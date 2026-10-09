@@ -1408,6 +1408,7 @@ mod tests {
             files: node.files(),
             dir: BLOB.into(),
             pool: Rc::clone(&pool),
+            floor_bytes: 0,
         })
         .await
         .unwrap();

@@ -169,6 +169,8 @@ const IDLE: Span = Span::from_nanos(30_000_000_000);
 /// The largest message of a stream, when the pool holds it, a patch as [`WINDOW`]
 /// is.
 const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
+/// The bytes the blob store leaves free on the disk, a patch as [`WINDOW`] is.
+const FLOOR: u64 = 1 << 30;
 
 impl Node {
     /// Binds the node's port at [`Config::listen`], then starts one shard per core,
@@ -870,6 +872,7 @@ impl Endpoint {
             files: files.clone(),
             dir: directory::blob(),
             pool: Rc::clone(&pool),
+            floor_bytes: FLOOR,
         });
         let store = match store.await {
             Ok(store) => store,
