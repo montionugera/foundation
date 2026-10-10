@@ -64,14 +64,23 @@ fn record(comments: Vec<Comment>) -> Record {
 /// The start of the range of `ROUND`, which changes only comment lines.
 const COMMENTS: &str = "38cba24f";
 
+/// A commit on the first-parent chain of `HEAD` from which the range to `HEAD`
+/// changes no code.
+const TEXT: &str = "5e0f17a2";
+
+/// A commit on the first-parent chain of `HEAD` from which the range to `HEAD`
+/// changes code.
+const CODE: &str = "82ba5b72";
+
 fn check(record: &Record) -> Vec<String> {
-    // A commit reaches the head only when it is a prefix of it.
+    let head = |commit: &str| HEAD.starts_with(commit);
     problems(
         record,
         HEAD,
-        &|end| Ok(HEAD.starts_with(end)),
+        &|end| Ok(head(end) || [TEXT, CODE].contains(&end)),
         &|from, _| {
-            Ok((from != COMMENTS).then(|| "changes code at `a.rs:2`".to_string()))
+            let text = head(from) || [COMMENTS, TEXT].contains(&from);
+            Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
         },
     )
     .unwrap()
@@ -688,9 +697,10 @@ fn reads_each_field_as_github_shows_it() {
         check(&record(vec![bot(&range)])),
         vec![
             "review round 3 skips `breaker`, but its range changes code at `a.rs:2`.",
-            "review round 3 ends at bbbbbbbb, not at the head \
-             c77c67d72fd8d37964334c80e14dd8b5a1d5b6fb. A commit after the round needs \
-             a new round; only a clean merge of the base does not.",
+            "review round 3 ends at `bbbbbbbb`, which is not the head \
+             `c77c67d72fd8d37964334c80e14dd8b5a1d5b6fb` or a commit on its \
+             first-parent chain. A commit after the round needs a new round, unless \
+             it changes no code.",
         ]
     );
 }
@@ -898,13 +908,33 @@ fn ignores_a_round_by_another_account() {
 }
 
 #[test]
-fn fails_a_range_that_ends_before_the_head() {
-    let round = ROUND.replace("..c77c67d7", "..82ba5b72");
+fn fails_a_range_that_ends_before_a_commit_that_changes_code() {
+    let round = ROUND.replace("..c77c67d7", &format!("..{CODE}"));
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at 82ba5b72, not at the head {HEAD}. A commit after \
-             the round needs a new round; only a clean merge of the base does not."
+            "review round 3 ends at `{CODE}`, and the range from it to the head \
+             `{HEAD}` changes code at `a.rs:2`. A commit that changes code needs a new \
+             round."
+        )]
+    );
+}
+
+#[test]
+fn passes_a_range_that_ends_before_commits_that_change_no_code() {
+    let round = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
+    assert_eq!(check(&record(vec![bot(&round)])), Vec::<String>::new());
+}
+
+#[test]
+fn fails_a_range_that_ends_off_the_first_parent_chain() {
+    let round = ROUND.replace("..c77c67d7", "..0badc0de");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![format!(
+            "review round 3 ends at `0badc0de`, which is not the head `{HEAD}` or a \
+             commit on its first-parent chain. A commit after the round needs a new \
+             round, unless it changes no code."
         )]
     );
 }

@@ -99,8 +99,13 @@ impl Repo {
         self.git(&args.concat())
     }
 
-    fn reaches(&self, end: &str, head: &str) -> Result<bool, String> {
-        History::new(&self.dir, "main").reaches(end, head)
+    fn follows(&self, end: &str, head: &str) -> Result<bool, String> {
+        History::new(&self.dir, "main").follows(end, head)
+    }
+
+    /// Whether a last round that ends at `end` passes at `head`.
+    fn passes(&self, end: &str, head: &str) -> Result<bool, String> {
+        Ok(self.follows(end, head)? && self.code_change(end, head)?.is_none())
     }
 
     fn code_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
@@ -120,23 +125,23 @@ impl Repo {
 }
 
 #[test]
-fn reaches_itself_by_full_sha_and_by_prefix() {
+fn passes_itself_by_full_sha_and_by_prefix() {
     let (repo, end) = Repo::with_pr("itself");
-    assert_eq!(repo.reaches(&end, &end), Ok(true));
-    assert_eq!(repo.reaches(&end[..7], &end), Ok(true));
+    assert_eq!(repo.passes(&end, &end), Ok(true));
+    assert_eq!(repo.passes(&end[..7], &end), Ok(true));
     let child = repo.commit("a.md", "text\n");
-    assert_eq!(repo.reaches(&format!("{child}^"), &end), Ok(false));
+    assert_eq!(repo.passes(&format!("{child}^"), &end), Ok(false));
     repo.remove();
 }
 
 #[test]
-fn reaches_through_clean_merges_of_main() {
+fn passes_through_clean_merges_of_main() {
     let (repo, end) = Repo::with_pr("clean");
     let main = repo.advance_main("c.txt", "main\n");
     repo.git(&["merge", "--quiet", "--no-edit", &main]);
     repo.advance_main("d.txt", "main again\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(true));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(true));
     repo.remove();
 }
 
@@ -144,7 +149,7 @@ fn reaches_through_clean_merges_of_main() {
 fn refuses_a_commit_after_the_end() {
     let (repo, end) = Repo::with_pr("after");
     let head = repo.commit("b.txt", "changed\n");
-    assert_eq!(repo.reaches(&end, &head), Ok(false));
+    assert_eq!(repo.passes(&end, &head), Ok(false));
     repo.remove();
 }
 
@@ -166,7 +171,7 @@ fn refuses_a_merge_that_resolves_a_conflict() {
     std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
     repo.git(&["add", "a.txt"]);
     repo.git(&["commit", "--quiet", "--no-edit"]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
@@ -177,7 +182,7 @@ fn refuses_a_clean_merge_with_an_added_change() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     std::fs::write(repo.dir.join("b.txt"), "slipped in\n").unwrap();
     repo.git(&["commit", "--quiet", "--all", "--amend", "--no-edit"]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
@@ -188,18 +193,184 @@ fn refuses_a_merge_of_a_branch_that_is_not_main() {
     let other = repo.commit("c.txt", "other\n");
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", &other]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
 #[test]
-fn text_that_names_no_commit_does_not_reach() {
+fn text_that_names_no_commit_does_not_pass() {
     let (repo, end) = Repo::with_pr("unknown");
-    assert_eq!(repo.reaches("abc12", &end), Ok(false));
-    assert_eq!(repo.reaches("HEAD~1x", &end), Ok(false));
-    assert_eq!(repo.reaches("deadbeef", &end), Ok(false));
-    assert_eq!(repo.reaches(&end[..6], &end), Ok(false));
-    assert_eq!(repo.reaches(&format!("{end}^{{commit}}"), &end), Ok(false));
+    assert_eq!(repo.passes("abc12", &end), Ok(false));
+    assert_eq!(repo.passes("HEAD~1x", &end), Ok(false));
+    assert_eq!(repo.passes("deadbeef", &end), Ok(false));
+    assert_eq!(repo.passes(&end[..6], &end), Ok(false));
+    assert_eq!(repo.passes(&format!("{end}^{{commit}}"), &end), Ok(false));
+    repo.remove();
+}
+
+#[test]
+fn follows_on_the_first_parent_chain_only() {
+    let (repo, end) = Repo::with_pr("follows");
+    repo.git(&["switch", "--quiet", "-c", "side", "main"]);
+    let side = repo.commit("c.md", "side\n");
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &side]);
+    let head = repo.commit("a.md", "text\n");
+    assert_eq!(repo.follows(&head, &head), Ok(true));
+    assert_eq!(repo.follows(&end, &head), Ok(true));
+    assert_eq!(repo.follows(&end[..7], &head), Ok(true));
+    assert_eq!(repo.follows(&side, &head), Ok(false));
+    assert_eq!(repo.passes(&side, &head), Ok(false));
+    assert_eq!(repo.follows(&head, &end), Ok(false));
+    assert_eq!(repo.follows("deadbeef", &head), Ok(false));
+    repo.remove();
+}
+
+#[test]
+fn passes_commits_that_change_no_code_after_the_end() {
+    let (repo, _) = Repo::with_pr("text");
+    let end = repo.commit("a.rs", "fn a() {}\n");
+    let text = |n: &str| {
+        std::fs::write(repo.dir.join("a.md"), n).unwrap();
+        let rust = std::fs::read_to_string(repo.dir.join("a.rs")).unwrap();
+        std::fs::write(repo.dir.join("a.rs"), format!("// {n}\n{rust}")).unwrap();
+        repo.git(&["add", "a.md", "a.rs"]);
+        repo.git(&["commit", "--quiet", "-m", n]);
+        repo.head()
+    };
+    let first = text("first");
+    assert_eq!(repo.code_change(&end, &first), Ok(None));
+    assert_eq!(repo.passes(&end, &first), Ok(true));
+    repo.advance_main("c.txt", "main\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let second = text("second");
+    assert_eq!(repo.code_change(&end, &second), Ok(None));
+    assert_eq!(repo.passes(&end, &second), Ok(true));
+    repo.remove();
+}
+
+#[test]
+fn refuses_a_commit_that_changes_code_after_the_end() {
+    let (repo, _) = Repo::with_pr("code-after");
+    let end = repo.commit("a.rs", "// A.\n");
+    let rust = repo.commit("a.rs", "// A.\nfn a() {}\n");
+    assert_eq!(
+        repo.code_change(&end, &rust),
+        Ok(Some("changes code at `a.rs:2`".to_string()))
+    );
+    assert_eq!(repo.passes(&end, &rust), Ok(false));
+    let yaml = repo.commit("a.yaml", "# A comment.\n");
+    assert_eq!(
+        repo.code_change(&rust, &yaml),
+        Ok(Some("changes code at `a.yaml:1`".to_string()))
+    );
+    assert_eq!(repo.passes(&rust, &yaml), Ok(false));
+    repo.commit("a.sh", "echo a\n");
+    let script = repo.head();
+    repo.git(&["update-index", "--chmod=+x", "a.sh"]);
+    repo.git(&["commit", "--quiet", "-m", "mode"]);
+    let mode = repo.head();
+    assert_eq!(
+        repo.code_change(&script, &mode),
+        Ok(Some("changes code at `a.sh`".to_string()))
+    );
+    assert_eq!(repo.passes(&script, &mode), Ok(false));
+    std::fs::write(repo.dir.join("a.bin"), b"\x00\x01\xff").unwrap();
+    repo.git(&["add", "a.bin"]);
+    repo.git(&["commit", "--quiet", "-m", "bin"]);
+    let binary = repo.head();
+    assert_eq!(
+        repo.code_change(&mode, &binary),
+        Ok(Some("changes code at `a.bin:1`".to_string()))
+    );
+    assert_eq!(repo.passes(&mode, &binary), Ok(false));
+    repo.remove();
+}
+
+#[test]
+fn a_shell_script_line_is_code() {
+    let (repo, from) = Repo::with_pr("script");
+    let end = repo.commit("a.sh", "# A comment.\n");
+    assert_eq!(
+        repo.code_change(&from, &end),
+        Ok(Some("changes code at `a.sh:1`".to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_change_of_mode_or_an_empty_file_is_code_except_in_text() {
+    let (repo, from) = Repo::with_pr("mode");
+    let empty = repo.commit("e.yaml", "");
+    assert_eq!(
+        repo.code_change(&from, &empty),
+        Ok(Some("changes code at `e.yaml`".to_string()))
+    );
+    let rust = repo.commit("e.rs", "");
+    assert_eq!(repo.code_change(&empty, &rust), Ok(None));
+    let text = repo.commit("a.md", "text\n");
+    for file in ["e.rs", "a.md"] {
+        repo.git(&["update-index", "--chmod=+x", file]);
+    }
+    repo.git(&["commit", "--quiet", "-m", "mode"]);
+    let mode = repo.head();
+    assert_eq!(
+        repo.code_change(&text, &mode),
+        Ok(Some("changes code at `e.rs`".to_string()))
+    );
+    repo.git(&["update-index", "--chmod=-x", "a.md"]);
+    repo.git(&["commit", "--quiet", "-m", "mode"]);
+    assert_eq!(repo.code_change(&mode, &repo.head()), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_submodule_is_code() {
+    for path in ["sub", "sub.rs"] {
+        let (repo, from) = Repo::with_pr(&format!("submodule-{path}"));
+        let link = |commit: &str| {
+            let info = format!("160000,{commit},{path}");
+            repo.git(&["update-index", "--add", "--cacheinfo", &info]);
+            repo.git(&["commit", "--quiet", "-m", "link"]);
+            repo.head()
+        };
+        let added = link(&from);
+        assert_eq!(
+            repo.code_change(&from, &added),
+            Ok(Some(format!("changes code at `{path}`"))),
+            "{path}"
+        );
+        let moved = link(&added);
+        assert_eq!(
+            repo.code_change(&added, &moved),
+            Ok(Some(format!("changes code at `{path}`"))),
+            "{path}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn refuses_a_merge_with_a_conflict_in_a_file_that_is_not_text() {
+    let (repo, _) = Repo::with_pr("yaml-conflict");
+    let end = repo.commit("a.yaml", "pr: 1\n");
+    repo.advance_main("a.yaml", "main: 1\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert_eq!(merge.status.code(), Some(1), "{merge:?}");
+    std::fs::write(repo.dir.join("a.yaml"), "pr: 1\n").unwrap();
+    repo.git(&["commit", "--quiet", "--all", "--no-edit"]);
+    let merge = repo.head();
+    assert_eq!(
+        repo.code_change(&end, &merge),
+        Ok(Some(format!(
+            "resolves a conflict in `a.yaml` in `{merge}`"
+        )))
+    );
+    assert_eq!(repo.passes(&end, &merge), Ok(false));
     repo.remove();
 }
 
@@ -207,7 +378,7 @@ fn text_that_names_no_commit_does_not_reach() {
 fn names_the_git_failure_for_an_unknown_head() {
     let (repo, end) = Repo::with_pr("head");
     assert_eq!(
-        repo.reaches(&end, "deadbeef"),
+        repo.passes(&end, "deadbeef"),
         Err(
             "git rev-parse --verify deadbeef^{commit}: fatal: Needed a single revision"
                 .to_string()
@@ -222,7 +393,7 @@ fn a_range_of_comment_and_blank_lines_changes_no_code() {
     let code = repo.commit("a.rs", "/// A.\nfn a() {}\n");
     let docs = repo.commit("a.rs", "/// A, wrapped.\n\n  // B.\nfn a() {}\n\n");
     assert_eq!(repo.code_change(&code, &docs), Ok(None));
-    let text = repo.commit("b.txt", "fn b() {}\n");
+    let text = repo.commit("b.md", "fn b() {}\n");
     assert_eq!(repo.code_change(&code[..7], &text[..7]), Ok(None));
     let removed = repo.commit("a.rs", "fn a() {}\n");
     assert_eq!(repo.code_change(&text, &removed), Ok(None));
@@ -568,8 +739,8 @@ fn a_conflict_counts_only_in_a_code_file() {
 }
 
 #[test]
-fn a_conflict_in_a_text_file_named_with_a_tilde_does_not_count() {
-    for file in ["Cargo.toml~", "lib.rs~old"] {
+fn a_conflict_in_a_file_named_with_a_tilde_counts() {
+    for file in ["Cargo.toml~", "a.md~old"] {
         let (repo, _) = Repo::with_pr(&format!("merge-tilde-{file}"));
         let end = repo.commit(file, "pr\n");
         repo.advance_main(file, "main\n");
@@ -582,20 +753,31 @@ fn a_conflict_in_a_text_file_named_with_a_tilde_does_not_count() {
         std::fs::write(repo.dir.join(file), "pr\n").unwrap();
         repo.git(&["commit", "--quiet", "--all", "--no-edit"]);
         let merge = repo.head();
-        assert_eq!(repo.code_change(&end, &merge), Ok(None), "{file}");
+        assert_eq!(
+            repo.code_change(&end, &merge),
+            Ok(Some(format!(
+                "resolves a conflict in `{file}` in `{merge}`"
+            ))),
+            "{file}"
+        );
         repo.remove();
     }
 }
 
 #[test]
-fn a_start_base_conflict_in_a_text_file_named_with_a_tilde_does_not_count() {
+fn a_start_base_conflict_in_a_file_named_with_a_tilde_counts() {
     let (repo, _) = Repo::with_pr("merge-tilde-start");
-    let end = repo.commit("Cargo.toml~", "pr\n");
-    repo.git(&["rm", "--quiet", "Cargo.toml~"]);
+    let end = repo.commit("a.md~", "pr\n");
+    repo.git(&["rm", "--quiet", "a.md~"]);
     repo.git(&["commit", "--quiet", "-m", "rm"]);
-    repo.advance_main("Cargo.toml~", "main\n");
+    repo.advance_main("a.md~", "main\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
-    assert_eq!(repo.code_change(&end, &repo.head()), Ok(None));
+    assert_eq!(
+        repo.code_change(&end, &repo.head()),
+        Ok(Some(
+            "has a conflict in `a.md~` between its start and the base".to_string()
+        ))
+    );
     repo.remove();
 }
 
@@ -672,7 +854,7 @@ fn reads_a_merge_whose_messages_are_not_utf8() {
     let resolved = lines("p", "m");
     let merge = commit([(b"\xff.md", &resolved), (b"y.md", "p\n")], &[&end, &main]);
     assert_eq!(repo.code_change(&end, &merge), Ok(None));
-    assert_eq!(repo.reaches(&end, &merge), Ok(false));
+    assert_eq!(repo.passes(&end, &merge), Ok(true));
     repo.remove();
 }
 
@@ -746,7 +928,7 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
         repo.git(&["show", "HEAD:a.rs"]).lines().next(),
         Some("fn unreviewed() {}")
     );
-    assert_eq!(repo.reaches(&end, &merge), Ok(false));
+    assert_eq!(repo.passes(&end, &merge), Ok(false));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
@@ -784,7 +966,7 @@ fn a_base_move_counts_by_the_source_that_the_merge_pairs() {
         repo.git(&["show", "HEAD:c.rs"]).lines().next(),
         Some("fn unreviewed() {}")
     );
-    assert_eq!(repo.reaches(&end, &merge), Ok(false));
+    assert_eq!(repo.passes(&end, &merge), Ok(false));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
@@ -917,7 +1099,7 @@ fn a_start_with_two_merge_bases_with_the_base_reads_both() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
-    assert_eq!(repo.reaches(&end, &merge), Ok(true));
+    assert_eq!(repo.passes(&end, &merge), Ok(true));
     assert_eq!(repo.code_change(&end, &merge), Ok(None));
     repo.remove();
 }
@@ -946,7 +1128,7 @@ fn a_base_move_after_two_merge_bases_with_the_base_counts() {
             .count(),
         2
     );
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     assert_eq!(
         repo.code_change(&end, &repo.head()),
         Ok(Some(
@@ -1099,7 +1281,7 @@ fn a_base_move_after_a_modify_delete_of_two_merge_bases_counts() {
                 .to_string()
         ))
     );
-    assert_eq!(repo.reaches(&first, &end), Ok(false));
+    assert_eq!(repo.passes(&first, &end), Ok(false));
     repo.remove();
 }
 
@@ -1121,7 +1303,7 @@ fn at_one_time(repo: &Repo, files: &[(&[u8], &str)], parents: &[&str]) -> String
 }
 
 #[test]
-fn a_base_move_of_a_file_that_the_bases_move_aside_counts() {
+fn a_base_move_of_a_file_that_the_bases_move_aside_is_a_move_of_code() {
     let text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
     let unreviewed = format!("fn unreviewed() {{}}\n{text}");
     let aside: &[u8] = b"d~Temporary merge branch 1";
@@ -1158,16 +1340,8 @@ fn a_base_move_of_a_file_that_the_bases_move_aside_counts() {
             repo.git(&["show", "HEAD:x.rs"]).lines().next(),
             Some("fn unreviewed() {}")
         );
-        assert_eq!(
-            repo.code_change(&first, &end),
-            Ok(Some(
-                "the base moves `d~Temporary merge branch 1`, which the PR changes, \
-                 into the code file `x.rs`"
-                    .to_string()
-            )),
-            "{graph}"
-        );
-        assert_eq!(repo.reaches(&first, &end), Ok(false), "{graph}");
+        assert_eq!(repo.code_change(&first, &end), Ok(None), "{graph}");
+        assert_eq!(repo.passes(&first, &end), Ok(true), "{graph}");
         repo.remove();
     }
 }
@@ -1191,7 +1365,7 @@ fn a_base_move_from_code_or_to_text_does_not_count() {
             repo.git(&["show", &format!("HEAD:{new}")]).lines().next(),
             Some("// pr")
         );
-        assert_eq!(repo.reaches(&end, &merge), Ok(true), "{new}");
+        assert_eq!(repo.passes(&end, &merge), Ok(true), "{new}");
         assert_eq!(repo.code_change(&end, &merge), Ok(None), "{new}");
         repo.remove();
     }
@@ -1211,7 +1385,7 @@ fn a_base_move_of_text_that_the_pr_does_not_change_does_not_count() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
-    assert_eq!(repo.reaches(&end, &merge), Ok(true));
+    assert_eq!(repo.passes(&end, &merge), Ok(true));
     assert_eq!(repo.code_change(&end, &merge), Ok(None));
     repo.remove();
 }
@@ -1227,7 +1401,7 @@ fn a_conflict_of_the_start_and_the_base_fails_closed() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
     let first = repo.git(&["rev-parse", "HEAD^1"]);
-    assert_eq!(repo.reaches(&first, &merge), Ok(true));
+    assert_eq!(repo.passes(&first, &merge), Ok(true));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
@@ -1262,7 +1436,7 @@ fn a_modify_delete_conflict_of_the_start_and_the_base_fails_closed() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
     let first = repo.git(&["rev-parse", "HEAD^1"]);
-    assert_eq!(repo.reaches(&first, &merge), Ok(true));
+    assert_eq!(repo.passes(&first, &merge), Ok(true));
     // The PR brings back the file that the base deleted.
     repo.commit("x.rs", "fn a() {}\nfn pr() {}\n");
     assert_eq!(
@@ -1285,7 +1459,7 @@ fn a_binary_conflict_of_the_start_and_the_base_fails_closed() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
     let first = repo.git(&["rev-parse", "HEAD^1"]);
-    assert_eq!(repo.reaches(&first, &merge), Ok(true));
+    assert_eq!(repo.passes(&first, &merge), Ok(true));
     // The PR replaces the base's `fn base` with its own text.
     repo.commit("x.rs", "// \0\nfn pr() {}\n");
     assert_eq!(
@@ -1325,7 +1499,7 @@ fn a_range_needs_the_base_ref() {
     let (repo, end) = Repo::with_pr("merge-no-base");
     repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
     assert_eq!(
-        repo.code_change(&end, &end),
+        repo.code_change(&format!("{end}^"), &end),
         Err(
             "git show-ref --verify --hash refs/remotes/origin/main: fatal: \
              'refs/remotes/origin/main' - not a valid ref"
@@ -1503,11 +1677,11 @@ fn a_tag_named_like_a_commit_prefix_does_not_hide_code() {
 }
 
 #[test]
-fn a_tag_named_like_an_end_prefix_does_not_reach() {
+fn a_tag_named_like_an_end_prefix_does_not_pass() {
     let (repo, end) = Repo::with_pr("tagend");
     let head = repo.commit("a.rs", "fn a() {}\n");
     repo.git(&["tag", &end[..8], &head]);
-    assert_eq!(repo.reaches(&end[..8], &head), Ok(false));
+    assert_eq!(repo.passes(&end[..8], &head), Ok(false));
     repo.remove();
 }
 
@@ -1519,7 +1693,7 @@ fn a_tag_named_like_the_base_does_not_put_a_commit_on_it() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["tag", "origin/main", &side]);
     repo.git(&["merge", "--quiet", "--no-edit", &side]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
@@ -1528,7 +1702,7 @@ fn hex_after_a_full_sha_names_no_commit() {
     let (repo, end) = Repo::with_pr("longhex");
     for zeros in [1, 25] {
         let long = format!("{end}{}", "0".repeat(zeros));
-        assert_eq!(repo.reaches(&long, &end), Ok(false));
+        assert_eq!(repo.passes(&long, &end), Ok(false));
         assert_eq!(
             repo.code_change(&long, &end),
             Ok(Some(format!("has `{long}`, which names no commit")))
@@ -1550,8 +1724,8 @@ fn a_prefix_of_two_commits_names_no_commit() {
     });
     for sha in &shas {
         assert_eq!(&sha[..7], "303b29b");
-        assert_eq!(repo.reaches(&sha[..7], sha), Ok(false));
-        assert_eq!(repo.reaches(sha, sha), Ok(true));
+        assert_eq!(repo.passes(&sha[..7], sha), Ok(false));
+        assert_eq!(repo.passes(sha, sha), Ok(true));
     }
     repo.remove();
 }
@@ -1564,7 +1738,7 @@ fn a_local_main_does_not_put_a_commit_on_the_base() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["branch", "--force", "main", &side]);
     repo.git(&["merge", "--quiet", "--no-edit", &side]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
@@ -1578,7 +1752,7 @@ fn a_tag_does_not_stand_in_for_a_missing_base() {
     repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
     repo.git(&["tag", "refs/remotes/origin/main", &side]);
     assert_eq!(
-        repo.reaches(&end, &repo.head()),
+        repo.passes(&end, &repo.head()),
         Err(
             "git show-ref --verify --hash refs/remotes/origin/main: fatal: \
              'refs/remotes/origin/main' - not a valid ref"
@@ -1592,7 +1766,7 @@ fn a_tag_does_not_stand_in_for_a_missing_base() {
 fn a_directory_left_by_a_killed_run_does_not_break_a_test() {
     Repo::with_pr("stale");
     let (repo, end) = Repo::with_pr("stale");
-    assert_eq!(repo.reaches(&end, &end), Ok(true));
+    assert_eq!(repo.passes(&end, &end), Ok(true));
     let dir = repo.dir.clone();
     repo.remove();
     assert!(!dir.exists(), "remove left the directory {}", dir.display());
@@ -1619,7 +1793,7 @@ fn an_inherited_git_environment_does_not_reach_another_repository() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "review::history::tests::reaches_through_clean_merges_of_main",
+            "review::history::tests::passes_through_clean_merges_of_main",
         ])
         .env("GIT_DIR", other.dir.join(".git"))
         .env("GIT_CONFIG_PARAMETERS", "'commit.gpgsign'='true'")
@@ -1633,7 +1807,7 @@ fn an_inherited_git_environment_does_not_reach_another_repository() {
 }
 
 #[test]
-fn a_union_resolution_of_a_conflict_does_not_reach() {
+fn a_union_resolution_of_a_conflict_does_not_pass() {
     let (repo, _) = Repo::with_pr("union");
     let end = repo.commit("a.txt", "pr side\n");
     repo.advance_main("a.txt", "main side\n");
@@ -1644,7 +1818,7 @@ fn a_union_resolution_of_a_conflict_does_not_reach() {
     std::fs::write(repo.dir.join("a.txt"), "pr side\nmain side\n").unwrap();
     repo.git(&["add", "a.txt"]);
     repo.git(&["commit", "--quiet", "--no-edit"]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
@@ -1657,12 +1831,12 @@ fn a_merge_driver_in_the_tree_does_not_hide_a_conflict() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merged = std::fs::read_to_string(repo.dir.join("a.txt")).unwrap();
     assert_eq!(merged, "pr side\nmain side\n");
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
     repo.remove();
 }
 
 #[test]
-fn reaches_through_a_clean_merge_of_a_rename() {
+fn passes_through_a_clean_merge_of_a_rename() {
     let (repo, _) = Repo::with_pr("reach-rename");
     let lines = (1..=10)
         .map(|n| format!("line {n}\n"))
@@ -1678,7 +1852,7 @@ fn reaches_through_a_clean_merge_of_a_rename() {
     repo.git(&["switch", "--quiet", "pr"]);
     let end = repo.commit("a.txt", &lines.replace("line 10", "line ten"));
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
-    assert_eq!(repo.reaches(&end, &repo.head()), Ok(true));
+    assert_eq!(repo.passes(&end, &repo.head()), Ok(true));
     repo.remove();
 }
 
@@ -1693,8 +1867,8 @@ fn the_machine_git_settings_do_not_change_a_test() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "review::history::tests::a_union_resolution_of_a_conflict_does_not_reach",
-            "review::history::tests::reaches_through_a_clean_merge_of_a_rename",
+            "review::history::tests::a_union_resolution_of_a_conflict_does_not_pass",
+            "review::history::tests::passes_through_a_clean_merge_of_a_rename",
             "review::history::tests::a_moved_file_and_a_manifest_change_code",
         ])
         .env("HOME", &home)
@@ -1783,14 +1957,14 @@ fn a_file_directory_conflict_of_the_start_and_the_base_counts() {
         repo.git(&["rm", "--quiet", "-r", file]);
         repo.git(&["commit", "--quiet", "-m", "rm dir"]);
         std::fs::create_dir_all(repo.dir.join(file).parent().unwrap()).unwrap();
-        repo.advance_main(file, "fn base() {}\n");
+        let main = repo.advance_main(file, "fn base() {}\n");
         repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
         repo.git(&["rm", "--quiet", file]);
         repo.git(&["commit", "--quiet", "-m", "rm file"]);
         assert_eq!(
             repo.code_change(&end, &repo.head()),
             Ok(Some(format!(
-                "has a conflict in `{file}` between its start and the base"
+                "has a conflict in `{file}~{main}` between its start and the base"
             ))),
             "{file}"
         );
@@ -1812,9 +1986,9 @@ fn a_file_moved_aside_to_a_taken_name_counts() {
     repo.git(&["commit", "--quiet", "-m", "rm x.rs"]);
     assert_eq!(
         repo.code_change(&end, &repo.head()),
-        Ok(Some(
-            "has a conflict in `x.rs` between its start and the base".to_string()
-        ))
+        Ok(Some(format!(
+            "has a conflict in `x.rs~{base}_0` between its start and the base"
+        )))
     );
     repo.remove();
 }
@@ -1830,9 +2004,9 @@ fn a_start_file_moved_aside_by_a_base_directory_counts() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     assert_eq!(
         repo.code_change(&end, &repo.head()),
-        Ok(Some(
-            "has a conflict in `x.rs` between its start and the base".to_string()
-        ))
+        Ok(Some(format!(
+            "has a conflict in `x.rs~{end}` between its start and the base"
+        )))
     );
     repo.remove();
 }
@@ -1840,7 +2014,7 @@ fn a_start_file_moved_aside_by_a_base_directory_counts() {
 #[test]
 fn a_merge_that_moves_the_pr_file_aside_counts() {
     let (repo, from) = Repo::with_pr("merge-dirfile-chain");
-    repo.commit("x.rs", "fn pr() {}\n");
+    let pr = repo.commit("x.rs", "fn pr() {}\n");
     repo.git(&["switch", "--quiet", "main"]);
     std::fs::create_dir(repo.dir.join("x.rs")).unwrap();
     let main = repo.commit("x.rs/a.txt", "base\n");
@@ -1868,7 +2042,9 @@ fn a_merge_that_moves_the_pr_file_aside_counts() {
     let merge = repo.head();
     assert_eq!(
         repo.code_change(&from, &merge),
-        Ok(Some(format!("resolves a conflict in `x.rs` in `{merge}`")))
+        Ok(Some(format!(
+            "resolves a conflict in `x.rs~{pr}` in `{merge}`"
+        )))
     );
     repo.remove();
 }
@@ -1926,6 +2102,6 @@ fn a_start_with_an_early_commit_time_reads() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let end = repo.head();
     assert_eq!(repo.code_change(&from, &end), Ok(None));
-    assert_eq!(repo.reaches(&from, &end), Ok(true));
+    assert_eq!(repo.passes(&from, &end), Ok(true));
     repo.remove();
 }

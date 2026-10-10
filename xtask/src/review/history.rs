@@ -25,62 +25,58 @@ impl<'a> History<'a> {
         Self { root, base }
     }
 
-    /// Reports whether `end` (a SHA or a prefix of at least 7 digits) is `head`, or
-    /// reaches it through first-parent merges of a commit on the base that resolve no
-    /// conflict: each merge's tree is the tree that `git merge-tree` makes of its
-    /// parents. A merge whose base side moves text of its first parent into a code file
-    /// does not count, as in `code_change`. Text that names no single commit does not
-    /// reach `head`.
+    /// Reports whether `end` (a SHA or a prefix of at least 7 digits) is `head` or a
+    /// commit on the first-parent chain of `head`. Text that names no single commit
+    /// does not follow.
     ///
     /// # Errors
     ///
-    /// A failed `git` command, also when the base ref does not exist.
-    pub(crate) fn reaches(&self, end: &str, head: &str) -> Result<bool, String> {
+    /// A failed `git` command, also when `head` names no commit.
+    pub(crate) fn follows(&self, end: &str, head: &str) -> Result<bool, String> {
         let Some(end) = self.sha(end)? else {
             return Ok(false);
         };
-        let base = self.base()?;
-        let mut commit =
+        let head =
             self.git(&["rev-parse", "--verify", &format!("{head}^{{commit}}")])?;
-        while commit != end {
-            let line = self.git(&["rev-list", "--parents", "-n", "1", &commit])?;
-            let Some((first, second)) = self.base_merge(&line, &base)? else {
-                return Ok(false);
-            };
-            if !self.clean(&commit, first, second)? {
-                return Ok(false);
-            }
-            commit = first.to_string();
-        }
-        Ok(true)
+        let range = format!("{end}..{head}");
+        let chain = self.git(&["rev-list", "--first-parent", "--parents", &range])?;
+        // The walk stops at the first commit that `end` holds, so the last commit
+        // listed has `end` as its first parent only when `end` is on the chain.
+        Ok(end == head
+            || chain
+                .lines()
+                .last()
+                .is_some_and(|line| line.split(' ').nth(1) == Some(&end)))
     }
 
-    /// The first line of code that `from..end` adds or removes, as a phrase: "changes
-    /// code at `<file>:<line>`". A line of a `.rs` file is code unless, trimmed, it is
-    /// empty or starts with `//`; each line of a `Cargo.toml` or `Cargo.lock` is
-    /// code. A moved file counts as removed and added.
+    /// The first code change of `from..end`, as a phrase: "changes code at
+    /// `<file>:<line>`", or "changes code at `<file>`" when no line differs. Each
+    /// change to a file that is not a `.md` file is code (its lines, its mode, or its
+    /// path), except a `.rs` line that, trimmed, is empty or starts with `//`. A moved
+    /// file counts as removed and added.
     ///
     /// A merge of a commit on the base on the first-parent chain of `end` counts only
-    /// by its resolution: a `.rs`, `Cargo.toml`, or `Cargo.lock` file that
-    /// `git merge-tree` finds a conflict in between its parents gives "resolves a
-    /// conflict in `<file>` in `<merge>`". Else the change is read to `end` from the
-    /// tree that `git merge-tree` makes of `from` and the newest base commit that `end`
-    /// holds, not from `from`: the base's code does not count, and text of the range
-    /// that the base moves into a code file does. A code file that this tree has a
-    /// conflict in gives "has a conflict in `<file>` between its start and the base",
-    /// so a conflict that leaves no markers fails closed too. A path that is not code,
-    /// that `from` changes since its merge base with that base commit, as the merge
-    /// reads it, and that the merge that makes this tree moves into a code file by its
-    /// own rename detection gives "the base moves `<old>`, which the PR changes, into
-    /// the code file `<new>`". An `end` that holds more than one newest base commit
-    /// gives "holds the base at more than one newest commit: `<commit>`, `<commit>`".
+    /// by its resolution: a file that is not a `.md` file that `git merge-tree` finds a
+    /// conflict in between its parents gives "resolves a conflict in `<file>` in
+    /// `<merge>`". Else the change is read to `end` from the tree that `git merge-tree`
+    /// makes of `from` and the newest base commit that `end` holds, not from `from`:
+    /// the base's code does not count, and text of the range that the base moves into a
+    /// code file does. A code file that this tree has a conflict in gives "has a
+    /// conflict in `<file>` between its start and the base", so a conflict that leaves
+    /// no markers fails closed too. A `.md` file that `from` changes since its merge
+    /// base with that base commit, as the merge reads it, and that the merge that makes
+    /// this tree moves into a code file by its own rename detection gives "the base
+    /// moves `<old>`, which the PR changes, into the code file `<new>`". An `end` that
+    /// holds more than one newest base commit gives "holds the base at more than one
+    /// newest commit: `<commit>`, `<commit>`".
     ///
     /// The line number is in `end` for an added line, and in `from` or that tree for
     /// a removed one.
     ///
-    /// `None` when no line is code. `from` and `end` are SHAs or prefixes of at least
-    /// 7 digits, and `from` may end in one `^` for its first parent; text that names
-    /// no single commit gives the phrase "has `<text>`, which names no commit".
+    /// `None` when the range changes no code, also when it is empty. `from` and `end`
+    /// are SHAs or prefixes of at least 7 digits, and `from` may end in one `^` for its
+    /// first parent; text that names no single commit gives the phrase "has `<text>`,
+    /// which names no commit".
     ///
     /// # Errors
     ///
@@ -98,6 +94,9 @@ impl<'a> History<'a> {
         let Some(end_sha) = self.sha(end)? else {
             return Ok(Some(unnamed(end)));
         };
+        if from_sha == end_sha {
+            return Ok(None);
+        }
         let base = self.base()?;
         let range = format!("{from_sha}..{end_sha}");
         let chain = self.git(&[
@@ -140,30 +139,33 @@ impl<'a> History<'a> {
         self.first_change(&merged.tree, &end_sha)
     }
 
-    /// The first line of code that the change from the tree-ish `old` to `new` adds
-    /// or removes, as `code_change` gives it.
+    /// The first code change from the tree-ish `old` to `new`, as `code_change`
+    /// gives it.
     ///
     /// # Errors
     ///
     /// A failed `git` command, or a changed path that is not UTF-8.
     fn first_change(&self, old: &str, new: &str) -> Result<Option<String>, String> {
-        let globs = [
-            "--",
-            ":(glob)**/*.rs",
-            ":(glob)**/Cargo.toml",
-            ":(glob)**/Cargo.lock",
-        ];
-        for entry in self.diff(old, new, &globs)? {
+        for entry in self.diff(old, new, &[])? {
             let path = std::str::from_utf8(&entry.path).map_err(|e| {
                 format!(
                     "git diff: the path `{}` is not UTF-8: {e}",
                     String::from_utf8_lossy(&entry.path)
                 )
             })?;
-            if let Some(line) =
-                self.first_code(&entry.old, &entry.new, rust_path(path))?
+            if text_path(path) {
+                continue;
+            }
+            // A submodule's blob is a commit, which has no lines to read.
+            let submodule = entry.old_mode == GITLINK || entry.new_mode == GITLINK;
+            let rust = rust_path(path);
+            if !submodule
+                && let Some(line) = self.first_code(&entry.old, &entry.new, rust)?
             {
                 return Ok(Some(format!("changes code at `{path}:{line}`")));
+            }
+            if !rust || submodule || entry.mode_changed() {
+                return Ok(Some(format!("changes code at `{path}`")));
             }
         }
         Ok(None)
@@ -292,17 +294,6 @@ impl<'a> History<'a> {
         }
     }
 
-    /// Reports whether `merge` has the tree that a merge of `first` and `second`
-    /// makes with no conflict, and the merge moves no text of `first` into a code
-    /// file (`moved_into_code`).
-    fn clean(&self, merge: &str, first: &str, second: &str) -> Result<bool, String> {
-        let merged = self.merged(first, second)?;
-        let tree = self.git(&["rev-parse", &format!("{merge}^{{tree}}")])?;
-        Ok(merged.clean
-            && merged.tree == tree
-            && self.moved_into_code(first, second, &merged.tree)?.is_none())
-    }
-
     /// The phrase "the base moves `<old>`, which the PR changes, into the code file
     /// `<new>`" for the first path `<old>` of `changed(first, second)` that their
     /// merge, with the tree `tree`, moves into the code file `<new>`. The moves are the
@@ -329,7 +320,7 @@ impl<'a> History<'a> {
         let probed = self.merged(&probe.commit, second)?.tree;
         for entry in self.diff(tree, &probed, &[])? {
             let new = String::from_utf8_lossy(&entry.path);
-            if !code_path(&new) {
+            if text_path(&new) {
                 continue;
             }
             let text = self.output(&["cat-file", "blob", &entry.new])?;
@@ -378,10 +369,10 @@ impl<'a> History<'a> {
         }))
     }
 
-    /// The mode and path of each file that is not code and that `first` changes since
-    /// its merge base with `second`, as a merge of the two reads that base. A file
-    /// that `first` moves since that base is in too, which changes no result: no file
-    /// of the base has its path, so the base cannot move it into a code file.
+    /// The mode and path of each `.md` file that `first` changes since its merge base
+    /// with `second`, as a merge of the two reads that base. A file that `first` moves
+    /// since that base is in too, which changes no result: no file of the base has its
+    /// path, so the base cannot move it into a code file.
     ///
     /// # Errors
     ///
@@ -396,7 +387,7 @@ impl<'a> History<'a> {
         // and `first` both hold with a difference, and for each file that `first`
         // moves.
         let gone = self.commit(second, EMPTY_TREE)?;
-        let (_, output) = self.merge_tree(&[first, &gone])?;
+        let output = self.merge_tree(&[first, &gone])?;
         // `<tree>NUL`, then `<mode> <blob> <stage>TAB<path>NUL` for each stage of each
         // conflicted path, then `NUL` and the messages.
         let mut changed = Vec::new();
@@ -409,7 +400,7 @@ impl<'a> History<'a> {
             let stage = String::from_utf8_lossy(parts.next().unwrap_or_default());
             let path = parts.next().unwrap_or_default();
             if let [mode, _, "2"] = stage.split(' ').collect::<Vec<_>>()[..]
-                && !code_path(&String::from_utf8_lossy(path))
+                && text_path(&String::from_utf8_lossy(path))
             {
                 changed.push((mode.to_string(), path.to_vec()));
             }
@@ -516,10 +507,14 @@ impl<'a> History<'a> {
         let mut fields = raw.split(|&b| b == 0);
         while let (Some(entry), Some(path)) = (fields.next(), fields.next()) {
             let entry = String::from_utf8_lossy(entry);
-            let [_, _, old, new, _] = entry.split(' ').collect::<Vec<_>>()[..] else {
+            let [old_mode, new_mode, old, new, _] =
+                entry.split(' ').collect::<Vec<_>>()[..]
+            else {
                 return Err(format!("git diff: a bad raw entry `{entry}`"));
             };
             entries.push(Entry {
+                old_mode: old_mode.trim_start_matches(':').to_string(),
+                new_mode: new_mode.to_string(),
                 old: old.to_string(),
                 new: new.to_string(),
                 path: path.to_vec(),
@@ -534,28 +529,27 @@ impl<'a> History<'a> {
     ///
     /// A failed `git merge-tree`.
     fn merged(&self, first: &str, second: &str) -> Result<Merged, String> {
-        let (clean, output) = self.merge_tree(&["--name-only", first, second])?;
+        let output = self.merge_tree(&["--name-only", first, second])?;
         // `<tree>NUL`, then `<path>NUL` for each conflicted path, then `NUL` and the
         // messages, which are not read: they can hold any bytes.
         let mut fields = output.split(|&b| b == 0);
         let tree = String::from_utf8_lossy(fields.next().unwrap_or_default());
         let conflicts = fields
             .take_while(|path| !path.is_empty())
-            .map(|path| unrenamed(&String::from_utf8_lossy(path), [first, second]));
+            .map(|path| String::from_utf8_lossy(path).into_owned());
         Ok(Merged {
-            clean,
             tree: tree.into_owned(),
             conflicts: conflicts.collect(),
         })
     }
 
-    /// Whether `git merge-tree --write-tree -z` with `args` finds no conflict, and its
-    /// output.
+    /// The output of `git merge-tree --write-tree -z` with `args`, with or without a
+    /// conflict.
     ///
     /// # Errors
     ///
     /// A failed `git merge-tree`.
-    fn merge_tree(&self, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
+    fn merge_tree(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let output = command(self.root)
             .arg(format!("--attr-source={EMPTY_TREE}"))
             .args(["merge-tree", "--write-tree", "-z"])
@@ -563,8 +557,7 @@ impl<'a> History<'a> {
             .output()
             .map_err(|e| format!("git merge-tree: {e}"))?;
         match output.status.code() {
-            Some(0) => Ok((true, output.stdout)),
-            Some(1) => Ok((false, output.stdout)),
+            Some(0 | 1) => Ok(output.stdout),
             _ => Err(failure("merge-tree", &output.stderr)),
         }
     }
@@ -614,13 +607,30 @@ impl<'a> History<'a> {
 /// The first word of each line of probe text that `History::moved_into_code` writes.
 const PROBE: &str = "xtask-review-probe";
 
+/// The mode of a submodule.
+const GITLINK: &str = "160000";
+
 /// One entry of `git diff --raw`.
 struct Entry {
+    /// The mode in the old tree, all zeros when the path is added.
+    old_mode: String,
+    /// The mode in the new tree, all zeros when the path is removed.
+    new_mode: String,
     /// The blob in the old tree, all zeros when the path is added.
     old: String,
     /// The blob in the new tree, all zeros when the path is removed.
     new: String,
     path: Vec<u8>,
+}
+
+impl Entry {
+    /// Whether the path is in both trees, with a different mode.
+    fn mode_changed(&self) -> bool {
+        let absent = |mode: &str| mode.bytes().all(|b| b == b'0');
+        self.old_mode != self.new_mode
+            && !absent(&self.old_mode)
+            && !absent(&self.new_mode)
+    }
 }
 
 /// A file to write in a tree.
@@ -630,8 +640,7 @@ struct File<'a> {
     text: String,
 }
 
-/// A copy of a commit, with a probe text in each path that is not code and that
-/// the commit changes.
+/// A copy of a commit, with a probe text in each `.md` file that the commit changes.
 struct Probe {
     commit: String,
     /// The probed paths, by the number in their probe text.
@@ -640,55 +649,39 @@ struct Probe {
 
 /// What `git merge-tree` makes of two commits.
 struct Merged {
-    /// Whether no path conflicts.
-    clean: bool,
     /// The merged tree, with conflict markers in each file whose content conflicts.
     tree: String,
     /// Each path with a conflict, in the order `git` gives, with each byte that is not
-    /// UTF-8 replaced. A file that `git` moves aside has its path before the move.
+    /// UTF-8 replaced. A file that `git` moves aside has its new path, `<path>~<side>`,
+    /// which is not a `.md` file.
     conflicts: Vec<String>,
 }
 
 impl Merged {
-    /// The first conflicted path that is a code path.
+    /// The first conflicted path that is not a `.md` file.
     fn code_conflict(&self) -> Option<&str> {
         self.conflicts
             .iter()
-            .find(|p| code_path(p))
+            .find(|p| !text_path(p))
             .map(String::as_str)
     }
 }
 
-/// `path` without the suffix `~<side>` or `~<side>_<n>` that `git merge-tree` adds to
-/// a file that it moves aside in a file/directory conflict, where `<side>` is one of
-/// `sides`, the two commits as given to it.
-fn unrenamed(path: &str, sides: [&str; 2]) -> String {
-    let moved = path.rsplit_once('~').filter(|(_, label)| {
-        sides.iter().any(|side| {
-            label.strip_prefix(side).is_some_and(|n| {
-                n.is_empty()
-                    || n.strip_prefix('_')
-                        .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
-            })
-        })
-    });
-    moved.map_or(path, |(path, _)| path).to_string()
-}
-
-/// Whether a change to `path`, a path as `git` gives it, can change code: a `.rs`
-/// file, a `Cargo.toml`, or a `Cargo.lock`.
-pub(super) fn code_path(path: &str) -> bool {
-    rust_path(path)
-        || Path::new(path)
-            .file_name()
-            .is_some_and(|n| n == "Cargo.toml" || n == "Cargo.lock")
-}
-
-/// Whether `path` is a `.rs` file as the pathspec `**/*.rs` matches it: also the file
-/// `.rs`, which has no extension to `Path`.
+/// Whether `path`, a path as `git` gives it, is a `.md` file, the one kind of file
+/// whose change is never code.
 #[expect(
     clippy::case_sensitive_file_extension_comparisons,
-    reason = "the pathspec matches case"
+    reason = "a `.MD` file is not text, so it fails closed"
+)]
+fn text_path(path: &str) -> bool {
+    path.ends_with(".md")
+}
+
+/// Whether `path` is a `.rs` file: also the file `.rs`, which has no extension to
+/// `Path`.
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "a `.RS` file is code by any line, so it fails closed"
 )]
 fn rust_path(path: &str) -> bool {
     path.ends_with(".rs")
@@ -717,8 +710,9 @@ fn command(root: &Path) -> Command {
     command
 }
 
-/// Whether `text`, a changed line of a file, is code: any line of a file that is not
-/// `.rs`, and a `.rs` line that, trimmed, is not empty or a comment.
+/// Whether `text`, a changed line of a file that is not `.md`, is code: any line of
+/// a file that is not `.rs`, and a `.rs` line that, trimmed, is not empty or a
+/// comment.
 fn code(rust: bool, text: &str) -> bool {
     let text = text.trim();
     !rust || !(text.is_empty() || text.starts_with("//"))

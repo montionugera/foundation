@@ -135,11 +135,11 @@ struct Parsed {
     performance: Option<String>,
 }
 
-/// Checks that the review of PR `pr` is done at commit `head`: its last round
-/// comment ends at `head` or reaches it through clean merges of the base, finds
-/// nothing, and names each required reviewer, and, for a red-team PR, the director
-/// approved `head`. Reads the PR with `gh` and the history of the repository at
-/// `root` with `git`, and prints each problem.
+/// Checks that the review of PR `pr` is done at commit `head`: its last round comment
+/// ends at `head` or at a commit on its first-parent chain from which the range to
+/// `head` changes no code, finds nothing, and names each required reviewer, and, for a
+/// red-team PR, the director approved `head`. Reads the PR with `gh` and the history of
+/// the repository at `root` with `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
@@ -149,7 +149,7 @@ pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
         problems(
             &record,
             head,
-            &|end| history.reaches(end, head),
+            &|end| history.follows(end, head),
             &|from, end| history.code_change(from, end),
         )
     });
@@ -174,16 +174,17 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 }
 
 /// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must find nothing and end at `head`.
-/// `reaches` reports whether a commit (a SHA or its prefix) reaches `head` through
-/// clean merges of the base. A later round may skip `breaker` when the range of the
-/// last round changes no code; an earlier round's skip is taken as written.
-/// `code_change` gives the first code change in a range, with a merge of the base read
-/// by its resolution, as a phrase, or `None` (`History::code_change`).
+/// reviewers it requires, and the last round must find nothing and end at `head` or
+/// at a commit from which the range to `head` changes no code. `follows` reports
+/// whether a commit (a SHA or its prefix) is `head` or on its first-parent chain. A
+/// later round may skip `breaker` when the range of the last round changes no code;
+/// an earlier round's skip is taken as written. `code_change` gives the first code
+/// change in a range, with a merge of the base read by its resolution, as a phrase,
+/// or `None` (`History::code_change`).
 fn problems(
     record: &Record,
     head: &str,
-    reaches: &dyn Fn(&str) -> Result<bool, String>,
+    follows: &dyn Fn(&str) -> Result<bool, String>,
     code_change: CodeChange<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
@@ -230,11 +231,17 @@ fn problems(
                 round.number, round.findings
             ));
         }
-        if !reaches(&round.end)? {
+        if !follows(&round.end)? {
             problems.push(format!(
-                "review round {} ends at {}, not at the head {head}. A commit after \
-                 the round needs a new round; only a clean merge of the base does \
-                 not.",
+                "review round {} ends at `{}`, which is not the head `{head}` or a \
+                 commit on its first-parent chain. A commit after the round needs a \
+                 new round, unless it changes no code.",
+                round.number, round.end
+            ));
+        } else if let Some(change) = code_change(&round.end, head)? {
+            problems.push(format!(
+                "review round {} ends at `{}`, and the range from it to the head \
+                 `{head}` {change}. A commit that changes code needs a new round.",
                 round.number, round.end
             ));
         }
@@ -250,7 +257,7 @@ fn problems(
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must reach the head.
+/// round from the clone, but the last round's end must be on the head's chain.
 fn unnamed(
     round: &Round,
     files: &[String],
@@ -286,7 +293,7 @@ fn unnamed(
 /// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
 /// `breaker` for a code PR; and `performance` when the round names a hot path.
 fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
-    let code = files.iter().any(|f| history::code_path(f));
+    let code = files.iter().any(|f| code_path(f));
     let mut required = if code && round.number <= 1 {
         vec!["reviewer", "architecture", "breaker"]
     } else if code {
@@ -298,6 +305,19 @@ fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
         required.push("performance");
     }
     required
+}
+
+/// Whether a PR that changes `path` is a code PR by REVIEW TIERS: a `.rs` file, a
+/// `Cargo.toml`, or a `Cargo.lock`.
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "git paths match case"
+)]
+fn code_path(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .is_some_and(|n| n == "Cargo.toml" || n == "Cargo.lock")
+        || path.ends_with(".rs")
 }
 
 /// A problem when no director verdict by the bot has the line
