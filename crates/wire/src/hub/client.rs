@@ -6,14 +6,20 @@
 //!   then to renew.
 //! - A request stream carries one request. The program sends a [`Request`] and then
 //!   its body, and the node sends a [`Response`] and then its body.
+//! - A read stream carries one reader session. The program sends a [`Read`] and then
+//!   its [`Open`] as a body. The node sends [`Places`] and the run of its [`place`]s,
+//!   and then the replies of a reader session as [`super::Reader`] decodes them, from
+//!   `Opened`. The program sends no credit.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
 //! request or response, so the receiver counts it to find where it ends. No message
 //! follows a body.
 //!
-//! Each side knows the kind of each stream, so it calls the `decode` of the message
-//! that it expects, and counts a body with the [`Body`] of its request or response.
+//! The program knows the kind of each stream, so it calls the `decode` of the message
+//! that it expects. The node knows the kind of the hello stream only: it decodes the
+//! first message of each later stream with [`First::decode`]. Each side counts a body
+//! with the [`Body`] of its request, response, or read.
 //!
 //! Fields are little-endian.
 //!
@@ -25,6 +31,13 @@
 //!   signed bytes of the hello with no tag.
 //! - [`Request`]: kind 5, the body's length (`u64`), and the signature (64).
 //! - [`Response`]: kind 5 and the body's length (`u64`).
+//! - [`Read`]: kind 6, the open's length (`u64`), and the signature (64).
+//! - [`Open`]: the mode (`u8`, latest 1, complete 2), then each pattern of the selector
+//!   as written, an exclusion with its leading `!`: its length (`u16`) and its text.
+//! - [`Places`]: kind 6, the count of places (`u32`), and the place of the index
+//!   (`u32`).
+//! - [`place`]: each place's key (`u128`), its sample type as text (length `u8`, then
+//!   the text), and its name (length `u8`, then the name).
 
 use std::fmt;
 
@@ -35,12 +48,17 @@ use types::name::Name;
 use types::node;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error};
+use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN};
 use crate::common::{Fields, Writer, body};
 use crate::header::MALFORMED;
 
+mod read;
+
+pub use read::{Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, place};
+
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
+const READ: u8 = 6;
 
 /// Stop code: the hello or request failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
@@ -70,7 +88,14 @@ pub enum Refusal {
     /// [`MALFORMED`]: a message of the program does not decode, or breaks a rule of
     /// the client wire.
     Malformed,
-    /// [`BUSY`]: the node had no memory for a response or a request body.
+    /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
+    /// read was removed.
+    Unknown,
+    /// [`NOT_HOME`]: the home of the index of a read moved.
+    NotHome,
+    /// [`FAILED`]: the reader of a read failed.
+    Failed,
+    /// [`BUSY`]: the node had no memory for a response, a request body, or a read.
     Busy,
     /// [`REFUSED`].
     Refused,
@@ -87,8 +112,11 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::Malformed,
+        Self::Unknown,
+        Self::NotHome,
+        Self::Failed,
         Self::Busy,
         Self::Refused,
         Self::Unsynced,
@@ -109,6 +137,9 @@ impl Refusal {
     pub const fn code(self) -> u32 {
         match self {
             Self::Malformed => MALFORMED,
+            Self::Unknown => UNKNOWN,
+            Self::NotHome => NOT_HOME,
+            Self::Failed => FAILED,
             Self::Busy => BUSY,
             Self::Refused => REFUSED,
             Self::Unsynced => UNSYNCED,
@@ -124,7 +155,17 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Malformed => "a message of the program broke the client wire",
-            Self::Busy => "the node had no memory for a response or a request body",
+            Self::Unknown => {
+                "the selector matches no channel, or a channel of the read was removed"
+            }
+            Self::NotHome => "the home of the index of the read moved",
+            Self::Failed => {
+                "the reader failed: the buffer or the mesh of the home of the index \
+                 stopped, or the path from the node to that home failed"
+            }
+            Self::Busy => {
+                "the node had no memory for a response, a request body, or a read"
+            }
             Self::Refused => {
                 "the spec has no such subject, does not list the key for it, or the \
                  signature is not valid"
@@ -314,6 +355,31 @@ impl Request {
     }
 }
 
+/// The first message of a stream after the hello stream, which gives the stream's
+/// kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum First {
+    /// A request stream.
+    Request(Request),
+    /// A read stream.
+    Read(Read),
+}
+
+impl First {
+    /// Decodes the first message of a stream after the hello stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Empty`], [`Error::Kind`] for a message that is neither kind 5 nor 6,
+    /// and the errors of [`Request::decode`] and [`Read::decode`].
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        match message.first() {
+            Some(&READ) => Read::decode(message).map(Self::Read),
+            _ => Request::decode(message).map(Self::Request),
+        }
+    }
+}
+
 /// The fixed part of a response. Its body follows, unless `length` is 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Response {
@@ -424,7 +490,10 @@ fn stamp(word: [u8; 8]) -> Stamp {
 fn body(word: [u8; 8]) -> Result<u64, Error> {
     let length = u64::from_le_bytes(word);
     if length > BODY_BYTES_MAX {
-        return Err(Error::Oversize { length });
+        return Err(Error::Oversize {
+            length,
+            cap: BODY_BYTES_MAX,
+        });
     }
     Ok(length)
 }

@@ -123,6 +123,8 @@ mod pins {
         );
         assert_eq!(BODY_BYTES_MAX, 16_777_216);
         assert_eq!((Challenge::LEN, Request::LEN, Response::LEN), (33, 73, 9));
+        assert_eq!(OPEN_BYTES_MAX, 65_536);
+        assert_eq!((Read::LEN, Places::LEN), (73, 9));
     }
 }
 
@@ -277,7 +279,8 @@ mod request {
         assert_eq!(
             Request::decode(&over),
             Err(Error::Oversize {
-                length: BODY_BYTES_MAX + 1
+                length: BODY_BYTES_MAX + 1,
+                cap: BODY_BYTES_MAX,
             })
         );
     }
@@ -334,7 +337,10 @@ mod response {
         over[1..9].copy_from_slice(&u64::MAX.to_le_bytes());
         assert_eq!(
             Response::decode(&over),
-            Err(Error::Oversize { length: u64::MAX })
+            Err(Error::Oversize {
+                length: u64::MAX,
+                cap: BODY_BYTES_MAX,
+            })
         );
     }
 
@@ -529,9 +535,25 @@ fn gives_the_code_and_the_text_of_each_refusal() {
             "a message of the program broke the client wire",
         ),
         (
+            Refusal::Unknown,
+            16,
+            "the selector matches no channel, or a channel of the read was removed",
+        ),
+        (
+            Refusal::NotHome,
+            17,
+            "the home of the index of the read moved",
+        ),
+        (
+            Refusal::Failed,
+            18,
+            "the reader failed: the buffer or the mesh of the home of the index \
+             stopped, or the path from the node to that home failed",
+        ),
+        (
             Refusal::Busy,
             19,
-            "the node had no memory for a response or a request body",
+            "the node had no memory for a response, a request body, or a read",
         ),
         (
             Refusal::Refused,
@@ -563,7 +585,7 @@ fn gives_the_code_and_the_text_of_each_refusal() {
 
 #[test]
 fn gives_no_refusal_for_0_or_a_code_outside_the_set() {
-    for code in [0, 1, 3, 16, 17, 18, 25, 27, u32::MAX] {
+    for code in [0, 1, 3, 15, 25, 27, u32::MAX] {
         assert_eq!(Refusal::from_code(code), None, "{code}");
     }
 }

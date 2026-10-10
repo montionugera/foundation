@@ -53,3 +53,21 @@
   Supersedes shape decision 1 of #1854
   (https://github.com/synnaxlabs/foundation/pull/1854#issuecomment-6057726181), one
   decoder for each side that takes the kind of the stream from its first message.
+  Amended: a third kind of stream, a read stream, carries one reader session. The
+  program sends a `Read` (kind 6: the open's length and the signature) and then the
+  `client::Open` as a body of at most `OPEN_BYTES_MAX` (64 KiB): the mode (latest 1,
+  complete 2), then each pattern of the selector as written, each a `u16` length and
+  its text. The selector matches channels of one index; else `MALFORMED`. The node
+  sends `Places` (kind 6: the count of places and the place of the index), a run of
+  `Place` (key, sample type as text, name), then the replies of HUB WIRE from
+  `Opened`. The program sends no credit: the stream's flow control bounds the frames
+  in flight. The program knows the kind of each stream that it opens; the node knows
+  the kind of the hello stream only, and decodes the first message of each later
+  stream with `client::First::decode`, which gives a `Request` or a `Read` and refuses
+  each other kind with `Error::Kind`. The lost reason above, that each caller checks
+  the kind again, does not apply: both variants come, and the node handles each.
+  `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
+  17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each
+  SDK writes; and the stream class, which sets priority. Decided by
+  `laptop.architect` (2026-10-10T23:31:47Z):
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608.

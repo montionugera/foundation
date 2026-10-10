@@ -576,11 +576,26 @@ pub enum Error {
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
-    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX).
+    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX), or a read has an open over
+    /// [`OPEN_BYTES_MAX`](client::OPEN_BYTES_MAX).
     Oversize {
         /// The bytes of the body.
         length: u64,
+        /// The cap of the body.
+        cap: u64,
     },
+    /// The open of a read has a pattern that does not read, or none that includes
+    /// names.
+    Selector,
+    /// The places of a read name an index place that is not below their count.
+    Index {
+        /// The place of the index.
+        index: u32,
+        /// The count of places.
+        count: u32,
+    },
+    /// A place of a read has a sample type or a name that does not read.
+    Place,
     /// A message comes after the body of a request or a response.
     Trailing,
     /// The stream ended before its body.
@@ -657,10 +672,19 @@ impl fmt::Display for Error {
             Self::SmallOrder => {
                 f.write_str("the key of the hello is a point of small order")
             }
-            Self::Oversize { length } => write!(
+            Self::Oversize { length, cap } => {
+                write!(f, "the body has {length} bytes, over the cap of {cap}")
+            }
+            Self::Selector => f.write_str(
+                "the open of the read has a pattern that does not read, or none that \
+                 includes names",
+            ),
+            Self::Index { index, count } => write!(
                 f,
-                "the body has {length} bytes, over the cap of {}",
-                client::BODY_BYTES_MAX
+                "the places of the read put the index at place {index} of {count}"
+            ),
+            Self::Place => f.write_str(
+                "a place of the read has a sample type or a name that does not read",
             ),
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
@@ -1363,8 +1387,24 @@ mod tests {
                 "the key of the hello is a point of small order",
             ),
             (
-                Error::Oversize { length: 16_777_217 },
+                Error::Oversize {
+                    length: 16_777_217,
+                    cap: 16_777_216,
+                },
                 "the body has 16777217 bytes, over the cap of 16777216",
+            ),
+            (
+                Error::Selector,
+                "the open of the read has a pattern that does not read, or none that \
+                 includes names",
+            ),
+            (
+                Error::Index { index: 3, count: 3 },
+                "the places of the read put the index at place 3 of 3",
+            ),
+            (
+                Error::Place,
+                "a place of the read has a sample type or a name that does not read",
             ),
             (
                 Error::Trailing,
