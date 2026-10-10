@@ -469,7 +469,7 @@ fn named_outside_tests(
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     let (library, _) = built(root, &[]);
-    let (tested, _) = built(root, &on(&["test".to_owned(), SIM.to_owned()]));
+    let tested = tested(root);
     let tests = root.join("tests");
     let mut files = files_under(root, "rs");
     files.retain(|path| !path.starts_with(&tests));
@@ -481,6 +481,12 @@ fn named_outside_tests(
         .filter(|path| library.contains(path) || !tested.contains(path))
         .flat_map(|path| named_in(&path, &named))
         .collect()
+}
+
+/// Each file that a test build of the crate at `root`, with `test` and [`SIM`] on,
+/// reads, sorted.
+fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    built(root, &on(&["test".to_owned(), SIM.to_owned()])).0
 }
 
 /// Each file that a build of the library of the crate at `root` with the flags `base`
@@ -899,11 +905,15 @@ fn the_scan_builds_with_the_target_features_of_the_build() {
 }
 
 /// The builds of the library set each cfg that the crate tests and rustc does not
-/// know, less [`SIM`].
+/// know, less [`SIM`], and only the test build reads the code behind [`SIM`].
 #[test]
 fn the_scan_builds_each_cfg_of_the_crate() {
-    let (_, cfgs) = built(&root(), &[]);
+    let (library, cfgs) = built(&root(), &[]);
     assert_eq!(cfgs, ["asan", "feature=\"open62541\""]);
+    let bench = src().join("bench.rs");
+    assert!(!library.contains(&bench), "{library:?}");
+    let tested = tested(&root());
+    assert!(tested.contains(&bench), "{tested:?}");
 }
 
 /// A test mock that a `path` attribute gives in place of a module is cut off, and
