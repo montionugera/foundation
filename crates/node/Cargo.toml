@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes `Scope` to the `scope` bench, `fuzz` to the fuzz targets, and `create_key` to
-# the tests. Off by default.
+# Exposes `Scope` to the `scope` bench, `fuzz` to the fuzz targets, and `create_key` and
+# `Region::Given` to the tests. Off by default.
 sim = []
 
 [[bin]]

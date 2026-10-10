@@ -105,13 +105,15 @@ impl<M> fmt::Debug for Config<M> {
 
 /// The region whose mesh a node opens.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Region {
     /// No mesh: the node serves only its own hub.
     Absent,
-    /// The region that the data directory holds. At the first start, the node founds
-    /// the root region alone: it is the one member and voter, and the spec holds the
-    /// first admin, whose private key the node writes to the file `admin.key`. Each
-    /// later start opens that region.
+    /// The region that the data directory holds. When its mesh directory holds no
+    /// founding, the node founds the root region alone: it is the one member and voter,
+    /// and the spec holds the first admin, whose private key the node reads from the
+    /// file `admin.key`, or makes and writes there. A start that finds a founding opens
+    /// that region and reads no `admin.key`.
     Stored,
     /// The region `founding`, a patch until a node joins by ticket (#1157). One
     /// founding member has the node's key, and its card holds the public half of the
@@ -183,19 +185,20 @@ impl Node {
     /// has opened, shard 0 reads the node's key, private key, and seal key from the
     /// file `node.key` in the data directory, and makes the file at the first start
     /// once it has mesh time, unless `create_key` made it, then opens the mesh of
-    /// [`Config::region`] when it has one, then serves the port, admits each member of
-    /// the region and at most 256 sessions of other peers at once, until its transport
-    /// or the mesh's group stops, which stops the node. Returns once each shard runs or
-    /// one has failed to start. When the disk budget holds no ring on each shard, no
-    /// shard starts, and [`Node::join`] gives [`Error::Disk`] with the budget, the
-    /// shard count, and the least budget. When a shard's part of the pool budget gives
-    /// a reservation of more than `usize::MAX` bytes, no shard starts either, and
-    /// [`Node::join`] gives [`Error::Pool`]. A failed start, a shard with no memory, a
-    /// data directory that another node holds or that was made for another shard
-    /// count, a key file that is not valid, a file `name` that holds another name or
-    /// that no node wrote, or a buffer or a mesh that does not open stops the node, and
-    /// [`Node::join`] returns its error. The `# Errors` of [`Node::join`] gives which
-    /// error comes first.
+    /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
+    /// founds the root region and reads or makes `admin.key`), then serves the port,
+    /// admits each member of the region and at most 256 sessions of other peers at
+    /// once, until its transport or the mesh's group stops, which stops the node.
+    /// Returns once each shard runs or one has failed to start. When the disk budget
+    /// holds no ring on each shard, no shard starts, and [`Node::join`] gives
+    /// [`Error::Disk`] with the budget, the shard count, and the least budget. When a
+    /// shard's part of the pool budget gives a reservation of more than `usize::MAX`
+    /// bytes, no shard starts either, and [`Node::join`] gives [`Error::Pool`]. A
+    /// failed start, a shard with no memory, a data directory that another node holds
+    /// or that was made for another shard count, a key file that is not valid, a file
+    /// `name` that holds another name or that no node wrote, or a buffer or a mesh that
+    /// does not open stops the node, and [`Node::join`] returns its error. The
+    /// `# Errors` of [`Node::join`] gives which error comes first.
     ///
     /// # Panics
     ///
@@ -1160,9 +1163,10 @@ pub enum Error {
     /// session and does not write over the file, because a new key is a new node to its
     /// region.
     Key,
-    /// At a first start, the file `admin.key` in the data directory is not a key that a
-    /// node wrote: another length, or another tag or checksum. The node does not serve
-    /// its port and does not write over the file.
+    /// At a start that founds the root region, the file `admin.key` in the data
+    /// directory is not a key that a node wrote: another length, also no bytes, or
+    /// another tag or checksum. The node took no session and does not write over the
+    /// file.
     Admin,
     /// The node's port did not bind. No shard started.
     Port {
