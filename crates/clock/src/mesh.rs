@@ -185,6 +185,17 @@ impl Reader {
         }
     }
 
+    /// Waits until the node's monotonic clock reaches `at`. A drop cancels the wait.
+    ///
+    /// # Panics
+    ///
+    /// As [`env::clock::Clock::sleep_until`] does, on a thread that `env` did not
+    /// start.
+    #[must_use]
+    pub fn sleep_until(&self, at: Monotonic) -> env::clock::Sleep {
+        self.monotonic.sleep_until(at)
+    }
+
     /// What the clock follows now, with mesh time at the call. It holds the result of
     /// the last [`Clock::add`], [`Clock::remove`], or [`Clock::push`] to return. That
     /// mesh time is the one [`Reader::now`] gives, so it never goes back.
