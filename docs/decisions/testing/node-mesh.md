@@ -148,3 +148,33 @@
   https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6073726053). Approved
   by `laptop.architect-2` for the `node` and `ops` parts (2026-10-09T03:40:04Z,
   https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6073787912).
+  Amended (2026-10-10, #1744 PR 1b-3): `Config::region` has the type `node::Region`.
+  `Region::Stored` is the production path, and supersedes the long-term path above.
+  Shard 0 reads the founding of the mesh directory with `mesh::founding`. When the
+  directory holds none, the node founds the root region alone: one member, the node,
+  whose card has `Config::name`, the public halves of the two private keys of
+  `node.key`, the addresses that the port bound but a scoped IPv6 address, and version
+  1, with 64 zero bytes as its admission; that node as the one voter; the definitions
+  of `spec::founding::create` with the public key of the first admin; and no home. The
+  first admin's private key is in the file `admin.key` of the data directory: 54 bytes,
+  the tag `foundation/admin/1`, the Ed25519 private key, and the CRC32C of those 50
+  bytes (little-endian), in one sector, with the code of `node.key` (NODE PORT). Shard
+  0 reads it or makes it from `Config::entropy`, and writes it back and syncs it before
+  it builds the founding, so a crash before the founding is durable leaves a key that
+  the next start founds with. A file with no bytes or with 54 zero bytes is a key not
+  yet written. A file of another length that is not 0, or of another tag or checksum,
+  gives `Error::Admin`, and the node does not write over it. Each other file error on
+  `admin.key` gives `Error::Directory`. A start that reads a founding reads no
+  `admin.key`, so a start with a founding and no `admin.key` starts. A founding that
+  does not read gives `Error::Mesh`. `Error::Admin` and these errors come where
+  `Error::Mesh` does in the rank of `Node::join`. `Region::Given(founding)` is the
+  `Some` of before, behind the feature `sim`: a patch for the tests of `node` and the
+  `acceptance` lab until a node joins by ticket (#1157). `Region::Absent` is `None`.
+  The status of the member is empty until #728 gives the status channels of the node
+  their keys. By `laptop.architect-2` (#1744, plan revision 3, 2026-10-10 03:30 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Lost:
+  `node` keeps its own founding file, a second copy of one value; `node` builds the
+  founding again at each start, so a card with port 0 or a release that changes
+  `spec::founding::create` changes the founding of a region that exists;
+  `mesh::Config::founding: Option<Founding>`, with which `node` cannot tell a first
+  start from a later one before the open fails.
