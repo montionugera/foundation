@@ -390,8 +390,10 @@ impl Shard {
 
     /// When the control of a carried index next changes with no call: the earliest end
     /// of a holder's control lease or of a restored holder's grace, on the monotonic
-    /// clock of the shard. `None` when only a call can change control. Takes O(n) time
-    /// for n carried indexes.
+    /// clock of the shard. `None` when only a call can change control. Only
+    /// [`carry`](Self::carry), [`open_writer`](Self::open_writer), and
+    /// [`close_writer`](Self::close_writer) can make it earlier. Takes O(n) time for n
+    /// carried indexes.
     #[must_use]
     pub fn deadline(&self) -> Option<Monotonic> {
         self.indexes
@@ -404,23 +406,23 @@ impl Shard {
     /// control lease ran out loses control, and a restored holder that did not reopen in
     /// its grace is dropped. Appends a handoff for each index whose holder changed and
     /// that has an open writer, as [`close_writer`](Self::close_writer) does. Call it at
-    /// [`deadline`](Self::deadline); an earlier call changes nothing. An index with no
-    /// open writer records its handoff at the next open of a writer on it. Takes O(n)
-    /// time for n carried indexes, plus O(c) for each handoff, for c claims of open
-    /// writers.
+    /// [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n) time for
+    /// n carried indexes, plus O(c) for each index that came due, for c claims of open
+    /// writers. An index with no open writer records its handoff at the next open of a
+    /// writer on it.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
-        for index in &mut self.indexes {
-            index.gate.advance(monotonic);
-        }
-        // No writer opens before mesh time.
-        let Some(mesh) = mesh.map(midpoint) else {
-            return;
-        };
+        let mesh = mesh.map(midpoint);
         for place in 0..self.indexes.len() {
-            if self.indexes[place].gate.handoff().is_none() {
+            let gate = &mut self.indexes[place].gate;
+            if gate.deadline().is_none_or(|due| monotonic < due) {
                 continue;
             }
+            gate.advance(monotonic);
+            // No writer opens before mesh time.
+            let Some(mesh) = mesh else {
+                continue;
+            };
             let held = self.writers.values().find_map(|session| {
                 let mut groups = (0..).zip(&session.claims);
                 let (group, _) = groups.find(|(_, claim)| claim.place == place)?;
@@ -2845,8 +2847,43 @@ mod tests {
         });
     }
 
+    /// A handoff that found no room waits for the next append on its index.
     #[test]
-    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_a_lease() {
+    fn appends_no_waiting_handoff_at_an_advance_with_no_deadline() {
+        run(240, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let blocks = test.fill();
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            drop(blocks);
+            assert_eq!(shard.deadline(), None);
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+        });
+    }
+
+    /// The hub's gate task sleeps to `deadline` again after each `advance`, so a
+    /// deadline that `advance` leaves due spins it.
+    #[test]
+    fn advances_past_the_end_of_the_grace_before_the_node_has_mesh_time() {
+        let (mut sim, node) = cut_after(237, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.unsynced().await;
+            shard.carry(Slot::new(0));
+            test.clock.sleep(GRACE).await;
+            assert!(shard.deadline() <= Some(test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_a_lease_in_index_order() {
         run(234, |test| async move {
             let (mut shard, _, set) = test.leased().await;
             shard
@@ -2854,10 +2891,17 @@ mod tests {
                 .expect("synced");
             test.clock.sleep(WAIT).await;
             assert!(shard.deadline() <= Some(test.reader.now().monotonic));
+            let marked = test.now();
             shard.advance();
             shard.committed().await.expect("the commit ends");
-            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
-            assert_eq!(handoffs.len(), 2, "b takes both indexes");
+            let ring = test.ring().await;
+            assert_eq!(find(&ring, &handoff_to("subject-b")).len(), 2);
+            let zero = key(Slot::new(0)).as_u128();
+            let two = key(Slot::new(2)).as_u128();
+            assert_eq!(
+                headers(&ring, marked),
+                [(zero, 0, 0, 0, 1), (two, 0, 0, 0, 1)]
+            );
             assert_eq!(shard.deadline(), None);
         });
     }
