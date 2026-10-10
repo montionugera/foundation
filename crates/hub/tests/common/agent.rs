@@ -44,7 +44,8 @@ impl Stream {
     /// Sends a request of `length` bytes, signed over `body`, and `body` in messages
     /// of at most 64 KiB.
     pub(crate) async fn request(&mut self, length: u64, body: &[u8]) {
-        let signed = access::proof::request(CONNECTION, body);
+        let signed =
+            access::proof::signed(access::proof::Kind::Request, CONNECTION, body);
         let request = Request {
             length,
             signature: Pair::new(&AGENT).sign(&signed),

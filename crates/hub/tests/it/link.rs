@@ -631,8 +631,11 @@ fn refuses_a_request_whose_signature_does_not_verify() {
         let mut stream = agent.open().await;
         let request = Request {
             length: 2,
-            signature: Pair::new(&AGENT)
-                .sign(&access::proof::request(CONNECTION, b"xy")),
+            signature: Pair::new(&AGENT).sign(&access::proof::signed(
+                access::proof::Kind::Request,
+                CONNECTION,
+                b"xy",
+            )),
         };
         let mut out = [0; Request::LEN];
         request.encode(&mut out);
@@ -983,8 +986,11 @@ fn takes_a_request_sent_once_the_last_response_header_comes() {
         let mut first = agent.open().await;
         let request = Request {
             length,
-            signature: Pair::new(&AGENT)
-                .sign(&access::proof::request(CONNECTION, &body)),
+            signature: Pair::new(&AGENT).sign(&access::proof::signed(
+                access::proof::Kind::Request,
+                CONNECTION,
+                &body,
+            )),
         };
         let mut out = [0; Request::LEN];
         request.encode(&mut out);
@@ -1026,8 +1032,11 @@ fn cuts_a_response_to_the_largest_block_of_the_pool() {
             let mut stream = agent.open().await;
             let request = Request {
                 length,
-                signature: Pair::new(&AGENT)
-                    .sign(&access::proof::request(CONNECTION, &body)),
+                signature: Pair::new(&AGENT).sign(&access::proof::signed(
+                    access::proof::Kind::Request,
+                    CONNECTION,
+                    &body,
+                )),
             };
             let mut out = [0; Request::LEN];
             request.encode(&mut out);

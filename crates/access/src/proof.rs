@@ -1,4 +1,5 @@
-//! The proof of a subject: a signed hello, then signed requests on its connection.
+//! The proof of a subject: a signed hello, then signed requests and read opens on
+//! its connection.
 
 use std::fmt;
 
@@ -16,6 +17,7 @@ pub const CAP: Span = Span::from_nanos(15 * Span::MINUTE.nanos());
 
 const HELLO_TAG: &[u8] = b"foundation/hello/1";
 const REQUEST_TAG: &[u8] = b"foundation/request/1";
+const READ_TAG: &[u8] = b"foundation/read/1";
 
 /// The bytes that the signature of `hello` covers. Each integer is little-endian:
 /// the 18 bytes `foundation/hello/1`, the length of the subject (1 byte), the
@@ -31,20 +33,35 @@ pub fn hello(hello: &Hello) -> Vec<u8> {
     bytes
 }
 
-/// The bytes that the signature of a request or session open on `connection` covers:
-/// the 20 bytes `foundation/request/1`, the connection (16), and `body`, the exact
-/// bytes that the program sent.
+/// What a program signs on a stream after its hello. Each kind has its own tag, so a
+/// signature of one kind never verifies as another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A request: its body.
+    Request,
+    /// The open of a read.
+    Read,
+}
+
+/// The bytes that the signature of `bytes`, of `kind`, on `connection` covers: the
+/// tag of `kind` (the 20 bytes `foundation/request/1` or the 17 bytes
+/// `foundation/read/1`), the connection (16), and `bytes`, the exact bytes that the
+/// program sent.
 #[must_use]
-pub fn request(connection: connection::Key, body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(REQUEST_TAG.len() + 16 + body.len());
-    bytes.extend_from_slice(REQUEST_TAG);
-    bytes.extend_from_slice(&connection.0);
-    bytes.extend_from_slice(body);
-    bytes
+pub fn signed(kind: Kind, connection: connection::Key, bytes: &[u8]) -> Vec<u8> {
+    let tag = match kind {
+        Kind::Request => REQUEST_TAG,
+        Kind::Read => READ_TAG,
+    };
+    let mut signed = Vec::with_capacity(tag.len() + 16 + bytes.len());
+    signed.extend_from_slice(tag);
+    signed.extend_from_slice(&connection.0);
+    signed.extend_from_slice(bytes);
+    signed
 }
 
 /// A hello that [`Rules::admit`] took. Keep it for the connection, and give it to
-/// [`Rules::verify`] with each request.
+/// [`Rules::verify`] with each request and read open.
 #[derive(Clone, Debug)]
 pub struct Admitted {
     hello: Hello,
@@ -136,10 +153,10 @@ impl Rules {
         self.admit(now, first.via, hello, signature)
     }
 
-    /// Checks that `body`, signed with `signature`, is a request of the connection of
-    /// `admitted`, at mesh time `now`: its subject still lists its key, the hello is
-    /// live until [`Admitted::ends`], and the key signed [`request`] of the hello's
-    /// connection and `body`.
+    /// Checks that `bytes` of `kind`, signed with `signature`, came on the connection
+    /// of `admitted`, at mesh time `now`: its subject still lists its key, the hello is
+    /// live until [`Admitted::ends`], and the key signed [`signed`] of `kind`, the
+    /// hello's connection, and `bytes`.
     ///
     /// # Errors
     ///
@@ -149,7 +166,8 @@ impl Rules {
         &self,
         admitted: &Admitted,
         now: Option<Interval>,
-        body: &[u8],
+        kind: Kind,
+        bytes: &[u8],
         signature: &[u8; 64],
     ) -> Result<(), Error> {
         let now = now.ok_or(Error::Unsynced)?;
@@ -157,7 +175,7 @@ impl Rules {
         self.listed(hello)?;
         hello
             .key
-            .verify(&request(hello.connection, body), signature)
+            .verify(&signed(kind, hello.connection, bytes), signature)
             .map_err(|_bad| Error::Signature)?;
         live(admitted.ends, now)
     }

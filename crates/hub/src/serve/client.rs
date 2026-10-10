@@ -377,7 +377,13 @@ async fn read(
     let state = session.state.borrow();
     state
         .rules
-        .verify(&admitted, state.time.now().mesh, &body, &request.signature)
+        .verify(
+            &admitted,
+            state.time.now().mesh,
+            proof::Kind::Request,
+            &body,
+            &request.signature,
+        )
         .map_err(Error::Access)?;
     let admitted = Signed {
         hello: admitted.hello().clone(),

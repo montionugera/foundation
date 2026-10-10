@@ -188,9 +188,11 @@ impl Shared {
         let receiver = open.receiver.insert(receiver);
         self.send(&mut sender, &wire::header::encode(Protocol::Hub))
             .await?;
-        let signature = self
-            .pair
-            .sign(&access::proof::request(self.connection, body));
+        let signature = self.pair.sign(&access::proof::signed(
+            access::proof::Kind::Request,
+            self.connection,
+            body,
+        ));
         // Never `Error::Pool`: `connect` took a larger block for its hello.
         let mut message = self.alloc(Request::LEN).await?;
         Request { length, signature }.encode(&mut message);
