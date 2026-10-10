@@ -266,12 +266,11 @@
   peer sends while it writes what waits, closes its side, then reads until the peer
   closes its side, so that the drop sends no reset. It drops the stream with a warning
   10 s after the first close, so that a peer that reads slowly or never closes cannot
-  hold it. A manager reads each stream into its one buffer of 64 KiB, which it makes
-  when its first stream opens, since open62541 copies what it keeps of a read. At most
-  100 streams close at once: a close past that drops the stream that started to
-  close first, before its close ends, with a warning. So a server of the minimal
-  config holds at most its 100 secure channels and 100 closing streams (#2262).
-  Approved by `laptop.architect-2`
+  hold it. A manager reads each stream into its one buffer of 64 KiB, since open62541
+  copies what it keeps of a read. At most 100 streams close at once: a close past that
+  drops the stream that started to close first, before its close ends, with a warning.
+  So a server of the minimal config holds at most its 100 secure channels and 100
+  closing streams (#2262). Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2271#issuecomment-6099183891,
   2026-10-10 15:38 UTC). Supersedes
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6085824086 for the

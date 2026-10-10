@@ -100,7 +100,7 @@ impl Manager {
             raw: Cell::new(ptr::null_mut()),
             events: events.raw(),
             table: RefCell::new(BTreeMap::new()),
-            read: RefCell::new(Vec::new()),
+            read: RefCell::new(vec![0; READ_BYTES].into_boxed_slice()),
             next: Cell::new(1),
             waker: RefCell::new(None),
             driving: Cell::new(false),
@@ -110,7 +110,7 @@ impl Manager {
             #[cfg(feature = "sim")]
             moves: Cell::new(0),
             ends: RefCell::new(VecDeque::new()),
-            closes: Cell::new(0),
+            next_order: Cell::new(0),
             closed: UnsafeCell::new(ffi::DelayedCallback {
                 next: ptr::null_mut(),
                 callback: closed,
@@ -238,7 +238,7 @@ impl Drop for Manager {
 }
 
 /// What the manager and its hooks share. No borrow of a `RefCell` but `read` spans a
-/// call into C, since C may call a hook again. No hook touches `read`.
+/// call into C, since C may call a hook again.
 struct State {
     net: Net,
     /// The listener until a listen open takes it.
@@ -247,9 +247,10 @@ struct State {
     raw: Cell<*mut ffi::ConnectionManager>,
     events: *mut ffi::EventLoop,
     table: RefCell<BTreeMap<usize, Connection>>,
-    /// The buffer of each read, empty until a stream opens. open62541 copies what it
-    /// keeps of the bytes it gets.
-    read: RefCell<Vec<u8>>,
+    /// The buffer of each read. open62541 copies what it keeps of the bytes it gets.
+    /// `move_on` holds this borrow across its calls into C, and no hook calls
+    /// `move_on` or touches it.
+    read: RefCell<Box<[u8]>>,
     /// The key of the next connection. open62541 reads 0 as no connection.
     next: Cell<usize>,
     /// The waker of the last pass.
@@ -269,8 +270,8 @@ struct State {
     moves: Cell<usize>,
     /// The connections whose `CLOSING` the next run of the loop gives.
     ends: RefCell<VecDeque<usize>>,
-    /// The count of streams that have started to close.
-    closes: Cell<u64>,
+    /// The order of the next stream to start to close.
+    next_order: Cell<u64>,
     /// The delayed callback that gives each `CLOSING`. C writes its `next`.
     closed: UnsafeCell<ffi::DelayedCallback>,
     queued: Cell<bool>,
@@ -338,7 +339,7 @@ impl State {
                         linger: self.clock.sleep_until(self.clock.now() + LINGER),
                         shut: false,
                         drained: false,
-                        order: self.closes.replace(self.closes.get() + 1),
+                        order: self.next_order.replace(self.next_order.get() + 1),
                     },
                     stream @ (Stream::Closing { .. } | Stream::Closed) => {
                         connection.stream = stream;
@@ -396,12 +397,10 @@ impl State {
         self.wake(id);
     }
 
-    /// Moves connection `id` on until it waits. It holds only the `read` borrow across
-    /// a call into C.
+    /// Moves connection `id` on until it waits.
     fn move_on(&self, id: usize, cx: &mut Context<'_>) {
         #[cfg(feature = "sim")]
         self.moves.set(self.moves.get() + 1);
-        // No read callback moves a connection on, so this borrow never nests.
         let mut read = self.read.borrow_mut();
         loop {
             let step = match self.table.borrow_mut().get_mut(&id) {
@@ -671,11 +670,7 @@ impl fmt::Display for Failure {
 impl Connection {
     /// Moves the connection on with `read` as the buffer of its reads, or gives why it
     /// fails. [`Step::Read`] gives the count of bytes read into `read`.
-    fn step(
-        &mut self,
-        cx: &mut Context<'_>,
-        read: &mut Vec<u8>,
-    ) -> Result<Step, Failure> {
+    fn step(&mut self, cx: &mut Context<'_>, read: &mut [u8]) -> Result<Step, Failure> {
         match &mut self.stream {
             Stream::Connecting(connect) => match connect.as_mut().poll(cx) {
                 Poll::Pending => Ok(Step::Waiting),
@@ -691,7 +686,6 @@ impl Connection {
                 Poll::Ready(Err(e)) => Err(Failure::Net("accept", e)),
             },
             Stream::Open(tcp) => {
-                read.resize(READ_BYTES, 0);
                 match tcp.poll_read(cx, read) {
                     Poll::Ready(Ok(0)) => return Ok(Step::Ended),
                     Poll::Ready(Ok(n)) => return Ok(Step::Read(n)),
@@ -711,7 +705,6 @@ impl Connection {
                 if Pin::new(linger).poll(cx).is_ready() {
                     return Err(Failure::Lingered);
                 }
-                read.resize(READ_BYTES, 0);
                 while !*drained {
                     match tcp.poll_read(cx, read) {
                         Poll::Ready(Ok(0)) => *drained = true,

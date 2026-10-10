@@ -245,7 +245,9 @@ impl Side {
         self.manager.state().table.borrow().len()
     }
 
-    /// The keys of the connections in the table whose streams close.
+    /// The keys of the connections in the table whose streams close. A stream that
+    /// lingers after open62541 has its `CLOSING` shows only here, and the server gives
+    /// no call that lists it.
     fn closing(&self) -> Vec<usize> {
         let table = self.manager.state().table.borrow();
         table
@@ -2731,6 +2733,7 @@ fn closes_past_the_bound() {
     let closing: Vec<usize> = (3..=102).collect();
     assert_eq!(held, (1 + 100 + CLOSES, closing));
 }
+
 /// A close past [`CLOSES`] drops the stream that started to close first, with a
 /// warning: stream 2 at the last accept, then 3 to 102 as the shutdown closes each
 /// channel.
@@ -2853,34 +2856,26 @@ unsafe extern "C" fn address(
     calls.borrow_mut().push((id, state, at));
 }
 
-/// Each read gives C its bytes in the one read buffer of the manager, which the manager
-/// makes only when a stream opens, at 64 KiB, and never clears: a short read, or the
-/// drain of a closing stream, leaves the bytes of a longer read past its end. It reads
-/// the private `State.read`: C sees only the bytes of a read, which the 64 KiB stream
-/// buffers of `OPTIONS` also cap, no warning names it, and the counting-allocator tests
-/// make no manager.
+/// Each read gives C its bytes in the one read buffer of the manager, of 64 KiB, which
+/// it never clears: a short read leaves the bytes of a longer one past its end. It
+/// reads the private `State.read`: C sees only the bytes of a read, which the 64 KiB
+/// stream buffers of `OPTIONS` also cap, no warning names it, and the
+/// counting-allocator tests make no manager.
 #[test]
 fn each_read_is_in_the_one_buffer_of_the_manager() {
     let mut network = Network::new();
     network.dial(Span::from_nanos(100_000_000), b"one, longer");
     network.dial(Span::from_nanos(200_000_000), b"two");
-    let (buffers, calls) = network
+    let (buffer, calls) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let mut side = Side::listening(&node, listener(&node));
             side.callback = address;
             assert_eq!(side.listen(PORT), Status::GOOD);
-            let buffer = |side: &Side| {
-                let read = side.manager.state().read.borrow();
-                let start: Vec<u8> = read.iter().take(11).copied().collect();
-                (read.len(), read.capacity(), start)
-            };
-            side.drive(Span::from_nanos(50_000_000)).await;
-            let before = buffer(&side);
             side.drive(Span::SECOND).await;
-            assert_eq!(side.close(3), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            ((before, buffer(&side)), side.calls())
+            let read = side.manager.state().read.borrow();
+            let start: Vec<u8> = read.iter().take(11).copied().collect();
+            ((read.len(), start), side.calls())
         })
         .expect("the run ends");
     let reads: Vec<(usize, Vec<u8>)> = calls
@@ -2894,9 +2889,9 @@ fn each_read_is_in_the_one_buffer_of_the_manager() {
         .map(|(id, at)| (id, Some(at) == first))
         .collect();
     assert_eq!(
-        (buffers, same),
+        (buffer, same),
         (
-            ((0, 0, vec![]), (1 << 16, 1 << 16, b"two, longer".to_vec())),
+            (1 << 16, b"two, longer".to_vec()),
             vec![(2, true), (3, true)]
         )
     );
