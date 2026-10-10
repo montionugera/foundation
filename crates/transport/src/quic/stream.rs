@@ -141,7 +141,8 @@ pub(super) struct Streams {
     /// Streams the peer opened that the caller has not accepted, by class byte,
     /// oldest first, each with the first byte of its first message.
     incoming: [VecDeque<(StreamId, u8)>; 4],
-    /// Each stream that this side sends on and has not finished.
+    /// Each stream that this side sends on and has not finished, while the connection
+    /// lives.
     halves: Map<StreamId, Half>,
     sending: Sending,
     /// The messages that hold a block and have not gone to the caller.
@@ -1941,7 +1942,8 @@ const STOPPED: &str = "invariant: a stream resets at the peer's stop";
 const OPEN: &str = "invariant: only a stop resets a sender's stream";
 const RECEIVING: &str = "invariant: a receiver's stream is open until it ends";
 const OPENED: &str = "invariant: a stream this side just opened is open";
-const HALF: &str = "invariant: a sender that is not finished has its half";
+const HALF: &str =
+    "invariant: a sender that is not finished has its half while the connection lives";
 
 /// The byte that starts a stream of `class` on the wire. The byte order is the order
 /// in which [`Streams::accept`] gives streams.
