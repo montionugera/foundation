@@ -255,8 +255,8 @@ mod tests {
     /// # Panics
     ///
     /// When a quoted scalar or a flow collection of `line` does not close on it, or
-    /// `line` has an anchor, alias, or tag, or a `?` or `:` at the start of a node, any
-    /// of which can make a node run on.
+    /// `line` has an anchor, alias, or tag, a `?` or `:` at the start of a node, or a
+    /// `#` after a character that is not a space, any of which can make a node run on.
     fn code(line: &str) -> &str {
         let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
         // `start` holds where a node can start, the only place where a quote or a
@@ -288,6 +288,8 @@ mod tests {
                     }
                     return line[..i].trim_end();
                 }
+                // Parsers differ on whether such a `#` starts a comment.
+                '#' => refused(),
                 '\'' | '"' if start => quote = Some(c),
                 '[' | '{' if start => depth += 1,
                 ']' | '}' if depth > 0 => (depth, start) = (depth - 1, false),
@@ -530,7 +532,7 @@ mod tests {
         let text = concat!(
             "a: 'b''c'\n",
             "b: \"c\\\"d\" # e\n",
-            "c: it's a#b\n",
+            "c: it's a b # c\n",
             "d: [e, 'f', {g: \"h\"}] # it's\n",
             "e: \"!cancelled()\"\n",
             "f: |\n",
@@ -538,7 +540,6 @@ mod tests {
             "  - g: >-\n",
             "      [h\n",
             "i: 'j\\'\n",
-            "k: [l#, m]\n",
             "a: b[c\n",
             "d: e,'f\n",
             "g: |+\n",
@@ -580,6 +581,10 @@ mod tests {
             "  : b: |",
             "a: [? b]",
             "a: 'b''c",
+            "a: b#c",
+            "a: [\"b\"#c]",
+            "a: ['b',#]",
+            "a: {'b':#}",
         ] {
             let text = format!("x: |\n  y\nz:\n{line}\n");
             let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
