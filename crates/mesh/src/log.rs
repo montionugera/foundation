@@ -410,7 +410,7 @@ struct Scan {
 fn settle(dir: &Path, segments: &mut Vec<Vec<u8>>) -> Result<Scan, Error> {
     let scan = scan(dir, segments)?;
     if scan.spare {
-        segments.pop();
+        segments.remove(scan.segment.strict_add(1));
     }
     if let Some(bytes) = segments.get_mut(scan.segment) {
         bytes
