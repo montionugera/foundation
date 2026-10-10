@@ -395,8 +395,7 @@ mod tests {
 
     use super::*;
     use crate::cancel::Token;
-    use crate::common::{create_config, env, run, run_on};
-    use crate::testing;
+    use crate::common::{create_config, run, run_on};
 
     const MISSING: Code = Code::new("test.missing");
     const RANGE: Code = Code::new("test.range");
@@ -778,109 +777,5 @@ mod tests {
             "the config cannot work: n is over 8. Fix it; no integer n. Fix it"
         );
         assert!(std::error::Error::source(&config).is_none());
-    }
-
-    /// The index `plant.time`, alone.
-    fn definitions() -> [(Name, spec::definition::Definition); 1] {
-        use spec::channel::{Channel, Kind};
-        let kind = Kind::Index {
-            error: None,
-            control: None,
-        };
-        let key = types::channel::Key::from_u128(1);
-        let time = spec::definition::Definition::Channel(Channel { key, kind });
-        [(name("plant.time"), time)]
-    }
-
-    /// Writes the mesh time to `plant.time` through `writer`, which writes only it.
-    fn write_now(writer: &mut hub::writer::Writer) -> Vec<hub::home::Outcome> {
-        use types::frame::{Form, Label, Path};
-        let mut draft = writer.draft(Form::Raw, &[(0, 8)]).expect("a frame");
-        let now = writer.now().nanos().to_le_bytes();
-        draft
-            .series_mut(0)
-            .expect("the index")
-            .copy_from_slice(&now);
-        draft.set_count(writer.set().entries()[0].group, 1);
-        let written = writer.write(Label::Path(Path::Live), draft);
-        written.expect("the hub takes the frame").to_vec()
-    }
-
-    /// Opens a writer of `plant.time` as `subject` at authority 1 and writes once.
-    async fn write_as(hub: &hub::Hub, subject: &str) -> Vec<hub::home::Outcome> {
-        let config = hub::writer::Config {
-            subject: name(subject),
-            authority: Authority(1),
-            lease: None,
-            channels: vec![name("plant.time")],
-        };
-        let mut writer = hub.writer(config).await.expect("opens");
-        write_now(&mut writer)
-    }
-
-    /// The writer that a kind opens holds control as its connector: after a power
-    /// cut, until the grace ends, the home keeps control for the connector's name.
-    #[test]
-    fn holds_control_as_the_connector_across_a_power_cut() {
-        use hub::home::{Outcome, Refusal};
-        use types::channel::Slot;
-
-        let slot = Slot::new(0);
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let node = sim.node(sim::node::Config::default());
-        let config = env::shards::Config {
-            name: "shard-0".into(),
-            core: None,
-        };
-        let shards = node.shards();
-        let started = shards.start(config, {
-            let node = node.clone();
-            move |tasks| async move {
-                let seams = env(&node, tasks.clone());
-                let inputs =
-                    testing::create_config(seams, node.net(), Table::new()).await;
-                inputs
-                    .hub
-                    .set_definitions(definitions().iter().map(|(n, d)| (n, d)));
-                let status = status::Status::new(Vec::new());
-                let ctx = Context::new(
-                    name("plant.write"),
-                    (),
-                    Token::new(),
-                    tasks,
-                    status,
-                    Rc::new(inputs),
-                );
-                let channels = vec![name("plant.time")];
-                let writer = ctx.writer(channels, Authority(1), None).await;
-                let mut writer = writer.expect("opens");
-                let range = types::frame::Range { seq: 0, count: 1 };
-                let applied = Outcome::Applied { slot, range };
-                assert_eq!(write_now(&mut writer), [applied]);
-                // A dropped writer records a handoff with no holder.
-                std::future::pending::<()>().await;
-            }
-        });
-        let _shard = started.expect("the shard starts");
-        sim.run_for(types::time::Span::SECOND)
-            .expect("the run goes on");
-        sim.crash(&node, sim::Crash::Power);
-        let (other, own) = sim
-            .run_on(&node, |node, tasks| async move {
-                let (hub, _) = hub::testing::open(env(&node, tasks)).await;
-                hub.set_definitions(definitions().iter().map(|(n, d)| (n, d)));
-                let other = write_as(&hub, "plant.other").await;
-                let own = write_as(&hub, "plant.write").await;
-                (other, own)
-            })
-            .expect("the run after the cut ends");
-        let reserved = Outcome::Refused {
-            slot,
-            refusal: Refusal::Reserved,
-        };
-        assert_eq!(other, [reserved]);
-        // Seq 1: the frame of the kind is on disk.
-        let range = types::frame::Range { seq: 1, count: 1 };
-        assert_eq!(own, [Outcome::Applied { slot, range }]);
     }
 }

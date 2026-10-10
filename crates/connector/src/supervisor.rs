@@ -2684,13 +2684,6 @@ mod tests {
                 .writer(channels, self.authority, self.lease)
                 .await
                 .expect("the writer opens");
-            let entries = writer.set().entries();
-            let entry = |key| {
-                let key = channel::Key::from_u128(key);
-                entries.iter().position(|entry| entry.key == key)
-            };
-            let (time, value) = (entry(1).expect("time"), entry(2).expect("value"));
-            let group = entries[time].group;
             let mut last = None;
             for (i, sample) in self.values.iter().enumerate() {
                 if i > 0 {
@@ -2699,18 +2692,8 @@ mod tests {
                 let now = writer.now().nanos();
                 let stamp = last.map_or(now, |last: i64| now.max(last + 1));
                 last = Some(stamp);
-                let mut series = [(time, 8), (value, 8)];
-                series.sort_unstable();
-                let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
-                let time = draft.series_mut(time).expect("the index series");
-                time.copy_from_slice(&stamp.to_le_bytes());
-                let value = draft.series_mut(value).expect("the value series");
-                value.copy_from_slice(&sample.to_le_bytes());
-                draft.set_count(group, 1);
-                let outcomes = writer
-                    .write(Label::Path(Path::Live), draft)
-                    .expect("the home takes it");
-                let refusal = match outcomes {
+                let outcomes = write_value(&mut writer, stamp, *sample);
+                let refusal = match &outcomes[..] {
                     [hub::home::Outcome::Applied { .. }] => None,
                     [hub::home::Outcome::Refused { refusal, .. }] => {
                         Some(refusal.clone())
@@ -2725,6 +2708,32 @@ mod tests {
 
     fn name(text: &str) -> Name {
         text.parse().expect("a valid name")
+    }
+
+    /// Writes `sample` at `stamp` to `plant.value` through `writer`, which writes
+    /// `plant.value` and its index, and gives the outcomes.
+    fn write_value(
+        writer: &mut hub::writer::Writer,
+        stamp: i64,
+        sample: i64,
+    ) -> Vec<hub::home::Outcome> {
+        let entries = writer.set().entries();
+        let entry = |key| {
+            let key = channel::Key::from_u128(key);
+            entries.iter().position(|entry| entry.key == key)
+        };
+        let (time, value) = (entry(1).expect("time"), entry(2).expect("value"));
+        let group = entries[time].group;
+        let mut series = [(time, 8), (value, 8)];
+        series.sort_unstable();
+        let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
+        let time = draft.series_mut(time).expect("the index series");
+        time.copy_from_slice(&stamp.to_le_bytes());
+        let value = draft.series_mut(value).expect("the value series");
+        value.copy_from_slice(&sample.to_le_bytes());
+        draft.set_count(group, 1);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        outcomes.expect("the home takes it").to_vec()
     }
 
     /// Defines `plant.time` (key 1), `plant.value` (key 2, `i64`), and the status
@@ -2901,6 +2910,65 @@ mod tests {
             drop(other);
             refusals.lock().expect("no panic").clone()
         })
+    }
+
+    /// Writes 9 at the mesh time to `plant.value` as `subject` at authority 1.
+    async fn write_as(hub: &hub::Hub, subject: &str) -> Vec<hub::home::Outcome> {
+        let channels = vec![name("plant.value")];
+        let mut writer = open_writer(hub, subject, Authority(1), channels).await;
+        let now = writer.now().nanos();
+        write_value(&mut writer, now, 9)
+    }
+
+    /// The writer of a kind holds control as its connector: after a power cut, until
+    /// the grace ends, the home keeps control for the connector's name.
+    #[test]
+    fn holds_control_for_the_connector_across_a_power_cut() {
+        let write = Write {
+            gap: Span::HOUR,
+            ..Write::new(vec![7, 8])
+        };
+        let refusals = Arc::clone(&write.refusals);
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let shard = env::shards::Config {
+            name: "shard-0".into(),
+            core: None,
+        };
+        let started = node.shards().start(shard, {
+            let node = node.clone();
+            move |tasks| async move {
+                let mut inputs =
+                    create_config(&node, tasks, Table::new(), "plant.write").await;
+                define(&inputs.hub);
+                inputs.kinds = Arc::new(Table::new().with("write", write));
+                let supervisor = Supervisor::new(inputs);
+                let (name, token) = (name("plant.write"), Token::new());
+                let result = supervisor.run("write", name, &config(), &token).await;
+                result.expect("the run returns ok");
+            }
+        });
+        let _shard = started.expect("the shard starts");
+        // The kind's writer stays open: a closed one records a handoff with no holder.
+        sim.run_for(Span::SECOND).expect("the run goes on");
+        sim.crash(&node, sim::Crash::Power);
+        let (other, own) = sim
+            .run_on(&node, |node, tasks| async move {
+                let (hub, _) = hub::testing::open(env(&node, tasks)).await;
+                define(&hub);
+                let other = write_as(&hub, "plant.other").await;
+                (other, write_as(&hub, "plant.write").await)
+            })
+            .expect("the run after the cut ends");
+
+        assert_eq!(*refusals.lock().expect("no panic"), [None]);
+        // The ring keeps the slots of the first run, where the status index took 0.
+        let slot = channel::Slot::new(1);
+        let refusal = Refusal::Reserved;
+        assert_eq!(other, [hub::home::Outcome::Refused { slot, refusal }]);
+        // Seq 1: the frame of the kind is on disk.
+        let range = frame::Range { seq: 1, count: 1 };
+        assert_eq!(own, [hub::home::Outcome::Applied { slot, range }]);
     }
 
     #[test]
