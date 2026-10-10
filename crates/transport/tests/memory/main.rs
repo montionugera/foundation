@@ -7,6 +7,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod dials;
+mod ended;
 mod failed;
 mod held;
 mod kept;
@@ -27,6 +28,7 @@ fn main() {
     stretch::main();
     peers::main();
     dials::main();
+    ended::main();
 }
 
 /// Takes every block of `pool` that could hold a message of `len` bytes.

@@ -349,7 +349,7 @@ impl Connection {
 
     /// Gives `error` to the stream calls, and gives the [`Event::Closed`] of the
     /// connection, which [`Connection::end`] ended.
-    fn closed(&self, error: Error) -> Event {
+    fn closed(&mut self, error: Error) -> Event {
         self.streams.end(error.clone());
         Event::Closed {
             key: self.key,

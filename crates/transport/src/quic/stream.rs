@@ -1284,14 +1284,16 @@ impl Streams {
         }
     }
 
-    /// Gives `error` to each handle of the connection, for each later stream call.
+    /// Gives `error` to each handle of the connection, for each later stream call,
+    /// and drops the sending half of each stream, which no later call reaches.
     ///
     /// # Panics
     ///
     /// When the connection closed before.
-    pub(super) fn end(&self, error: Error) {
+    pub(super) fn end(&mut self, error: Error) {
         let set = self.closed.set(error);
         assert!(set.is_ok(), "invariant: a connection closes once");
+        self.halves = Map::default();
     }
 
     /// Starts the wait for the peer's hello at `now`, when the handshake ends.
