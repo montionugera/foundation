@@ -329,7 +329,10 @@ state on `main`.
 - `types::ed25519::PrivateKey` writes `PrivateKey(..)` in `Debug`, and has no `Display`
   and no equality. The TLS configs do not write key bytes in `Debug`.
 - Open hardening: `PrivateKey` is `Clone` with a public field, and neither it nor the
-  PKCS#8 copy in `tls` is cleared when dropped.
+  PKCS#8 copy in `tls` is cleared when dropped. `node` does not clear the copies of
+  `node.key` that it reads and writes (the encoded bytes, the pool block of each file
+  call, and `Held::Written`), so the seal key that `secret::seal::Opener` clears is
+  still in them.
 - Node key material is on the node's local disk. A local user who can read it (Who
   attacks) is that node.
 - `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
