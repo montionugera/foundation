@@ -27,7 +27,6 @@ mod task;
 #[cfg(not(loom))]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
@@ -174,16 +173,18 @@ impl Node {
     /// or the mesh's group stops, which stops the node. Returns once each shard runs or
     /// one has failed to start. When the disk budget holds no ring on each shard, no
     /// shard starts, and [`Node::join`] gives [`Error::Disk`] with the budget, the
-    /// shard count, and the least budget. A failed start, a shard with no memory, a
-    /// data directory that another node holds or that was made for another shard count,
-    /// a key file that is not valid, a file `name` that holds another name or that no
-    /// node wrote, or a buffer or a mesh that does not open stops the node, and
-    /// [`Node::join`] returns its error.
+    /// shard count, and the least budget. When a shard's part of the pool budget gives
+    /// a reservation of more than `usize::MAX` bytes, no shard starts either, and
+    /// [`Node::join`] gives [`Error::Pool`]. A failed start, a shard with no memory, a
+    /// data directory that another node holds or that was made for another shard
+    /// count, a key file that is not valid, a file `name` that holds another name or
+    /// that no node wrote, or a buffer or a mesh that does not open stops the node, and
+    /// [`Node::join`] returns its error. The `# Errors` of [`Node::join`] gives which
+    /// error comes first.
     ///
     /// # Panics
     ///
-    /// If a shard's part of the budget needs more address space than a `usize` holds,
-    /// or if the disk budget holds a ring on each of more than `u32::MAX` cores.
+    /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
     #[must_use = "a dropped Node leaves its shards running"]
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
         let cores = config.shards.cores().get();
@@ -218,6 +219,14 @@ impl Node {
             region: config.region.clone(),
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
+        };
+        let parts = parts
+            .into_iter()
+            .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
+            .collect::<Result<Vec<_>, block::Unfit>>();
+        let Ok(parts) = parts else {
+            let pool = config.budget.pool;
+            return Self::failed(Error::Pool { pool, cores }, regional);
         };
         Self::launch(config, endpoint, parts.into_iter().zip(0..count))
     }
@@ -373,17 +382,18 @@ impl Node {
     /// # Errors
     ///
     /// The first failure: [`Error::Disk`] for a disk budget that holds no ring on each
-    /// shard, [`Error::Port`] for a port that did not bind, [`Error::Start`] for a
-    /// shard that could not start or pin, or [`Error::Memory`] for a shard with no
-    /// memory, else [`Error::Shards`] or [`Error::Directory`] for a data directory that
-    /// shard 0 could not claim, else [`Error::Buffer`] for the first shard by core
-    /// whose buffer, or the home over it, did not open, [`Error::Budget`] or
-    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
-    /// [`Error::Key`] or [`Error::Directory`] for a key file that shard 0 could not
-    /// read or write, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a mesh
-    /// that did not open, or [`Error::Transport`] or [`Error::Group`], whichever the
-    /// node sees stop first, else [`Error::Panicked`] for the first shard by core that
-    /// panicked. Any failed shard stops the node.
+    /// shard, [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part
+    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
+    /// data directory that shard 0 could not claim, else [`Error::Buffer`] for the
+    /// first shard by core whose buffer, or the home over it, did not open,
+    /// [`Error::Budget`] or [`Error::Directory`] for a file `budget` that shard 0 could
+    /// not read or write, [`Error::Key`] or [`Error::Directory`] for a key file that
+    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
+    /// [`Error::Mesh`] for a mesh that did not open, or [`Error::Transport`] or
+    /// [`Error::Group`], whichever the node sees stop first, else [`Error::Panicked`]
+    /// for the first shard by core that panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -539,24 +549,18 @@ impl Role {
     }
 }
 
-/// The pool of each shard from its part of `budget`, and the layout of its ring from
-/// its part of `disk`, in order of core, else the first part that holds no ring.
+/// The part of `budget` of each shard, and the layout of its ring from its part of
+/// `disk`, in order of core, else the first part that holds no ring.
 fn parts(
     budget: types::byte::Size,
     disk: types::byte::Size,
     cores: usize,
-) -> Result<Vec<(block::Config, buffer::Layout)>, buffer::Small> {
+) -> Result<Vec<(u64, buffer::Layout)>, buffer::Small> {
     (0..cores)
         .map(|core| {
-            let budget = part(budget.bytes(), cores, core);
-            let Ok(budget) = usize::try_from(budget) else {
-                panic!(
-                    "pool budget {budget} of shard-{core} is past the address space"
-                );
-            };
             let layout =
                 buffer::Layout::fit(part(disk.bytes(), cores, core), BODY_MAX)?;
-            Ok((block::Config { budget }, layout))
+            Ok((part(budget.bytes(), cores, core), layout))
         })
         .collect()
 }
@@ -814,10 +818,10 @@ impl Serve {
     /// `home`, `guard`, each session and stream future, the operations on the mesh,
     /// the mesh, and the transport, and waits for each task of the mesh to end, with a
     /// mesh, and for the transport to free the port. Unless the socket broke, the port
-    /// is freed only after each task of a remote reader of the hub has ended. Runs no
-    /// task and takes no session when a shard did not open, or when the budgets were
-    /// not kept, the identity did not load, or the mesh did not open, which goes into
-    /// `failed`.
+    /// is freed only after the hub lets go of the region, as [`hub::Hub::new`] states.
+    /// Runs no task and takes no session when a shard did not open, or when the
+    /// budgets were not kept, the identity did not load, or the mesh did not open,
+    /// which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
@@ -852,8 +856,9 @@ impl Serve {
         let freed = transport.ended();
         let (inbox, time) = (self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
-        // ends, on each path, or is a hub task of a remote reader, which ends at its
-        // next poll after its reader drops. So the port is freed before `lock` drops.
+        // ends, on each path, or is a task of the mesh, awaited below, or of the hub,
+        // which ends as `hub::Hub::new` states. So the port is freed before `lock`
+        // drops.
         let served = async move {
             let mesh = match mesh {
                 Ok(mesh) => mesh,
@@ -867,7 +872,8 @@ impl Serve {
                 transport: Rc::clone(&transport),
             });
             let ops = mesh.as_ref().map(|mesh| {
-                Rc::new(operations(mesh.clone(), time.clone(), entropy.clone()))
+                let (time, entropy) = (time.clone(), entropy.clone());
+                Rc::new(operations(mesh.clone(), time, entropy))
             });
             let hub = hub::Hub::new(hub::Config {
                 home,
@@ -914,20 +920,26 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh`, whose keys [`channel_key`] makes.
+/// The operations on `mesh` with the connector kinds of [`kinds`], whose keys
+/// [`channel_key`] makes.
 fn operations(
     mesh: mesh::Mesh,
     time: clock::Reader,
     entropy: env::entropy::Entropy,
 ) -> ops::Node {
     let key = move || channel_key(&time, &entropy);
-    let front_ends = BTreeMap::from([(
+    let front_ends = ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
-    )]);
-    ops::Node::new(mesh, key, front_ends, connector::kind::Table::new())
+    );
+    ops::Node::new(mesh, key, front_ends, Arc::new(kinds()))
+}
+
+/// The connector kinds of this binary.
+fn kinds() -> connector::kind::Table {
+    connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
 /// Gives `hub` what the spec that `mesh` uses defines, then returns a future that gives
@@ -1044,6 +1056,15 @@ pub enum Error {
         /// `Size`.
         min: types::byte::Size,
     },
+    /// The pool budget gives one of `cores` shards a pool whose reservation is more
+    /// than `usize::MAX` bytes, more address space than this host has. No shard
+    /// started.
+    Pool {
+        /// The pool budget that was given.
+        pool: types::byte::Size,
+        /// The count of shards.
+        cores: usize,
+    },
     /// The transport of the node's port stopped, as when the OS breaks its socket.
     /// The node stops.
     Transport(transport::Error),
@@ -1106,6 +1127,11 @@ impl fmt::Display for Error {
                 f,
                 "the disk budget {disk} holds no ring on each of {cores} shards; it \
                  needs at least {min}"
+            ),
+            Self::Pool { pool, cores } => write!(
+                f,
+                "the pool budget {pool} gives one of {cores} shards a pool that needs \
+                 more address space than this host has"
             ),
             Self::Transport(error) => {
                 write!(f, "the node's transport stopped: {error}")
