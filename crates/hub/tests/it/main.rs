@@ -723,6 +723,62 @@ fn opens_no_writer_on_a_channel_removed_while_it_waits_for_mesh_time() {
     });
 }
 
+/// A control lease short enough to run out in a test.
+const LEASE: Span = Span::from_nanos(1_000_000);
+
+/// How many times the ring of `test` holds a handoff to `subject` at authority 1.
+async fn handoffs_to(test: &Test, subject: &str) -> usize {
+    let file = test
+        .node
+        .files()
+        .open(FilePath::new(RING), env::files::Mode::Read)
+        .await
+        .expect("opens");
+    let block = test.pool.alloc(1 << 16).expect("a block");
+    let ring = file.read_at(0, block).await.expect("reads");
+    let handoff = [&[1], subject.as_bytes()].concat();
+    ring.windows(handoff.len())
+        .filter(|window| *window == handoff)
+        .count()
+}
+
+/// A holder that stops writing loses control at the end of its lease with no other
+/// call, so the handoff is durable before the next write.
+#[test]
+fn records_the_handoff_to_a_waiting_writer_when_a_lease_runs_out_with_no_call() {
+    run(71, |test| async move {
+        let leased = writer::Config {
+            lease: Some(LEASE),
+            ..config("subject-a", &["value"])
+        };
+        let mut a = test.hub.writer(leased).await.expect("opens");
+        assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+        let _b = test.writer("subject-b", &["value"]).await;
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(handoffs_to(&test, "subject-b").await, 1);
+    });
+}
+
+/// The close of a holder can start a lease, so it wakes the task that waits for the
+/// end of each lease.
+#[test]
+fn records_the_handoff_at_the_end_of_a_lease_that_a_close_starts() {
+    run(72, |test| async move {
+        let a = test.writer("subject-a", &["value"]).await;
+        let leased = writer::Config {
+            lease: Some(LEASE),
+            ..config("subject-b", &["value"])
+        };
+        let _b = test.hub.writer(leased).await.expect("opens");
+        let _c = test.writer("subject-c", &["value"]).await;
+        test.clock.sleep(SETTLE).await;
+        drop(a);
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(handoffs_to(&test, "subject-b").await, 1);
+        assert_eq!(handoffs_to(&test, "subject-c").await, 1);
+    });
+}
+
 #[test]
 fn gives_control_to_a_waiting_writer_when_a_writer_drops() {
     run(6, |test| async move {
@@ -761,7 +817,7 @@ fn drops_the_home_once_the_hub_and_each_session_drop() {
         drop((hub, reader, commit));
         clock.sleep(SETTLE).await;
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
     });
 }
 
@@ -793,7 +849,7 @@ fn ends_the_commit_task_once_each_session_that_outlives_the_hub_drops() {
         assert_eq!(ended.get(), 0, "the reader holds the home");
         drop(reader);
         clock.sleep(SETTLE).await;
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
     });
 }
@@ -838,7 +894,7 @@ fn ends_the_commit_task_in_its_commit_wait_once_the_hub_drops() {
         clock.sleep(Span::from_nanos(1)).await;
         drop((hub, reader, writer, commit));
         clock.sleep(Span::from_nanos(1)).await;
-        assert_eq!(ended.get(), 1, "the commit task ended before the commit");
+        assert_eq!(ended.get(), 2, "the tasks ended before the commit");
         clock.sleep(SETTLE).await;
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
     });
