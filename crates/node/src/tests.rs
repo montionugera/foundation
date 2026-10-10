@@ -13,7 +13,7 @@ use types::time::Span;
 use secret::seal::Opener;
 
 use crate::identity::{self, Identity};
-use crate::{Budget, Config, Error, Node, Region, root};
+use crate::{Budget, Config, Error, Node, Region};
 
 mod region;
 
@@ -3850,7 +3850,7 @@ mod port {
         use types::node::SealKey;
 
         use super::*;
-        use crate::{Endpoint, route};
+        use crate::{Endpoint, Opening, route};
 
         /// The key and private key of a second node.
         const OTHER: (types::node::Key, PrivateKey) =
@@ -4103,10 +4103,8 @@ mod port {
                     opener: Opener::from_bytes(SEAL),
                 };
                 let endpoint = Endpoint {
-                    addresses: root::addresses(bound.addresses()),
-                    name: "edge".parse().expect("a name"),
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Region::Given(region(&members)),
+                    region: Opening::Given(region(&members)),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };
@@ -5267,10 +5265,8 @@ mod port {
                 };
                 let definitions = founding.definitions.clone();
                 let endpoint = Endpoint {
-                    addresses: root::addresses(bound.addresses()),
-                    name: "edge".parse().expect("a name"),
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Region::Given(founding),
+                    region: Opening::Given(founding),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };

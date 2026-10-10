@@ -229,13 +229,19 @@ impl Node {
                 return Self::failed(Error::Port { listen, error }, regional);
             }
         };
-        let addresses = root::addresses(bound.addresses());
+        let region = match &config.region {
+            Region::Absent => Opening::Absent,
+            Region::Stored => Opening::Stored {
+                name: config.name.clone(),
+                addresses: root::addresses(bound.addresses()),
+            },
+            #[cfg(feature = "sim")]
+            Region::Given(founding) => Opening::Given(founding.clone()),
+        };
         let part = bound.split(NonZeroUsize::MIN).pop();
         let endpoint = Endpoint {
             part: part.expect("invariant: a port splits into the parts asked for"),
-            addresses,
-            name: config.name.clone(),
-            region: config.region.clone(),
+            region,
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
         };
@@ -282,7 +288,7 @@ impl Node {
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let regional = !matches!(endpoint.region, Region::Absent);
+        let regional = !matches!(endpoint.region, Opening::Absent);
         let (mesh, clock) = clock::Clock::new(monotonic.clone());
         let serve = Serve {
             interner: last,
@@ -766,21 +772,64 @@ struct Serve {
 struct Endpoint {
     /// The node's part of its port.
     part: transport::port::Part,
-    /// The addresses of the port that the card of a root founder holds.
-    addresses: mesh::card::addresses::Addresses,
-    name: types::name::Name,
-    region: Region,
+    region: Opening,
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
+}
+
+/// The region that shard 0 opens, with what it needs to found the root region.
+enum Opening {
+    /// No region: the node opens no mesh.
+    Absent,
+    /// The founding in the mesh directory, else the root region with a card of `name`
+    /// and `addresses`.
+    Stored {
+        name: types::name::Name,
+        addresses: mesh::card::addresses::Addresses,
+    },
+    /// This founding.
+    #[cfg(feature = "sim")]
+    Given(mesh::region::Founding),
+}
+
+impl Opening {
+    /// The founding of the region in `files`, or `None` for no region. When the mesh
+    /// directory holds no founding, it is the root region that [`root::founding`]
+    /// gives.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Mesh`] when the stored founding does not read, and the errors of
+    /// [`root::founding`].
+    async fn founding(
+        self,
+        files: &env::files::Files,
+        pool: Rc<block::Pool>,
+        entropy: &env::entropy::Entropy,
+        identity: &identity::Identity,
+    ) -> Result<Option<mesh::region::Founding>, Error> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Stored { name, addresses } => {
+                let stored = mesh::founding(files, &directory::mesh(), pool).await;
+                if let Some(founding) = stored.map_err(Error::Mesh)? {
+                    return Ok(Some(founding));
+                }
+                let root = root::founding(files, entropy, identity, name, addresses);
+                root.await.map(Some)
+            }
+            #[cfg(feature = "sim")]
+            Self::Given(founding) => Ok(Some(founding)),
+        }
+    }
 }
 
 impl Endpoint {
     /// Opens the node's transport on `pool` and `tasks` with `identity`, then, when the
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
-    /// and the mesh of that region over both, in directory [`directory::mesh`]. A
-    /// [`Region::Stored`] is the founding that [`root::founding`] gives. Gives the
-    /// transport, also with the error of a founding, a store, or a mesh that did not
-    /// open.
+    /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
+    /// the transport, also with the error of a founding, a store, or a mesh that did
+    /// not open.
     async fn open(
         self,
         identity: identity::Identity,
@@ -802,21 +851,13 @@ impl Endpoint {
         let transport = transport::Transport::new(config, self.part)
             .expect("invariant: a buffer's pool holds a block of a whole UDP payload");
         let transport = Rc::new(transport);
-        let founding = match self.region {
-            Region::Absent => return (transport, Ok(None)),
-            Region::Stored => {
-                let entropy = &self.entropy;
-                let (name, addresses) = (self.name, self.addresses);
-                let pool = Rc::clone(&pool);
-                let root =
-                    root::founding(&files, pool, entropy, &identity, name, addresses);
-                match root.await {
-                    Ok(founding) => founding,
-                    Err(error) => return (transport, Err(error)),
-                }
-            }
-            #[cfg(feature = "sim")]
-            Region::Given(founding) => founding,
+        let founding =
+            self.region
+                .founding(&files, Rc::clone(&pool), &self.entropy, &identity);
+        let founding = match founding.await {
+            Ok(Some(founding)) => founding,
+            Ok(None) => return (transport, Ok(None)),
+            Err(error) => return (transport, Err(error)),
         };
         let store = blob::Store::open(blob::Config {
             files: files.clone(),
