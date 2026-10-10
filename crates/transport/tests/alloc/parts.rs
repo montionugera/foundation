@@ -1,7 +1,9 @@
 //! A `send_parts` allocates as a `send` of one block of the same bytes, plus one
 //! allocation for the copy of each stretch over 1452 bytes, one when noq-proto first
 //! takes such a copy in part, one for each growth of the segment queue of noq-proto,
-//! and one for each growth of the stretch buffer of the connection.
+//! and one for each growth of the stretch buffer of the connection. A message of more
+//! than 1452 bytes that gives noq-proto no slice of the block saves the shared count
+//! that the slice of a `send` makes.
 
 use std::iter;
 use std::net::SocketAddr;
@@ -24,11 +26,11 @@ use crate::ALLOCATOR;
 use crate::common::{CLIENT, PORT, SERVER, filled, part};
 
 /// Long enough for the peer to read and acknowledge a message.
-const PAUSE: Span = Span::from_nanos(100_000_000);
+pub(crate) const PAUSE: Span = Span::from_nanos(100_000_000);
 const CLOSED: Error = Error::PeerClosed { code: Code(0) };
 /// The sends of each kind before the counted ones.
-const WARMUP: usize = 8;
-const ROUNDS: usize = 8;
+pub(crate) const WARMUP: usize = 8;
+pub(crate) const ROUNDS: usize = 8;
 
 /// The parts of a message, and the allocations of its `send_parts` over those of a
 /// `send`, with their cause.
@@ -59,8 +61,9 @@ fn shapes() -> [Shape; 6] {
         Shape {
             name: "1000 ranges of 8 B",
             parts: spaced(1000, 8, 16),
-            over: 1,
-            cause: "the copy of the stretch",
+            over: 0,
+            cause: "the copy of the stretch, in place of the shared count of the \
+                    slice that a send gives noq-proto",
         },
         Shape {
             name: "a stretch of 1452 bytes with zeros",
@@ -71,8 +74,9 @@ fn shapes() -> [Shape; 6] {
         Shape {
             name: "a range of 1452 bytes, then 1 byte and a zero",
             parts: vec![series(0..1452, 0), series(2000..2001, 1)],
-            over: 1,
-            cause: "the copy of the stretch of 1454 bytes",
+            over: 0,
+            cause: "the copy of the stretch of 1454 bytes, in place of the shared \
+                    count of the slice that a send gives noq-proto",
         },
         Shape {
             name: "two adjacent ranges of 1000 bytes",
@@ -97,12 +101,12 @@ fn spaced(ranges: usize, len: usize, stride: usize) -> Vec<Part> {
 
 /// The limits of a transport: its largest message and its window.
 #[derive(Clone, Copy)]
-struct Limits {
+pub(crate) struct Limits {
     message: usize,
     window: usize,
 }
 
-const WIDE: Limits = Limits {
+pub(crate) const WIDE: Limits = Limits {
     message: 1 << 17,
     window: 1 << 20,
 };
@@ -203,7 +207,7 @@ pub(crate) fn main() {
 
 /// Runs `client` on a session of a client and a server with `limits`, then closes the
 /// session.
-fn run(
+pub(crate) fn run(
     limits: Limits,
     client: impl AsyncFnOnce(Session, Rc<Pool>, Clock) + Send + 'static,
 ) {
@@ -265,8 +269,8 @@ async fn measure(sender: &mut Sender, pool: &Pool, clock: &Clock, shape: &Shape)
 ///
 /// When the first write of the stretch does not allocate as that of the block plus
 /// the buffer of the stretch and the shared count that `bytes` makes when noq-proto
-/// first takes the buffer in part, or the later writes do not allocate as those of
-/// the block.
+/// first takes the buffer in part, less the shared count of the block's slice, or
+/// the later writes do not allocate as those of the block.
 async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
     let parts = spaced(NARROW.message / 8, 8, 16);
     for round in 0..WARMUP + ROUNDS {
@@ -281,10 +285,10 @@ async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
         if round >= WARMUP {
             assert_eq!(
                 parted,
-                [sent[0] + 2, sent[1]],
+                [sent[0] + 1, sent[1]],
                 "a stretch that the window takes in parts, over send: the copy of \
-                 the stretch and the shared count of bytes at the first cut, then no \
-                 copy of the rest"
+                 the stretch and the shared count of bytes at the first cut, less the \
+                 shared count of the block's slice, then no copy of the rest"
             );
         }
     }
@@ -331,7 +335,7 @@ async fn cut_send(
 /// # Panics
 ///
 /// When the send waits or fails.
-fn poll(sender: &mut Sender, block: Block, parts: &[Part]) {
+pub(crate) fn poll(sender: &mut Sender, block: Block, parts: &[Part]) {
     let mut cx = Context::from_waker(Waker::noop());
     let polled = if parts.is_empty() {
         pin!(sender.send(block)).poll(&mut cx)
