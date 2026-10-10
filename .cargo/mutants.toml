@@ -77,10 +77,10 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
-  # The oracle of the `node_identity` fuzz target and of the property tests, and the
-  # entry of the target. Each panics only when `decode` is wrong, and the mutants of
-  # `decode` show that `check` does.
-  'crates/node/src/identity\.rs:.*replace check with \(\)',
+  # The oracles of the `node_identity` fuzz target and of the property tests, and the
+  # entry of the target. Each panics only when a `decode` is wrong, and the mutants of
+  # each `decode` show that its `check` does.
+  'crates/node/src/(identity|admin)\.rs:.*replace check with \(\)',
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No public call reads the entries that an open leaks. The unit test
   # `an_open_keeps_no_entry_once_it_drops` reads them.

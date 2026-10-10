@@ -25,3 +25,17 @@ fn file<const N: usize>(data: &[u8]) -> Option<[u8; N]> {
         .ok()
         .or_else(|| sector::summed(data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_is_its_bytes_or_its_body_with_the_checksum() {
+        assert_eq!(file::<4>(&[1, 2, 3, 4]), Some([1, 2, 3, 4]));
+        let mut bytes = [7; 54];
+        sector::checksum(&mut bytes);
+        assert_eq!(file::<54>(&bytes[..50]), Some(bytes));
+        assert_eq!(file::<54>(&bytes[..53]), None);
+    }
+}
