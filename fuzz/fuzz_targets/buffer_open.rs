@@ -920,11 +920,20 @@ async fn edit(
         .collect();
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");
-    let carried = (AREA_START..AREA_START + BLOCKS).any(|block| {
-        record::kind(&image, block) == record::CARRY
-            && record::sealed(&image, block, chain_before(&image, block))
-    });
+    // The open may take the second header, so a way from it counts too.
+    let mut second = image.clone();
+    second.copy_within(BLOCK..2 * BLOCK, 0);
+    let carried = carries(&image) || carries(&second);
     (Room::walked(&image, edits), carried)
+}
+
+/// Whether a block holds a carry record that continues the chain on the way from the
+/// tail in the first header block.
+fn carries(image: &[u8]) -> bool {
+    (AREA_START..AREA_START + BLOCKS).any(|block| {
+        record::kind(image, block) == record::CARRY
+            && record::sealed(image, block, chain_before(image, block))
+    })
 }
 
 /// Opens the changed ring, which must open or refuse as `room` says. With no edits,
@@ -939,7 +948,7 @@ async fn edit(
 /// not checked.
 ///
 /// `carried` says whether a block of the ring holds a carry record that continues
-/// the chain.
+/// the chain from the tail in either header block.
 async fn check(
     shard: &Shard,
     input: &Input,

@@ -304,8 +304,9 @@ state on `main`.
   after the first open lost the new ring: its directory was not synced in its parent),
   #393 (two CRC-valid fields stopped the node at open); the `area_16` and
   `below_tail_16` inputs hold the two fields of #393. The `carry` inputs hold a
-  carry record (#160): one valid, and one each with a count past the body, an
-  unknown path byte, and a carried tail below the path's tail.
+  carry record (#160): one valid, one each with a count past the body, an unknown
+  path byte, and a carried tail below the path's tail, and one that continues the
+  chain only from the second header.
 
 ### Device to connector
 
