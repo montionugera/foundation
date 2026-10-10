@@ -393,7 +393,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `mesh_message` | The decode of a mesh message, with its `raft` proof, chain, and entries, by `mesh::testing::round_trip_message` | Encodes to the same bytes |
 | `mesh_entries` | The decode of `raft` entries one after another, as a mesh log record body and an append hold them, by `mesh::testing::round_trip_entries` | Encode to the same bytes |
 | `mesh_log` | The decode of one mesh log record by `mesh::testing::round_trip_log_record`: the header, its version, and the hard state and entries of the body, after `seal_log_record` writes the length and both checks | Encodes to the same bytes |
-| `mesh_log_dir` | `mesh::log::sequence` and `mesh::log::scan` on the files of a log directory, by `mesh::testing::scan_log_dir`, after `seal_log_dir` writes the checks of each record | An open of the files that an open leaves reads the same hard state and entries |
+| `mesh_log_dir` | `mesh::log::sequence` and `mesh::log::scan` on the files of a log directory, by `mesh::testing::scan_log_dir`, after `seal_log_dir` writes the checks of each record | An open of the files that an open leaves reads the same hard state and entries, and the files are a fixed point after two opens |
 | `mesh_spec_name` | `mesh::driver::used::pointer` on a file name of the directory of the spec in use, by `mesh::testing::round_trip_spec_name` | A name it reads is the name of its pointer |
 | `codec_series` | `codec::validate`, `codec::decode`, `codec::Decoder` | All give one result |
 | `codec_encoder` | `codec::Encoder` | Its output is valid and decodes unchanged |
