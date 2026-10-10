@@ -352,11 +352,12 @@
   2026-10-10 00:19 UTC). The drive until no delayed callback waits: approved by
   `laptop.architect-2` at `c04ad0db3`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
-  2026-10-10 16:03 UTC). The bound of 64 runs: decided by `laptop.architect-2`
+  2026-10-10 16:03 UTC). Supersedes the drive until nothing is due of
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998. The bound
+  of 64 runs: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6102906547,
-  2026-10-10 22:34 UTC). Supersedes the drive until nothing is due of
-  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998. The delete
-  and the calls between: approved by `laptop.architect-2` at `1816b9c85`
+  2026-10-10 22:34 UTC). The delete and the calls between: approved by
+  `laptop.architect-2` at `1816b9c85`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6090016795,
   2026-10-09 22:04 UTC). The panic in place of a drive until `STOPPED`: decided by
   `laptop.architect-2`
