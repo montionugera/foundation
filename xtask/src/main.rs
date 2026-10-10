@@ -255,22 +255,26 @@ mod tests {
     /// # Panics
     ///
     /// When a quoted scalar or a flow collection of `line` does not close on it, or
-    /// `line` has an anchor, alias, tag, or explicit key, any of which can make a node
-    /// run on.
+    /// `line` has an anchor, alias, or tag, or a `?` or `:` at the start of a node, any
+    /// of which can make a node run on.
     fn code(line: &str) -> &str {
         let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
         // `start` holds where a node can start, the only place where a quote or a
         // bracket opens one.
         let (mut quote, mut escaped, mut depth, mut start) = (None, false, 0, true);
         let mut prev = ' ';
-        for (i, c) in line.char_indices() {
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
             if let Some(open) = quote {
+                let doubled = chars.peek().is_some_and(|(_, next)| *next == '\'');
                 if escaped {
                     escaped = false;
-                } else if open == '"' && c == '\\' {
+                } else if (open, c) == ('"', '\\')
+                    || (open, c, doubled) == ('\'', '\'', true)
+                {
                     escaped = true;
                 } else if c == open {
-                    quote = None;
+                    (quote, start) = (None, false);
                 }
                 prev = c;
                 continue;
@@ -465,46 +469,50 @@ mod tests {
     /// When a model job is not its job in [`JOBS`].
     fn pin_jobs(jobs: &[&str]) {
         for (task, job) in JOBS {
+            let found = under(jobs, &format!("  {task}:"));
             assert!(
-                under(jobs, &format!("  {task}:")) == job,
+                found == job,
                 "the {task} job of .github/workflows/ci.yaml is not the job that the \
-                 check pins"
+                 check pins: {found:#?}"
             );
         }
     }
 
     #[test]
     fn pin_jobs_refuses_each_change_to_a_model_job() {
-        let lines = |miri: &[&str]| -> Vec<String> {
-            (JOBS.iter())
-                .flat_map(|(task, job)| {
-                    let job = if *task == "miri" { miri } else { job };
+        let pin = |changed: usize, edited: &[&str]| {
+            let lines: Vec<String> = (JOBS.iter().enumerate())
+                .flat_map(|(i, (task, job))| {
+                    let job = if i == changed { edited } else { job };
                     let job = job.iter().map(|line| (*line).to_owned());
                     std::iter::once(format!("  {task}:")).chain(job)
                 })
-                .collect()
-        };
-        let pin = |miri: &[&str]| {
-            let lines = lines(miri);
+                .collect();
             pin_jobs(&lines.iter().map(String::as_str).collect::<Vec<_>>());
         };
-        let miri = JOBS[2].1;
-        pin(miri);
-        for (at, added) in [
-            (miri.len(), &["        if: false"][..]),
-            (3, &["    env:", "      A: b"][..]),
-            (miri.len() - 2, &["      - run: echo a"][..]),
-        ] {
-            let mut job = miri.to_vec();
-            job.splice(at..at, added.iter().copied());
-            let panic = std::panic::catch_unwind(|| pin(&job)).expect_err(added[0]);
-            assert_eq!(
-                panic.downcast_ref::<String>().map(String::as_str),
-                Some(
-                    "the miri job of .github/workflows/ci.yaml is not the job that the \
-                     check pins"
-                ),
-            );
+        pin(0, JOBS[0].1);
+        for (changed, (task, job)) in JOBS.into_iter().enumerate() {
+            let end = job.len();
+            for (at, lines) in [
+                (end..end, &["        if: false"][..]),
+                (1..2, &["    if: \"false\""][..]),
+                (end - 1..end, &["        run: \"true\""][..]),
+                (end - 1..end, &[][..]),
+                (3..3, &["    env:", "      A: b"][..]),
+                (end - 2..end - 2, &["      - run: echo a"][..]),
+            ] {
+                let mut edited = job.to_vec();
+                edited.splice(at.clone(), lines.iter().copied());
+                let panic = std::panic::catch_unwind(|| pin(changed, &edited))
+                    .expect_err(&format!("{task} {at:?}"));
+                assert_eq!(
+                    panic.downcast_ref::<String>(),
+                    Some(&format!(
+                        "the {task} job of .github/workflows/ci.yaml is not the job \
+                         that the check pins: {edited:#?}"
+                    )),
+                );
+            }
         }
     }
 
@@ -540,6 +548,19 @@ mod tests {
     }
 
     #[test]
+    fn yaml_lines_keeps_each_quoted_key() {
+        let text = concat!(
+            "env:\n",
+            "  \"A\": b\n",
+            "  'C': d # e\n",
+            "steps:\n",
+            "  - \"f\": |\n",
+            "      g\n",
+        );
+        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
+    }
+
+    #[test]
     fn yaml_lines_refuses_each_node_that_can_run_on() {
         for line in [
             "    runs-on: \"${{ 'ubuntu-latest' || '",
@@ -558,6 +579,7 @@ mod tests {
             "  ? a",
             "  : b: |",
             "a: [? b]",
+            "a: 'b''c",
         ] {
             let text = format!("x: |\n  y\nz:\n{line}\n");
             let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
