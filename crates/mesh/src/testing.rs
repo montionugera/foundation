@@ -1293,6 +1293,7 @@ mod tests {
             "no_dash",
             "plus_version",
             "not_utf8",
+            "trailing_slash",
         );
         assert_eq!(count_files("mesh_spec_name"), inputs.len());
         let root = "ab".repeat(32);
@@ -1314,6 +1315,7 @@ mod tests {
             ("not_hex", named(format!("7-{}gg", "ab".repeat(31)))),
             ("no_dash", named(format!("7{root}"))),
             ("plus_version", named(format!("+7-{root}"))),
+            ("trailing_slash", named(format!("7-{root}/"))),
             (
                 "not_utf8",
                 [&named(format!("7-{root}"))[..], &[0xFF]].concat(),

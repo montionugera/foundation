@@ -521,7 +521,7 @@ pub(crate) fn pointer(name: &Path) -> Option<Pointer> {
         version,
         root: Digest(bytes),
     };
-    (file(pointer) == Path::new(name)).then_some(pointer)
+    (file(pointer).as_os_str() == name).then_some(pointer)
 }
 
 // The name of the file that names `pointer`.
