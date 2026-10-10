@@ -25,28 +25,37 @@ impl<'a> History<'a> {
         Self { root, base }
     }
 
-    /// Reports whether `end` (a SHA or a prefix of at least 7 digits) is `head` or a
-    /// commit on the first-parent chain of `head`. Text that names no single commit
-    /// does not follow.
+    /// Where `end` (a SHA or a prefix of at least 7 digits) is on the first-parent
+    /// chain of `head`. Text that names no single commit is [`Place::Off`].
     ///
     /// # Errors
     ///
-    /// A failed `git` command, also when `head` names no commit.
-    pub(crate) fn follows(&self, end: &str, head: &str) -> Result<bool, String> {
+    /// A failed `git` command, also when `head` names no commit or the base ref does
+    /// not exist.
+    pub(crate) fn place(&self, end: &str, head: &str) -> Result<Place, String> {
         let Some(end) = self.sha(end)? else {
-            return Ok(false);
+            return Ok(Place::Off);
         };
         let head =
             self.git(&["rev-parse", "--verify", &format!("{head}^{{commit}}")])?;
+        if end == head {
+            return Ok(Place::Head);
+        }
         let range = format!("{end}..{head}");
         let chain = self.git(&["rev-list", "--first-parent", "--parents", &range])?;
         // The walk stops at the first commit that `end` holds, so the last commit
         // listed has `end` as its first parent only when `end` is on the chain.
-        Ok(end == head
-            || chain
-                .lines()
-                .last()
-                .is_some_and(|line| line.split(' ').nth(1) == Some(&end)))
+        let last = chain.lines().last();
+        if last.is_none_or(|line| line.split(' ').nth(1) != Some(&end)) {
+            return Ok(Place::Off);
+        }
+        let base = self.base()?;
+        for line in chain.lines() {
+            if self.base_merge(line, &base)?.is_none() {
+                return Ok(Place::Before);
+            }
+        }
+        Ok(Place::Head)
     }
 
     /// The first code change of `from..end`, as a phrase: "changes code at
@@ -146,18 +155,18 @@ impl<'a> History<'a> {
     ///
     /// A failed `git` command, or a changed path that is not UTF-8.
     fn first_change(&self, old: &str, new: &str) -> Result<Option<String>, String> {
-        for entry in self.diff(old, new, &[])? {
+        for entry in self.diff(old, new)? {
             let path = std::str::from_utf8(&entry.path).map_err(|e| {
                 format!(
                     "git diff: the path `{}` is not UTF-8: {e}",
                     String::from_utf8_lossy(&entry.path)
                 )
             })?;
-            if text_path(path) {
-                continue;
-            }
             // A submodule's blob is a commit, which has no lines to read.
             let submodule = entry.old_mode == GITLINK || entry.new_mode == GITLINK;
+            if text_path(path) && !submodule {
+                continue;
+            }
             let rust = rust_path(path);
             if !submodule
                 && let Some(line) = self.first_code(&entry.old, &entry.new, rust)?
@@ -181,7 +190,6 @@ impl<'a> History<'a> {
         new: &str,
         rust: bool,
     ) -> Result<Option<u32>, String> {
-        let absent = |blob: &str| blob.bytes().all(|b| b == b'0');
         if absent(old) || absent(new) {
             let blob = if absent(old) { new } else { old };
             let text = self.output(&["cat-file", "blob", blob])?;
@@ -318,7 +326,7 @@ impl<'a> History<'a> {
             return Ok(None);
         };
         let probed = self.merged(&probe.commit, second)?.tree;
-        for entry in self.diff(tree, &probed, &[])? {
+        for entry in self.diff(tree, &probed)? {
             let new = String::from_utf8_lossy(&entry.path);
             if text_path(&new) {
                 continue;
@@ -480,27 +488,21 @@ impl<'a> History<'a> {
     }
 
     /// The entries of `git diff --raw` from the tree-ish `old` to `new`, with no
-    /// renames, given the further arguments `args`.
+    /// renames.
     ///
     /// # Errors
     ///
     /// A failed `git diff`, or an entry not in the raw format.
-    fn diff(&self, old: &str, new: &str, args: &[&str]) -> Result<Vec<Entry>, String> {
-        let raw = self.output(
-            &[
-                &[
-                    "diff",
-                    "--raw",
-                    "-z",
-                    "--no-abbrev",
-                    "--no-renames",
-                    old,
-                    new,
-                ],
-                args,
-            ]
-            .concat(),
-        )?;
+    fn diff(&self, old: &str, new: &str) -> Result<Vec<Entry>, String> {
+        let raw = self.output(&[
+            "diff",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
+            old,
+            new,
+        ])?;
         // Each entry is `:<old mode> <new mode> <old blob> <new blob> <status>` and
         // the path, each ended by a NUL.
         let mut entries = Vec::new();
@@ -607,6 +609,18 @@ impl<'a> History<'a> {
 /// The first word of each line of probe text that `History::moved_into_code` writes.
 const PROBE: &str = "xtask-review-probe";
 
+/// Where the end of a round is on the first-parent chain of a head
+/// ([`History::place`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// The head, or a commit that only merges of the base follow on the chain.
+    Head,
+    /// A commit on the chain that a commit other than a merge of the base follows.
+    Before,
+    /// Not on the chain.
+    Off,
+}
+
 /// The mode of a submodule.
 const GITLINK: &str = "160000";
 
@@ -626,11 +640,16 @@ struct Entry {
 impl Entry {
     /// Whether the path is in both trees, with a different mode.
     fn mode_changed(&self) -> bool {
-        let absent = |mode: &str| mode.bytes().all(|b| b == b'0');
         self.old_mode != self.new_mode
             && !absent(&self.old_mode)
             && !absent(&self.new_mode)
     }
+}
+
+/// Whether `field`, a mode or a blob of `git diff --raw`, is all zeros: the path is
+/// not in that tree.
+fn absent(field: &str) -> bool {
+    field.bytes().all(|b| b == b'0')
 }
 
 /// A file to write in a tree.

@@ -15,6 +15,8 @@ use crate::field;
 
 mod history;
 
+use history::Place;
+
 /// The first change of code in a range `<from>..<end>`, as a phrase, or `None`.
 type CodeChange<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
 
@@ -110,6 +112,9 @@ struct Round {
     from: String,
     end: String,
     findings: u32,
+    /// The comment has a line `Text fixes:`, so commits that apply its items may
+    /// follow the round.
+    fixed: bool,
     /// The `Hot path:` end line names a function, so the round requires
     /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
     hot: bool,
@@ -149,7 +154,7 @@ pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
         problems(
             &record,
             head,
-            &|end| history.follows(end, head),
+            &|end| history.place(end, head),
             &|from, end| history.code_change(from, end),
         )
     });
@@ -174,9 +179,11 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 }
 
 /// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must find nothing and end at `head` or
-/// at a commit from which the range to `head` changes no code. `follows` reports
-/// whether a commit (a SHA or its prefix) is `head` or on its first-parent chain. A
+/// reviewers it requires, and the last round must find nothing and end at `head`, or
+/// at a commit on its first-parent chain from which the range to `head` changes no
+/// code, with a `Text fixes:` line when a commit other than a merge of the base
+/// follows it. `place` gives where a commit (a SHA or its prefix) is from `head`
+/// (`History::place`). A
 /// later round may skip `breaker` when the range of the last round changes no code;
 /// an earlier round's skip is taken as written. `code_change` gives the first code
 /// change in a range, with a merge of the base read by its resolution, as a phrase,
@@ -184,7 +191,7 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 fn problems(
     record: &Record,
     head: &str,
-    follows: &dyn Fn(&str) -> Result<bool, String>,
+    place: &dyn Fn(&str) -> Result<Place, String>,
     code_change: CodeChange<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
@@ -231,20 +238,7 @@ fn problems(
                 round.number, round.findings
             ));
         }
-        if !follows(&round.end)? {
-            problems.push(format!(
-                "review round {} ends at `{}`, which is not the head `{head}` or a \
-                 commit on its first-parent chain. A commit after the round needs a \
-                 new round, unless it changes no code.",
-                round.number, round.end
-            ));
-        } else if let Some(change) = code_change(&round.end, head)? {
-            problems.push(format!(
-                "review round {} ends at `{}`, and the range from it to the head \
-                 `{head}` {change}. A commit that changes code needs a new round.",
-                round.number, round.end
-            ));
-        }
+        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -252,6 +246,36 @@ fn problems(
         problems.extend(approval(record, head));
     }
     Ok(problems)
+}
+
+/// The problem with the end of the last round, `round`, at `head`, where `place` is
+/// where its end is from `head`, or `None`.
+fn unended(
+    round: &Round,
+    head: &str,
+    place: Place,
+    code_change: CodeChange<'_>,
+) -> Result<Option<String>, String> {
+    let (number, end) = (round.number, &round.end);
+    if place == Place::Off {
+        return Ok(Some(format!(
+            "review round {number} ends at `{end}`, which is not the head `{head}` or \
+             a commit on its first-parent chain. A commit after the round needs a new \
+             round, unless it applies the round's `Text fixes:` items."
+        )));
+    }
+    if let Some(change) = code_change(end, head)? {
+        return Ok(Some(format!(
+            "review round {number} ends at `{end}`, and the range from it to the head \
+             `{head}` {change}. A commit that changes code needs a new round."
+        )));
+    }
+    Ok((place == Place::Before && !round.fixed).then(|| {
+        format!(
+            "review round {number} ends at `{end}`, not at the head `{head}`, and has \
+             no `Text fixes:` line."
+        )
+    }))
 }
 
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
@@ -293,7 +317,7 @@ fn unnamed(
 /// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
 /// `breaker` for a code PR; and `performance` when the round names a hot path.
 fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
-    let code = files.iter().any(|f| code_path(f));
+    let code = files.iter().any(|f| tiered(f));
     let mut required = if code && round.number <= 1 {
         vec!["reviewer", "architecture", "breaker"]
     } else if code {
@@ -307,13 +331,13 @@ fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     required
 }
 
-/// Whether a PR that changes `path` is a code PR by REVIEW TIERS: a `.rs` file, a
+/// Whether a change to `path` makes a code PR by REVIEW TIERS: a `.rs` file, a
 /// `Cargo.toml`, or a `Cargo.lock`.
 #[expect(
     clippy::case_sensitive_file_extension_comparisons,
     reason = "git paths match case"
 )]
-fn code_path(path: &str) -> bool {
+fn tiered(path: &str) -> bool {
     Path::new(path)
         .file_name()
         .is_some_and(|n| n == "Cargo.toml" || n == "Cargo.lock")
@@ -376,6 +400,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
     let breakerless = lines.clone().any(|l| l.starts_with("Breaker: skipped"));
+    let fixed = text.iter().flatten().any(|l| l.starts_with("Text fixes:"));
     let binding =
         [reviewers, range, findings].iter().any(Option::is_some) || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
@@ -424,6 +449,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
+            fixed,
             hot,
         })
     };

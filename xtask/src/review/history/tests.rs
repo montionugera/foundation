@@ -99,13 +99,15 @@ impl Repo {
         self.git(&args.concat())
     }
 
-    fn follows(&self, end: &str, head: &str) -> Result<bool, String> {
-        History::new(&self.dir, "main").follows(end, head)
+    fn place(&self, end: &str, head: &str) -> Result<Place, String> {
+        History::new(&self.dir, "main").place(end, head)
     }
 
-    /// Whether a last round that ends at `end` passes at `head`.
+    /// Whether a last round with a `Text fixes:` line that ends at `end` passes at
+    /// `head`.
     fn passes(&self, end: &str, head: &str) -> Result<bool, String> {
-        Ok(self.follows(end, head)? && self.code_change(end, head)?.is_none())
+        Ok(self.place(end, head)? != Place::Off
+            && self.code_change(end, head)?.is_none())
     }
 
     fn code_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
@@ -141,6 +143,7 @@ fn passes_through_clean_merges_of_main() {
     repo.git(&["merge", "--quiet", "--no-edit", &main]);
     repo.advance_main("d.txt", "main again\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Head));
     assert_eq!(repo.passes(&end, &repo.head()), Ok(true));
     repo.remove();
 }
@@ -209,20 +212,22 @@ fn text_that_names_no_commit_does_not_pass() {
 }
 
 #[test]
-fn follows_on_the_first_parent_chain_only() {
-    let (repo, end) = Repo::with_pr("follows");
+fn places_on_the_first_parent_chain_only() {
+    let (repo, end) = Repo::with_pr("place");
     repo.git(&["switch", "--quiet", "-c", "side", "main"]);
     let side = repo.commit("c.md", "side\n");
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", &side]);
+    let merge = repo.head();
     let head = repo.commit("a.md", "text\n");
-    assert_eq!(repo.follows(&head, &head), Ok(true));
-    assert_eq!(repo.follows(&end, &head), Ok(true));
-    assert_eq!(repo.follows(&end[..7], &head), Ok(true));
-    assert_eq!(repo.follows(&side, &head), Ok(false));
+    assert_eq!(repo.place(&head, &head), Ok(Place::Head));
+    assert_eq!(repo.place(&merge, &head), Ok(Place::Before));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Before));
+    assert_eq!(repo.place(&end[..7], &head), Ok(Place::Before));
+    assert_eq!(repo.place(&side, &head), Ok(Place::Off));
     assert_eq!(repo.passes(&side, &head), Ok(false));
-    assert_eq!(repo.follows(&head, &end), Ok(false));
-    assert_eq!(repo.follows("deadbeef", &head), Ok(false));
+    assert_eq!(repo.place(&head, &end), Ok(Place::Off));
+    assert_eq!(repo.place("deadbeef", &head), Ok(Place::Off));
     repo.remove();
 }
 
@@ -239,6 +244,7 @@ fn passes_commits_that_change_no_code_after_the_end() {
         repo.head()
     };
     let first = text("first");
+    assert_eq!(repo.place(&end, &first), Ok(Place::Before));
     assert_eq!(repo.code_change(&end, &first), Ok(None));
     assert_eq!(repo.passes(&end, &first), Ok(true));
     repo.advance_main("c.txt", "main\n");
@@ -326,7 +332,7 @@ fn a_change_of_mode_or_an_empty_file_is_code_except_in_text() {
 
 #[test]
 fn a_submodule_is_code() {
-    for path in ["sub", "sub.rs"] {
+    for path in ["sub", "sub.rs", "sub.md"] {
         let (repo, from) = Repo::with_pr(&format!("submodule-{path}"));
         let link = |commit: &str| {
             let info = format!("160000,{commit},{path}");

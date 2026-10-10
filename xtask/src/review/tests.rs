@@ -77,7 +77,13 @@ fn check(record: &Record) -> Vec<String> {
     problems(
         record,
         HEAD,
-        &|end| Ok(head(end) || [TEXT, CODE].contains(&end)),
+        &|end| {
+            Ok(match end {
+                _ if head(end) => Place::Head,
+                TEXT | CODE => Place::Before,
+                _ => Place::Off,
+            })
+        },
         &|from, _| {
             let text = head(from) || [COMMENTS, TEXT].contains(&from);
             Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
@@ -700,7 +706,7 @@ fn reads_each_field_as_github_shows_it() {
             "review round 3 ends at `bbbbbbbb`, which is not the head \
              `c77c67d72fd8d37964334c80e14dd8b5a1d5b6fb` or a commit on its \
              first-parent chain. A commit after the round needs a new round, unless \
-             it changes no code.",
+             it applies the round's `Text fixes:` items.",
         ]
     );
 }
@@ -922,8 +928,23 @@ fn fails_a_range_that_ends_before_a_commit_that_changes_code() {
 
 #[test]
 fn passes_a_range_that_ends_before_commits_that_change_no_code() {
-    let round = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
+    let round = ROUND.replace("..c77c67d7", &format!("..{TEXT}")).replace(
+        "No bug,",
+        "Text fixes:\n\n1. In the PR body, write `x`.\n\nNo bug,",
+    );
     assert_eq!(check(&record(vec![bot(&round)])), Vec::<String>::new());
+}
+
+#[test]
+fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
+    let round = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![format!(
+            "review round 3 ends at `{TEXT}`, not at the head `{HEAD}`, and has no \
+             `Text fixes:` line."
+        )]
+    );
 }
 
 #[test]
@@ -934,7 +955,7 @@ fn fails_a_range_that_ends_off_the_first_parent_chain() {
         vec![format!(
             "review round 3 ends at `0badc0de`, which is not the head `{HEAD}` or a \
              commit on its first-parent chain. A commit after the round needs a new \
-             round, unless it changes no code."
+             round, unless it applies the round's `Text fixes:` items."
         )]
     );
 }
@@ -1225,7 +1246,12 @@ fn returns_a_failure_to_read_history() {
     );
     let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
     assert_eq!(
-        problems(&record(vec![bot(ROUND)]), HEAD, &|_| Ok(true), &failed),
+        problems(
+            &record(vec![bot(ROUND)]),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &failed
+        ),
         Err("git diff: bad".to_string())
     );
 }
