@@ -280,7 +280,9 @@ mod tests {
                 continue;
             }
             match c {
-                ' ' if matches!(prev, ':' | '-') => start = true,
+                ' ' if prev == ':' => start = true,
+                // A `-` starts a sequence entry only at a node start, before a space.
+                '-' if start && chars.peek().is_none_or(|(_, next)| *next == ' ') => {}
                 ' ' => {}
                 '#' if prev == ' ' => {
                     if depth > 0 {
@@ -583,8 +585,12 @@ mod tests {
             "a: 'b''c",
             "a: b#c",
             "a: [\"b\"#c]",
+            "a: ['b'#]",
             "a: ['b',#]",
             "a: {'b':#}",
+            "a: [b - 'c, [d']",
+            "a: [b - '#, [d']",
+            "a: [-'b, [c']",
         ] {
             let text = format!("x: |\n  y\nz:\n{line}\n");
             let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
