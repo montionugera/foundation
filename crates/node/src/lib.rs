@@ -1120,8 +1120,8 @@ pub enum Error {
     /// region.
     Key,
     /// At a first start, the file `admin.key` in the data directory is not a key that a
-    /// node wrote: another length that is not 0, or another tag or checksum. The node
-    /// does not serve its port and does not write over the file.
+    /// node wrote: another length, or another tag or checksum. The node does not serve
+    /// its port and does not write over the file.
     Admin,
     /// The node's port did not bind. No shard started.
     Port {

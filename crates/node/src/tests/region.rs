@@ -12,6 +12,8 @@ use types::name::Prefix;
 use super::*;
 use crate::admin::{FILE, LEN};
 
+/// The file that `sector::publish` renames to [`FILE`].
+const NEW: &str = "admin.key.new";
 /// The founding file of the mesh directory.
 const FOUNDING: &str = "mesh/founding";
 
@@ -54,14 +56,19 @@ fn bytes(sim: &mut sim::Sim, host: &sim::node::Node, path: &str) -> Option<Vec<u
     .expect("the run ends")
 }
 
-/// Writes `bytes` to a new file `admin.key` on `host`, and makes it durable.
-fn write_admin(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
+/// Writes `bytes` to a new file `path` on `host`, and makes it durable.
+fn write(
+    sim: &mut sim::Sim,
+    host: &sim::node::Node,
+    path: &'static str,
+    bytes: Vec<u8>,
+) {
     sim.run_on(host, move |host, _| async move {
         let files = host.files();
         let mode = env::files::Mode::Create {
             len: bytes.len() as u64,
         };
-        let file = files.open(Path::new(FILE), mode).await.expect("opens");
+        let file = files.open(Path::new(path), mode).await.expect("opens");
         if !bytes.is_empty() {
             let pool =
                 block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
@@ -173,24 +180,25 @@ fn a_first_start_founds_with_the_admin_key_of_the_corpus() {
     assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    write_admin(&mut sim, &host, valid.to_vec());
+    write(&mut sim, &host, FILE, valid.to_vec());
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     let founded = root(&host, &PrivateKey([7; 32]));
     assert_eq!(stored(&mut sim, &host), Some(founded));
     assert_eq!(bytes(&mut sim, &host, FILE), Some(valid.to_vec()));
 }
 
-/// An `admin.key` with no bytes or with 54 zero bytes is a key not yet written, so
-/// the first start makes one.
+/// A start removes the file `admin.key.new` that a crash left, of any length, and
+/// makes `admin.key`.
 #[test]
-fn a_first_start_makes_an_admin_key_over_an_unwritten_one() {
-    for unwritten in [Vec::new(), vec![0; LEN]] {
+fn a_first_start_removes_a_new_admin_key_that_a_crash_left() {
+    for bytes in [Vec::new(), vec![7; LEN], vec![7; 3]] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
-        write_admin(&mut sim, &host, unwritten);
+        write(&mut sim, &host, NEW, bytes);
         assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
         let admin = admin(&mut sim, &host);
         assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
+        assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
     }
 }
 
@@ -212,9 +220,10 @@ fn a_start_with_a_region_makes_no_admin_key() {
     assert_eq!(stored(&mut sim, &host), founding);
 }
 
-/// A power cut at each time of the first start leaves a data directory whose next
-/// start opens or founds a region with the first admin of `admin.key`. Some cuts come
-/// after `admin.key` is durable and before the founding is.
+/// A power cut at each time of the first start leaves no `admin.key` or a whole one,
+/// and a data directory whose next start opens or founds a region with the first
+/// admin of that file. Some cuts come after `admin.key` is durable and before the
+/// founding is.
 #[test]
 fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
     let mut between = 0;
@@ -226,11 +235,14 @@ fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
         sim.crash(&host, sim::Crash::Power);
         drop(node);
         let kept = stored(&mut sim, &host);
-        let written =
-            bytes(&mut sim, &host, FILE).is_some_and(|bytes| bytes != [0; LEN]);
-        between += usize::from(written && kept.is_none());
+        let written = bytes(&mut sim, &host, FILE).map(|_| admin(&mut sim, &host));
+        between += usize::from(written.is_some() && kept.is_none());
         assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{after:?}");
-        let founded = Some(root(&host, &admin(&mut sim, &host)));
+        let admin = admin(&mut sim, &host);
+        if let Some(written) = written {
+            assert_eq!(written.0, admin.0, "{after:?}");
+        }
+        let founded = Some(root(&host, &admin));
         assert_eq!(stored(&mut sim, &host), founded, "{after:?}");
         if kept.is_some() {
             assert_eq!(kept, founded, "{after:?}");
@@ -240,8 +252,9 @@ fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
     assert!(between > 0, "no cut came between the two files");
 }
 
-/// An `admin.key` of another length that is not 0, or of another tag or checksum,
-/// stops the node, which keeps the file and founds no region.
+/// An `admin.key` of another length, also one with no bytes, or of another tag or
+/// checksum, also 54 zero bytes, stops the node, which keeps the file and founds no
+/// region.
 #[test]
 fn an_admin_key_that_is_not_valid_stops_the_node() {
     let valid: [u8; LEN] =
@@ -258,10 +271,12 @@ fn an_admin_key_that_is_not_valid_stops_the_node() {
     changed[30] ^= 1;
     let short = valid[..LEN - 1].to_vec();
     let long = [valid.as_slice(), &[0]].concat();
-    for foreign in [short, long, changed.to_vec()].into_iter().chain(tags) {
+    let unwritten = [Vec::new(), vec![0; LEN]];
+    let lengths = [short, long, changed.to_vec()];
+    for foreign in unwritten.into_iter().chain(lengths).chain(tags) {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
-        write_admin(&mut sim, &host, foreign.clone());
+        write(&mut sim, &host, FILE, foreign.clone());
         let node = start(&host);
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Err(Error::Admin));
@@ -275,26 +290,48 @@ fn an_admin_key_that_is_not_valid_stops_the_node() {
     );
 }
 
-/// A failed file call on `admin.key` stops the node before it founds a region, and
-/// the next start founds one.
+/// A failed file call on `admin.key`, or on the `admin.key.new` that makes it, stops
+/// the node before it founds a region, and the next start founds one. A failed read
+/// keeps the key that the file holds.
 #[test]
 fn a_failed_file_call_on_the_admin_key_stops_the_node() {
-    use env::files::Operation::{Open, ReadAt, Sync, WriteAt};
-    for operation in [Open, ReadAt, WriteAt, Sync] {
+    use env::files::Operation::{Open, ReadAt, Remove, Rename, Sync, WriteAt};
+    let valid: [u8; LEN] =
+        *include_bytes!("../../../../oracles/fuzz/node_identity/admin-valid");
+    for (path, operation) in [
+        (NEW, Remove),
+        (NEW, Open),
+        (NEW, WriteAt),
+        (NEW, Sync),
+        (NEW, Rename),
+        (FILE, Open),
+        (FILE, ReadAt),
+    ] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
-        host.fail_file(Path::new(FILE), operation);
+        if path == FILE {
+            write(&mut sim, &host, FILE, valid.to_vec());
+        }
+        host.fail_file(Path::new(path), operation);
         let error = env::files::Error::Io {
-            path: PathBuf::from(FILE),
+            path: PathBuf::from(path),
             operation,
             code: 5,
         };
         let failed = start_and_stop(&mut sim, &host);
-        assert_eq!(failed, Err(Error::Directory(error)), "{operation:?}");
-        assert_eq!(stored(&mut sim, &host), None, "{operation:?}");
-        assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{operation:?}");
-        let founded = Some(root(&host, &admin(&mut sim, &host)));
-        assert_eq!(stored(&mut sim, &host), founded, "{operation:?}");
+        assert_eq!(failed, Err(Error::Directory(error)), "{operation:?} {path}");
+        assert_eq!(stored(&mut sim, &host), None, "{operation:?} {path}");
+        assert_eq!(
+            start_and_stop(&mut sim, &host),
+            Ok(()),
+            "{operation:?} {path}"
+        );
+        let admin = admin(&mut sim, &host);
+        if path == FILE {
+            assert_eq!(admin.0, [7; 32], "{operation:?} {path}");
+        }
+        let founded = Some(root(&host, &admin));
+        assert_eq!(stored(&mut sim, &host), founded, "{operation:?} {path}");
     }
 }
 
