@@ -13,7 +13,9 @@ use types::time::Span;
 use secret::seal::Opener;
 
 use crate::identity::{self, Identity};
-use crate::{Config, Error, Node};
+use crate::{Config, Error, Node, Region, root};
+
+mod region;
 
 struct Run {
     seed: u64,
@@ -79,7 +81,7 @@ fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block:
         disk: DISK,
         net: host.net(),
         listen: listen(host),
-        region: None,
+        region: Region::Absent,
         name: "edge".parse().expect("a name"),
     }
 }
@@ -408,7 +410,7 @@ fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
         format!(
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Size(4096), entropy: {entropy:?}, disk: {DISK:?}, \
-             listen: {listen:?}, region: None, name: Name(\"edge\"), .. }}",
+             listen: {listen:?}, region: Absent, name: Name(\"edge\"), .. }}",
             listen = config.listen,
         )
     );
@@ -3707,7 +3709,7 @@ mod port {
         /// Starts the node on `host`, which [`keyed`] made, with `region`.
         fn start(host: &sim::node::Node, region: Founding) -> Node {
             Node::start(Config {
-                region: Some(region),
+                region: Region::Given(region),
                 ..config(host, Size::MEBIBYTE, Box::new(heap))
             })
         }
@@ -3893,8 +3895,10 @@ mod port {
                     opener: Opener::from_bytes(SEAL),
                 };
                 let endpoint = Endpoint {
+                    addresses: root::addresses(bound.addresses()),
+                    name: "edge".parse().expect("a name"),
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Some(region(&members)),
+                    region: Region::Given(region(&members)),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };
@@ -5042,8 +5046,10 @@ mod port {
                 };
                 let definitions = founding.definitions.clone();
                 let endpoint = Endpoint {
+                    addresses: root::addresses(bound.addresses()),
+                    name: "edge".parse().expect("a name"),
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Some(founding),
+                    region: Region::Given(founding),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };
@@ -5671,7 +5677,7 @@ mod port {
             let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
             let disk = Size::from_bytes(smallest);
             let node = Node::start(Config {
-                region: Some(region(&[member(OWN, &KEY, &host)])),
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
                 disk,
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });

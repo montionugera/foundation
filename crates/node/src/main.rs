@@ -90,7 +90,7 @@ fn node(start: &Start) -> Result<(), Failure> {
         disk: DISK,
         net: net(),
         listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        region: None,
+        region: node::Region::Absent,
         name: name.clone(),
     });
     let stopper = node.stopper();

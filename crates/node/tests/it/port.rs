@@ -103,7 +103,7 @@ fn start_node(
         disk: Size::from_bytes(cores * (8 << 20)),
         net: os::net(),
         listen,
-        region: None,
+        region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
     })
 }

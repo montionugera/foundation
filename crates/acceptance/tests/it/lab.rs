@@ -251,7 +251,10 @@ impl Lab {
                 disk: types::byte::Size::GIBIBYTE,
                 net: host.net(),
                 listen: listen(host),
-                region: member.region.clone(),
+                region: member
+                    .region
+                    .clone()
+                    .map_or(node::Region::Absent, node::Region::Given),
                 name: member
                     .name
                     .parse()
