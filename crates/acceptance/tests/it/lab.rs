@@ -238,7 +238,10 @@ impl Lab {
                 shards: host.shards(),
                 clock: host.clock(),
                 wall: host.wall(),
-                budget: types::byte::Size::MEBIBYTE,
+                budget: node::Budget {
+                    pool: types::byte::Size::MEBIBYTE,
+                    disk: types::byte::Size::GIBIBYTE,
+                },
                 memory: Box::new(|len| Ok(block::Heap::new(len))),
                 files: {
                     let host = host.clone();
@@ -248,7 +251,6 @@ impl Lab {
                     })
                 },
                 entropy: host.entropy(),
-                disk: types::byte::Size::GIBIBYTE,
                 net: host.net(),
                 listen: listen(host),
                 region: member
@@ -265,12 +267,14 @@ impl Lab {
     }
 
     /// Sets the disk budget of `node` to `bytes`.
+    #[expect(clippy::todo, reason = "waits on #337")]
     pub(crate) fn limit(&mut self, _node: Node, _bytes: u64) {
         todo!("waits on #337")
     }
 
     /// The disk budget that holds `span` of one `f64` channel at `rate` samples per
     /// second, as `buffer` stores it.
+    #[expect(clippy::todo, reason = "waits on #1256")]
     pub(crate) fn budget(&self, _rate: u64, _span: Duration) -> u64 {
         todo!("waits on #1256")
     }
@@ -523,21 +527,25 @@ impl Lab {
     }
 
     /// Creates a single-use join ticket on `admin`.
+    #[expect(clippy::todo, reason = "waits on #336")]
     pub(crate) fn ticket(&mut self, _admin: Node) -> Ticket {
         todo!("waits on #336")
     }
 
     /// Joins `node` to the region of the ticket's issuer.
+    #[expect(clippy::todo, reason = "waits on #336")]
     pub(crate) fn join(&mut self, _node: Node, _ticket: Ticket) {
         todo!("waits on #336")
     }
 
     /// The members that `node` sees, by name, sorted.
+    #[expect(clippy::todo, reason = "waits on #336")]
     pub(crate) fn members(&self, _node: Node) -> Vec<String> {
         todo!("waits on #336")
     }
 
     /// The spec hash that `node` holds.
+    #[expect(clippy::todo, reason = "waits on #336")]
     pub(crate) fn spec(&self, _node: Node) -> [u8; 32] {
         todo!("waits on #336")
     }
@@ -641,6 +649,7 @@ impl Lab {
 
     /// Runs the MCP `plan` tool on `node` and returns the plan and the names of the
     /// changed definitions.
+    #[expect(clippy::todo, reason = "waits on #337")]
     pub(crate) fn mcp_plan(
         &mut self,
         _node: Node,
@@ -650,32 +659,38 @@ impl Lab {
     }
 
     /// Runs the MCP `apply` tool on `node` with a plan from [`Lab::mcp_plan`].
+    #[expect(clippy::todo, reason = "waits on #337")]
     pub(crate) fn mcp_apply(&mut self, _node: Node, _plan: &str) {
         todo!("waits on #337")
     }
 
     /// Attaches a simulated device to `node` at `address`.
+    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
     pub(crate) fn device(&mut self, _node: Node, _protocol: Protocol, _address: &str) {
         todo!("waits on #432, #434, #435, #436")
     }
 
     /// Attaches a simulated Influx store to `node` at `address`.
+    #[expect(clippy::todo, reason = "waits on #341")]
     pub(crate) fn influx(&mut self, _node: Node, _address: &str) {
         todo!("waits on #341")
     }
 
     /// The value of `point` on the device at `address`.
+    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
     pub(crate) fn point(&self, _address: &str, _point: &str) -> f64 {
         todo!("waits on #432, #434, #435, #436")
     }
 
     /// Sets the value of `point` on the device at `address`.
+    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
     pub(crate) fn set_point(&mut self, _address: &str, _point: &str, _value: f64) {
         todo!("waits on #432, #434, #435, #436")
     }
 
     /// Writes `count` samples to `channel` on `node` at `rate` samples per second,
     /// as the simulation runs. Sample `k`, from 0, has the value `k as f64`.
+    #[expect(clippy::todo, reason = "waits on #2145")]
     pub(crate) fn write(
         &mut self,
         _node: Node,
@@ -687,16 +702,19 @@ impl Lab {
     }
 
     /// The seqs that the home gave the samples written to `channel`.
+    #[expect(clippy::todo, reason = "waits on #2145")]
     pub(crate) fn written(&self, _channel: &str) -> Range<u64> {
         todo!("waits on #2145")
     }
 
     /// The true simulated time of each sample written to `channel`, in order.
+    #[expect(clippy::todo, reason = "waits on #2145")]
     pub(crate) fn truth(&self, _channel: &str) -> Vec<i64> {
         todo!("waits on #2145")
     }
 
     /// Sends `value` to the command channel `channel` as `subject`.
+    #[expect(clippy::todo, reason = "waits on #2145")]
     pub(crate) fn command(
         &mut self,
         _node: Node,
@@ -708,6 +726,7 @@ impl Lab {
     }
 
     /// Reads `channel` on `node` from the oldest sample, as `subject`.
+    #[expect(clippy::todo, reason = "waits on #274")]
     pub(crate) fn read(
         &mut self,
         _node: Node,
@@ -745,6 +764,7 @@ impl Lab {
     }
 
     /// The commands recorded on `channel`, with their acknowledgments.
+    #[expect(clippy::todo, reason = "waits on #2145")]
     pub(crate) fn audit(&mut self, _node: Node, _channel: &str) -> Vec<Command> {
         todo!("waits on #2145")
     }
@@ -896,12 +916,12 @@ fn at(entries: &[types::frame::key_set::Entry], key: types::channel::Key) -> usi
 ///
 /// When the frame holds another channel.
 fn decode(received: &hub::reader::Received<'_>, keys: Keys) -> Vec<Sample> {
-    let entries = received.set.entries();
+    let entries = received.set().entries();
     let mut series = [Vec::new(), Vec::new()];
-    for (entry, bytes) in received.view.iter() {
+    for (entry, bytes) in received.view().iter() {
         let at = &entries[entry];
         let range = received
-            .view
+            .view()
             .range(at.group)
             .expect("the group has a range");
         let count = usize::try_from(range.count).unwrap();
@@ -910,7 +930,6 @@ fn decode(received: &hub::reader::Received<'_>, keys: Keys) -> Vec<Sample> {
             key if key == keys.data => &mut series[1],
             key => panic!("the frame holds {key:?}"),
         };
-        out.resize(count * 8, 0);
         codec::decode(at.data_type, count, bytes, out).expect("the series decodes");
     }
     let [time, data] = series;
