@@ -108,8 +108,8 @@
   chain of the head after which each merge is a clean merge of the base
   (`git merge-tree`) and the range to the head changes no code, read as the range of a
   round with `Breaker: skipped` is read. When a commit that is not a merge follows it,
-  its round comment has a line `Text fixes:` (TEXT FIXES). A line `Text fixes: none`
-  does not count. Decided by the director at 2026-10-10T23:01:29Z
+  its round comment has a line `Text fixes:` that is not `Text fixes: none`
+  (TEXT FIXES). Decided by the director at 2026-10-10T23:01:29Z
   (https://github.com/synnaxlabs/foundation/issues/2315), 2026-10-10T23:21:22Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281), and
   2026-10-10T23:29:42Z
