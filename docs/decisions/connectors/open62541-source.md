@@ -402,13 +402,13 @@
   2026-10-10 15:28 UTC), which moves to `close_server` the cfg on `delete_server`
   approved at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
-  2026-10-10 03:05 UTC). The scans of the Rust outside tests in `link` count only the
-  code behind `test` or `feature = "sim"` as test code, and `open62541` stays a
-  product cfg: decided by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
-  2026-10-10 15:28 UTC). The one function: asked by `laptop.architect-2`
+  2026-10-10 03:05 UTC). The one function: asked by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
-  2026-10-09 21:51 UTC). The test of the `ua_server.c` patch stops and deletes its
+  2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
+  code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
+  cfg: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
+  2026-10-10 15:28 UTC). The test of the `ua_server.c` patch stops and deletes its
   server itself, because it checks `STOPPING` between the stop and the drive. That
   exception: approved by `laptop.architect-2` at `c04ad0db3`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
