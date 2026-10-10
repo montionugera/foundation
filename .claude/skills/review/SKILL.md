@@ -150,6 +150,9 @@ Findings: <count, or none>
 
 <the findings, most severe first>
 
+Text fixes:
+<each item and its exact new text; leave out this line and its items when none>
+
 Deferred: <none, or each issue>
 Later steps: <none, or each step and its issue>
 Public surface: <none, or each item and its approval>
@@ -200,16 +203,16 @@ nothing checked again. So when round 1 led to fix commits:
    range, and update the Performance section with its numbers.
 2. Handle their findings as above. A round that has a finding gets another round, until
    one finds nothing. A finding in text only, at any severity (a `.md` file, a `.rs`
-   comment line that, trimmed, starts with `//`, the PR title or body, or an end line of
-   a round comment), whose fix the `reviewer` gives as the exact new text, is not
-   counted: the round comment lists it under a line `Text fixes:` after its findings.
-   An item that gives only facts and links, or that asks the author to find a fact or
-   give a reason, is a finding. The author applies each item as given, by a commit that
-   changes no code (Round comment), in the PR title or body, or by an edit of the round
-   comment that holds the line and in the same line of the `Text fixes:` round. That
-   needs no further round, and the `reviewer` of the next round, when one runs, checks
-   it. An item still needs each approval that its file needs (Round 1,
-   `docs/factory.md`).
+   comment line that, trimmed, starts with `//` and is not a doctest line, the PR title
+   or body, or an end line of a round comment), whose fix the `reviewer` gives as the
+   exact new text, is not counted: the round comment lists it under a line `Text fixes:`
+   after its findings. An item that gives only facts and links, or that asks the author
+   to find a fact or give a reason, is a finding. The author applies each item as given,
+   by a commit that changes no code (Round comment), in the PR title or body, or by an
+   edit of the round comment that holds the line and in the same line of the
+   `Text fixes:` round. That needs no further round, and the `reviewer` of the next
+   round, when one runs, checks it. An item still needs each approval that its file
+   needs (Round 1, `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its
