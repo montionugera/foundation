@@ -390,6 +390,9 @@ UA_Boolean shim_loop_delayed(UA_EventLoop *el) { return loop_of(el)->queued != N
  * itself at each pass is a defect. */
 #define FREE_PASSES 64
 
+/* `FREE_PASSES`, for the close of a server in `src/connection/server.rs`. */
+const int shim_free_passes = FREE_PASSES;
+
 /* Runs the queued delayed callbacks, which free what they hold, and those that they
  * queue, removes each timer, and frees `el`, a loop of `shim_loop_new`. Aborts when
  * callbacks are still queued after `FREE_PASSES` passes. */
