@@ -76,8 +76,10 @@ pub struct Entry {
 /// Checks the definitions in a mesh's Documents, one Document for each file, and
 /// gives each by its tree key: the name of a channel or a connector, or
 /// `<label>.@<kind>` for each other block. The kind in `kinds` that a `connector`
-/// block names checks its config. Each order of `documents` gives the same entries,
-/// or each gives problems.
+/// block names checks its config. Each connector also gives, at the span of its
+/// label, the status channels that [`::connector::status::channels`] names: the index
+/// `<connector>.status.time` and each data channel on it. Each order of `documents`
+/// gives the same entries, or each gives problems.
 ///
 /// # Errors
 ///
@@ -96,6 +98,13 @@ pub struct Entry {
 /// channel knows. A `kind` of connector that is missing, is not a name, or is not in
 /// `kinds` hides each problem of the connector's config, and so does a config nested
 /// deeper than `document::encoding::Checked` takes.
+/// `config.long-name` at the label of a connector with a status name longer than
+/// [`Name::MAX_BYTES`]. `config.implied-channel` at the label of each block whose key
+/// in the map is, in any ASCII case, a status channel, and at the label of each
+/// connector whose kind writes one, with a note at the connector of the channel. At a
+/// key that repeats in any ASCII case, only the first block in span order, no span
+/// first, then in the order of `documents`, is checked as its definition, so a
+/// connector implies or writes channels only when it is that block.
 pub fn check(
     documents: &[Document],
     kinds: &Table,
@@ -113,11 +122,18 @@ fn checked<'a>(
     if !alarms.is_empty() {
         return Err(alarms);
     }
+    let mut blocks: Vec<_> = documents
+        .iter()
+        .flat_map(|document| &document.blocks)
+        .collect();
+    // At a repeated key, the first block in span order is kept, no span first, then in
+    // the order of `documents`. `duplicate::in_labels` relies on this order.
+    blocks.sort_by_key(|block| block.labels.first().and_then(|label| label.span));
     let mut found = Found {
         entries: BTreeMap::new(),
         diagnostics: Vec::new(),
         labels: BTreeMap::new(),
-        channels: names(documents, Kind::Channel)
+        channels: names(&blocks, Kind::Channel)
             .map(|(name, _)| name)
             .collect(),
         connectors: BTreeMap::new(),
@@ -125,9 +141,7 @@ fn checked<'a>(
         blocks: BTreeMap::new(),
         writes: BTreeMap::new(),
     };
-    let mut connectors: Vec<_> = names(documents, Kind::Connector).collect();
-    connectors.sort_by_key(|(_, label)| label.span);
-    for (name, label) in connectors {
+    for (name, label) in names(&blocks, Kind::Connector) {
         let lower = name.as_str().to_ascii_lowercase().into();
         found.connectors.entry(lower).or_insert(label);
     }
@@ -136,28 +150,29 @@ fn checked<'a>(
         found
             .diagnostics
             .extend(read::unknown(document, "a file", &[], &keywords));
-        for block in &document.blocks {
-            let Some((kind, check_block)) = KINDS
-                .iter()
-                .find(|(kind, _)| kind.as_str() == &*block.keyword)
-            else {
-                // `read::unknown` reported it.
-                continue;
+    }
+    for block in blocks {
+        let Some((kind, check_block)) = KINDS
+            .iter()
+            .find(|(kind, _)| kind.as_str() == &*block.keyword)
+        else {
+            // `read::unknown` reported it.
+            continue;
+        };
+        let key = found.key(block, *kind);
+        let name = key.as_ref().map(|(name, _)| name);
+        let definition = check_block(&mut found, block, name);
+        if let (Some((key, label_span)), Some(definition)) = (key, definition) {
+            let entry = Entry {
+                definition,
+                label_span,
             };
-            let key = found.key(block, *kind);
-            let name = key.as_ref().map(|(name, _)| name);
-            let definition = check_block(&mut found, block, name);
-            if let (Some((key, label_span)), Some(definition)) = (key, definition) {
-                let entry = Entry {
-                    definition,
-                    label_span,
-                };
-                found.blocks.insert(key.clone(), block);
-                found.entries.insert(key, entry);
-            }
+            found.blocks.insert(key.clone(), block);
+            found.entries.insert(key, entry);
         }
     }
-    let repeats = duplicate::in_labels(&mut found.labels);
+    connector::imply(&mut found);
+    let repeats = duplicate::in_labels(&found.labels);
     found.diagnostics.extend(repeats);
     if found.diagnostics.is_empty() {
         Ok(found)
@@ -178,11 +193,14 @@ fn sort(diagnostics: &mut [Diagnostic]) {
     diagnostics.sort_by_key(|diagnostic| diagnostic.span);
 }
 
-/// The name and the label of each block of `kind` in `documents` whose one label
-/// reads as a name. `check` reports each other label.
-fn names(documents: &[Document], kind: Kind) -> impl Iterator<Item = (Name, &Label)> {
-    let blocks = documents.iter().flat_map(|document| &document.blocks);
+/// The name and the label of each block of `kind` in `blocks` whose one label reads as
+/// a name, in the order of `blocks`. `check` reports each other label.
+fn names<'a>(
+    blocks: &[&'a Block],
+    kind: Kind,
+) -> impl Iterator<Item = (Name, &'a Label)> {
     blocks
+        .iter()
         .filter(move |block| &*block.keyword == kind.as_str())
         .filter_map(|block| match block.labels.as_slice() {
             [label] => Some((read::label(label).ok()?, label)),
@@ -208,9 +226,8 @@ struct Found<'a> {
     kinds: &'a Table,
     /// The block of each entry, by tree key.
     blocks: BTreeMap<Name, &'a Block>,
-    /// The channels that each connector writes to the mesh, as its kind checks them, by
-    /// tree key.
-    writes: BTreeMap<Name, Vec<Name>>,
+    /// What each connector writes to the mesh, as its kind checks it, by tree key.
+    writes: BTreeMap<Name, connector::Writes>,
 }
 
 /// A problem that is already in the diagnostics.
@@ -219,7 +236,8 @@ struct Reported;
 
 impl<'a> Found<'a> {
     /// Reads the one label of a block of `kind` as its name, and gives the tree key and
-    /// the label's span. [`duplicate::in_labels`] reports a key that repeats.
+    /// the label's span, only for the first block at the key in any ASCII case.
+    /// [`duplicate::in_labels`] reports a key that repeats.
     fn key(&mut self, block: &'a Block, kind: Kind) -> Option<(Name, Option<Span>)> {
         let keyword = kind.as_str();
         let fix = "Give the block one label, its name, such as \"site_a.budget\"";
@@ -257,8 +275,8 @@ impl<'a> Found<'a> {
                 return None;
             }
         };
-        duplicate::add(&mut self.labels, &key, label, kind);
-        Some((key, label.span))
+        let first = duplicate::add(&mut self.labels, &key, label, kind);
+        first.then_some((key, label.span))
     }
 
     /// The value that a reader gives, or `Reported` after it reports the reader's

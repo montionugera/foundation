@@ -27,6 +27,8 @@ const POLL: Duration = Duration::from_millis(100);
 pub(crate) struct Rig {
     /// The working directory of each command. It holds `plant.hcl`.
     pub(crate) dir: PathBuf,
+    /// The disk budget that [`Rig::new`] keeps: 8 MiB for each core.
+    pub(crate) disk: u64,
     clock: Clock,
     node: Option<Running>,
 }
@@ -34,8 +36,15 @@ pub(crate) struct Rig {
 impl Rig {
     /// Makes a temporary directory for the test on this thread, with a name that no
     /// directory has: a run that was killed keeps its directory, and a later run can
-    /// get the same PID.
+    /// get the same PID. Its data directory keeps a pool budget of 1 GiB and a disk
+    /// budget of 8 MiB for each core ([`Rig::keep`]), so a first start does not take
+    /// a quarter of the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
+        Rig::with_cores(os::shards().expect("read the cores").cores().get())
+    }
+
+    /// [`Rig::new`] for a host of `cores` cores.
+    fn with_cores(cores: usize) -> Self {
         let thread = std::thread::current();
         let test = thread.name().expect("invariant: libtest names the thread");
         let name = format!("foundation-node-{}-{test}", std::process::id());
@@ -49,11 +58,33 @@ impl Rig {
                 Err(error) => panic!("make {}: {error}", dir.display()),
             }
         };
-        Self {
+        let rig = Self {
             dir,
+            disk: u64::try_from(cores).expect("invariant: a core count fits u64")
+                * (8 << 20),
             clock: os::clock(),
             node: None,
-        }
+        };
+        rig.keep(1 << 30, rig.disk);
+        rig
+    }
+
+    /// The path of the file `budget` of the data directory `foundation-data`.
+    pub(crate) fn budget(&self) -> PathBuf {
+        self.dir.join("foundation-data/data/budget")
+    }
+
+    /// Writes the file [`Rig::budget`] as a node keeps its budgets: the tag, `pool`
+    /// and `disk` (little-endian), and the CRC32C of those 35 bytes.
+    pub(crate) fn keep(&self, pool: u64, disk: u64) {
+        let mut bytes = b"foundation/budget/1".to_vec();
+        bytes.extend(pool.to_le_bytes());
+        bytes.extend(disk.to_le_bytes());
+        bytes.extend(crc32c::crc32c(&bytes).to_le_bytes());
+        let path = self.budget();
+        let data = path.parent().expect("invariant: a file of a directory");
+        std::fs::create_dir_all(data).expect("make the data directory");
+        std::fs::write(path, bytes).expect("write the budget file");
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -132,6 +163,46 @@ impl Rig {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
         command.args(args).current_dir(&self.dir);
         run(&self.clock, PATIENCE, command, input)
+    }
+
+    /// [`Rig::run`] under `taskset`, on the first CPU of the test's affinity set, so
+    /// the node runs one shard on each host. Linux only: it reads `/proc`.
+    pub(crate) fn run_on_one_core(&self, args: &[&str], input: &[u8]) -> Output {
+        let command = self.on_one_core(Command::new("taskset"), args);
+        run(&self.clock, PATIENCE, command, input)
+    }
+
+    /// [`Rig::run_on_one_core`] under `prlimit`, which limits the address space of the
+    /// node to `space` bytes.
+    pub(crate) fn run_on_one_core_in(
+        &self,
+        space: u64,
+        args: &[&str],
+        input: &[u8],
+    ) -> Output {
+        let mut prlimit = Command::new("prlimit");
+        prlimit.args([&format!("--as={space}"), "--", "taskset"]);
+        run(
+            &self.clock,
+            PATIENCE,
+            self.on_one_core(prlimit, args),
+            input,
+        )
+    }
+
+    /// Gives `taskset` in `command` the first CPU of the test's affinity set,
+    /// `foundation`, and `args`.
+    fn on_one_core(&self, mut command: Command, args: &[&str]) -> Command {
+        let status = std::fs::read_to_string("/proc/self/status").expect("read status");
+        let cpus = (status.lines())
+            .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+            .expect("a list of the allowed CPUs");
+        let first = (cpus.trim().split([',', '-']).next()).expect("one CPU at least");
+        command
+            .args(["-c", first, env!("CARGO_BIN_EXE_foundation")])
+            .args(args)
+            .current_dir(&self.dir);
+        command
     }
 
     /// Starts `foundation` with `args` in [`Rig::dir`], for a test that writes its
@@ -828,4 +899,24 @@ fn a_rig_ends_its_node_before_it_removes_the_directory() {
         .output()
         .expect("kill -0");
     assert_eq!(alive.status.code(), Some(1), "{pid} still runs");
+}
+
+/// The budget that `a_disk_budget_of_8_mib_for_each_core_starts_a_host_of_any_size`
+/// in `node` starts. A fixed budget of 256 MiB holds no ring on each of 64 shards.
+#[test]
+fn a_rig_keeps_8_mib_of_disk_for_each_core() {
+    for cores in [1, 64, 1024] {
+        let rig = Rig::with_cores(cores);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test reads what the rig wrote to the disk"
+        )]
+        let kept = std::fs::read(rig.budget()).expect("read the budget file");
+        let disk = u64::from_le_bytes(kept[27..35].try_into().expect("8 bytes"));
+        assert_eq!(
+            disk,
+            u64::try_from(cores).unwrap() * (8 << 20),
+            "{cores} cores"
+        );
+    }
 }

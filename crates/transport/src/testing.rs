@@ -54,7 +54,7 @@ impl Shard {
     /// reserves about 110 MiB for it, so a test of 4 nodes on each of 8 threads stays
     /// under the 4 GiB cap of a CI test process.
     pub(crate) fn new(node: &sim::node::Node, tasks: Tasks) -> Self {
-        let config = block::Config { budget: 1 << 21 };
+        let config = block::Config::new(1 << 21).expect("the budget fits");
         let memory = Heap::new(config.reservation());
         Self {
             clock: node.clock(),
@@ -134,19 +134,14 @@ pub(crate) fn spans(span: Span, n: i64) -> Span {
     Span::from_nanos(span.nanos() * n)
 }
 
-/// A run from `value` with a client node and a server node, whose timers wake early
-/// as on `os`.
+/// A run from `value` with a client node and a server node.
 pub(crate) fn nodes(value: u64) -> (Sim, Node, Node) {
     let mut sim = Sim::new(sim::Config {
         seed: value,
         ..sim::Config::default()
     });
-    let config = || sim::node::Config {
-        arm_max: Some(Span::SECOND),
-        ..sim::node::Config::default()
-    };
-    let client = sim.node(config());
-    let server = sim.node(config());
+    let client = sim.node(sim::node::Config::default());
+    let server = sim.node(sim::node::Config::default());
     (sim, client, server)
 }
 

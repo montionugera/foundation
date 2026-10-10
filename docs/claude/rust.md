@@ -107,21 +107,30 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   a fix. Do not use error structs with a hidden kind (r16 17).
 - Every error a user can see has a stable code and a fix-it hint.
 - Convert errors with `From` and `?`. Never drop the cause (r16 18).
-- Never ignore a `Result`: no `.ok();` and no `let _ = fallible();` (r16 19). Never
-  `unwrap()` outside tests. Use `expect("invariant: ...")` only for an internal
-  invariant.
+- Never ignore a `Result`: no `.ok();`, no `let _ = fallible();`, and no
+  `let _name = fallible();` (r16 19). A `#[should_panic]` test may bind to `_name` a
+  call that panics before it returns. Never `unwrap()` outside tests. Use
+  `expect("invariant: ...")` only for an internal invariant.
 - An internal invariant that breaks panics. Bad outside input never panics: it returns
   an error. Panic and assert messages state what broke and the values (r16 20).
-- `Drop` never panics. It never blocks unless the type also gives a call that does
-  not block (r16 23). Two exceptions: `sim::Sim` (SIM DROP in
-  `docs/decisions/testing/sim-drop.md`), and the test types that TEST DROP names
-  (`docs/decisions/testing/test-drop.md`).
+- `Drop` never panics on a failure from outside the code (an I/O error, a closed peer,
+  bad outside input). It matches that failure by its name, and the arm states why the
+  outcome is then correct. A broken internal invariant panics in `Drop` too. `Drop`
+  never blocks unless the type also gives a call that does not block (r16 23).
+  `sim::Sim` panics in its `Drop` to report a panic of a future, when the thread is not
+  already panicking (SIM DROP in `docs/decisions/testing/sim-drop.md`). A test helper
+  under `tests/` may panic or block in its `Drop` only as TEST DROP says
+  (`docs/decisions/testing/test-drop.md`), and a type in test code (under `tests/` or
+  in a `#[cfg(test)]` module) whose `Drop` panics or blocks as the input of its test
+  is outside this bullet.
 
 ## Unsafe
 
 - `unsafe_code` is denied. Only the crates the crate map names may hold `unsafe`:
-  `block`, `ring`, `counting`, the `memory`, `clock`, and `wall` modules of `os`, the
-  `net::lowat` module of `os` (architect, #120,
+  `block`, `ring`, `counting`, `waker` (`laptop.architect`, 2026-10-10 06:25 UTC, #2254,
+  https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943), the
+  `memory`, `clock`, and `wall` modules of `os`, the `net::lowat` module of `os`
+  (architect, #120,
   https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6050971843), the
   `net::resolve` module of `os` (architect, 2026-10-08 16:52 UTC, #1095,
   https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287), the
