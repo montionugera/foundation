@@ -319,7 +319,7 @@ async fn newest(files: &Files, held: &Path) -> Result<Option<Pointer>, Error> {
     let mut named = Vec::new();
     for name in files.list(held).await.map_err(Error::Files)? {
         let path = held.join(&name);
-        let Some(pointer) = pointer(&name) else {
+        let Some(pointer) = name.to_str().and_then(pointer) else {
             return Err(Error::Stray { path });
         };
         named.push((pointer, path));
@@ -509,8 +509,7 @@ async fn name(files: &Files, held: &Path, pointer: Pointer) -> Result<(), Cause>
 }
 
 // The pointer that the name of a file spells, `<version>-<root>`.
-pub(crate) fn pointer(name: &Path) -> Option<Pointer> {
-    let name = name.to_str()?;
+pub(crate) fn pointer(name: &str) -> Option<Pointer> {
     let (version, root) = name.split_once('-')?;
     let version = version.parse().ok()?;
     let mut bytes = [0; 32];

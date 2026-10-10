@@ -1,7 +1,7 @@
 //! Entry points for the fuzz targets. Needs the `sim` feature.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use raft::{Entry, Hard};
 
@@ -104,16 +104,10 @@ pub fn scan_log_dir(dir: &[u8]) -> Result<Scan, log::Error> {
 }
 
 /// The name of the file in the folder `spec` of a mesh directory that names the
-/// pointer that `name` names, or `None` when `name` names no pointer. On Unix, a
-/// `name` that is not UTF-8 reaches the read as the bytes of a path.
+/// pointer that `name` names, or `None` when `name` names no pointer.
 #[must_use]
 pub fn round_trip_spec_name(name: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(unix)]
-    let name =
-        Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-    #[cfg(not(unix))]
-    let name = Path::new(std::str::from_utf8(name).ok()?);
-    let pointer = used::pointer(name)?;
+    let pointer = used::pointer(std::str::from_utf8(name).ok()?)?;
     Some(used::file(pointer).into_os_string().into_encoded_bytes())
 }
 
@@ -166,6 +160,7 @@ fn frames(dir: &[u8]) -> Vec<(Range<usize>, Range<usize>)> {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
 
     use raft::{
         Answer, Body, Data, Grant, Link, Position, Proof, Signature, Term, Voters,
@@ -1036,8 +1031,9 @@ mod tests {
 
     /// Inputs of a torn record.
     fn torn_inputs() -> Vec<LogDirInput> {
-        let [r0, r2] = [0, 2].map(numbered);
+        let [r0, r1, r2] = [0, 1, 2].map(numbered);
         let len = r0.len();
+        let zeros = vec![0; LEN];
         let torn_end = log_file(&[&r0, &torn(1, 2)], LEN);
         let kept = log_file(&[&r0], LEN);
         vec![
@@ -1068,6 +1064,20 @@ mod tests {
                 "torn_before_next_file",
                 framed(&[("log-0", &torn_end), ("log-1", &log_file(&[&r2], LEN))]),
                 Err(corrupt("log-0", len)),
+            ),
+            (
+                "torn_end_before_next_record",
+                framed(&[("log-0", &torn_end), ("log-1", &log_file(&[&r1], LEN))]),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "torn_first_before_empty_files",
+                framed(&[
+                    ("log-0", &log_file(&[&torn(0, 1)], LEN)),
+                    ("log-1", &zeros),
+                    ("log-2", &zeros),
+                ]),
+                Err(corrupt("log-1", 0)),
             ),
         ]
     }
@@ -1121,6 +1131,11 @@ mod tests {
             (
                 "empty_file_before_record",
                 framed(&[("log-0", &zeros), ("log-1", &kept)]),
+                Err(corrupt("log-0", 0)),
+            ),
+            (
+                "empty_file_before_garbage",
+                framed(&[("log-0", &zeros), ("log-1", &[1; 10])]),
                 Err(corrupt("log-0", 0)),
             ),
             (
@@ -1197,6 +1212,8 @@ mod tests {
             "torn_not_next",
             "after_torn",
             "torn_before_next_file",
+            "torn_end_before_next_record",
+            "torn_first_before_empty_files",
             "stale_next_file",
             "next_file_past_next",
             "number_gap",
@@ -1210,6 +1227,7 @@ mod tests {
             "torn_end_in_next_file",
             "next_file_of_version_2",
             "garbage_next_file",
+            "empty_file_before_garbage",
             "empty_files_before_record",
             "bytes_after_a_file_end",
             "stray",
@@ -1283,14 +1301,17 @@ mod tests {
         assert_eq!(scan_log_dir(&dir), Err(corrupt("log-0", 0)));
     }
 
-    // A scan error hides the ranges of a cut frame, so these assert `frames` itself.
     #[test]
-    fn frames_end_with_the_input() {
-        assert_eq!(frames(&[]), []);
-        assert_eq!(frames(&[3, b'a']), [(1..2, 2..2)]);
-        assert_eq!(frames(&[1, b'a', 2]), [(1..2, 3..3)]);
-        assert_eq!(frames(&[1, b'a', 2, 0, 9]), [(1..2, 4..5)]);
-        assert_eq!(frames(&[0, 1, 0, 9, 0]), [(1..1, 3..4), (5..5, 5..5)]);
+    fn a_cut_frame_ends_with_the_input() {
+        let name = [5, b'l', b'o', b'g', b'-', b'0'];
+        let scan = |tail: &[u8]| scan_log_dir(&[&name[..], tail].concat());
+        let zeros = |len| Ok(empties(0, framed(&[("log-0", &vec![0; len])])));
+        assert_eq!(scan_log_dir(&[]), Ok(empties(0, Vec::new())));
+        assert_eq!(scan_log_dir(&[5, b'l', b'o']), Err(stray("lo")));
+        assert_eq!(scan(&[]), zeros(0));
+        assert_eq!(scan(&[16]), zeros(0));
+        assert_eq!(scan(&[16, 0, 0, 0, 0]), zeros(3));
+        assert_eq!(scan(&[1, 0, 0, 0]), Err(stray("")));
     }
 
     #[test]
