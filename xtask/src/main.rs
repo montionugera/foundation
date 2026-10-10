@@ -348,9 +348,10 @@ mod tests {
     /// models output.
     fn model_job(job: &[&str], task: &str) {
         let run = format!("run: cargo xtask {task}");
-        // The job has no key past these, its steps are block style, and the step
-        // that runs the task holds only its name. A line between the keys, or a
-        // flow node under `steps:`, would open a scalar that can hold a decoy step.
+        // The job has no key past these, its steps are a block sequence, and the
+        // step that runs the task holds only its name. A line between the keys, or
+        // a flow node under `steps:`, would open a scalar that can hold a decoy
+        // step.
         let head = [
             "    needs: changes",
             MODELS_IF,
@@ -358,10 +359,11 @@ mod tests {
             "    steps:",
         ];
         let steps = under(job, "    steps:");
+        let entry = |line: &&str| line.starts_with("      - ");
         let keys = job.get(..head.len()) == Some(&head[..])
             && steps.len() == job.len() - head.len()
-            && (steps.iter())
-                .all(|line| line.starts_with("      - ") || indent(line) >= 8);
+            && steps.first().is_some_and(entry)
+            && (steps.iter()).all(|line| entry(line) || indent(line) >= 8);
         let end = job.iter().position(|line| line.trim() == run);
         let alone = end.is_some_and(|end| {
             end > 0
@@ -400,12 +402,18 @@ mod tests {
              [{{name: Miri, run: \"true\n      - name: Miri\n        \
              run: cargo xtask miri\n      \"}}]\n"
         );
+        let flow_8 = format!(
+            "    needs: changes\n{MODELS_IF}\n{on}\n    steps:\n        \
+             [{{name: Miri, run: \"true\n      - name: Miri\n        \
+             run: cargo xtask miri\n      - \"}}]\n"
+        );
         for text in [
             job(quoted, "", "\"true\"", ""),
             job("    runs-on: macos-latest", "", miri, ""),
             job(on, env, miri, ""),
             job(on, "", miri, env),
             flow,
+            flow_8,
         ] {
             let job: Vec<&str> = text.lines().collect();
             let panic =
