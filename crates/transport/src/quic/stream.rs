@@ -61,7 +61,7 @@ struct Half {
     /// The bytes of `header` that the stream has not taken.
     unsent: Range<usize>,
     /// The block of the message in hand.
-    block: Held,
+    block: Source,
     /// The rest of a chunk of the message in hand that the stream took in part.
     chunk: Bytes,
     /// The parts of the message in hand that the stream has not taken all of. Empty
@@ -351,7 +351,7 @@ impl Half {
             started: true,
             header: [0; 1 + varint::BYTES_MAX],
             unsent: 0..0,
-            block: Held::default(),
+            block: Source::default(),
             chunk: Bytes::new(),
             parts: Kept::default(),
             body: 0,
@@ -368,7 +368,7 @@ impl Half {
     /// write gives the message's parts. The half holds no part of a message.
     fn load(&mut self, block: Block, bytes: usize, rest: Rest) {
         self.rest = rest;
-        self.block = Held::Block(block);
+        self.block = Source::Block(block);
         self.body = bytes;
         let prefix = message::prefix(bytes);
         let start = usize::from(self.started);
@@ -478,18 +478,18 @@ impl Half {
 /// The block of the message in hand. It becomes a `Bytes` only when noq-proto keeps
 /// a slice of it, because `Bytes::from_owner` allocates.
 #[derive(Debug)]
-enum Held {
+enum Source {
     Block(Block),
     Shared(Bytes),
 }
 
-impl Default for Held {
+impl Default for Source {
     fn default() -> Self {
         Self::Shared(Bytes::new())
     }
 }
 
-impl Held {
+impl Source {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Block(block) => block,
@@ -659,7 +659,7 @@ impl<'a> Left<'a> {
     /// `buffer`. A longer one is a copy of `buffer` of its length.
     fn piece<'b>(
         &self,
-        block: &'b mut Held,
+        block: &'b mut Source,
         buffer: &'b mut Vec<u8>,
     ) -> (Piece<'b>, Self) {
         if self.tail.is_empty() && self.head.zeros == 0 {
@@ -1221,7 +1221,7 @@ impl Sending {
     /// [`Sending::end`], with `first` the first stream in turn before the caller
     /// wrote `half`.
     fn end_after(&mut self, half: &mut Half, first: Option<Key>) {
-        (half.unsent, half.block, half.body) = (0..0, Held::default(), 0);
+        (half.unsent, half.block, half.body) = (0..0, Source::default(), 0);
         half.chunk = Bytes::new();
         half.parts.clear();
         let admission = self.share.admission(&self.budget);
@@ -5211,10 +5211,10 @@ mod tests {
     fn pieces(block: &Bytes, parts: &[Part]) -> Vec<(&'static str, Vec<u8>)> {
         let (mut left, mut buffer) = (Left::new(parts), Vec::new());
         let within = block.as_ptr_range();
-        let mut held = Held::Shared(block.clone());
+        let mut source = Source::Shared(block.clone());
         let mut pieces = Vec::new();
         while left.skip() {
-            let (piece, after) = left.piece(&mut held, &mut buffer);
+            let (piece, after) = left.piece(&mut source, &mut buffer);
             let (kind, bytes) = match piece {
                 Piece::Chunk(chunk) if within.contains(&chunk.as_ptr()) => {
                     ("slice", chunk.to_vec())
