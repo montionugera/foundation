@@ -245,18 +245,6 @@ impl Side {
         self.manager.state().table.borrow().len()
     }
 
-    /// The keys of the connections in the table whose streams close. A stream that
-    /// lingers after open62541 has its `CLOSING` shows only here, and the server gives
-    /// no call that lists it.
-    fn closing(&self) -> Vec<usize> {
-        let table = self.manager.state().table.borrow();
-        table
-            .iter()
-            .filter(|(_, c)| matches!(c.stream, super::Stream::Closing { .. }))
-            .map(|(id, _)| *id)
-            .collect()
-    }
-
     fn states(&self) -> Vec<ConnectionState> {
         self.calls().iter().map(|(_, state, _)| *state).collect()
     }
@@ -437,6 +425,26 @@ impl Reads {
     }
 }
 
+/// What a peer of [`Network::probe`] finds of its stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// The stream has not ended.
+    Open,
+    /// The stream ended, and a write after its end gets no reset.
+    Closing,
+    /// The stream was reset.
+    Dropped,
+}
+
+/// What each peer of [`Network::probe`] finds now. A stop of the server later ends
+/// each open stream.
+fn snapshot(peers: &[Arc<Mutex<Held>>]) -> Vec<Held> {
+    peers
+        .iter()
+        .map(|p| *p.lock().expect("no panic under the lock"))
+        .collect()
+}
+
 /// A run with the manager on one node and a TCP peer on another.
 struct Network {
     sim: Sim,
@@ -517,6 +525,52 @@ impl Network {
             drop(stream);
         });
         drop(handle.expect("the shard starts"));
+    }
+
+    /// As [`Self::hold`], but the peer reads until the stream ends, and `at` after
+    /// now it writes one byte and reads again 100 ms later. A stream that closes
+    /// drains the byte and gives an end, and a dropped stream gives a reset.
+    fn probe(&self, delay: Span, at: Span) -> Arc<Mutex<Held>> {
+        let held = Arc::new(Mutex::new(Held::Open));
+        let slot = Arc::clone(&held);
+        let net = self.peer.net();
+        let clock = self.peer.clock();
+        let at = clock.now() + at;
+        let config = tcp::Config {
+            remote: self.listening(),
+            options: OPTIONS,
+        };
+        let shard = env::shards::Config {
+            name: "probe".into(),
+            core: None,
+        };
+        let handle = self.peer.shards().start(shard, move |_| async move {
+            clock.sleep(delay).await;
+            let mut stream = net.connect(&config).await.expect("the listener accepts");
+            let mut buffer = [0; 64];
+            let mut read = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+            while matches!(read, Ok(n) if n > 0) {
+                read = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+            }
+            if read.is_ok() {
+                clock.sleep_until(at).await;
+                let parts = [IoSlice::new(b"x")];
+                read = poll_fn(|cx| stream.poll_write(cx, &parts)).await;
+                clock.sleep(Span::from_nanos(100_000_000)).await;
+                if read.is_ok() {
+                    read = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+                }
+            }
+            *slot.lock().expect("no panic under the lock") = match read {
+                Ok(0) => Held::Closing,
+                Ok(n) => panic!("a closed stream reads {n} bytes"),
+                Err(_) => Held::Dropped,
+            };
+            clock.sleep(Span::from_nanos(60_000_000_000)).await;
+            drop(stream);
+        });
+        drop(handle.expect("the shard starts"));
+        held
     }
 
     /// Accepts one stream on the peer, and runs `peer` on it with the clock of the
@@ -2688,22 +2742,29 @@ fn a_stopped_server_is_deleted_when_its_loop_has_nothing_due() {
 #[test]
 fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
     let mut network = Network::new();
-    for i in 0..1000 {
-        network.hold(Span::from_nanos((i + 1) * 1_000_000));
-    }
-    let held = network
+    let peers: Vec<_> = (0..1000)
+        .map(|i| {
+            let delay = Span::from_nanos((i + 1) * 1_000_000);
+            network.probe(delay, Span::from_nanos(1_500_000_000))
+        })
+        .collect();
+    let (connections, held) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, listener(&node));
             let server = side.start(c"opc.tcp://:4840");
             side.drive(Span::from_nanos(2_000_000_000)).await;
             // Less the listen connection.
-            let held = (side.connections() - 1, side.closing().len());
+            let held = (side.connections() - 1, snapshot(&peers));
             side.stop(server).await;
             held
         })
         .expect("the run ends");
-    assert_eq!(held, (100 + CLOSES, CLOSES));
+    let count = |of| held.iter().filter(|h| **h == of).count();
+    assert_eq!(
+        (connections, count(Held::Open), count(Held::Closing)),
+        (100 + CLOSES, 100, CLOSES)
+    );
 }
 
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
@@ -2715,23 +2776,28 @@ fn closes_past_the_bound() {
         return;
     }
     let mut network = Network::new();
-    for i in 0..=100 + CLOSES {
-        let i = i64::try_from(i).expect("a small count");
-        network.hold(Span::from_nanos((i + 1) * 1_000_000));
-    }
+    let peers: Vec<_> = (0..=100 + CLOSES)
+        .map(|i| {
+            let i = i64::try_from(i).expect("a small count");
+            let delay = Span::from_nanos((i + 1) * 1_000_000);
+            network.probe(delay, Span::from_nanos(500_000_000))
+        })
+        .collect();
     let held = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, listener(&node));
             let server = side.start(c"opc.tcp://:4840");
             side.drive(Span::SECOND).await;
-            let held = (side.connections(), side.closing());
+            let held = (side.connections(), snapshot(&peers));
             side.stop(server).await;
             held
         })
         .expect("the run ends");
-    let closing: Vec<usize> = (3..=102).collect();
-    assert_eq!(held, (1 + 100 + CLOSES, closing));
+    let mut expected = vec![Held::Dropped];
+    expected.extend([Held::Closing; CLOSES]);
+    expected.extend([Held::Open; 100]);
+    assert_eq!(held, (1 + 100 + CLOSES, expected));
 }
 
 /// A close past [`CLOSES`] drops the stream that started to close first, with a
