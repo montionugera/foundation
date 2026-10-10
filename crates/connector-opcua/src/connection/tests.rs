@@ -2736,9 +2736,9 @@ fn a_stopped_server_is_deleted_when_its_loop_has_nothing_due() {
     }
 }
 
-/// Each purged stream of a peer that neither reads nor closes stays in the table for
-/// `LINGER`. The table must hold no more than the 100 secure channels of the minimal
-/// config and [`CLOSES`] closing streams.
+/// Each purged stream of a peer that reads until its stream ends and never closes stays
+/// in the table for `LINGER`. The table must hold no more than the 100 secure channels
+/// of the minimal config and [`CLOSES`] closing streams.
 #[test]
 fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
     let mut network = Network::new();
@@ -2768,8 +2768,8 @@ fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
 }
 
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
-/// together, each of which neither reads nor closes, when `child::running()`. The
-/// server purges the oldest channel at each accept past 100.
+/// together, each of which reads until its stream ends and never closes, when
+/// `child::running()`. The server purges the oldest channel at each accept past 100.
 #[test]
 fn closes_past_the_bound() {
     if !child::running() {
