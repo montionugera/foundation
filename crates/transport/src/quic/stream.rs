@@ -511,7 +511,7 @@ impl Source {
             return shared.slice(range);
         }
         let Self::Block(block) = mem::take(self) else {
-            unreachable!("a shared source returns above")
+            unreachable!("invariant: the source is a block")
         };
         let shared = Bytes::from_owner(Body(block));
         let slice = shared.slice(range);

@@ -209,10 +209,13 @@ async fn measure(sender: &mut Sender, pool: &Pool, clock: &Clock, shape: &Shape)
 ///
 /// # Panics
 ///
-/// When the first write of the stretch does not allocate as that of the block plus
-/// the buffer of the stretch and the shared count that `bytes` makes when noq-proto
-/// first takes the buffer in part, less the shared count of the block's slice, or
-/// the later writes do not allocate as those of the block.
+/// When the first write of the block does not allocate 4 times or the later writes
+/// once, noq-proto's allocations included: a stream that did not keep its parts
+/// list grows it again. When the first write of the stretch does not allocate as
+/// that of the block plus the buffer of the stretch and the shared count that
+/// `bytes` makes when noq-proto first takes the buffer in part, less the shared
+/// count of the block's slice, or the later writes do not allocate as those of the
+/// block.
 async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
     let parts = spaced(NARROW.message / 8, 8, 16);
     for round in 0..WARMUP + ROUNDS {
@@ -228,7 +231,8 @@ async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
             assert_eq!(
                 sent,
                 [4, 1],
-                "a send that the window cuts keeps its parts list"
+                "the allocations of the first write and of the later writes of a \
+                 send, noq-proto's included: the stream keeps its parts list"
             );
             assert_eq!(
                 parted,
