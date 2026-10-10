@@ -5,15 +5,21 @@
   call one; a list per file would pass a new call in a listed file. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
-  2026-10-08 02:27 UTC). A test of `connector-opcua` names each pair and fails
-  when its reason becomes false. For example, `shim.c` fails the build with
-  `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust or `shim.c` names a security
-  policy, so a client has only the policy `None`, and `encryptUserIdentityTokenEcc`
-  needs an ECC policy. Approved by `laptop.architect`
+  2026-10-08 02:27 UTC). A test of `connector-opcua` names the function of each clock
+  key of `FUNCTION_SYMBOLS` and fails when its reason becomes false. For example,
+  `shim.c` fails the build with `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust
+  or `shim.c` names a security policy, so a client has only the policy `None`, and
+  `encryptUserIdentityTokenEcc` needs an ECC policy. Approved by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6094588326,
   2026-10-10 06:19 UTC) and `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6099193878,
-  2026-10-10 15:39 UTC). The copy goes in `patches/open62541/`, and the `build.rs` of
+  2026-10-10 15:39 UTC). The sentence "A test of `connector-opcua` names the function of
+  each clock key of `FUNCTION_SYMBOLS` and fails when its reason becomes false.":
+  approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6102856606,
+  2026-10-10 22:28 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103121782,
+  2026-10-10 23:02 UTC). The copy goes in `patches/open62541/`, and the `build.rs` of
   `connector-opcua` reads its `sources.txt`. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057244538,
   2026-10-08 09:50 UTC). `cargo xtask open62541 <tag>` makes the copy. Each file from
@@ -32,13 +38,68 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058025302,
   2026-10-08 10:37 UTC). #1860 makes CI run it on a PR that changes only `patches/`.
-  The C library and the POSIX headers of the plugins are a closed list of system
-  headers (`SYSTEM_HEADERS`) that the copy may include, each found in a system
-  directory as `cc` finds it. The list holds no clock header (`time.h`,
-  `sys/time.h`): a PR that adds one needs the OK of the `connector` architect. The
-  check fails on every reference to a clock function that is not a call, also one in
-  code. A call relocation counts as a call only in a section that `objdump -d`
-  disassembles. Decided by `laptop.architect-2`
+  The check reads each undefined symbol of an object that a relocation in that object
+  names (`nm -u` and `objdump -r`) and fails on each symbol outside the copy that is not
+  on a closed list, with the file and the symbol. `SYMBOLS` admits a symbol for any
+  file. Each other reference needs its key in `FUNCTION_SYMBOLS`. Each entry has its
+  reason. A symbol goes in `SYMBOLS` only when it reads no clock, file, network,
+  randomness, or process state. A symbol is outside the copy when no object exports it:
+  a `static` function of one file does not hide a call of the OS function of its name
+  from another. A key of `FUNCTION_SYMBOLS` with no reference fails, so a file that the
+  build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
+  `connector-opcua`, which lists the outside symbols of the production build. A header
+  list is not a check: a listed header can include another (`pthread.h` includes
+  `time.h`). So the check refuses no system header, and each header that the copy
+  includes must be in the copy or in a system directory as `cc` finds it. Lost: a header
+  list, and a deny list of OS symbols, which passes a call that it does not name.
+  Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375,
+  2026-10-08 13:31 UTC). Supersedes the closed list of system headers of
+  https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058446715. The
+  sentences "`SYMBOLS` admits a symbol for any file. Each other reference needs its key
+  in `FUNCTION_SYMBOLS`." and "A key of `FUNCTION_SYMBOLS` with no reference fails, so a
+  file that the build leaves out loses its keys.": changed by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099491752,
+  2026-10-10 16:07 UTC). `SYMBOLS` holds memory and string functions, the 5 constructors
+  that `shim.c` defines to abort, and one exception that reads process state: the
+  allocator, whose addresses the OS places at random, so no result of the copy may
+  depend on an address. On x86-64 the assembler makes `_GLOBAL_OFFSET_TABLE_` undefined
+  in each object that reads the table, with no relocation, so only a reference that the
+  C makes counts. The check builds with no stack protector, so the compiler adds no
+  reference to its random canary, and a reference that the C makes fails. Approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC). A reference is an undefined symbol that a relocation names, and
+  it is outside the copy when no object exports it: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6093780083,
+  2026-10-10 04:30 UTC). When `SYMBOLS` does not admit a reference in a function, in any
+  file, and it is not the address of a clock, the check keys it by (file, function,
+  symbol, access), read from `objdump -dr` as the clock check reads a call. The function
+  is the whole label of the function symbol, such as `parse.0` for a nested function,
+  and the access is a call or an address. So a listed symbol in a new function of a file
+  fails, and so does the address of a listed symbol that its function only calls.
+  `FUNCTION_SYMBOLS` lists these keys, the clock calls among them. A reference from
+  outside a function fails when `SYMBOLS` does not admit it. Decided by
+  `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094336509,
+  2026-10-10 05:46 UTC). The whole label and the access: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094746609,
+  2026-10-10 06:40 UTC). It refines the (file, enclosing function) list of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367 by symbol
+  and access. A key may name a symbol that is not a clock, with its reason. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC). Supersedes the (file, symbol) pairs of
+  https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. The text
+  from "When `SYMBOLS` does not admit" to here: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099229278,
+  2026-10-10 15:42 UTC). The check fails on every reference to a clock function that is
+  not a call, also one in code. A call relocation counts as a call only in a section
+  that `objdump -d` disassembles. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058446715,
   2026-10-08 11:03 UTC). Supersedes the clock address rule of
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057554572. The
@@ -58,12 +119,14 @@
   flag. `build.rs` and the check both read `flags.txt`, so the check reads objects
   compiled with the flags of the connector. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
-  2026-10-08 13:31 UTC). The `UA_ARCH_HEADER` of the allocator below and the
-  sanitizer flags below are the only flags of `build.rs` outside `flags.txt`, so the
-  objects of the check do not have them. A
-  `-W` flag with no `,` is a warning, which changes no code, so `collect` leaves it
-  out by that pattern, not by name. Decided by
-  `laptop.architect-2`
+  2026-10-08 13:31 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
+  flags below are the only flags of `build.rs` outside `flags.txt`, so the objects of
+  the check do not have them. The check adds `-g -O0` and `-fno-stack-protector`
+  (above), and no other flag that changes the code. This sentence: approved by
+  `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6093693327,
+  2026-10-10 04:19 UTC). A `-W` flag with no `,` is a warning, which changes no code, so
+  `collect` leaves it out by that pattern, not by name. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
   2026-10-08 13:57 UTC) and `laptop.director`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061540779,
