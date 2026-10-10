@@ -163,7 +163,9 @@
   `node.key`, the addresses that the port bound but an IPv6 address with flow info or a
   scope, and version 1, with 64 zero bytes as its admission; that node as the one voter;
   the definitions of `spec::founding::create` with the public key of the first admin;
-  and no home. The first admin's private key is in the file `admin.key` of the data
+  and no home. The card filter: approved by `laptop.architect` (2026-10-10T23:18:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825). The
+  first admin's private key is in the file `admin.key` of the data
   directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
   CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it
   from `Config::entropy` with `sector::publish` as it makes `name` (NODE NAME), before
