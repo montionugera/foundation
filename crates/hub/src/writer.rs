@@ -217,7 +217,6 @@ impl Writer {
             set: Arc::clone(&set),
         };
         let key = borrowed.home.open_writer(writer).map_err(Error::Home)?;
-        borrowed.commit.appended();
         keys.extend(groups.iter().map(|group| group.index));
         let ending = borrowed.writers.add(key, keys.into());
         Ok(Self {
@@ -304,7 +303,6 @@ impl Writer {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         let written = state.home.write(self.key, label, frame);
-        state.commit.appended();
         let outcomes = written.map_err(Failure::Home)?;
         self.outcomes.clear();
         self.outcomes.extend_from_slice(outcomes);

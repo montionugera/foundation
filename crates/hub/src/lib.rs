@@ -141,6 +141,7 @@ impl Hub {
             entropy,
             region,
         } = config;
+        let next = home.next_commit();
         let state = Rc::new(RefCell::new(State {
             home,
             interner,
@@ -153,7 +154,7 @@ impl Hub {
             waiting: hash::Map::default(),
             opened: 0,
             woken: Vec::new(),
-            commit: commit::Signal::default(),
+            commit: commit::Signal::new(next),
             failed: None,
             node,
             time,
@@ -443,7 +444,6 @@ impl State {
     fn close_writer(&mut self, key: ::home::writer::Key) {
         if self.writers.remove(key) {
             self.home.close_writer(key);
-            self.commit.appended();
         }
     }
 

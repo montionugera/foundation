@@ -810,11 +810,30 @@ fn does_not_wake_the_commit_task_for_the_writes_during_a_commit() {
             write(&mut writer, &[test.now()], &[value]);
             test.clock.sleep(Span::from_nanos(1)).await;
         }
-        assert_eq!(
-            test.polls.get() - before,
-            1,
-            "one wake, for the first write"
-        );
+        assert_eq!(test.polls.get() - before, 0, "no wake for a write");
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.polls.get() - before, 1, "one wake, for the commit");
+    });
+}
+
+/// Writes that append nothing do not wake the commit task, as no commit follows them.
+#[test]
+fn does_not_wake_the_commit_task_for_writes_with_no_samples() {
+    run(23, |test| async move {
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[0]);
+        test.clock.sleep(SETTLE).await;
+        let empty = Outcome::Applied {
+            slot: Slot::new(0),
+            range: Range { seq: 1, count: 0 },
+        };
+        let before = test.polls.get();
+        for _ in 0..1000 {
+            assert_eq!(write(&mut writer, &[], &[]), std::slice::from_ref(&empty));
+            test.clock.sleep(Span::from_nanos(1)).await;
+        }
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.polls.get() - before, 0);
     });
 }
 
