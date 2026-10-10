@@ -9,8 +9,18 @@
     subject, the key (32), `via` as a `u128` (16, the reverse of the byte order of its
     UUID text), the connection key (16), the nonce (16), and `expires` in nanoseconds
     (8);
-  - request or session open: the 20 bytes `foundation/request/1`, the connection key
-    (16), and the exact bytes that the program sent.
+  - request: the 20 bytes `foundation/request/1`, the connection key (16), and the
+    exact bytes of the body;
+  - read open: the 17 bytes `foundation/read/1`, the connection key (16), and the
+    exact bytes of the open.
+
+  A signature binds its kind: `proof::signed(kind, connection, bytes)` with
+  `proof::Kind` (`Request`, `Read`) gives the signed bytes, and `Rules::verify` takes
+  the kind. The kind byte of a message is not in the signed bytes, so with one tag a
+  forwarding node could send a signed read open as a request body. A later kind adds
+  its own tag. Supersedes "request or session open" and `proof::request`. Decided by
+  `laptop.architect` (2026-10-10T23:31:47Z):
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608.
 
   `types::hello::Hello::encode` writes the fields of the hello after the tag, so
   `access` and `wire` share one encoder of the field run, and a test in `types` pins
