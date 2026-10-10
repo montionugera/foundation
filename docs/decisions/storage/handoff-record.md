@@ -11,7 +11,13 @@
   https://github.com/synnaxlabs/foundation/issues/275#issuecomment-6093580361). The
   experiment that sets the gate grace (`docs/decisions/open/parameters.md`), or a test
   that needs another value, makes `GRACE` a `Config` field (`laptop.architect`, #275,
-  2026-10-10T04:04:50Z, item 4). Trimming must keep the last record of each index
+  2026-10-10T04:04:50Z, item 4). A lease or a grace that ends with no call records its
+  handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
+  on the monotonic clock of the hub's `clock::Reader`. An index with no open writer
+  records its handoff at the next open of a writer on it (`laptop.architect`, #2307,
+  2026-10-10T22:46:08Z:
+  https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411).
+  Trimming must keep the last record of each index
   (#406). Until it does, a trim (STORE TRIM) can free that record, and a holder whose
   record a trim freed gets no grace after a restart. Retention deletes nothing
   (decided by `laptop.architect`, 2026-10-07T12:30:53Z and 2026-10-07T12:59:37Z:

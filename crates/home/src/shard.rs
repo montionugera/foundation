@@ -404,7 +404,8 @@ impl Shard {
     /// its grace is dropped. Appends a handoff for each index whose holder changed and
     /// that has an open writer, as [`close_writer`](Self::close_writer) does. Call it at
     /// [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n + c)
-    /// time for n carried indexes and c claims of open writers on them.
+    /// time for n carried indexes and c claims of open writers on them. An index with
+    /// no open writer records its handoff at the next open of a writer on it.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         for index in &mut self.indexes {
