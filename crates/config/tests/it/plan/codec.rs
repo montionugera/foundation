@@ -626,14 +626,27 @@ proptest! {
     }
 }
 
+/// The inputs hold the status of a connector, but not each of its channels, so a new
+/// status channel does not make them stale.
 #[test]
-fn decodes_the_fuzz_inputs_to_the_fixture_plans() {
+fn decodes_the_fuzz_inputs_with_the_status_channels() {
     let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added_status");
     let changed =
         include_bytes!("../../../../../oracles/fuzz/config_plan/changed_status");
     let empty = include_bytes!("../../../../../oracles/fuzz/config_plan/empty");
-    let found = [added.as_slice(), changed].map(Plan::decode);
-    assert_eq!(found, plans().map(|plan| Ok(spanless(plan))));
+    let status = name("influx.status.time");
+    let [added, changed] = [added.as_slice(), changed].map(|found| {
+        let plan = Plan::decode(found).expect("a plan");
+        assert_eq!(plan.encode().as_slice(), found);
+        plan
+    });
+    let change = |plan: &Plan| {
+        let change = &plan.changes[&status];
+        (change.old.is_some(), change.new.is_some())
+    };
+    assert_eq!(change(&added), (false, true));
+    assert_eq!(added.homes[&status], name("cloud"));
+    assert_eq!(change(&changed), (true, false));
     assert_eq!(
         Plan::decode(empty).map(|plan| plan.encode()),
         Ok(bytes(&[]))
