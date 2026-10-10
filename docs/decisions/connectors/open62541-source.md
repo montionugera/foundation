@@ -381,4 +381,5 @@
   server itself, because it checks `STOPPING` between the stop and the drive. That
   exception: approved by `laptop.architect-2` at `c04ad0db3`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
-  2026-10-10 16:03 UTC).
+  2026-10-10 16:03 UTC). The test of the bound deletes its server itself after the panic
+  of the close.
