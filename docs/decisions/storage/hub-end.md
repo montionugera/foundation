@@ -53,3 +53,8 @@
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6068108715), and no
   session in the hub (2026-10-08T21:19:24Z,
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6069259471).
+  The commit task waits for the next group commit of the buffer, which wakes it, and
+  no session signals an append. `Hub::new` takes the first one, so no commit after the
+  start goes unseen. Lost: a signal from each home call that may append, which woke
+  the task for each write that appended nothing. Decided by `laptop.architect`
+  (2026-10-10T23:38:36Z, https://github.com/synnaxlabs/foundation/issues/2323).
