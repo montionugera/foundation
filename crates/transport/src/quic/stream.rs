@@ -500,6 +500,9 @@ impl Source {
     /// A slice of `range` for noq-proto to keep. The later slices of the message
     /// share the `Bytes` that the first one makes.
     fn slice(&mut self, range: Range<usize>) -> Bytes {
+        if let Self::Shared(shared) = self {
+            return shared.slice(range);
+        }
         let shared = match mem::take(self) {
             Self::Block(block) => Bytes::from_owner(Body(block)),
             Self::Shared(bytes) => bytes,
