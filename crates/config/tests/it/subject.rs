@@ -45,7 +45,9 @@ fn refused(subject: &Document, connector: &Document, message: &str) -> Vec<Diagn
 fn checks_the_connector_and_the_subject_alone() {
     let connector = [
         "plc",
+        "plc.status.backoff",
         "plc.status.class",
+        "plc.status.error",
         "plc.status.restarts",
         "plc.status.state",
         "plc.status.time",

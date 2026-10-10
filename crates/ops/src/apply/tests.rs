@@ -1049,15 +1049,22 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
         let (output, planned) = plan_on(&mesh, &[("site.hcl", &connector)]).await;
         assert_eq!(
             output.text(),
-            "+ connector site.plc\n- channel site.plc\n\
-             1 to add, 0 to change, 1 to remove.\n"
+            "+ connector site.plc\n\
+             + channel site.plc.status.backoff\n\
+             + channel site.plc.status.class\n\
+             + channel site.plc.status.error\n\
+             + channel site.plc.status.restarts\n\
+             + channel site.plc.status.state\n\
+             + channel site.plc.status.time\n\
+             - channel site.plc\n\
+             7 to add, 0 to change, 1 to remove.\n"
         );
         let applied = apply(path(), &planned.encode(), &mesh, &kinds(), keys(10))
             .await
             .expect("an apply");
         assert_eq!(
             applied.text(),
-            "Applied site.plan: 1 added, 1 removed, 1 home listed.\n",
+            "Applied site.plan: 7 added, 1 removed, 2 homes listed.\n",
             "the plan showed:\n{}",
             output.text()
         );

@@ -504,7 +504,9 @@ fn removes_a_definition_that_no_file_holds() {
     let plan = spec.plan(&[EDGE], &members).expect("no problems");
     let removed = [
         "influx",
+        "influx.status.backoff",
         "influx.status.class",
+        "influx.status.error",
         "influx.status.restarts",
         "influx.status.state",
         "influx.status.time",
@@ -2899,8 +2901,10 @@ fn implies_the_status_channels_of_each_connector_at_its_label() {
         control: None,
     };
     let expected = [
+        ("c.status.backoff", status(Type::Scalar(Scalar::Span))),
         ("c.status.class", status(Type::Scalar(Scalar::U8))),
         ("c.status.confirmed", status(Type::Scalar(Scalar::U64))),
+        ("c.status.error", status(Type::String)),
         ("c.status.restarts", status(Type::Scalar(Scalar::U64))),
         ("c.status.state", status(Type::Scalar(Scalar::U8))),
         ("c.status.time", index),

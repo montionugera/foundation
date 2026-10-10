@@ -73,7 +73,9 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
     let keys: Vec<_> = entries.keys().map(Name::as_str).collect();
     let expected = [
         "influx",
+        "influx.status.backoff",
         "influx.status.class",
+        "influx.status.error",
         "influx.status.restarts",
         "influx.status.state",
         "influx.status.time",
