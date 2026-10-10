@@ -626,8 +626,8 @@ proptest! {
     }
 }
 
-/// Checks the status index of `influx` in each input, not each status channel, so a new
-/// status channel does not fail this test.
+/// Checks the status index of `influx` in `added_status` and `changed_status`, not each
+/// status channel, so a new status channel does not fail this test.
 #[test]
 fn decodes_the_fuzz_inputs_with_the_status_channels() {
     let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added_status");
