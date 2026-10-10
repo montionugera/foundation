@@ -230,7 +230,10 @@
   UTC:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6044783047, and
   2026-10-07 20:44 UTC:
-  https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6046501911). The
+  https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6046501911). Lost:
+  a list that gives back its capacity at the end of each message, because it allocates
+  for each message that waits (`laptop.architect-2`, #2304, 2026-10-10 22:35 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6102910746). The
   block's count changes once for each run over 1452 bytes. A short run changes no count.
   Decided by `laptop.architect-2` (#68, 2026-10-08 07:29 UTC:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6054932643). A
