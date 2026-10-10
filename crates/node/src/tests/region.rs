@@ -139,8 +139,20 @@ fn the_first_start_founds_the_root_region_alone() {
     assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
 }
 
+/// Two first starts on two hosts make two admin keys from the entropy.
+#[test]
+fn a_first_start_makes_the_admin_key_from_the_entropy() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+    let admins = hosts.map(|host| {
+        assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+        admin(&mut sim, &host)
+    });
+    assert_ne!(admins[0].0, admins[1].0);
+}
+
 /// A later start opens the region of the first start, also on another port, and
-/// keeps `admin.key`. A task of `operate` runs on that region.
+/// keeps `admin.key` and `node.key`. A task of `operate` runs on that region.
 #[test]
 fn a_later_start_opens_the_region_of_the_first_start() {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -148,6 +160,7 @@ fn a_later_start_opens_the_region_of_the_first_start() {
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     let founding = bytes(&mut sim, &host, FOUNDING).expect("the founding");
     let admin = bytes(&mut sim, &host, FILE).expect("the admin key");
+    let key = bytes(&mut sim, &host, identity::FILE).expect("the node key");
     let node = Node::start(Config {
         region: Region::Stored,
         listen: SocketAddr::new(host.addresses()[0], PORT + 1),
@@ -166,6 +179,7 @@ fn a_later_start_opens_the_region_of_the_first_start() {
     assert_eq!(names.lock().unwrap().take(), Some(edge));
     assert_eq!(bytes(&mut sim, &host, FOUNDING), Some(founding));
     assert_eq!(bytes(&mut sim, &host, FILE), Some(admin));
+    assert_eq!(bytes(&mut sim, &host, identity::FILE), Some(key));
 }
 
 /// A first start founds the region with the admin key in its data directory, and
