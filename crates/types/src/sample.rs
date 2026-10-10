@@ -145,7 +145,8 @@ impl Type {
 
 impl fmt::Display for Type {
     /// Writes the text that a user writes and [`Type::from_str`] reads: `f64`,
-    /// `f32[3]`, `f32[2][3]`, `list<u8, 16>`, `string`, or `bytes`.
+    /// `f32[3]`, `f32[2][3]`, `list<u8, 16>`, `string`, or `bytes`. The client wire
+    /// carries this text too, so a change of it is a change of that wire.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Scalar(scalar) => f.write_str(scalar.name()),
