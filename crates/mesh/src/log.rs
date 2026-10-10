@@ -436,7 +436,9 @@ pub(crate) fn reopen(
         })
         .collect();
     let scan = scan(dir, &segments)?;
-    segments.truncate(scan.segment.saturating_add(1));
+    if scan.spare {
+        segments.pop();
+    }
     if segments.len() > scan.segment {
         clear(&mut segments, &scan);
     }
