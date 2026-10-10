@@ -455,15 +455,21 @@ fn src() -> std::path::PathBuf {
     root().join("src")
 }
 
+/// The cfg of the code that only tests and benchmarks build, which the scan counts as
+/// test code.
+const SIM: &str = "feature=\"sim\"";
+
 /// Each identifier for which `named` holds, as `path: identifier`, in the Rust
 /// outside tests of the crate at `root`: each `.rs` file outside `tests/` and each
-/// file that a build of the library reads ([`built`]), less each file that a test
-/// build reads and no build of the library reads. Comments and inline modules count.
+/// file that a build of the library reads ([`built`]), less each file that the test
+/// build, with [`SIM`] on, reads and no build of the library reads. Comments and
+/// inline modules count.
 fn named_outside_tests(
     root: &std::path::Path,
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    let (built, cfgs) = built(root);
+    let (built, mut cfgs) = built(root);
+    cfgs.push(SIM.to_owned());
     let mut flags = on(&cfgs);
     flags.push("--test".to_owned());
     let (tested, _) = read_by_rustc(root, &cfgs, &flags);
@@ -483,7 +489,8 @@ fn named_outside_tests(
 /// Each file that a build of the library of the crate at `root` reads, and the cfgs
 /// that the builds set, sorted. The builds are those on this host, with the target
 /// features of this build, and with each set of the cfgs that the crate tests and
-/// rustc does not know (features among them), each with debug assertions on and off
+/// rustc does not know (features among them, less [`SIM`], which no build of the
+/// library sets), each with debug assertions on and off
 /// and with each panic strategy. rustc names each such cfg in a build that reads the
 /// file that tests it. A file under a known value of a target cfg that this build does
 /// not set, such as `target_os = "windows"`, is read by no build.
@@ -497,6 +504,8 @@ fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
     let mut runs = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     loop {
+        let mut known = cfgs.clone();
+        known.push(SIM.to_owned());
         let mut found = Vec::new();
         for set in 0..1usize << cfgs.len() {
             let set: Vec<_> = (0..cfgs.len())
@@ -509,7 +518,7 @@ fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
                     flags.push(format!("-Cdebug-assertions={assertions}"));
                     flags.push(format!("-Cpanic={panic}"));
                     if runs.insert(flags.clone()) {
-                        let (read, unknown) = read_by_rustc(root, &cfgs, &flags);
+                        let (read, unknown) = read_by_rustc(root, &known, &flags);
                         files.extend(read);
                         found.extend(unknown);
                     }
@@ -675,10 +684,11 @@ fn the_scan_names_only_the_files_outside_tests() {
     let src = src();
     let named = named_outside_tests(&root(), |name| name == "shim_client_new");
     let at = |file: &str| format!("{}: shim_client_new", src.join(file).display());
-    assert_eq!(named, [at("bench.rs"), at("ffi.rs")]);
+    assert_eq!(named, [at("ffi.rs")]);
 }
 
-/// A file that only a test build reads is cut off, with the files that it declares.
+/// A file that only a test build reads, also with [`SIM`] on, is cut off, with the
+/// files that it declares.
 #[test]
 fn the_scan_cuts_off_only_the_files_of_a_test_build() {
     let root = create_tree(
@@ -686,9 +696,11 @@ fn the_scan_cuts_off_only_the_files_of_a_test_build() {
         &[
             (
                 "src/lib.rs",
-                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n",
+                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n\
+                 #[cfg(feature = \"sim\")]\nmod s;\n",
             ),
             ("src/t.rs", "mod u;"),
+            ("src/s.rs", "fn named() {}"),
             ("src/t/u.rs", "fn named() {}"),
             ("src/p.rs", "fn named() {}"),
         ],
@@ -886,11 +898,11 @@ fn the_scan_builds_with_the_target_features_of_the_build() {
 }
 
 /// The builds of the library set each cfg that the crate tests and rustc does not
-/// know.
+/// know, less [`SIM`].
 #[test]
 fn the_scan_builds_each_cfg_of_the_crate() {
     let (_, cfgs) = built(&root());
-    assert_eq!(cfgs, ["asan", "feature=\"open62541\"", "feature=\"sim\""]);
+    assert_eq!(cfgs, ["asan", "feature=\"open62541\""]);
 }
 
 /// A test mock that a `path` attribute gives in place of a module is cut off, and
