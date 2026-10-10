@@ -33,11 +33,11 @@
   https://github.com/synnaxlabs/foundation/issues/1903#issuecomment-6069112623.
   `plan` places the status index of a connector with the connector's placement, not
   with `place` at its first writer (STATUS PLACEMENT). Each other index that a
-  connector implies is placed so too (ruling owed,
-  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6101711998, item
-  2). Each rule that counts the writers of an index also counts a connector
-  that implies the index (ruling owed,
-  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6101804379).
+  connector implies is placed so too (`laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855). Each
+  rule that counts the writers of an index also counts a connector that implies the
+  index (`laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855).
   `config.unknown-node` is at each node that a connector or a placement names and that
   `members` does not hold, and the fix names a member that is equal to it without case.
   `config.writer-nodes` is at the `node` of the first connector, in name order, on a
