@@ -2,6 +2,7 @@
 //! append, and their readers.
 
 use std::fmt;
+use std::iter;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -403,9 +404,10 @@ impl Shard {
     /// control lease ran out loses control, and a restored holder that did not reopen in
     /// its grace is dropped. Appends a handoff for each index whose holder changed and
     /// that has an open writer, as [`close_writer`](Self::close_writer) does. Call it at
-    /// [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n + c)
-    /// time for n carried indexes and c claims of open writers on them. An index with
-    /// no open writer records its handoff at the next open of a writer on it.
+    /// [`deadline`](Self::deadline); an earlier call changes nothing. An index with no
+    /// open writer records its handoff at the next open of a writer on it. Takes O(n)
+    /// time for n carried indexes, plus O(c) for each handoff, for c claims of open
+    /// writers.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         for index in &mut self.indexes {
@@ -415,13 +417,24 @@ impl Shard {
         let Some(mesh) = mesh.map(midpoint) else {
             return;
         };
-        for session in self.writers.values() {
+        for place in 0..self.indexes.len() {
+            if self.indexes[place].gate.handoff().is_none() {
+                continue;
+            }
+            let held = self.writers.values().find_map(|session| {
+                let mut groups = (0..).zip(&session.claims);
+                let (group, _) = groups.find(|(_, claim)| claim.place == place)?;
+                Some((session, group))
+            });
+            let Some((session, group)) = held else {
+                continue;
+            };
             // A handoff with no room waits, and a failed commit fails the next write.
             drop(record(
                 &self.buffer,
                 &mut self.indexes,
                 session,
-                session.groups(),
+                iter::once(group),
                 mesh,
             ));
         }
@@ -831,25 +844,21 @@ impl Shard {
 
     /// Appends the unrecorded handoff of each index of `session`.
     fn record_all(&mut self, session: &Session, mesh: Stamp) {
+        let groups = (0..session.claims.len()).map(|group| {
+            u32::try_from(group).expect("invariant: a key set has u32 groups")
+        });
         // A handoff with no room waits, and a failed commit fails the next write.
         drop(record(
             &self.buffer,
             &mut self.indexes,
             session,
-            session.groups(),
+            groups,
             mesh,
         ));
     }
 }
 
 impl Session {
-    /// Each group of the key set, in order.
-    fn groups(&self) -> impl Iterator<Item = u32> + use<> {
-        (0..self.claims.len()).map(|group| {
-            u32::try_from(group).expect("invariant: a key set has u32 groups")
-        })
-    }
-
     /// The writer's claim on the index of `group`, and the index's entry in the key
     /// set.
     fn claim(&self, group: u32) -> (Claim, &key_set::Entry) {
@@ -1008,7 +1017,6 @@ fn room(appended: Result<(), buffer::Rejected>) -> Result<bool, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::iter;
     use std::path::{Path as FilePath, PathBuf};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
