@@ -255,7 +255,8 @@ mod tests {
     /// # Panics
     ///
     /// When a quoted scalar or a flow collection of `line` does not close on it, or
-    /// `line` has an anchor, alias, or tag, any of which can make a node run on.
+    /// `line` has an anchor, alias, tag, or explicit key, any of which can make a node
+    /// run on.
     fn code(line: &str) -> &str {
         let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
         // `start` holds where a node can start, the only place where a quote or a
@@ -275,7 +276,7 @@ mod tests {
                 continue;
             }
             match c {
-                ' ' if matches!(prev, ':' | '-' | '?') => start = true,
+                ' ' if matches!(prev, ':' | '-') => start = true,
                 ' ' => {}
                 '#' if prev == ' ' => {
                     if depth > 0 {
@@ -287,7 +288,7 @@ mod tests {
                 '[' | '{' if start => depth += 1,
                 ']' | '}' if depth > 0 => (depth, start) = (depth - 1, false),
                 ',' | ':' if depth > 0 => start = true,
-                '&' | '*' | '!' if start => refused(),
+                '&' | '*' | '!' | '?' | ':' if start => refused(),
                 _ => start = false,
             }
             prev = c;
@@ -457,6 +458,56 @@ mod tests {
         ),
     ];
 
+    /// Checks each model job in the lines `jobs` under the key `jobs` of a workflow.
+    ///
+    /// # Panics
+    ///
+    /// When a model job is not its job in [`JOBS`].
+    fn pin_jobs(jobs: &[&str]) {
+        for (task, job) in JOBS {
+            assert!(
+                under(jobs, &format!("  {task}:")) == job,
+                "the {task} job of .github/workflows/ci.yaml is not the job that the \
+                 check pins"
+            );
+        }
+    }
+
+    #[test]
+    fn pin_jobs_refuses_each_change_to_a_model_job() {
+        let lines = |miri: &[&str]| -> Vec<String> {
+            (JOBS.iter())
+                .flat_map(|(task, job)| {
+                    let job = if *task == "miri" { miri } else { job };
+                    let job = job.iter().map(|line| (*line).to_owned());
+                    std::iter::once(format!("  {task}:")).chain(job)
+                })
+                .collect()
+        };
+        let pin = |miri: &[&str]| {
+            let lines = lines(miri);
+            pin_jobs(&lines.iter().map(String::as_str).collect::<Vec<_>>());
+        };
+        let miri = JOBS[2].1;
+        pin(miri);
+        for (at, added) in [
+            (miri.len(), &["        if: false"][..]),
+            (3, &["    env:", "      A: b"][..]),
+            (miri.len() - 2, &["      - run: echo a"][..]),
+        ] {
+            let mut job = miri.to_vec();
+            job.splice(at..at, added.iter().copied());
+            let panic = std::panic::catch_unwind(|| pin(&job)).expect_err(added[0]);
+            assert_eq!(
+                panic.downcast_ref::<String>().map(String::as_str),
+                Some(
+                    "the miri job of .github/workflows/ci.yaml is not the job that the \
+                     check pins"
+                ),
+            );
+        }
+    }
+
     #[test]
     fn yaml_lines_skips_each_blank_and_comment_line() {
         let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
@@ -480,6 +531,10 @@ mod tests {
             "      [h\n",
             "i: 'j\\'\n",
             "k: [l#, m]\n",
+            "a: b[c\n",
+            "d: e,'f\n",
+            "g: |+\n",
+            "  'h\n",
         );
         assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
     }
@@ -500,6 +555,9 @@ mod tests {
             "a: &b 'c'",
             "a: !b c",
             "a: *b",
+            "  ? a",
+            "  : b: |",
+            "a: [? b]",
         ] {
             let text = format!("x: |\n  y\nz:\n{line}\n");
             let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
@@ -692,13 +750,8 @@ mod tests {
             by_cfg("shuttle").unwrap(),
             miri::packages(&metadata).unwrap(),
         ];
-        for ((task, job), packages) in JOBS.into_iter().zip(packages) {
-            assert_eq!(
-                under(&jobs, &format!("  {task}:")),
-                job,
-                "the {task} job of .github/workflows/ci.yaml is not the job that the \
-                 check pins"
-            );
+        pin_jobs(&jobs);
+        for ((task, _), packages) in JOBS.into_iter().zip(packages) {
             for select::Package { name, .. } in packages {
                 assert!(
                     models.contains(&format!("'crates/{name}/**'").as_str()),
