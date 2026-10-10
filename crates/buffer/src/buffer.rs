@@ -665,6 +665,18 @@ impl Buffer {
         }
     }
 
+    /// Resolves at the end of the next group commit after the call, also one in
+    /// flight, or gives the file error that ended the buffer. It does not resolve
+    /// while nothing is appended.
+    #[must_use]
+    pub fn next_commit(&self) -> Commit {
+        let until = self.shared.state.borrow().commits + 1;
+        Commit {
+            waiter: Waiter::new(&self.shared, Event::Commit),
+            until,
+        }
+    }
+
     /// Resolves once the commit task ended: after the drop, once nothing is queued,
     /// or at a failed file call. Gives the error of that call, so `Ok` means that
     /// each entry appended before the drop is durable.
