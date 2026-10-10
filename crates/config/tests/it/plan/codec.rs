@@ -626,8 +626,8 @@ proptest! {
     }
 }
 
-/// The inputs hold the status of a connector, but not each of its channels, so a new
-/// status channel does not make them stale.
+/// Checks the status index of `influx` in each input, not each status channel, so a new
+/// status channel does not fail this test.
 #[test]
 fn decodes_the_fuzz_inputs_with_the_status_channels() {
     let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added_status");

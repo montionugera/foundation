@@ -18,8 +18,8 @@
   https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6099218399). Only
   the connector writes its status: `config.implied-channel` refuses each connector whose
   kind writes a status channel (#2295; ruling owed,
-  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6101711998, item
-  1). So the index can have no other home, and a rule that lets a placement give it one
-  only makes an error that no file can fix (`laptop.architect-2`, 2026-10-10T15:41:24Z,
-  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6099218399).
-  The connector is a writer of each index that it implies (PLAN SURFACE).
+  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6101711998, item 1).
+  So the index can have no other home, and a rule that lets a placement give it one only
+  makes an error that no file can fix (`laptop.architect-2`, 2026-10-10T15:41:24Z,
+  https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6099218399). The
+  connector is a writer of each index that it implies (PLAN SURFACE).
