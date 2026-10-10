@@ -11,7 +11,7 @@ use transport::Class;
 
 use crate::ALLOCATOR;
 use crate::common::filled;
-use crate::parts::{PAUSE, ROUNDS, WARMUP, WIDE, poll, run};
+use crate::session::{PAUSE, ROUNDS, WARMUP, WIDE, poll, run};
 
 /// The bytes of each message, and its allocations after warm-up.
 const SENDS: [(usize, u64); 4] = [
