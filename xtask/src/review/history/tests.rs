@@ -174,7 +174,7 @@ fn refuses_a_merge_that_resolves_a_conflict() {
     std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
     repo.git(&["add", "a.txt"]);
     repo.git(&["commit", "--quiet", "--no-edit"]);
-    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
     repo.remove();
 }
 
@@ -185,7 +185,7 @@ fn refuses_a_clean_merge_with_an_added_change() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     std::fs::write(repo.dir.join("b.txt"), "slipped in\n").unwrap();
     repo.git(&["commit", "--quiet", "--all", "--amend", "--no-edit"]);
-    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
     repo.remove();
 }
 
@@ -193,10 +193,11 @@ fn refuses_a_clean_merge_with_an_added_change() {
 fn refuses_a_merge_of_a_branch_that_is_not_main() {
     let (repo, end) = Repo::with_pr("other");
     repo.git(&["switch", "--quiet", "-c", "other", "main"]);
-    let other = repo.commit("c.txt", "other\n");
+    let other = repo.commit("c.md", "other\n");
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", &other]);
-    assert_eq!(repo.passes(&end, &repo.head()), Ok(false));
+    assert_eq!(repo.code_change(&end, &repo.head()), Ok(None));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
     repo.remove();
 }
 
@@ -214,18 +215,16 @@ fn text_that_names_no_commit_does_not_pass() {
 #[test]
 fn places_on_the_first_parent_chain_only() {
     let (repo, end) = Repo::with_pr("place");
-    repo.git(&["switch", "--quiet", "-c", "side", "main"]);
-    let side = repo.commit("c.md", "side\n");
-    repo.git(&["switch", "--quiet", "pr"]);
-    repo.git(&["merge", "--quiet", "--no-edit", &side]);
+    let main = repo.advance_main("c.md", "main\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let merge = repo.head();
     let head = repo.commit("a.md", "text\n");
     assert_eq!(repo.place(&head, &head), Ok(Place::Head));
     assert_eq!(repo.place(&merge, &head), Ok(Place::Before));
     assert_eq!(repo.place(&end, &merge), Ok(Place::Head));
     assert_eq!(repo.place(&end[..7], &head), Ok(Place::Before));
-    assert_eq!(repo.place(&side, &head), Ok(Place::Off));
-    assert_eq!(repo.passes(&side, &head), Ok(false));
+    assert_eq!(repo.place(&main, &head), Ok(Place::Off));
+    assert_eq!(repo.passes(&main, &head), Ok(false));
     assert_eq!(repo.place(&head, &end), Ok(Place::Off));
     assert_eq!(repo.place("deadbeef", &head), Ok(Place::Off));
     let tree = format!("{end}^{{tree}}");
@@ -253,6 +252,7 @@ fn passes_commits_that_change_no_code_after_the_end() {
     repo.advance_main("c.txt", "main\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let second = text("second");
+    assert_eq!(repo.place(&end, &second), Ok(Place::Before));
     assert_eq!(repo.code_change(&end, &second), Ok(None));
     assert_eq!(repo.passes(&end, &second), Ok(true));
     repo.remove();
@@ -908,7 +908,7 @@ fn reads_a_merge_whose_messages_are_not_utf8() {
     let resolved = lines("p", "m");
     let merge = commit([(b"\xff.md", &resolved), (b"y.md", "p\n")], &[&end, &main]);
     assert_eq!(repo.code_change(&end, &merge), Ok(None));
-    assert_eq!(repo.passes(&end, &merge), Ok(true));
+    assert_eq!(repo.passes(&end, &merge), Ok(false));
     repo.remove();
 }
 

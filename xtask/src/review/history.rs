@@ -26,34 +26,40 @@ impl<'a> History<'a> {
     }
 
     /// Where `end` (a SHA or a prefix of at least 7 digits) is on the first-parent
-    /// chain of `head`. Text that names no single commit is [`Place::Off`].
+    /// chain of `head`. Each merge between them must be a clean merge of a commit on
+    /// the base: its tree is the tree that `git merge-tree` makes of its parents, and
+    /// its base side moves no text of its first parent into a code file, as in
+    /// `code_change`. Else, and for text that names no single commit, it is
+    /// [`Place::Off`].
     ///
     /// # Errors
     ///
-    /// A failed `git` command, also when `head` names no commit.
+    /// A failed `git` command, also when the base ref does not exist or `head` names
+    /// no commit.
     pub(crate) fn place(&self, end: &str, head: &str) -> Result<Place, String> {
         let Some(end) = self.sha(end)? else {
             return Ok(Place::Off);
         };
-        let head =
+        let base = self.base()?;
+        let mut commit =
             self.git(&["rev-parse", "--verify", &format!("{head}^{{commit}}")])?;
-        if end == head {
-            return Ok(Place::Head);
+        let mut place = Place::Head;
+        while commit != end {
+            let line = self.git(&["rev-list", "--parents", "-n", "1", &commit])?;
+            if let [_, parent] = line.split(' ').collect::<Vec<_>>()[..] {
+                place = Place::Before;
+                commit = parent.to_string();
+                continue;
+            }
+            let Some((first, second)) = self.base_merge(&line, &base)? else {
+                return Ok(Place::Off);
+            };
+            if !self.clean(&commit, first, second)? {
+                return Ok(Place::Off);
+            }
+            commit = first.to_string();
         }
-        let range = format!("{end}..{head}");
-        let chain = self.git(&["rev-list", "--first-parent", "--parents", &range])?;
-        // The walk stops at the first commit that `end` holds, so the last commit
-        // listed has `end` as its first parent only when `end` is on the chain.
-        let last = chain.lines().last();
-        if last.is_none_or(|line| line.split(' ').nth(1) != Some(&end)) {
-            return Ok(Place::Off);
-        }
-        let merge = |line: &str| line.split(' ').count() > 2;
-        Ok(if chain.lines().all(merge) {
-            Place::Head
-        } else {
-            Place::Before
-        })
+        Ok(place)
     }
 
     /// The first code change of `from..end`, as a phrase: "changes code at
@@ -303,6 +309,17 @@ impl<'a> History<'a> {
         }
     }
 
+    /// Reports whether `merge` has the tree that a merge of `first` and `second`
+    /// makes with no conflict, and the merge moves no text of `first` into a code
+    /// file (`moved_into_code`).
+    fn clean(&self, merge: &str, first: &str, second: &str) -> Result<bool, String> {
+        let merged = self.merged(first, second)?;
+        let tree = self.git(&["rev-parse", &format!("{merge}^{{tree}}")])?;
+        Ok(merged.clean
+            && merged.tree == tree
+            && self.moved_into_code(first, second, &merged.tree)?.is_none())
+    }
+
     /// The phrase "the base moves `<old>`, which the PR changes, into the code file
     /// `<new>`" for the first path `<old>` of `changed(first, second)` that their
     /// merge, with the tree `tree`, moves into the code file `<new>`. The moves are the
@@ -396,7 +413,7 @@ impl<'a> History<'a> {
         // and `first` both hold with a difference, and for each file that `first`
         // moves.
         let gone = self.commit(second, EMPTY_TREE)?;
-        let output = self.merge_tree(&[first, &gone])?;
+        let (_, output) = self.merge_tree(&[first, &gone])?;
         // `<tree>NUL`, then `<mode> <blob> <stage>TAB<path>NUL` for each stage of each
         // conflicted path, then `NUL` and the messages.
         let mut changed = Vec::new();
@@ -532,7 +549,7 @@ impl<'a> History<'a> {
     ///
     /// A failed `git merge-tree`.
     fn merged(&self, first: &str, second: &str) -> Result<Merged, String> {
-        let output = self.merge_tree(&["--name-only", first, second])?;
+        let (clean, output) = self.merge_tree(&["--name-only", first, second])?;
         // `<tree>NUL`, then `<path>NUL` for each conflicted path, then `NUL` and the
         // messages, which are not read: they can hold any bytes.
         let mut fields = output.split(|&b| b == 0);
@@ -541,18 +558,19 @@ impl<'a> History<'a> {
             .take_while(|path| !path.is_empty())
             .map(|path| String::from_utf8_lossy(path).into_owned());
         Ok(Merged {
+            clean,
             tree: tree.into_owned(),
             conflicts: conflicts.collect(),
         })
     }
 
-    /// The output of `git merge-tree --write-tree -z` with `args`, with or without a
-    /// conflict.
+    /// Whether `git merge-tree --write-tree -z` with `args` finds no conflict, and its
+    /// output.
     ///
     /// # Errors
     ///
     /// A failed `git merge-tree`.
-    fn merge_tree(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+    fn merge_tree(&self, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
         let output = command(self.root)
             .arg(format!("--attr-source={EMPTY_TREE}"))
             .args(["merge-tree", "--write-tree", "-z"])
@@ -560,7 +578,8 @@ impl<'a> History<'a> {
             .output()
             .map_err(|e| format!("git merge-tree: {e}"))?;
         match output.status.code() {
-            Some(0 | 1) => Ok(output.stdout),
+            Some(0) => Ok((true, output.stdout)),
+            Some(1) => Ok((false, output.stdout)),
             _ => Err(failure("merge-tree", &output.stderr)),
         }
     }
@@ -614,11 +633,12 @@ const PROBE: &str = "xtask-review-probe";
 /// ([`History::place`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Place {
-    /// The head, or a commit that only merges follow on the chain.
+    /// The head, or a commit that only clean merges of the base follow.
     Head,
-    /// A commit on the chain that a commit that is not a merge follows.
+    /// A commit that clean merges of the base and commits that are not merges follow,
+    /// with at least one of the second kind.
     Before,
-    /// Not on the chain.
+    /// Any other commit.
     Off,
 }
 
@@ -672,6 +692,8 @@ struct Probe {
 
 /// What `git merge-tree` makes of two commits.
 struct Merged {
+    /// Whether no path conflicts.
+    clean: bool,
     /// The merged tree, with conflict markers in each file whose content conflicts.
     tree: String,
     /// Each path with a conflict, in the order `git` gives, with each byte that is not

@@ -141,10 +141,11 @@ struct Parsed {
 }
 
 /// Checks that the review of PR `pr` is done at commit `head`: its last round comment
-/// ends at `head` or at a commit on its first-parent chain from which the range to
-/// `head` changes no code, finds nothing, and names each required reviewer, and, for a
-/// red-team PR, the director approved `head`. Reads the PR with `gh` and the history of
-/// the repository at `root` with `git`, and prints each problem.
+/// ends at `head` or at a commit on its first-parent chain after which each merge is
+/// a clean merge of the base and the range to `head` changes no code, finds nothing,
+/// and names each required reviewer, and, for a red-team PR, the director approved
+/// `head`. Reads the PR with `gh` and the history of the repository at `root` with
+/// `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
@@ -180,8 +181,9 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 
 /// The problems with the review in `record` at `head`: each round must name the
 /// reviewers it requires, and the last round must find nothing and end at `head`, or
-/// at a commit on its first-parent chain from which the range to `head` changes no
-/// code, with a `Text fixes:` line when a commit that is not a merge follows it.
+/// at a commit on its first-parent chain after which each merge is a clean merge of
+/// the base and the range to `head` changes no code, with a `Text fixes:` line when a
+/// commit that is not a merge follows it.
 /// `place` gives where a commit (a SHA or its prefix) is from `head`
 /// (`History::place`). A later round may skip `breaker` when the range of the last
 /// round changes no code; an earlier round's skip is taken as written. `code_change`
@@ -258,9 +260,9 @@ fn unended(
     let (number, end) = (round.number, &round.end);
     if place == Place::Off {
         return Ok(Some(format!(
-            "review round {number} ends at `{end}`, which is not the head `{head}` or \
-             a commit on its first-parent chain. A commit after the round needs a new \
-             round, unless it applies the round's `Text fixes:` items."
+            "review round {number} ends at {end}, not at the head {head}. A commit \
+             after the round needs a new round; only a clean merge of the base does \
+             not."
         )));
     }
     if let Some(change) = code_change(end, head)? {
