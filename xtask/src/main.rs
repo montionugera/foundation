@@ -287,18 +287,17 @@ mod tests {
             // whose end each parser finds at the same place.
             if flow {
                 match c {
-                    ']' => flow = false,
+                    ']' => (flow, start) = (false, false),
                     ' ' | ',' | '-' | '_' | '.' | '/' => {}
                     _ if c.is_ascii_alphanumeric() => {}
                     _ => refused(),
                 }
-                prev = c;
                 continue;
             }
             match c {
                 ' ' if prev == ':' => start = true,
                 // A `-` keeps a node start only before a space.
-                '-' if chars.peek().is_none_or(|(_, next)| *next == ' ') => {}
+                '-' if chars.peek().is_some_and(|(_, next)| *next == ' ') => {}
                 ' ' => {}
                 '#' if prev == ' ' => return line[..i].trim_end(),
                 // Parsers differ on whether such a `#` starts a comment.
@@ -555,6 +554,7 @@ mod tests {
             "d: e,'f\n",
             "g: |+\n",
             "  'h\n",
+            "[i]: j\n",
         );
         assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
     }
