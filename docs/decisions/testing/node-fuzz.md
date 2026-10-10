@@ -15,9 +15,12 @@
   test decodes (`docs/claude/testing.md`, "Oracles", from item 33 of #1839 by
   `laptop.director`, 2026-10-08 19:30 UTC:
   https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6067499161).
-  Trigger: the PR of #1744 that adds `admin.key` adds its form to the target, by its
-  length, with its inputs (moved from PR 1b-1 by `laptop.architect`, 2026-10-10 04:15
-  UTC: https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093666647).
+  The target also checks the decode of `admin.key` (NODE MESH), on 54 bytes as they
+  are, or on 50 bytes with their CRC32C appended, with `admin::check` as its oracle,
+  which the property tests of `admin` share. The inputs `admin-*` are its form (#1744
+  PR 1b-3, the trigger that `laptop.architect` moved from PR 1b-1, 2026-10-10 04:15
+  UTC: https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093666647). A
+  test founds a region with the key of `admin-valid`.
   Lost: property tests only, with a sentence in `docs/security.md` that the decode
   needs no target.
   It breaks T1. Decided by `laptop.architect-2`

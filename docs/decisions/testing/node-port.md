@@ -141,8 +141,9 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093413533, and
   approved by `laptop.architect` (03:57 UTC):
   https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453.
-  `admin.key` (#1744 PR 1b) shares this code when it lands. `os` gives each new file
-  the mode `0600` and each new directory `0700`, and on Linux a new directory takes
+  `admin.key` has the same form, and is made with `sector::publish` (NODE MESH, #1744
+  PR 1b-3); `node.key` moves to `publish` too (#2305). `os` gives each new file the
+  mode `0600` and each new directory `0700`, and on Linux a new directory takes
   the setgid bit of its parent; the umask can clear more bits. It does not change the
   mode of one that is there (#1988):
   https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831, on the

@@ -85,7 +85,7 @@ fn node(start: &Start) -> Result<(), Failure> {
         entropy: os::entropy(),
         net: net(),
         listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        region: None,
+        region: node::Region::Absent,
         name: known.name.clone(),
     });
     let stopper = node.stopper();
