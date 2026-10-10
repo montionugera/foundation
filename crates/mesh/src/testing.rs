@@ -79,8 +79,9 @@ pub struct Scan {
     /// The entries from index 1.
     pub entries: Vec<Entry>,
     /// The log files that the open leaves, in the framing of [`scan_log_dir`]: each
-    /// file in number order, named `log-<n>`, with zeros after the last record, and no
-    /// file after the one that holds the end. With no log file, it holds none.
+    /// file in number order, named `log-<n>`, and no file after the one that holds the
+    /// end. That file has zeros after its last record, and each file before it is as
+    /// read. With no log file, it holds none.
     pub files: Vec<u8>,
 }
 
@@ -94,7 +95,7 @@ pub struct Scan {
 /// What an open gives for these files: [`log::Error::Stray`], [`log::Error::Corrupt`],
 /// or [`log::Error::Version`].
 pub fn scan_log_dir(dir: &[u8]) -> Result<Scan, log::Error> {
-    let (stored, left) = log::reopen(&unframe(dir))?;
+    let (stored, left) = log::open_files(&unframe(dir))?;
     Ok(Scan {
         hard: stored.hard,
         entries: stored.entries,
@@ -103,10 +104,16 @@ pub fn scan_log_dir(dir: &[u8]) -> Result<Scan, log::Error> {
 }
 
 /// The name of the file in the folder `spec` of a mesh directory that names the
-/// pointer that `name` names, or `None` when `name` names no pointer.
+/// pointer that `name` names, or `None` when `name` names no pointer. On Unix, a
+/// `name` that is not UTF-8 reaches the read as the bytes of a path.
 #[must_use]
 pub fn round_trip_spec_name(name: &[u8]) -> Option<Vec<u8>> {
-    let pointer = used::pointer(Path::new(std::str::from_utf8(name).ok()?))?;
+    #[cfg(unix)]
+    let name =
+        Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    #[cfg(not(unix))]
+    let name = Path::new(std::str::from_utf8(name).ok()?);
+    let pointer = used::pointer(name)?;
     Some(used::file(pointer).into_os_string().into_encoded_bytes())
 }
 
@@ -957,17 +964,26 @@ mod tests {
         }
     }
 
+    type LogDirInput = (&'static str, Vec<u8>, Result<Scan, log::Error>);
+
+    const LEN: usize = 1024;
+
+    /// Record `number` with an empty entry at `number + 1`.
+    fn next(number: u64) -> Vec<u8> {
+        log_record(number, number.strict_add(1))
+    }
+
     /// Each input of `mesh_log_dir`, built from values, and what its scan gives.
-    #[expect(clippy::too_many_lines, reason = "one item for each input")]
-    fn log_dir_inputs() -> Vec<(&'static str, Vec<u8>, Result<Scan, log::Error>)> {
-        const LEN: usize = 1024;
-        let [r0, r1, r2] =
-            [0, 1, 2].map(|number| log_record(number, number.strict_add(1)));
+    fn log_dir_inputs() -> Vec<LogDirInput> {
+        [record_inputs(), torn_inputs(), file_inputs(), name_inputs()].concat()
+    }
+
+    /// Inputs of the records of one file.
+    fn record_inputs() -> Vec<LogDirInput> {
+        let r0 = next(0);
         let len = r0.len();
         let record = log::encode(0, Some(hard(true)), &[empty(1)]);
         let one = log_file(&[&record], LEN);
-        let two = log_file(&[&r0, &r1], LEN);
-        let zeros = vec![0; LEN];
         // A record that leaves less than a header before the first sector end, so the
         // next starts at the second sector.
         let filler = |len: usize| Entry {
@@ -986,43 +1002,59 @@ mod tests {
         let mut cut = log_file(&[&r0], LEN);
         cut.truncate(len.strict_sub(1));
         log::seal_file(&mut cut);
-        let follows = log_record(0, 2);
         let mut garbage = r0.clone();
         garbage.extend([1; 10]);
-        let torn_end = log_file(&[&r0, &torn(1, 2)], LEN);
+        let one_file = |bytes: &[u8]| framed(&[("log-0", bytes)]);
         vec![
-            ("empty", Vec::new(), Ok(empties(0, Vec::new()))),
-            ("lock", framed(&[("lock", &[])]), Ok(empties(0, Vec::new()))),
             (
                 "one_record",
                 framed(&[("lock", &[]), ("log-0", &one)]),
-                Ok(scanned(
-                    hard(true),
-                    vec![empty(1)],
-                    framed(&[("log-0", &one)]),
-                )),
-            ),
-            (
-                "two_files",
-                framed(&[("log-1", &log_file(&[&r2], LEN)), ("log-0", &two)]),
-                Ok(empties(
-                    3,
-                    framed(&[("log-0", &two), ("log-1", &log_file(&[&r2], LEN))]),
-                )),
+                Ok(scanned(hard(true), vec![empty(1)], one_file(&one))),
             ),
             (
                 "next_sector",
-                framed(&[("log-0", &sector)]),
-                Ok(scanned(
-                    Hard::default(),
-                    sector_entries,
-                    framed(&[("log-0", &sector)]),
-                )),
+                one_file(&sector),
+                Ok(scanned(Hard::default(), sector_entries, one_file(&sector))),
             ),
+            (
+                "number_gap",
+                one_file(&log_file(&[&r0, &next(2)], LEN)),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "version_2",
+                one_file(&log_file(&[&version], LEN)),
+                Err(version_2("log-0")),
+            ),
+            ("body_cut", one_file(&cut), Err(corrupt("log-0", 0))),
+            (
+                "entries_do_not_follow",
+                one_file(&log_file(&[&log_record(0, 2)], LEN)),
+                Err(corrupt("log-0", 0)),
+            ),
+            ("garbage", one_file(&garbage), Err(corrupt("log-0", len))),
+        ]
+    }
+
+    /// Inputs of a torn record.
+    fn torn_inputs() -> Vec<LogDirInput> {
+        let [r0, r2] = [0, 2].map(next);
+        let len = r0.len();
+        let torn_end = log_file(&[&r0, &torn(1, 2)], LEN);
+        let kept = log_file(&[&r0], LEN);
+        vec![
             (
                 "torn_end",
                 framed(&[("log-0", &torn_end)]),
-                Ok(empties(1, framed(&[("log-0", &log_file(&[&r0], LEN))]))),
+                Ok(empties(1, framed(&[("log-0", &kept)]))),
+            ),
+            (
+                "torn_end_in_next_file",
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&torn(1, 2)], LEN))]),
+                Ok(empties(
+                    1,
+                    framed(&[("log-0", &kept), ("log-1", &[0; LEN])]),
+                )),
             ),
             (
                 "torn_not_next",
@@ -1039,6 +1071,32 @@ mod tests {
                 framed(&[("log-0", &torn_end), ("log-1", &log_file(&[&r2], LEN))]),
                 Err(corrupt("log-0", len)),
             ),
+        ]
+    }
+
+    /// Inputs of the order of the files.
+    fn file_inputs() -> Vec<LogDirInput> {
+        let [r0, r1, r2] = [0, 1, 2].map(next);
+        let two = log_file(&[&r0, &r1], LEN);
+        let kept = log_file(&[&r0], LEN);
+        let zeros = vec![0; LEN];
+        // Bytes after the zero header that ends a file before the end file stay.
+        let mut after_end = kept.clone();
+        after_end[r0.len().strict_add(HEADER).strict_add(10)] = 9;
+        let after_end_files =
+            framed(&[("log-0", &after_end), ("log-1", &log_file(&[&r1], LEN))]);
+        let mut version = log::encode(9, None, &[empty(2)]);
+        version[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        log::seal_file(&mut version);
+        vec![
+            (
+                "two_files",
+                framed(&[("log-1", &log_file(&[&r2], LEN)), ("log-0", &two)]),
+                Ok(empties(
+                    3,
+                    framed(&[("log-0", &two), ("log-1", &log_file(&[&r2], LEN))]),
+                )),
+            ),
             (
                 "stale_next_file",
                 framed(&[("log-0", &two), ("log-1", &log_file(&[&r1], LEN))]),
@@ -1046,59 +1104,52 @@ mod tests {
             ),
             (
                 "next_file_past_next",
-                framed(&[
-                    ("log-0", &log_file(&[&r0], LEN)),
-                    ("log-1", &log_file(&[&r2], LEN)),
-                ]),
-                Err(corrupt("log-0", len)),
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&r2], LEN))]),
+                Err(corrupt("log-0", r0.len())),
             ),
             (
-                "number_gap",
-                framed(&[("log-0", &log_file(&[&r0, &r2], LEN))]),
-                Err(corrupt("log-0", len)),
+                "next_file_of_version_2",
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&version], LEN))]),
+                Err(version_2("log-1")),
             ),
             (
-                "version_2",
-                framed(&[("log-0", &log_file(&[&version], LEN))]),
-                Err(log::Error::Version {
-                    path: Path::new("log").join("log-0"),
-                    found: 2,
-                }),
+                "garbage_next_file",
+                framed(&[("log-0", &kept), ("log-1", &[1; 10])]),
+                Err(corrupt("log-1", 0)),
             ),
             (
-                "body_cut",
-                framed(&[("log-0", &cut)]),
-                Err(corrupt("log-0", 0)),
-            ),
-            (
-                "entries_do_not_follow",
-                framed(&[("log-0", &log_file(&[&follows], LEN))]),
-                Err(corrupt("log-0", 0)),
-            ),
-            (
-                "garbage",
-                framed(&[("log-0", &garbage)]),
-                Err(corrupt("log-0", len)),
+                "bytes_after_a_file_end",
+                after_end_files.clone(),
+                Ok(empties(2, after_end_files)),
             ),
             (
                 "empty_file_before_record",
-                framed(&[("log-0", &zeros), ("log-1", &log_file(&[&r0], LEN))]),
+                framed(&[("log-0", &zeros), ("log-1", &kept)]),
+                Err(corrupt("log-0", 0)),
+            ),
+            (
+                "empty_files_before_record",
+                framed(&[("log-0", &zeros), ("log-1", &zeros), ("log-2", &kept)]),
                 Err(corrupt("log-0", 0)),
             ),
             (
                 "empty_file_not_last",
-                framed(&[
-                    ("log-0", &log_file(&[&r0], LEN)),
-                    ("log-1", &zeros),
-                    ("log-2", &zeros),
-                ]),
+                framed(&[("log-0", &kept), ("log-1", &zeros), ("log-2", &zeros)]),
                 Err(corrupt("log-1", 0)),
             ),
             (
                 "spare",
-                framed(&[("log-0", &log_file(&[&r0], LEN)), ("log-1", &zeros)]),
-                Ok(empties(1, framed(&[("log-0", &log_file(&[&r0], LEN))]))),
+                framed(&[("log-0", &kept), ("log-1", &zeros)]),
+                Ok(empties(1, framed(&[("log-0", &kept)]))),
             ),
+        ]
+    }
+
+    /// Inputs of the names of the files and of the framing.
+    fn name_inputs() -> Vec<LogDirInput> {
+        vec![
+            ("empty", Vec::new(), Ok(empties(0, Vec::new()))),
+            ("lock", framed(&[("lock", &[])]), Ok(empties(0, Vec::new()))),
             (
                 "stray",
                 framed(&[("lock", &[]), ("other", &[])]),
@@ -1124,6 +1175,13 @@ mod tests {
         ]
     }
 
+    fn version_2(file: &str) -> log::Error {
+        log::Error::Version {
+            path: Path::new("log").join(file),
+            found: 2,
+        }
+    }
+
     #[test]
     fn each_log_dir_input_is_what_its_name_says() {
         let inputs = inputs!("mesh_log_dir":
@@ -1146,6 +1204,11 @@ mod tests {
             "empty_file_before_record",
             "empty_file_not_last",
             "spare",
+            "torn_end_in_next_file",
+            "next_file_of_version_2",
+            "garbage_next_file",
+            "empty_files_before_record",
+            "bytes_after_a_file_end",
             "stray",
             "leading_zero",
             "past_count",
@@ -1217,6 +1280,7 @@ mod tests {
         assert_eq!(scan_log_dir(&dir), Err(corrupt("log-0", 0)));
     }
 
+    // A scan error hides the ranges of a cut frame, so these assert `frames` itself.
     #[test]
     fn frames_end_with_the_input() {
         assert_eq!(frames(&[]), []);

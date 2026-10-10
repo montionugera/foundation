@@ -216,7 +216,7 @@ impl Log {
             segments.push(blocks.read(&file).await?);
             open.push(file);
         }
-        let scan = scan(&dir, &segments)?;
+        let scan = settle(&dir, &mut segments)?;
         let number = wide(scan.segment);
         if scan.spare {
             files.remove(&path(&dir, number.saturating_add(1))).await?;
@@ -225,7 +225,9 @@ impl Log {
             // A sync that failed in this boot leaves its writes in the cache, where
             // the read saw them, and a later sync does not write them. So the open
             // writes again what it read, with zeros after the last record.
-            let bytes = clear(&mut segments, &scan);
+            let bytes = segments
+                .get(scan.segment)
+                .expect("invariant: the open read each file that it holds");
             blocks.write(&file, 0, &mut &bytes[..]).await?;
             file
         } else {
@@ -403,24 +405,27 @@ struct Scan {
     spare: bool,
 }
 
-// Puts zeros after the last record of the file of `segments` that holds the end, and
-// gives that file.
-fn clear<'a>(segments: &'a mut [Vec<u8>], scan: &Scan) -> &'a [u8] {
-    let bytes = segments
-        .get_mut(scan.segment)
-        .expect("invariant: the open read each file that it holds");
-    bytes
-        .get_mut(scan.offset..)
-        .expect("invariant: the log ends in its end file")
-        .fill(0);
-    bytes
+// Scans `segments`, the files of `dir` in order, and leaves in it the files that an
+// open keeps: no spare, and zeros after the last record of the end file.
+fn settle(dir: &Path, segments: &mut Vec<Vec<u8>>) -> Result<Scan, Error> {
+    let scan = scan(dir, segments)?;
+    if scan.spare {
+        segments.pop();
+    }
+    if let Some(bytes) = segments.get_mut(scan.segment) {
+        bytes
+            .get_mut(scan.offset..)
+            .expect("invariant: the log ends in its end file")
+            .fill(0);
+    }
+    Ok(scan)
 }
 
 /// What an open of a directory that holds `files` reads, and the log files, in number
-/// order, that it leaves: each with zeros after the last record, and no file after
-/// the one that holds the end. Each of `files` is a name and the bytes of that file.
+/// order, that it leaves: no file after the one that holds the end, which has zeros
+/// after its last record. Each of `files` is a name and the bytes of that file.
 #[cfg(any(test, feature = "sim"))]
-pub(crate) fn reopen(
+pub(crate) fn open_files(
     files: &[(PathBuf, Vec<u8>)],
 ) -> Result<(Stored, Vec<Vec<u8>>), Error> {
     let dir = Path::new("log");
@@ -435,13 +440,7 @@ pub(crate) fn reopen(
             bytes.clone()
         })
         .collect();
-    let scan = scan(dir, &segments)?;
-    if scan.spare {
-        segments.pop();
-    }
-    if segments.len() > scan.segment {
-        clear(&mut segments, &scan);
-    }
+    let scan = settle(dir, &mut segments)?;
     Ok((scan.stored, segments))
 }
 
