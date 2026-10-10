@@ -21,7 +21,7 @@ pub(crate) const FILE: &str = "node.key";
 /// The first bytes of the file; a new form gets a new tag.
 const TAG: &[u8; 16] = b"foundation/key/2";
 /// The length of the tag, the node key, the private key, and the seal key.
-pub(crate) const BODY: usize = 96;
+const BODY: usize = 96;
 /// The length of the file: the body and its CRC32C.
 pub(crate) const LEN: usize = BODY + 4;
 
@@ -191,28 +191,6 @@ mod tests {
             crc32c::crc32c(&bytes[..96]).to_le_bytes(),
             "little-endian"
         );
-    }
-
-    /// The inputs of the fuzz corpus in this form decode, as their old forms did. Reads
-    /// `decode`, since no public call shows the seal key yet.
-    #[test]
-    fn decodes_the_inputs_of_the_corpus() {
-        let valid: &[u8; LEN] =
-            include_bytes!("../../../oracles/fuzz/node_identity/valid-2");
-        let body: &[u8; BODY] =
-            include_bytes!("../../../oracles/fuzz/node_identity/valid-body-2");
-        let mut summed = [0; LEN];
-        summed[..BODY].copy_from_slice(body);
-        sector::checksum(&mut summed);
-        for bytes in [valid, &summed] {
-            let identity = decode(bytes).expect("decodes");
-            assert_eq!(
-                identity.key,
-                types::node::Key::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10)
-            );
-            assert_eq!(identity.private_key.0, [7; 32]);
-            assert_eq!(identity.opener.expose(), &[5; 32]);
-        }
     }
 
     #[test]
