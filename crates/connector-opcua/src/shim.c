@@ -7,7 +7,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client_config_default.h>
-#include <open62541/server_config_default.h>
 #include <open62541/plugin/eventloop.h>
 #include <open62541/types.h>
 #include <open62541/util.h>
@@ -589,31 +588,6 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
     return UA_Client_newWithConfig(&config);
 }
 
-/* Gives a server on `el` with the minimal config for `port` and the one server URL
- * `url`, or NULL on a failure. */
-UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *url) {
-    UA_ServerConfig config;
-    memset(&config, 0, sizeof(config));
-    config.logging = &loop_of(el)->logger;
-    config.eventLoop = el;
-    config.externalEventLoop = true;
-    if(UA_ServerConfig_setMinimal(&config, port, NULL) != UA_STATUSCODE_GOOD) {
-        UA_ServerConfig_clear(&config);
-        return NULL;
-    }
-    UA_Array_delete(config.serverUrls, config.serverUrlsSize, &UA_TYPES[UA_TYPES_STRING]);
-    config.serverUrlsSize = 0;
-    UA_String text = UA_STRING((char *)(uintptr_t)url);
-    if(UA_Array_copy(&text, 1, (void **)&config.serverUrls, &UA_TYPES[UA_TYPES_STRING]) !=
-       UA_STATUSCODE_GOOD) {
-        config.serverUrls = NULL;
-        UA_ServerConfig_clear(&config);
-        return NULL;
-    }
-    config.serverUrlsSize = 1;
-    return UA_Server_newWithConfig(&config);
-}
-
 /* Sets `key` of `map` to an array of the `size` strings at `strings`, at most 4. */
 UA_StatusCode shim_map_set_strings(UA_KeyValueMap *map, const char *key,
                                    const char *const *strings, size_t size) {
@@ -632,13 +606,4 @@ UA_StatusCode shim_map_set_strings(UA_KeyValueMap *map, const char *key,
 /* Gives the service result of `response`, a response of a service. */
 UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
-}
-
-/* Gives discovery URL `index` of `server`, or NULL past the last. */
-const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
-    const UA_ApplicationDescription *description =
-        &UA_Server_getConfig(server)->applicationDescription;
-    if(index >= description->discoveryUrlsSize)
-        return NULL;
-    return &description->discoveryUrls[index];
 }

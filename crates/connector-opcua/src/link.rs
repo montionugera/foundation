@@ -147,10 +147,10 @@ fn shim_compiler() -> cc::Tool {
         .get_compiler()
 }
 
-/// Gives each pragma of `shim.c` after the preprocessor, which joins split lines and
-/// expands `_Pragma`.
-fn shim_pragmas() -> Vec<String> {
-    let path = std::path::Path::new(ROOT).join("src/shim.c");
+/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
+/// lines and expands `_Pragma`.
+fn shim_pragmas(file: &str) -> Vec<String> {
+    let path = src().join(file);
     let output = shim_compiler()
         .to_command()
         .arg("-E")
@@ -213,14 +213,17 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
         crate::child::run(name, &[]);
         return;
     }
-    assert_eq!(
-        shim_pragmas(),
-        [
-            "#pragma GCC diagnostic push",
-            "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
-            "#pragma GCC diagnostic pop",
-        ]
-    );
+    for file in ["shim.c", "server.c"] {
+        assert_eq!(
+            shim_pragmas(file),
+            [
+                "#pragma GCC diagnostic push",
+                "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
+                "#pragma GCC diagnostic pop",
+            ],
+            "{file}"
+        );
+    }
     let headers = "#include <open62541/types.h>";
     assert_eq!(check_shim(headers, ""), "");
     let parameter = "int in_the_headers(int unused) { return 0; }";
@@ -422,22 +425,25 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
 
-/// The shim takes no value from the PCG32 generator of the copy, which OPEN62541
-/// SOURCE bars for each nonce, key, and session token of Foundation code.
+/// Neither the shim nor the test server takes a value from the PCG32 generator of the
+/// copy, which OPEN62541 SOURCE bars for each nonce, key, and session token of
+/// Foundation code.
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     let shim: Vec<_> = std::fs::read_dir(env!("OUT_DIR"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.to_string_lossy().ends_with("-shim.o"))
+        .filter(|path| {
+            let path = path.to_string_lossy();
+            path.ends_with("-shim.o") || path.ends_with("-server.o")
+        })
         .collect();
-    assert_eq!(shim.len(), 1, "{shim:?}");
+    assert_eq!(shim.len(), 2, "{shim:?}");
     let undefined = names(&shim, "--undefined-only");
-    assert!(
-        undefined.contains("UA_Client_newWithConfig"),
-        "{undefined:?}"
-    );
+    for name in ["UA_Client_newWithConfig", "UA_Server_newWithConfig"] {
+        assert!(undefined.contains(name), "{name} in {undefined:?}");
+    }
     let drawn: Vec<_> = ["UA_UInt32_random", "UA_Guid_random"]
         .into_iter()
         .filter(|name| undefined.contains(*name))
@@ -561,26 +567,20 @@ fn read_by_rustc(
     let features = env!("CONNECTOR_OPCUA_TARGET_FEATURES").split(',');
     let features: Vec<_> = features.map(|feature| format!("+{feature}")).collect();
     let features = features.join(",");
-    // rustc checks cfgs only when it emits more than dep-info, and each thread needs a
-    // directory of its own for the metadata.
-    let out = std::path::Path::new(env!("OUT_DIR"))
-        .join("scan-out")
-        .join(format!(
-            "{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+    // rustc checks cfgs only when it emits more than dep-info.
+    let out = scan_out();
     let output = std::process::Command::new("rustc")
         .args(["--edition", "2024", "--crate-type", "lib"])
         .arg(format!("-Ctarget-feature={features}"))
         .args(["--emit", "dep-info=-,metadata", "--out-dir"])
-        .arg(out)
+        .arg(&out)
         .args(checked.iter().flat_map(|cfg| ["--check-cfg", cfg]))
         .args(["--force-warn", "unexpected_cfgs"])
         .args(flags)
         .arg(root.join("src/lib.rs"))
         .output()
         .unwrap();
+    std::fs::remove_dir_all(&out).unwrap();
     let deps = String::from_utf8(output.stdout).unwrap();
     let errors = String::from_utf8(output.stderr).unwrap();
     assert!(!deps.is_empty(), "rustc gives no files: {errors}");
@@ -590,6 +590,14 @@ fn read_by_rustc(
         .map(|path| std::fs::canonicalize(path.replace("\\ ", " ")).unwrap())
         .collect();
     (files, unknown_cfgs(&errors))
+}
+
+/// The directory of the metadata that [`read_by_rustc`] writes, one for each thread.
+fn scan_out() -> std::path::PathBuf {
+    let thread = std::thread::current().id();
+    std::path::Path::new(env!("OUT_DIR"))
+        .join("scan-out")
+        .join(format!("{}-{thread:?}", std::process::id()))
 }
 
 /// Each cfg that the warnings of rustc in `errors` give as unknown. Only the head and
@@ -654,17 +662,22 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 }
 
-/// Each identifier of `path` for which `named` holds, as `path: identifier`. A byte
-/// that is not UTF-8 splits identifiers.
+/// Each identifier of `path` for which `named` holds, as `path:line: identifier`. A
+/// byte that is not UTF-8 splits identifiers.
 #[expect(
     clippy::disallowed_methods,
     reason = "a test reads the files of the crate"
 )]
 fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String> {
     let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
-    let found = words(&text).filter(|word| named(word));
+    let lines = (1..).zip(text.lines());
+    let found = lines.flat_map(|(line, text)| {
+        words(text)
+            .filter(|word| named(word))
+            .map(move |word| (line, word))
+    });
     found
-        .map(|word| format!("{}: {word}", path.display()))
+        .map(|(line, word)| format!("{}:{line}: {word}", path.display()))
         .collect()
 }
 
@@ -672,10 +685,15 @@ fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String>
 /// no test file.
 #[test]
 fn the_scan_names_only_the_files_outside_tests() {
-    let src = src();
-    let named = named_outside_tests(&root(), |name| name == "shim_client_new");
-    let at = |file: &str| format!("{}: shim_client_new", src.join(file).display());
-    assert_eq!(named, [at("bench.rs"), at("ffi.rs")]);
+    let client = |name: &str| name == "shim_client_new";
+    let named = named_outside_tests(&root(), client);
+    let files = ["bench.rs", "ffi.rs"].map(|file| src().join(file));
+    let found: Vec<_> = files
+        .iter()
+        .flat_map(|path| named_in(path, client))
+        .collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(named, found);
 }
 
 /// A file that only a test build reads is cut off, with the files that it declares.
@@ -913,9 +931,17 @@ fn the_scan_reads_the_module_that_a_test_mock_shadows() {
     assert_eq!(named, [at(&root, "src/clock.rs")]);
 }
 
-/// How [`named_outside_tests`] gives the name `named` in `file` of `root`.
+/// A scan leaves no output of rustc behind.
+#[test]
+fn the_scan_removes_its_output() {
+    let root = create_tree("output", &[("src/lib.rs", "fn named() {}")]);
+    read_by_rustc(&root, &[], &[]);
+    assert!(!scan_out().exists(), "{}", scan_out().display());
+}
+
+/// How [`named_outside_tests`] gives the name `named` on line 1 of `file` of `root`.
 fn at(root: &std::path::Path, file: &str) -> String {
-    format!("{}: named", root.join(file).display())
+    format!("{}:1: named", root.join(file).display())
 }
 
 /// A directory under `OUT_DIR` named `name` that holds only `files`.
@@ -954,6 +980,52 @@ fn the_rust_outside_tests_builds_no_server() {
             || ["shim_server_new", "UA_random_seed"].contains(&name)
     });
     assert!(named.is_empty(), "the Rust outside tests names {named:?}");
+}
+
+/// Each name of a server in a `.c` or `.h` file under `dir` but `dir/server.c`, as
+/// [`named_in`] gives it.
+fn servers_in_c(dir: &std::path::Path) -> Vec<String> {
+    let server = dir.join("server.c");
+    let files = [files_under(dir, "c"), files_under(dir, "h")].concat();
+    files
+        .into_iter()
+        .filter(|path| *path != server)
+        .flat_map(|path| named_in(&path, |name| name.starts_with("UA_Server")))
+        .collect()
+}
+
+/// Only a build with `sim` compiles `server.c`, and no other C of `src/` names a
+/// server, so no production client reaches `setDefaultConfig`.
+#[test]
+fn the_c_outside_the_server_file_names_no_server() {
+    let named = servers_in_c(&src());
+    assert!(named.is_empty(), "the C outside server.c names {named:?}");
+}
+
+#[test]
+fn the_c_scan_names_each_server_outside_the_server_file() {
+    let root = create_tree(
+        "c",
+        &[
+            (
+                "shim.c",
+                "UA_Client *shim_client_new(UA_EventLoop *el) {\n    \
+                 UA_ServerConfig_setMinimal(&config, 4840, NULL);\n",
+            ),
+            ("server.c", "UA_Server *shim_server_new(void);"),
+            ("alloc.h", "UA_Server *server;"),
+        ],
+    );
+    assert_eq!(
+        servers_in_c(&root),
+        [
+            format!(
+                "{}:2: UA_ServerConfig_setMinimal",
+                root.join("shim.c").display()
+            ),
+            format!("{}:1: UA_Server", root.join("alloc.h").display()),
+        ]
+    );
 }
 
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`

@@ -304,9 +304,11 @@ mod tests {
             library.get_files().collect::<Vec<_>>(),
             [copy.join("a.c"), copy.join("src/b.c")]
         );
+        // The tests build with `sim`, so the shim build holds the test server.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         assert_eq!(
             shim.get_files().collect::<Vec<_>>(),
-            [Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shim.c")]
+            [src.join("shim.c"), src.join("server.c")]
         );
         let dirs = ["/copy/deps", "/copy/include"];
         let header = format!(
