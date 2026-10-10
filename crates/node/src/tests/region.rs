@@ -248,16 +248,6 @@ fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
                 ..sim::Config::default()
             });
             let host = keyed(&mut sim, 2);
-            // A cut can lose the entry of the `node.key` that `keyed` wrote, and a new
-            // key founds another region.
-            let synced = sim.run_on(&host, |host, _| async move {
-                let files = host.files();
-                files
-                    .sync_dir(Path::new(""))
-                    .await
-                    .expect("syncs the directory");
-            });
-            synced.expect("the run ends");
             let node = start(&host);
             assert_eq!(sim.run_for(after), Ok(()), "{seed} {after:?}");
             sim.crash(&host, sim::Crash::Power);
