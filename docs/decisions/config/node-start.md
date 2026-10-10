@@ -77,5 +77,7 @@
   2026-10-09T23:57:51Z, that reason confirmed, and the first bullet of the ruling
   narrowed to `Applied` and each error but `Config`,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6091313576).
-  `--listen`, and the files `address` and `admin.key`, come with #1744
+  `main` gives `Region::Stored`, so the first start founds the root region and writes
+  `admin.key`, and each later start opens that region (NODE MESH). `--listen` and the
+  file `address` come with #1744
   (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).

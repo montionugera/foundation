@@ -75,6 +75,20 @@ fn a_second_node_on_a_data_directory_fails_and_the_first_runs_on() {
 }
 
 #[test]
+fn a_first_start_founds_the_region_and_a_restart_needs_no_admin_key() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let admin = rig.dir.join("foundation-data/data/admin.key");
+    let len = std::fs::metadata(&admin).expect("stat the admin key").len();
+    assert_eq!(len, 54);
+    std::fs::remove_file(&admin).expect("remove the admin key");
+    rig.start_with(&[]);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert!(!admin.exists(), "a restart made a new admin key");
+}
+
+#[test]
 fn a_restart_with_another_name_fails() {
     let mut rig = Rig::new();
     rig.start();
@@ -329,7 +343,11 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
     rig.start();
     rig.stop();
     let mode = |mode| std::fs::Permissions::from_mode(mode);
-    for (file, call) in [("node.key", "open"), ("shard-0/ring", "open")] {
+    for (file, call) in [
+        ("node.key", "open"),
+        ("shard-0/ring", "open"),
+        ("mesh/log/log-0", "open"),
+    ] {
         let path = rig.dir.join("foundation-data/data").join(file);
         std::fs::set_permissions(&path, mode(0o400)).expect("make it read-only");
         let output = rig.run(&["start"], b"");
