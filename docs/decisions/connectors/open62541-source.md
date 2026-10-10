@@ -383,4 +383,7 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
   2026-10-10 16:03 UTC). The test of the panic at the bound deletes its server itself
   after that panic, because `close_server` panics before its delete, and the delayed
-  callbacks that still wait are those of the test, which do not read the server.
+  callbacks that still wait are those of the test, which do not read the server. That
+  exception: approved by `laptop.architect-2` at `08c753cbe`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6103350388,
+  2026-10-10 23:32 UTC).
