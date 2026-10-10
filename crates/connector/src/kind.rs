@@ -206,8 +206,8 @@ impl<C> Context<C> {
 
     /// Opens a reader session with `settings`, as this connector: its subject and its
     /// name are the connector's name. An open takes over the last session of the
-    /// connector's reader on its index, and a complete one resumes at its acks while
-    /// the home holds them (`settings.hold`), as [`hub::reader::Config::name`] says.
+    /// connector's reader on its index, and starts as [`hub::reader::Config::name`]
+    /// says.
     ///
     /// # Errors
     ///
