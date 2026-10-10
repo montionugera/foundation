@@ -42,7 +42,8 @@ const CLOCKS: [&str; 3] = [
 
 /// The only (file, function, symbol, access) keys with which a function references a
 /// symbol outside the copy that [`SYMBOLS`] does not admit. A clock counts only as a
-/// call.
+/// call. A test of `connector-opcua` names the function of each clock key and fails
+/// when its reason becomes false.
 const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 20] = [
     // `isdigit` reads the locale, which stays C: nothing calls `setlocale`.
     (
@@ -139,7 +140,8 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 20] = [
         "access",
         Access::Call,
     ),
-    // ECC user tokens, which need encryption, which is off.
+    // ECC user tokens, which need an ECC policy. Encryption is off and
+    // `connector-opcua` adds no policy, so a client has only the policy `None`.
     (
         "src/util/ua_encryptedsecret.c",
         "encryptUserIdentityTokenEcc",
@@ -974,7 +976,7 @@ impl Uses {
                 format!(
                     "{file}: `{function}` {verb} `{symbol}`, a global clock function. \
                      Find whether a node runs it; if not, add it to FUNCTION_SYMBOLS \
-                     with the reason"
+                     with the reason and a check of the reason in connector-opcua"
                 )
             } else {
                 format!(
@@ -1647,7 +1649,7 @@ End of search list.
         format!(
             "{file}: `{function}` calls `UA_DateTime_now`, a global clock function. \
              Find whether a node runs it; if not, add it to FUNCTION_SYMBOLS with the \
-             reason"
+             reason and a check of the reason in connector-opcua"
         )
     }
 
@@ -1662,6 +1664,30 @@ End of search list.
             }
         }
         uses
+    }
+
+    #[test]
+    fn a_test_of_connector_opcua_names_the_function_of_each_clock_key() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let link = workspace.join("crates/connector-opcua/src/link.rs");
+        let text = std::fs::read_to_string(link).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        let docs: Vec<String> = (0..lines.len())
+            .filter(|&at| lines[at] == "#[test]")
+            .map(|at| {
+                let doc = lines[..at]
+                    .iter()
+                    .rev()
+                    .take_while(|line| line.starts_with("///"));
+                doc.copied().collect::<Vec<_>>().join(" ")
+            })
+            .collect();
+        for (_, function, symbol, _) in FUNCTION_SYMBOLS {
+            if CLOCKS.contains(&symbol) {
+                let name = format!("`{function}`");
+                assert!(docs.iter().any(|doc| doc.contains(&name)), "{function}");
+            }
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 pub(crate) mod client;
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::future::poll_fn;
 use std::pin::pin;
@@ -24,7 +25,7 @@ use wire::hub::{
     BUSY, FAILED, FromReader, Head, Home, Mode, NOT_HOME, UNKNOWN, ends, keys,
 };
 
-use crate::reader::{Channels, Credit, Session, Stop};
+use crate::reader::{Channels, Complete, Session, Stop};
 use crate::{Away, Ending, State};
 
 pub use client::{Reply, Request};
@@ -50,6 +51,8 @@ pub enum Error {
     ManyIndexes,
     /// The keys of the open do not hold their index. Code `MALFORMED`.
     NoIndex,
+    /// The open names a channel more than once. Code `MALFORMED`.
+    Repeated(channel::Key),
     /// The open names a channel that this node does not know. Code `UNKNOWN`.
     Unknown(channel::Key),
     /// A channel of the open was removed from the definitions. Code `UNKNOWN`.
@@ -109,6 +112,7 @@ impl Error {
             | Self::Class(_)
             | Self::ManyIndexes
             | Self::NoIndex
+            | Self::Repeated(_)
             | Self::Unadmitted
             | Self::Pending => Some(Code(MALFORMED)),
             Self::Access(error) => Some(Code(client::refusal(error).code())),
@@ -139,6 +143,9 @@ impl fmt::Display for Error {
             }
             Self::NoIndex => {
                 f.write_str("the open does not name the index of its channels")
+            }
+            Self::Repeated(key) => {
+                write!(f, "the open names channel {key} more than once")
             }
             Self::Unknown(key) => {
                 write!(
@@ -258,7 +265,7 @@ async fn serve(
     let mut home = Home::default();
     let Some(Opened {
         mut session,
-        credit,
+        complete,
         mut layout,
     }) = open(state, class, &mut home, receiver).await?
     else {
@@ -268,7 +275,7 @@ async fn serve(
     sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
     // `peer` lives across turns, so a frame never drops a read of the peer. `take`
     // gives up a frame only in the poll that returns it.
-    let mut peer = pin!(peer(receiver, home, credit.as_ref()));
+    let mut peer = pin!(peer(receiver, home, complete.as_ref()));
     loop {
         let event = {
             let mut take = pin!(session.take());
@@ -287,8 +294,8 @@ async fn serve(
                 sender.finish()?;
                 return Ok(());
             }
-            Event::Frame(Ok((frame, set, _))) => {
-                layout.send(state, sender, &frame, set).await?;
+            Event::Frame(Ok((frame, lens))) => {
+                layout.send(state, sender, &frame, &lens.set).await?;
             }
             Event::Frame(Err(Stop::Behind)) => {
                 sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
@@ -319,13 +326,13 @@ enum Event<F> {
 async fn peer(
     receiver: &mut Receiver,
     mut home: Home,
-    credit: Option<&Credit>,
+    complete: Option<&Complete>,
 ) -> Result<(), Error> {
     while let Some(message) = receiver.recv().await? {
         let FromReader::Credit(grant) = home.decode(&message)? else {
             unreachable!("invariant: after the keys run, Home gives only credits");
         };
-        credit
+        complete
             .expect("invariant: Home refuses a credit in a latest session")
             .grant(grant.limit_bytes);
     }
@@ -335,8 +342,8 @@ async fn peer(
 /// A session open at the home.
 struct Opened {
     session: Session,
-    /// The credit of a complete session.
-    credit: Option<Credit>,
+    /// The grant and the ack of a complete session.
+    complete: Option<Complete>,
     layout: Layout,
 }
 
@@ -388,21 +395,21 @@ async fn open(
         slots: slots.clone(),
         index,
     };
-    let (session, credit) = match open.mode {
+    let (session, complete) = match open.mode {
         Mode::Complete { limit_bytes } => {
             let charge = ::home::reader::complete::Charge::Places(slots.clone());
-            let (session, credit) =
+            let (session, complete) =
                 Session::complete(state, channels, limit_bytes, charge);
-            (session, Some(credit))
+            (session, Some(complete))
         }
         Mode::Latest => (Session::latest(state, channels), None),
     };
-    if let Some(credit) = &credit {
-        credit.grant(granted);
+    if let Some(complete) = &complete {
+        complete.grant(granted);
     }
     Ok(Some(Opened {
         session,
-        credit,
+        complete,
         layout: Layout::new(slots, index),
     }))
 }
@@ -417,6 +424,8 @@ struct Opening<'s> {
     index: Option<channel::Key>,
     /// The position of the index in the keys checked.
     at: Option<usize>,
+    /// The keys checked, so a key listed twice is found.
+    listed: BTreeSet<channel::Key>,
 }
 
 impl<'s> Opening<'s> {
@@ -432,6 +441,7 @@ impl<'s> Opening<'s> {
             ending,
             index: None,
             at: None,
+            listed: BTreeSet::new(),
         }
     }
 
@@ -457,8 +467,8 @@ impl<'s> Opening<'s> {
         .await
     }
 
-    /// Checks that each of `keys` is known and on the index of the open, and adds it to
-    /// the channels of the open.
+    /// Checks that each of `keys` is known, on the index of the open, and not named
+    /// before, and adds it to the channels of the open.
     fn check(&mut self, keys: keys::Iter<'_>) -> Result<(), Error> {
         let state = &mut *self.state.borrow_mut();
         let checked = state.opens.keys_mut(self.key);
@@ -467,7 +477,10 @@ impl<'s> Opening<'s> {
             if *self.index.get_or_insert(of) != of {
                 return Err(Error::ManyIndexes);
             }
-            if key == of && self.at.is_none() {
+            if !self.listed.insert(key) {
+                return Err(Error::Repeated(key));
+            }
+            if key == of {
                 self.at = Some(checked.len());
             }
             checked.push(key);

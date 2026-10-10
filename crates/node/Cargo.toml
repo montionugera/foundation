@@ -30,6 +30,7 @@ hub = { path = "../hub" }
 mesh = { path = "../mesh" }
 ops = { path = "../ops" }
 os = { path = "../os" }
+secret = { path = "../secret" }
 spec = { path = "../spec" }
 transport = { path = "../transport" }
 types = { path = "../types" }
@@ -56,8 +57,8 @@ test = true
 loom = { workspace = true }
 
 # Under `--cfg loom`, tokio has no `net`.
-[target.'cfg(not(loom))'.dev-dependencies]
-# The simulated servers of the process tests serve over `os::net()`.
+[target.'cfg(not(loom))'.dependencies]
+# `foundation start` serves over `os::net()`.
 os = { path = "../os", features = ["net"] }
 
 [lints]
