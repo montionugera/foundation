@@ -3,8 +3,8 @@
   https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831). This
   supersedes `Config::key` and `Config::private_key` of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452.
-  `Config::region: Option<mesh::region::Founding>` gives the region that the node is a
-  member of: its prefix, its members (one card has the node's key), the voters before
+  `Config::region` (`Region::Given`, amended below) gives the region that the node is
+  a member of: its prefix, its members (one card has the node's key), the voters before
   the first entry of the log, and its founding definitions. The caller gives the same
   region at each start: a start whose mesh log holds no record keeps it in the data
   directory, and a start whose log holds a record and that gives another region stops
@@ -14,9 +14,10 @@
   condition on the log, `laptop.architect-2`, 2026-10-09T23:58:45Z:
   https://github.com/synnaxlabs/foundation/pull/2200#issuecomment-6091323223, and
   `laptop.architect`, 2026-10-10T00:00:37Z:
-  https://github.com/synnaxlabs/foundation/pull/2200#issuecomment-6091342010). `None`
-  opens no mesh, and the hub of each task then gets no mesh: a node runs with no region
-  before it founds or joins one. Changed by `laptop.architect`, 2026-10-08T18:42:42Z
+  https://github.com/synnaxlabs/foundation/pull/2200#issuecomment-6091342010).
+  `Region::Absent` opens no mesh, and the hub of each task then gets no mesh: a node
+  runs with no region before it founds or joins one. Changed by `laptop.architect`,
+  2026-10-08T18:42:42Z
   (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6066677536). The
   long-term path takes it out of `Config`: the node keeps its membership in its data
   directory when it founds or joins, and reads it at each start.
@@ -153,6 +154,8 @@
   by `laptop.architect-2` for the `node` and `ops` parts (2026-10-09T03:40:04Z,
   https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6073787912).
   Amended (2026-10-10, #1744 PR 1b-3): `Config::region` has the type `node::Region`.
+  Supersedes the type `Option<mesh::region::Founding>` of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452.
   `Region::Stored` is the production path, and supersedes the long-term path above.
   Shard 0 reads the founding of the mesh directory with `mesh::founding`. When the
   directory holds none, the node founds the root region alone: one member, the node,
@@ -169,16 +172,18 @@
   length, also one with no bytes, which `publish` never leaves, or of another tag or
   checksum gives `Error::Admin`, and the node does not write over it. Each other file
   error on `admin.key` gives `Error::Directory`. `publish` in place of a write in place,
-  by `laptop.architect-2` (2026-10-10, the audit of #2172):
+  by `laptop.architect-2` (2026-10-10T22:20:34Z, the audit of #2172):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. A start
   that reads a founding reads no `admin.key`, so a start with a founding and no
   `admin.key` starts. A founding that does not read gives `Error::Mesh`. `Error::Admin`
   and these errors come where `Error::Mesh` does in the rank of `Node::join`.
   `Region::Given(founding)` is the `Some` of before, behind the feature `sim`: a patch
-  for the tests of `node` and the `acceptance` lab until a node joins by ticket (#1157).
+  for the tests of `node` and the `acceptance` lab until a node joins by ticket (#1157;
+  the feature by `laptop.architect`, 2026-10-10T04:08:03Z:
+  https://github.com/synnaxlabs/foundation/issues/2233#issuecomment-6093607742).
   `Region::Absent` is `None`. The status of the member is empty until #728 gives the
   status channels of the node their keys. By `laptop.architect-2` (#1744, plan revision
-  3, 2026-10-10 03:30 UTC):
+  3, 2026-10-10T03:30:54Z):
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Lost:
   `node` keeps its own founding file, a second copy of one value; `node` builds the
   founding again at each start, so a card with port 0 or a release that changes
