@@ -253,8 +253,12 @@
   copy-then-send for 1000 ranges of 8 B); a copy into a new `Vec` as the walk goes,
   because the `Vec` grows, or takes the rest of the message and noq holds the extra
   capacity until the ACK; and a last long run that takes the block, because it gave no
-  time gain on box2 and adds a case. Decided by `laptop.architect-2` (#68, 2026-10-08
-  08:13 UTC, one walk:
+  time gain on box2 and adds a case. Lost: a copy of a longer stretch into a block of
+  the shard's pool, because noq still copies each shorter stretch to the heap, and a
+  write would wait for a block in the middle of a message, with no end when each block
+  is held by a write that waits (`laptop.architect-2`, #1879,
+  https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384). Decided
+  by `laptop.architect-2` (#68, 2026-10-08 08:13 UTC, one walk:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055676016; and 08:25
   UTC, the connection's buffer:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055859489; and

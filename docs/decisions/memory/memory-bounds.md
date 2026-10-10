@@ -19,3 +19,9 @@
   allocation fails with `Error::Refused`, a separate error from a full pool (the person
   on 2026-10-05: "I approve the separate error"). The carve counts do not change, the
   sizes given back stay given back, and a later allocation may succeed (#475, #542).
+  Outside the pool budget, each QUIC connection holds on the heap the sent data that noq
+  has not had acknowledged, at most `window_bytes` (`send_window`), the rest of each
+  copied stretch that noq has not taken, at most the peer's window (the send budget),
+  and the stretch buffer of `send_parts`, under twice the peer's `message_bytes_max`
+  (STREAM WIRE; `laptop.architect-2`, #1879,
+  https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384).
