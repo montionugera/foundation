@@ -582,7 +582,7 @@ async fn create_shard(
     node: &sim::node::Node,
     tasks: Tasks,
 ) -> (home::Shard, Interner, i64, clock::Reader) {
-    let config = block::Config { budget: 1 << 23 };
+    let config = block::Config::new(1 << 23).expect("the budget fits");
     let pool = Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
     let (clock, mesh) = clock::Clock::new(node.clock());
     let wall = node.wall();
@@ -601,7 +601,7 @@ async fn create_shard(
     let buffer = buffer::Buffer::open(config, interner.slots())
         .await
         .expect("opens");
-    let shard = home::Shard::new(home::Config {
+    let shard = home::Shard::open(home::Config {
         shard: 0,
         buffer,
         clock: mesh.clone(),
@@ -609,7 +609,9 @@ async fn create_shard(
             earliest: Stamp::from_nanos(1),
             ahead: Span::from_nanos(1_000_000_000),
         },
-    });
+    })
+    .await
+    .expect("opens");
     loop {
         if let Some(now) = mesh.now().mesh {
             return (

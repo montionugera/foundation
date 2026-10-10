@@ -2,8 +2,7 @@
 //! the data directory.
 //!
 //! The file is 54 bytes: the tag, the Ed25519 private key, and the CRC32C of those 50
-//! bytes (little-endian), in one sector ([`crate::sector`]). 54 zero bytes are a key
-//! that a crash kept from being written.
+//! bytes (little-endian), in one sector ([`crate::sector`]).
 
 use std::path::Path;
 
@@ -22,38 +21,33 @@ const BODY: usize = 50;
 /// The length of the file: the body and its CRC32C.
 pub(crate) const LEN: usize = BODY + 4;
 
-/// The private key in `admin.key` of `files`. When the file is not there, has no
-/// bytes, or holds 54 zero bytes, makes a new one from `entropy`. Writes the key back
-/// and makes it durable before it returns, also one it read: a failed sync of an
-/// earlier start can leave a key that a read sees but a crash loses. Never writes
-/// another key over a file that holds one.
+/// The private key in `admin.key` of `files`. When the file is not there, makes a new
+/// one from `entropy` and makes it durable. Call it under the lock of the data
+/// directory, after the sync of the directory that the claim makes: a failed sync of
+/// an earlier start can leave a key that a read sees but a crash loses.
 ///
 /// # Errors
 ///
-/// [`Error::Admin`] for a file of another length that is not 0, or of another tag or
-/// checksum, and [`Error::Directory`] for a file call that fails.
+/// [`Error::Admin`] for a file that a node did not write, and [`Error::Directory`] for
+/// a file call that fails.
 pub(crate) async fn load(
     files: &Files,
     entropy: &env::entropy::Entropy,
 ) -> Result<PrivateKey, Error> {
-    let opened = sector::open(files, Path::new(FILE), TAG).await;
-    let (file, held) = opened.map_err(|error| match error {
-        env::files::Error::Length { .. } => Error::Admin,
-        error => Error::Directory(error),
-    })?;
-    let private_key = match held {
+    let held = sector::read(files, Path::new(FILE), TAG).await;
+    match held.map_err(Error::Directory)? {
         Held::Nothing => {
             let mut bytes = [0; 32];
             entropy.fill(&mut bytes);
-            PrivateKey(bytes)
+            let private_key = PrivateKey(bytes);
+            sector::publish(files, Path::new(FILE), &encode(&private_key))
+                .await
+                .map_err(Error::Directory)?;
+            Ok(private_key)
         }
-        Held::Written(bytes) => field(&bytes),
-        Held::Foreign => return Err(Error::Admin),
-    };
-    sector::write(files, &file, &encode(&private_key))
-        .await
-        .map_err(Error::Directory)?;
-    Ok(private_key)
+        Held::Written(bytes) => Ok(field(&bytes)),
+        Held::Foreign => Err(Error::Admin),
+    }
 }
 
 /// The bytes of the file that holds `private_key`.

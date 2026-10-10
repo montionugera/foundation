@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use connector::cancel;
 use connector::kind::{self, Channels, Context};
+use document::Document;
 use document::diagnostic::Diagnostic;
-use document::{Document, Source};
 use env::files::{self, Operation};
 use env::tasks::Tasks;
 use mesh::card::addresses::Addresses;
@@ -26,7 +26,7 @@ use types::name::{Name, Prefix};
 use types::node::{self, SealKey};
 use types::time::Span;
 
-use crate::front_end::{File, FrontEnd};
+use crate::front_end::{File, FrontEnd, FrontEnds};
 
 pub(crate) const PLANT: &str =
     include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
@@ -73,13 +73,13 @@ impl kind::Kind for Reader {
     }
 }
 
-pub(crate) fn hcl(source: Source, text: &str) -> Result<Document, Vec<Diagnostic>> {
-    config_hcl::read(source, text)
-        .map_err(|errors| errors.iter().map(Diagnostic::from).collect())
-}
-
-pub(crate) fn front_ends() -> BTreeMap<&'static str, FrontEnd> {
-    BTreeMap::from([("hcl", FrontEnd { read: hcl })])
+pub(crate) fn front_ends() -> FrontEnds {
+    FrontEnds::new(
+        "hcl",
+        FrontEnd {
+            read: config_hcl::read,
+        },
+    )
 }
 
 pub(crate) fn name(text: &str) -> Name {
@@ -144,7 +144,7 @@ pub(crate) async fn open(
     names: &[&str],
     definitions: BTreeMap<Name, Definition>,
 ) -> Mesh {
-    let budget = block::Config { budget: 1 << 20 };
+    let budget = block::Config::new(1 << 20).expect("the budget fits");
     let memory = block::Heap::new(budget.reservation());
     let pool = Rc::new(block::Pool::new(budget, memory));
     let at = SocketAddr::new(node.addresses()[0], PORT);

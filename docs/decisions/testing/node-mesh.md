@@ -131,8 +131,12 @@
   (`Rc<ops::Node>`), the value that `ops::serve` of #1744 takes, so the lab runs the
   production value and the node has one key maker. A new channel key is a UUIDv7 at mesh
   time. `ops::Node` holds the handles that the operation table uses: the mesh, the key
-  maker, the front ends, and the connector kinds, and `new` refuses an empty table of
-  front ends. `node` may take `config-hcl`, as the composition root. Trigger: when the
+  maker, the front ends, and the connector kinds. `new` takes `ops::FrontEnds`, which
+  holds at least one front end (`laptop.architect-2`, 2026-10-09T05:10:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6074720909).
+  Supersedes "`new` refuses an empty front-end table once" of
+  https://github.com/synnaxlabs/foundation/issues/1756#issuecomment-6072660664. `node`
+  may take `config-hcl`, as the composition root. Trigger: when the
   lab reaches the node through the CLI, remove `Node::operate` if nothing else calls it.
   Lost: a `call(body)` dispatch, which is a table entry of #1744; typed methods on
   `ops::Node` that make `Output`, `Applied`, `Error`, and `Problem` public; a `hub` that
@@ -158,13 +162,15 @@
   of `spec::founding::create` with the public key of the first admin; and no home. The
   first admin's private key is in the file `admin.key` of the data directory: 54 bytes,
   the tag `foundation/admin/1`, the Ed25519 private key, and the CRC32C of those 50
-  bytes (little-endian), in one sector, with the code of `node.key` (NODE PORT). Shard
-  0 reads it or makes it from `Config::entropy`, and writes it back and syncs it before
-  it builds the founding, so a crash before the founding is durable leaves a key that
-  the next start founds with. A file with no bytes or with 54 zero bytes is a key not
-  yet written. A file of another length that is not 0, or of another tag or checksum,
-  gives `Error::Admin`, and the node does not write over it. Each other file error on
-  `admin.key` gives `Error::Directory`. A start that reads a founding reads no
+  bytes (little-endian), in one sector. Shard 0 reads it, or makes it from
+  `Config::entropy` with `sector::publish` as it makes `name` (NODE NAME), before it
+  builds the founding. So a read sees no file or a whole one, and a crash before the
+  founding is durable leaves a key that the next start founds with. A file of another
+  length, also one with no bytes, or of another tag or checksum gives `Error::Admin`,
+  and the node does not write over it. Each other file error on `admin.key` gives
+  `Error::Directory`. `publish` in place of a write in place, by `laptop.architect-2`
+  (2026-10-10, the audit of #2172):
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. A start that reads a founding reads no
   `admin.key`, so a start with a founding and no `admin.key` starts. A founding that
   does not read gives `Error::Mesh`. `Error::Admin` and these errors come where
   `Error::Mesh` does in the rank of `Node::join`. `Region::Given(founding)` is the

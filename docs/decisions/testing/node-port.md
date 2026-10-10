@@ -90,11 +90,16 @@
   or not at all when the pacer holds it until the transport frees the port. The peer
   then waits for its idle time, as when the link loses the close. Each clone of the
   transport and each session lives in a future that shard 0 drops before it waits for
-  the port, in a task of the mesh that it waits for, or in the hub's task of a reader
-  whose home is another node, which ends at its next poll after the drop of the reader.
-  So, unless the socket broke, a leak holds the stop. The drop of each session closes
-  it. The drop of the transport closes each session that no caller accepted and each
-  handshake in flight, its own dials too (#2084, by `laptop.architect-2`, 02:57 UTC:
+  the port, in a task of the mesh that it waits for, or in a task of the hub, which ends
+  at its next poll after the hub and each value and future that it gave drop (the doc of
+  `hub::Hub::new`; `laptop.architect`, 2026-10-10T09:04:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2244#issuecomment-6095943720, which
+  supersedes the hub clause of
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6089294422 of
+  2026-10-09T21:08:50Z). So, unless the socket broke, a leak holds the stop. The drop of
+  each session closes it. The drop of the transport closes each session that no caller
+  accepted and each handshake in flight, its own dials too (#2084, by
+  `laptop.architect-2`, 02:57 UTC:
   https://github.com/synnaxlabs/foundation/issues/2084). The stop waits for each to
   drain, in about 3 PTO, and at most 3 s after the last one ended, because a peer's
   round trip sets the PTO with no bound (`laptop.architect`, 03:46 UTC:
@@ -136,8 +141,9 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093413533, and
   approved by `laptop.architect` (03:57 UTC):
   https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453.
-  `admin.key` shares this code (NODE MESH, #1744 PR 1b-3). `os` gives each new file
-  the mode `0600` and each new directory `0700`, and on Linux a new directory takes
+  `admin.key` has the same form, and is made with `sector::publish` (NODE MESH, #1744
+  PR 1b-3); `node.key` moves to `publish` too (#2305). `os` gives each new file the
+  mode `0600` and each new directory `0700`, and on Linux a new directory takes
   the setgid bit of its parent; the umask can clear more bits. It does not change the
   mode of one that is there (#1988):
   https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831, on the
