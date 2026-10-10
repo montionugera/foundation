@@ -232,9 +232,70 @@ mod tests {
         if let Some(c) = text.chars().find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
             panic!("ci.yaml has a character that is not printable ASCII or LF: {c:?}");
         }
-        (text.lines())
+        let lines: Vec<&str> = (text.lines())
             .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
-            .collect()
+            .collect();
+        // The checks read each line as one node, so none may run on into the next.
+        // The text of a block scalar is not YAML.
+        let mut block = None;
+        for line in &lines {
+            if block.is_some_and(|key| indent(line) > key) {
+                continue;
+            }
+            let code = code(line);
+            let header = code.trim_end_matches(['-', '+']);
+            block = (header.ends_with(": |") || header.ends_with(": >"))
+                .then(|| line.len() - line.trim_start_matches([' ', '-']).len());
+        }
+        lines
+    }
+
+    /// The text of the YAML `line` before its comment.
+    ///
+    /// # Panics
+    ///
+    /// When a quoted scalar or a flow collection of `line` does not close on it, or
+    /// `line` has an anchor, alias, or tag, any of which can make a node run on.
+    fn code(line: &str) -> &str {
+        let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
+        // `start` holds where a node can start, the only place where a quote or a
+        // bracket opens one.
+        let (mut quote, mut escaped, mut depth, mut start) = (None, false, 0, true);
+        let mut prev = ' ';
+        for (i, c) in line.char_indices() {
+            if let Some(open) = quote {
+                if escaped {
+                    escaped = false;
+                } else if open == '"' && c == '\\' {
+                    escaped = true;
+                } else if c == open {
+                    quote = None;
+                }
+                prev = c;
+                continue;
+            }
+            match c {
+                ' ' if matches!(prev, ':' | '-' | '?') => start = true,
+                ' ' => {}
+                '#' if prev == ' ' => {
+                    if depth > 0 {
+                        refused();
+                    }
+                    return line[..i].trim_end();
+                }
+                '\'' | '"' if start => quote = Some(c),
+                '[' | '{' if start => depth += 1,
+                ']' | '}' if depth > 0 => (depth, start) = (depth - 1, false),
+                ',' | ':' if depth > 0 => start = true,
+                '&' | '*' | '!' if start => refused(),
+                _ => start = false,
+            }
+            prev = c;
+        }
+        if quote.is_some() || depth > 0 {
+            refused();
+        }
+        line
     }
 
     /// `.github/workflows/ci.yaml` in the workspace at `root`, with no blank or comment
@@ -340,100 +401,119 @@ mod tests {
         under(&changes, "    outputs:")
     }
 
-    /// The condition of a model job on the `models` output.
-    const MODELS_IF: &str =
-        "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"";
-
-    /// Panics unless the lines `job` of a model job run `cargo xtask <task>` on the
-    /// models output.
-    fn model_job(job: &[&str], task: &str) {
-        let run = format!("run: cargo xtask {task}");
-        // The job has no key past these, its steps are a block sequence, and the
-        // step that runs the task holds only its name. A line between the keys, or
-        // a flow node under `steps:`, would open a scalar that can hold a decoy
-        // step.
-        let head = [
-            "    needs: changes",
-            MODELS_IF,
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-        ];
-        let steps = under(job, "    steps:");
-        let entry = |line: &&str| line.starts_with("      - ");
-        let keys = job.get(..head.len()) == Some(&head[..])
-            && steps.len() == job.len() - head.len()
-            && steps.first().is_some_and(entry)
-            && (steps.iter()).all(|line| entry(line) || indent(line) >= 8);
-        let end = job.iter().position(|line| line.trim() == run);
-        let alone = end.is_some_and(|end| {
-            end > 0
-                && job[end - 1].starts_with("      - name: ")
-                && (job.get(end + 1)).is_none_or(|next| !next.starts_with("        "))
-        });
-        assert!(
-            keys && alone,
-            "the {task} job of .github/workflows/ci.yaml does not run `cargo xtask \
-             {task}` on the models output: {job:#?}"
-        );
-    }
-
-    #[test]
-    fn model_job_refuses_a_key_other_than_its_own() {
-        let job = |runs_on: &str, steps: &str, run: &str, after: &str| {
-            format!(
-                "    needs: changes\n\
-                 {MODELS_IF}\n\
-                 {runs_on}\n\
-                 {steps}    steps:\n      \
-                 - uses: actions/checkout@v4\n      \
-                 - name: Miri\n        \
-                 run: {run}\n\
-                 {after}"
-            )
-        };
-        let on = "    runs-on: ubuntu-latest";
-        let miri = "cargo xtask miri";
-        model_job(&job(on, "", miri, "").lines().collect::<Vec<_>>(), "miri");
-        let quoted = "    runs-on: \"${{ 'ubuntu-latest' || '\n      \
-                      - name: Miri\n        run: cargo xtask miri\n      ' }}\"";
-        let env = "    env:\n      X: x\n";
-        let flow = format!(
-            "    needs: changes\n{MODELS_IF}\n{on}\n    steps:\n      \
-             [{{name: Miri, run: \"true\n      - name: Miri\n        \
-             run: cargo xtask miri\n      \"}}]\n"
-        );
-        let flow_8 = format!(
-            "    needs: changes\n{MODELS_IF}\n{on}\n    steps:\n        \
-             [{{name: Miri, run: \"true\n      - name: Miri\n        \
-             run: cargo xtask miri\n      - \"}}]\n"
-        );
-        for text in [
-            job(quoted, "", "\"true\"", ""),
-            job("    runs-on: macos-latest", "", miri, ""),
-            job(on, env, miri, ""),
-            job(on, "", miri, env),
-            flow,
-            flow_8,
-        ] {
-            let job: Vec<&str> = text.lines().collect();
-            let panic =
-                std::panic::catch_unwind(|| model_job(&job, "miri")).expect_err(&text);
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!(
-                    "the miri job of .github/workflows/ci.yaml does not run `cargo \
-                     xtask miri` on the models output: {job:#?}"
-                )),
-            );
-        }
-    }
+    /// The lines of each model job of `ci.yaml` under its key. A step or a key that
+    /// the job gains can change what it runs, so the whole job is pinned.
+    const JOBS: [(&str, &[&str]); 3] = [
+        (
+            "loom",
+            &[
+                "    needs: changes",
+                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+                "      - uses: actions/checkout@v4",
+                "      - uses: Swatinem/rust-cache@v2",
+                "      - name: Clippy",
+                concat!(
+                    "        run: cargo clippy -p ring -p block --all-targets",
+                    " -- -D warnings",
+                ),
+                "        env:",
+                "          RUSTFLAGS: --cfg loom",
+                "      - name: Loom",
+                "        run: cargo xtask loom",
+            ],
+        ),
+        (
+            "shuttle",
+            &[
+                "    needs: changes",
+                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+                "      - uses: actions/checkout@v4",
+                "      - uses: Swatinem/rust-cache@v2",
+                "      - name: Shuttle",
+                "        run: cargo xtask shuttle",
+            ],
+        ),
+        (
+            "miri",
+            &[
+                "    needs: changes",
+                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+                "      - uses: actions/checkout@v4",
+                "      - name: Install the pinned nightly",
+                "        run: |",
+                "          rustup toolchain install \"$(cat rust-toolchain-nightly)\" \
+             --profile minimal \\",
+                "            --component miri,rust-src",
+                "      - uses: Swatinem/rust-cache@v2",
+                "      - name: Miri",
+                "        run: cargo xtask miri",
+            ],
+        ),
+    ];
 
     #[test]
     fn yaml_lines_skips_each_blank_and_comment_line() {
         let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
         assert_eq!(yaml_lines(text), ["a:", "  b: 1 # c"]);
         let printable: String = (' '..='~').collect();
-        assert_eq!(yaml_lines(&printable), [printable.as_str()]);
+        let text = format!("a: |\n  {printable}");
+        assert_eq!(yaml_lines(&text), ["a: |", &format!("  {printable}")]);
+    }
+
+    #[test]
+    fn yaml_lines_keeps_each_node_that_closes_on_its_line() {
+        let text = concat!(
+            "a: 'b''c'\n",
+            "b: \"c\\\"d\" # e\n",
+            "c: it's a#b\n",
+            "d: [e, 'f', {g: \"h\"}] # it's\n",
+            "e: \"!cancelled()\"\n",
+            "f: |\n",
+            "  [echo \"it's\n",
+            "  - g: >-\n",
+            "      [h\n",
+            "i: 'j\\'\n",
+            "k: [l#, m]\n",
+        );
+        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn yaml_lines_refuses_each_node_that_can_run_on() {
+        for line in [
+            "    runs-on: \"${{ 'ubuntu-latest' || '",
+            "      [{name: Miri, run: \"true",
+            "  - [x, [y]",
+            "          key: 'x",
+            "      - name: 'Miri",
+            "     note: \"",
+            "a'b: 'c",
+            "a: {\"b\":'c}",
+            "a: \"b\\\"",
+            "a: [b, # c",
+            "a: &b 'c'",
+            "a: !b c",
+            "a: *b",
+        ] {
+            let text = format!("x: |\n  y\nz:\n{line}\n");
+            let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
+            assert_eq!(
+                panic.downcast_ref::<String>(),
+                Some(&format!("ci.yaml has a node that can run on: `{line}`")),
+            );
+        }
+        let text = "  - a: |\n      b\n    c: 'd\n";
+        let panic = std::panic::catch_unwind(|| yaml_lines(text)).expect_err(text);
+        assert_eq!(
+            panic.downcast_ref::<String>(),
+            Some(&"ci.yaml has a node that can run on: `    c: 'd`".to_owned()),
+        );
     }
 
     #[test]
@@ -607,14 +687,18 @@ mod tests {
         );
         let metadata = metadata(&root).unwrap();
         let by_cfg = |name| select::packages(&metadata, |s| select::names_cfg(s, name));
-        let tasks = [
-            ("loom", by_cfg("loom").unwrap()),
-            ("shuttle", by_cfg("shuttle").unwrap()),
-            ("miri", miri::packages(&metadata).unwrap()),
+        let packages = [
+            by_cfg("loom").unwrap(),
+            by_cfg("shuttle").unwrap(),
+            miri::packages(&metadata).unwrap(),
         ];
-        for (task, packages) in tasks {
-            let job = under(&jobs, &format!("  {task}:"));
-            model_job(&job, task);
+        for ((task, job), packages) in JOBS.into_iter().zip(packages) {
+            assert_eq!(
+                under(&jobs, &format!("  {task}:")),
+                job,
+                "the {task} job of .github/workflows/ci.yaml is not the job that the \
+                 check pins"
+            );
             for select::Package { name, .. } in packages {
                 assert!(
                     models.contains(&format!("'crates/{name}/**'").as_str()),
