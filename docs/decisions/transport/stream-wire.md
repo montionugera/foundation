@@ -256,7 +256,7 @@
   time gain on box2 and adds a case. Lost: a copy of a longer stretch into a block of
   the shard's pool, because noq still copies each shorter stretch to the heap, and a
   write would wait for a block in the middle of a message, with no end when each block
-  is held by a write that waits (`laptop.architect-2`, #1879,
+  is held by a write that waits (`laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
   https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384). Decided
   by `laptop.architect-2` (#68, 2026-10-08 08:13 UTC, one walk:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055676016; and 08:25

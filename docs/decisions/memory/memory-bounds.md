@@ -23,5 +23,5 @@
   has not had acknowledged, at most `window_bytes` (`send_window`), the rest of each
   copied stretch that noq has not taken, at most the peer's window (the send budget),
   and the stretch buffer of `send_parts`, under twice the peer's `message_bytes_max`
-  (STREAM WIRE; `laptop.architect-2`, #1879,
+  (STREAM WIRE; `laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
   https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384).
