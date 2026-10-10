@@ -447,19 +447,29 @@ mod tests {
     /// of `error`.
     type Written = (Span, Vec<i64>, String);
 
+    /// Opens a writer of `channels` as `subject` at `authority`, with no lease.
+    async fn open_writer(
+        hub: &hub::Hub,
+        subject: &str,
+        authority: Authority,
+        channels: Vec<Name>,
+    ) -> hub::writer::Writer {
+        let config = hub::writer::Config {
+            subject: name(subject),
+            authority,
+            lease: None,
+            channels,
+        };
+        hub.writer(config).await.expect("opens")
+    }
+
     /// Writes one status frame of `plant.script` from another writer, stamped `lead`
     /// after the hub's time, with an empty `error` and 9 in each other sample.
     async fn write_ahead(hub: &hub::Hub, lead: Span) {
         let channels = ["state", "class", "restarts", "backoff", "error"];
-        let other = hub::writer::Config {
-            subject: name("plant.other"),
-            authority: Authority::ABSOLUTE,
-            lease: None,
-            channels: channels
-                .map(|c| name(&format!("plant.script.status.{c}")))
-                .into(),
-        };
-        let mut other = hub.writer(other).await.expect("opens");
+        let channels = channels.map(|c| name(&format!("plant.script.status.{c}")));
+        let mut other =
+            open_writer(hub, "plant.other", Authority::ABSOLUTE, channels.into()).await;
         let entries = other.set().entries();
         let text = codec::Variable::of(Type::String).expect("a variable type");
         let series: Vec<_> = (entries.iter().enumerate())
@@ -788,15 +798,11 @@ mod tests {
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.script").await;
             let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
-            let hog = hub::writer::Config {
-                subject: name("plant.other"),
-                authority: Authority(1),
-                lease: None,
-                channels: ["state", "error"]
-                    .map(|c| name(&format!("plant.script.status.{c}")))
-                    .into(),
-            };
-            let hog = inputs.hub.writer(hog).await.expect("opens");
+            let channels =
+                ["state", "error"].map(|c| name(&format!("plant.script.status.{c}")));
+            let hog =
+                open_writer(&inputs.hub, "plant.other", Authority(1), channels.into())
+                    .await;
             let (token, clock) = (Token::new(), node.clock());
             let (canceller, sleeper) = (token.clone(), clock.clone());
             let (filled, node) = (Arc::clone(&runs), node.clone());
@@ -948,13 +954,10 @@ mod tests {
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.script").await;
             let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
-            let holder = hub::writer::Config {
-                subject: name("plant.other"),
-                authority: Authority::ABSOLUTE,
-                lease: None,
-                channels: vec![name("plant.script.status.state")],
-            };
-            let holder = inputs.hub.writer(holder).await.expect("opens");
+            let channels = vec![name("plant.script.status.state")];
+            let holder =
+                open_writer(&inputs.hub, "plant.other", Authority::ABSOLUTE, channels)
+                    .await;
             let (token, clock) = (Token::new(), node.clock());
             let (canceller, sleeper) = (token.clone(), clock.clone());
             tasks.spawn(async move {
@@ -1000,13 +1003,10 @@ mod tests {
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.script").await;
             let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
-            let holder = hub::writer::Config {
-                subject: name("plant.other"),
-                authority: Authority::ABSOLUTE,
-                lease: None,
-                channels: vec![name("plant.script.status.state")],
-            };
-            let holder = inputs.hub.writer(holder).await.expect("opens");
+            let channels = vec![name("plant.script.status.state")];
+            let holder =
+                open_writer(&inputs.hub, "plant.other", Authority::ABSOLUTE, channels)
+                    .await;
             let (token, clock) = (Token::new(), node.clock());
             let (canceller, sleeper) = (token.clone(), clock.clone());
             tasks.spawn(async move {
@@ -1110,13 +1110,9 @@ mod tests {
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.script").await;
             let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
-            let hog = hub::writer::Config {
-                subject: name("plant.script"),
-                authority: Authority(1),
-                lease: None,
-                channels: vec![name("plant.script.status.state")],
-            };
-            let hog = inputs.hub.writer(hog).await.expect("opens");
+            let channels = vec![name("plant.script.status.state")];
+            let hog =
+                open_writer(&inputs.hub, "plant.script", Authority(1), channels).await;
             let clock = node.clock();
             let sleeper = clock.clone();
             tasks.spawn(async move {
@@ -2239,13 +2235,7 @@ mod tests {
         let channels = (suffixes.iter())
             .map(|suffix| name(&format!("plant.tally.status.{suffix}")))
             .collect();
-        let config = hub::writer::Config {
-            subject: name("plant.other"),
-            authority: Authority(1),
-            lease: None,
-            channels,
-        };
-        hub.writer(config).await.expect("opens")
+        open_writer(hub, "plant.other", Authority(1), channels).await
     }
 
     /// The time, `state`, and count of each status frame of `hog(full)`.
@@ -2325,13 +2315,8 @@ mod tests {
                 let channels = ["state", "class", "restarts", "backoff", "error"]
                     .map(|c| name(&format!("plant.script.status.{c}")))
                     .into();
-                let hog = hub::writer::Config {
-                    subject: name("plant.other"),
-                    authority: Authority(1),
-                    lease: None,
-                    channels,
-                };
-                let hog = hub.writer(hog).await.expect("opens");
+                let hog =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
                 let held = fill(&hog);
                 sleeper.sleep(ms(2_000)).await;
                 canceller.cancel();
@@ -2903,13 +2888,10 @@ mod tests {
             inputs.kinds = Arc::new(Table::new().with("write", write));
             let mut other = None;
             if let Some(authority) = holder {
-                let config = hub::writer::Config {
-                    subject: name("plant.other"),
-                    authority,
-                    lease: None,
-                    channels: vec![name("plant.value")],
-                };
-                other = Some(inputs.hub.writer(config).await.expect("opens"));
+                let channels = vec![name("plant.value")];
+                let hub = &inputs.hub;
+                other =
+                    Some(open_writer(hub, "plant.other", authority, channels).await);
             }
             let supervisor = Supervisor::new(inputs);
             let result = supervisor
