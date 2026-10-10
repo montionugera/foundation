@@ -334,17 +334,18 @@ mod tests {
         paths
     }
 
-    /// The lines of the value of the output `models` of the job `changes` in the
-    /// lines `ci` of a workflow.
-    fn output<'a>(ci: &[&'a str]) -> Vec<&'a str> {
+    /// The lines of the outputs of the job `changes` in the lines `ci` of a workflow.
+    fn outputs<'a>(ci: &[&'a str]) -> Vec<&'a str> {
         let changes = under(&under(ci, "jobs:"), "  changes:");
-        under(&under(&changes, "    outputs:"), "      models: >-")
+        under(&changes, "    outputs:")
     }
 
     #[test]
     fn yaml_lines_skips_each_blank_and_comment_line() {
         let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
         assert_eq!(yaml_lines(text), ["a:", "  b: 1 # c"]);
+        let printable: String = (' '..='~').collect();
+        assert_eq!(yaml_lines(&printable), [printable.as_str()]);
     }
 
     #[test]
@@ -418,7 +419,7 @@ mod tests {
         );
         let ci: Vec<&str> = ci.lines().collect();
         assert_eq!(models(&ci), ["'crates/env/**'"]);
-        assert_eq!(output(&ci), ["        real"]);
+        assert_eq!(outputs(&ci)[6..], ["      models: >-", "        real"]);
     }
 
     #[test]
@@ -499,11 +500,22 @@ mod tests {
             under(&step, "          filters: |"),
             "the step filter of .github/workflows/ci.yaml has a key after `filters`"
         );
+        // Any other line can open a scalar that holds a decoy output.
+        let expected: Vec<String> = (["rust", "deps", "models", "wait"].iter())
+            .flat_map(|name| {
+                [
+                    format!("      {name}: >-"),
+                    format!(
+                        "        ${{{{ github.event_name == 'push' && 'false' || \
+                         steps.filter.outputs.{name} }}}}"
+                    ),
+                ]
+            })
+            .collect();
         assert_eq!(
-            output(&ci),
-            ["        ${{ github.event_name == 'push' && 'false' || \
-                 steps.filter.outputs.models }}"],
-            "the models output of the changes job is not the models filter on each PR"
+            outputs(&ci),
+            expected,
+            "the outputs of the changes job are not the filters on each PR"
         );
         let metadata = metadata(&root).unwrap();
         let by_cfg = |name| select::packages(&metadata, |s| select::names_cfg(s, name));
@@ -518,12 +530,16 @@ mod tests {
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"";
             let run = format!("run: cargo xtask {task}");
             // The job has no key past these, and the step that runs the task holds
-            // only its name.
-            let keys: Vec<&str> = (job.iter().copied())
-                .filter(|line| {
-                    !line.starts_with("     ") && !line.starts_with("    runs-on:")
-                })
-                .collect();
+            // only its name. A line between the keys would continue a scalar, which
+            // can hold a decoy step.
+            let head = [
+                "    needs: changes",
+                on_models,
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+            ];
+            let keys = job.get(..head.len()) == Some(&head[..])
+                && under(&job, "    steps:").len() == job.len() - head.len();
             let end = job.iter().position(|line| line.trim() == run);
             let alone = end.is_some_and(|end| {
                 end > 0
@@ -532,7 +548,7 @@ mod tests {
                         .is_none_or(|next| !next.starts_with("        "))
             });
             assert!(
-                keys == ["    needs: changes", on_models, "    steps:"] && alone,
+                keys && alone,
                 "the {task} job of .github/workflows/ci.yaml does not run `cargo xtask \
                  {task}` on the models output: {job:#?}"
             );
