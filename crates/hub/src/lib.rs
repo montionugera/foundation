@@ -8,6 +8,7 @@ mod gate;
 mod link;
 pub mod reader;
 pub mod serve;
+mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
 pub mod writer;
@@ -125,8 +126,8 @@ struct State {
 
 impl Hub {
     /// A hub over `config.home` that knows no channel yet. Spawns two tasks on
-    /// `config.tasks`: one that ends when the home's buffer fails, and one that records
-    /// the handoff at the end of each control lease and grace. The hub holds the home
+    /// `config.tasks`: one that ends when the home's buffer fails, and one that applies
+    /// the end of each control lease and grace at the home. The hub holds the home
     /// and `config.region` until the hub and each value and future that it gave,
     /// directly or through another such value, drop. Each task of the hub ends at its
     /// next poll after that, and then holds neither. So a `::home::Commit` taken before

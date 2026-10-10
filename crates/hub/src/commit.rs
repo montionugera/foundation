@@ -6,7 +6,9 @@ use std::future::poll_fn;
 use std::mem;
 use std::pin::Pin;
 use std::rc::Weak;
-use std::task::{Poll, Waker};
+use std::task::Poll;
+
+use crate::task;
 
 /// The commit task's part of the state: whether a commit is due, the commit it waits
 /// for, and its waker.
@@ -18,7 +20,7 @@ pub(crate) struct Signal {
     /// the ring open, so it drops with the state.
     pending: Option<home::Commit>,
     /// The task's waker, kept while it sleeps and while it waits for a commit.
-    pub(crate) task: Option<Waker>,
+    task: task::Waiter,
 }
 
 impl Signal {
@@ -26,11 +28,8 @@ impl Signal {
     /// one, and the handoff of a writer open or close. Wakes the task only when it
     /// sleeps, once.
     pub(crate) fn appended(&mut self) {
-        if !mem::replace(&mut self.due, true)
-            && self.pending.is_none()
-            && let Some(task) = &self.task
-        {
-            task.wake_by_ref();
+        if !mem::replace(&mut self.due, true) && self.pending.is_none() {
+            self.task.wake();
         }
     }
 }
@@ -46,14 +45,7 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
                 return Poll::Ready(());
             };
             let mut state = state.borrow_mut();
-            if !state
-                .commit
-                .task
-                .as_ref()
-                .is_some_and(|task| task.will_wake(cx.waker()))
-            {
-                state.commit.task = Some(cx.waker().clone());
-            }
+            state.commit.task.polled(cx);
             if let Some(pending) = state.commit.pending.as_mut() {
                 let Poll::Ready(committed) = Pin::new(pending).poll(cx) else {
                     return Poll::Pending;
@@ -76,13 +68,4 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
         }
     })
     .await;
-}
-
-impl Drop for Signal {
-    /// Wakes the task, which then finds the state gone and ends.
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.wake();
-        }
-    }
 }

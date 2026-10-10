@@ -5,23 +5,23 @@ use std::cell::RefCell;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::rc::Weak;
-use std::task::{Poll, Waker};
+use std::task::Poll;
 
 use types::time::Monotonic;
+
+use crate::task;
 
 /// The gate task's part of the state: its waker.
 #[derive(Debug, Default)]
 pub(crate) struct Signal {
-    task: Option<Waker>,
+    task: task::Waiter,
 }
 
 impl Signal {
     /// Notes a home call that may make the home's deadline earlier: a writer open or
     /// close. Wakes the task.
     pub(crate) fn changed(&self) {
-        if let Some(task) = &self.task {
-            task.wake_by_ref();
-        }
+        self.task.wake();
     }
 }
 
@@ -36,14 +36,7 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>, time: clock::Reader)
                 return Poll::Ready(());
             };
             let mut state = state.borrow_mut();
-            if !state
-                .gate
-                .task
-                .as_ref()
-                .is_some_and(|task| task.will_wake(cx.waker()))
-            {
-                state.gate.task = Some(cx.waker().clone());
-            }
+            state.gate.task.polled(cx);
             let Some(deadline) = state.home.deadline() else {
                 return Poll::Pending;
             };
@@ -57,13 +50,4 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>, time: clock::Reader)
         }
     })
     .await;
-}
-
-impl Drop for Signal {
-    /// Wakes the task, which then finds the state gone and ends.
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.wake();
-        }
-    }
 }
