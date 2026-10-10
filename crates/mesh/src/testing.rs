@@ -147,7 +147,6 @@ fn frames(dir: &[u8]) -> Vec<(Range<usize>, Range<usize>)> {
         let length = span(name.end, 2);
         let len = match dir.get(length.clone()) {
             Some(&[low, high]) => u16::from_le_bytes([low, high]),
-            Some(&[low]) => u16::from(low),
             _ => 0,
         };
         let body = span(length.end, usize::from(len));
