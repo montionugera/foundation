@@ -381,6 +381,13 @@ impl Half {
         self.left() > 0
     }
 
+    /// Ends the stream with `error`, which each later write and finish gives. The
+    /// parts list gives back its capacity, which no later message can use.
+    fn close(&mut self, error: Error) {
+        self.ended = Some(error);
+        self.parts = Kept::default();
+    }
+
     /// Whether a byte of the message in hand went, its header included.
     fn sent(&self) -> bool {
         // Index 0 of `header` is the class byte, which belongs to no message.
@@ -1464,7 +1471,7 @@ impl Streams {
                 if half.ended.is_some() {
                     return Ok(None);
                 }
-                half.ended = Some(Error::Stopped { code });
+                half.close(Error::Stopped { code });
                 self.sending.end(half);
                 if half.rest == Rest::Finish {
                     self.halves.remove(&id);
@@ -1685,7 +1692,7 @@ impl Streams {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
         if half.sent() {
             reset(inner, half.key.id, Code(0));
-            half.ended = Some(Error::Reset { code: Code(0) });
+            half.close(Error::Reset { code: Code(0) });
         } else if half.unsent.start == 0 {
             // Not even the class byte went, so the next message opens the stream.
             half.started = false;
@@ -4900,6 +4907,84 @@ mod tests {
                 &mut Some(shard.block(b"b")),
             );
             assert_eq!(written, Err(Error::Stopped { code: Code(7) }));
+        });
+    }
+
+    /// 2000 parts of one byte and one zero each.
+    fn spread() -> Vec<Part> {
+        (0..2000)
+            .map(|at| Part {
+                range: at..at + 1,
+                zeros: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stream_that_the_peer_stopped_keeps_no_parts_list() {
+        testing::run(1, |shard| {
+            let mut pair = connected(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            let now = pair.now();
+            write(&mut pair.client, now, &mut sender, &[shard.block(b"a")]);
+            let mut bulk = open_sender(&mut pair, Class::CatchUp);
+            fill(&mut pair, shard, &mut bulk);
+            pair.run(RUN);
+            let id = accept(&mut pair.server).receiver.key().id;
+            let now = pair.now();
+            let written = pair.client.endpoint.write(
+                now,
+                &sender,
+                &mut Some(shard.block(&[7; 2000])),
+                &spread(),
+            );
+            assert_eq!(written, Ok(Poll::Pending));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 2000, "the stream keeps the parts");
+            let stopped = pair.server.connection().recv_stream(id).stop(7u32.into());
+            stopped.expect("stopped");
+            pair.run(RUN);
+            let now = pair.now();
+            let written = pair::write(
+                &mut pair.client.endpoint,
+                now,
+                &sender,
+                &mut Some(shard.block(b"b")),
+            );
+            assert_eq!(written, Err(Error::Stopped { code: Code(7) }));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 0, "the parts list of the stopped stream");
+        });
+    }
+
+    #[test]
+    fn a_stream_that_a_cancel_reset_keeps_no_parts_list() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            // Runs over 1452 bytes go as slices, so the stream keeps each part left.
+            let runs: Vec<Part> = (0..45)
+                .map(|at| Part {
+                    range: at * 1500..at * 1500 + 1453,
+                    zeros: 0,
+                })
+                .collect();
+            let prefix = message::prefix(45 * 1453).len();
+            spend(&mut pair, shard, &mut sender, prefix + 1);
+            let now = pair.now();
+            let block = shard.block(&vec![7; 45 * 1500]);
+            let written =
+                pair.client
+                    .endpoint
+                    .write(now, &sender, &mut Some(block), &runs);
+            assert_eq!(written, Ok(Poll::Pending));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 45, "the stream keeps the parts");
+            pair.client.endpoint.cancel(now, &sender);
+            let finished = pair.client.endpoint.finish(now, &mut sender);
+            assert_eq!(finished, Err(Error::Reset { code: Code(0) }));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 0, "the parts list of the reset stream");
         });
     }
 
