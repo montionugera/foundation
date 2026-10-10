@@ -340,6 +340,86 @@ mod tests {
         under(&changes, "    outputs:")
     }
 
+    /// The condition of a model job on the `models` output.
+    const MODELS_IF: &str =
+        "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"";
+
+    /// Panics unless the lines `job` of a model job run `cargo xtask <task>` on the
+    /// models output.
+    fn model_job(job: &[&str], task: &str) {
+        let run = format!("run: cargo xtask {task}");
+        // The job has no key past these, its steps are block style, and the step
+        // that runs the task holds only its name. A line between the keys, or a
+        // flow node under `steps:`, would open a scalar that can hold a decoy step.
+        let head = [
+            "    needs: changes",
+            MODELS_IF,
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+        ];
+        let steps = under(job, "    steps:");
+        let keys = job.get(..head.len()) == Some(&head[..])
+            && steps.len() == job.len() - head.len()
+            && (steps.iter())
+                .all(|line| line.starts_with("      - ") || indent(line) >= 8);
+        let end = job.iter().position(|line| line.trim() == run);
+        let alone = end.is_some_and(|end| {
+            end > 0
+                && job[end - 1].starts_with("      - name: ")
+                && (job.get(end + 1)).is_none_or(|next| !next.starts_with("        "))
+        });
+        assert!(
+            keys && alone,
+            "the {task} job of .github/workflows/ci.yaml does not run `cargo xtask \
+             {task}` on the models output: {job:#?}"
+        );
+    }
+
+    #[test]
+    fn model_job_refuses_a_key_other_than_its_own() {
+        let job = |runs_on: &str, steps: &str, run: &str, after: &str| {
+            format!(
+                "    needs: changes\n\
+                 {MODELS_IF}\n\
+                 {runs_on}\n\
+                 {steps}    steps:\n      \
+                 - uses: actions/checkout@v4\n      \
+                 - name: Miri\n        \
+                 run: {run}\n\
+                 {after}"
+            )
+        };
+        let on = "    runs-on: ubuntu-latest";
+        let miri = "cargo xtask miri";
+        model_job(&job(on, "", miri, "").lines().collect::<Vec<_>>(), "miri");
+        let quoted = "    runs-on: \"${{ 'ubuntu-latest' || '\n      \
+                      - name: Miri\n        run: cargo xtask miri\n      ' }}\"";
+        let env = "    env:\n      X: x\n";
+        let flow = format!(
+            "    needs: changes\n{MODELS_IF}\n{on}\n    steps:\n      \
+             [{{name: Miri, run: \"true\n      - name: Miri\n        \
+             run: cargo xtask miri\n      \"}}]\n"
+        );
+        for text in [
+            job(quoted, "", "\"true\"", ""),
+            job("    runs-on: macos-latest", "", miri, ""),
+            job(on, env, miri, ""),
+            job(on, "", miri, env),
+            flow,
+        ] {
+            let job: Vec<&str> = text.lines().collect();
+            let panic =
+                std::panic::catch_unwind(|| model_job(&job, "miri")).expect_err(&text);
+            assert_eq!(
+                panic.downcast_ref::<String>(),
+                Some(&format!(
+                    "the miri job of .github/workflows/ci.yaml does not run `cargo \
+                     xtask miri` on the models output: {job:#?}"
+                )),
+            );
+        }
+    }
+
     #[test]
     fn yaml_lines_skips_each_blank_and_comment_line() {
         let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
@@ -526,32 +606,7 @@ mod tests {
         ];
         for (task, packages) in tasks {
             let job = under(&jobs, &format!("  {task}:"));
-            let on_models =
-                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"";
-            let run = format!("run: cargo xtask {task}");
-            // The job has no key past these, and the step that runs the task holds
-            // only its name. A line between the keys would continue a scalar, which
-            // can hold a decoy step.
-            let head = [
-                "    needs: changes",
-                on_models,
-                "    runs-on: ubuntu-latest",
-                "    steps:",
-            ];
-            let keys = job.get(..head.len()) == Some(&head[..])
-                && under(&job, "    steps:").len() == job.len() - head.len();
-            let end = job.iter().position(|line| line.trim() == run);
-            let alone = end.is_some_and(|end| {
-                end > 0
-                    && job[end - 1].starts_with("      - name: ")
-                    && (job.get(end + 1))
-                        .is_none_or(|next| !next.starts_with("        "))
-            });
-            assert!(
-                keys && alone,
-                "the {task} job of .github/workflows/ci.yaml does not run `cargo xtask \
-                 {task}` on the models output: {job:#?}"
-            );
+            model_job(&job, task);
             for select::Package { name, .. } in packages {
                 assert!(
                     models.contains(&format!("'crates/{name}/**'").as_str()),
