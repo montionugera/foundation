@@ -2720,7 +2720,8 @@ fn a_close_ends_while_a_timer_of_the_loop_takes_its_interval() {
     assert!(runs < 10, "the close ran the timer {runs} times");
 }
 
-/// The runs of [`hop`], and the two delayed callbacks that each run queues in turn.
+/// The runs of [`hop`], and the two delayed callbacks that each of its first `queues`
+/// runs queues in turn.
 struct Hops {
     extra: Arc<AtomicU64>,
     runs: Cell<usize>,
@@ -2775,49 +2776,56 @@ unsafe extern "C" fn hop_first(_: *mut c_void, data: *mut c_void) {
 }
 
 /// A [`slow_server`] whose loop runs [`hop`] each 1 ms, with the [`Hops`] that it
-/// uses. The caller drops the side before the `Hops`, as the free of the loop can
-/// run `second`.
-async fn hopping(
-    node: &node::Node,
-    queues: usize,
-) -> (Side, Box<Hops>, *mut ffi::test::Server) {
-    let (side, extra, server) = slow_server(node).await;
-    let events = side.events();
-    let delayed = |callback| {
-        UnsafeCell::new(ffi::DelayedCallback {
-            next: ptr::null_mut(),
-            callback,
-            application: ptr::null_mut(),
-            context: ptr::null_mut(),
-        })
-    };
-    let hops = Box::new(Hops {
-        extra,
-        runs: Cell::new(0),
-        queues,
-        events: events.raw(),
-        first: delayed(hop_first),
-        second: delayed(nothing),
-    });
-    let data: *mut c_void = ptr::from_ref(&*hops).cast_mut().cast();
-    // SAFETY: nothing reads `first` yet.
-    unsafe { (*hops.first.get()).context = data };
-    // SAFETY: the member takes its own loop, and `hops` outlives the loop.
-    let status = Status(unsafe {
-        (events.members().add_timer)(
-            events.raw(),
-            hop,
-            ptr::null_mut(),
-            data,
-            1.0,
-            ptr::null_mut(),
-            ffi::CURRENT_TIME,
-            ptr::null_mut(),
-        )
-    });
-    assert_eq!(status, Status::GOOD);
-    side.clock.sleep(Span::from_nanos(1_000_000)).await;
-    (side, hops, server)
+/// uses.
+struct Hopping {
+    /// Drops before `hops`, as the free of the loop can run `second`.
+    side: Side,
+    hops: Box<Hops>,
+    server: *mut ffi::test::Server,
+}
+
+impl Hopping {
+    /// Starts the server and the timer. The caller deletes the server.
+    async fn start(node: &node::Node, queues: usize) -> Self {
+        let (side, extra, server) = slow_server(node).await;
+        let delayed = |callback| {
+            UnsafeCell::new(ffi::DelayedCallback {
+                next: ptr::null_mut(),
+                callback,
+                application: ptr::null_mut(),
+                context: ptr::null_mut(),
+            })
+        };
+        let hops = Box::new(Hops {
+            extra,
+            runs: Cell::new(0),
+            queues,
+            events: side.events().raw(),
+            first: delayed(hop_first),
+            second: delayed(nothing),
+        });
+        let data: *mut c_void = ptr::from_ref(&*hops).cast_mut().cast();
+        // SAFETY: nothing reads `first` yet.
+        unsafe { (*hops.first.get()).context = data };
+        let hopping = Self { side, hops, server };
+        let events = hopping.side.events();
+        // SAFETY: the member takes its own loop, and `hops` outlives the loop.
+        let status = Status(unsafe {
+            (events.members().add_timer)(
+                events.raw(),
+                hop,
+                ptr::null_mut(),
+                data,
+                1.0,
+                ptr::null_mut(),
+                ffi::CURRENT_TIME,
+                ptr::null_mut(),
+            )
+        });
+        assert_eq!(status, Status::GOOD);
+        hopping.side.clock.sleep(Span::from_nanos(1_000_000)).await;
+        hopping
+    }
 }
 
 /// A timer that is always due and queues a delayed callback on each run keeps one
@@ -2828,11 +2836,12 @@ fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
     let (message, runs) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let (side, hops, server) = hopping(&node, usize::MAX).await;
+            let hopping = Hopping::start(&node, usize::MAX).await;
             let panic = {
                 // SAFETY: the server lives on the loop, and the panic comes before the
                 // delete.
-                let close = unsafe { side.manager.close_server(server) };
+                let close =
+                    unsafe { hopping.side.manager.close_server(hopping.server) };
                 let mut close = pin!(close);
                 poll_fn(|cx| {
                     match panic::catch_unwind(AssertUnwindSafe(|| {
@@ -2845,13 +2854,14 @@ fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
                 .await
                 .expect("the close panics")
             };
-            // SAFETY: the server lives, as the panic came before the delete.
-            let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
+            // SAFETY: the server lives, as the panic came before the delete, and the
+            // delayed callbacks that wait are of `hops` and do not read it.
+            let status = Status(unsafe { ffi::test::UA_Server_delete(hopping.server) });
             assert_eq!(status, Status::GOOD);
-            let runs = hops.runs.get();
-            drop(side);
-            drop(hops);
-            (panic.downcast_ref::<String>().cloned(), runs)
+            (
+                panic.downcast_ref::<String>().cloned(),
+                hopping.hops.runs.get(),
+            )
         })
         .expect("the run ends");
     assert_eq!(
@@ -2868,13 +2878,10 @@ fn a_close_ends_when_its_64th_run_drains_the_delayed_callbacks() {
     let runs = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let (side, hops, server) = hopping(&node, 63).await;
+            let hopping = Hopping::start(&node, 63).await;
             // SAFETY: the server lives on the loop, and nothing uses it after.
-            unsafe { side.manager.close_server(server) }.await;
-            let runs = hops.runs.get();
-            drop(side);
-            drop(hops);
-            runs
+            unsafe { hopping.side.manager.close_server(hopping.server) }.await;
+            hopping.hops.runs.get()
         })
         .expect("the run ends");
     assert_eq!(runs, 64);
