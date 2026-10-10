@@ -883,16 +883,17 @@ impl Serve {
                 region,
             });
             let parts = mesh.as_ref().map(|mesh| {
+                let kinds = Arc::new(kinds());
+                let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
                 let config = connector::supervisor::Config {
-                    kinds: Arc::new(kinds()),
+                    kinds,
                     clock: clock.clone(),
-                    entropy: entropy.clone(),
+                    entropy,
                     net,
                     tasks: tasks.clone(),
                     hub: hub.clone(),
                 };
-                let (ops, runs) = wire(mesh, key, &time, &entropy, config);
-                (ops, (mesh, runs))
+                (ops, (mesh, runs(mesh, key, config)))
             });
             let (ops, runs) = parts.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
@@ -950,22 +951,16 @@ fn operations(
     Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
 }
 
-/// The operations on `mesh`, and the runs of the connectors that the spec in use
-/// places on its node `key`, on a supervisor made from `supervisor`. Both use the
-/// kind table of `supervisor`, so that each kind is one value for the life of the
-/// process.
-fn wire(
+/// The runs of the connectors that the spec in use places on the node `key` of
+/// `mesh`, on a supervisor made from `config`.
+fn runs(
     mesh: &mesh::Mesh,
     key: types::node::Key,
-    time: &clock::Reader,
-    entropy: &env::entropy::Entropy,
-    supervisor: connector::supervisor::Config,
-) -> (Rc<ops::Node>, connectors::Runs) {
-    let ops = operations(mesh, time, entropy, Arc::clone(&supervisor.kinds));
+    config: connector::supervisor::Config,
+) -> connectors::Runs {
     let member = mesh.member(key);
     let member = member.expect("invariant: a mesh opens only on a member");
-    let runs = connectors::Runs::new(supervisor, member.card.card().name.clone());
-    (ops, runs)
+    connectors::Runs::new(config, member.card.card().name.clone())
 }
 
 /// The connector kinds of this binary.
