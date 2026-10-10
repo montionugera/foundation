@@ -416,15 +416,15 @@ fn refused(code: i32) -> bool {
     )
 }
 
-/// The failure of a data directory `dir` that this user cannot write.
+/// The failure of a data directory `dir` that this user cannot use as it is.
 fn unwritable(dir: &Path, error: impl std::fmt::Display) -> Failure {
     let dir = dir.display();
     Failure {
         code: DATA,
         message: format!("cannot write the data directory {dir}: {error}"),
         fix: format!(
-            "Let this user make and write {dir} and each file in it, or give another \
-             directory with `--data`"
+            "Make {dir} a directory that this user can write, and let it write each \
+             file in it, or give another directory with `--data`"
         ),
     }
 }
@@ -871,8 +871,9 @@ mod tests {
                             "cannot write the data directory foundation-data: open of \
                              {file} failed with OS error {code}"
                         ),
-                        fix: "Let this user make and write foundation-data and each \
-                              file in it, or give another directory with `--data`"
+                        fix: "Make foundation-data a directory that this user can \
+                              write, and let it write each file in it, or give another \
+                              directory with `--data`"
                             .to_owned(),
                     },
                     "{reason}"

@@ -22,19 +22,23 @@
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.budget`, `node.disk`, `node.memory` (NODE SETTINGS), and
-  `node.failed`. `node.data` is "this user cannot write the data directory":
-  `os::Error::Dir`, and each `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or
-  `EROFS` that `node::Error::files` gives: the failed file call of a `Directory`,
-  `Buffer`, `Blob`, `Mesh`, or `Group` error. Its message is "cannot write the data
-  directory {data}: {error}", and its fix "Let this user make and write {data} and each
-  file in it, or give another directory with `--data`". Each other `Directory` error
-  but `Busy`, and each buffer error that neither `node.data` nor NODE SETTINGS (`Pool`)
-  names, is `node.failed`. Lost: `node.data` for the claim of `lock` alone, which
-  leaves a ring that the user cannot write on `node.failed`; `files` on each lower
-  error, four public items for one caller; a walk of `source()` with a downcast, type
-  erasure in which a lower error that gives no `source` hides its file call with no
-  failed test. Each match of `files` names each variant, so a new variant that holds a
-  file call fails to compile in `node`. Decided by `laptop.architect`
+  `node.failed`. `node.data` is "this user cannot use the data directory as it is":
+  each `os::Error::Dir` whatever its errno, and each `env::files::Error::Io` whose code
+  is `EACCES`, `EPERM`, or `EROFS` that `node::Error::files` gives: the failed file
+  call of a `Directory`, `Buffer`, `Blob`, `Mesh`, or `Group` error. Its message is
+  "cannot write the data directory {data}: {error}", and its fix "Make {data} a
+  directory that this user can write, and let it write each file in it, or give
+  another directory with `--data`". The fix also covers a missing parent (`ENOENT`)
+  and a file in its place (`ENOTDIR`). Decided by `laptop.architect-2`
+  (2026-10-10T22:20:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069). Each
+  other `Directory` error but `Busy`, and each buffer error that neither `node.data` nor
+  NODE SETTINGS (`Pool`) names, is `node.failed`. Lost: `node.data` for the claim of
+  `lock` alone, which leaves a ring that the user cannot write on `node.failed`; `files`
+  on each lower error, four public items for one caller; a walk of `source()` with a
+  downcast, type erasure in which a lower error that gives no `source` hides its file
+  call with no failed test. Each match of `files` names each variant, so a new variant
+  that holds a file call fails to compile in `node`. Decided by `laptop.architect`
   (2026-10-10T15:14:44Z,
   https://github.com/synnaxlabs/foundation/issues/2282#issuecomment-6098971338).
   `Node::stopper` gives a `Stopper` that stops the node from another thread. A stop

@@ -149,8 +149,24 @@ fn a_data_directory_that_is_a_file_fails() {
             "",
             "error[node.data]: cannot write the data directory plain: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write plain and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make plain a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
+        )
+    );
+}
+
+#[test]
+fn a_data_directory_whose_parent_is_missing_fails() {
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--data", "missing/x", "--name", "edge"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.data]: cannot write the data directory missing/x: No such file \
+             or directory (os error 2)\n\
+             fix: Make missing/x a directory that this user can write, and let it \
+             write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -168,8 +184,8 @@ fn a_data_directory_with_a_newline_that_is_a_file_fails_on_one_line() {
             "",
             "error[node.data]: cannot write the data directory a\\nb: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write a\\nb and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make a\\nb a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -357,8 +373,8 @@ fn a_data_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory foundation-data: open \
              of lock failed with OS error 13\n\
-             fix: Let this user make and write foundation-data and each file in it, or \
-             give another directory with `--data`\n"
+             fix: Make foundation-data a directory that this user can write, and let \
+             it write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -381,8 +397,8 @@ fn a_new_data_directory_in_a_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory read: Permission \
              denied (os error 13)\n\
-             fix: Let this user make and write read and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make read a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -431,8 +447,9 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
                 format!(
                     "error[node.data]: cannot write the data directory foundation-data: \
                      {call} of {file} failed with OS error 13\n\
-                     fix: Let this user make and write foundation-data and each file in \
-                     it, or give another directory with `--data`\n"
+                     fix: Make foundation-data a directory that this user can write, \
+                     and let it write each file in it, or give another directory \
+                     with `--data`\n"
                 )
                 .as_str()
             ),
