@@ -185,7 +185,8 @@ impl Reader {
         }
     }
 
-    /// Waits until the node's monotonic clock reaches `at`. A drop cancels the wait.
+    /// Waits until the node's monotonic clock reaches `at`, never before. An `at` that
+    /// has passed completes at once. A drop cancels the wait.
     ///
     /// # Panics
     ///
