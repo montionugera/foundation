@@ -190,8 +190,14 @@
   clock functions give 0, and the 5 POSIX constructors print their name and abort,
   since our config always has an event loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
-  2026-10-08 02:27 UTC). A test asserts the pragmas of `shim.c` after the
-  preprocessor. It stands against honest code. A `#line` directive or a line marker
+  2026-10-08 02:27 UTC). The test server is in `src/server.c`, which only the feature
+  `sim` compiles, and a test fails when another C file of `src/` names `UA_Server` or
+  `UA_ServerConfig`. So no production client reaches `setDefaultConfig`. Lost: a
+  smaller claim for that clock key, which no test then checks. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2309#issuecomment-6103245041,
+  2026-10-10 23:18 UTC). A test asserts the pragmas of `shim.c` and `server.c` after
+  the preprocessor. It stands against honest code. A `#line` directive or a line marker
   in `shim.c` has no honest use, since the file is written by hand, so review of
   `shim.c` covers it, and the `#line` rule of the copy check does not apply to it. If
   `shim.c` is ever generated, that rule applies to it. Decided by
