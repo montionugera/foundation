@@ -2649,6 +2649,38 @@ unsafe extern "C" fn busy(_: *mut c_void, data: *mut c_void) {
     }
 }
 
+/// A side on a clock that [`Slow`] makes slower by `extra`, and a server on its loop
+/// that started 1 s ago. The caller deletes the server.
+async fn slow_server(
+    node: &node::Node,
+) -> (Side, Arc<AtomicU64>, *mut ffi::test::Server) {
+    let extra = Arc::new(AtomicU64::new(0));
+    let clock = Clock::new(Slow {
+        inner: node.clock(),
+        extra: Arc::clone(&extra),
+    });
+    let rng = &mut Rng::from_seed(0);
+    let manager =
+        Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
+            .expect("the port is free");
+    let side = Side::of(clock, manager);
+    // SAFETY: the loop outlives the server, which the caller deletes.
+    let server = unsafe {
+        ffi::test::shim_server_new(
+            side.events().raw(),
+            PORT,
+            c"opc.tcp://:4840".as_ptr(),
+            1,
+        )
+    };
+    assert!(!server.is_null());
+    // SAFETY: the server lives.
+    let status = Status(unsafe { ffi::test::UA_Server_run_startup(server) });
+    assert_eq!(status, Status::GOOD);
+    side.drive(Span::SECOND).await;
+    (side, extra, server)
+}
+
 /// A 1 ms timer that takes 1 ms to run is always due, and the close waits only for
 /// the delayed callbacks.
 #[test]
@@ -2657,35 +2689,7 @@ fn a_close_ends_while_a_timer_of_the_loop_takes_its_interval() {
     let runs = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let extra = Arc::new(AtomicU64::new(0));
-            let clock = Clock::new(Slow {
-                inner: node.clock(),
-                extra: Arc::clone(&extra),
-            });
-            let rng = &mut Rng::from_seed(0);
-            let manager = Manager::listening(
-                Clock::clone(&clock),
-                node.net(),
-                local(&node),
-                4,
-                rng,
-            )
-            .expect("the port is free");
-            let side = Side::of(clock, manager);
-            // SAFETY: the loop outlives the server, which the test deletes.
-            let server = unsafe {
-                ffi::test::shim_server_new(
-                    side.events().raw(),
-                    PORT,
-                    c"opc.tcp://:4840".as_ptr(),
-                    1,
-                )
-            };
-            assert!(!server.is_null());
-            // SAFETY: the server lives.
-            let status = Status(unsafe { ffi::test::UA_Server_run_startup(server) });
-            assert_eq!(status, Status::GOOD);
-            side.drive(Span::SECOND).await;
+            let (side, extra, server) = slow_server(&node).await;
             let load = Box::new(Load {
                 extra,
                 runs: Cell::new(0),
@@ -2766,48 +2770,15 @@ unsafe extern "C" fn hop_first(_: *mut c_void, data: *mut c_void) {
     unsafe { hops.queue(&hops.second) };
 }
 
-unsafe extern "C" fn hop_second(_: *mut c_void, _: *mut c_void) {}
-
 /// A timer that is always due and queues a delayed callback on each run keeps one
-/// waiting after each run, so the close panics before the delete.
+/// waiting after each run, so the close panics after its 64th run, before the delete.
 #[test]
-#[should_panic(
-    expected = "open62541 queued delayed callbacks for 64 runs of a server close"
-)]
-fn a_close_panics_while_a_busy_timer_queues_two_delayed_callbacks() {
+fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
     let mut network = Network::new();
-    network
+    let (message, runs) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let extra = Arc::new(AtomicU64::new(0));
-            let clock = Clock::new(Slow {
-                inner: node.clock(),
-                extra: Arc::clone(&extra),
-            });
-            let rng = &mut Rng::from_seed(0);
-            let manager = Manager::listening(
-                Clock::clone(&clock),
-                node.net(),
-                local(&node),
-                4,
-                rng,
-            )
-            .expect("the port is free");
-            let side = Side::of(clock, manager);
-            // SAFETY: the loop outlives the server, which the panic leaks.
-            let server = unsafe {
-                ffi::test::shim_server_new(
-                    side.events().raw(),
-                    PORT,
-                    c"opc.tcp://:4840".as_ptr(),
-                    1,
-                )
-            };
-            assert!(!server.is_null());
-            // SAFETY: the server lives.
-            let status = Status(unsafe { ffi::test::UA_Server_run_startup(server) });
-            assert_eq!(status, Status::GOOD);
-            side.drive(Span::SECOND).await;
+            let (side, extra, server) = slow_server(&node).await;
             let events = side.events();
             let delayed = |callback| {
                 UnsafeCell::new(ffi::DelayedCallback {
@@ -2817,17 +2788,17 @@ fn a_close_panics_while_a_busy_timer_queues_two_delayed_callbacks() {
                     context: ptr::null_mut(),
                 })
             };
-            // Leaked, as the free of the loop runs `hop_first` while the panic unwinds.
-            let hops = Box::leak(Box::new(Hops {
+            let hops = Box::new(Hops {
                 extra,
                 runs: Cell::new(0),
                 events: events.raw(),
                 first: delayed(hop_first),
-                second: delayed(hop_second),
-            }));
-            let data: *mut c_void = ptr::from_mut(hops).cast();
-            hops.first.get_mut().context = data;
-            hops.second.get_mut().context = data;
+                second: delayed(nothing),
+            });
+            let data: *mut c_void = ptr::from_ref(&*hops).cast_mut().cast();
+            // SAFETY: nothing reads `first` yet.
+            unsafe { (*hops.first.get()).context = data };
+            let mut key = 0;
             // SAFETY: the member takes its own loop, and `hops` outlives the loop.
             let status = Status(unsafe {
                 (events.members().add_timer)(
@@ -2838,15 +2809,37 @@ fn a_close_panics_while_a_busy_timer_queues_two_delayed_callbacks() {
                     1.0,
                     ptr::null_mut(),
                     ffi::CURRENT_TIME,
-                    ptr::null_mut(),
+                    &raw mut key,
                 )
             });
             assert_eq!(status, Status::GOOD);
             side.clock.sleep(Span::from_nanos(1_000_000)).await;
-            // SAFETY: the server lives on the loop, and nothing uses it after.
-            unsafe { side.manager.close_server(server) }.await;
+            let panic = {
+                // SAFETY: the server lives on the loop, and the panic comes before the
+                // delete.
+                let close = unsafe { side.manager.close_server(server) };
+                let mut close = pin!(close);
+                let mut cx = Context::from_waker(Waker::noop());
+                panic::catch_unwind(AssertUnwindSafe(|| close.as_mut().poll(&mut cx)))
+                    .expect_err("the close panics")
+            };
+            // SAFETY: the member takes its own loop, and `key` is the timer of `hop`.
+            unsafe { (events.members().remove_timer)(events.raw(), key) };
+            // SAFETY: the server lives, as the panic came before the delete.
+            let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
+            assert_eq!(status, Status::GOOD);
+            let runs = hops.runs.get();
+            // The free of the loop runs `second`, which lives in `hops`.
+            drop(side);
+            drop(hops);
+            (panic.downcast_ref::<String>().cloned(), runs)
         })
         .expect("the run ends");
+    assert_eq!(
+        message.as_deref(),
+        Some("open62541 queued delayed callbacks for 64 runs of a server close")
+    );
+    assert_eq!(runs, 64);
 }
 
 /// The `CloseSession` service of a running server removes the session after the
