@@ -2676,40 +2676,31 @@ fn a_stopped_server_is_deleted_when_its_loop_has_nothing_due() {
 /// of the minimal config and [`CLOSES`] closing streams.
 #[test]
 fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
-    let mut network = Network::new();
+    let network = Network::new();
     let peers: Vec<_> = (0..1000)
         .map(|i| {
             let delay = Span::from_nanos((i + 1) * 1_000_000);
             network.probe(delay, Span::from_nanos(1_500_000_000))
         })
         .collect();
-    let (connections, held) = network
-        .sim
-        .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
-            side.drive(Span::from_nanos(2_000_000_000)).await;
-            // Less the listen connection.
-            let held = (side.connections() - 1, snapshot(&peers));
-            side.stop(server).await;
-            held
-        })
-        .expect("the run ends");
-    let count = |of| held.iter().filter(|h| **h == of).count();
-    assert_eq!(
-        (connections, count(Held::Open), count(Held::Closing)),
-        (100 + CLOSES, 100, CLOSES)
-    );
+    assert_eq!(bound(network, peers), (100 + CLOSES, 100, CLOSES));
 }
 
 /// As [`streams_that_a_purge_closes_are_no_more_than_the_bound`], with each peer in
 /// one burst at one instant.
 #[test]
 fn a_burst_of_streams_holds_no_more_than_the_bound() {
-    let mut network = Network::new();
+    let network = Network::new();
     let peers: Vec<_> = (0..400)
         .map(|_| network.probe(Span::MILLISECOND, Span::from_nanos(1_500_000_000)))
         .collect();
+    assert_eq!(bound(network, peers), (100 + CLOSES, 100, CLOSES));
+}
+
+/// Drives the minimal server for 2 s with `peers` of [`Network::probe`]. Gives the
+/// count of connections less the listen connection, and the counts of `peers` that
+/// find their stream [`Held::Open`] and [`Held::Closing`].
+fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, usize) {
     let (connections, held) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
@@ -2723,10 +2714,7 @@ fn a_burst_of_streams_holds_no_more_than_the_bound() {
         })
         .expect("the run ends");
     let count = |of| held.iter().filter(|h| **h == of).count();
-    assert_eq!(
-        (connections, count(Held::Open), count(Held::Closing)),
-        (100 + CLOSES, 100, CLOSES)
-    );
+    (connections, count(Held::Open), count(Held::Closing))
 }
 
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
