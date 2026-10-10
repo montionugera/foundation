@@ -969,7 +969,7 @@ mod tests {
     const LEN: usize = 1024;
 
     /// Record `number` with an empty entry at `number + 1`.
-    fn next(number: u64) -> Vec<u8> {
+    fn numbered(number: u64) -> Vec<u8> {
         log_record(number, number.strict_add(1))
     }
 
@@ -980,7 +980,7 @@ mod tests {
 
     /// Inputs of the records of one file.
     fn record_inputs() -> Vec<LogDirInput> {
-        let r0 = next(0);
+        let r0 = numbered(0);
         let len = r0.len();
         let record = log::encode(0, Some(hard(true)), &[empty(1)]);
         let one = log_file(&[&record], LEN);
@@ -996,9 +996,7 @@ mod tests {
         let mut sector = log_file(&[&fill], 512);
         let sector_entries = vec![filler(490_usize.strict_sub(short)), empty(2)];
         sector.extend(log_file(&[&log_record(1, 2)], 512));
-        let mut version = r0.clone();
-        version[8..10].copy_from_slice(&2_u16.to_le_bytes());
-        log::seal_file(&mut version);
+        let version = as_version_2(r0.clone());
         let mut cut = log_file(&[&r0], LEN);
         cut.truncate(len.strict_sub(1));
         log::seal_file(&mut cut);
@@ -1018,7 +1016,7 @@ mod tests {
             ),
             (
                 "number_gap",
-                one_file(&log_file(&[&r0, &next(2)], LEN)),
+                one_file(&log_file(&[&r0, &numbered(2)], LEN)),
                 Err(corrupt("log-0", len)),
             ),
             (
@@ -1038,7 +1036,7 @@ mod tests {
 
     /// Inputs of a torn record.
     fn torn_inputs() -> Vec<LogDirInput> {
-        let [r0, r2] = [0, 2].map(next);
+        let [r0, r2] = [0, 2].map(numbered);
         let len = r0.len();
         let torn_end = log_file(&[&r0, &torn(1, 2)], LEN);
         let kept = log_file(&[&r0], LEN);
@@ -1076,7 +1074,7 @@ mod tests {
 
     /// Inputs of the order of the files.
     fn file_inputs() -> Vec<LogDirInput> {
-        let [r0, r1, r2] = [0, 1, 2].map(next);
+        let [r0, r1, r2] = [0, 1, 2].map(numbered);
         let two = log_file(&[&r0, &r1], LEN);
         let kept = log_file(&[&r0], LEN);
         let zeros = vec![0; LEN];
@@ -1085,9 +1083,7 @@ mod tests {
         after_end[r0.len().strict_add(HEADER).strict_add(10)] = 9;
         let after_end_files =
             framed(&[("log-0", &after_end), ("log-1", &log_file(&[&r1], LEN))]);
-        let mut version = log::encode(9, None, &[empty(2)]);
-        version[8..10].copy_from_slice(&2_u16.to_le_bytes());
-        log::seal_file(&mut version);
+        let version = as_version_2(log::encode(9, None, &[empty(2)]));
         vec![
             (
                 "two_files",
@@ -1173,6 +1169,13 @@ mod tests {
                 Ok(empties(0, framed(&[("log-0", &[])]))),
             ),
         ]
+    }
+
+    /// `record` with format version 2, sealed.
+    fn as_version_2(mut record: Vec<u8>) -> Vec<u8> {
+        record[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        log::seal_file(&mut record);
+        record
     }
 
     fn version_2(file: &str) -> log::Error {
