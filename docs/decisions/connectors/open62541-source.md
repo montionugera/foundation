@@ -381,5 +381,6 @@
   server itself, because it checks `STOPPING` between the stop and the drive. That
   exception: approved by `laptop.architect-2` at `c04ad0db3`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
-  2026-10-10 16:03 UTC). The test of the bound deletes its server itself after the panic
-  of the close.
+  2026-10-10 16:03 UTC). The test of the panic at the bound deletes its server itself
+  after that panic, because `close_server` panics before its delete, and the delayed
+  callbacks that still wait are those of the test, which do not read the server.
