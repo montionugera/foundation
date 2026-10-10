@@ -1162,6 +1162,7 @@ impl Error {
             Self::Start(_)
             | Self::Panicked(_)
             | Self::Memory { .. }
+            | Self::Pool { .. }
             | Self::Shards { .. }
             | Self::Disk { .. }
             | Self::Transport(_)
