@@ -15,7 +15,7 @@ use types::channel::Slot;
 use types::frame::key_set::{self, KeySet};
 use types::frame::{self, Draft, Frame, Label, Path};
 use types::hash;
-use types::time::{Monotonic, Span, Stamp};
+use types::time::{Interval, Monotonic, Span, Stamp};
 
 use crate::Refusal;
 use crate::index::{Accepted, Index};
@@ -384,6 +384,45 @@ impl Shard {
             for claim in claims.filter(|claim| claim.place == last) {
                 claim.place = place;
             }
+        }
+    }
+
+    /// When the control of a carried index next changes with no call: the earliest end
+    /// of a holder's control lease or of a restored holder's grace, on the monotonic
+    /// clock of the shard. `None` when only a call can change control. Takes O(n) time
+    /// for n carried indexes.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Monotonic> {
+        self.indexes
+            .iter()
+            .filter_map(|index| index.gate.deadline())
+            .min()
+    }
+
+    /// Applies what came due by now in the gate of each carried index: a holder whose
+    /// control lease ran out loses control, and a restored holder that did not reopen in
+    /// its grace is dropped. Appends a handoff for each index whose holder changed and
+    /// that has an open writer, as [`close_writer`](Self::close_writer) does. Call it at
+    /// [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n + c)
+    /// time for n carried indexes and c claims of open writers on them.
+    pub fn advance(&mut self) {
+        let clock::Time { monotonic, mesh } = self.clock.now();
+        for index in &mut self.indexes {
+            index.gate.advance(monotonic);
+        }
+        // No writer opens before mesh time.
+        let Some(mesh) = mesh.map(midpoint) else {
+            return;
+        };
+        for session in self.writers.values() {
+            // A handoff with no room waits, and a failed commit fails the next write.
+            drop(record(
+                &self.buffer,
+                &mut self.indexes,
+                session,
+                session.groups(),
+                mesh,
+            ));
         }
     }
 
@@ -763,9 +802,7 @@ impl Shard {
     /// the node first has mesh time.
     fn clocks(&self) -> Option<(Monotonic, Stamp)> {
         let clock::Time { monotonic, mesh } = self.clock.now();
-        let mesh = mesh?;
-        let midpoint = mesh.earliest.nanos().midpoint(mesh.latest.nanos());
-        Some((monotonic, Stamp::from_nanos(midpoint)))
+        Some((monotonic, midpoint(mesh?)))
     }
 
     /// Both clocks now, as [`clocks`](Self::clocks) gives them.
@@ -793,21 +830,25 @@ impl Shard {
 
     /// Appends the unrecorded handoff of each index of `session`.
     fn record_all(&mut self, session: &Session, mesh: Stamp) {
-        let groups = (0..session.claims.len()).map(|group| {
-            u32::try_from(group).expect("invariant: a key set has u32 groups")
-        });
         // A handoff with no room waits, and a failed commit fails the next write.
         drop(record(
             &self.buffer,
             &mut self.indexes,
             session,
-            groups,
+            session.groups(),
             mesh,
         ));
     }
 }
 
 impl Session {
+    /// Each group of the key set, in order.
+    fn groups(&self) -> impl Iterator<Item = u32> + use<> {
+        (0..self.claims.len()).map(|group| {
+            u32::try_from(group).expect("invariant: a key set has u32 groups")
+        })
+    }
+
     /// The writer's claim on the index of `group`, and the index's entry in the key
     /// set.
     fn claim(&self, group: u32) -> (Claim, &key_set::Entry) {
@@ -815,6 +856,11 @@ impl Session {
         let entry = &self.set.entries()[self.set.groups()[group]];
         (self.claims[group], entry)
     }
+}
+
+/// The midpoint of `mesh`, the best guess of the true time.
+fn midpoint(mesh: Interval) -> Stamp {
+    Stamp::from_nanos(mesh.earliest.nanos().midpoint(mesh.latest.nanos()))
 }
 
 /// Freezes the index frame from `split` of each accepted group of `checks` with
@@ -2711,6 +2757,148 @@ mod tests {
             shard.carry(Slot::new(0));
             shard.carry(Slot::new(2));
             let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[applied(0, 1, 1), applied(2, 1, 1)][..])
+            );
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn gives_no_deadline_when_no_holder_has_a_lease() {
+        run(230, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            assert_eq!(shard.deadline(), None);
+            shard.open_writer(writer("a", 1, &set)).expect("synced");
+            assert_eq!(shard.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn gives_the_end_of_the_earliest_lease_as_the_deadline() {
+        run(231, |test| async move {
+            let index = |slot| {
+                intern(&[Group {
+                    index: key(Slot::new(slot)),
+                    data: &[],
+                }])
+            };
+            let mut shard = test.shard(AREA).await;
+            let opened = test.reader.now().monotonic;
+            let long = Writer {
+                lease: Some(Span::from_nanos(2_000_000)),
+                ..writer("a", 1, &index(0))
+            };
+            shard.open_writer(long).expect("synced");
+            let short = Writer {
+                lease: Some(LEASE),
+                ..writer("b", 1, &index(2))
+            };
+            shard.open_writer(short).expect("synced");
+            assert_eq!(shard.deadline(), Some(opened + LEASE));
+        });
+    }
+
+    #[test]
+    fn gives_the_end_of_the_grace_as_the_deadline_after_a_power_cut() {
+        let (mut sim, node) = cut_after(232, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.open(AREA, 4).await;
+            let opened = test.reader.now().monotonic;
+            assert_eq!(shard.deadline(), None, "no index is carried");
+            shard.carry(Slot::new(0));
+            assert_eq!(shard.deadline(), Some(opened + GRACE));
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn advances_nothing_before_the_deadline() {
+        run(233, |test| async move {
+            let (mut shard, a, set) = test.leased().await;
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            let deadline = shard.deadline();
+            shard.advance();
+            assert_eq!(shard.deadline(), deadline);
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1]), (2, &[10])]);
+            assert_eq!(
+                shard.write(a, LIVE, write),
+                Ok(&[applied(0, 0, 1), applied(2, 0, 1)][..])
+            );
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+        });
+    }
+
+    #[test]
+    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_a_lease() {
+        run(234, |test| async move {
+            let (mut shard, _, set) = test.leased().await;
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            test.clock.sleep(WAIT).await;
+            assert!(shard.deadline() <= Some(test.reader.now().monotonic));
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 2, "b takes both indexes");
+            assert_eq!(shard.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_the_grace() {
+        let (mut sim, node) = cut_after(236, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 2, "b takes both indexes");
+        })
+        .expect("the run after the cut ends");
+    }
+
+    /// With no record of the end of the lease, the open after the cut restores `a`
+    /// and reserves control for it.
+    #[test]
+    fn records_no_holder_at_the_end_of_a_lease_before_a_power_cut() {
+        let (mut sim, node) = create_node(235);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let (mut shard, a, set) = test.leased().await;
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1]), (2, &[10])]);
+            assert_eq!(
+                shard.write(a, LIVE, write),
+                Ok(&[applied(0, 0, 1), applied(2, 0, 1)][..])
+            );
+            test.clock.sleep(LEASE).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the first run ends");
+        sim.crash(&node, sim::Crash::Power);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            assert_eq!(shard.deadline(), None, "no holder is restored");
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
             assert_eq!(
                 shard.write(b, LIVE, next),
