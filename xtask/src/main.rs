@@ -254,14 +254,18 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// When a quoted scalar or a flow collection of `line` does not close on it, or
-    /// `line` has an anchor, alias, or tag, a `?` or `:` at the start of a node, or a
-    /// `#` after a character that is not a space, any of which can make a node run on.
+    /// When a quoted scalar or a flow sequence of `line` does not close on it, a flow
+    /// sequence holds more than plain words, or `line` has a flow mapping, an anchor,
+    /// alias, or tag, a `?` or `:` at the start of a node, a `#` after a character that
+    /// is not a space, or a document marker, any of which can make a node run on.
     fn code(line: &str) -> &str {
         let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
+        if line.starts_with("---") || line.starts_with("...") {
+            refused();
+        }
         // `start` holds where a node can start, the only place where a quote or a
         // bracket opens one.
-        let (mut quote, mut escaped, mut depth, mut start) = (None, false, 0, true);
+        let (mut quote, mut escaped, mut flow, mut start) = (None, false, false, true);
         let mut prev = ' ';
         let mut chars = line.char_indices().peekable();
         while let Some((i, c)) = chars.next() {
@@ -279,29 +283,34 @@ mod tests {
                 prev = c;
                 continue;
             }
+            // A flow of plain words is the only flow ci.yaml needs, and the only one
+            // whose end each parser finds at the same place.
+            if flow {
+                match c {
+                    ']' => flow = false,
+                    ' ' | ',' | '-' | '_' | '.' | '/' => {}
+                    _ if c.is_ascii_alphanumeric() => {}
+                    _ => refused(),
+                }
+                prev = c;
+                continue;
+            }
             match c {
                 ' ' if prev == ':' => start = true,
-                // A `-` starts a sequence entry only at a node start, before a space.
-                '-' if start && chars.peek().is_none_or(|(_, next)| *next == ' ') => {}
+                // A `-` keeps a node start only before a space.
+                '-' if chars.peek().is_none_or(|(_, next)| *next == ' ') => {}
                 ' ' => {}
-                '#' if prev == ' ' => {
-                    if depth > 0 {
-                        refused();
-                    }
-                    return line[..i].trim_end();
-                }
+                '#' if prev == ' ' => return line[..i].trim_end(),
                 // Parsers differ on whether such a `#` starts a comment.
                 '#' => refused(),
                 '\'' | '"' if start => quote = Some(c),
-                '[' | '{' if start => depth += 1,
-                ']' | '}' if depth > 0 => (depth, start) = (depth - 1, false),
-                ',' | ':' if depth > 0 => start = true,
-                '&' | '*' | '!' | '?' | ':' if start => refused(),
+                '[' if start => flow = true,
+                '{' | '&' | '*' | '!' | '?' | ':' if start => refused(),
                 _ => start = false,
             }
             prev = c;
         }
-        if quote.is_some() || depth > 0 {
+        if quote.is_some() || flow {
             refused();
         }
         line
@@ -535,7 +544,7 @@ mod tests {
             "a: 'b''c'\n",
             "b: \"c\\\"d\" # e\n",
             "c: it's a b # c\n",
-            "d: [e, 'f', {g: \"h\"}] # it's\n",
+            "d: [e, f-g, h_i.j/k] # it's\n",
             "e: \"!cancelled()\"\n",
             "f: |\n",
             "  [echo \"it's\n",
@@ -582,6 +591,13 @@ mod tests {
             "  ? a",
             "  : b: |",
             "a: [? b]",
+            "a: [b:'c, [d']",
+            "a: [b:'#, [c']",
+            "a: [b, [c]]",
+            "a: [b, c",
+            "--- 'a",
+            "... [a",
+            "a: {b: c}",
             "a: 'b''c",
             "a: b#c",
             "a: [\"b\"#c]",
