@@ -72,6 +72,8 @@ mod tests {
 
     use super::*;
 
+    /// A test of the private call: the sim binds no address with flow info or a scope,
+    /// so no test through `Node::start` sees the filter.
     #[test]
     fn a_card_holds_each_bound_address_but_one_with_flow_info_or_a_scope() {
         let v4 = Address::Udp(SocketAddr::from((Ipv4Addr::new(10, 0, 0, 1), 7000)));
