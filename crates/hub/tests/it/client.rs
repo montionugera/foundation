@@ -654,6 +654,29 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
     );
 }
 
+/// Each request after the end of the renewal gives the error that ended it, not only
+/// the first.
+#[test]
+fn gives_the_error_of_the_renewal_to_each_later_request() {
+    raw(
+        135,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            let refused = own_pool().copy(&[0xff]).expect("room");
+            sender.send(refused).await.expect("sends");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(LIFE).await;
+            let ended = Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }));
+            assert_eq!(client.request(b"ab").await, ended);
+            assert_eq!(client.request(b"cd").await, ended);
+        },
+    );
+}
+
 /// A request in flight when a challenge that `wire` refuses ends the renewal gives
 /// that error, not the error of the close.
 #[test]
