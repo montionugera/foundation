@@ -2702,6 +2702,33 @@ fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
     );
 }
 
+/// As [`streams_that_a_purge_closes_are_no_more_than_the_bound`], with each peer in
+/// one burst at one instant.
+#[test]
+fn a_burst_of_streams_holds_no_more_than_the_bound() {
+    let mut network = Network::new();
+    let peers: Vec<_> = (0..400)
+        .map(|_| network.probe(Span::MILLISECOND, Span::from_nanos(1_500_000_000)))
+        .collect();
+    let (connections, held) = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let side = Side::listening(&node, listener(&node));
+            let server = side.start(c"opc.tcp://:4840");
+            side.drive(Span::from_nanos(2_000_000_000)).await;
+            // Less the listen connection.
+            let held = (side.connections() - 1, snapshot(&peers));
+            side.stop(server).await;
+            held
+        })
+        .expect("the run ends");
+    let count = |of| held.iter().filter(|h| **h == of).count();
+    assert_eq!(
+        (connections, count(Held::Open), count(Held::Closing)),
+        (100 + CLOSES, 100, CLOSES)
+    );
+}
+
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
 /// together, each of which reads until its stream ends and never closes, when
 /// `child::running()`. The server purges the oldest channel at each accept past 100.
