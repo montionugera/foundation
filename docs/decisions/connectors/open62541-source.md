@@ -272,7 +272,9 @@
   So a server of the minimal config holds at most its 100 secure channels and 100
   closing streams (#2262). Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2271#issuecomment-6099183891,
-  2026-10-10 15:38 UTC). Supersedes
+  2026-10-10 15:38 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2271#issuecomment-6103268271,
+  2026-10-10 23:21 UTC). Supersedes
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6085824086 for the
   memory of a manager, and
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086204518 for a
