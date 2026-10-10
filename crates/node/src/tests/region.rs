@@ -227,26 +227,41 @@ fn a_start_with_a_region_makes_no_admin_key() {
 #[test]
 fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
     let mut between = 0;
-    for after in (0..).step_by(25_000).map(Span::from_nanos) {
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let host = keyed(&mut sim, 2);
-        let node = start(&host);
-        assert_eq!(sim.run_for(after), Ok(()), "{after:?}");
-        sim.crash(&host, sim::Crash::Power);
-        drop(node);
-        let kept = stored(&mut sim, &host);
-        let written = bytes(&mut sim, &host, FILE).map(|_| admin(&mut sim, &host));
-        between += usize::from(written.is_some() && kept.is_none());
-        assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{after:?}");
-        let admin = admin(&mut sim, &host);
-        if let Some(written) = written {
-            assert_eq!(written.0, admin.0, "{after:?}");
-        }
-        let founded = Some(root(&host, &admin));
-        assert_eq!(stored(&mut sim, &host), founded, "{after:?}");
-        if kept.is_some() {
-            assert_eq!(kept, founded, "{after:?}");
-            break;
+    for seed in 0..4 {
+        for after in (0..).step_by(25_000).map(Span::from_nanos) {
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let host = keyed(&mut sim, 2);
+            // A cut can lose the entry of the `node.key` that `keyed` wrote, and a new
+            // key founds another region.
+            let synced = sim.run_on(&host, |host, _| async move {
+                let files = host.files();
+                files
+                    .sync_dir(Path::new(""))
+                    .await
+                    .expect("syncs the directory");
+            });
+            synced.expect("the run ends");
+            let node = start(&host);
+            assert_eq!(sim.run_for(after), Ok(()), "{seed} {after:?}");
+            sim.crash(&host, sim::Crash::Power);
+            drop(node);
+            let kept = stored(&mut sim, &host);
+            let written = bytes(&mut sim, &host, FILE).map(|_| admin(&mut sim, &host));
+            between += usize::from(written.is_some() && kept.is_none());
+            assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{seed} {after:?}");
+            let admin = admin(&mut sim, &host);
+            if let Some(written) = written {
+                assert_eq!(written.0, admin.0, "{seed} {after:?}");
+            }
+            let founded = Some(root(&host, &admin));
+            assert_eq!(stored(&mut sim, &host), founded, "{seed} {after:?}");
+            if kept.is_some() {
+                assert_eq!(kept, founded, "{seed} {after:?}");
+                break;
+            }
         }
     }
     assert!(between > 0, "no cut came between the two files");
