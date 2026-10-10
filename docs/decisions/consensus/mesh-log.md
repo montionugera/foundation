@@ -141,7 +141,8 @@
   name (approved by the architect, 2026-10-10T22:44:18Z:
   https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950; the
   `Scan` result and the fixed point after two opens, 2026-10-10T22:54:30Z:
-  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6103059175.
-  Supersedes
-  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950 for the
-  result of `scan_log_dir`).
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6103059175; the one
+  step that `Log::open` also calls, 2026-10-10T23:17:42Z:
+  https://github.com/synnaxlabs/foundation/pull/2317#issuecomment-6103236920. Supersedes
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950 for
+  condition 1 and for the result of `scan_log_dir`).
