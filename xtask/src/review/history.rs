@@ -160,18 +160,21 @@ impl<'a> History<'a> {
                     String::from_utf8_lossy(&entry.path)
                 )
             })?;
-            // A submodule's blob is a commit, which has no lines to read.
-            let submodule = entry.old_mode == GITLINK || entry.new_mode == GITLINK;
-            if text_path(path) && !submodule {
+            // A submodule's blob is a commit and a symlink's blob is its target, so
+            // neither has lines to read.
+            let link = [&entry.old_mode, &entry.new_mode]
+                .iter()
+                .any(|mode| [GITLINK, SYMLINK].contains(&mode.as_str()));
+            if text_path(path) && !link {
                 continue;
             }
             let rust = rust_path(path);
-            if !submodule
+            if !link
                 && let Some(line) = self.first_code(&entry.old, &entry.new, rust)?
             {
                 return Ok(Some(format!("changes code at `{path}:{line}`")));
             }
-            if !rust || submodule || entry.mode_changed() {
+            if !rust || link || entry.mode_changed() {
                 return Ok(Some(format!("changes code at `{path}`")));
             }
         }
@@ -621,6 +624,9 @@ pub(crate) enum Place {
 
 /// The mode of a submodule.
 const GITLINK: &str = "160000";
+
+/// The mode of a symlink.
+const SYMLINK: &str = "120000";
 
 /// One entry of `git diff --raw`.
 struct Entry {

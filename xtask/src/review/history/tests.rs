@@ -228,6 +228,9 @@ fn places_on_the_first_parent_chain_only() {
     assert_eq!(repo.passes(&side, &head), Ok(false));
     assert_eq!(repo.place(&head, &end), Ok(Place::Off));
     assert_eq!(repo.place("deadbeef", &head), Ok(Place::Off));
+    let tree = format!("{end}^{{tree}}");
+    let second = repo.git(&["commit-tree", &tree, "-p", "main", "-p", &end, "-m", "m"]);
+    assert_eq!(repo.place(&end, &second), Ok(Place::Off));
     repo.remove();
 }
 
@@ -305,6 +308,22 @@ fn a_shell_script_line_is_code() {
 }
 
 #[test]
+fn an_extension_in_another_case_is_code() {
+    let (repo, from) = Repo::with_pr("case");
+    let text = repo.commit("A.MD", "text\n");
+    assert_eq!(
+        repo.code_change(&from, &text),
+        Ok(Some("changes code at `A.MD:1`".to_string()))
+    );
+    let rust = repo.commit("a.RS", "// A.\n");
+    assert_eq!(
+        repo.code_change(&text, &rust),
+        Ok(Some("changes code at `a.RS:1`".to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
 fn a_change_of_mode_or_an_empty_file_is_code_except_in_text() {
     let (repo, from) = Repo::with_pr("mode");
     let empty = repo.commit("e.yaml", "");
@@ -328,6 +347,35 @@ fn a_change_of_mode_or_an_empty_file_is_code_except_in_text() {
     repo.git(&["commit", "--quiet", "-m", "mode"]);
     assert_eq!(repo.code_change(&mode, &repo.head()), Ok(None));
     repo.remove();
+}
+
+#[test]
+fn a_symlink_is_code() {
+    for path in ["build.rs", "a.md"] {
+        let (repo, from) = Repo::with_pr(&format!("symlink-{path}"));
+        // A target that starts with `//` reads as a comment line of a `.rs` file.
+        let link = |target: &str| {
+            std::fs::write(repo.dir.join("blob"), target).unwrap();
+            let blob = repo.git(&["hash-object", "-w", "blob"]);
+            let info = format!("120000,{blob},{path}");
+            repo.git(&["update-index", "--add", "--cacheinfo", &info]);
+            repo.git(&["commit", "--quiet", "-m", "link"]);
+            repo.head()
+        };
+        let added = link("//tmp/a.md");
+        assert_eq!(
+            repo.code_change(&from, &added),
+            Ok(Some(format!("changes code at `{path}`"))),
+            "{path}"
+        );
+        let moved = link("//tmp/b.md");
+        assert_eq!(
+            repo.code_change(&added, &moved),
+            Ok(Some(format!("changes code at `{path}`"))),
+            "{path}"
+        );
+        repo.remove();
+    }
 }
 
 #[test]
@@ -1582,17 +1630,17 @@ fn names_the_file_when_a_file_and_a_directory_of_its_name_trade_places() {
 
 #[cfg(unix)]
 #[test]
-fn reads_a_link_that_a_file_of_code_replaces() {
+fn reads_a_link_that_a_file_replaces_as_code() {
     let (repo, _) = Repo::with_pr("link");
     std::os::unix::fs::symlink("// a", repo.dir.join("x.rs")).unwrap();
     repo.git(&["add", "x.rs"]);
     repo.git(&["commit", "--quiet", "-m", "link"]);
     let from = repo.head();
     std::fs::remove_file(repo.dir.join("x.rs")).unwrap();
-    let end = repo.commit("x.rs", "// a\nfn b() {}\n");
+    let end = repo.commit("x.rs", "// a\n");
     assert_eq!(
         repo.code_change(&from, &end),
-        Ok(Some("changes code at `x.rs:2`".to_string()))
+        Ok(Some("changes code at `x.rs`".to_string()))
     );
     repo.remove();
 }

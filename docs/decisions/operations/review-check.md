@@ -108,29 +108,33 @@
   chain of the head from which the range to the head changes no code, read as the range
   of a round with `Breaker: skipped` is read (TEXT FIXES), and when a commit that is
   not a merge follows a last round that ends before the head, its round comment has a
-  line `Text fixes:`. Decided by the director on
-  https://github.com/synnaxlabs/foundation/issues/2315 and
-  https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281, which
-  change the rule decided by the director at 2026-10-07T17:21:14Z
-  (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385). A
-  line `Text fixes: none` does not count. When the last round is a later round with
+  line `Text fixes:`. A line `Text fixes: none` does not count. Decided by the
+  director at 2026-10-10T23:01:29Z
+  (https://github.com/synnaxlabs/foundation/issues/2315) and 2026-10-10T23:21:22Z
+  (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281), on
+  the person's approval at 2026-10-10T15:50:57Z
+  (https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621).
+  Supersedes the last-round sentence of
+  https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385
+  (2026-10-07T17:21:14Z). When the last round is a later round with
   `Breaker: skipped`, it fails if its range changes code: a change to a file that is
   not a `.md` file (its lines, its mode, or its path), other than a `.rs` line that,
   trimmed, is blank or starts with `//` (a doctest line is a comment) (decided by the
-  director on https://github.com/synnaxlabs/foundation/issues/2315). Each line of a
-  moved file counts as removed and added. A merge of the base in the range counts only
-  by its resolution: a conflict that `git merge-tree` finds between its parents in a
-  file that is not a `.md` file is a code change (decided by the director on
-  https://github.com/synnaxlabs/foundation/issues/2315). The rest of the range is read
-  from the tree that `git merge-tree` makes of its start and the newest base commit that
-  its end holds, not from its start: the base's code does not count, and text that the
-  range changes and the base moves into a code file does. So does a path that is not
-  code, that the start changes since its merge base with that base commit, as the merge
-  reads it, and that this merge moves into a code file, by the merge's own rename
-  detection. A conflict in this tree in a code file is a code change, also one that
-  leaves no markers, and so is an end that holds more than one newest base commit. In
-  the range, a base move counts only through this tree. Decided by the director at
-  2026-10-07T18:27:30Z
+  director at 2026-10-10T23:01:29Z in
+  https://github.com/synnaxlabs/foundation/issues/2315). Each line of a moved file
+  counts as removed and added. A merge of the base in the range counts only by its
+  resolution: a conflict that `git merge-tree` finds between its parents in a file
+  that is not a `.md` file is a code change (decided by the director at
+  2026-10-10T23:01:29Z in https://github.com/synnaxlabs/foundation/issues/2315). The
+  rest of the range is read from the tree that `git merge-tree` makes of its start and
+  the newest base commit that its end holds, not from its start: the base's code does
+  not count, and text that the range changes and the base moves into a code file does.
+  So does a path that is not code, that the start changes since its merge base with that
+  base commit, as the merge reads it, and that this merge moves into a code file, by the
+  merge's own rename detection. A conflict in this tree in a code file is a code change,
+  also one that leaves no markers, and so is an end that holds more than one newest base
+  commit. In the range, a base move counts only through this tree. Decided by the
+  director at 2026-10-07T18:27:30Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6044222273).
   Supersedes the range sentence of
   https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385. Found
