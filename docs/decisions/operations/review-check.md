@@ -106,23 +106,21 @@
   (https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6052414062).
   The last round finds none and ends at the head, or at a commit on the first-parent
   chain of the head from which the range to the head changes no code, read as the range
-  of a round with `Breaker: skipped` is read (TEXT FIXES), and a last round that ends
-  before the head has a line `Text fixes:` in its round comment. Decided by the
-  director on https://github.com/synnaxlabs/foundation/issues/2315 and
-  https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103182934, which
+  of a round with `Breaker: skipped` is read (TEXT FIXES), and when a commit that is
+  not a merge follows a last round that ends before the head, its round comment has a
+  line `Text fixes:`. Decided by the director on
+  https://github.com/synnaxlabs/foundation/issues/2315 and
+  https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281, which
   change the rule decided by the director at 2026-10-07T17:21:14Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385). A
-  round whose end only merges of the base follow on that chain does not end before the
-  head, since such merges may follow the last round (decided by the director in item
-  3 of https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6103180556).
-  When the last round is a later round with `Breaker: skipped`, it fails if its range
-  changes code: a change to a file that is not a `.md` file (its lines, its mode, or
-  its path), other than a `.rs` line that, trimmed, is blank or starts with `//` (a
-  doctest line is a comment) (decided by the director on
-  https://github.com/synnaxlabs/foundation/issues/2315). Each line of a moved
-  file counts as removed and added. A merge of the base in the range counts only by its
-  resolution: a conflict that `git merge-tree` finds between its parents in a file that
-  is not a `.md` file is a code change (decided by the director on
+  line `Text fixes: none` does not count. When the last round is a later round with
+  `Breaker: skipped`, it fails if its range changes code: a change to a file that is
+  not a `.md` file (its lines, its mode, or its path), other than a `.rs` line that,
+  trimmed, is blank or starts with `//` (a doctest line is a comment) (decided by the
+  director on https://github.com/synnaxlabs/foundation/issues/2315). Each line of a
+  moved file counts as removed and added. A merge of the base in the range counts only
+  by its resolution: a conflict that `git merge-tree` finds between its parents in a
+  file that is not a `.md` file is a code change (decided by the director on
   https://github.com/synnaxlabs/foundation/issues/2315). The rest of the range is read
   from the tree that `git merge-tree` makes of its start and the newest base commit that
   its end holds, not from its start: the base's code does not count, and text that the

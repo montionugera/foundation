@@ -30,8 +30,7 @@ impl<'a> History<'a> {
     ///
     /// # Errors
     ///
-    /// A failed `git` command, also when `head` names no commit or the base ref does
-    /// not exist.
+    /// A failed `git` command, also when `head` names no commit.
     pub(crate) fn place(&self, end: &str, head: &str) -> Result<Place, String> {
         let Some(end) = self.sha(end)? else {
             return Ok(Place::Off);
@@ -49,13 +48,12 @@ impl<'a> History<'a> {
         if last.is_none_or(|line| line.split(' ').nth(1) != Some(&end)) {
             return Ok(Place::Off);
         }
-        let base = self.base()?;
-        for line in chain.lines() {
-            if self.base_merge(line, &base)?.is_none() {
-                return Ok(Place::Before);
-            }
-        }
-        Ok(Place::Head)
+        let merge = |line: &str| line.split(' ').count() > 2;
+        Ok(if chain.lines().all(merge) {
+            Place::Head
+        } else {
+            Place::Before
+        })
     }
 
     /// The first code change of `from..end`, as a phrase: "changes code at
@@ -613,9 +611,9 @@ const PROBE: &str = "xtask-review-probe";
 /// ([`History::place`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Place {
-    /// The head, or a commit that only merges of the base follow on the chain.
+    /// The head, or a commit that only merges follow on the chain.
     Head,
-    /// A commit on the chain that a commit other than a merge of the base follows.
+    /// A commit on the chain that a commit that is not a merge follows.
     Before,
     /// Not on the chain.
     Off,

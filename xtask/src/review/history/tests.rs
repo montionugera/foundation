@@ -222,7 +222,7 @@ fn places_on_the_first_parent_chain_only() {
     let head = repo.commit("a.md", "text\n");
     assert_eq!(repo.place(&head, &head), Ok(Place::Head));
     assert_eq!(repo.place(&merge, &head), Ok(Place::Before));
-    assert_eq!(repo.place(&end, &merge), Ok(Place::Before));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Head));
     assert_eq!(repo.place(&end[..7], &head), Ok(Place::Before));
     assert_eq!(repo.place(&side, &head), Ok(Place::Off));
     assert_eq!(repo.passes(&side, &head), Ok(false));

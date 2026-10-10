@@ -112,8 +112,8 @@ struct Round {
     from: String,
     end: String,
     findings: u32,
-    /// The comment has a line `Text fixes:`, so commits that apply its items may
-    /// follow the round.
+    /// The comment has a line `Text fixes:` that is not `Text fixes: none`, so commits
+    /// that apply its items may follow the round.
     fixed: bool,
     /// The `Hot path:` end line names a function, so the round requires
     /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
@@ -181,13 +181,12 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// The problems with the review in `record` at `head`: each round must name the
 /// reviewers it requires, and the last round must find nothing and end at `head`, or
 /// at a commit on its first-parent chain from which the range to `head` changes no
-/// code, with a `Text fixes:` line when a commit other than a merge of the base
-/// follows it. `place` gives where a commit (a SHA or its prefix) is from `head`
-/// (`History::place`). A
-/// later round may skip `breaker` when the range of the last round changes no code;
-/// an earlier round's skip is taken as written. `code_change` gives the first code
-/// change in a range, with a merge of the base read by its resolution, as a phrase,
-/// or `None` (`History::code_change`).
+/// code, with a `Text fixes:` line when a commit that is not a merge follows it.
+/// `place` gives where a commit (a SHA or its prefix) is from `head`
+/// (`History::place`). A later round may skip `breaker` when the range of the last
+/// round changes no code; an earlier round's skip is taken as written. `code_change`
+/// gives the first code change in a range, with a merge of the base read by its
+/// resolution, as a phrase, or `None` (`History::code_change`).
 fn problems(
     record: &Record,
     head: &str,
@@ -373,6 +372,15 @@ fn performer(text: &[Vec<String>]) -> bool {
         .any(|r| listed(r).contains("performance"))
 }
 
+/// Whether `text` ([`Shown::text`]) has a line `Text fixes:` that is not
+/// `Text fixes: none`.
+fn fixed(text: &[Vec<String>]) -> bool {
+    text.iter()
+        .flatten()
+        .filter_map(|l| l.strip_prefix("Text fixes:"))
+        .any(|items| items.trim() != "none")
+}
+
 /// The reviewers that the value of a `Reviewers:` line lists.
 fn listed(reviewers: &str) -> BTreeSet<String> {
     reviewers
@@ -400,7 +408,6 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
     let breakerless = lines.clone().any(|l| l.starts_with("Breaker: skipped"));
-    let fixed = text.iter().flatten().any(|l| l.starts_with("Text fixes:"));
     let binding =
         [reviewers, range, findings].iter().any(Option::is_some) || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
@@ -449,7 +456,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
-            fixed,
+            fixed: fixed(text),
             hot,
         })
     };

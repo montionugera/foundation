@@ -64,6 +64,10 @@ fn record(comments: Vec<Comment>) -> Record {
 /// The start of the range of `ROUND`, which changes only comment lines.
 const COMMENTS: &str = "38cba24f";
 
+/// A commit on the first-parent chain of `HEAD` that only clean merges of the base
+/// follow.
+const MERGED: &str = "3d9a61c0";
+
 /// A commit on the first-parent chain of `HEAD` from which the range to `HEAD`
 /// changes no code.
 const TEXT: &str = "5e0f17a2";
@@ -80,12 +84,13 @@ fn check(record: &Record) -> Vec<String> {
         &|end| {
             Ok(match end {
                 _ if head(end) => Place::Head,
+                MERGED => Place::Head,
                 TEXT | CODE => Place::Before,
                 _ => Place::Off,
             })
         },
         &|from, _| {
-            let text = head(from) || [COMMENTS, TEXT].contains(&from);
+            let text = head(from) || [COMMENTS, MERGED, TEXT].contains(&from);
             Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
         },
     )
@@ -937,14 +942,28 @@ fn passes_a_range_that_ends_before_commits_that_change_no_code() {
 
 #[test]
 fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
-    let round = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
-    assert_eq!(
-        check(&record(vec![bot(&round)])),
-        vec![format!(
-            "review round 3 ends at `{TEXT}`, not at the head `{HEAD}`, and has no \
-             `Text fixes:` line."
-        )]
-    );
+    let none = "Text fixes: none\n\nNo bug,";
+    for round in [
+        ROUND.replace("..c77c67d7", &format!("..{TEXT}")),
+        ROUND
+            .replace("..c77c67d7", &format!("..{TEXT}"))
+            .replace("No bug,", none),
+    ] {
+        assert_eq!(
+            check(&record(vec![bot(&round)])),
+            vec![format!(
+                "review round 3 ends at `{TEXT}`, not at the head `{HEAD}`, and has no \
+                 `Text fixes:` line."
+            )],
+            "{round}"
+        );
+    }
+}
+
+#[test]
+fn passes_a_range_that_ends_before_only_clean_merges_without_text_fixes() {
+    let round = ROUND.replace("..c77c67d7", &format!("..{MERGED}"));
+    assert_eq!(check(&record(vec![bot(&round)])), Vec::<String>::new());
 }
 
 #[test]
