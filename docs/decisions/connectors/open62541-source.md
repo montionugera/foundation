@@ -5,8 +5,9 @@
   call one; a list per file would pass a new call in a listed file. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
-  2026-10-08 02:27 UTC). A test of `connector-opcua` names each pair and fails
-  when its reason becomes false. For example, `shim.c` fails the build with
+  2026-10-08 02:27 UTC). A test of `connector-opcua` names the function of each clock
+  key of `FUNCTION_SYMBOLS` and fails when its reason becomes false. For example,
+  `shim.c` fails the build with
   `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust or `shim.c` names a security
   policy, so a client has only the policy `None`, and `encryptUserIdentityTokenEcc`
   needs an ECC policy. Approved by `laptop.architect`
