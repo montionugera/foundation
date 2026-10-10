@@ -27,32 +27,32 @@ read the diff (`gh pr diff <n>`) and every file it touches. In each round, each 
 number, or claim of the PR title or body that is false at the PR head is a finding: the
 title becomes the message of the merge commit. In a second round you get the earlier
 findings and a commit range: review only that range, and check that each fix closes its
-finding and adds no new defect, that the range, a merge resolution included, undoes no
-fix that an earlier round comment names, and that each answer with no code change holds
-against the code and against "Findings" step 3 of `.claude/skills/review/SKILL.md` on
-`main`. Name each answer or fix that defers work or decides what a ruling means, with
-its issue and each link to the architect that step 3 asks for. An answer that names
-later work with no linked issue, or that lacks a link that step 3 asks for, is a
-finding. Read each such link, and each approval that a `Public surface:` line of an
-earlier round links (not the ruling link that follows `departs from`): one that does not
-name the item, or whose approved SHA comes before a commit that changes the item's
-surface or the meaning of a ruling (`.claude/skills/architect/SKILL.md`, "Review before
-the person" step 3), counts as missing, which is a finding. Take each decision or public
-doc that the PR adds or changes and that states what a crate does, when that crate, each
-other crate that the text names, the crate whose public doc holds it, and the crates
-that the PR changes are not all on one architect's list (`docs/factory.md`,
-"Architects"; a folder of `docs/decisions/` is a topic, not a crate). One with no link
-on the PR to the approval of `laptop.architect` (Round 1 of the `review` skill) is a
-finding. Read that approval: one that does not name the text, or whose approved SHA
-comes before a commit that changes what the text states, counts as missing. Read each
-architect review and ruling on the PR, on a PR that it replaces, on each issue that it
-closes, and linked from a round comment, and the text of each issue that it closes: each
-later step or trigger that one names, and that lacks the record that "Done" in the
-`review` skill asks for, is a finding. So is each change that one puts in this PR, with
-no commit at the head and no answer. A report gives, after the summary, the `Public
-surface:` and `Hot path:` lines that `.claude/agents/architecture.md` defines: in a
-second round for the range, and in a round 1 that runs no `architecture` agent for the
-PR.
+finding and adds no new defect, that each `Text fixes:` item that the range applies says
+what the item gives, that the range, a merge resolution included, undoes no fix that an
+earlier round comment names, and that each answer with no code change holds against the
+code and against "Findings" step 3 of `.claude/skills/review/SKILL.md` on `main`. Name
+each answer or fix that defers work or decides what a ruling means, with its issue and
+each link to the architect that step 3 asks for. An answer that names later work with no
+linked issue, or that lacks a link that step 3 asks for, is a finding. Read each such
+link, and each approval that a `Public surface:` line of an earlier round links (not the
+ruling link that follows `departs from`): one that does not name the item, or whose
+approved SHA comes before a commit that changes the item's surface or the meaning of a
+ruling (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3), counts
+as missing, which is a finding. Take each decision or public doc that the PR adds or
+changes and that states what a crate does, when that crate, each other crate that the
+text names, the crate whose public doc holds it, and the crates that the PR changes are
+not all on one architect's list (`docs/factory.md`, "Architects"; a folder of
+`docs/decisions/` is a topic, not a crate). One with no link on the PR to the approval
+of `laptop.architect` (Round 1 of the `review` skill) is a finding. Read that approval:
+one that does not name the text, or whose approved SHA comes before a commit that
+changes what the text states, counts as missing. Read each architect review and ruling
+on the PR, on a PR that it replaces, on each issue that it closes, and linked from a
+round comment, and the text of each issue that it closes: each later step or trigger
+that one names, and that lacks the record that "Done" in the `review` skill asks for, is
+a finding. So is each change that one puts in this PR, with no commit at the head and no
+answer. A report gives, after the summary, the `Public surface:` and `Hot path:` lines
+that `.claude/agents/architecture.md` defines: in a second round for the range, and in a
+round 1 that runs no `architecture` agent for the PR.
 
 Check:
 
@@ -85,7 +85,8 @@ Check:
   states the item. Does each test fail if the behavior breaks? Name a change to the code
   that no test would catch. `cargo mutants` never removes a call or widens a pattern, so
   its result does not answer this: remove each call that reports a problem, move it past
-  the next early return, and widen each pattern that stops a check, then run the tests.
+  the next early return, widen each pattern that stops a check, and remove each `drop`
+  of a pool block or lease that comes before a later allocation, then run the tests.
   For each sentence that the PR adds to a public doc or to `docs/decisions/` that states
   a behavior, which test fails when the code breaks it, in each place that the sentence
   covers? For each sentence of a public doc that new code in the PR must keep (a driver
@@ -108,7 +109,8 @@ Check:
   as CI does. A change that only such a test catches is a finding, unless a
   `.cargo/mutants.toml` entry gives its reason, or, for a hand mutant that `cargo
   mutants` never makes, its test doc gives it, and the report links that doc
-  (`testing.md`). When the PR exists to remove work, which test fails if it is reverted?
+  (`testing.md`). When the PR, or a commit of the range, exists to remove work, which
+  test fails if it is reverted?
   For work that no test can count through the product code (`testing.md`, "Test what the
   change is for"), which committed bench line runs it, and does each pair of alternate
   runs on one named machine favor the change? Such a bench line answers "Name a change
@@ -146,4 +148,6 @@ Start the report with the rating and the summary of code quality that "Rating" i
 `.claude/skills/review/SKILL.md` defines, for the whole PR at the head you reviewed.
 Then report only findings you can show: a concrete input and the wrong result, or a
 failing test you wrote and ran. For each: file and line, the failure, and the fix. Most
-severe first. No praise, and no other summary.
+severe first. Give a finding in text only, whose fix you can state, under `Text fixes:`
+with the exact new text, or each fact and link that the text must state ("Second round"
+step 2 of the `review` skill). No praise, and no other summary.

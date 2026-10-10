@@ -84,10 +84,11 @@ command outside that worktree. Remove each worktree when its agent returns
    names them, and in a round with no `architecture` agent the `reviewer` report names
    those of its range) and each rule change that Round 1 sends to `laptop.director`,
    each with the link to its approval once it exists. An approval holds for the text at
-   the SHA that it approves: after a commit changes the item, the line gives it
-   `approval owed` in place of the link until a new approval exists. A later round keeps
-   each item of the round before it. Then `Hot path:` as the `architecture` report gives
-   it, or, in a round with no `architecture` agent, the `reviewer` report.
+   the SHA that it approves: after a commit or an edit of the PR body changes the item,
+   the line gives it `approval owed` in place of the link until a new approval exists.
+   A later round keeps each item of the round before it. Then `Hot path:` as the
+   `architecture` report gives it, or, in a round with no `architecture` agent, the
+   `reviewer` report.
 3. Fix each finding in this PR, or answer it on the PR. A deferral is an issue that
    states the item, linked in the answer, also when the code is already on `main` or
    another crate does the work. A finding whose fix is a small change in a crate or a
@@ -170,14 +171,15 @@ round heading:
 Breaker: skipped, the check counts no code change in the range
 ```
 
-When the last round has that line, the check fails if its range changes code: a `.rs`
-line that, trimmed, is not empty and does not start with `//`, or a `Cargo.toml` or
-`Cargo.lock` line. The base's code does not count, but a conflict in a code file that
-`git merge-tree` finds does. REVIEW CHECK in `docs/decisions/operations/review-check.md`
-states each case, and the check names the one it finds. A head that is the range end
-plus clean merges of the base needs no new round. A red-team PR labeled `oracle` also
-needs the director's verdict with the line ``Director: approved at `<sha>` `` at the
-head.
+When the last round has that line, the check fails if its range changes code: a change
+to a file that is not a `.md` file, other than a `.rs` line that, trimmed, is empty or
+starts with `//`. The rest is text. The base's code does not count, but a conflict in a
+code file that `git merge-tree` finds does. REVIEW CHECK in
+`docs/decisions/operations/review-check.md` states each case, and the check names the
+one it finds. A head that is the range end plus clean merges of the base and commits
+that change no code needs no new round ("Second round" step 2). A red-team PR labeled
+`oracle` also needs the director's verdict with the line
+``Director: approved at `<sha>` `` at the head.
 
 ## Second round
 
@@ -185,7 +187,7 @@ In 4 of the 5 worst escaped defects, the defect came in through a fix or a defer
 nothing checked again. So when round 1 led to fix commits:
 
 1. Run `reviewer` and `breaker` on the fix commits only (`<from>..<head sha>`, where
-   `<from>` is the SHA of the parent of the first fix), with the round 1 comment and
+   `<from>` is the end of the range of the round before), with the round 1 comment and
    each architect review attached. Add `architecture` when the range adds or changes a
    public item, a variant of a public enum, or a sentence of a public doc or a decision
    that states what a crate does. Only a range in which the check counts no code change
@@ -196,16 +198,17 @@ nothing checked again. So when round 1 led to fix commits:
    comment adds each item of the first to its own `Public surface:` line, and copies the
    second. When the `Hot path:` line names a function, run `performance` again on the
    range, and update the Performance section with its numbers.
-2. Handle their findings as above. Fix commits from this round get another round, until
-   one finds nothing. So does a fix that only edits the PR body: its range is
-   `<head>..<head>`, so its round runs `reviewer` alone, on the edit, and its comment
-   has the `Breaker:` skip line (Round comment). When each finding of a round is low and
-   in the PR title or body, or in the `Deferred:`, `Later steps:`, or `Public surface:`
-   line of a round comment, its comment gives `Findings: none` and lists them under a
-   line `Text fixes:`. Each item gives the exact new text: an item that asks the author
-   to write text is a finding. The author applies each with the `reviewer`'s words as
-   given, in the PR title or body, or by an edit of the round comment that holds the
-   line and in the same line of the `Text fixes:` round, and needs no further round.
+2. Handle their findings as above. A round that has a finding gets another round, until
+   one finds nothing. A finding in text only, at any severity (a `.md` file, a `.rs`
+   comment, the PR title or body, or an end line of a round comment), whose fix the
+   `reviewer` gives as the exact new text, or as each fact and link that the text must
+   state, is not counted: the round comment lists it under a line `Text fixes:` after
+   its findings. An item that asks the author to find a fact or give a reason is a
+   finding. The author applies each item as given, by a commit that changes no code
+   (Round comment), in the PR title or body, or by an edit of the round comment that
+   holds the line and in the same line of the `Text fixes:` round. That needs no further
+   round, and the `reviewer` of the next round, when one runs, checks it. An item in a
+   public doc or a decision still needs each approval that Round 1 asks for.
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its
@@ -216,32 +219,34 @@ which runs as step 1 says.
 
 ## Done
 
-Review is done when the last round comment ends at the PR head, or at a head before
-clean merges of `main`, and finds nothing (each `Text fixes:` item applied as "Second
-round" step 2 says), each round comment names each reviewer its round requires (round 1:
-the table; a later round: `reviewer`, `breaker` unless the check counts no code change
-in its range, `architecture` when "Second round" step 1 asks for it, and `performance`
-with new numbers when its `Hot path:` line names a function), the `Deferred:` line of
-each round comment links the OK of each deferral in a risk crate, the `Public surface:`
-line of the last round comment links the approval of each item, at a SHA after which no
-commit changes the item's surface or the meaning of a ruling
-(`.claude/skills/architect/SKILL.md`, "Review before the person" step 3), each run that
-Round 1 asks for (an OS that CI does not run, a `build.rs` that compiles C or C++) is
-linked on the PR, at a commit after which no commit changes that code, each finding
-of an architect review, and each change that an architect's ruling puts in this PR, has
-its fix commit or a linked answer, each merge condition that the PR body or an answer
-states (`Merges after #<n>`, `holds for #<n>`) is met (#<n> is merged or closed), and
-each later step that a round, an architect review, an architect's ruling, or an issue
-that the PR closes names is stated on an open issue that does it and that the PR does
-not close (a new issue, or a comment on an existing one) or as a trigger in the
-decisions entry, each trigger that is the work of another open issue or PR is commented
-on that issue or PR, and each issue in `gh pr view <n> --json closingIssuesReferences`,
-or after a closing word in a commit message of the PR, is one that the PR finishes.
-GitHub closes each at the merge. It reads an issue link after a form of "close", "fix",
-or "resolve" as closing, also in a sentence about the past, such as "#1228 closed #1197"
-in the body of #1185. A pushed commit stays as it is (`CLAUDE.md`, Git rule 3). So when
-the message of a pushed commit names an issue that the PR does not finish, a new PR
-replaces the PR (Round 1). Each decision or public doc that Round 1 sends to
-`laptop.architect` also has the link to its approval on the PR, at a SHA after which no
-commit changes what the text states. Only then is the PR marked ready: by its author, or
-by `laptop.monitor` for a red-team or rule PR.
+Review is done when the last round comment finds nothing and ends at the PR head, or at
+a commit from which only clean merges of `main` and commits that apply `Text fixes:`
+items reach the head, each item applied as "Second round" step 2 says, each round
+comment names each reviewer its round requires (round 1: the table; a later round:
+`reviewer`, `breaker` unless the check counts no code change in its range,
+`architecture` when "Second round" step 1 asks for it, and `performance` with new
+numbers when its `Hot path:` line names a function), the `Deferred:` line of each round
+comment links the OK of each deferral in a risk crate, the `Public surface:` line of the
+last round comment links the approval of each item, at a SHA after which no commit
+changes the item's surface or the meaning of a ruling
+(`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
+the PR body changes the approved text in the body, each run that Round 1 asks for (an OS
+that CI does not run, a `build.rs` that compiles C or C++) is linked on the PR, at a
+commit after which no commit changes that code, each finding of an architect review, and
+each change that an architect's ruling puts in this PR, has its fix commit or a linked
+answer, each merge condition that the PR body or an answer states (`Merges after #<n>`,
+`holds for #<n>`) is met (#<n> is merged or closed), and each later step that a round,
+an architect review, an architect's ruling, or an issue that the PR closes names is
+stated on an open issue that does it and that the PR does not close (a new issue, or a
+comment on an existing one) or as a trigger in the decisions entry, each trigger that is
+the work of another open issue or PR is commented on that issue or PR, and each issue in
+`gh pr view <n> --json closingIssuesReferences`, or after a closing word in a commit
+message of the PR, is one that the PR finishes. GitHub closes each at the merge. It
+reads an issue link after a form of "close", "fix", or "resolve" as closing, also in a
+sentence about the past, such as "#1228 closed #1197" in the body of #1185. A pushed
+commit stays as it is (`CLAUDE.md`, Git rule 3). So when the message of a pushed commit
+names an issue that the PR does not finish, a new PR replaces the PR (Round 1). Each
+decision or public doc that Round 1 sends to `laptop.architect` also has the link to its
+approval on the PR, at a SHA after which no commit changes what the text states. Only
+then is the PR marked ready: by its author, or by `laptop.monitor` for a red-team or
+rule PR.

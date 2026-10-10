@@ -48,6 +48,7 @@
 | QUALITY SESSIONS (`verify`, `audit`, `ux`), CLOUD ROUTINES | FACTORY ROLES |
 | MODELS | FACTORY MODELS |
 | BREAKER REVIEW | REVIEW TIERS |
+| COST TRIALS, the drop of change 1: a commit that applies `Text fixes:` gets a round | TEXT FIXES |
 | MERGE RULE, C9c "a person merges every PR" | MERGE QUEUE |
 | REMOTE CONTROL, `inbox:<name>` issues | MESSAGES |
 | FACTORY HOST (daily renewal by the coordinator) | AWS CEILING |
