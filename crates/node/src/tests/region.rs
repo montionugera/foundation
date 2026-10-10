@@ -139,8 +139,20 @@ fn the_first_start_founds_the_root_region_alone() {
     assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
 }
 
+/// Two first starts on two hosts make two admin keys from the entropy.
+#[test]
+fn a_first_start_makes_the_admin_key_from_the_entropy() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+    let admins = hosts.map(|host| {
+        assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+        admin(&mut sim, &host)
+    });
+    assert_ne!(admins[0].0, admins[1].0);
+}
+
 /// A later start opens the region of the first start, also on another port, and
-/// keeps `admin.key`. A task of `operate` runs on that region.
+/// keeps `admin.key` and `node.key`. A task of `operate` runs on that region.
 #[test]
 fn a_later_start_opens_the_region_of_the_first_start() {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -148,6 +160,7 @@ fn a_later_start_opens_the_region_of_the_first_start() {
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     let founding = bytes(&mut sim, &host, FOUNDING).expect("the founding");
     let admin = bytes(&mut sim, &host, FILE).expect("the admin key");
+    let key = bytes(&mut sim, &host, identity::FILE).expect("the node key");
     let node = Node::start(Config {
         region: Region::Stored,
         listen: SocketAddr::new(host.addresses()[0], PORT + 1),
@@ -166,6 +179,7 @@ fn a_later_start_opens_the_region_of_the_first_start() {
     assert_eq!(names.lock().unwrap().take(), Some(edge));
     assert_eq!(bytes(&mut sim, &host, FOUNDING), Some(founding));
     assert_eq!(bytes(&mut sim, &host, FILE), Some(admin));
+    assert_eq!(bytes(&mut sim, &host, identity::FILE), Some(key));
 }
 
 /// A first start founds the region with the admin key in its data directory, and
@@ -227,26 +241,31 @@ fn a_start_with_a_region_makes_no_admin_key() {
 #[test]
 fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
     let mut between = 0;
-    for after in (0..).step_by(25_000).map(Span::from_nanos) {
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let host = keyed(&mut sim, 2);
-        let node = start(&host);
-        assert_eq!(sim.run_for(after), Ok(()), "{after:?}");
-        sim.crash(&host, sim::Crash::Power);
-        drop(node);
-        let kept = stored(&mut sim, &host);
-        let written = bytes(&mut sim, &host, FILE).map(|_| admin(&mut sim, &host));
-        between += usize::from(written.is_some() && kept.is_none());
-        assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{after:?}");
-        let admin = admin(&mut sim, &host);
-        if let Some(written) = written {
-            assert_eq!(written.0, admin.0, "{after:?}");
-        }
-        let founded = Some(root(&host, &admin));
-        assert_eq!(stored(&mut sim, &host), founded, "{after:?}");
-        if kept.is_some() {
-            assert_eq!(kept, founded, "{after:?}");
-            break;
+    for seed in 0..4 {
+        for after in (0..).step_by(25_000).map(Span::from_nanos) {
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let host = keyed(&mut sim, 2);
+            let node = start(&host);
+            assert_eq!(sim.run_for(after), Ok(()), "{seed} {after:?}");
+            sim.crash(&host, sim::Crash::Power);
+            drop(node);
+            let kept = stored(&mut sim, &host);
+            let written = bytes(&mut sim, &host, FILE).map(|_| admin(&mut sim, &host));
+            between += usize::from(written.is_some() && kept.is_none());
+            assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{seed} {after:?}");
+            let admin = admin(&mut sim, &host);
+            if let Some(written) = written {
+                assert_eq!(written.0, admin.0, "{seed} {after:?}");
+            }
+            let founded = Some(root(&host, &admin));
+            assert_eq!(stored(&mut sim, &host), founded, "{seed} {after:?}");
+            if kept.is_some() {
+                assert_eq!(kept, founded, "{seed} {after:?}");
+                break;
+            }
         }
     }
     assert!(between > 0, "no cut came between the two files");

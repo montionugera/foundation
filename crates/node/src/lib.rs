@@ -106,13 +106,15 @@ impl<M> fmt::Debug for Config<M> {
 
 /// The region whose mesh a node opens.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Region {
     /// No mesh: the node serves only its own hub.
     Absent,
-    /// The region that the data directory holds. At the first start, the node founds
-    /// the root region alone: it is the one member and voter, and the spec holds the
-    /// first admin, whose private key the node writes to the file `admin.key`. Each
-    /// later start opens that region.
+    /// The region that the data directory holds. When its mesh directory holds no
+    /// founding, the node founds the root region alone: it is the one member and voter,
+    /// and the spec holds the first admin, whose private key the node reads from the
+    /// file `admin.key`, or makes and writes there. A start that finds a founding opens
+    /// that region and reads no `admin.key`.
     Stored,
     /// The region `founding`, a patch until a node joins by ticket (#1157). One
     /// founding member has the node's key, and its card holds the public half of the
@@ -184,19 +186,20 @@ impl Node {
     /// has opened, shard 0 reads the node's key, private key, and seal key from the
     /// file `node.key` in the data directory, and makes the file at the first start
     /// once it has mesh time, unless `create_key` made it, then opens the mesh of
-    /// [`Config::region`] when it has one, then serves the port, admits each member of
-    /// the region and at most 256 sessions of other peers at once, until its transport
-    /// or the mesh's group stops, which stops the node. Returns once each shard runs or
-    /// one has failed to start. When the disk budget holds no ring on each shard, no
-    /// shard starts, and [`Node::join`] gives [`Error::Disk`] with the budget, the
-    /// shard count, and the least budget. When a shard's part of the pool budget gives
-    /// a reservation of more than `usize::MAX` bytes, no shard starts either, and
-    /// [`Node::join`] gives [`Error::Pool`]. A failed start, a shard with no memory, a
-    /// data directory that another node holds or that was made for another shard
-    /// count, a key file that is not valid, a file `name` that holds another name or
-    /// that no node wrote, or a buffer or a mesh that does not open stops the node, and
-    /// [`Node::join`] returns its error. The `# Errors` of [`Node::join`] gives which
-    /// error comes first.
+    /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
+    /// founds the root region and reads or makes `admin.key`), then serves the port,
+    /// admits each member of the region and at most 256 sessions of other peers at
+    /// once, until its transport or the mesh's group stops, which stops the node.
+    /// Returns once each shard runs or one has failed to start. When the disk budget
+    /// holds no ring on each shard, no shard starts, and [`Node::join`] gives
+    /// [`Error::Disk`] with the budget, the shard count, and the least budget. When a
+    /// shard's part of the pool budget gives a reservation of more than `usize::MAX`
+    /// bytes, no shard starts either, and [`Node::join`] gives [`Error::Pool`]. A
+    /// failed start, a shard with no memory, a data directory that another node holds
+    /// or that was made for another shard count, a key file that is not valid, a file
+    /// `name` that holds another name or that no node wrote, or a buffer or a mesh that
+    /// does not open stops the node, and [`Node::join`] returns its error. The
+    /// `# Errors` of [`Node::join`] gives which error comes first.
     ///
     /// # Panics
     ///
@@ -230,13 +233,19 @@ impl Node {
                 return Self::failed(Error::Port { listen, error }, regional);
             }
         };
-        let addresses = root::addresses(bound.addresses());
+        let region = match &config.region {
+            Region::Absent => Opening::Absent,
+            Region::Stored => Opening::Stored {
+                name: config.name.clone(),
+                addresses: root::addresses(bound.addresses()),
+            },
+            #[cfg(feature = "sim")]
+            Region::Given(founding) => Opening::Given(founding.clone()),
+        };
         let part = bound.split(NonZeroUsize::MIN).pop();
         let endpoint = Endpoint {
             part: part.expect("invariant: a port splits into the parts asked for"),
-            addresses,
-            name: config.name.clone(),
-            region: config.region.clone(),
+            region,
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
         };
@@ -283,7 +292,7 @@ impl Node {
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let regional = !matches!(endpoint.region, Region::Absent);
+        let regional = !matches!(endpoint.region, Opening::Absent);
         let (mesh, clock) = clock::Clock::new(monotonic.clone());
         let serve = Serve {
             interner: last,
@@ -767,21 +776,64 @@ struct Serve {
 struct Endpoint {
     /// The node's part of its port.
     part: transport::port::Part,
-    /// The addresses of the port that the card of a root founder holds.
-    addresses: mesh::card::addresses::Addresses,
-    name: types::name::Name,
-    region: Region,
+    region: Opening,
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
+}
+
+/// The region that shard 0 opens, with what it needs to found the root region.
+enum Opening {
+    /// No region: the node opens no mesh.
+    Absent,
+    /// The founding in the mesh directory, else the root region with a card of `name`
+    /// and `addresses`.
+    Stored {
+        name: types::name::Name,
+        addresses: mesh::card::addresses::Addresses,
+    },
+    /// This founding.
+    #[cfg(feature = "sim")]
+    Given(mesh::region::Founding),
+}
+
+impl Opening {
+    /// The founding of the region in `files`, or `None` for no region. When the mesh
+    /// directory holds no founding, it is the root region that [`root::founding`]
+    /// gives.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Mesh`] when the stored founding does not read, and the errors of
+    /// [`root::founding`].
+    async fn founding(
+        self,
+        files: &env::files::Files,
+        pool: Rc<block::Pool>,
+        entropy: &env::entropy::Entropy,
+        identity: &identity::Identity,
+    ) -> Result<Option<mesh::region::Founding>, Error> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Stored { name, addresses } => {
+                let stored = mesh::founding(files, &directory::mesh(), pool).await;
+                if let Some(founding) = stored.map_err(Error::Mesh)? {
+                    return Ok(Some(founding));
+                }
+                let root = root::founding(files, entropy, identity, name, addresses);
+                root.await.map(Some)
+            }
+            #[cfg(feature = "sim")]
+            Self::Given(founding) => Ok(Some(founding)),
+        }
+    }
 }
 
 impl Endpoint {
     /// Opens the node's transport on `pool` and `tasks` with `identity`, then, when the
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
-    /// and the mesh of that region over both, in directory [`directory::mesh`]. A
-    /// [`Region::Stored`] is the founding that [`root::founding`] gives. Gives the
-    /// transport, also with the error of a founding, a store, or a mesh that did not
-    /// open.
+    /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
+    /// the transport, also with the error of a founding, a store, or a mesh that did
+    /// not open.
     async fn open(
         self,
         identity: identity::Identity,
@@ -803,21 +855,13 @@ impl Endpoint {
         let transport = transport::Transport::new(config, self.part)
             .expect("invariant: a buffer's pool holds a block of a whole UDP payload");
         let transport = Rc::new(transport);
-        let founding = match self.region {
-            Region::Absent => return (transport, Ok(None)),
-            Region::Stored => {
-                let entropy = &self.entropy;
-                let (name, addresses) = (self.name, self.addresses);
-                let pool = Rc::clone(&pool);
-                let root =
-                    root::founding(&files, pool, entropy, &identity, name, addresses);
-                match root.await {
-                    Ok(founding) => founding,
-                    Err(error) => return (transport, Err(error)),
-                }
-            }
-            #[cfg(feature = "sim")]
-            Region::Given(founding) => founding,
+        let founding =
+            self.region
+                .founding(&files, Rc::clone(&pool), &self.entropy, &identity);
+        let founding = match founding.await {
+            Ok(Some(founding)) => founding,
+            Ok(None) => return (transport, Ok(None)),
+            Err(error) => return (transport, Err(error)),
         };
         let store = blob::Store::open(blob::Config {
             files: files.clone(),
@@ -1120,9 +1164,10 @@ pub enum Error {
     /// session and does not write over the file, because a new key is a new node to its
     /// region.
     Key,
-    /// At a first start, the file `admin.key` in the data directory is not a key that a
-    /// node wrote: another length, or another tag or checksum. The node does not serve
-    /// its port and does not write over the file.
+    /// At a start that founds the root region, the file `admin.key` in the data
+    /// directory is not a key that a node wrote: another length, also no bytes, or
+    /// another tag or checksum. The node took no session and does not write over the
+    /// file.
     Admin,
     /// The node's port did not bind. No shard started.
     Port {
