@@ -46,7 +46,8 @@ fn bytes(sim: &mut sim::Sim, host: &sim::node::Node, path: &str) -> Option<Vec<u
         if len == 0 {
             return Some(Vec::new());
         }
-        let pool = block::Pool::heap(block::Config { budget: 1 << 16 });
+        let pool =
+            block::Pool::heap(block::Config::new(1 << 16).expect("the budget fits"));
         let into = pool.alloc(len).expect("a block");
         Some(file.read_at(0, into).await.expect("reads").to_vec())
     })
@@ -62,7 +63,8 @@ fn write_admin(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
         };
         let file = files.open(Path::new(FILE), mode).await.expect("opens");
         if !bytes.is_empty() {
-            let pool = block::Pool::heap(block::Config { budget: 4096 });
+            let pool =
+                block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
             let block = pool.copy(&bytes).expect("a block");
             file.write_at(0, &[block]).await.expect("writes");
         }
@@ -75,7 +77,9 @@ fn write_admin(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
 /// The founding in the mesh directory of `host`.
 fn stored(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Founding> {
     sim.run_on(host, |host, _| async move {
-        let pool = Rc::new(block::Pool::heap(block::Config { budget: 1 << 20 }));
+        let pool = Rc::new(block::Pool::heap(
+            block::Config::new(1 << 20).expect("the budget fits"),
+        ));
         let (files, dir) = (host.files(), crate::directory::mesh());
         let stored = ::mesh::founding(&files, &dir, pool).await;
         stored.expect("the founding reads")
