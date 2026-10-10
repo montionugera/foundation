@@ -177,9 +177,9 @@ starts with `//`. The rest is text. The base's code does not count, but a confli
 code file that `git merge-tree` finds does. REVIEW CHECK in
 `docs/decisions/operations/review-check.md` states each case, and the check names the
 one it finds. A head that is the range end plus clean merges of the base and commits
-that change no code needs no new round ("Second round" step 2). A red-team PR labeled
-`oracle` also needs the director's verdict with the line
-``Director: approved at `<sha>` `` at the head.
+that only apply the `Text fixes:` items of that round needs no new round ("Second
+round" step 2). A red-team PR labeled `oracle` also needs the director's verdict with
+the line ``Director: approved at `<sha>` `` at the head.
 
 ## Second round
 
@@ -200,15 +200,16 @@ nothing checked again. So when round 1 led to fix commits:
    range, and update the Performance section with its numbers.
 2. Handle their findings as above. A round that has a finding gets another round, until
    one finds nothing. A finding in text only, at any severity (a `.md` file, a `.rs`
-   comment, the PR title or body, or an end line of a round comment), whose fix the
-   `reviewer` gives as the exact new text, or as each fact and link that the text must
-   state, is not counted: the round comment lists it under a line `Text fixes:` after
-   its findings. An item that asks the author to find a fact or give a reason is a
-   finding. The author applies each item as given, by a commit that changes no code
-   (Round comment), in the PR title or body, or by an edit of the round comment that
-   holds the line and in the same line of the `Text fixes:` round. That needs no further
-   round, and the `reviewer` of the next round, when one runs, checks it. An item in a
-   public doc or a decision still needs each approval that Round 1 asks for.
+   comment line that, trimmed, starts with `//`, the PR title or body, or an end line of
+   a round comment), whose fix the `reviewer` gives as the exact new text, is not
+   counted: the round comment lists it under a line `Text fixes:` after its findings.
+   An item that gives only facts and links, or that asks the author to find a fact or
+   give a reason, is a finding. The author applies each item as given, by a commit that
+   changes no code (Round comment), in the PR title or body, or by an edit of the round
+   comment that holds the line and in the same line of the `Text fixes:` round. That
+   needs no further round, and the `reviewer` of the next round, when one runs, checks
+   it. An item still needs each approval that its file needs (Round 1,
+   `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its
@@ -220,10 +221,10 @@ which runs as step 1 says.
 ## Done
 
 Review is done when the last round comment finds nothing and ends at the PR head, or at
-a commit from which only clean merges of `main` and commits that apply `Text fixes:`
-items reach the head, each item applied as "Second round" step 2 says, each round
-comment names each reviewer its round requires (round 1: the table; a later round:
-`reviewer`, `breaker` unless the check counts no code change in its range,
+a commit from which only clean merges of `main` and commits that only apply its
+`Text fixes:` items reach the head, each item applied as "Second round" step 2 says,
+each round comment names each reviewer its round requires (round 1: the table; a later
+round: `reviewer`, `breaker` unless the check counts no code change in its range,
 `architecture` when "Second round" step 1 asks for it, and `performance` with new
 numbers when its `Hot path:` line names a function), the `Deferred:` line of each round
 comment links the OK of each deferral in a risk crate, the `Public surface:` line of the

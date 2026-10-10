@@ -5,5 +5,5 @@
   "YES"). 4 of the 5 worst escaped defects came in through a fix or a deferral that
   nothing checked again. Decided by the advisor under the quality delegation.
   Supersedes: BREAKER REVIEW.
-  Amended (2026-10-10, TEXT FIXES): a fix commit that changes no code gets no second
-  round.
+  Amended (2026-10-10, TEXT FIXES): a commit that only applies `Text fixes:` items
+  gets no second round.
