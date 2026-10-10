@@ -16,6 +16,7 @@
 
 mod bits;
 mod int;
+mod text;
 mod vector;
 mod word;
 
@@ -68,8 +69,11 @@ impl Encoder {
     /// # Errors
     ///
     /// Returns [`Error::Overflow`] when `count` samples take more than `usize::MAX`
-    /// bytes, [`Error::Length`] when `values` does not hold them, and [`Error::Ends`]
-    /// or [`Error::Long`] when their ends are not valid. It writes nothing then.
+    /// bytes, then [`Error::Length`] when `values` ends inside the ends of a `String`,
+    /// `Bytes`, or `List` series, then [`Error::Ends`] or [`Error::Long`] for the first
+    /// end that is not valid. After those, it returns [`Error::Length`] when `values`
+    /// does not hold the samples, then [`Error::Utf8`] for the first `String` sample
+    /// that is not UTF-8. It writes nothing then.
     ///
     /// # Panics
     ///
@@ -99,7 +103,8 @@ impl Encoder {
 
 /// Checks `bytes`, an encoded series of `count` samples of `data_type`, and returns the
 /// length of its raw bytes. It reads each vector header, and it decodes the ends of a
-/// `String`, `Bytes`, or `List` series, but no other samples.
+/// `String`, `Bytes`, or `List` series and the elements of a `String` series, but no
+/// other samples.
 ///
 /// The bytes do not carry `count`. A wrong count passes when the vectors also parse
 /// at it: an FFOR or delta vector with bit width 0 holds any count up to
@@ -108,8 +113,10 @@ impl Encoder {
 /// # Errors
 ///
 /// Returns [`Error::Overflow`] when the samples take more than `usize::MAX` bytes, the
-/// error of the first vector whose header or length is not valid, [`Error::Ends`] or
-/// [`Error::Long`] for the first end that is not valid, or [`Error::Trailing`].
+/// error of the first vector whose header or length is not valid, or [`Error::Ends`]
+/// or [`Error::Long`] for the first end that is not valid. After those, it returns
+/// [`Error::Utf8`] for the first `String` sample that is not UTF-8, then
+/// [`Error::Trailing`].
 #[inline]
 pub fn validate(data_type: Type, count: usize, bytes: &[u8]) -> Result<usize, Error> {
     let Type::Scalar(scalar) = data_type else {
@@ -133,46 +140,61 @@ fn validate_shape(data_type: Type, count: usize, bytes: &[u8]) -> Result<usize, 
                 element.check(elements, bytes, 0)?,
             )
         }
-        Shape::Variable { element, max } => {
+        Shape::Variable { element, max, utf8 } => {
             let front = element.front(count)?;
-            let (elements, rest) = ends(count, bytes, max, None)?;
-            (
-                front.raw_len(elements)?,
-                element.check(elements, rest, vectors(count))?,
-            )
+            // One vector of ends decodes here, so that the UTF-8 check reads it again.
+            let decoded = count <= VECTOR_LEN;
+            let mut storage;
+            let first: &mut [u8] = if decoded {
+                storage = [0; Layout::END.width().strict_mul(VECTOR_LEN)];
+                storage.split_at_mut(Layout::END.raw_len(count)?).0
+            } else {
+                &mut []
+            };
+            let (elements, rest) =
+                ends(count, bytes, max, decoded.then_some(&mut *first))?;
+            let len = front.raw_len(elements)?;
+            let after = element.check(elements, rest, vectors(count))?;
+            if utf8 {
+                let ends = if decoded {
+                    text::Ends::Raw(first)
+                } else {
+                    let bytes = bytes.split_at(bytes.len().strict_sub(rest.len())).0;
+                    text::Ends::Encoded { count, bytes }
+                };
+                let vectors = rest.split_at(rest.len().strict_sub(after.len())).0;
+                text::encoded(ends, elements, vectors)?;
+            }
+            (len, after)
         }
     };
     trailing(rest)?;
     Ok(len)
 }
 
-/// Decodes `bytes`, an encoded series of `count` samples of `data_type`, into `out`. It
-/// checks what [`validate`] checks, and it writes the padding of a variable series as
-/// zeros.
+/// Decodes `bytes`, an encoded series of `count` samples of `data_type`, into `out`,
+/// in place of what it held. It checks what [`validate`] checks, and it writes the
+/// padding of a variable series as zeros. It allocates only when `out` has less
+/// capacity than the raw length, and it then reads `bytes` twice, so reuse `out`. The
+/// raw length of a variable series is not bounded by the length of `bytes`, and
+/// [`validate`] gives it before any allocation.
 ///
 /// # Errors
 ///
-/// Returns the errors of [`validate`], whatever the length of `out`. The contents of
-/// `out` are then unspecified.
-///
-/// # Panics
-///
-/// Panics when `bytes` are valid and `out` is not the length that [`validate`]
-/// returns.
+/// Returns the errors of [`validate`], [`Error::Utf8`] included. The contents of `out`
+/// are then unspecified.
 #[inline]
 pub fn decode(
     data_type: Type,
     count: usize,
     bytes: &[u8],
-    out: &mut [u8],
+    out: &mut Vec<u8>,
 ) -> Result<(), Error> {
     let Type::Scalar(scalar) = data_type else {
         return decode_shape(data_type, count, bytes, out);
     };
     let layout = Layout::of(scalar);
-    if out.len() != layout.raw_len(count)? {
-        return misfit(data_type, count, bytes, out.len());
-    }
+    resize(out, layout.raw_len(count)?, data_type, count, bytes)?;
     trailing(layout.fill(count, bytes, 0, out)?)
 }
 
@@ -183,45 +205,198 @@ fn decode_shape(
     data_type: Type,
     count: usize,
     bytes: &[u8],
-    out: &mut [u8],
+    out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let held = out.len();
     let rest = match Shape::of(data_type) {
         Shape::Fixed { element, len } => {
             let elements = elements(count, len)?;
-            if held != element.raw_len(elements)? {
-                return misfit(data_type, count, bytes, held);
-            }
+            resize(out, element.raw_len(elements)?, data_type, count, bytes)?;
             element.fill(elements, bytes, 0, out)?
         }
-        Shape::Variable { element, max } => {
+        Shape::Variable { element, max, utf8 } => {
             let front = element.front(count)?;
-            let Some((front_out, out)) = out.split_at_mut_checked(front.start) else {
-                return misfit(data_type, count, bytes, held);
-            };
-            let (ends_out, padding) = front_out.split_at_mut(front.ends);
+            // A longer `out` keeps its length, so a reused `out` gets no zero fill.
+            let held = out.len().max(front.start);
+            resize(out, held, data_type, count, bytes)?;
+            let (ends_out, padding) =
+                out.split_at_mut(front.start).0.split_at_mut(front.ends);
             padding.fill(0);
-            let (elements, rest) = ends(count, bytes, max, Some(ends_out))?;
-            if out.len() != element.raw_len(elements)? {
-                return misfit(data_type, count, bytes, held);
+            let (elements, rest) = ends(count, bytes, max, Some(&mut *ends_out))?;
+            resize(out, front.raw_len(elements)?, data_type, count, bytes)?;
+            let (ends_out, out) = out.split_at_mut(front.start);
+            let rest = element.fill(elements, rest, vectors(count), out)?;
+            if utf8 {
+                text::raw(ends_out.split_at(front.ends).0, out)?;
             }
-            element.fill(elements, rest, vectors(count), out)?
+            rest
         }
     };
     trailing(rest)
 }
 
-/// Returns the error of `bytes` when they are not valid. Otherwise it panics: `decode`
-/// got an `out` of `held` bytes, which is not their raw length.
-#[cold]
-fn misfit(
+/// Sets the length of `out` to `len`. Before `out` grows past its capacity, it checks
+/// `bytes` with [`validate_shape`] and reserves their raw length, so that bytes that do
+/// not hold `count` samples allocate nothing.
+#[inline]
+fn resize(
+    out: &mut Vec<u8>,
+    len: usize,
     data_type: Type,
     count: usize,
     bytes: &[u8],
-    held: usize,
 ) -> Result<(), Error> {
-    let len = validate(data_type, count, bytes)?;
-    panic!("out holds {held} bytes, not the {len} of {count} samples");
+    if len > out.capacity() {
+        reserve(out, data_type, count, bytes)?;
+    }
+    out.resize(len, 0);
+    Ok(())
+}
+
+/// Checks `bytes` and reserves their raw length in `out`.
+#[cold]
+fn reserve(
+    out: &mut Vec<u8>,
+    data_type: Type,
+    count: usize,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    let len = validate_shape(data_type, count, bytes)?;
+    out.reserve_exact(len.saturating_sub(out.len()));
+    Ok(())
+}
+
+/// The raw form of a `String`, `Bytes`, or `List` series: the `u32` end of each
+/// sample, counted in elements from the first, then zeros up to a multiple of the
+/// element width or 8, whichever is less, then the elements.
+#[derive(Clone, Copy, Debug)]
+pub struct Variable {
+    element: Layout,
+}
+
+impl Variable {
+    /// The raw form of `data_type`, or `None` when it is not `String`, `Bytes`, or
+    /// `List`.
+    #[must_use]
+    pub fn of(data_type: Type) -> Option<Self> {
+        match Shape::of(data_type) {
+            Shape::Variable { element, .. } => Some(Self { element }),
+            Shape::Fixed { .. } => None,
+        }
+    }
+
+    /// The raw length of `samples`, each the little-endian bytes of its elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Overflow`] when the samples hold more than `u32::MAX` elements
+    /// or take more than `usize::MAX` bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a sample is not a whole number of elements.
+    pub fn len(self, samples: &[impl AsRef<[u8]>]) -> Result<usize, Error> {
+        let mut elements = 0_usize;
+        for sample in samples {
+            elements = elements
+                .checked_add(self.elements(sample.as_ref()))
+                .ok_or(Error::Overflow)?;
+        }
+        if u32::try_from(elements).is_err() {
+            return Err(Error::Overflow);
+        }
+        self.element.front(samples.len())?.raw_len(elements)
+    }
+
+    /// Writes `samples` in the raw form into the front of `out`, with zeros for the
+    /// padding, and returns the bytes written, the length that [`Variable::len`]
+    /// gives. It does not check what [`Encoder::encode`] checks: UTF-8 and the `max`
+    /// of a `List`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when [`Variable::len`] refuses `samples`, when a sample is not a whole
+    /// number of elements, or when `out` is shorter than that length.
+    pub fn write(self, samples: &[impl AsRef<[u8]>], out: &mut [u8]) -> usize {
+        let len = self
+            .len(samples)
+            .unwrap_or_else(|error| panic!("the samples have no raw form: {error}"));
+        assert!(
+            out.len() >= len,
+            "out holds {} bytes, fewer than the {len} of the samples",
+            out.len()
+        );
+        let front = self
+            .element
+            .front(samples.len())
+            .expect("invariant: `len` checks the front");
+        let (head, mut rest) = out.split_at_mut(front.start);
+        let (ends, padding) = head.split_at_mut(front.ends);
+        padding.fill(0);
+        let mut end = 0_usize;
+        for (sample, slot) in samples.iter().zip(ends.as_chunks_mut::<4>().0) {
+            let sample = sample.as_ref();
+            end = end.strict_add(self.elements(sample));
+            *slot = u32::try_from(end)
+                .expect("invariant: `len` checks the elements")
+                .to_le_bytes();
+            let (elements, after) = mem::take(&mut rest).split_at_mut(sample.len());
+            elements.copy_from_slice(sample);
+            rest = after;
+        }
+        len
+    }
+
+    /// Each sample of `raw`, a raw series of `count` samples, as the bytes of its
+    /// elements. [`decode`] gives such a series. Copies nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `raw` is shorter than the ends and padding of `count` samples. The
+    /// iterator panics at the first end that is not valid for `raw`.
+    pub fn samples(self, count: usize, raw: &[u8]) -> impl Iterator<Item = &[u8]> {
+        let front = self
+            .element
+            .front(count)
+            .ok()
+            .filter(|front| front.start <= raw.len());
+        let Some(front) = front else {
+            panic!(
+                "{} bytes do not hold the ends of {count} samples",
+                raw.len()
+            );
+        };
+        let (head, elements) = raw.split_at(front.start);
+        let ends = head.split_at(front.ends).0.as_chunks::<4>().0;
+        let width = self.element.width();
+        let mut start = 0_usize;
+        ends.iter().enumerate().map(move |(index, end)| {
+            let end = usize::try_from(u32::from_le_bytes(*end))
+                .expect("invariant: a usize holds a u32");
+            let sample = end
+                .checked_mul(width)
+                .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
+            let Some(sample) = sample else {
+                panic!(
+                    "sample {index} ends at {end}, not in {start}..={} of {width}-byte \
+                     elements",
+                    elements.len().strict_div(width)
+                );
+            };
+            start = end;
+            sample
+        })
+    }
+
+    /// The elements of `sample`.
+    fn elements(self, sample: &[u8]) -> usize {
+        let width = self.element.width();
+        assert!(
+            sample.len().strict_rem(width) == 0,
+            "a sample of {} bytes is not a whole number of {width}-byte elements",
+            sample.len()
+        );
+        sample.len().strict_div(width)
+    }
 }
 
 /// The sample count of each vector in a series of `count` samples.
@@ -359,7 +534,12 @@ enum Shape {
     /// `len` elements in each sample.
     Fixed { element: Layout, len: usize },
     /// The end of each sample, padding, then at most `max` elements in each sample.
-    Variable { element: Layout, max: u32 },
+    /// Each sample is UTF-8 when `utf8`.
+    Variable {
+        element: Layout,
+        max: u32,
+        utf8: bool,
+    },
 }
 
 impl Shape {
@@ -383,10 +563,12 @@ impl Shape {
             Type::List { element, max } => Self::Variable {
                 element: Layout::of(element),
                 max,
+                utf8: false,
             },
             Type::String | Type::Bytes => Self::Variable {
                 element: Layout::of(Scalar::U8),
                 max: u32::MAX,
+                utf8: data_type == Type::String,
             },
         }
     }
@@ -406,7 +588,7 @@ impl Shape {
                 }
                 Ok((&[], values))
             }
-            Self::Variable { element, max } => {
+            Self::Variable { element, max, utf8 } => {
                 let front = element.front(count)?;
                 let (ends, _) = values
                     .split_at_checked(front.ends)
@@ -417,7 +599,11 @@ impl Shape {
                 if values.len() != expected {
                     return Err(length(expected));
                 }
-                Ok((ends, values.split_at(front.start).1))
+                let elements = values.split_at(front.start).1;
+                if utf8 {
+                    text::raw(ends, elements)?;
+                }
+                Ok((ends, elements))
             }
         }
     }
@@ -731,8 +917,14 @@ pub enum Error {
         /// The most elements its type allows.
         max: u32,
     },
-    /// The samples take more than `usize::MAX` bytes.
+    /// The samples take more than `usize::MAX` bytes, or the samples of a `String`,
+    /// `Bytes`, or `List` series hold more than `u32::MAX` elements.
     Overflow,
+    /// A sample of a `String` series is not UTF-8.
+    Utf8 {
+        /// The index of the sample in the series.
+        sample: usize,
+    },
 }
 
 impl fmt::Display for Error {
@@ -782,9 +974,10 @@ impl fmt::Display for Error {
                 f,
                 "sample {sample} holds {len} elements, more than its type's {max}"
             ),
-            Self::Overflow => {
-                f.write_str("the samples take more than usize::MAX bytes")
-            }
+            Self::Overflow => f.write_str(
+                "the samples take more than usize::MAX bytes or u32::MAX elements",
+            ),
+            Self::Utf8 { sample } => write!(f, "sample {sample} is not UTF-8"),
         }
     }
 }
@@ -894,14 +1087,23 @@ mod tests {
     }
 
     /// The raw bytes of `count` samples of `data_type`. A variable sample `n` holds
-    /// `lens[n]` elements, cut to what its type allows. The bytes repeat `bytes`.
+    /// `lens[n]` elements, cut to what its type allows. The bytes repeat `bytes`, cut
+    /// to ASCII in a `String`.
     fn samples_of(
         data_type: Type,
         count: usize,
         lens: &[u32],
         bytes: &[u8],
     ) -> Vec<u8> {
-        let fill = |len| bytes.iter().copied().cycle().take(len).collect::<Vec<u8>>();
+        let mask = if data_type == Type::String {
+            0x7f
+        } else {
+            0xff
+        };
+        let fill = |len| {
+            let bytes = bytes.iter().map(|byte| byte & mask);
+            bytes.cycle().take(len).collect::<Vec<u8>>()
+        };
         let (width, max) = match data_type {
             Type::List { element, max } => (element.width(), max),
             Type::String | Type::Bytes => (1, u32::MAX),
@@ -925,7 +1127,7 @@ mod tests {
             index: channel::Key::from_u128(1),
             data: &[],
         }]);
-        let config = block::Config { budget: 1 << 16 };
+        let config = block::Config::new(1 << 16).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         let pool = block::Pool::new(config, memory);
         let mut draft = Draft::new(&pool, &set, form, &[(0, bytes.len())])
@@ -964,7 +1166,7 @@ mod tests {
             Err(trailing.clone())
         );
         assert_eq!(
-            decode(Type::Scalar(Scalar::Stamp), count, &series, &mut []),
+            decode(Type::Scalar(Scalar::Stamp), count, &series, &mut Vec::new()),
             Err(trailing)
         );
     }
@@ -1524,6 +1726,7 @@ mod tests {
                     Error::Trailing { extra: 1 },
                     "bytes after the last vector: 1",
                 ),
+                (Error::Utf8 { sample: 1 }, "sample 1 is not UTF-8"),
                 (
                     Error::Length {
                         expected: 4,
@@ -1550,7 +1753,7 @@ mod tests {
                 ),
                 (
                     Error::Overflow,
-                    "the samples take more than usize::MAX bytes",
+                    "the samples take more than usize::MAX bytes or u32::MAX elements",
                 ),
             ] {
                 assert_eq!(error.to_string(), text);
@@ -1866,7 +2069,10 @@ mod tests {
             let encoded = Encoder::new(data_type).encode(count, &[], &mut []);
             assert_eq!(encoded, Err(Error::Overflow));
             assert_eq!(validate(data_type, count, &[]), Err(Error::Overflow));
-            assert_eq!(decode(data_type, count, &[], &mut []), Err(Error::Overflow));
+            assert_eq!(
+                decode(data_type, count, &[], &mut Vec::new()),
+                Err(Error::Overflow)
+            );
         }
 
         #[test]
@@ -1874,7 +2080,7 @@ mod tests {
             let data_type = array(Scalar::U64, 0);
             assert_eq!(encode_type(data_type, 5, &[]), []);
             assert_eq!(validate(data_type, usize::MAX, &[]), Ok(0));
-            assert_eq!(decode(data_type, usize::MAX, &[], &mut []), Ok(()));
+            assert_eq!(decode(data_type, usize::MAX, &[], &mut Vec::new()), Ok(()));
         }
     }
 
@@ -1917,7 +2123,7 @@ mod tests {
                 "{data_type:?}"
             );
             assert_eq!(
-                decode(data_type, count, &encoded, &mut [0; 256]),
+                decode(data_type, count, &encoded, &mut vec![0; 256]),
                 Err(expected.clone()),
                 "{data_type:?}"
             );
@@ -1930,7 +2136,7 @@ mod tests {
             for data_type in [Type::String, Type::Bytes] {
                 assert_eq!(encode_type(data_type, count, &values), encoded);
                 assert_eq!(validate(data_type, count, &encoded), Ok(17));
-                let mut out = [0; 17];
+                let mut out = vec![0; 17];
                 assert_eq!(decode(data_type, count, &encoded, &mut out), Ok(()));
                 assert_eq!(out[..], values);
             }
@@ -2000,7 +2206,7 @@ mod tests {
             for data_type in [Type::String, Type::Bytes, LIST, LIST_8] {
                 assert_eq!(encode_type(data_type, 0, &[]), [], "{data_type:?}");
                 assert_eq!(validate(data_type, 0, &[]), Ok(0));
-                assert_eq!(decode(data_type, 0, &[], &mut []), Ok(()));
+                assert_eq!(decode(data_type, 0, &[], &mut Vec::new()), Ok(()));
             }
         }
 
@@ -2031,6 +2237,190 @@ mod tests {
                 max: 0,
             };
             refuses(empty, &[0, 1], &[7], &long(1, 0));
+        }
+
+        #[test]
+        fn refuses_a_string_sample_that_is_not_utf8() {
+            let cases: [(&[u32], &[u8], usize); 8] = [
+                (&[1, 3], b"a\xffb", 1),
+                (&[1, 7], b"a\xffbcdef", 1),
+                (&[1, 3], b"a\x80b", 1),
+                (&[1, 2], "\u{e9}".as_bytes(), 0),
+                (&[1, 3], b"a\xe2\x82", 1),
+                (&[3], b"\xed\xa0\x80", 0),
+                (&[0, 2], b"\xc0\x80", 1),
+                (&[1, 2], b"a\xf0", 1),
+            ];
+            for (ends, elements, sample) in cases {
+                refuses(Type::String, ends, elements, &Error::Utf8 { sample });
+                let (count, values) = (ends.len(), raw(ends, 1, elements));
+                let encoded = encode_type(Type::Bytes, count, &values);
+                assert_eq!(validate(Type::Bytes, count, &encoded), Ok(values.len()));
+            }
+        }
+
+        #[test]
+        fn refuses_a_char_that_a_vector_of_elements_ends_inside() {
+            let mut elements = vec![b'a'; 1_023];
+            elements.extend(b"\xe2A");
+            refuses(
+                Type::String,
+                &[1_025],
+                &elements,
+                &Error::Utf8 { sample: 0 },
+            );
+            refuses(
+                Type::String,
+                &[1_024, 1_025],
+                &elements,
+                &Error::Utf8 { sample: 0 },
+            );
+            let mut elements = vec![b'a'; 1_022];
+            elements.extend("\u{20ac}".as_bytes());
+            let ends = [1_024, 1_025];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 0 });
+            let mut elements = vec![b'a'; 1_023];
+            elements.extend(b"\xf0\x9fA\x80\x80bb");
+            let ends = [1_025, 1_030];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 0 });
+        }
+
+        #[test]
+        fn checks_a_sample_from_the_first_vector_that_is_not_ascii() {
+            let long = format!("{}\u{e9}", "a".repeat(24));
+            let samples = ["a".repeat(1_000), long];
+            let (count, values) = variable(1, &samples);
+            let encoded = encode_type(Type::String, count, &values);
+            assert_eq!(validate(Type::String, count, &encoded), Ok(values.len()));
+            let mut elements = vec![b'a'; 1_024];
+            elements.extend(b"\xc3\xa9\xff");
+            let ends = [1_000, 1_026, 1_027];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 2 });
+            let ends = [1_000, 1_025, 1_027];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 1 });
+        }
+
+        #[test]
+        fn checks_a_sample_after_two_vectors_of_ascii() {
+            let long = format!("{}\u{e9}", "a".repeat(1_100));
+            let samples = ["a".repeat(1_000), long];
+            let (count, values) = variable(1, &samples);
+            let encoded = encode_type(Type::String, count, &values);
+            assert_eq!(validate(Type::String, count, &encoded), Ok(values.len()));
+            let mut out = vec![0; values.len()];
+            assert_eq!(decode(Type::String, count, &encoded, &mut out), Ok(()));
+            assert_eq!(out, values);
+            let mut elements = vec![b'a'; 2_048];
+            elements.extend(b"\xc3\xa9\xff");
+            let ends = [1_000, 2_050, 2_051];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 2 });
+            let ends = [1_000, 2_049, 2_051];
+            refuses(Type::String, &ends, &elements, &Error::Utf8 { sample: 1 });
+        }
+
+        #[test]
+        fn refuses_an_end_inside_a_char_of_utf8_elements() {
+            let elements = format!("{}\u{e9}\u{20ac}", "a".repeat(1_023));
+            let elements = elements.as_bytes();
+            let ends: [&[u32]; 2] = [&[1_024, 1_028], &[1_025, 1_026, 1_028]];
+            for (ends, sample) in ends.into_iter().zip([0, 1]) {
+                refuses(Type::String, ends, elements, &Error::Utf8 { sample });
+            }
+        }
+
+        #[test]
+        fn checks_utf8_with_ends_in_two_vectors() {
+            let mut samples = vec!["\u{e9}".as_bytes(); 1_100];
+            let (count, values) = variable(1, &samples);
+            let encoded = encode_type(Type::String, count, &values);
+            assert_eq!(validate(Type::String, count, &encoded), Ok(values.len()));
+            samples[1_050] = b"\xff";
+            let (count, values) = variable(1, &samples);
+            let encoded = [
+                encode(Scalar::U32, &values[..4 * count]),
+                encode(Scalar::U8, &values[4 * count..]),
+            ]
+            .concat();
+            let expected = Err(Error::Utf8 { sample: 1_050 });
+            assert_eq!(
+                validate(Type::String, count, &encoded).map(|_| ()),
+                expected
+            );
+            let mut out = vec![0; values.len()];
+            assert_eq!(decode(Type::String, count, &encoded, &mut out), expected);
+        }
+
+        #[test]
+        fn refuses_an_end_inside_a_char_in_the_second_vector_of_ends() {
+            let elements = "\u{e9}".repeat(1_100);
+            let mut ends: Vec<u32> = (1..=1_100).map(|i| 2 * i).collect();
+            ends[1_050] -= 1;
+            let expected = Error::Utf8 { sample: 1_050 };
+            refuses(Type::String, &ends, elements.as_bytes(), &expected);
+        }
+
+        #[test]
+        fn refuses_utf8_before_trailing_bytes() {
+            let values = raw(&[1, 2], 1, b"a\xff");
+            let mut encoded = [
+                encode(Scalar::U32, &values[..8]),
+                encode(Scalar::U8, b"a\xff"),
+            ]
+            .concat();
+            encoded.push(0);
+            let expected = Err(Error::Utf8 { sample: 1 });
+            assert_eq!(validate(Type::String, 2, &encoded).map(|_| ()), expected);
+            let mut out = vec![0; values.len()];
+            assert_eq!(decode(Type::String, 2, &encoded, &mut out), expected);
+        }
+
+        #[test]
+        fn takes_utf8_samples_across_vectors_of_elements() {
+            let long =
+                format!("{}\u{20ac}{}", "a".repeat(1_023), "\u{1f600}".repeat(600));
+            let samples = ["", &long, "", "\u{fc}", ""];
+            let (count, values) = variable(1, &samples);
+            let encoded = encode_type(Type::String, count, &values);
+            assert!(encoded.len() > 2 * VECTOR_LEN, "the elements span vectors");
+            assert_eq!(validate(Type::String, count, &encoded), Ok(values.len()));
+            let mut out = vec![0; values.len()];
+            assert_eq!(decode(Type::String, count, &encoded, &mut out), Ok(()));
+            assert_eq!(out, values);
+        }
+
+        proptest! {
+            #[test]
+            fn refuses_the_first_string_sample_that_is_not_utf8(
+                samples in proptest::collection::vec(
+                    prop_oneof![
+                        8 => "\\PC{0,300}".prop_map(String::into_bytes),
+                        1 => proptest::collection::vec(any::<u8>(), 0..4),
+                    ],
+                    0..32,
+                ),
+            ) {
+                let first = samples.iter().position(|s| str::from_utf8(s).is_err());
+                let (count, values) = variable(1, &samples);
+                let encoded = encode_type(Type::Bytes, count, &values);
+                let mut out = vec![7; max_len(Type::String, values.len())];
+                let encoded_string = Encoder::new(Type::String)
+                    .encode(count, &values, &mut out)
+                    .map(|len| out[..len].to_vec());
+                let mut decoded = vec![0; values.len()];
+                let (raw, checked, read) = match first {
+                    Some(sample) => {
+                        let error = Error::Utf8 { sample };
+                        (Err(error.clone()), Err(error.clone()), Err(error))
+                    }
+                    None => (Ok(encoded.clone()), Ok(values.len()), Ok(())),
+                };
+                prop_assert_eq!(encoded_string, raw);
+                prop_assert_eq!(validate(Type::String, count, &encoded), checked);
+                prop_assert_eq!(
+                    decode(Type::String, count, &encoded, &mut decoded),
+                    read
+                );
+            }
         }
 
         #[test]
@@ -2069,7 +2459,7 @@ mod tests {
             };
             assert_eq!(validate(Type::String, 1, &encoded), Err(truncated.clone()));
             assert_eq!(
-                decode(Type::String, 1, &encoded, &mut [0; 9]),
+                decode(Type::String, 1, &encoded, &mut vec![0; 9]),
                 Err(truncated)
             );
         }
@@ -2082,7 +2472,7 @@ mod tests {
             encoded.extend([9, 0, 120]);
             let tag = Error::Tag { vector: 2, tag: 9 };
             assert_eq!(validate(Type::String, 1_025, &encoded), Err(tag.clone()));
-            let mut out = [0; 4_101];
+            let mut out = vec![0; 4_101];
             assert_eq!(decode(Type::String, 1_025, &encoded, &mut out), Err(tag));
         }
 
@@ -2091,7 +2481,10 @@ mod tests {
             let encoded = Encoder::new(Type::String).encode(usize::MAX, &[], &mut []);
             assert_eq!(encoded, Err(Error::Overflow));
             assert_eq!(validate(Type::Bytes, usize::MAX, &[]), Err(Error::Overflow));
-            assert_eq!(decode(LIST, usize::MAX, &[], &mut []), Err(Error::Overflow));
+            assert_eq!(
+                decode(LIST, usize::MAX, &[], &mut Vec::new()),
+                Err(Error::Overflow)
+            );
         }
 
         /// The ends fit in a `usize`, but not once padded to 8 bytes.
@@ -2101,7 +2494,10 @@ mod tests {
             let encoded = Encoder::new(LIST_8).encode(count, &[], &mut []);
             assert_eq!(encoded, Err(Error::Overflow));
             assert_eq!(validate(LIST_8, count, &[]), Err(Error::Overflow));
-            assert_eq!(decode(LIST_8, count, &[], &mut []), Err(Error::Overflow));
+            assert_eq!(
+                decode(LIST_8, count, &[], &mut Vec::new()),
+                Err(Error::Overflow)
+            );
         }
     }
 
@@ -2109,26 +2505,97 @@ mod tests {
         use super::*;
 
         #[test]
-        #[should_panic(expected = "out holds 3 bytes, not the 4 of 2 samples")]
-        fn panics_when_out_does_not_hold_the_samples() {
-            let encoded = encode(Scalar::U16, &[1, 0, 2, 0]);
-            let _result = decode(Type::Scalar(Scalar::U16), 2, &encoded, &mut [0; 3]);
+        fn sizes_out_whatever_it_held() {
+            let (count, text) = variable(1, &["ab", "", "cde"]);
+            let ints = [1, 0, 2, 0];
+            for (data_type, count, values) in [
+                (Type::String, count, &text[..]),
+                (Type::Scalar(Scalar::U16), 2, &ints),
+            ] {
+                let encoded = encode_type(data_type, count, values);
+                for held in [0, 3, 4, 16, 17, 40] {
+                    let mut out = vec![7; held];
+                    assert_eq!(decode(data_type, count, &encoded, &mut out), Ok(()));
+                    assert_eq!(out, values, "{data_type:?} into {held} bytes");
+                }
+            }
         }
 
         #[test]
-        #[should_panic(expected = "out holds 16 bytes, not the 17 of 3 samples")]
-        fn panics_when_out_does_not_hold_the_elements() {
+        fn keeps_the_memory_of_an_out_with_room() {
             let (count, values) = variable(1, &["ab", "", "cde"]);
             let encoded = encode_type(Type::String, count, &values);
-            let _result = decode(Type::String, count, &encoded, &mut [0; 16]);
+            let mut out = Vec::with_capacity(values.len());
+            let memory = out.as_ptr();
+            assert_eq!(decode(Type::String, count, &encoded, &mut out), Ok(()));
+            assert_eq!((out.as_ptr(), out), (memory, values));
         }
 
+        /// A reused `out` of the raw length gets no zero fill and no second check
+        /// before the fill. The bytes past an error, which a caller must not rely on,
+        /// show both: the first vector is decoded, and the last byte is untouched.
         #[test]
-        #[should_panic(expected = "out holds 4 bytes, not the 17 of 3 samples")]
-        fn panics_when_out_does_not_hold_the_ends() {
-            let (count, values) = variable(1, &["ab", "", "cde"]);
-            let encoded = encode_type(Type::String, count, &values);
-            let _result = decode(Type::String, count, &encoded, &mut [0; 4]);
+        fn fills_no_zeros_into_a_reused_out() {
+            let ints: Vec<u8> = (0..2048_u32)
+                .map(|i| u8::try_from(i % 200).expect("small"))
+                .collect();
+            let (count, text) = variable(1, &vec!["a"; 2048]);
+            let truncated = |vector, needed| Error::Truncated {
+                vector,
+                needed,
+                available: needed - 1,
+            };
+            for (data_type, count, values, first, error) in [
+                (
+                    Type::Scalar(Scalar::U8),
+                    2048,
+                    &ints[..],
+                    VECTOR_LEN,
+                    truncated(1, 772),
+                ),
+                (
+                    Type::Array {
+                        element: Scalar::U8,
+                        len: 2,
+                    },
+                    1024,
+                    &ints[..],
+                    VECTOR_LEN,
+                    truncated(1, 772),
+                ),
+                (Type::Bytes, count, &text, 4 * VECTOR_LEN, truncated(3, 3)),
+            ] {
+                let mut encoded = encode_type(data_type, count, values);
+                encoded.pop();
+                let mut out = vec![0xa5; values.len()];
+                assert_eq!(decode(data_type, count, &encoded, &mut out), Err(error));
+                assert_eq!(out[..first], values[..first], "{data_type:?}");
+                assert_eq!(out.last(), Some(&0xa5), "{data_type:?} got a zero fill");
+            }
+        }
+
+        /// A count or an end that the bytes do not hold must not size `out`: a
+        /// count of 2^40 would take terabytes.
+        #[test]
+        fn allocates_nothing_for_bytes_that_do_not_hold_the_samples() {
+            let huge = 1 << 40;
+            let truncated = |vector, needed, available| Error::Truncated {
+                vector,
+                needed,
+                available,
+            };
+            let end = encode(Scalar::U32, &u32::MAX.to_le_bytes());
+            for (data_type, count, bytes, error) in [
+                (Type::Scalar(Scalar::U16), huge, &[][..], truncated(0, 2, 0)),
+                (Type::String, huge, &[], truncated(0, 2, 0)),
+                (Type::Bytes, 1, &end, truncated(1, 2, 0)),
+            ] {
+                // Room for the end, so that only the elements could grow `out`.
+                let mut out = Vec::with_capacity(8);
+                let room = out.capacity();
+                assert_eq!(decode(data_type, count, bytes, &mut out), Err(error));
+                assert_eq!(out.capacity(), room, "{data_type:?} grew out");
+            }
         }
 
         #[test]
@@ -2149,9 +2616,203 @@ mod tests {
         #[test]
         fn refuses_counts_past_usize_before_it_checks_out() {
             assert_eq!(
-                decode(Type::Scalar(Scalar::U16), usize::MAX, &[], &mut []),
+                decode(Type::Scalar(Scalar::U16), usize::MAX, &[], &mut Vec::new()),
                 Err(Error::Overflow)
             );
+        }
+    }
+
+    mod form {
+        use super::*;
+
+        const STRING: Variable = Variable {
+            element: Layout::Int8 { signed: false },
+        };
+
+        fn list(element: Scalar) -> Variable {
+            Variable::of(Type::List { element, max: 4 }).expect("a list is variable")
+        }
+
+        /// Checks that `write` lays out `samples` as `variable` does, padding
+        /// included, and leaves the bytes after them.
+        fn check(form: Variable, width: usize, samples: &[&[u8]]) {
+            let expected = variable(width, samples).1;
+            assert_eq!(form.len(samples), Ok(expected.len()), "{samples:?}");
+            let mut out = vec![0xaa; expected.len() + 3];
+            assert_eq!(form.write(samples, &mut out), expected.len());
+            assert_eq!(out[..expected.len()], expected, "{samples:?}");
+            assert_eq!(out[expected.len()..], [0xaa; 3], "{samples:?}");
+        }
+
+        #[test]
+        fn is_the_form_of_strings_bytes_and_lists_only() {
+            for data_type in [
+                Type::String,
+                Type::Bytes,
+                Type::List {
+                    element: Scalar::I32,
+                    max: 1,
+                },
+            ] {
+                assert!(Variable::of(data_type).is_some(), "{data_type:?}");
+            }
+            for data_type in [
+                Type::Scalar(Scalar::U8),
+                Type::Array {
+                    element: Scalar::U8,
+                    len: 2,
+                },
+                Type::Matrix {
+                    element: Scalar::U8,
+                    sides: Sides {
+                        rows: 1,
+                        columns: 1,
+                    },
+                },
+            ] {
+                assert!(Variable::of(data_type).is_none(), "{data_type:?}");
+            }
+        }
+
+        #[test]
+        fn writes_the_ends_zeros_then_the_elements() {
+            check(STRING, 1, &[b"ab", b"", b"cde"]);
+            check(STRING, 1, &[]);
+            check(STRING, 1, &[b""]);
+            check(list(Scalar::U16), 2, &[&[1, 0, 2, 0], &[], &[3, 0]]);
+            check(list(Scalar::F32), 4, &[&[1, 2, 3, 4]]);
+            check(list(Scalar::U64), 8, &[&[1, 2, 3, 4, 5, 6, 7, 8]]);
+            check(list(Scalar::Uuid), 16, &[&[9; 16]]);
+        }
+
+        #[test]
+        fn counts_up_to_u32_max_elements() {
+            let mib = vec![0; 1 << 20];
+            let mut samples = vec![&mib[..]; 4_095];
+            samples.push(&mib[1..]);
+            let len = 4 * 4_096 + usize::try_from(u32::MAX).unwrap();
+            assert_eq!(STRING.len(&samples), Ok(len));
+            samples.push(&mib[..1]);
+            assert_eq!(STRING.len(&samples), Err(Error::Overflow));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "a sample of 3 bytes is not a whole number of 2-byte"
+        )]
+        fn len_panics_on_a_part_element() {
+            let _len = list(Scalar::U16).len(&[&[1, 0, 2][..]]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "a sample of 7 bytes is not a whole number of 8-byte"
+        )]
+        fn write_panics_on_a_part_element() {
+            let _len = list(Scalar::U64).write(&[&[1; 7][..]], &mut [0; 64]);
+        }
+
+        #[test]
+        #[should_panic(expected = "out holds 4 bytes, fewer than the 5 of the samples")]
+        fn write_panics_when_out_is_short() {
+            let _len = STRING.write(&["a"], &mut [0; 4]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "the samples have no raw form: the samples take more"
+        )]
+        fn write_panics_when_len_refuses() {
+            let mib = vec![0; 1 << 20];
+            let _len = STRING.write(&vec![&mib[..]; 4_097], &mut []);
+        }
+
+        #[test]
+        fn reads_back_each_sample() {
+            let samples: [&[u8]; 3] = [&[1, 0, 2, 0], &[], &[3, 0]];
+            let (count, raw) = variable(2, &samples);
+            let read: Vec<&[u8]> = list(Scalar::U16).samples(count, &raw).collect();
+            assert_eq!(read, samples);
+            assert_eq!(STRING.samples(0, &[]).count(), 0);
+        }
+
+        #[test]
+        #[should_panic(expected = "7 bytes do not hold the ends of 2 samples")]
+        fn samples_panics_when_raw_is_shorter_than_the_ends() {
+            let _samples = STRING.samples(2, &[0; 7]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 1 ends at 1, not in 2..=3 of 1-byte elements"
+        )]
+        fn samples_panics_at_an_end_that_decreases() {
+            let raw = raw(&[2, 1], 1, b"abc");
+            let _samples: Vec<_> = STRING.samples(2, &raw).collect();
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 0 ends at 2, not in 0..=1 of 2-byte elements"
+        )]
+        fn samples_panics_at_an_end_past_the_elements() {
+            let raw = raw(&[2], 2, &[1, 0]);
+            let _samples: Vec<_> = list(Scalar::U16).samples(1, &raw).collect();
+        }
+
+        /// Raw samples of an element `width` and at most `max` elements each, as
+        /// UTF-8 text when `text`.
+        fn any_samples(
+            width: usize,
+            max: usize,
+            text: bool,
+        ) -> impl Strategy<Value = Vec<Vec<u8>>> {
+            let sample = if text {
+                "\\PC{0,40}".prop_map(String::into_bytes).boxed()
+            } else {
+                proptest::collection::vec(any::<u8>(), 0..=max)
+                    .prop_map(move |elements| elements.repeat(width))
+                    .boxed()
+            };
+            proptest::collection::vec(sample, 0..1_100)
+        }
+
+        fn any_case() -> impl Strategy<Value = (Type, Vec<Vec<u8>>)> {
+            let scalar = prop::sample::select([INTS.as_slice(), &OTHERS].concat());
+            prop_oneof![
+                any_samples(1, 40, true).prop_map(|samples| (Type::String, samples)),
+                any_samples(1, 40, false).prop_map(|samples| (Type::Bytes, samples)),
+                (scalar, 0..6_u32).prop_flat_map(|(element, max)| {
+                    let max_len = usize::try_from(max).unwrap();
+                    any_samples(element.width(), max_len, false)
+                        .prop_map(move |samples| (Type::List { element, max }, samples))
+                }),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn writes_what_encode_takes_and_decode_gives_back(
+                (data_type, samples) in any_case(),
+            ) {
+                let form = Variable::of(data_type).expect("a variable type");
+                let len = form.len(&samples).expect("the samples are small");
+                let mut values = vec![0xaa; len];
+                prop_assert_eq!(form.write(&samples, &mut values), len);
+                let mut encoded = vec![0; max_len(data_type, len)];
+                let written = Encoder::new(data_type)
+                    .encode(samples.len(), &values, &mut encoded)
+                    .expect("encode takes what write writes");
+                let mut decoded = Vec::new();
+                prop_assert_eq!(
+                    decode(data_type, samples.len(), &encoded[..written], &mut decoded),
+                    Ok(())
+                );
+                prop_assert_eq!(&decoded, &values);
+                let read: Vec<&[u8]> = form.samples(samples.len(), &decoded).collect();
+                let samples: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+                prop_assert_eq!(read, samples);
+            }
         }
     }
 }

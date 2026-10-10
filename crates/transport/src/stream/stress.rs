@@ -49,13 +49,13 @@ struct Plan {
 }
 
 fn scarce_pool() -> Pool {
-    let config = block::Config { budget: 1 << 16 };
+    let config = block::Config::new(1 << 16).expect("the budget fits");
     let memory = Heap::new(config.reservation());
     Pool::new(config, memory)
 }
 
 fn send_pool() -> Pool {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     let memory = Heap::new(config.reservation());
     Pool::new(config, memory)
 }
@@ -69,7 +69,7 @@ impl Plan {
         if scarce {
             bytes_max = bytes_max.min(scarce_pool().largest());
         }
-        let window = bytes_max * usize::try_from(1 + rng.below(4)).expect("small")
+        let window = bytes_max * usize::try_from(2 + rng.below(4)).expect("small")
             + usize::try_from(rng.below(4096)).expect("small");
         Self {
             case,
@@ -428,7 +428,7 @@ async fn open(plan: Plan, at: Address, config: Config, node: Node, shared: Share
     };
     let part = testing::part(&node.net(), testing::address(&node));
     let transport = Transport::new(config, part).expect("a transport");
-    let server = crate::tls::public(&testing::SERVER);
+    let server = testing::SERVER.public();
     let session = loop {
         match transport.dial(server, slice::from_ref(&at)).await {
             Ok(session) => break session,

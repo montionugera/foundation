@@ -1,6 +1,6 @@
 use std::fmt;
 
-use types::node::PublicKey;
+use types::ed25519::PublicKey;
 
 use crate::address::Address;
 use crate::code::Code;
@@ -76,7 +76,8 @@ pub enum Error {
     },
     /// The socket under the session broke. Every session on it ends with this. Each
     /// later dial gets it, and so does each accept once it gave the sessions that
-    /// connected before the break.
+    /// connected before the break. [`Client::new`](crate::Client::new) gives it
+    /// when its bind fails.
     Network {
         /// What the socket gave.
         error: env::net::Error,

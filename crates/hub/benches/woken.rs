@@ -13,12 +13,13 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-#[path = "../tests/common/shard.rs"]
-mod shard;
+#[path = "../tests/common/node.rs"]
+mod node;
 mod table;
 #[path = "../tests/common/woken.rs"]
 mod woken;
 
+use home::reader::Next;
 use table::Line;
 use woken::Woken;
 
@@ -29,7 +30,7 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 const INDEXES: [(usize, &str); 3] =
     [(1, "woken 1"), (16, "woken 16"), (256, "woken 256")];
 /// `WARMUP + ROUNDS` commits, under the 113 of 256 frames that the ring of
-/// `shard::shard` holds.
+/// `home::testing::shard` holds.
 const WARMUP: usize = 10;
 const ROUNDS: usize = 100;
 
@@ -66,7 +67,7 @@ async fn bench(
         assert_eq!(woken.keys, readers, "the commit wakes each reader");
         for &reader in &woken.readers {
             assert!(
-                woken.shard.take(reader).is_some(),
+                matches!(woken.shard.take(reader), Next::Frame(_)),
                 "a frame waits for the reader"
             );
         }

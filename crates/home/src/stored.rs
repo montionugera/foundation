@@ -266,7 +266,7 @@ mod tests {
     use types::frame::{Draft, Path};
 
     use super::*;
-    use crate::common::{SCALARS, create_interner, create_pool, key};
+    use crate::common::{create_interner, create_pool, data_type, intern, key};
 
     /// A live frame of `set` in `form` with each present entry and its bytes, in
     /// entry order.
@@ -296,7 +296,7 @@ mod tests {
 
     /// The stored body of one index series of 8 bytes: 38 bytes.
     fn stored() -> Vec<u8> {
-        let set = create_interner().intern(&[Group {
+        let set = intern(&[Group {
             index: key(Slot::new(1)),
             data: &[],
         }]);
@@ -320,7 +320,7 @@ mod tests {
             // The data channel's slot is below its index's, so the first series of
             // the frame is not the index.
             let data = [(key(Slot::new(2)), Type::Scalar(Scalar::U8))];
-            let set = create_interner().intern(&[
+            let set = intern(&[
                 Group {
                     index: key(Slot::new(1)),
                     data: &[],
@@ -359,7 +359,7 @@ mod tests {
         #[test]
         #[should_panic(expected = "the frame has no series")]
         fn panics_on_a_frame_of_no_series_also_with_a_full_pool() {
-            let set = create_interner().intern(&[Group {
+            let set = intern(&[Group {
                 index: key(Slot::new(1)),
                 data: &[],
             }]);
@@ -455,7 +455,7 @@ mod tests {
                 .zip(cases)
                 .map(|(slot, (data_type, _))| (key(Slot::new(slot)), data_type))
                 .collect();
-            let set = create_interner().intern(&[Group {
+            let set = intern(&[Group {
                 index: key(Slot::new(1)),
                 data: &data,
             }]);
@@ -484,7 +484,7 @@ mod tests {
 
         #[test]
         fn returns_the_pool_error_when_the_pool_is_full() {
-            let set = create_interner().intern(&[Group {
+            let set = intern(&[Group {
                 index: key(Slot::new(1)),
                 data: &[],
             }]);
@@ -518,7 +518,7 @@ mod tests {
             #[test]
             #[should_panic(expected = "the frame is not encoded")]
             fn panics_on_a_raw_frame() {
-                let set = create_interner().intern(&[Group {
+                let set = intern(&[Group {
                     index: key(Slot::new(1)),
                     data: &[],
                 }]);
@@ -530,7 +530,7 @@ mod tests {
             #[test]
             #[should_panic(expected = "the frame is not of the key set")]
             fn panics_on_a_frame_of_another_key_set() {
-                let mut interner = create_interner();
+                let mut interner = create_interner(&[1, 2], &[]);
                 let [of, other] = [1, 2].map(|slot| {
                     interner.intern(&[Group {
                         index: key(Slot::new(slot)),
@@ -545,7 +545,7 @@ mod tests {
             #[test]
             #[should_panic(expected = "the frame has more than one group")]
             fn panics_on_a_frame_of_two_groups() {
-                let set = create_interner().intern(&[1, 2].map(|slot| Group {
+                let set = intern(&[1, 2].map(|slot| Group {
                     index: key(Slot::new(slot)),
                     data: &[],
                 }));
@@ -627,22 +627,6 @@ mod tests {
     mod round_trip {
         use super::*;
 
-        fn data_type() -> impl Strategy<Value = Type> {
-            let scalar = || proptest::sample::select(SCALARS.to_vec());
-            prop_oneof![
-                scalar().prop_map(Type::Scalar),
-                (scalar(), any::<u32>())
-                    .prop_map(|(element, len)| Type::Array { element, len }),
-                (scalar(), any::<u16>(), any::<u16>()).prop_map(
-                    |(element, rows, columns)| matrix(element, rows, columns)
-                ),
-                (scalar(), any::<u32>())
-                    .prop_map(|(element, max)| Type::List { element, max }),
-                Just(Type::String),
-                Just(Type::Bytes),
-            ]
-        }
-
         /// One entry of a generated write.
         #[derive(Debug, Clone)]
         struct Entry {
@@ -654,18 +638,20 @@ mod tests {
         /// then its data channels, the present group, then each entry of their key
         /// set.
         fn write() -> impl Strategy<Value = Write> {
-            vec(vec(data_type(), 0..4), 1..4).prop_flat_map(|groups| {
-                let entries: usize = groups.iter().map(|data| data.len() + 1).sum();
-                let keys = btree_set(any::<u128>(), entries)
-                    .prop_map(|bits| {
-                        bits.into_iter().map(channel::Key::from_u128).collect()
-                    })
-                    .prop_shuffle();
-                let entry = (any::<bool>(), vec(any::<u8>(), 0..24))
-                    .prop_map(|(present, bytes)| Entry { present, bytes });
-                let group = 0..groups.len();
-                (Just(groups), keys, group, vec(entry, entries))
-            })
+            vec(vec(data_type(0..=u32::MAX, 0..=u16::MAX), 0..4), 1..4).prop_flat_map(
+                |groups| {
+                    let entries: usize = groups.iter().map(|data| data.len() + 1).sum();
+                    let keys = btree_set(any::<u128>(), entries)
+                        .prop_map(|bits| {
+                            bits.into_iter().map(channel::Key::from_u128).collect()
+                        })
+                        .prop_shuffle();
+                    let entry = (any::<bool>(), vec(any::<u8>(), 0..24))
+                        .prop_map(|(present, bytes)| Entry { present, bytes });
+                    let group = 0..groups.len();
+                    (Just(groups), keys, group, vec(entry, entries))
+                },
+            )
         }
 
         type Write = (Vec<Vec<Type>>, Vec<channel::Key>, usize, Vec<Entry>);

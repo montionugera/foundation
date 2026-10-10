@@ -3,11 +3,12 @@ use std::slice;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{Kind, Value};
 use document::{Block, read};
-use spec::access::{Action, Actions, Policy};
+use spec::access::{Action, Actions, Error, Policy};
 use spec::definition;
 use types::authority::Authority;
+use types::name::Name;
 
-use crate::{Definition, Found, written};
+use crate::{Definition, Found};
 
 const BAD_ACTION: Code = Code::new("config.bad-action");
 const EMPTY_ALLOW: Code = Code::new("config.empty-allow");
@@ -27,7 +28,11 @@ const ACTIONS: [(&str, Action); 6] = [
 
 /// Checks an `access` block and gives its policy. With no `authority`, a write is
 /// capped at the least authority. An `authority` with no `write` is refused.
-pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> {
+pub(crate) fn check(
+    found: &mut Found<'_>,
+    block: &Block,
+    _: Option<&Name>,
+) -> Option<Definition> {
     let unknown = found.unknown(block, &KEYS);
     let fix = "Add a `subjects` attribute with the subjects that it allows, such as \
                \"site_a.operators.*\"";
@@ -42,6 +47,20 @@ pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> 
     else {
         return None;
     };
+    let policy =
+        match Policy::new(subjects, select, allow, authority.unwrap_or(Authority(0))) {
+            Ok(policy) => policy,
+            Err(Error::Empty) => {
+                let at = block.body.attributes.get("allow");
+                found.diagnostics.push(Diagnostic::new(
+                    EMPTY_ALLOW,
+                    at.and_then(|allow| allow.value.span),
+                    "the `allow` list holds no action".into(),
+                    "Add one or more actions, such as \"read\"".into(),
+                ));
+                return None;
+            }
+        };
     if authority.is_some() && !allow.contains(Action::Write) {
         let at = block.body.attributes.get("authority");
         found.diagnostics.push(Diagnostic::new(
@@ -54,22 +73,12 @@ pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> 
         ));
         return None;
     }
-    let authority = authority.unwrap_or(Authority(0));
-    let policy = Policy::new(subjects, select, allow, authority);
     Some(Definition::Spec(definition::Definition::Access(policy)))
 }
 
 /// Reads one action or a list of actions, each a string or a reference.
 fn actions(value: &Value) -> Result<Actions, Diagnostic> {
     let items = match &value.kind {
-        Kind::List(items) if items.is_empty() => {
-            return Err(Diagnostic::new(
-                EMPTY_ALLOW,
-                value.span,
-                "the `allow` list holds no action".into(),
-                "Add one or more actions, such as \"read\"".into(),
-            ));
-        }
         Kind::List(items) => items,
         _ => slice::from_ref(value),
     };
@@ -82,7 +91,7 @@ fn action(value: &Value) -> Result<Action, Diagnostic> {
         let fix = format!("Use {}", read::one_of(&words));
         Diagnostic::new(BAD_ACTION, value.span, message, fix)
     };
-    let word = written(value).ok_or_else(|| {
+    let word = value.kind.text().ok_or_else(|| {
         refuse(format!(
             "an action is a string or a reference, not {}",
             value.kind.noun()
@@ -92,7 +101,7 @@ fn action(value: &Value) -> Result<Action, Diagnostic> {
         .iter()
         .find(|(known, _)| *known == word)
         .map(|(_, action)| *action)
-        .ok_or_else(|| refuse(format!("`{word}` is not an action")))
+        .ok_or_else(|| refuse(format!("{word:?} is not an action")))
 }
 
 fn authority(value: &Value) -> Result<Authority, Diagnostic> {

@@ -78,7 +78,7 @@ fn main() {
         "a heap pads"
     );
 
-    let config = Config { budget: 1 << 16 };
+    let config = Config::new(1 << 16).expect("the budget fits");
     let heap = Heap::new(config.reservation());
     let pool = Pool::new(config, heap);
     let allocations = count(|| {
@@ -95,11 +95,19 @@ fn main() {
         }
     });
     assert_eq!(allocations, 0, "the hot path allocated");
+    let bytes = [7_u8; 4096];
+    let allocations = count(|| {
+        for len in [0, 1, 64, 65, 1000, 4096].into_iter().cycle().take(600) {
+            let block = pool.copy(&bytes[..len]).expect("the budget has room");
+            assert_eq!(&*block, &bytes[..len], "a copy holds the bytes");
+        }
+    });
+    assert_eq!(allocations, 0, "a copy allocated");
     // One block of each of the four classes: a dropped block serves the next alloc.
     let committed = 128 + 192 + 1088 + 4160;
     assert_eq!(pool.committed(), committed, "blocks are used again");
 
-    let config = Config { budget: 2 * 4160 };
+    let config = Config::new(2 * 4160).expect("the budget fits");
     let heap = Heap::new(config.reservation());
     let pool = Pool::new(config, heap);
     let large = [pool.alloc(4096), pool.alloc(4096)].map(|block| block.expect("room"));

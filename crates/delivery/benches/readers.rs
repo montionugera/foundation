@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use delivery::complete::{Charge, Key};
-use delivery::{Position, Reader, Readers, Start};
+use delivery::{Next, Position, Reader, Readers, Start};
 use divan::Bencher;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
@@ -55,7 +55,7 @@ fn frame() -> (Frame, Arc<KeySet>) {
         index: channel::Key::from_u128(1),
         data: &[],
     }]);
-    let config = block::Config { budget: 1 << 16 };
+    let config = block::Config::new(1 << 16).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let frame = Draft::new(&pool, &set, Form::Raw, &[(0, 8)])
         .expect("the pool holds the frame")
@@ -80,6 +80,34 @@ fn release(bencher: Bencher<'_, '_>, sessions: usize) {
     });
 }
 
+/// The frames of one release in [`release_waiting`].
+const BURST: u64 = 64;
+
+/// A release of [`BURST`] frames to `sessions` recording readers with credit for 8,
+/// so each later frame waits for a grant. Each session takes each frame and grants
+/// after each take, as a hub reader does.
+#[divan::bench(args = [1, 16])]
+fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (frame, set) = frame();
+    let window = 8 * frame.charge();
+    let (mut readers, keys) = opened(sessions, window);
+    let mut spent = vec![0; sessions];
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        for _ in 0..BURST {
+            readers.queue(&frame, &set, seq..seq + 1);
+            seq += 1;
+        }
+        divan::black_box(readers.release(seq));
+        for (&key, spent) in keys.iter().zip(&mut spent) {
+            while let Next::Frame(frame) = readers.take(key.into()) {
+                *spent += frame.charge();
+                readers.grant(key, *spent + window);
+            }
+        }
+    });
+}
+
 /// The channels of [`wide`]: one index and its data channels.
 const CHANNELS: usize = 100_000;
 
@@ -98,7 +126,7 @@ fn wide() -> (Frame, Arc<KeySet>) {
         index: channel::Key::from_u128(1),
         data: &data,
     }]);
-    let config = block::Config { budget: 1 << 22 };
+    let config = block::Config::new(1 << 22).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let lens: Vec<_> = (0..CHANNELS).map(|entry| (entry, 8)).collect();
     let frame = Draft::new(&pool, &set, Form::Raw, &lens)
@@ -208,7 +236,7 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
         index: channel::Key::from_u128(1),
         data: &db,
     }]);
-    let config = block::Config { budget: 1 << 24 };
+    let config = block::Config::new(1 << 24).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let build = |set: &Arc<KeySet>| {
         let lens: Vec<_> = (0..set.entries().len()).map(|entry| (entry, 8)).collect();
