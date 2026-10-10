@@ -225,13 +225,7 @@ impl Log {
             // A sync that failed in this boot leaves its writes in the cache, where
             // the read saw them, and a later sync does not write them. So the open
             // writes again what it read, with zeros after the last record.
-            let bytes = segments
-                .get_mut(scan.segment)
-                .expect("invariant: the open read each file that it holds");
-            bytes
-                .get_mut(scan.offset..)
-                .expect("invariant: the log ends in its end file")
-                .fill(0);
+            let bytes = clear(&mut segments, &scan);
             blocks.write(&file, 0, &mut &bytes[..]).await?;
             file
         } else {
@@ -407,6 +401,46 @@ struct Scan {
     next: u64,
     // A file after `segment` is there, with no record.
     spare: bool,
+}
+
+// Puts zeros after the last record of the file of `segments` that holds the end, and
+// gives that file.
+fn clear<'a>(segments: &'a mut [Vec<u8>], scan: &Scan) -> &'a [u8] {
+    let bytes = segments
+        .get_mut(scan.segment)
+        .expect("invariant: the open read each file that it holds");
+    bytes
+        .get_mut(scan.offset..)
+        .expect("invariant: the log ends in its end file")
+        .fill(0);
+    bytes
+}
+
+/// What an open of a directory that holds `files` reads, and the log files, in number
+/// order, that it leaves: each with zeros after the last record, and no file after
+/// the one that holds the end. Each of `files` is a name and the bytes of that file.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn reopen(
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<(Stored, Vec<Vec<u8>>), Error> {
+    let dir = Path::new("log");
+    let names = files.iter().map(|(name, _)| name.clone()).collect();
+    let mut segments: Vec<Vec<u8>> = sequence(dir, names)?
+        .iter()
+        .map(|path| {
+            let (_, bytes) = files
+                .iter()
+                .find(|(name, _)| dir.join(name) == *path)
+                .expect("invariant: each log file is one of the files");
+            bytes.clone()
+        })
+        .collect();
+    let scan = scan(dir, &segments)?;
+    segments.truncate(scan.segment.saturating_add(1));
+    if segments.len() > scan.segment {
+        clear(&mut segments, &scan);
+    }
+    Ok((scan.stored, segments))
 }
 
 // Reads the records of the files in `dir`, which `segments` holds in order.
@@ -727,6 +761,49 @@ pub(crate) fn seal(record: &mut [u8]) {
         .split_last_chunk_mut::<8>()
         .expect("invariant: the length comes before the body check");
     *len = wide(body.len()).to_le_bytes();
+    seal_header(head);
+}
+
+/// Makes the checks of each record in the log file `bytes` match its bytes, as a scan
+/// reads the records: the body check over the length that the header claims, unless
+/// it is zeros, then the header check. It stops at the end of `bytes`, at a header of
+/// zeros, and after the header of a record that claims more bytes than `bytes` holds.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn seal_file(bytes: &mut [u8]) {
+    let mut end = 0;
+    loop {
+        let at = start(end);
+        let Some((head, after)) = bytes
+            .get_mut(at..)
+            .and_then(<[u8]>::split_first_chunk_mut::<HEADER>)
+        else {
+            return;
+        };
+        if *head == [0; HEADER] {
+            return;
+        }
+        let (fields, claimed) = head
+            .split_last_chunk_mut::<CHECK>()
+            .expect("invariant: a header ends with the body check");
+        let (_, len) = fields
+            .split_last_chunk::<8>()
+            .expect("invariant: the length comes before the body check");
+        let len = usize::try_from(u64::from_le_bytes(*len)).ok();
+        let Some((len, body)) = len.and_then(|len| Some((len, after.get(..len)?)))
+        else {
+            seal_header(head);
+            return;
+        };
+        if *claimed != [0; CHECK] {
+            *claimed = check(body);
+        }
+        seal_header(head);
+        end = at.saturating_add(HEADER).saturating_add(len);
+    }
+}
+
+#[cfg(any(test, feature = "sim"))]
+fn seal_header(head: &mut [u8; HEADER]) {
     let (claimed, rest) = head
         .split_first_chunk_mut::<CHECK>()
         .expect("invariant: a header starts with its check");

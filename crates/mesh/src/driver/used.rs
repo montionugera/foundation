@@ -509,7 +509,7 @@ async fn name(files: &Files, held: &Path, pointer: Pointer) -> Result<(), Cause>
 }
 
 // The pointer that the name of a file spells, `<version>-<root>`.
-fn pointer(name: &Path) -> Option<Pointer> {
+pub(crate) fn pointer(name: &Path) -> Option<Pointer> {
     let name = name.to_str()?;
     let (version, root) = name.split_once('-')?;
     let version = version.parse().ok()?;
@@ -525,7 +525,7 @@ fn pointer(name: &Path) -> Option<Pointer> {
 }
 
 // The name of the file that names `pointer`.
-fn file(pointer: Pointer) -> PathBuf {
+pub(crate) fn file(pointer: Pointer) -> PathBuf {
     PathBuf::from(format!("{}-{}", pointer.version, pointer.root))
 }
 
