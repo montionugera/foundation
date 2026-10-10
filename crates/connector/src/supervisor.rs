@@ -2072,9 +2072,11 @@ mod tests {
         })
     }
 
+    /// The gap is a little over 1 ms, so that no set falls at a status tick, where the
+    /// order of the two tasks is random.
     #[test]
     fn gives_13_frames_for_10_000_samples_over_10_s_set_from_a_task() {
-        let statuses = tally(relay(10_000, ms(1)));
+        let statuses = tally(relay(10_000, Span::from_nanos(1_000_050)));
         assert_eq!(statuses.len(), 13, "{statuses:?}");
         assert_eq!(
             statuses.last().map(|(_, samples, _)| samples[4]),
