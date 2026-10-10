@@ -2947,13 +2947,8 @@ mod tests {
     /// Writes each `(at, value)` of `samples` at `at` from the call, through a hub
     /// writer as `plant.other`.
     async fn write_at(hub: hub::Hub, clock: Clock, samples: Vec<(Span, i64)>) {
-        let open = hub::writer::Config {
-            subject: name("plant.other"),
-            authority: Authority(1),
-            lease: None,
-            channels: vec![name("plant.value")],
-        };
-        let mut writer = hub.writer(open).await.expect("opens");
+        let channels = vec![name("plant.value")];
+        let mut writer = open_writer(&hub, "plant.other", Authority(1), channels).await;
         let start = clock.now();
         for (at, value) in samples {
             clock.sleep_until(start + at).await;
