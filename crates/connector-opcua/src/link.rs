@@ -455,8 +455,8 @@ fn src() -> std::path::PathBuf {
     root().join("src")
 }
 
-/// The cfg of the code that only tests and benchmarks build, which the scan counts as
-/// test code.
+/// The cfg of the code that only tests, benchmarks, and fuzz targets build, which the
+/// scan counts as test code.
 const SIM: &str = "feature=\"sim\"";
 
 /// Each identifier for which `named` holds, as `path: identifier`, in the Rust
@@ -490,10 +490,10 @@ fn named_outside_tests(
 /// that the builds set, sorted. The builds are those on this host, with the target
 /// features of this build, and with each set of the cfgs that the crate tests and
 /// rustc does not know (features among them, less [`SIM`], which no build of the
-/// library sets), each with debug assertions on and off
-/// and with each panic strategy. rustc names each such cfg in a build that reads the
-/// file that tests it. A file under a known value of a target cfg that this build does
-/// not set, such as `target_os = "windows"`, is read by no build.
+/// library sets), each with debug assertions on and off and with each panic strategy.
+/// rustc names each such cfg in a build that reads the file that tests it. A file
+/// under a known value of a target cfg that this build does not set, such as
+/// `target_os = "windows"`, is read by no build.
 ///
 /// # Panics
 ///
