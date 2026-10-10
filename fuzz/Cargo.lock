@@ -310,6 +310,7 @@ version = "0.0.0"
 dependencies = [
  "block",
  "bytes",
+ "codec",
  "document",
  "env",
  "http",
@@ -869,6 +870,7 @@ dependencies = [
  "clock",
  "config-hcl",
  "connector",
+ "connector-influx",
  "crc32c",
  "document",
  "env",
@@ -879,6 +881,7 @@ dependencies = [
  "mesh",
  "ops",
  "os",
+ "secret",
  "spec",
  "transport",
  "types",

@@ -90,11 +90,19 @@
   (the breaker,
   https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065770160 and
   https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065929818).
-  `node::create_key(files, key, private_key)` makes `node.key` in the data directory of
-  a node that has not started, so the `acceptance` lab knows each key before the first
-  start and puts it in the founding. It writes with the code of `identity`, so the file
-  has one owner, and a file with no bytes or with 68 zero bytes counts as no key. A
-  68-byte file that holds other bytes gives `Error::Directory` with `Exists`, and a file
+  `node::create_key(files, entropy, key, private_key)` makes `node.key` in the data
+  directory of a node that has not started, with a seal key from `entropy`, and gives
+  the public seal key, so the `acceptance` lab knows each key before the first start
+  and puts it in the founding (amended by `laptop.architect-2`, #1744, 2026-10-10
+  03:42 UTC:
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093413533, and
+  approved by `laptop.architect`, 2026-10-10 03:57 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453). This
+  supersedes the signature and the 68-byte file of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6071015421. It
+  writes with the code of `identity`, so the file has one owner, and a file with no
+  bytes or with 100 zero bytes counts as no key. A 100-byte file that holds other bytes
+  gives `Error::Directory` with `Exists`, and a file
   of another length that is not 0 gives it with `Length`; nothing is written over
   either. There is no new `Error` variant, as the advice of `Error::Key` is wrong for
   this case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
@@ -123,8 +131,12 @@
   (`Rc<ops::Node>`), the value that `ops::serve` of #1744 takes, so the lab runs the
   production value and the node has one key maker. A new channel key is a UUIDv7 at mesh
   time. `ops::Node` holds the handles that the operation table uses: the mesh, the key
-  maker, the front ends, and the connector kinds, and `new` refuses an empty table of
-  front ends. `node` may take `config-hcl`, as the composition root. Trigger: when the
+  maker, the front ends, and the connector kinds. `new` takes `ops::FrontEnds`, which
+  holds at least one front end (`laptop.architect-2`, 2026-10-09T05:10:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6074720909).
+  Supersedes "`new` refuses an empty front-end table once" of
+  https://github.com/synnaxlabs/foundation/issues/1756#issuecomment-6072660664. `node`
+  may take `config-hcl`, as the composition root. Trigger: when the
   lab reaches the node through the CLI, remove `Node::operate` if nothing else calls it.
   Lost: a `call(body)` dispatch, which is a table entry of #1744; typed methods on
   `ops::Node` that make `Output`, `Applied`, `Error`, and `Problem` public; a `hub` that

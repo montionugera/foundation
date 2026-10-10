@@ -28,7 +28,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
 | Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
-| Voter | Vote and stall its region; break `raft` safety (Node to node) | Forge a spec change or move a home outside placement |
+| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node | |
@@ -264,8 +264,9 @@ state on `main`.
   `document_encoding`. Fixed: #446 (`update` put a new block after a kept block
   it must come before); the `block_before_kept` inputs hold it. `config::check`
   reads the documents into definitions, and the influx kind reads the config of each
-  `connector` block of kind `influx`. Fuzzed: `config_check`, which no input yet
-  takes to the influx kind (#1817).
+  `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
+  `influx_*` take to the influx kind, through `connector::reader::read`,
+  `connector::http::uri`, and `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
   decision, with no `security` label yet: #360 (a lone `\r` in a comment,
@@ -361,7 +362,7 @@ state on `main`.
   `cargo deny check advisories bans licenses sources` runs in CI on each change to a
   manifest. aws-lc-rs is the only crypto provider, with one recorded exception.
 - `unsafe` is denied in the workspace. The crates that allow it (`block`, `ring`,
-  `counting`) run under Miri in CI.
+  `counting`, `waker`) run under Miri in CI.
 - The `fuzz/` crate has its own lock file. The `deny` job of `ci.yaml` checks it with
   `cargo deny` on each change to it.
 - A local patch of a Rust crate (`patches/`) is a path package, which `cargo deny`
@@ -385,7 +386,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `wire_clock` | `wire::clock::decode` | Encodes to the same bytes |
 | `wire_hub_home` | `wire::hub::Home::decode`, `Open::encode`, `Credit::encode`, `keys::encode` | Each message encodes to the same bytes; each event comes in the order of a session, and each refusal is one that the order or the mode of the session gives; each valid message made from the input decodes to itself |
 | `wire_blob` | `wire::blob::Server::decode`, `Requester::decode`, `Put::body`, `Reply::body`, `Body::take`, `Body::end`, `get::encode`, `Put::encode`, `Reply::encode` | Each message encodes to the same bytes; each body counts exactly the bytes of its head, and each refusal of a body is the one that its rest gives; a body ends unfinished while bytes remain; each valid message made from the input decodes to itself |
-| `wire_hub_reader` | `wire::hub::Reader::decode`, `Reader::end`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session, and each refusal is one that the order or the mode of the session gives; the body is where `Reader::body` says; `Reader::end` refuses each point before `Behind`, with `Unfinished` inside a body; each valid message made from the input decodes to itself |
+| `wire_hub_reader` | `wire::hub::Reader::decode`, `Reader::end`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it; each refusal is one that the order, the mode, or the heads of the session give; the body is where `Reader::body` says; `Reader::end` refuses each point before `Behind`, with `Unfinished` inside a body; each valid message made from the input decodes to itself |
 | `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `Body::take`, `Body::end`, and the encoders of each message | Each message encodes to the same bytes; each decoder refuses another kind with `Error::Kind`; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; each valid message made from the input decodes to itself |
 | `transport_hello` | `transport::fuzzing::Hello::decode`, `Hello::encode` (feature `fuzzing`) | Gives the hello, or the refusal, that a second reader of the STREAM WIRE rules gives; its encoding decodes to itself |
 | `transport_certificate` | `transport::fuzzing::peer`: the client verifier and the peer of a node's server, for a dialer's chain of 0 to 3 certificates (feature `fuzzing`) | Gives the peer that a second reader of the rules gives: a client for no certificate, none for a chain of more than one or a certificate over 1024 bytes, and else none or the node whose key follows the Ed25519 key header in the certificate; a certificate that a node issues reads back to its key, and two of it are refused. Not reached: the handshake signature, which fuzzed bytes cannot make |
@@ -396,7 +397,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `codec_series` | `codec::validate`, `codec::decode`, `codec::Decoder` | All give one result |
 | `codec_encoder` | `codec::Encoder` | Its output is valid and decodes unchanged |
 | `codec_string` | `codec::Encoder`, `codec::validate`, `codec::decode` on a `String` series | Each refuses at the first sample that `str::from_utf8` refuses, and at no other |
-| `codec_shape` | `codec::validate`, `codec::decode` on an array, matrix, list, `String`, or `Bytes` series | Both give one result; an array or a matrix gives the result of the series of its elements; a `String` series gives the result of a `Bytes` series or the first sample that `str::from_utf8` refuses; a valid series decodes with zeros for the padding, and encodes and decodes unchanged |
+| `codec_shape` | `codec::validate`, `codec::decode`, `codec::Variable` on an array, matrix, list, `String`, or `Bytes` series | Both give one result; an array or a matrix gives the result of the series of its elements; a `String` series gives the result of a `Bytes` series or the first sample that `str::from_utf8` refuses; a valid series decodes with zeros for the padding, and encodes and decodes unchanged; `Variable` reads the samples of a valid variable series and writes them back to the same bytes |
 | `codec_shape_encoder` | `codec::Encoder` on an array, matrix, list, `String`, or `Bytes` series | Gives the refusal that a second reader of the raw form gives, or a valid series that decodes unchanged with zeros for the padding; an array or a matrix encodes as the series of its elements |
 | `document_encoding` | `document::encoding::decode` | Encodes to the same bytes |
 | `spec_definition` | `spec::definition::Definition::decode` | Encodes to the same bytes |
@@ -406,7 +407,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `config_hcl_update` | `config_hcl::update` | Its text reads as the document; an update to its own document keeps each byte; an unread text gives the problems of `read` |
 | `config_hcl_write` | `config_hcl::write` | Its text reads back as an equal document |
 | `config_plan` | `config::plan::Plan::decode` | Encodes to the same bytes |
-| `config_check` | `config::check` on the documents that `config_hcl::read` reads from up to three files, with the influx kind in the kind table | The same entries for the files in either order, or problems in both; with no problem, one entry for each block, unique in any case, each policy and connector decodes to itself, and each edge of a channel names a channel entry; each problem's span is in its file, in the order of the files, then of the source; files that pass alone, with keys that differ in more than case and no subject named as a connector in any ASCII case, pass together and give the union of their entries |
+| `config_check` | `config::check` on the documents that `config_hcl::read` reads from up to three files, with the influx kind in the kind table | The same entries or the same problems for the files in either order; with no problem, one entry for each block and one for each status channel of each connector, and no other, unique in any case, each policy and connector decodes to itself, and each edge of a channel names a channel entry; each problem's span is in its file, in the order of the files, then of the source; files that pass alone, with keys that differ in more than case and no subject named as a connector in any ASCII case, pass together and give the union of their entries |
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
@@ -422,7 +423,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
 | `buffer_open` | `Buffer::open` and `Buffer::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Buffer::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
-| `node_identity` | `node::identity::decode` and `encode`, by `node::fuzz::identity` (feature `sim`), on 68 bytes, or on 64 bytes with their CRC32C | Gives an identity exactly for bytes with the tag and the CRC32C, and that identity encodes to the same bytes |
+| `node_identity` | `node::identity::decode` and `encode`, by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C | Gives an identity exactly for bytes with the tag and the CRC32C, and that identity encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#55), the QUIC hello
@@ -434,8 +435,6 @@ answer (`mesh::Member::decode` from a peer, #336 adds its target), the names in 
 directory of the spec in use (`mesh::driver::used::pointer`, #1746), each connector's
 protocol parser, the file `name` of the data directory (`node::name::decode`, #2174),
 the file `budget` of the data directory (`node::budget::decode`, #2174), the parsers of
-`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the chunk
-processing of open62541 (`ua_securechannel.c`, #1990), and `connector::reader::read`,
-`connector::http::uri`, and `connector_influx::Kind::parse`, which `config_check`
-reaches only from an input with a `connector` block of kind `influx`, and no input holds
-one yet (#1817).
+`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the newest
+handoff record of each index in the ring (`home::handoff::read`, #2278), and the chunk
+processing of open62541 (`ua_securechannel.c`, #1990).

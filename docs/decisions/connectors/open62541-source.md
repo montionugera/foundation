@@ -5,7 +5,15 @@
   call one; a list per file would pass a new call in a listed file. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
-  2026-10-08 02:27 UTC). The copy goes in `patches/open62541/`, and the `build.rs` of
+  2026-10-08 02:27 UTC). A test of `connector-opcua` names each pair and fails
+  when its reason becomes false. For example, `shim.c` fails the build with
+  `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust or `shim.c` names a security
+  policy, so a client has only the policy `None`, and `encryptUserIdentityTokenEcc`
+  needs an ECC policy. Approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6094588326,
+  2026-10-10 06:19 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6099193878,
+  2026-10-10 15:39 UTC). The copy goes in `patches/open62541/`, and the `build.rs` of
   `connector-opcua` reads its `sources.txt`. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057244538,
   2026-10-08 09:50 UTC). `cargo xtask open62541 <tag>` makes the copy. Each file from
@@ -257,7 +265,8 @@
   another task on that thread wakes the drive. After each `run`, also the one that gives
   the value, the drive moves on each connection again after each connect, send, or close
   on it that the `run` or such a step asks for, so it can also read and call open62541
-  back after that `run`. At most 256 sends wait on one connection: a send past them
+  back after that `run`, except the listen connection after an accept, which moves on
+  only after the next `run`. At most 256 sends wait on one connection: a send past them
   closes the connection. open62541 allocates each send at most at the send buffer size
   of its channel, so this bounds the memory of a connection at 256 send buffers. Sends
   wait from one pass to the next, and longer while a stream is full, so an owner keeps
@@ -298,10 +307,28 @@
   2026-10-09 17:51 UTC). The moves after each `run`, and the `CLOSING` of the first
   close or an error before it: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731,
-  2026-10-09 18:21 UTC).
+  2026-10-09 18:21 UTC). The listen connection after an accept, and one accept between
+  two runs of the loop: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2258#issuecomment-6099177882,
+  2026-10-10 15:37 UTC). Supersedes
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086285343 and
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
+  listen connection after an accept.
   A server listens on the listener that its owner gives the manager at
   `Manager::listening`. Each accepted stream is a new connection that gets
-  `ESTABLISHED`, with the context of the listen connection at the accept. As the POSIX
+  `ESTABLISHED`, with the context of the listen connection at the accept. A drive
+  accepts at most one stream between two runs of the loop, as the POSIX manager accepts
+  one for each run (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541
+  needs that run: at the limit, `purgeFirstChannelWithoutSession`
+  (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
+  is already `CLOSING`, on which `UA_SecureChannel_shutdown` does nothing, so each
+  accept before the run that gives that `CLOSING` adds one channel past the limit. A
+  burst of 150 accepts in one pass held 149 secure channels against the limit of 100 in
+  the `sim` test of #2255. After an accept, the drive moves the listen connection on
+  only after the next run, so an accept costs one move of the listen connection, not a
+  pass of the table. Lost: a wake and a full pass after each accept, so a burst of n
+  streams cost n passes; and the manager gives each queued `CLOSING` after an accept, so
+  it would run work of the loop, and a `CLOSING` would come by two paths. As the POSIX
   manager does, the first `ESTABLISHED` of the listen gives `listen-address`, the host
   of its `address` param, and `listen-port`, from which the server makes its discovery
   URL, and that of an accepted connection gives `remote-address`. A listen with no
