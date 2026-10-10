@@ -40,7 +40,7 @@ const BODY_MAX: usize = 4087;
 /// The two header blocks come before the area.
 const AREA_START: u64 = 2 * BLOCK;
 const COMMIT: Span = Span::from_nanos(10_000_000);
-const POOL: usize = 1 << 21;
+const POOL: u64 = 1 << 21;
 const DIR: &str = "shard-0";
 const RING: &str = "shard-0/ring";
 /// Where a header block keeps its version, its `body_max`, its tail offset, its tail
@@ -497,7 +497,7 @@ where
 
 /// A pool with the budget of a test's shard.
 fn pool() -> Pool {
-    let config = block::Config { budget: POOL };
+    let config = block::Config::new(POOL).expect("the budget fits");
     Pool::new(config.clone(), Heap::new(config.reservation()))
 }
 
@@ -1823,7 +1823,7 @@ where
 
 /// A buffer config for the ring in `dir` on the files of `node`.
 fn node_config(node: &sim::node::Node, tasks: Tasks, dir: &str) -> Config {
-    let config = block::Config { budget: POOL };
+    let config = block::Config::new(POOL).expect("the budget fits");
     let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
     Config {
         files: node.files(),
@@ -3751,6 +3751,108 @@ fn a_buffer_prints_whether_it_idles_and_no_pointer() {
     });
 }
 
+/// A waker drops after the borrow of the state ends: a `Commit` and an `End` drop it
+/// in a poll that replaces it and in their own drop. The waker holds an `End`, whose
+/// drop borrows the state.
+#[test]
+fn a_waker_drops_after_the_borrow_of_the_state() {
+    let (mut sim, node) = create_node(143);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = node_config(&node, tasks, DIR);
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        buffer
+            .append([entry(1, a, Path::Live, 0, 3, Some(30), Parts::default())])
+            .expect("queues");
+        drop_wakers(&buffer, buffer.committed());
+        drop_wakers(&buffer, buffer.ended());
+        assert_eq!(buffer.committed().await, Ok(()));
+    })
+    .expect("the buffer ends");
+}
+
+/// The commit task drops each waker of an `End` at its end after the borrow of the
+/// state ends. The waker holds an `End`, whose drop borrows the state.
+#[test]
+fn a_waker_drops_at_the_end_after_the_borrow_of_the_state() {
+    let (mut sim, node) = create_node(145);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = node_config(&node, tasks, DIR);
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let mut end = pin!(buffer.ended());
+        let waker = waker::holding(buffer.ended());
+        assert!(
+            end.as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        let other = buffer.ended();
+        drop(buffer);
+        assert_eq!(other.await, Ok(()));
+    })
+    .expect("the buffer ends");
+}
+
+/// The commit task drops each waker of a `Commit` that it wakes after the borrow of
+/// the state ends. The waker holds an `End`, whose drop borrows the state.
+#[test]
+fn a_waker_drops_at_the_commit_after_the_borrow_of_the_state() {
+    let (mut sim, node) = create_node(146);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = node_config(&node, tasks, DIR);
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        buffer
+            .append([entry(1, a, Path::Live, 0, 3, Some(30), Parts::default())])
+            .expect("queues");
+        let mut commit = pin!(buffer.committed());
+        let waker = waker::holding(buffer.ended());
+        assert!(
+            commit
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        assert_eq!(buffer.committed().await, Ok(()));
+        assert_eq!(commit.await, Ok(()));
+    })
+    .expect("the buffer ends");
+}
+
+/// Polls `waiter` with a waker that holds an `End` of `buffer`, then with a no-op
+/// waker, then with one more such waker, and drops `waiter`.
+fn drop_wakers<F: Future>(buffer: &Buffer, waiter: F) {
+    let mut waiter = pin!(waiter);
+    let waker = waker::holding(buffer.ended());
+    assert!(
+        waiter
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    let noop = Waker::noop();
+    assert!(
+        waiter
+            .as_mut()
+            .poll(&mut Context::from_waker(noop))
+            .is_pending()
+    );
+    let waker = waker::holding(buffer.ended());
+    assert!(
+        waiter
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+}
+
 /// `End`s polled from other tasks and dropped while the buffer is held keep no
 /// waker.
 #[test]
@@ -3882,11 +3984,6 @@ fn a_commit_polled_with_new_wakers_keeps_the_last_one() {
 }
 
 /// The drop of a polled `Commit` leaves the waker of another, and the commit wakes it.
-///
-/// No test checks that a `Commit` or an `End` drops a waker after the borrow of the
-/// state ends, in a poll or in its own drop. Only a waker that holds a `Commit` or an
-/// `End` can see the order, and such a waker is not `Send`, so safe code cannot make
-/// it.
 #[test]
 fn a_dropped_commit_keeps_the_wakers_of_others() {
     let (mut sim, node) = create_node(134);
@@ -4322,7 +4419,7 @@ fn a_drop_during_a_commit_ends_the_task_after_the_next_commit() {
 fn a_record_over_the_largest_block_of_the_pool_is_recovered() {
     run(101, |mut shard| async move {
         let parts_pool = Rc::clone(&shard.pool);
-        let config = block::Config { budget: 96 << 10 };
+        let config = block::Config::new(96 << 10).expect("the budget fits");
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), 80 << 10);
@@ -4356,7 +4453,7 @@ fn a_record_over_the_largest_block_of_the_pool_is_recovered() {
 #[test]
 fn an_open_with_no_largest_block_free_fails_and_the_next_recovers() {
     run(143, |mut shard| async move {
-        let config = block::Config { budget: 640 << 10 };
+        let config = block::Config::new(640 << 10).expect("the budget fits");
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), 512 << 10);
@@ -4401,9 +4498,10 @@ fn an_entry_over_the_largest_pool_block_is_large() {
         let over = Parts::from([shard.block(largest), shard.block(1)]);
         let more = Parts::from([shard.block(largest), shard.block(2)]);
         let fits = Parts::from(shard.block(largest));
-        let config = block::Config {
-            budget: block::footprint(largest),
-        };
+        let config = block::Config::new(
+            u64::try_from(block::footprint(largest)).expect("a usize fits in a u64"),
+        )
+        .expect("the budget fits");
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), largest);
@@ -4460,7 +4558,7 @@ fn an_open_with_an_entry_over_the_largest_pool_block_fails() {
         buffer.committed().await.expect("commits");
         drop(buffer);
         let larger = Rc::clone(&shard.pool);
-        let config = block::Config { budget: 1 << 17 };
+        let config = block::Config::new(1 << 17).expect("the budget fits");
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         let opened = shard.open(ring, &mut Slots::new()).await;

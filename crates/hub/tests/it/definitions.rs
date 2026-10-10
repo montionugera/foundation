@@ -579,9 +579,9 @@ async fn reopen(
     tasks: env::tasks::Tasks,
     mesh: clock::Reader,
 ) -> hub::Hub {
-    let budget = block::Config {
-        budget: super::POOL,
-    };
+    let budget =
+        block::Config::new(u64::try_from(super::POOL).expect("a usize fits in a u64"))
+            .expect("the budget fits");
     let pool = std::rc::Rc::new(block::Pool::new(
         budget.clone(),
         block::Heap::new(budget.reservation()),
@@ -601,12 +601,14 @@ async fn reopen(
     let buffer = buffer::Buffer::open(ring, interner.slots())
         .await
         .expect("opens");
-    let home = home::Shard::new(home::Config {
+    let home = home::Shard::open(home::Config {
         shard: 0,
         buffer,
         clock: mesh.clone(),
         limits: super::LIMITS,
-    });
+    })
+    .await
+    .expect("opens");
     hub::Hub::new(hub::Config {
         home,
         interner,
