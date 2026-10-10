@@ -2962,7 +2962,8 @@ mod tests {
             .expect("the run after the cut ends");
 
         assert_eq!(*refusals.lock().expect("no panic"), [None]);
-        // The ring keeps the slots of the first run, where the status index took 0.
+        // The restart gives slots in the order of the ring's entries, and the status
+        // index's come first.
         let slot = channel::Slot::new(1);
         let refusal = Refusal::Reserved;
         assert_eq!(other, [hub::home::Outcome::Refused { slot, refusal }]);
