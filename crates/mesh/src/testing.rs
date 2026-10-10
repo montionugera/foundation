@@ -1239,7 +1239,7 @@ mod tests {
 
     proptest::proptest! {
         // The oracle of `mesh_log_dir`: an open of the files that an open leaves reads
-        // the same log.
+        // the same log, and the files are a fixed point after two opens.
         #[test]
         fn a_scan_of_the_files_a_scan_leaves_gives_them(
             records in 0_u64..6,
@@ -1272,6 +1272,8 @@ mod tests {
             seal_log_dir(&mut dir);
             if let Ok(first) = scan_log_dir(&dir) {
                 let second = scan_log_dir(&first.files).unwrap();
+                let third = scan_log_dir(&second.files).unwrap();
+                proptest::prop_assert_eq!(third, second.clone());
                 proptest::prop_assert_eq!(
                     (second.hard, second.entries),
                     (first.hard, first.entries)

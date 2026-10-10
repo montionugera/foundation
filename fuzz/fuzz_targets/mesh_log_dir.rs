@@ -1,5 +1,6 @@
-//! The open of a mesh log directory never panics, and an open of the files that it
-//! leaves reads the same hard state and entries.
+//! The open of a mesh log directory never panics, an open of the files that it leaves
+//! reads the same hard state and entries, and a third open leaves the files that the
+//! second left.
 //!
 //! The target seals each input before the open: it writes the checks of each record,
 //! so a change to a header or a body still reaches the rules of the scan.
@@ -17,5 +18,8 @@ fuzz_target!(|bytes: &[u8]| {
             .expect("an open refused the files that an open left");
         assert_eq!(second.hard, first.hard, "the hard state changed");
         assert_eq!(second.entries, first.entries, "the entries changed");
+        let third = mesh::testing::scan_log_dir(&second.files)
+            .expect("an open refused the files that an open left");
+        assert_eq!(third.files, second.files, "the files changed after two opens");
     }
 });
