@@ -226,6 +226,11 @@ async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
         let parted = cut_send(clock, pin!(sender.send_parts(block, &parts))).await;
         if round >= WARMUP {
             assert_eq!(
+                sent,
+                [4, 1],
+                "a send that the window cuts keeps its parts list"
+            );
+            assert_eq!(
                 parted,
                 [sent[0] + 1, sent[1]],
                 "a stretch that the window takes in parts, over send: the copy of \
