@@ -295,6 +295,11 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
 /// The failure of `error`, an error that no budget causes, in the data directory
 /// `dir`.
 fn failure(dir: &Path, error: &node::Error) -> Failure {
+    if let Some(error @ env::files::Error::Io { code, .. }) = error.files()
+        && refused(*code)
+    {
+        return unwritable(dir, error);
+    }
     let data = dir.display();
     let (code, message, fix) = match error {
         node::Error::Directory(env::files::Error::Busy { .. }) => (
@@ -302,11 +307,6 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             format!("another node runs in {data}"),
             "Stop that node, or give another data directory with `--data`".to_owned(),
         ),
-        node::Error::Directory(error @ env::files::Error::Io { code, .. })
-        | node::Error::Buffer {
-            error: buffer::Error::Files(error @ env::files::Error::Io { code, .. }),
-            ..
-        } if refused(*code) => return unwritable(dir, error),
         node::Error::Unnamed => (
             UNNAMED,
             format!("the data directory {data} holds no node"),
@@ -704,10 +704,12 @@ mod tests {
                 core: 2,
                 error: buffer::Error::Files(io("shard-2/ring", code)),
             };
+            let log = mesh::log::Error::Files(io("mesh/log/log-0", code));
             let reason = io::Error::from_raw_os_error(code);
             for (error, file) in [
                 (node::Error::Directory(io("node.key", code)), "node.key"),
                 (ring, "shard-2/ring"),
+                (node::Error::Mesh(mesh::Error::Log(log)), "mesh/log/log-0"),
             ] {
                 assert_eq!(
                     of(&error),

@@ -7,6 +7,7 @@ mod admin;
 #[doc(hidden)]
 pub mod bench;
 mod budget;
+mod cause;
 mod directory;
 #[cfg(feature = "sim")]
 #[doc(hidden)]
@@ -1121,6 +1122,34 @@ pub enum Error {
     /// The file `budget` in the data directory does not hold budgets that a node
     /// wrote. The node does not write over it.
     Budget,
+}
+
+impl Error {
+    /// The failed file call that caused this error, or `None` when no file call
+    /// caused it.
+    #[must_use]
+    pub fn files(&self) -> Option<&env::files::Error> {
+        match self {
+            Self::Directory(error) => Some(error),
+            Self::Buffer { error, .. } => cause::buffer(error),
+            Self::Blob(error) => cause::blob(error),
+            Self::Mesh(error) => cause::mesh(error),
+            Self::Group(stopped) => cause::stopped(stopped),
+            Self::Start(_)
+            | Self::Panicked(_)
+            | Self::Memory { .. }
+            | Self::Shards { .. }
+            | Self::Disk { .. }
+            | Self::Transport(_)
+            | Self::Key
+            | Self::Admin
+            | Self::Port { .. }
+            | Self::Name
+            | Self::Renamed { .. }
+            | Self::Unnamed
+            | Self::Budget => None,
+        }
+    }
 }
 
 impl fmt::Display for Error {

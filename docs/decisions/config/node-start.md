@@ -24,13 +24,19 @@
   `node.name`, `node.budget`, `node.disk`, `node.memory` (NODE SETTINGS), and
   `node.failed`. `node.data` is "this user cannot write the data directory":
   `os::Error::Dir`, and each `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or
-  `EROFS`, in `node::Error::Directory` or in the `buffer::Error::Files` of
-  `node::Error::Buffer`. Its message is "cannot write the data directory {data}:
-  {error}", and its fix "Let this user make and write {data} and each file in it, or
-  give another directory with `--data`". Each other `Directory` error but `Busy`, and
-  each buffer error that neither `node.data` nor NODE SETTINGS (`Pool`) names, is
-  `node.failed`. Lost: `node.data` for the claim of `lock` alone, which leaves a ring
-  that the user cannot write on `node.failed`.
+  `EROFS` that `node::Error::files` gives: the failed file call of a `Directory`,
+  `Buffer`, `Blob`, `Mesh`, or `Group` error. Its message is "cannot write the data
+  directory {data}: {error}", and its fix "Let this user make and write {data} and each
+  file in it, or give another directory with `--data`". Each other `Directory` error
+  but `Busy`, and each buffer error that neither `node.data` nor NODE SETTINGS (`Pool`)
+  names, is `node.failed`. Lost: `node.data` for the claim of `lock` alone, which
+  leaves a ring that the user cannot write on `node.failed`; `files` on each lower
+  error, four public items for one caller; a walk of `source()` with a downcast, type
+  erasure in which a lower error that gives no `source` hides its file call with no
+  failed test. Each match of `files` names each variant, so a new variant that holds a
+  file call fails to compile in `node`. Decided by `laptop.architect`
+  (2026-10-10T15:14:44Z,
+  https://github.com/synnaxlabs/foundation/issues/2282#issuecomment-6098971338).
   `Node::stopper` gives a `Stopper` that stops the node from another thread. A stop
   after the node ended does nothing. Lost: a line that `node` writes itself, a second
   owner of the output form; an entry of the table with a flag that each of its four
