@@ -57,7 +57,9 @@ pub(crate) fn addresses(bound: Vec<transport::Address>) -> Addresses {
         .filter(|&address| match Addresses::new(vec![address]) {
             Ok(_) => true,
             Err(Invalid::Scoped { .. }) => false,
-            Err(Invalid::Count { .. }) => unreachable!("invariant: a card holds one"),
+            Err(Invalid::Count { count }) => {
+                unreachable!("invariant: a card holds one address, not {count}")
+            }
         })
         .collect();
     Addresses::new(held)
