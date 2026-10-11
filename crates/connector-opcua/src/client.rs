@@ -150,8 +150,8 @@ impl Client {
     /// Closes the session and the connection of the client, and waits until the
     /// connection is closed. When the server has not answered the request that makes
     /// the session, it waits for that answer or for its request timeout first. A client
-    /// that lost its connection sends no CloseSession, so its session stays on the
-    /// server until it times out.
+    /// that lost its connection cannot close its session, which stays on the server
+    /// until it times out.
     pub(crate) async fn close(self) {
         // A CloseSession sent before the CreateSession answer has no session token, so
         // the server keeps the session that it makes.
