@@ -248,6 +248,14 @@ mod tests {
             ("", "#[macro_export]\nmacro_rules! a { () => {}; }"),
             ("", "a!();"),
             ("", "use a::B;"),
+            ("", "const A: u8 = 1;"),
+            ("", "static A: u8 = 1;"),
+            ("", "type A = u8;"),
+            ("", "union A { b: u8 }"),
+            ("", "trait A = B;"),
+            ("", "extern crate a;"),
+            ("", "impl A { a!(); }"),
+            ("", "unsafe extern \"C\" { a!(); }"),
         ];
         for (old, new) in pairs {
             assert!(!changed(old, new), "{old:?} to {new:?}");
