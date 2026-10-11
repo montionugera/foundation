@@ -451,8 +451,12 @@
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
   lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
   options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 needs the port before it builds the URL of its server: with the first
-  such owner, `Manager::listening` also gives the address of its listener. Also lost:
+  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
+  until a listen open takes it, and `Server::start` makes the URL of its server from
+  that port. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
   one constructor with an `Option<Listener>`, which a client gives as a literal `None`
   (`docs/claude/rust.md`; `laptop.director`,
   https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089322178, 2026-10-09
@@ -518,10 +522,14 @@
   `Server::close` panics before the stop when its manager does not hold the loop of
   the server: approved by `laptop.architect-2` at `d6d834286`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
-  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it
-  makes the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
+  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it makes
+  the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
-  2026-10-11 10:14 UTC). The one function: asked by `laptop.architect-2`
+  2026-10-11 10:14 UTC). `host` is a `&CStr`, so `start` has no panic for a NUL: decided
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes `host: &str` of that comment. The one function:
+  asked by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
   2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
   code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
