@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 open62541 = ["dep:cc"]
-# Exposes `bench` to the `run` and `manager` benches, `fuzz` to the fuzz target, and
+# Exposes `bench` to the `run`, `manager`, and `client` benches, `fuzz` to the fuzz target, and
 # both to the `alloc` and `memory` tests.
 sim = ["open62541"]
 
@@ -48,6 +48,11 @@ test = true
 
 [[bench]]
 name = "manager"
+harness = false
+test = true
+
+[[bench]]
+name = "client"
 harness = false
 test = true
 

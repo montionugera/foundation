@@ -6,7 +6,10 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-use connector_opcua::bench::{Client, Manager};
+use std::future::{Future as _, poll_fn};
+use std::pin::pin;
+
+use connector_opcua::bench::{Client, Manager, Server};
 use sim::Sim;
 use types::time::Span;
 
@@ -20,6 +23,7 @@ fn main() {
     the_fuzz_round_trip_allocates_for_each_step();
     a_failed_decode_stops_the_round_trip();
     a_read_through_the_manager_allocates_a_fixed_count();
+    a_read_of_a_client_allocates_a_fixed_count();
 }
 
 fn sim() -> (Sim, env::clock::Clock) {
@@ -129,4 +133,40 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
             assert_eq!(counts, [4, 5, 2, 0], "{idle} idle, read {read}");
         }
     }
+}
+
+/// The allocations in the polls of reads 2 to 100 of one client. The server runs on
+/// its own manager, outside the polls.
+fn client_reads() -> Vec<u64> {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &Server| {
+            let mut client = server.connect().await;
+            let mut counts = Vec::new();
+            for _ in 1..=100 {
+                let mut read = pin!(client.read());
+                let mut count = 0;
+                poll_fn(|cx| {
+                    let (poll, allocations) =
+                        ALLOCATOR.count(|| read.as_mut().poll(cx));
+                    count += allocations;
+                    poll
+                })
+                .await;
+                counts.push(count);
+            }
+            client.close().await;
+            counts.split_off(1)
+        };
+        Server::scope(node.clock(), node.net(), address, body).await
+    };
+    sim.run_on(&node, run).expect("the run ends")
+}
+
+/// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
+/// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
+fn a_read_of_a_client_allocates_a_fixed_count() {
+    assert_eq!(client_reads(), [7; 99], "reads 2 to 100");
 }
