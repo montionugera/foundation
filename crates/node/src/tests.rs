@@ -15,6 +15,7 @@ use secret::seal::Opener;
 use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
+mod address;
 mod region;
 
 struct Run {
@@ -831,7 +832,8 @@ mod buffer {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let shards = ["shard-0", "shard-1"];
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
         ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
         for shard in shards {
@@ -1107,8 +1109,9 @@ mod buffer {
             assert_eq!(sim.run(), Ok(()), "at {after:?}");
             assert_eq!(node.join(), Ok(()), "at {after:?}");
             let mut listed = listed(&mut sim, &host, "");
-            let late = ["budget", "node.key"].map(PathBuf::from);
-            // Shard 0 keeps the budgets, then reads the key, once each ring has opened.
+            let late = ["budget", "node.key", "address"].map(PathBuf::from);
+            // Shard 0 keeps the budgets, then reads the key, then writes `address`,
+            // once each ring has opened.
             if listed.contains(&late[0]) {
                 listed.retain(|name| !late.contains(name));
                 assert_eq!(listed, all, "at {after:?}");
@@ -1372,6 +1375,7 @@ mod directory {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
         let made = [
+            "address",
             "budget",
             "lock",
             "name",
@@ -1486,8 +1490,8 @@ mod directory {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", &name,
-            "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            &name, "shards-2",
         ];
         assert_eq!(listed, made.map(PathBuf::from));
     }
@@ -1511,8 +1515,8 @@ mod directory {
             .expect("the run ends");
             assert_eq!(run_on(&mut sim, &host), Ok(()), "{name}");
             let mut made = [
-                "budget", "lock", "name", "node.key", "shard-0", "shard-1", &name,
-                "shards-2",
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                &name, "shards-2",
             ];
             made.sort_unstable();
             let made = made.map(PathBuf::from);
@@ -1954,7 +1958,8 @@ mod lock {
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(first.join(), Ok(()));
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
         ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
     }
@@ -1982,7 +1987,8 @@ mod lock {
             assert_eq!(joined[1 - claimed], Err(busy()), "seed {seed}");
             seen[claimed] = true;
             let made = [
-                "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                "shards-2",
             ];
             let made = made.map(PathBuf::from);
             assert_eq!(listed(&mut sim, &host, ""), made, "seed {seed}");
@@ -2219,6 +2225,12 @@ mod hub {
         codec::decode(entries[entry].data_type, count, bytes, &mut out)
             .expect("decodes");
         out
+    }
+
+    /// The seq of the first sample of the group of `key` in `received`.
+    pub(super) fn seq(received: &Received<'_>, key: u128) -> u64 {
+        let group = received.set().entries()[entry(received.set(), key)].group;
+        received.view().range(group).expect("a range").seq
     }
 
     /// A node of `cores` shards on a new host, with the host.
@@ -3990,7 +4002,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_740_641;
+        const WRITE: i64 = 1_793_706_886;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -4221,13 +4233,9 @@ mod port {
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let endpoint = Endpoint {
-                    part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Opening::Given(region(&members)),
-                    clock: own.clock(),
-                    entropy: own.entropy(),
-                    net: own.net(),
-                };
+                let (opening, clock) = (Opening::Given(region(&members)), own.clock());
+                let endpoint =
+                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -4994,7 +5002,7 @@ mod port {
             let kept = (vec![(0, refused())], vec![]);
             let fresh = (vec![], vec![(0, refused())]);
             let mut outcomes = Vec::new();
-            for seed in 0..8 {
+            for seed in 0..32 {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
@@ -5257,7 +5265,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5267,7 +5275,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..2 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -5770,13 +5778,9 @@ mod port {
                     opener: Opener::from_bytes(SEAL),
                 };
                 let definitions = founding.definitions.clone();
-                let endpoint = Endpoint {
-                    part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Opening::Given(founding),
-                    clock: own.clock(),
-                    entropy: own.entropy(),
-                    net: own.net(),
-                };
+                let (opening, clock) = (Opening::Given(founding), own.clock());
+                let endpoint =
+                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -6472,19 +6476,17 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             // `state` running, ending, then stopped; `class` none, then config.
-            assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
+            assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
         }
 
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
         /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader and the run of the start race, so a seed can
-        /// hide a part of that run, and the test asserts that one seed sees it whole.
+        /// one that keeps it. The reader opens after the run of the start, which no
+        /// reader sees: its open and the open of that run wait for the same home. The
+        /// seq of the first frame that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
-            let run = [(0, 0), (3, 1), (2, 1)];
-            let all = [run, run, run].concat();
-            let mut whole = false;
             for seed in 0..16 {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
@@ -6499,6 +6501,7 @@ mod port {
                 assert_eq!(sim.run(), Ok(()));
                 assert_eq!(node.join(), Ok(()));
                 let node = start(&host, founding);
+                assert_eq!(sim.run_for(TEN), Ok(()));
                 let read = read_status(&node, &definitions);
                 assert_eq!(sim.run_for(TEN), Ok(()));
                 let other = text("other", &[]);
@@ -6514,11 +6517,16 @@ mod port {
                 assert_eq!(sim.run(), Ok(()));
                 assert_eq!(node.join(), Ok(()));
                 let read = read.lock().unwrap();
-                let hidden = all.len().saturating_sub(read.len()).min(run.len());
-                assert_eq!(*read, all[hidden..], "seed {seed}");
-                whole |= hidden == 0;
+                let runs = [
+                    (6, 0, 0),
+                    (7, 3, 1),
+                    (8, 2, 1),
+                    (9, 0, 0),
+                    (10, 3, 1),
+                    (11, 2, 1),
+                ];
+                assert_eq!(*read, runs, "seed {seed}");
             }
-            assert!(whole, "no seed sees the run of the start");
         }
 
         /// A connector that an apply moves from another member to this node keeps its
@@ -6564,13 +6572,13 @@ mod port {
             assert_eq!(error.to_string(), "thread shard-0 panicked");
         }
 
-        /// Reads each `state` and `class` of `plant.influx` that `node` writes, from a
-        /// task on `node`, by the keys of `definitions`.
+        /// Reads each seq, `state`, and `class` of `plant.influx` that `node` writes,
+        /// from a task on `node`, by the keys of `definitions`.
         fn read_status(
             node: &Node,
             definitions: &BTreeMap<Name, Definition>,
-        ) -> Arc<Mutex<Vec<(u8, u8)>>> {
-            use super::super::hub::bytes;
+        ) -> Arc<Mutex<Vec<(u64, u8, u8)>>> {
+            use super::super::hub::{bytes, seq};
             let [state, class] = ["state", "class"]
                 .map(|name| key_of(definitions, &format!("influx.status.{name}")));
             let read = Arc::new(Mutex::new(Vec::new()));
@@ -6586,9 +6594,13 @@ mod port {
                 };
                 let mut reader = hub.reader(config).await.expect("the reader opens");
                 while let Ok(received) = reader.next().await {
+                    let first = seq(&received, state.as_u128());
                     let [state, class] =
                         [state, class].map(|key| bytes(&received, key.as_u128()));
-                    out.lock().unwrap().extend(state.into_iter().zip(class));
+                    let seqs = (first..).zip(state).zip(class);
+                    out.lock()
+                        .unwrap()
+                        .extend(seqs.map(|((seq, s), c)| (seq, s, c)));
                 }
             });
             read

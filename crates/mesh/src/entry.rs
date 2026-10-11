@@ -72,10 +72,10 @@ fn wide(len: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use raft::{Change, Grant, Position, Proof, Signature, Term, Voters};
+    use raft::{Change, Grant, Proof, Signature, Voters};
 
     use super::*;
-    use crate::common::key;
+    use crate::common::{at, key};
 
     fn change(signature: Option<Signature>) -> Entry {
         let voters = Voters {
@@ -88,10 +88,7 @@ mod tests {
             voters: [(key(1), Some(Signature([7; 64])))].into(),
         };
         Entry {
-            at: Position {
-                term: Term(3),
-                index: 4,
-            },
+            at: at(3, 4),
             data: Data::Voters(Change {
                 voters,
                 votes: proof,

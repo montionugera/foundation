@@ -236,7 +236,7 @@ fn a_reopen_with_another_prefix_is_refused() {
 fn a_reopen_with_another_record_of_a_member_is_refused() {
     let (mut sim, node, region) = founded(0);
     let mut given = region.clone();
-    given.members = vec![common::member(1), record(2, 2, 9), common::member(3)];
+    given.members = vec![common::member(1), member_signed(2, 2, 9), common::member(3)];
     let error = refused(&mut sim, &node, given.clone());
     assert_eq!(error, mismatch(&region, &given));
     let text = format!(
