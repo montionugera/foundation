@@ -80,7 +80,11 @@
   its reader again only after its old run returned, so an in connector that its apply
   adds can write before that open, and those frames do not come again before #274
   (`laptop.architect-2`, 2026-10-11T12:26:28Z:
-  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109004938). After a
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109004938). Lost: a
+  share from the apply for a changed connector, or for a name added again. Its open
+  starts only after its old run returned, so a task that does not end at the cancel then
+  holds each first run on the node (`laptop.architect-2`, 2026-10-11T12:32:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109054993). After a
   run returns, the supervisor waits, with no timeout, until each task that the run
   spawned through `Context::tasks` ended, and only then starts its backoff. A task that
   does not end at the cancel is a defect of its kind (`laptop.architect-2`,
