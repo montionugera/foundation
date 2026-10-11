@@ -32,6 +32,7 @@ hub = { path = "../hub", features = ["sim"] }
 proptest = { workspace = true }
 sim = { path = "../sim" }
 spec = { path = "../spec" }
+wire = { path = "../wire" }
 
 [[test]]
 name = "alloc"

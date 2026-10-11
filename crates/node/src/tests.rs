@@ -571,7 +571,18 @@ async fn take_lock(host: &sim::node::Node) -> (env::files::File, bool) {
 /// A host of `sim` with `cores` cores, whose data directory holds the key [`OWN`]
 /// and the private key [`KEY`].
 fn keyed(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
-    let host = host(sim, cores);
+    keyed_on(
+        sim,
+        sim::node::Config {
+            cores: NonZeroUsize::new(cores).unwrap(),
+            ..sim::node::Config::default()
+        },
+    )
+}
+
+/// As [`keyed`], on a host of `config`.
+fn keyed_on(sim: &mut sim::Sim, config: sim::node::Config) -> sim::node::Node {
+    let host = sim.node(config);
     let identity = Identity {
         key: OWN,
         private_key: KEY,
@@ -2584,10 +2595,12 @@ mod port {
         Rc::new(block::Pool::new(config, memory))
     }
 
-    /// A part of a port at a free address of `host`, and a pool of 1 MiB to send on.
-    fn port(host: &sim::node::Node) -> (Rc<block::Pool>, transport::port::Part) {
+    /// A part of a port of `host` at `at`, and a pool of 1 MiB to send on.
+    fn port(
+        host: &sim::node::Node,
+        at: SocketAddr,
+    ) -> (Rc<block::Pool>, transport::port::Part) {
         let pool = pool();
-        let at = SocketAddr::new(host.addresses()[0], 0);
         let bound = transport::Port::bind(&host.net(), at).expect("a port");
         let part = bound.split(NonZeroUsize::MIN).pop().expect("one part");
         (pool, part)
@@ -2599,7 +2612,18 @@ mod port {
         tasks: env::tasks::Tasks,
         key: PrivateKey,
     ) -> (Transport, Rc<block::Pool>) {
-        let (pool, part) = port(host);
+        let at = SocketAddr::new(host.addresses()[0], 0);
+        transport_at(host, tasks, key, at)
+    }
+
+    /// A transport on `host` with `key`, at `at`, with its pool.
+    fn transport_at(
+        host: &sim::node::Node,
+        tasks: env::tasks::Tasks,
+        key: PrivateKey,
+        at: SocketAddr,
+    ) -> (Transport, Rc<block::Pool>) {
+        let (pool, part) = port(host, at);
         let config = transport::Config {
             private_key: key,
             message_bytes_max: NonZeroUsize::new(1 << 16).unwrap(),
@@ -3851,6 +3875,7 @@ mod port {
     }
 
     mod mesh {
+        use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -4333,59 +4358,279 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
-        /// The node holds 256 sessions of peers outside the region. It closes the next
-        /// with the code of a refused session, admits a member past them, and admits a
-        /// peer again once one of the 256 ends.
+        /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
+        fn shard<F: Future<Output = ()> + 'static>(
+            host: &sim::node::Node,
+            act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
+        ) {
+            let shard = env::shards::Config {
+                name: "peer".into(),
+                core: None,
+            };
+            let own = host.clone();
+            let started = host.shards().start(shard, move |tasks| act(own, tasks));
+            drop(started.expect("the peer starts"));
+        }
+
+        /// `count` sessions that `program` dials to the node [`OWN`] at `at`, in order.
+        async fn create_sessions(
+            program: &transport::Client,
+            at: &[Address],
+            count: usize,
+        ) -> Vec<transport::Session> {
+            let mut held = Vec::new();
+            for _ in 0..count {
+                held.push(program.dial(KEY.public(), at).await.expect("a session"));
+            }
+            held
+        }
+
+        /// The index and the error of each of `sessions` that closes, in the order that
+        /// they close.
+        fn closings(
+            sessions: &[transport::Session],
+            tasks: &env::tasks::Tasks,
+        ) -> Rc<RefCell<Vec<(usize, transport::Error)>>> {
+            let closed = Rc::new(RefCell::new(Vec::new()));
+            for (index, session) in sessions.iter().enumerate() {
+                let (session, out) = (session.clone(), Rc::clone(&closed));
+                tasks.spawn(async move {
+                    let error = session.closed().await;
+                    out.borrow_mut().push((index, error));
+                });
+            }
+            closed
+        }
+
+        /// The error of a session that the node closed to free its place.
+        fn refused() -> transport::Error {
+            let code = Code(wire::session::REFUSED);
+            transport::Error::PeerClosed { code }
+        }
+
+        /// The error of [`sent_clock`] on a session that the node admitted.
+        fn admitted() -> transport::Error {
+            let code = Code(wire::header::REJECTED);
+            transport::Error::Stopped { code }
+        }
+
+        /// Runs `sim` for a minute, then stops `node` and runs `sim` to its end.
+        fn run_and_stop(sim: &mut sim::Sim, node: &Node) {
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+        }
+
+        /// 256 programs hold each place for peers outside the region. A new program
+        /// gets a session, the session of the oldest closes with the code of a
+        /// refused session, and the other 255 stay. The next program closes the
+        /// second oldest.
         #[test]
-        fn refuses_a_session_over_256_of_peers_outside_the_region() {
+        fn the_oldest_place_frees_for_a_new_peer_at_the_bound() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let node = start(&hosts[0], region(&pair(&hosts)));
             let listen = listen(&hosts[0]);
             let out = Arc::new(Mutex::new(None));
             let seen = Arc::clone(&out);
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = hosts[1].clone();
-            let started = hosts[1].shards().start(shard, move |tasks| async move {
+            shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (program, pool) = program(&own, tasks.clone());
-                let mut held = Vec::new();
-                for _ in 0..256 {
-                    let session = program.dial(KEY.public(), &at).await;
-                    held.push(session.expect("a session"));
+                let mut held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                let (mut sent, mut after) = (Vec::new(), Vec::new());
+                for _ in 0..2 {
+                    let new = program.dial(KEY.public(), &at).await.expect("a session");
+                    sent.push(sent_clock(&new, &pool, &own).await);
+                    own.clock().sleep(Span::SECOND).await;
+                    after.push(closed.borrow().clone());
+                    held.push(new);
                 }
-                let over = program.dial(KEY.public(), &at).await;
-                let refused = over.expect("the handshake completes").closed().await;
-                let (node, node_pool) = transport(&own, tasks, OTHER.1);
-                let member = node.dial(KEY.public(), &at).await.expect("a session");
-                let of_member = sent_clock(&member, &node_pool, &own).await;
-                held.pop().expect("a held session").close(Code(0));
-                own.clock().sleep(Span::SECOND).await;
-                let again = program.dial(KEY.public(), &at).await.expect("a session");
-                let of_program = sent_clock(&again, &pool, &own).await;
-                *seen.lock().unwrap() = Some((refused, of_member, of_program));
-                drop((held, member, again, node, program));
+                *seen.lock().unwrap() = Some((sent, after));
+                drop((held, program));
             });
-            drop(started.expect("the peer starts"));
-            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
+            run_and_stop(&mut sim, &node);
             assert_eq!(node.join(), Ok(()));
-            let (refused, of_member, of_program) =
+            let (sent, after) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, vec![admitted(), admitted()]);
+            let first = vec![(0, refused())];
+            let second = vec![(0, refused()), (1, refused())];
+            assert_eq!(after, vec![first, second]);
+        }
+
+        /// 256 programs fill the bound, then a member dials: it takes no place, so no
+        /// session closes. The next program closes the oldest program, and the
+        /// member's session stays.
+        #[test]
+        fn the_bound_closes_no_session_of_a_member() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                let (node, node_pool) = transport(&own, tasks.clone(), OTHER.1);
+                let member = node.dial(KEY.public(), &at).await.expect("a session");
+                let of_member = closings(std::slice::from_ref(&member), &tasks);
+                let sent_member = sent_clock(&member, &node_pool, &own).await;
+                let at_member = closed.borrow().clone();
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                let closed = (
+                    at_member,
+                    of_member.borrow().clone(),
+                    closed.borrow().clone(),
+                );
+                *seen.lock().unwrap() = Some((sent, sent_member, closed));
+                drop((held, new, member, node, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, sent_member, closed) =
                 out.lock().unwrap().take().expect("the peer ran");
-            let code = Code(wire::session::REFUSED);
-            assert_eq!(refused, transport::Error::PeerClosed { code });
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(of_member, transport::Error::Stopped { code });
-            assert_eq!(of_program, transport::Error::Stopped { code });
+            assert_eq!(sent, admitted());
+            assert_eq!(sent_member, admitted());
+            assert_eq!(closed, (vec![], vec![], vec![(0, refused())]));
+        }
+
+        /// A program that closes its session frees its place, so at the bound the
+        /// next program closes no session.
+        #[test]
+        fn a_peer_that_closes_its_session_frees_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let mut held = create_sessions(&program, &at, 256).await;
+                held.remove(100).close(Code(0));
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((held, new, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, closed) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(closed, vec![]);
+        }
+
+        /// A node outside the region that holds a place, and that is a member now,
+        /// frees its place and keeps its session: at the bound, no session closes. It
+        /// calls `Places::take`, since no path makes a node a member at run time until
+        /// the join of #336, so no session through `accept` can show it.
+        #[test]
+        fn a_peer_that_is_a_member_now_frees_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [
+                sim.node(sim::node::Config::default()),
+                sim.node(sim::node::Config::default()),
+            ];
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[0], move |own, tasks| async move {
+                let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
+                let now = Peer::Node(CLIENT.public());
+                let joined = Cell::new(false);
+                let mut places = route::Places::default();
+                let (mut sessions, mut holds) = (Vec::new(), Vec::new());
+                for _ in 0..257 {
+                    let session = transport.accept().await.expect("a session");
+                    let hold =
+                        places.take(&session, |peer| joined.get() && peer == now);
+                    assert!(hold.is_some());
+                    joined.set(joined.get() || session.peer() == now);
+                    holds.push(hold);
+                    sessions.push(session);
+                }
+                let closed = closings(&sessions, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some(closed.borrow().clone());
+                drop((holds, sessions, transport));
+            });
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, _) = program(&own, tasks.clone());
+                let first = create_sessions(&program, &at, 1).await;
+                let (node, _) = transport(&own, tasks, CLIENT);
+                let member = node.dial(KEY.public(), &at).await.expect("a session");
+                let held = create_sessions(&program, &at, 255).await;
+                own.clock().sleep(Span::MINUTE).await;
+                drop((first, member, held, program, node));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
+        }
+
+        /// A session whose hold drops leaves its place: at the bound, the place closes
+        /// only the sessions that still hold it. It calls `Places::take`, since through
+        /// `accept` a hold drops only as its session ends, and a close of an ended
+        /// session does nothing.
+        #[test]
+        fn a_session_whose_hold_drops_leaves_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [
+                sim.node(sim::node::Config::default()),
+                sim.node(sim::node::Config::default()),
+            ];
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[0], move |own, tasks| async move {
+                let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
+                let mut places = route::Places::default();
+                let left = transport.accept().await.expect("a session");
+                let hold = places.take(&left, |_| false);
+                let ended = transport.accept().await.expect("a session");
+                let kept = places.take(&ended, |_| false);
+                drop(hold);
+                let (mut sessions, mut holds) = (Vec::new(), Vec::new());
+                for _ in 0..256 {
+                    let session = transport.accept().await.expect("a session");
+                    holds.push(places.take(&session, |_| false));
+                    sessions.push(session);
+                }
+                let closed = closings(std::slice::from_ref(&left), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some(closed.borrow().clone());
+                drop((kept, holds, sessions, left, ended, transport));
+            });
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                let open = first.dial(KEY.public(), &at).await.expect("a session");
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let ended = second.dial(KEY.public(), &at).await.expect("a session");
+                ended.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let (program, _) = program(&own, tasks);
+                let held = create_sessions(&program, &at, 256).await;
+                own.clock().sleep(Span::MINUTE).await;
+                drop((open, ended, held, program, first, second));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
         }
 
         /// A node with no region: 255 programs and the node [`CLIENT`] fill the bound,
-        /// so a second node key is refused. Once [`CLIENT`] closes its session, its
-        /// place frees, and the second node key is admitted.
+        /// and the node of a second key closes the oldest program. [`CLIENT`] holds
+        /// one place by its key: once it closes its session, the next program closes
+        /// no session.
         #[test]
         fn a_node_outside_the_region_holds_one_place_by_its_key() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -4394,47 +4639,38 @@ mod port {
             let listen = listen(&hosts[0]);
             let out = Arc::new(Mutex::new(None));
             let seen = Arc::clone(&out);
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = hosts[1].clone();
-            let started = hosts[1].shards().start(shard, move |tasks| async move {
+            shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
-                let (program, _) = program(&own, tasks.clone());
-                let mut held = Vec::new();
-                for _ in 0..255 {
-                    held.push(
-                        program.dial(KEY.public(), &at).await.expect("a session"),
-                    );
-                }
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 255).await;
+                let closed = closings(&held, &tasks);
                 let (first, _) = transport(&own, tasks.clone(), CLIENT);
                 let placed = first.dial(KEY.public(), &at).await.expect("a session");
-                let (second, pool) = transport(&own, tasks, OTHER.1);
-                let over = second.dial(KEY.public(), &at).await;
-                let refused = over.expect("a handshake").closed().await;
+                let (second, second_pool) = transport(&own, tasks, OTHER.1);
+                let other = second.dial(KEY.public(), &at).await.expect("a session");
+                let of_other = sent_clock(&other, &second_pool, &own).await;
                 placed.close(Code(0));
                 own.clock().sleep(Span::SECOND).await;
-                let again = second.dial(KEY.public(), &at).await.expect("a session");
-                let admitted = sent_clock(&again, &pool, &own).await;
-                *seen.lock().unwrap() = Some((refused, admitted));
-                drop((held, again, first, second, program));
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let of_new = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() =
+                    Some((of_other, of_new, closed.borrow().clone()));
+                drop((held, other, new, first, second, program));
             });
-            drop(started.expect("the peer starts"));
-            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
+            run_and_stop(&mut sim, &node);
             assert_eq!(node.join(), Ok(()));
-            let (refused, admitted) = out.lock().unwrap().take().expect("the peer ran");
-            let code = Code(wire::session::REFUSED);
-            assert_eq!(refused, transport::Error::PeerClosed { code });
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(admitted, transport::Error::Stopped { code });
+            let (of_other, of_new, closed) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(of_other, admitted());
+            assert_eq!(of_new, admitted());
+            assert_eq!(closed, vec![(0, refused())]);
         }
 
-        /// 255 programs and one node outside the region fill the bound, and the next
-        /// program is refused. Once the peer's links drop every packet, its sessions
-        /// time out and free their places, and a later program is admitted.
+        /// A program on one host holds the oldest place, and 254 programs and one
+        /// node outside the region on another host fill the bound. Once that host's
+        /// links drop every packet, its sessions time out and free their places, so
+        /// a later program closes no session: the oldest stays.
         #[test]
         fn places_free_when_the_peers_outside_the_region_vanish() {
             const LATE: Span = Span::from_nanos(150_000_000_000);
@@ -4444,42 +4680,38 @@ mod port {
             let listen = listen(&hosts[0]);
             let attacker = sim.node(sim::node::Config::default());
             let late = sim.node(sim::node::Config::default());
-            let (refused, admitted) =
-                (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
-            let shard = || env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let (own, seen) = (attacker.clone(), Arc::clone(&refused));
-            let started = attacker.shards().start(shard(), move |tasks| async move {
+            let filled = Arc::new(AtomicBool::new(false));
+            let out = Arc::new(Mutex::new(None));
+            let done = Arc::clone(&filled);
+            shard(&attacker, move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
-                let (program, pool) = program(&own, tasks.clone());
+                own.clock().sleep(Span::SECOND).await;
+                let (program, _) = program(&own, tasks.clone());
                 let (outsider, _) = transport(&own, tasks, CLIENT);
-                let mut held = Vec::new();
-                for _ in 0..255 {
-                    held.push(
-                        program.dial(KEY.public(), &at).await.expect("a session"),
-                    );
-                }
+                let mut held = create_sessions(&program, &at, 254).await;
                 held.push(outsider.dial(KEY.public(), &at).await.expect("a session"));
-                let over = program.dial(KEY.public(), &at).await;
-                *seen.lock().unwrap() = Some(over.expect("a handshake").closed().await);
-                drop(pool);
+                done.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
                 drop((held, program, outsider));
             });
-            drop(started.expect("the peer starts"));
-            let (own, seen) = (late.clone(), Arc::clone(&admitted));
-            let started = late.shards().start(shard(), move |tasks| async move {
-                own.clock().sleep(LATE).await;
+            let seen = Arc::clone(&out);
+            shard(&late, move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
-                let (program, pool) = program(&own, tasks);
-                let again = program.dial(KEY.public(), &at).await.expect("a session");
-                *seen.lock().unwrap() = Some(sent_clock(&again, &pool, &own).await);
-                drop((again, program));
+                let (program, pool) = program(&own, tasks.clone());
+                let oldest = program.dial(KEY.public(), &at).await.expect("a session");
+                let closed = closings(std::slice::from_ref(&oldest), &tasks);
+                own.clock().sleep(LATE).await;
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((oldest, new, program));
             });
-            drop(started.expect("the late peer starts"));
             assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert!(
+                filled.load(Ordering::SeqCst),
+                "the attacker filled the bound"
+            );
             let cut = sim::link::Config {
                 loss: 1.0,
                 ..sim::link::Config::default()
@@ -4487,97 +4719,46 @@ mod port {
             sim.link(&attacker, &hosts[0], cut);
             sim.link(&hosts[0], &attacker, cut);
             assert_eq!(sim.run_for(LATE), Ok(()));
-            let code = Code(wire::session::REFUSED);
-            let refused = refused.lock().unwrap().take();
-            assert_eq!(refused, Some(transport::Error::PeerClosed { code }));
-            let code = Code(wire::header::REJECTED);
-            let admitted = admitted.lock().unwrap().take();
-            assert_eq!(admitted, Some(transport::Error::Stopped { code }));
+            let seen = out.lock().unwrap().take();
+            assert_eq!(seen, Some((admitted(), vec![])));
             drop(node);
         }
 
-        /// A node outside the region holds the 256th place, then dials again from a new
-        /// transport. The node's transport closes the old session, as the newer one
-        /// wins, so the new one takes the old one's place.
-        #[test]
-        fn a_node_outside_the_region_that_dials_again_at_the_bound_keeps_its_place() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-            let node = start(&hosts[0], region(&pair(&hosts)));
-            let listen = listen(&hosts[0]);
-            let attacker = sim.node(sim::node::Config::default());
-            let out = Arc::new(Mutex::new(None));
-            let seen = Arc::clone(&out);
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = attacker.clone();
-            let started = attacker.shards().start(shard, move |tasks| async move {
-                let at = [Address::Udp(listen)];
-                let (program, _) = program(&own, tasks.clone());
-                let mut held = Vec::new();
-                for _ in 0..255 {
-                    held.push(
-                        program.dial(KEY.public(), &at).await.expect("a session"),
-                    );
-                }
-                let (first, _) = transport(&own, tasks.clone(), CLIENT);
-                let old = first.dial(KEY.public(), &at).await.expect("a session");
-                own.clock().sleep(Span::SECOND).await;
-                let (second, pool) = transport(&own, tasks, CLIENT);
-                let new = second.dial(KEY.public(), &at).await.expect("a session");
-                let of_new = sent_clock(&new, &pool, &own).await;
-                let old_closed = old.closed().await;
-                *seen.lock().unwrap() = Some((old_closed, of_new));
-                drop((held, program, first, second, new));
-            });
-            drop(started.expect("the peer starts"));
-            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let (old_closed, of_new) =
-                out.lock().unwrap().take().expect("the peer ran");
-            assert_eq!(old_closed, transport::Error::PeerClosed { code: Code(0) });
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(of_new, transport::Error::Stopped { code });
-        }
-
-        /// A node outside the region holds the 256th place and dials again, while a
-        /// program dials too. A program refused while the old session holds the place
-        /// leaves it to the node's new session. When both arrive at once, exactly one
-        /// gets the place, since the transport closes the old session as the new one
-        /// arrives.
+        /// 255 programs and the old session of a node outside the region fill the
+        /// bound, and the node dials again while a program dials too. Both get a
+        /// session, and the program closes the oldest program. A redial after the
+        /// program's session keeps the node's place, so no other session closes.
+        /// When both arrive at once, the redial closes at most the second oldest.
         #[test]
         fn a_node_that_dials_again_at_the_bound_races_a_program_for_its_place() {
-            let admitted = Some(transport::Error::Stopped {
-                code: Code(wire::header::REJECTED),
-            });
-            let refused = Some(transport::Error::PeerClosed {
-                code: Code(wire::session::REFUSED),
-            });
+            let first = vec![(0, refused())];
+            let second = vec![(0, refused()), (1, refused())];
             for seed in 0..4 {
                 let seen = redial_with_program(seed, true);
-                assert_eq!(seen, (admitted.clone(), refused.clone()), "seed {seed}");
+                let want = (Some(admitted()), Some(admitted()), first.clone());
+                assert_eq!(seen, want, "seed {seed}");
             }
             for seed in 0..16 {
-                let seen = redial_with_program(seed, false);
-                let one = [
-                    (admitted.clone(), refused.clone()),
-                    (refused.clone(), admitted.clone()),
-                ];
-                assert!(one.contains(&seen), "seed {seed}: {seen:?}");
+                let (of_node, of_program, closed) = redial_with_program(seed, false);
+                assert_eq!(of_node, Some(admitted()), "seed {seed}");
+                assert_eq!(of_program, Some(admitted()), "seed {seed}");
+                let one = [first.clone(), second.clone()];
+                assert!(one.contains(&closed), "seed {seed}: {closed:?}");
             }
         }
 
-        /// What the new session of [`CLIENT`] and a program saw, when 255 programs and
-        /// the old session of [`CLIENT`] fill the bound. [`CLIENT`] dials again once
-        /// the program's session is done when `after`, else at the program's dial.
+        /// What the new session of [`CLIENT`] and a program saw, and each program
+        /// session that closed, when 255 programs and the old session of [`CLIENT`]
+        /// fill the bound. [`CLIENT`] dials again once the program's session is done
+        /// when `after`, else at the program's dial.
         fn redial_with_program(
             seed: u64,
             after: bool,
-        ) -> (Option<transport::Error>, Option<transport::Error>) {
+        ) -> (
+            Option<transport::Error>,
+            Option<transport::Error>,
+            Vec<(usize, transport::Error)>,
+        ) {
             let mut sim = sim::Sim::new(sim::Config {
                 seed,
                 ..sim::Config::default()
@@ -4586,25 +4767,22 @@ mod port {
             let node = start(&hosts[0], region(&pair(&hosts)));
             let listen = listen(&hosts[0]);
             let attacker = sim.node(sim::node::Config::default());
-            let (of_node, of_program) =
-                (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
-            let (seen_node, seen_program) =
-                (Arc::clone(&of_node), Arc::clone(&of_program));
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = attacker.clone();
-            let started = attacker.shards().start(shard, move |tasks| async move {
+            let (of_node, of_program, of_held) = (
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let (seen_node, seen_program, seen_held) = (
+                Arc::clone(&of_node),
+                Arc::clone(&of_program),
+                Arc::clone(&of_held),
+            );
+            shard(&attacker, move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (programs, _) = program(&own, tasks.clone());
                 let (late, late_pool) = program(&own, tasks.clone());
-                let mut held = Vec::new();
-                for _ in 0..255 {
-                    held.push(
-                        programs.dial(KEY.public(), &at).await.expect("a session"),
-                    );
-                }
+                let held = create_sessions(&programs, &at, 255).await;
+                let closed = closings(&held, &tasks);
                 let (first, _) = transport(&own, tasks.clone(), CLIENT);
                 let old = first.dial(KEY.public(), &at).await.expect("a session");
                 own.clock().sleep(Span::SECOND).await;
@@ -4623,14 +4801,174 @@ mod port {
                 }
                 let new = second.dial(KEY.public(), &at).await.expect("a session");
                 *seen_node.lock().unwrap() = Some(sent_clock(&new, &pool, &own).await);
+                own.clock().sleep(Span::SECOND).await;
+                *seen_held.lock().unwrap() = closed.borrow().clone();
                 own.clock().sleep(Span::MINUTE).await;
                 drop((held, programs, first, second, new, old));
             });
-            drop(started.expect("the peer starts"));
             assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
             drop(node);
             let of_node = of_node.lock().unwrap().take();
-            (of_node, of_program.lock().unwrap().take())
+            let of_held = of_held.lock().unwrap().clone();
+            (of_node, of_program.lock().unwrap().take(), of_held)
+        }
+
+        /// A node outside the region holds the oldest place with its old
+        /// session, then dials again from a new transport and closes the new session
+        /// at once. Then 256 programs dial. The old session must not outlive the
+        /// bound: it closes, as the newer session won, or as the oldest place.
+        #[test]
+        fn a_redial_that_ends_at_once_keeps_no_session_past_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, first_pool) = transport(&own, tasks.clone(), CLIENT);
+                let old = first.dial(KEY.public(), &at).await.expect("a session");
+                let of_old = closings(std::slice::from_ref(&old), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                dead.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let after_redial = of_old.borrow().clone();
+                let (program, _) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let old_closed = of_old.borrow().clone();
+                let sent_old = if old_closed.is_empty() {
+                    Some(sent_clock(&old, &first_pool, &own).await)
+                } else {
+                    None
+                };
+                *seen.lock().unwrap() =
+                    Some((after_redial, old_closed, closed.borrow().clone(), sent_old));
+                drop((held, program, first, second, old, dead));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (after_redial, old_closed, closed, sent_old) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(
+                (after_redial, old_closed, closed, sent_old),
+                (vec![], vec![(0, refused())], vec![], None),
+            );
+        }
+
+        /// 8 node keys outside the region each hold a session and send a
+        /// dead redial, then 512 programs dial. At most 256 sessions of peers outside
+        /// the region may stay open, so each old session of the 8 must close.
+        #[test]
+        fn redials_that_end_at_once_hold_no_session_over_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let mut keep = Vec::new();
+                let mut olds = Vec::new();
+                for n in 0..8u8 {
+                    let (first, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    let (second, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                    dead.close(Code(0));
+                    olds.push(old);
+                    keep.push((first, second, dead));
+                }
+                own.clock().sleep(Span::SECOND).await;
+                let of_olds = closings(&olds, &tasks);
+                let (program, _) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 512).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let open_programs = held.len() - closed.borrow().len();
+                let open_olds = olds.len() - of_olds.borrow().len();
+                *seen.lock().unwrap() = Some((open_olds, open_programs));
+                drop((held, program, olds, keep));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (open_olds, open_programs) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert!(
+                open_olds + open_programs <= 256,
+                "{open_olds} old node sessions and {open_programs} programs are open"
+            );
+        }
+
+        /// A node outside the region holds the oldest place, 255 programs fill the
+        /// bound, and the node dials again from a new transport. The transport of the
+        /// started node closes the old session as the new one arrives. When the old
+        /// session still holds the place at `accept`, the new one keeps its age, and
+        /// the next program closes it; else the new one takes a new place, and the next
+        /// program closes the oldest program. No other session closes, and each
+        /// outcome occurs at some seed.
+        #[test]
+        fn a_node_that_dials_again_keeps_its_age_or_takes_a_new_place() {
+            let kept = (vec![(0, refused())], vec![]);
+            let fresh = (vec![], vec![(0, refused())]);
+            let mut outcomes = Vec::new();
+            for seed in 0..8 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = start(&hosts[0], region(&pair(&hosts)));
+                let listen = listen(&hosts[0]);
+                let attacker = sim.node(sim::node::Config::default());
+                let out = Arc::new(Mutex::new(None));
+                let seen = Arc::clone(&out);
+                shard(&attacker, move |own, tasks| async move {
+                    let at = [Address::Udp(listen)];
+                    let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    own.clock().sleep(Span::SECOND).await;
+                    let (program, _) = program(&own, tasks.clone());
+                    let held = create_sessions(&program, &at, 255).await;
+                    let closed = closings(&held, &tasks);
+                    let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                    let new = second.dial(KEY.public(), &at).await.expect("a session");
+                    let of_old = old.closed().await;
+                    own.clock().sleep(Span::SECOND).await;
+                    let next =
+                        program.dial(KEY.public(), &at).await.expect("a session");
+                    let later = [new, next];
+                    let of_later = closings(&later, &tasks);
+                    own.clock().sleep(Span::SECOND).await;
+                    let of_later = of_later.borrow().clone();
+                    *seen.lock().unwrap() =
+                        Some((of_old, (of_later, closed.borrow().clone())));
+                    drop((held, program, first, second, later));
+                });
+                run_and_stop(&mut sim, &node);
+                assert_eq!(node.join(), Ok(()));
+                let (of_old, outcome) =
+                    out.lock().unwrap().take().expect("the peer ran");
+                assert_eq!(of_old, transport::Error::PeerClosed { code: Code(0) });
+                assert!(
+                    outcome == kept || outcome == fresh,
+                    "seed {seed}: {outcome:?}"
+                );
+                outcomes.push(outcome);
+            }
+            assert!(
+                outcomes.contains(&kept) && outcomes.contains(&fresh),
+                "{outcomes:?}"
+            );
         }
 
         /// The error of the first send that fails on a one-way stream of `session`
@@ -5019,6 +5357,78 @@ mod port {
             );
         }
 
+        /// The chunk store of a node leaves 1 GiB free: on a disk of 1 GiB, the put of
+        /// the first founding chunk stops the node, and `join` gives the floor.
+        #[test]
+        fn a_founding_chunk_under_the_free_floor_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed_on(
+                &mut sim,
+                sim::node::Config {
+                    cores: NonZeroUsize::new(2).unwrap(),
+                    disk_bytes: 1 << 30,
+                    ..sim::node::Config::default()
+                },
+            );
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let node = start(&host, region);
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 1 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
+        /// A node whose chunk store holds each founding chunk starts again after
+        /// another writer took the disk under 1 GiB free: the puts of its founding
+        /// chunks take no new room.
+        #[test]
+        fn a_restart_on_a_disk_under_the_free_floor_opens_the_mesh() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let node = start(&host, region.clone());
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move {
+                    let files = host.files();
+                    let free_bytes = files.free().await.expect("the free bytes");
+                    let len = free_bytes - (1 << 30) + 1;
+                    let mode = env::files::Mode::Create { len };
+                    let file = files.open(Path::new("other"), mode).await;
+                    let file = file.expect("the file of the other writer opens");
+                    file.sync().await.expect("syncs");
+                    file.close().await;
+                    files.sync_dir(Path::new("")).await.expect("syncs");
+                    files.free().await.expect("the free bytes")
+                })
+                .expect("the run ends");
+            assert_eq!(free_bytes, (1 << 30) - 1);
+            let node = start(&host, region);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
         /// Takes the lock of `host` as soon as it is free, then binds the node's port
         /// and opens the mesh's log to write. Gives whether the lock was held, the
         /// bind, the open of the log, and the file closes of `host` before the
@@ -5190,6 +5600,7 @@ mod port {
                     files: own.files(),
                     dir: crate::directory::blob(),
                     pool,
+                    floor_bytes: 0,
                 })
                 .await
                 .expect("the store opens");
@@ -5992,9 +6403,10 @@ mod port {
         }
 
         /// A node that starts on a spec that places a connector on it applies that
-        /// spec to its runs: a later apply that keeps the connector starts no run, and
-        /// one that changes it starts one. The reader opens after the run of the start,
-        /// because a status written before the open is lost to it.
+        /// spec to its runs: it runs the connector at the start, before any apply.
+        /// `influx` ends with a config error, so each later apply runs it again, also
+        /// one that keeps it. The reader opens before the node has mesh time, so it
+        /// sees the run of the start.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -6007,7 +6419,6 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             let node = start(&host, founding);
-            assert_eq!(sim.run_for(TEN), Ok(()));
             let read = read_status(&node, &definitions);
             assert_eq!(sim.run_for(TEN), Ok(()));
             let other = text("other", &[]);
@@ -6022,7 +6433,8 @@ mod port {
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
-            assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
+            let run = [(0, 0), (3, 1), (2, 1)];
+            assert_eq!(*read.lock().unwrap(), [run, run, run].concat());
         }
 
         /// A connector that an apply moves from another member to this node keeps its
@@ -6303,6 +6715,118 @@ mod name {
             "the data directory holds the node edge, not cloud; give edge, or another \
              data directory"
         );
+    }
+
+    /// A region refuses a reserved name, so a start keeps none, and a later start
+    /// with another name runs.
+    #[test]
+    fn a_reserved_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        for given in ["@x", "a.@b"] {
+            let reserved = Error::Reserved { name: name(given) };
+            assert_eq!(start_and_stop(&mut sim, &host, given), Err(reserved));
+            assert_eq!(read(&mut sim, &host), None, "keeps no name: {given}");
+        }
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        assert_eq!(
+            Error::Reserved { name: name("a.@b") }.to_string(),
+            "the name a.@b has a segment that starts with `@`, which is reserved for \
+             Foundation; give another name"
+        );
+    }
+
+    /// A reserved name that is not the stored name stops the start as reserved, not
+    /// as renamed, and the node keeps the stored name. `node::name` does not check it.
+    #[test]
+    fn a_reserved_name_comes_before_the_stored_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        assert_eq!(resolve(&mut sim, &host, Some("@x")), Ok(name("@x")));
+        let started = start_and_stop(&mut sim, &host, "@x");
+        assert_eq!(started, Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// The claim checks the shard count before the name.
+    #[test]
+    fn another_shard_count_comes_before_another_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        write(&mut sim, &host, "shards-3", Vec::new());
+        let started = start_and_stop(&mut sim, &host, "cloud");
+        assert_eq!(
+            started,
+            Err(Error::Shards {
+                stored: 3,
+                cores: 2
+            })
+        );
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// A name that fails the claim stops the start before any ring opens.
+    #[test]
+    fn a_name_that_fails_the_claim_opens_no_ring() {
+        enum Stored {
+            Zeros,
+            Kept(Name),
+        }
+        let renamed = Error::Renamed {
+            stored: name("edge"),
+            given: name("cloud"),
+        };
+        let cases = [
+            (Stored::Zeros, Error::Name),
+            (Stored::Kept(name("edge")), renamed),
+        ];
+        for (stored, error) in cases {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            match stored {
+                Stored::Kept(stored) => sim
+                    .run_on(&host, move |host, _| async move {
+                        crate::name::keep(&host.files(), &stored).await
+                    })
+                    .expect("the run ends")
+                    .expect("keeps the name"),
+                Stored::Zeros => write(&mut sim, &host, FILE, vec![0; LEN]),
+            }
+            let started = start_and_stop(&mut sim, &host, "cloud");
+            assert_eq!(started, Err(error.clone()));
+            let made = ["lock", "name", "shards-2"].map(PathBuf::from);
+            assert_eq!(listed(&mut sim, &host, ""), made, "{error}");
+        }
+    }
+
+    /// A reserved name is the first failure, also before a disk budget that holds no
+    /// ring.
+    #[test]
+    fn a_reserved_name_starts_no_shard_and_comes_before_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let node = Node::start(Config {
+            name: name("@x"),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(host.shard_starts().len(), 0);
+        let disk = Size::from_bytes(1);
+        let node = Node::start(Config {
+            name: name("@x"),
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk,
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
     }
 
     /// A file of another length that is not 0, or that `encode` does not give, is

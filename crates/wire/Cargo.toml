@@ -14,6 +14,11 @@ divan = { workspace = true }
 proptest = { workspace = true }
 
 [[bench]]
+name = "blob"
+harness = false
+test = true
+
+[[bench]]
 name = "hub"
 harness = false
 test = true

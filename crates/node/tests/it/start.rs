@@ -75,6 +75,20 @@ fn a_second_node_on_a_data_directory_fails_and_the_first_runs_on() {
 }
 
 #[test]
+fn a_first_start_founds_the_region_and_a_restart_needs_no_admin_key() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let admin = rig.dir.join("foundation-data/data/admin.key");
+    let len = std::fs::metadata(&admin).expect("stat the admin key").len();
+    assert_eq!(len, 54);
+    std::fs::remove_file(&admin).expect("remove the admin key");
+    rig.start_with(&[]);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert!(!admin.exists(), "a restart made a new admin key");
+}
+
+#[test]
 fn a_restart_with_another_name_fails() {
     let mut rig = Rig::new();
     rig.start();
@@ -89,6 +103,23 @@ fn a_restart_with_another_name_fails() {
              fix: Give `--name edge`, or another data directory with `--data`\n"
         )
     );
+}
+
+#[test]
+fn a_first_start_with_a_reserved_name_fails_and_a_start_with_another_name_runs() {
+    let mut rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "@x"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.reserved]: the name @x has a segment that starts with `@`, \
+             which is reserved for Foundation\n\
+             fix: Give a name with no segment that starts with `@`\n"
+        )
+    );
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
 }
 
 #[test]
@@ -135,8 +166,24 @@ fn a_data_directory_that_is_a_file_fails() {
             "",
             "error[node.data]: cannot write the data directory plain: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write plain and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make plain a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
+        )
+    );
+}
+
+#[test]
+fn a_data_directory_whose_parent_is_missing_fails() {
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--data", "missing/x", "--name", "edge"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.data]: cannot write the data directory missing/x: No such file \
+             or directory (os error 2)\n\
+             fix: Make missing/x a directory that this user can write, and let it \
+             write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -154,8 +201,8 @@ fn a_data_directory_with_a_newline_that_is_a_file_fails_on_one_line() {
             "",
             "error[node.data]: cannot write the data directory a\\nb: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write a\\nb and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make a\\nb a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -343,8 +390,8 @@ fn a_data_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory foundation-data: open \
              of lock failed with OS error 13\n\
-             fix: Let this user make and write foundation-data and each file in it, or \
-             give another directory with `--data`\n"
+             fix: Make foundation-data a directory that this user can write, and let \
+             it write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -367,8 +414,8 @@ fn a_new_data_directory_in_a_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory read: Permission \
              denied (os error 13)\n\
-             fix: Let this user make and write read and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make read a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -400,7 +447,11 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
     rig.start();
     rig.stop();
     let mode = |mode| std::fs::Permissions::from_mode(mode);
-    for (file, call) in [("node.key", "open"), ("shard-0/ring", "open")] {
+    for (file, call) in [
+        ("node.key", "open"),
+        ("shard-0/ring", "open"),
+        ("mesh/log/log-0", "open"),
+    ] {
         let path = rig.dir.join("foundation-data/data").join(file);
         std::fs::set_permissions(&path, mode(0o400)).expect("make it read-only");
         let output = rig.run(&["start"], b"");
@@ -413,8 +464,9 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
                 format!(
                     "error[node.data]: cannot write the data directory foundation-data: \
                      {call} of {file} failed with OS error 13\n\
-                     fix: Let this user make and write foundation-data and each file in \
-                     it, or give another directory with `--data`\n"
+                     fix: Make foundation-data a directory that this user can write, \
+                     and let it write each file in it, or give another directory \
+                     with `--data`\n"
                 )
                 .as_str()
             ),

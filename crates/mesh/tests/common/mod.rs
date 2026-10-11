@@ -47,6 +47,7 @@ pub(crate) async fn create_config(node: &Node, tasks: &Tasks) -> Config {
         files: node.files(),
         dir: "blob".into(),
         pool: Rc::clone(&pool),
+        floor_bytes: 0,
     })
     .await
     .expect("the store opens");

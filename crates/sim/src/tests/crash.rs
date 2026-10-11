@@ -238,6 +238,33 @@ fn a_power_cut_keeps_a_prefix_of_the_creates_and_removes_that_no_sync_dir_covers
     }
 }
 
+#[test]
+fn a_create_that_finds_no_room_makes_the_removes_in_its_directory_durable() {
+    let full = Arc::new(Mutex::new(Vec::new()));
+    let listed: BTreeSet<_> = (0..16)
+        .map(|seed| {
+            let (mut sim, node) = disk(seed);
+            let full = Arc::clone(&full);
+            crash_after(&mut sim, &node, Crash::Power, move |node| async move {
+                let files = node.files();
+                drop(create(&node, "a", MIB).await);
+                files.sync_dir(Path::new("")).await.unwrap();
+                files.remove(Path::new("a")).await.unwrap();
+                let mode = Mode::Create { len: MIB + 4 * KIB };
+                let result = files.open(Path::new("b"), mode).await.map(drop);
+                full.lock().unwrap().push(result);
+            });
+            sim.run_on(&node, |node, _| async move {
+                node.files().list(Path::new("")).await.unwrap()
+            })
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(listed, BTreeSet::from([names(&[])]));
+    let expected = vec![Err(Error::Full { path: "b".into() }); 16];
+    assert_eq!(*full.lock().unwrap(), expected);
+}
+
 /// The names in the data directory and the free bytes after a power cut, when a
 /// synced file `old` of 64 KiB is removed through its handle and a file `new` of
 /// 128 KiB is made, with no `sync_dir` after them.
