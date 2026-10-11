@@ -114,7 +114,8 @@ impl<'a> History<'a> {
 
     /// The first change of a decision in the range `<from>..<end>`, as a phrase, or
     /// `None`, also when the range is empty. A file under `docs/decisions/` that the
-    /// range adds, changes, or removes gives "changes the decision `<path>`".
+    /// range adds, changes, or removes gives "changes the decision `<path>`". Here and
+    /// below, `docs/decisions/` is in any ASCII case of those letters.
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a change
@@ -787,8 +788,8 @@ const CODE: Kind = Kind {
     noun: "the code file ",
 };
 
-/// The files under `docs/decisions/`, in any ASCII case of those letters: a file
-/// system that folds case shows such a path as a decision.
+/// The files under `docs/decisions/`, in any ASCII case of those letters: a file system
+/// that folds case shows such a path as a decision.
 const DECISION: Kind = Kind {
     counts: |path| {
         let decisions = "docs/decisions/";
@@ -842,9 +843,9 @@ impl Merged {
 enum Range {
     /// `from` and `end` name the same commit.
     Empty,
-    /// A range that counts for the rule whatever its diff holds, as a phrase: one
-    /// that the check cannot read, one with a conflict in a path that the rule counts,
-    /// or one in which the base moves a path of the PR into such a path.
+    /// A range that counts for the rule whatever its diff holds, as a phrase: one that
+    /// the check cannot read, one with a conflict in a path that the rule counts, or
+    /// one in which the base moves a path of the PR into such a path.
     Counted(String),
     /// A range whose diff decides: from the tree of `from` and the newest base commit
     /// that `end` holds, to the commit `end`.

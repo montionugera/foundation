@@ -313,7 +313,8 @@ fn unended(
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
 /// round with a `decision_change` requires `architecture` too when that gives a phrase
-/// for its range, and its problem gives the remedy, then the phrase.
+/// for its range. When `required` does not already ask for `architecture`, its problem
+/// gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
