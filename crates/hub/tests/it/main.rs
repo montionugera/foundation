@@ -920,9 +920,9 @@ fn ends_the_commit_task_in_its_commit_wait_once_the_hub_drops() {
     });
 }
 
-/// Once the hub and each session drop while the commit task waits for a commit, the
-/// hub holds no commit: a commit of the home that resolves holds the ring open until
-/// it drops. The commit task ends.
+/// Once the hub and each session drop at a commit, before or after the commit task
+/// polls it, the hub holds no commit: a commit of the home that resolves holds the
+/// ring open until it drops. The commit task ends.
 #[test]
 fn drops_the_commit_it_waits_for_with_the_hub() {
     let firsts: Vec<bool> = (0..64)
@@ -931,18 +931,18 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
                 let reader = test.reader(&["value"], Mode::Complete).await;
                 let mut writer = test.writer("a", &["value"]).await;
                 test.clock.sleep(SETTLE).await;
+                test.paused.pause();
                 write(&mut writer, &[test.now()], &[1]);
-                test.clock.sleep(Span::from_nanos(1)).await;
+                test.clock.sleep(SETTLE).await;
+                let first = test.paused.race().await;
                 let Test {
                     node,
                     clock,
                     ended,
                     mut commit,
                     hub,
-                    paused,
                     ..
                 } = test;
-                paused.pause();
                 drop((hub, reader, writer));
                 assert_eq!((&mut commit).await, Ok(()));
                 let open = || async {
@@ -957,7 +957,6 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
                 assert_eq!(open().await, Err(busy), "seed {seed}");
                 drop(commit);
                 assert_eq!(open().await, Ok(()), "seed {seed}");
-                let first = paused.race().await;
                 clock.sleep(Span::from_nanos(1)).await;
                 assert_eq!(ended.get(), 1, "the commit task ended");
                 first
