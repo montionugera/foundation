@@ -464,9 +464,8 @@ impl Stopper {
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there and
-/// holds a key, and [`Error::Directory`] for a file call that fails. It writes nothing
-/// over a key.
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when a file is there, before
+/// it writes anything, and [`Error::Directory`] for a file call that fails.
 #[cfg(feature = "sim")]
 pub async fn create_key(
     files: &env::files::Files,
@@ -481,7 +480,7 @@ pub async fn create_key(
         private_key,
         opener,
     };
-    identity::store(files, &identity).await?;
+    identity::write_new(files, &identity).await?;
     Ok(seal_key)
 }
 
@@ -1168,7 +1167,8 @@ pub enum Error {
     },
     /// A file call that locks the data directory, reads or records its shard count or
     /// the node's name or its budgets, or reads or writes the node's key or the first
-    /// admin's key, failed.
+    /// admin's key, failed. Also [`env::files::Error::Exists`] when `create_key` finds
+    /// a file at `node.key`, with no file call that failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),
@@ -1202,9 +1202,9 @@ pub enum Error {
     /// The chunk store did not open. The node took no session.
     Blob(blob::Error),
     /// The file `node.key` in the data directory is not a key that a node wrote:
-    /// another length that is not 0, or another tag or checksum. The node took no
-    /// session and does not write over the file, because a new key is a new node to its
-    /// region.
+    /// another length, also no bytes, or another tag or checksum, also 100 zero bytes.
+    /// The node took no session and does not write over the file, because a new key is
+    /// a new node to its region.
     Key,
     /// At a start that founds the root region, the file `admin.key` in the data
     /// directory is not a key that a node wrote: another length, also no bytes, or

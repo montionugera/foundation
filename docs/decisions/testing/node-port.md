@@ -125,20 +125,30 @@
   mesh open. The file is 100 bytes: the tag `foundation/key/2`, the node key
   (big-endian; UUIDv7 when shard 0 makes it), the Ed25519 private key, the X25519 seal
   private key of `secret::seal::Opener` (S8), and the CRC32C of those 96 bytes
-  (little-endian). It is one sector, which a crash keeps whole or old. At the first
-  start, shard 0 makes the file with `Mode::Create`, unless `node::create_key` made it
-  first (NODE MESH); a file with no bytes or with 100 zero bytes is a key not yet
-  written, so shard 0 makes a key (`types::node::Key::v7` at mesh time, once it has one,
-  from `Config::entropy`, and 64 random bytes). At each start, shard 0 writes the key
-  back and syncs the file and the directory before the transport proves it, because a
-  failed sync of an earlier start can leave a key that a read sees but a power cut
-  loses. A node that joins by ticket (#336) makes its key the same way at its first
-  start. A file of another length that is not 0, or of another tag or checksum, gives
+  (little-endian). It is one sector. At the first start, when the file is not there,
+  shard 0 makes a key (`types::node::Key::v7` at mesh time, once it has one, from
+  `Config::entropy`, and 64 random bytes) and makes the file with `sector::publish`,
+  unless `node::create_key` made it first (NODE MESH). `publish` writes `node.key.new`,
+  syncs it, and renames it with no replace, so a reader sees no file or a whole one. A
+  start that finds a whole key writes nothing: the claim of the data directory syncs the
+  directory first, so a key that a crash left visible is durable before the transport
+  proves it. The bytes of a `node.key` that a restore copied in are the restore's to
+  sync: the claim syncs only the name. When a power cut loses them, the next start
+  gives `Error::Key`, and the same restore brings the key back (decided by
+  `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). A node
+  that joins by ticket (#336) makes its key the same way at its first start. A file of
+  another length (also no bytes), tag, or checksum (also 100 zero bytes) gives
   `Error::Key`, which `Node::join` ranks above `Error::Blob`, `Error::Mesh`,
   `Error::Transport`, and `Error::Group`; the node never writes over it, because a new
-  key is a new node to its region. The file with no bytes, by `laptop.architect-2`
-  (01:08 UTC):
-  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320. Each other
+  key is a new node to its region. Amended (2026-10-11, #2305, by
+  `laptop.architect-2`, 2026-10-10 22:20 UTC):
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. This
+  supersedes `Mode::Create` and the file with no bytes or with 68 zero bytes (100 since
+  `foundation/key/2`) as a key not yet written, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320, and the
+  write back at each start, of
+  https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. Each other
   file error on `node.key` gives `Error::Directory`. The form is not a contract: only
   `node` reads it. The seal key is in `node.key`, not in a file of its own, because S8
   rotates it with the Ed25519 key, and a restore of `node.key` alone must not give a
@@ -152,7 +162,7 @@
   approved by `laptop.architect` (03:57 UTC):
   https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453.
   `admin.key` has the same form, and is made with `sector::publish` (NODE MESH, #1744
-  PR 1b-3); `node.key` moves to `publish` too (#2305). `os` gives each new file the
+  PR 1b-3), as `node.key` is (#2305). `os` gives each new file the
   mode `0600` and each new directory `0700`, and on Linux a new directory takes
   the setgid bit of its parent; the umask can clear more bits. It does not change the
   mode of one that is there (#1988):
@@ -168,8 +178,8 @@
   the same comment approves. The rank above `Error::Transport` and `Error::Group`, from
   the merge with #1936, by `laptop.architect-2` (21:48 UTC):
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6069688780. The load
-  before the hub and the write back at each start (the fix of a finding of `breaker` in
-  round 1 of #1991), by `laptop.architect-2` (20:23 UTC):
+  before the hub, and the write back at each start that #2305 supersedes (the fix of a
+  finding of `breaker` in round 1 of #1991), by `laptop.architect-2` (20:23 UTC):
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. This
   supersedes `Config::private_key`, the patch of
   https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6048898047. `node`

@@ -1367,8 +1367,6 @@ mod tests {
         /// The newest committed pointer that the task did not use. No public call
         /// shows it.
         newest: Option<Pointer>,
-        /// The chunks of the tree in use, as `Debug` gives them: `Chunks` has no `Eq`.
-        chunks: String,
     }
 
     impl Seen {
@@ -1379,7 +1377,6 @@ mod tests {
                 definitions: (*spec.definitions).clone(),
                 behind: spec.behind,
                 newest: group.used.newest.as_ref().map(|newest| newest.pointer),
-                chunks: format!("{:?}", group.used.chunks),
             }
         }
     }

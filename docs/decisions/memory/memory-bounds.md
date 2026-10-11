@@ -19,3 +19,20 @@
   allocation fails with `Error::Refused`, a separate error from a full pool (the person
   on 2026-10-05: "I approve the separate error"). The carve counts do not change, the
   sizes given back stay given back, and a later allocation may succeed (#475, #542).
+  Outside the pool budget, each QUIC connection holds on the heap the sent data that noq
+  has not had acknowledged, at most `window_bytes` (`send_window`), the rest of each
+  copied stretch that noq has not taken, at most the peer's window (the send budget),
+  and the stretch buffer of `send_parts`, under twice the peer's `message_bytes_max`,
+  and the parts list of each sending stream, 24 bytes for each part of its capacity, at
+  least 4 parts once it keeps one, which grows by doubling to the most parts that the
+  stream kept of one message and stays until the stream ends (a count that the caller's
+  messages bound, not the peer) (STREAM WIRE; `laptop.architect-2`, #1879,
+  2026-10-08 16:29 UTC:
+  https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384, #2304,
+  2026-10-10 22:35 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6102910746, and #2304,
+  2026-10-10 23:27 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6103308877, which
+  supersedes the parts-list clause of 6102910746). A stream ends at the last of its
+  sends, at a peer stop, at a cancel that resets it, and at the close of its connection
+  by either side (the same 6103308877).

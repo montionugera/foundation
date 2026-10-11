@@ -59,12 +59,6 @@ fn encode(private_key: &PrivateKey) -> [u8; LEN] {
     bytes
 }
 
-/// The private key in `bytes`, or `None` for another tag or checksum.
-#[cfg(any(test, feature = "sim"))]
-fn decode(bytes: &[u8; LEN]) -> Option<PrivateKey> {
-    sector::written(bytes, TAG).map(|bytes| field(&bytes))
-}
-
 /// The private key in `bytes`, whatever its tag and checksum.
 fn field(bytes: &[u8; LEN]) -> PrivateKey {
     PrivateKey(
@@ -74,22 +68,15 @@ fn field(bytes: &[u8; LEN]) -> PrivateKey {
     )
 }
 
-/// Checks that `decode` gives a private key exactly for the bytes that `encode`
-/// writes, and that the key encodes to `bytes`.
+/// Checks that `sector::written` takes `bytes` exactly when `encode` of their fields
+/// gives them back.
 ///
 /// # Panics
 ///
-/// When a check fails.
+/// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    let valid = encode(&field(bytes)) == *bytes;
-    match decode(bytes) {
-        Some(private_key) => {
-            assert!(valid, "decodes {bytes:02x?}");
-            assert_eq!(encode(&private_key), *bytes, "encodes {bytes:02x?}");
-        }
-        None => assert!(!valid, "refuses {bytes:02x?}"),
-    }
+    sector::check(bytes, TAG, |bytes| encode(&field(bytes)));
 }
 
 #[cfg(test)]
@@ -112,14 +99,15 @@ mod tests {
 
     #[test]
     fn refuses_zero_bytes() {
-        assert!(decode(&[0; LEN]).is_none());
+        assert!(!sector::written(&[0; LEN], TAG));
     }
 
     proptest! {
         #[test]
         fn decodes_what_it_encodes(private_key in any::<[u8; 32]>()) {
             let bytes = encode(&PrivateKey(private_key));
-            prop_assert_eq!(decode(&bytes).expect("decodes").0, private_key);
+            prop_assert!(sector::written(&bytes, TAG));
+            prop_assert_eq!(field(&bytes).0, private_key);
         }
 
         #[test]
@@ -129,7 +117,7 @@ mod tests {
         ) {
             let mut bytes = encode(&PrivateKey(private_key));
             bytes[bit / 8] ^= 1 << (bit % 8);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]
@@ -141,7 +129,7 @@ mod tests {
             check(&bytes);
             bytes[bit / 8] ^= 1 << (bit % 8);
             sector::checksum(&mut bytes);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]
