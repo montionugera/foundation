@@ -302,8 +302,6 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     );
 }
 
-/// The places of a read hold no reservation, so a read whose places pass the share of
-/// its subject opens and gets its frames.
 /// A read holds the reservation of its open only until the open decodes, so reads
 /// whose opens fit the share one at a time each open.
 #[test]
@@ -340,6 +338,8 @@ fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
     );
 }
 
+/// The places of a read hold no reservation, so a read whose places pass the share of
+/// its subject opens and gets its frames.
 #[test]
 fn opens_a_read_whose_places_pass_the_share() {
     const MANY: usize = 60_000;
@@ -547,8 +547,6 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// A read that waits for the home of its index stops with `FAILED` when the mesh
-/// stops.
 /// Runs one client session on a synced hub whose mesh names no home of `time`, and
 /// gives what each stream served, then what `then` gave at [`START`].
 fn homeless<T, P>(
@@ -596,6 +594,8 @@ where
     (served, given)
 }
 
+/// A read that waits for the home of its index stops with `FAILED` when the mesh
+/// stops.
 #[test]
 fn stops_a_read_on_a_stopped_mesh_as_failed() {
     let (served, stopped) = homeless(
@@ -648,6 +648,59 @@ fn ends_a_read_whose_program_finishes_or_breaks_its_stream_while_it_waits_for_a_
             Err(trailing),
             Err(serve::Error::Stream(reset)),
             Ok(Got::Ended)
+        ]
+    );
+}
+
+/// A read holds the reservation of its open while it waits for the home of its index,
+/// and frees it when it ends in the wait or when its open decodes after the wait. The
+/// open of `value` is 8 bytes, so beside the held body one such open fits at a time.
+#[test]
+fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
+    let (served, ()) = homeless(
+        317,
+        async |test| test.set_home(TIME, NODE).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut waiting = agent.read(Mode::Complete, &["value"]).await;
+            agent.sleep(Span::MILLISECOND).await;
+            let held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
+            agent.sleep(Span::MILLISECOND).await;
+            let mut busy = agent.read(Mode::Complete, &["value"]).await;
+            assert_eq!(busy.recv().await, reset_with(BUSY));
+            waiting.sender.finish().expect("finishes");
+            assert_eq!(waiting.recv().await, Ok(None));
+            let mut streams = Vec::new();
+            for _ in 0..2 {
+                let mut stream = agent.read(Mode::Complete, &["value"]).await;
+                let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+                assert_eq!(places, Places { count: 2, index: 1 });
+                streams.push(stream);
+            }
+            drop((held, streams));
+            finish(&mut agent).await;
+        },
+    );
+    let share = serve::Error::Share {
+        subject: name(SUBJECT),
+        length: 8,
+        held: BODY_BYTES_MAX,
+    };
+    let reset = serve::Error::Stream(transport::Error::Reset {
+        code: transport::Code(0),
+    });
+    let closed = serve::Error::Stream(transport::Error::Closed {
+        code: transport::Code(0),
+    });
+    assert_eq!(
+        served,
+        [
+            Err(share),
+            Ok(Got::Ended),
+            Err(reset),
+            Ok(Got::Ended),
+            Err(closed.clone()),
+            Err(closed)
         ]
     );
 }

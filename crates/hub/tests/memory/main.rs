@@ -34,7 +34,7 @@ use transport::{Class, Code};
 use types::channel;
 use types::name::Selector;
 use types::time::Span;
-use wire::hub::client::{self, BODY_BYTES_MAX, Place};
+use wire::hub::client::{self, BODY_BYTES_MAX, OPEN_BYTES_MAX, Place};
 use wire::hub::{BUSY, Open, keys};
 
 #[global_allocator]
@@ -50,6 +50,73 @@ fn main() {
     holds_the_same_bytes_over_many_opens_of_a_named_reader();
     holds_no_more_bytes_for_an_open_that_names_one_channel_many_times();
     holds_no_places_while_a_read_waits_for_its_home();
+    holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
+}
+
+/// Patterns `x` that fill the open of a read of `value` to [`OPEN_BYTES_MAX`]: one
+/// mode byte, `value` (2 + 5), and 3 bytes for each `x`.
+const PADS: usize = (65_536 - 8) / 3;
+
+/// The mesh names no home of `time`, so each read waits for it. A read of `value`
+/// whose open is at the cap holds, while it waits, at most its open more than a read
+/// of `value`, plus a tenth of the places of [`WIDE`] channels, the bound of
+/// `holds_no_places_while_a_read_waits_for_its_home`.
+fn holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap() {
+    let long = "x".repeat(240);
+    let places: usize = (0..WIDE)
+        .map(|n| size_of::<Place>() + format!("w.{long}.{n}").len())
+        .sum();
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let transport = Rc::new(transport);
+        let region =
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let hub = common::hub_in(&node, tasks.clone(), region, &[]).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        agent.sleep(common::SETTLE).await;
+        let before = ALLOCATOR.held();
+        let _one = agent.read(client::Mode::Complete, &["value"]).await;
+        agent.sleep(common::SETTLE).await;
+        let one = ALLOCATOR.held();
+        let mut select = vec!["value"];
+        select.extend(std::iter::repeat_n("x", PADS));
+        let _padded = agent.read(client::Mode::Complete, &select).await;
+        drop(select);
+        agent.sleep(common::SETTLE).await;
+        let padded = ALLOCATOR.held();
+        *kept.lock().expect("not poisoned") = Some((one - before, padded - one));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(3, home, program);
+    let (one, padded) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    let open = usize::try_from(OPEN_BYTES_MAX).expect("fits");
+    assert!(
+        padded < one + open + places / 10,
+        "a read of value holds {one} bytes, and one of value with an open at the cap \
+         holds {padded}: the open is {open} bytes, and a tenth of the places of {WIDE} \
+         channels is {}",
+        places / 10
+    );
 }
 
 /// Keys of `value` that the peer sends in each message.

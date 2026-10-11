@@ -29,7 +29,7 @@ pub(super) async fn serve(
     receiver: &mut Receiver,
     sender: &mut Sender,
 ) -> Result<(), Error> {
-    let (select, mode) = open(session, class, subject, read, receiver).await?;
+    let (open, mode) = open(session, class, subject, read, receiver).await?;
     let mut program = pin!(async {
         match receiver.recv().await? {
             None => Ok(()),
@@ -38,7 +38,7 @@ pub(super) async fn serve(
     });
     let state = &session.state;
     let Some((reader, matched, layout)) =
-        here(state, select, mode, program.as_mut()).await?
+        here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
@@ -47,21 +47,38 @@ pub(super) async fn serve(
     relay(state, reader, layout, program, sender).await
 }
 
-/// Reads and verifies the open, and gives its selector and mode.
+/// The verified open of a read, which holds its reservation until it drops.
+struct Held {
+    /// The selector of the first decode, until the read takes it.
+    select: Option<Selector>,
+    bytes: Vec<u8>,
+    _reserved: Reserved,
+}
+
+impl Held {
+    /// The selector of the open, decoded again after the first take.
+    fn select(&mut self) -> Selector {
+        self.select.take().unwrap_or_else(|| {
+            Open::decode(&self.bytes)
+                .expect("invariant: the open decoded once")
+                .select
+        })
+    }
+}
+
+/// Reads, verifies, and decodes the open, and gives it with its mode.
 async fn open(
     session: &Session,
     class: Class,
     subject: Name,
     read: Read,
     receiver: &mut Receiver,
-) -> Result<(Selector, reader::Mode), Error> {
-    // A read takes no turn, and its open holds its bytes only until it decodes.
-    let open = {
-        let _body = Reserved::new(&session.state, subject, read.length)?;
-        let bytes = body(receiver, read.body()).await?;
-        verify(session, proof::Kind::Read, &bytes, &read.signature)?;
-        Open::decode(&bytes)?
-    };
+) -> Result<(Held, reader::Mode), Error> {
+    // A read takes no turn.
+    let reserved = Reserved::new(&session.state, subject, read.length)?;
+    let bytes = body(receiver, read.body()).await?;
+    verify(session, proof::Kind::Read, &bytes, &read.signature)?;
+    let open = Open::decode(&bytes)?;
     let (wanted, mode) = match open.mode {
         Mode::Latest => (Class::Latest, reader::Mode::Latest),
         Mode::Complete => (Class::Complete, reader::Mode::Complete),
@@ -69,14 +86,20 @@ async fn open(
     if class != wanted {
         return Err(Error::Class(class));
     }
-    Ok((open.select, mode))
+    let held = Held {
+        select: Some(open.select),
+        bytes,
+        _reserved: reserved,
+    };
+    Ok((held, mode))
 }
 
-/// Opens the reader of `select` at this node, the home of its index, and gives it
-/// with its places and their layout, or `None` when `program` finishes first.
+/// Opens the reader of `open` at this node, the home of its index, and gives it with
+/// its places and their layout, or `None` when `program` finishes first. Holds the
+/// reservation of `open` until the open decodes after the wait for the home.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
-    select: Selector,
+    mut open: Held,
     mode: reader::Mode,
     mut program: Pin<&mut F>,
 ) -> Result<Option<(Reader, Matched, Layout)>, Error>
@@ -85,13 +108,14 @@ where
 {
     let refused = |error| Error::Reader(Box::new(error));
     let found = {
-        let mut matched = pin!(reader::matched(state, &select));
+        let mut matched = pin!(reader::matched(state, || open.select()));
         poll_fn(|cx| match program.as_mut().poll(cx) {
             Poll::Ready(finished) => Poll::Ready(Err(finished)),
             Poll::Pending => matched.as_mut().poll(cx).map(Ok),
         })
         .await
     };
+    drop(open);
     let (matched, home) = match found {
         Ok(found) => found.map_err(refused)?,
         Err(finished) => return finished.map(|()| None),

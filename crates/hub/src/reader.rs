@@ -422,7 +422,7 @@ impl Reader {
             "a hold of {hold} for a reader that is unnamed or latest"
         );
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
-        let (matched, home) = matched(state, &select).await?;
+        let (matched, home) = matched(state, || &select).await?;
         let home = match home {
             Home::Here(channels) => {
                 return Self::local(state, &matched, channels, mode, named, hold);
@@ -615,21 +615,22 @@ pub(crate) enum Home {
     Away(types::node::Key),
 }
 
-/// What `select` matches once the home of its index is known, and that home. While it
-/// waits for the home, it holds only the key of the index.
-pub(crate) async fn matched(
+/// What the selector that `select` gives matches once the home of its index is known,
+/// and that home. It calls `select` before and after each wait for the home, and keeps
+/// no selector or place across a wait.
+pub(crate) async fn matched<S: std::borrow::Borrow<Selector>>(
     state: &Rc<RefCell<State>>,
-    select: &Selector,
+    mut select: impl FnMut() -> S,
 ) -> Result<(Matched, Home), Error> {
     let (places, index, away) = loop {
-        let index = matching(&state.borrow(), select)?[0].1.index();
+        let index = matching(&state.borrow(), select().borrow())?[0].1.index();
         let away = match crate::homes(state, &[index]).await {
             Ok(()) => None,
             Err(Away::Remote(home)) => Some(home),
             Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
         };
         // A call of `set_definitions` while the open waits can change a channel.
-        let (places, at) = resolve(&state.borrow(), select)?;
+        let (places, at) = resolve(&state.borrow(), select().borrow())?;
         if places[at].key == index {
             break (places, at, away);
         }

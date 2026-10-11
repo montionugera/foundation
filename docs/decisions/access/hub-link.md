@@ -160,12 +160,23 @@
   home keep their code (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
   2). Supersedes "the code of the home's refusal" of plan item 6 for `MALFORMED`.
-  After its open decodes, a read holds no reservation. It holds its places from its last
-  resolve until the program took its last place. A place is the name, the key, and the
-  sample type of one channel that its selector matches. It holds none while it waits for
-  the home of its index. For its life it holds the key and the slot of each of those
-  channels. So one read holds at most the defined channels of one index, and a link
-  holds at most `streams_max` reads. No cap bounds the reads of one subject or of one
-  node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the share, which refuses a
-  read wider than the share at each retry (`laptop.architect`, 2026-10-11T15:17:29Z,
+  A read holds the reservation of its open until the home of its index is known and its
+  open decodes after that wait. While it waits, it holds its open and the key of its
+  index, and no places. After that decode it holds no reservation. A decoded selector
+  lives across no wait: the read drops it before the wait for the home, and before it
+  sends its first place to the program (`laptop.architect`, 2026-10-11T16:46:33Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6111323686).
+  Supersedes "After its open decodes, a read holds no reservation." of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 4.
+  Lost: the decoded selector through the wait, which holds about 26 times the bytes of
+  the open with no reservation; and a compact `types::name::Selector`, an interface
+  change of `types` that still holds a few times the bytes of the open. It holds its
+  places from its last resolve until the program took its last place. A place is the
+  name, the key, and the sample type of one channel that its selector matches. It holds
+  none while it waits for the home of its index. For its life it holds the key and the
+  slot of each of those channels. So one read holds at most the defined channels of one
+  index, and a link holds at most `streams_max` reads. No cap bounds the reads of one
+  subject or of one node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the
+  share, which refuses a read wider than the share at each retry (`laptop.architect`,
+  2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item 4).
