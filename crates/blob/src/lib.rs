@@ -746,6 +746,27 @@ mod tests {
         }
 
         #[test]
+        fn longer_than_the_free_bytes_gives_floor_and_writes_nothing() {
+            let (mut sim, node) = create_node(0, 64 << 10);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 128 << 10);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, 1).await;
+                let error = store.put(digest, &block).await.unwrap_err();
+                let expected = Error::Floor {
+                    len: 128 << 10,
+                    free_bytes,
+                    floor_bytes: 1,
+                };
+                assert_eq!(error, expected);
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, Vec::<PathBuf>::new());
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn whose_free_fails_gives_io_and_writes_nothing() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
