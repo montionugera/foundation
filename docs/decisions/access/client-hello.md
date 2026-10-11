@@ -131,12 +131,13 @@
   `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
   and `serve::Error::Message` keeps the errors from a reader's node. Lost: a variant
   `client::Error::Hub(hub::Error)`, which brings back two levels of error and puts
-  each variant that only a frame decoder gives in the type of the client wire. Why:
-  a `hub::Error` that is not `Copy` cost each frame that a node or a program decodes,
-  and bought nothing, since each text error keeps its cause in both forms. Against the
-  `Copy` form, `main` gave +0.78 ns on `decode_ends/3` (each pass apart), +0.59 ns on
-  `decode_a_frame/1`, and +0.34 ns on `decode_a_frame/3`, three passes of each commit
-  on c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
+  each variant that only a frame decoder gives in the type of the client wire. Why: a
+  `hub::Error` that is not `Copy` cost each frame that a node or a program decodes, and
+  bought nothing, because each text error keeps its cause in both forms. Against the
+  `Copy` form, `main` gave +0.78 ns on `decode_ends/3` (each pass apart). It gave
+  +0.59 ns on `decode_a_frame/1` and +0.34 ns on `decode_a_frame/3` (the passes of the
+  two commits overlap on both). Each is of three passes of each commit on
+  c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
   (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
   Decided by `laptop.architect` (2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;

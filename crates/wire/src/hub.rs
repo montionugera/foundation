@@ -496,7 +496,8 @@ pub mod ends {
     }
 }
 
-/// A hub message that is not valid.
+/// A message of a reader session that is not valid. The decoders of [`client`] give
+/// [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
