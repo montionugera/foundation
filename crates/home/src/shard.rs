@@ -428,13 +428,7 @@ impl Shard {
             let Some(mesh) = mesh else {
                 continue;
             };
-            // A handoff with no room waits, and a failed commit fails the next write.
-            drop(record(
-                &self.buffer,
-                &mut self.indexes,
-                iter::once(place),
-                mesh,
-            ));
+            self.record_waiting(iter::once(place), mesh);
         }
     }
 
@@ -487,7 +481,7 @@ impl Shard {
             claims.push(Claim { place, key });
         }
         let session = Session { set, claims };
-        self.record_all(&session, mesh);
+        self.record_waiting(session.claims.iter().map(|claim| claim.place), mesh);
         let key = writer::Key {
             shard: self.number,
             number: self.next,
@@ -512,7 +506,7 @@ impl Shard {
         for claim in &session.claims {
             self.indexes[claim.place].gate.close(claim.key, now);
         }
-        self.record_all(&session, mesh);
+        self.record_waiting(session.claims.iter().map(|claim| claim.place), mesh);
     }
 
     /// Applies `frame` to each index it holds, whole or not at all per index. The
@@ -853,11 +847,15 @@ impl Shard {
         place
     }
 
-    /// Appends the unrecorded handoff of each index of `session`.
-    fn record_all(&mut self, session: &Session, mesh: Stamp) {
-        let places = session.claims.iter().map(|claim| claim.place);
-        // A handoff with no room waits, and a failed commit fails the next write.
-        drop(record(&self.buffer, &mut self.indexes, places, mesh));
+    /// Appends the unrecorded handoff of the index at each of `places`. A handoff with
+    /// no room waits, and a failed commit fails the next write.
+    fn record_waiting(&mut self, places: impl Iterator<Item = usize>, mesh: Stamp) {
+        match record(&self.buffer, &mut self.indexes, places, mesh) {
+            Ok(_) | Err(Error::Disk(_)) => {}
+            Err(error @ (Error::Resend | Error::Full | Error::Large)) => {
+                panic!("invariant: a handoff append fails only on disk: {error}")
+            }
+        }
     }
 }
 
@@ -3137,6 +3135,47 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_handoff_that_comes_due_before_the_node_has_mesh_time_unrecorded() {
+        let (mut sim, node) = cut_after(189, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
+            let (clock, reader) = clock::Clock::new(test.clock.clone());
+            let mut shard = Test::with(0, buffer, reader).await;
+            shard.carry(Slot::new(0), key(Slot::new(0)));
+            shard.carry(Slot::new(2), key(Slot::new(2)));
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            let wall = test.node.wall();
+            test.tasks.spawn(async move { clock.run(wall).await });
+            while shard.now().is_none() {
+                test.clock.sleep(Span::from_nanos(1)).await;
+            }
+            // The drop to no holder is not on disk, so a reopen of a changes nothing.
+            shard.open_writer(writer("a", 1, &set)).expect("synced");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("a"));
+            assert_eq!(handoffs.len(), 2, "only the handoffs before the cut");
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn keeps_no_gate_at_a_shed_of_an_index_with_no_holder_and_no_waiting_handoff() {
+        run(190, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            shard.close_writer(a);
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            // No public call shows what a shed keeps.
+            assert!(shard.kept.is_empty(), "each gate equals a new one");
+        });
+    }
+
+    #[test]
     fn advances_past_the_end_of_each_grace_with_no_open_writer() {
         let (mut sim, node) = cut_after(237, false);
         sim.run_on(&node, |node, tasks| async move {
@@ -4863,7 +4902,7 @@ mod tests {
             });
         }
 
-        /// The ring is full, so the handoff of the close waits, and the shed drops it.
+        /// The ring is full, so the handoff of the close waits, and the shed keeps it.
         /// No entry is appended after the lost frames, so their gap goes.
         #[test]
         fn gives_the_first_lost_seq_again_after_a_shed_and_a_carry_as_after_a_restart()
@@ -4886,7 +4925,8 @@ mod tests {
                     }
                 };
                 shard.close_writer(a);
-                // No public outcome shows a waiting handoff before the shed drops it.
+                // No public outcome of this test shows the waiting handoff: the open
+                // of b replaces it.
                 assert!(shard.indexes[0].handoff().is_some(), "the handoff waits");
                 shard.shed(Slot::new(0));
                 shard.carry(Slot::new(0), key(Slot::new(0)));
