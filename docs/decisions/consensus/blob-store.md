@@ -64,3 +64,10 @@
   the two. Lost: each get that read bytes that do not hash counts (the count then rises
   on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
   that ruling) and its doc of the field.
+  `Store::get` and `Store::put` are not a hot path. Each runs one time for each chunk
+  call of `blob::peer` and of `mesh`. A chunk holds bytes of a spec tree or of an upgrade
+  binary (BQ1). So a chunk message is a control message, and its rate does not grow with
+  the data. Lost: a benchmark of the two. Trigger: a decision that gives `blob` bytes
+  whose count grows with the data makes the two a hot path, and its PR adds the
+  benchmark. Ruled by `laptop.architect` (2026-10-11T11:49:10Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
