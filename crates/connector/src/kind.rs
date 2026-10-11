@@ -862,7 +862,7 @@ mod tests {
     // The Retry and panic tests call the mapping directly: the hub of
     // `hub::testing` has no region, so it never gives `Remote` or `Mesh`; a run
     // starts after the status writer opens, so `Unsynced` cannot come through
-    // `Supervisor::run`; and `connector` cannot build a `transport` or `wire` error.
+    // `Supervisor::run`; and `connector` cannot build a `transport` error.
 
     #[test]
     fn retries_a_hub_error_that_the_home_or_the_mesh_can_clear() {
@@ -910,6 +910,28 @@ mod tests {
             available: 0,
         };
         drop(reader_error(hub::reader::Error::Pool(pool)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    refused the reader with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refusal_of_the_reader() {
+        let refusal = wire::hub::Refusal::NotHome;
+        drop(reader_error(hub::reader::Error::Refused(refusal)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the reply of \
+                    the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_reply_that_breaks_the_hub_protocol() {
+        drop(reader_error(hub::reader::Error::Message(
+            wire::hub::Error::Empty,
+        )));
     }
 
     #[test]
