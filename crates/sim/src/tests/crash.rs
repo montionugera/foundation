@@ -791,6 +791,36 @@ fn a_power_crash_in_a_create_that_fills_the_disk_leaves_no_file_with_bytes() {
     assert_eq!(outcomes, BTreeSet::from([(Vec::new(), MIB), (made, MIB)]));
 }
 
+// As when the create makes the file: the create that the draw keeps whole fails, and
+// removes `a`.
+#[test]
+fn a_crash_in_a_create_with_no_room_over_a_durable_file_with_no_bytes_can_remove_it() {
+    for crash in [Crash::Process, Crash::Power] {
+        let mut outcomes = BTreeSet::new();
+        for seed in 0..32 {
+            let (mut sim, node) = disk(seed);
+            crash_after(&mut sim, &node, crash, |node| async move {
+                drop(create_durable_empty(&node).await);
+                until_crash(&node).await;
+                let mode = Mode::Create { len: 2 * MIB };
+                hang(node.files().open(Path::new("a"), mode)).await;
+            });
+            let outcome = sim
+                .run_on(&node, |node, _| async move {
+                    let files = node.files();
+                    let names = files.list(Path::new("")).await.unwrap();
+                    let opened = files.open(Path::new("a"), Mode::Read).await;
+                    (names, opened.ok().map(|file| file.len()))
+                })
+                .unwrap();
+            outcomes.insert(outcome);
+        }
+        let kept = (names(&["a"]), Some(0));
+        let expected = BTreeSet::from([(names(&[]), None), kept]);
+        assert_eq!(outcomes, expected, "{crash:?}");
+    }
+}
+
 /// The digest of `sim` after a file call on `node`. The delay of the call draws from
 /// the files stream, and the digest holds its end, so the digest shows each earlier
 /// draw.

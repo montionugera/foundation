@@ -59,9 +59,11 @@
   whole or has no bytes, and the prefix decides whether its entry stays. A create of one
   or more bytes over a file with no bytes whose entry is durable draws its bytes apart
   from the prefix: the file keeps no bytes or is whole, and the prefix decides each
-  other change of the directory. A cut gives a state that a journaled file system can
-  reach, or a state that only a missing `sync_dir` reaches. Lost: a log for each
-  directory, which gives states that need no missing `sync_dir`.
+  other change of the directory. A create with no room for its bytes that a crash of
+  either kind draws whole fails as with no crash, and removes its file. A cut gives a
+  state that a journaled file system can reach, or a state that only a missing
+  `sync_dir` reaches. Lost: a log for each directory, which gives states that need no
+  missing `sync_dir`.
   Decided by `laptop.architect-2` (2026-10-07T19:20:28Z):
   https://github.com/synnaxlabs/foundation/issues/1551#issuecomment-6045125302; the
   calls in flight, 2026-10-08T02:39:46Z:
