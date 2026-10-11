@@ -40,6 +40,10 @@
 //! each acknowledgement, less one when the `send` gives noq-proto a slice of the block
 //! and the `send_parts` does not.
 //!
+//! The `dropped` line times the drop of a `send` that waits on its first poll with its
+//! message not taken, behind a message of a `try_send` that the stream holds. It times
+//! one drop at a time, so it holds a clock read per drop.
+//!
 //! A send reads the clock and wakes a task, so the control does both per block. The sim
 //! and `os` costs for both differ: on a Xeon 8488C, an `os` clock read costs about 7
 //! times a sim one, and an `os` wake about a quarter of a sim one. Compare a send with
@@ -375,6 +379,10 @@ fn main() {
                     sender.finish().expect("the stream finishes");
                 }
             }
+            let mut sender = session.open_sender(Class::Complete).await;
+            let sender = sender.as_mut().expect("a stream");
+            lines.push(measure_drops(&pool, sender));
+            sender.finish().expect("the stream finishes");
             session.close(Code(0));
             // A shard that ends drops its tasks, so give the close time to go out.
             clock.sleep(Span::MILLISECOND).await;
@@ -656,6 +664,51 @@ fn poll_control(
         waker.wake_by_ref();
     }
     nanos(Instant::now().duration_since(start))
+}
+
+/// Fills `sender`'s stream with `try_send`, then times the drop of each of the sends
+/// of the rounds, with no await in between, so the stream holds its message.
+///
+/// # Panics
+///
+/// When a send does not wait on its first poll.
+#[expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
+fn measure_drops(pool: &Pool, sender: &mut Sender) -> Measured {
+    while sender.try_send(filled(pool, 1024)).expect("open").is_none() {}
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut figures = Vec::with_capacity(ROUNDS);
+    let mut allocations = 0;
+    for round in 0..WARMUP + ROUNDS {
+        let mut span = Duration::ZERO;
+        for _ in 0..SENDS {
+            let block = filled(pool, 64);
+            let mut sending = Box::pin(sender.send(block));
+            let polled = sending.as_mut().poll(&mut cx);
+            assert!(polled.is_pending(), "a send waits behind the try_send");
+            let (spent, counted) = ALLOCATOR.count(|| {
+                let start = Instant::now();
+                drop(sending);
+                start.elapsed()
+            });
+            span += spent;
+            if round >= WARMUP {
+                allocations += counted;
+            }
+        }
+        if round >= WARMUP {
+            figures.push(per(nanos(span)) / per(SENDS));
+        }
+    }
+    figures.sort_unstable_by(f64::total_cmp);
+    let sends = u64::try_from(ROUNDS * SENDS).expect("fits");
+    Measured {
+        name: "dropped".to_owned(),
+        nanos: figures,
+        allocations,
+        polls: 0,
+        sends,
+        round: SENDS,
+    }
 }
 
 /// Opens a stream for each of `classes`.
