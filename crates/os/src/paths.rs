@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use env::entropy::Driver as _;
@@ -20,29 +20,26 @@ impl env::paths::Driver for Driver {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        if path.as_os_str().is_empty() {
-            return Err(Error::NotFound);
-        }
-        // `/`, `.`, and a path that ends in `..` name a directory.
-        let Some(name) = path.file_name() else {
-            return Err(Error::Io {
+        if names_directory(path) {
+            // As an open of the path: nothing, a file on the way, or a directory.
+            let directory = Error::Io {
                 code: Errno::ISDIR.raw_os_error(),
-            });
-        };
+            };
+            return Err(fs::metadata(path).map_or_else(|e| error(&e), |_| directory));
+        }
         let mut key = [0; 8];
         entropy::Driver.fill(&mut key);
-        let mut new = name.to_owned();
-        new.push(format!(".{:016x}.new", u64::from_le_bytes(key)));
-        let new = path.with_file_name(new);
-        // A new file gives other users no access. A replaced file keeps its mode.
-        let mode = fs::metadata(path).map_or(0o600, |old| old.permissions().mode());
+        let name = format!(".{:016x}.new", u64::from_le_bytes(key));
+        let new = path.with_file_name(name);
+        let kept = fs::metadata(path).ok().map(|old| old.permissions());
         let file = open(&new).map_err(|e| error(&e))?;
-        let written = fill(file, bytes, mode).and_then(|()| fs::rename(&new, path));
+        let written = fill(file, bytes, kept).and_then(|()| fs::rename(&new, path));
         if let Err(e) = written {
             match fs::remove_file(&new) {
-                // Only an I/O fault keeps the file. The error of the write says why
-                // the write failed.
-                Ok(()) | Err(_) => {}
+                Ok(()) => {}
+                // The file stays, as `os::paths` states. The error of the write says
+                // why the write failed.
+                Err(_kept) => {}
             }
             return Err(error(&e));
         }
@@ -50,21 +47,28 @@ impl env::paths::Driver for Driver {
     }
 }
 
+/// Whether `path` is empty or ends in `/`, `.`, or `..`, so that no file can be at
+/// it.
+fn names_directory(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let name = bytes.rsplit(|&byte| byte == b'/').next();
+    matches!(name, Some(b"" | b"." | b".."))
+}
+
 fn read(path: &Path, most: usize) -> io::Result<Found> {
     #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
     let file = File::open(path)?;
     if file.metadata()?.is_dir() {
-        let (mut names, mut size) = (Vec::new(), 0_usize);
+        let (mut entries, mut size) = (Vec::new(), 0_usize);
         for entry in fs::read_dir(path)? {
-            let name = entry?.file_name();
-            size = size.saturating_add(name.len());
+            let entry = path.join(entry?.file_name());
+            size = size.saturating_add(entry.as_os_str().len());
             if size > most {
                 return Ok(Found::Large);
             }
-            names.push(name);
+            entries.push(entry);
         }
-        names.sort_unstable();
-        let entries = names.into_iter().map(|name| path.join(name)).collect();
+        entries.sort_unstable();
         return Ok(Found::Directory(entries));
     }
     let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
@@ -86,10 +90,12 @@ fn open(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// Writes `bytes` to `file` with `mode`, synced, so a power cut after the rename
-/// leaves the whole file.
-fn fill(mut file: File, bytes: &[u8], mode: u32) -> io::Result<()> {
-    file.set_permissions(Permissions::from_mode(mode))?;
+/// Writes `bytes` to `file`, synced, so a power cut after the rename leaves the
+/// whole file. `kept` is the mode of the file that it replaces.
+fn fill(mut file: File, bytes: &[u8], kept: Option<Permissions>) -> io::Result<()> {
+    if let Some(kept) = kept {
+        file.set_permissions(kept)?;
+    }
     file.write_all(bytes)?;
     file.sync_all()
 }

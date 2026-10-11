@@ -464,10 +464,8 @@
   `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes `env::files` for
   the user's files (that seam is one directory, refuses an absolute path and `..`, and
   starts a thread for each directory); a trait in `ops` that `main` implements (its real
-  half would reach the OS outside `os`); directories of their own in the `sim` tree,
-  which need a public `sim::Node` call to make one (trigger: a test of #1744 PR 2e that
-  needs `NotFound` on `--out`). Decided by `laptop.architect-2` (2026-10-11 07:10 UTC,
-  plan revision 4, decision 4,
+  half would reach the OS outside `os`). Decided by `laptop.architect-2` (2026-10-11
+  07:10 UTC, plan revision 4, decision 4,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913), with
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274).

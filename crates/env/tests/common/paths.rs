@@ -20,6 +20,9 @@ pub(crate) struct Host<'a> {
 pub(crate) const NOT_DIRECTORY: i32 = 20;
 pub(crate) const DIRECTORY: i32 = 21;
 
+/// A bound that each directory of a case passes.
+const ALL: usize = 1 << 12;
+
 /// One `#[test]` for each case, which gives the case to `$run`. Call it where this
 /// module is in scope as `cases`.
 macro_rules! tests {
@@ -29,11 +32,11 @@ macro_rules! tests {
             a_file_at_the_bound_reads_whole,
             a_file_over_the_bound_reads_large,
             a_directory_lists_in_name_order,
-            a_directory_whose_names_pass_the_bound_reads_large,
+            a_directory_whose_paths_pass_the_bound_reads_large,
             a_path_with_nothing_is_not_found,
             a_write_replaces_the_file,
             a_path_through_a_file_fails,
-            a_path_that_ends_in_a_slash_names_a_directory,
+            a_path_that_ends_in_a_slash_or_a_dot_names_a_directory,
             an_empty_path_is_not_found,
         );
     };
@@ -77,13 +80,13 @@ pub(crate) fn a_directory_lists_in_name_order(host: &Host<'_>) {
     }
     let entries = ["a-b.hcl", "a.hcl", "b.hcl", "c"].map(|name| config.join(name));
     assert_eq!(
-        paths.read(&config, 64),
+        paths.read(&config, ALL),
         Ok(Found::Directory(entries.to_vec()))
     );
-    assert_eq!(paths.read(dir, 64), Ok(Found::Directory(vec![config])));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![config])));
 }
 
-pub(crate) fn a_directory_whose_names_pass_the_bound_reads_large(host: &Host<'_>) {
+pub(crate) fn a_directory_whose_paths_pass_the_bound_reads_large(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
     let config = dir.join("config");
     (host.make_dir)(&config);
@@ -91,9 +94,10 @@ pub(crate) fn a_directory_whose_names_pass_the_bound_reads_large(host: &Host<'_>
         paths.write(&config.join(name), b"x").unwrap();
     }
     let entries = ["a.hcl", "b.hcl", "c"].map(|name| config.join(name));
+    let size = entries.iter().map(|entry| entry.as_os_str().len()).sum();
     let listed = Ok(Found::Directory(entries.to_vec()));
-    assert_eq!(paths.read(&config, 11), listed);
-    assert_eq!(paths.read(&config, 10), Ok(Found::Large));
+    assert_eq!(paths.read(&config, size), listed);
+    assert_eq!(paths.read(&config, size - 1), Ok(Found::Large));
 }
 
 pub(crate) fn a_path_with_nothing_is_not_found(host: &Host<'_>) {
@@ -107,8 +111,8 @@ pub(crate) fn a_write_replaces_the_file(host: &Host<'_>) {
     let path = dir.join("plant.plan");
     paths.write(&path, b"first plan").unwrap();
     paths.write(&path, b"second").unwrap();
-    assert_eq!(paths.read(&path, 64), Ok(Found::File(b"second".to_vec())));
-    assert_eq!(paths.read(dir, 64), Ok(Found::Directory(vec![path])));
+    assert_eq!(paths.read(&path, ALL), Ok(Found::File(b"second".to_vec())));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![path])));
 }
 
 pub(crate) fn a_path_through_a_file_fails(host: &Host<'_>) {
@@ -127,32 +131,35 @@ pub(crate) fn a_path_through_a_file_fails(host: &Host<'_>) {
     let on_dir = paths.write(&config, b"y");
     assert_eq!(on_dir, Err(Error::Io { code: DIRECTORY }));
     let entries = vec![config, file];
-    assert_eq!(paths.read(dir, 64), Ok(Found::Directory(entries)));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(entries)));
 }
 
-pub(crate) fn a_path_that_ends_in_a_slash_names_a_directory(host: &Host<'_>) {
+pub(crate) fn a_path_that_ends_in_a_slash_or_a_dot_names_a_directory(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
     let file = dir.join("plant.hcl");
     paths.write(&file, b"x").unwrap();
-    let slashed = PathBuf::from(format!("{}/", file.display()));
-    let through = Error::Io {
-        code: NOT_DIRECTORY,
-    };
-    assert_eq!(paths.read(&slashed, 1), Err(through));
-    assert_eq!(paths.write(&slashed, b"y"), Err(through));
-    let none = PathBuf::from(format!("{}/", dir.join("none").display()));
-    assert_eq!(paths.read(&none, 1), Err(Error::NotFound));
-    assert_eq!(paths.write(&none, b"y"), Err(through));
     let config = dir.join("config");
     (host.make_dir)(&config);
     paths.write(&config.join("a.hcl"), b"x").unwrap();
-    let slashed = PathBuf::from(format!("{}/", config.display()));
-    let entries = vec![slashed.join("a.hcl")];
-    assert_eq!(paths.read(&slashed, 64), Ok(Found::Directory(entries)));
-    assert_eq!(paths.write(&slashed, b"y"), Err(through));
+    let through = Error::Io {
+        code: NOT_DIRECTORY,
+    };
+    for end in ["/", "/."] {
+        let named = |path: &Path| PathBuf::from(format!("{}{end}", path.display()));
+        assert_eq!(paths.read(&named(&file), 1), Err(through), "{end}");
+        assert_eq!(paths.write(&named(&file), b"y"), Err(through), "{end}");
+        let none = named(&dir.join("none"));
+        assert_eq!(paths.read(&none, 1), Err(Error::NotFound), "{end}");
+        assert_eq!(paths.write(&none, b"y"), Err(Error::NotFound), "{end}");
+        let named = named(&config);
+        let entries = Ok(Found::Directory(vec![named.join("a.hcl")]));
+        assert_eq!(paths.read(&named, ALL), entries, "{end}");
+        let on_dir = Err(Error::Io { code: DIRECTORY });
+        assert_eq!(paths.write(&named, b"y"), on_dir, "{end}");
+    }
     assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
     let entries = vec![config, file];
-    assert_eq!(paths.read(dir, 64), Ok(Found::Directory(entries)));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(entries)));
 }
 
 pub(crate) fn an_empty_path_is_not_found(host: &Host<'_>) {

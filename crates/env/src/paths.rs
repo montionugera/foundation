@@ -34,7 +34,7 @@ impl Paths {
     }
 
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
-    /// each entry of a directory whose entry names hold at most `most` bytes in all,
+    /// each entry of a directory whose entry paths hold at most `most` bytes in all,
     /// in name order.
     ///
     /// # Errors
@@ -58,17 +58,20 @@ impl Paths {
     }
 
     /// Writes `bytes` as the file at `path`, whole or not at all, in place of a file
-    /// that is there.
+    /// that is there. A path that ends in `/`, `.`, or `..` names a directory, and a
+    /// write on it writes nothing.
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when the directory of `path` is not there, else
-    /// [`Error::Io`].
+    /// [`Error::NotFound`] when the directory of `path`, or the directory that it
+    /// names, is not there, else [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
     ///
-    /// fn out(paths: &env::paths::Paths, plan: &[u8]) -> Result<(), env::paths::Error> {
+    /// use env::paths::{Error, Paths};
+    ///
+    /// fn out(paths: &Paths, plan: &[u8]) -> Result<(), Error> {
     ///     paths.write(Path::new("plant.plan"), plan)
     /// }
     /// ```
@@ -82,7 +85,7 @@ impl Paths {
 pub enum Found {
     /// A file of at most `most` bytes: its bytes.
     File(Vec<u8>),
-    /// A file of more than `most` bytes, or a directory whose entry names hold more.
+    /// A file of more than `most` bytes, or a directory whose entry paths hold more.
     Large,
     /// A directory: the path of each entry, in name order.
     Directory(Vec<PathBuf>),

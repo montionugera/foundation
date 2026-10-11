@@ -27,7 +27,7 @@ impl Paths {
     ) -> Result<Found, Error> {
         let at = self.check(node, path)?;
         if let Some(bytes) = self.files.get(&(node, at.clone())) {
-            if slashed(path) {
+            if names_directory(path) {
                 return Err(Error::Io {
                     code: NOT_DIRECTORY,
                 });
@@ -45,10 +45,11 @@ impl Paths {
         if names.is_empty() && at != Path::new("/") {
             return Err(Error::NotFound);
         }
-        if names.iter().map(|name| name.len()).sum::<usize>() > most {
+        let entries: Vec<_> = names.into_iter().map(|name| path.join(name)).collect();
+        let size = entries.iter().map(|entry| entry.as_os_str().len());
+        if size.fold(0_usize, usize::saturating_add) > most {
             return Ok(Found::Large);
         }
-        let entries = names.into_iter().map(|name| path.join(name)).collect();
         Ok(Found::Directory(entries))
     }
 
@@ -60,16 +61,18 @@ impl Paths {
         bytes: &[u8],
     ) -> Result<(), Error> {
         let at = self.check(node, path)?;
-        if at == Path::new("/") {
-            return Err(Error::Io { code: DIRECTORY });
-        }
-        // Linux gives this for a file, a directory, or nothing.
-        if slashed(path) {
-            return Err(Error::Io {
-                code: NOT_DIRECTORY,
+        let file = self.files.contains_key(&(node, at.clone()));
+        let directory = at == Path::new("/") || self.under(node, &at).next().is_some();
+        if names_directory(path) {
+            return Err(match (file, directory) {
+                (true, _) => Error::Io {
+                    code: NOT_DIRECTORY,
+                },
+                (false, true) => Error::Io { code: DIRECTORY },
+                (false, false) => Error::NotFound,
             });
         }
-        if self.under(node, &at).next().is_some() {
+        if directory {
             return Err(Error::Io { code: DIRECTORY });
         }
         self.files.insert((node, at), bytes.to_vec());
@@ -116,9 +119,11 @@ impl Paths {
     }
 }
 
-/// Whether `path` ends in `/`, and so names a directory.
-fn slashed(path: &Path) -> bool {
-    path.as_os_str().as_encoded_bytes().ends_with(b"/")
+/// Whether `path` ends in `/`, `.`, or `..`, and so names a directory.
+fn names_directory(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let name = bytes.rsplit(|&byte| byte == b'/').next();
+    matches!(name, Some(b"" | b"." | b".."))
 }
 
 /// `path` from `/`, the working directory of each host, with no `.` or `..`.

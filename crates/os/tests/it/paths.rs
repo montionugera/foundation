@@ -52,14 +52,17 @@ fn a_path_with_a_nul_byte_is_an_invalid_argument() {
 fn a_new_file_gives_other_users_no_access() {
     let scratch = Scratch::new();
     let path = scratch.0.join("plant.plan");
-    fs::write(scratch.0.join("plant.plan.new"), b"old").unwrap();
-    fs::set_permissions(
-        scratch.0.join("plant.plan.new"),
-        Permissions::from_mode(0o644),
-    )
-    .unwrap();
     os::paths().write(&path, b"plan").unwrap();
     assert_eq!(mode(&path), 0o600);
+}
+
+#[test]
+fn a_write_of_a_name_of_the_longest_length_succeeds() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("a".repeat(255));
+    let paths = os::paths();
+    paths.write(&path, b"plan").unwrap();
+    assert_eq!(paths.read(&path, 4), Ok(Found::File(b"plan".to_vec())));
 }
 
 #[test]
@@ -82,21 +85,28 @@ fn a_write_on_a_path_that_ends_in_a_slash_keeps_the_files_inside() {
     fs::write(config.join(".new"), b"user").unwrap();
     let slashed = PathBuf::from(format!("{}/", config.display()));
     let paths = os::paths();
-    assert_eq!(paths.write(&slashed, b"y"), Err(Error::Io { code: 20 }));
+    assert_eq!(paths.write(&slashed, b"y"), Err(Error::Io { code: 21 }));
     let user = Ok(Found::File(b"user".to_vec()));
     assert_eq!(paths.read(&config.join(".new"), 4), user);
     let entries = Ok(Found::Directory(vec![config]));
-    assert_eq!(paths.read(&scratch.0, 64), entries);
+    assert_eq!(paths.read(&scratch.0, 1 << 12), entries);
 }
 
 #[test]
 fn a_write_on_a_path_with_no_name_writes_nothing() {
+    let scratch = Scratch::new();
+    let config = scratch.0.join("config");
+    fs::create_dir_all(config.join("c")).unwrap();
     let paths = os::paths();
-    assert_eq!(paths.write(Path::new(""), b"x"), Err(Error::NotFound));
     let on_dir = Err(Error::Io { code: 21 });
-    for path in ["/", ".", "..", "a/.."] {
-        assert_eq!(paths.write(Path::new(path), b"x"), on_dir, "{path}");
+    for path in ["/", ".", ".."].map(PathBuf::from) {
+        assert_eq!(paths.write(&path, b"x"), on_dir, "{}", path.display());
     }
+    for path in [config.join(".."), config.join("./"), config.join("c/..")] {
+        assert_eq!(paths.write(&path, b"x"), on_dir, "{}", path.display());
+    }
+    let entries = Ok(Found::Directory(vec![config.join("c")]));
+    assert_eq!(paths.read(&config, 1 << 12), entries);
 }
 
 #[test]
@@ -118,5 +128,5 @@ fn two_writers_of_one_path_each_write_whole() {
         assert!(whole.contains(&read), "a mixed or failed write");
     }
     let entries = Ok(Found::Directory(vec![path]));
-    assert_eq!(os::paths().read(&scratch.0, 64), entries);
+    assert_eq!(os::paths().read(&scratch.0, 1 << 12), entries);
 }
