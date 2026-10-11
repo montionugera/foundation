@@ -1198,8 +1198,6 @@ fn key(instruction: &str) -> Option<String> {
 
 /// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
 /// it and the function symbol that labels it, or `None` when no function symbol does.
-/// The header of a section or a function comes as an empty line, so a symbol name in
-/// it reads as no relocation or instruction.
 fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
     let (mut section, mut function) = ("", None);
     disassembly.lines().map(move |line| {
@@ -1214,10 +1212,8 @@ fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)>
         {
             // A section with no symbol at its start shows as `<.text>`.
             function = Some(name.1).filter(|name| !name.starts_with('.'));
-        } else {
-            return (section, function, line);
         }
-        (section, function, "")
+        (section, function, line)
     })
 }
 
@@ -1429,7 +1425,8 @@ Disassembly of section .text:
         );
     }
 
-    /// `.text` holds only its headers, with no blank line after them.
+    /// `.text` holds only its headers, with no blank line after them. No `check` test
+    /// shows this: objdump writes a blank line after each section header.
     #[test]
     fn references_reads_no_relocation_of_a_disassembled_section_again() {
         let disassembly = "\
