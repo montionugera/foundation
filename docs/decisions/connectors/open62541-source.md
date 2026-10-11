@@ -205,7 +205,10 @@
   (https://github.com/synnaxlabs/foundation/pull/1947#issuecomment-6067031461,
   2026-10-08 19:03 UTC; the line marker:
   https://github.com/synnaxlabs/foundation/pull/1947#issuecomment-6067179092,
-  2026-10-08 19:12 UTC).
+  2026-10-08 19:12 UTC). The pragma test and the `#line` rule for `server.c`:
+  approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
+  2026-10-11 00:41 UTC).
   The copy also holds `arch/common/timer.c` and `timer.h`, which the build with
   `UA_ARCHITECTURE=none` does not compile. `cargo xtask open62541` takes them from a
   closed list of extra release files, with the reason of each, and compiles them with
@@ -244,6 +247,9 @@
   2026-10-08 21:46 UTC, and the list for 64-bit Arm at 586e8089:
   https://github.com/synnaxlabs/foundation/pull/1981#issuecomment-6069858320,
   2026-10-08 22:00 UTC).
+  The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
+  2026-10-11 00:41 UTC).
   `build.rs` gives both builds the sanitizers of the Rust build. With
   `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
   -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
