@@ -328,3 +328,41 @@ fn a_connect_to_a_listener_that_closes_each_stream_times_out() {
     let (out, _) = run(0, async |node| connect_to_listener(&node, drop).await);
     assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
 }
+
+/// A close waits for the answer of the server, which a server that stops never gives,
+/// until the request times out after 5 s. open62541 checks the timeouts of requests
+/// once a second.
+#[test]
+fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+    let (took, _) = run(0, async |node| {
+        let mut rng = node.entropy().rng();
+        let local = SocketAddr::new(node.addresses()[0], PORT);
+        let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
+            .expect("the port is free");
+        // SAFETY: the close below deletes the server before the manager drops.
+        let server = unsafe { Server::start(&manager, c"", 4) };
+        let url = format!("opc.tcp://{local}");
+        let client = {
+            let mut server_drive = pin!(manager.drive(|_| {
+                manager.events().run();
+                Poll::<()>::Pending
+            }));
+            let mut connect =
+                pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
+            poll_fn(|cx| {
+                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
+                connect.as_mut().poll(cx)
+            })
+            .await
+            .expect("the client connects")
+        };
+        let clock = node.clock();
+        let start = clock.now();
+        client.close().await;
+        let took = clock.now() - start;
+        server.close(&manager).await;
+        took
+    });
+    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(window.contains(&took), "{took:?}");
+}
