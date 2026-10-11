@@ -401,6 +401,54 @@ fn a_failed_get_of_the_store_leaves_the_node_behind_until_a_retry() {
     });
 }
 
+// The change lists its whole tree and the root of another tree, whose get fails on
+// each call. The store gives each chunk of the new tree.
+#[test]
+fn a_failed_get_of_a_listed_chunk_of_another_tree_stops_no_retry() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let mut chunks = Chunks::default();
+        let other = spec::region::tree(&mut chunks, &create_subjects(&["plant.c"], 1));
+        put(&mesh.store, &mesh.pool, &chunks, &other.chunks)
+            .await
+            .unwrap();
+        let a = create_subjects(&["plant.a"], 1);
+        let update = spec::region::tree(&mut chunks, &a);
+        put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
+            .await
+            .unwrap();
+        let path = Path::new(BLOB).join(other.root.to_string());
+        for _ in 0..10 {
+            node.fail_file(&path, Operation::Open);
+        }
+        let mut listed: BTreeSet<Digest> = update.chunks.iter().copied().collect();
+        listed.insert(other.root);
+        let settled = mesh.settle_spec(
+            base(),
+            update.root,
+            listed,
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        let moved = settled.await.unwrap();
+        let cause = files::Error::Io {
+            path,
+            operation: Operation::Open,
+            code: 5,
+        };
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: moved,
+                cause: Cause::Blob(blob::Error::Files(cause)),
+            }),
+            ..in_use(base(), &BTreeMap::new())
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
+        node.clock().sleep(seconds(2)).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &a)));
+    });
+}
+
 // The change lists the root of the tree in use, whose get fails.
 #[test]
 fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
