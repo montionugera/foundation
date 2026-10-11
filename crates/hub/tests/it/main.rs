@@ -817,6 +817,26 @@ fn does_not_wake_the_commit_task_for_the_writes_during_a_commit() {
     });
 }
 
+/// A group commit that ends before the first poll of the commit task still wakes a
+/// complete reader, as the hub takes its first commit at the start.
+#[test]
+fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
+    unsynced(23, |mut test| async move {
+        test.paused.pause();
+        test.sync().await;
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[5]);
+        test.clock.sleep(SETTLE).await;
+        test.paused.resume();
+        test.clock.sleep(Span::from_nanos(1)).await;
+        let Poll::Ready(received) = poll_once(reader.next()) else {
+            panic!("the commit before the first poll woke no reader");
+        };
+        assert_eq!(samples(&received.expect("a frame"), 2), [5]);
+    });
+}
+
 /// Writes that append nothing do not wake the commit task, as no commit follows them.
 #[test]
 fn does_not_wake_the_commit_task_for_writes_with_no_samples() {

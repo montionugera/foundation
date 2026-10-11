@@ -1,5 +1,5 @@
-//! The commit task: it wakes complete readers after each group commit that holds
-//! frames for them.
+//! The commit task: at each group commit of the home, it wakes the complete readers
+//! it holds frames for.
 
 use std::cell::RefCell;
 use std::future::poll_fn;
