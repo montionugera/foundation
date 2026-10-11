@@ -5,7 +5,7 @@ use types::sample::{self, Scalar, Sides};
 use super::*;
 use crate::hub::client::First;
 use crate::hub::client::Request;
-use crate::hub::text;
+use crate::hub::client::text;
 
 fn read(length: u64) -> Read {
     Read {

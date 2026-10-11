@@ -30,7 +30,6 @@
 pub mod client;
 mod home;
 mod reader;
-pub mod text;
 
 use std::fmt;
 
@@ -38,6 +37,8 @@ pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
 use types::{name, sample};
+
+use client::text;
 
 use crate::common::{Fields, Length, Writer, body};
 

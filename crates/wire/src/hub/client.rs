@@ -50,11 +50,12 @@ use types::name::Name;
 use types::node;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN, text};
+use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN};
 use crate::common::{Fields, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
+pub mod text;
 
 pub use read::{
     FromNode, Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, place,
