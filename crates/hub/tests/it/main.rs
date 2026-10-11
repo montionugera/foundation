@@ -202,7 +202,7 @@ impl Test {
         writes();
         self.clock.sleep(SETTLE).await;
         let polls = self.pause.polls.get();
-        self.pause.resume();
+        assert_eq!(self.pause.resume(), 1, "only the commit task waits to run");
         let mut yielded = false;
         std::future::poll_fn(|cx| {
             if yielded {
@@ -292,10 +292,18 @@ impl Pause {
         *self.held.borrow_mut() = Some(Vec::new());
     }
 
-    /// Wakes each task woken while paused.
-    fn resume(&self) {
+    /// Wakes each task woken while paused. Gives how many tasks it woke.
+    fn resume(&self) -> usize {
         let held = self.held.borrow_mut().take().unwrap_or_default();
-        held.into_iter().for_each(Waker::wake);
+        let mut tasks: Vec<Waker> = Vec::new();
+        for waker in held {
+            if !tasks.iter().any(|task| task.will_wake(&waker)) {
+                tasks.push(waker);
+            }
+        }
+        let woke = tasks.len();
+        tasks.into_iter().for_each(Waker::wake);
+        woke
     }
 
     /// Polls `task` and counts the poll, or, while paused, holds the waker of `cx`.
