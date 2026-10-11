@@ -147,7 +147,7 @@ fn parts() -> Vec<Part> {
         .collect()
 }
 
-/// Sends messages that leave the window room for a few parts of the next one.
+/// Sends messages that leave the window room for less than one part of the next one.
 fn fill(sender: &mut Sender, pool: &Pool) {
     let large = filled(pool, 1 << 18);
     for block in [large.clone(), large.clone(), large, filled(pool, FILL)] {
