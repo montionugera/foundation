@@ -376,10 +376,10 @@ impl Endpoint {
     /// zeros, is over the peer's largest message. Nothing of it is sent, and the
     /// block stays in `message`. When the stream holds a message whose rest the caller
     /// was to write, the stream writes that rest by itself from then, as after a write
-    /// that passes. Then the error of the connection's
-    /// [`Event::Closed`] once it ended. Then [`Error::Reset`] with `Code(0)` after an
-    /// [`Endpoint::cancel`] reset the stream, and [`Error::Stopped`] when the peer
-    /// stopped it; each later write gives it too.
+    /// that passes. Then the error of the connection's [`Event::Closed`] once it
+    /// ended. Then [`Error::Reset`] with `Code(0)` after an [`Endpoint::cancel`] reset
+    /// the stream, and [`Error::Stopped`] when the peer stopped it; each later write
+    /// gives it too.
     ///
     /// # Panics
     ///
@@ -397,9 +397,7 @@ impl Endpoint {
             .map_or(0, |block| crate::stream::size(parts, block.len()));
         sender.check_open();
         if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
-            let message = message.as_ref().expect("invariant: an empty write fits");
-            self.refuse(now, sender, message);
-            return Err(error);
+            return self.adopt(now, sender, error);
         }
         let key = sender.key().connection;
         self.streams(
@@ -435,8 +433,7 @@ impl Endpoint {
         let bytes = crate::stream::size(parts, message.len());
         sender.check_open();
         if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
-            self.refuse(now, sender, &message);
-            return Err(error);
+            return self.adopt(now, sender, error);
         }
         let key = sender.key().connection;
         let mut message = Some(message);
@@ -676,17 +673,23 @@ impl Endpoint {
         sender
     }
 
-    /// Hands the rest of a leaked write of `sender`'s stream to the stream, for a
-    /// write of `message` that the size check refused ([`Streams::refuse`]). Does
-    /// nothing once the connection ended, and drops the state error of the stream.
-    fn refuse(&mut self, now: Monotonic, sender: &Sender, message: &Block) {
+    /// Gives `refusal`, the error of the size check of a write of `sender`, in each
+    /// state of the stream and the connection. Before, while the connection runs,
+    /// the stream adopts the rest of a leaked write ([`Streams::adopt`]).
+    fn adopt<T>(
+        &mut self,
+        now: Monotonic,
+        sender: &Sender,
+        refusal: Error,
+    ) -> Result<T, Error> {
+        if sender.closed().is_some() {
+            return Err(refusal);
+        }
         let key = sender.key().connection;
-        let closed = sender.closed().cloned();
-        let refused = self.streams(now, key, closed, |streams, inner, _, _| {
-            streams.refuse(inner, sender, message)
-        });
-        // The caller gets `TooLarge` in each state of the stream.
-        drop(refused);
+        self.streams(now, key, None, |streams, inner, _, _| {
+            streams.adopt(inner, sender);
+            Err(refusal)
+        })
     }
 
     /// Runs `call` on the streams of `key`'s connection with the pool and the event

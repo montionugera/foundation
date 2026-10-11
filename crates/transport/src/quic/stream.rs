@@ -1170,10 +1170,10 @@ impl Sending {
     }
 
     /// Writes the rest of the message that `half` holds to `inner`, before the next
-    /// `message` of a write. `Ready` once it holds no message, and `Pending` while it
-    /// holds one. A `Some` while the rest is the caller's shows that the write that
-    /// gave it never ended, as a leaked future, and the rest becomes the stream's
-    /// ([`Rest::Pump`]).
+    /// message of a write, when `writing`. `Ready` once it holds no message, and
+    /// `Pending` while it holds one. `writing` while the rest is the caller's shows
+    /// that the write that gave it never ended, as a leaked future, and the rest
+    /// becomes the stream's ([`Rest::Pump`]).
     ///
     /// # Errors
     ///
@@ -1182,9 +1182,9 @@ impl Sending {
         &mut self,
         inner: &mut noq_proto::Connection,
         half: &mut Half,
-        message: Option<&Block>,
+        writing: bool,
     ) -> Result<Poll<()>, Error> {
-        if message.is_some() && half.rest == Rest::Caller {
+        if writing && half.rest == Rest::Caller {
             half.rest = Rest::Pump;
         }
         half.notified = false;
@@ -1561,7 +1561,7 @@ impl Streams {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
         if self
             .sending
-            .resume(inner, half, message.as_ref())?
+            .resume(inner, half, message.is_some())?
             .is_pending()
         {
             return Ok(Poll::Pending);
@@ -1574,21 +1574,17 @@ impl Streams {
     }
 
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, for a
-    /// write of `message` that the size check refused. When the rest is the caller's,
-    /// the write that gave it never ended, as a leaked future, and the rest becomes
-    /// the stream's ([`Rest::Pump`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Half::check`].
-    pub(super) fn refuse(
-        &mut self,
-        inner: &mut noq_proto::Connection,
-        sender: &Sender,
-        message: &Block,
-    ) -> Result<(), Error> {
+    /// write that the size check refused. When the rest is the caller's, the write
+    /// that gave it never ended, as a leaked future, and the stream adopts the rest
+    /// ([`Rest::Pump`]). A stream that a reset or a stop ended writes nothing.
+    pub(super) fn adopt(&mut self, inner: &mut noq_proto::Connection, sender: &Sender) {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        self.sending.resume(inner, half, Some(message)).map(drop)
+        match self.sending.resume(inner, half, true) {
+            Ok(_) | Err(Error::Reset { .. } | Error::Stopped { .. }) => {}
+            Err(error) => {
+                panic!("invariant: a reset or a stop ends a half, not {error}")
+            }
+        }
     }
 
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, then
@@ -1613,7 +1609,7 @@ impl Streams {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
         if self
             .sending
-            .resume(inner, half, message.as_ref())?
+            .resume(inner, half, message.is_some())?
             .is_pending()
         {
             return Ok(());
