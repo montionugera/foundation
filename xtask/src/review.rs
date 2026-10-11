@@ -867,17 +867,17 @@ fn ignorable(c: char) -> bool {
     )
 }
 
-/// `text` with each line ended by `\n`, with no spaces or tabs at the end of a line,
-/// and with each tab in the spaces, tabs, and `>` at the start of a line, after its
-/// [`mark`], replaced by spaces to the next multiple of 4 columns. None of these
-/// changes what GitHub shows. A line number then gives the offset of its line, and
-/// comrak gives the right column after a tab that a quote or a list item takes in part.
+/// `text` with each line ended by `\n`, and with each tab in the spaces, tabs, and
+/// `>` at the start of a line, after its [`mark`], replaced by spaces to the next
+/// multiple of 4 columns. Neither changes what GitHub shows. A line number then gives
+/// the offset of its line, and comrak gives the right column after a tab that a quote
+/// or a list item takes in part. The spaces and tabs at the end of a line stay: a line
+/// of only spaces ends a footnote, and a backslash before a space is no line break.
 fn normalized(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     let (mark, text) = text.split_at(mark(text));
     normalized.push_str(mark);
     for line in lines(text) {
-        let line = line.trim_end_matches([' ', '\t']);
         let content = line.trim_start_matches([' ', '\t', '>']);
         let start = normalized.len();
         for c in line[..line.len() - content.len()].chars() {

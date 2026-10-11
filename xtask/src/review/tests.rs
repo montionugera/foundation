@@ -2541,3 +2541,33 @@ fn fails_each_round_with_no_name_line_and_names_it_before_a_missing_field() {
         ]
     );
 }
+
+#[test]
+fn fails_a_round_that_github_starts_with_a_code_block_after_a_footnote() {
+    let head = format!("[^1]: x\n \n    Junk\n\n{NAME}\nQuality: 8/10\n{SUMMARY}");
+    assert_eq!(
+        check(&record(vec![headed(&head)])),
+        unrated("does not start with a name line `**<session>** · <role>`")
+    );
+}
+
+#[test]
+fn fails_a_rating_that_github_shows_with_a_backslash_after_it() {
+    for end in ["\\ ", "\\\t", "\\ \t "] {
+        let head = format!("{NAME}\nQuality: 8/10{end}\n{SUMMARY}");
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated(
+                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                 name line"
+            ),
+            "{end:?}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_that_github_ends_with_a_code_block_after_a_footnote() {
+    let tail = ROUND.to_string() + "\n\n[^1]: x\n \n    Hot path: `send`";
+    assert_eq!(check(&record(vec![bot(&tail)])), vec![unended("Deferred")]);
+}
