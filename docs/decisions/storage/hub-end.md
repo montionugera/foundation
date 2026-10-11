@@ -1,9 +1,14 @@
 - **HUB END (#585)** The hub's commit task holds the hub's state weakly, and keeps its
-  waker in the state while it sleeps and while it waits for a commit. The state wakes
-  it on drop, and the task ends at its first poll after that. Lost:
-  `Hub::close(self) -> Commit`, which each caller must call, and which a clone or a
-  live session defeats. Decided by `laptop.architect` (2026-10-07T18:07:55Z:
+  waker in the state while it waits for a commit. The state wakes it on drop, and the
+  task ends at its first poll after that. Lost: `Hub::close(self) -> Commit`, which
+  each caller must call, and which a clone or a live session defeats. Decided by
+  `laptop.architect` (2026-10-07T18:07:55Z:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6043897000).
+  Supersedes "Keep the task's waker in `Signal` in both phases"
+  (https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6043897000). The
+  task has no sleep phase: it always waits for a commit, with its waker in the state.
+  Decided by `laptop.architect` (2026-10-11T00:37:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820, item 2).
   The commit that the task waits for lives in the state, and the task polls it through
   the state. So the drop of the state drops the commit in the same call. Once the hub
   and each of its sessions drop, the hub holds no part of the home: no `Home`, no
@@ -53,3 +58,10 @@
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6068108715), and no
   session in the hub (2026-10-08T21:19:24Z,
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6069259471).
+  The commit task waits for the next group commit of the buffer, which wakes it, and
+  no session signals an append. `Hub::new` takes the first one, so no commit after the
+  start goes unseen. Lost: a signal from each home call that may append, which woke
+  the task for each write that appended nothing. Decided by `laptop.architect`
+  (2026-10-10T23:38:36Z, https://github.com/synnaxlabs/foundation/issues/2323; the
+  first commit at `Hub::new`: 2026-10-11T00:37:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820).

@@ -319,7 +319,8 @@ fn serve_stops_at_a_vote_under_the_key_of_a_join_that_a_step_replaced() {
                 .await;
             let served = mesh.serve(public(3), incoming).await;
             node.clock().sleep(HALF).await;
-            assert_eq!(term(&mesh), unapplied::later());
+            let later = unapplied::later();
+            assert_eq!(probe_term(&mesh, 3, later).await, later);
             served
         },
         |peer| async move {

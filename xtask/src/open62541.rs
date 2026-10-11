@@ -76,7 +76,8 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 20] = [
         "UA_DateTime_nowMonotonic",
         Access::Call,
     ),
-    // The build date of a server config, for the test server only.
+    // The build date of a server config, for the test server only. In
+    // `connector-opcua`, `link::the_production_code_builds_no_server` checks it.
     (
         "plugins/ua_config_default.c",
         "setDefaultConfig",

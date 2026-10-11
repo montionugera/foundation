@@ -7,7 +7,7 @@
 //! - `timer`: an empty closure, the floor of each line's figure.
 //! - `now`: one `Writer::now`, before each write.
 //! - `first write`: the first `Writer::write` of a round, after the round before it
-//!   committed. It wakes the commit task.
+//!   committed.
 //! - `write`, the control: each later `Writer::write` of a round but the last. The
 //!   draft of each write is ready before it is timed.
 //! - `write wake`: the last `Writer::write` of a round. The latest reader waits for it

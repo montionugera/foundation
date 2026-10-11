@@ -129,3 +129,22 @@
   https://github.com/synnaxlabs/foundation/pull/1740#issuecomment-6051674927. Supersedes
   https://github.com/synnaxlabs/foundation/issues/1711#issuecomment-6050509924 for the
   doc of the seal).
+  `mesh::testing::seal_log_dir` and `scan_log_dir`, behind `sim`, give the fuzz target
+  `mesh_log_dir` the open of a framed log directory: `log::sequence` as it is, and the
+  one step that `Log::open` also calls, which scans, drops the spare, and writes zeros
+  after the last record. The seal writes both checks of each record and keeps a body
+  check of zeros, so the target reaches a torn end. An open of the files that an open
+  leaves reads the same hard state and entries, not the same files: an empty end file
+  after `log-0` stays at the first open and goes as the spare at the second. After two
+  opens the files are a fixed point; a case that breaks this is a defect of the open.
+  `round_trip_spec_name` gives `mesh_spec_name` the read of a spec pointer from a file
+  name (approved by the architect, 2026-10-10T22:44:18Z:
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950; the
+  `Scan` result and the fixed point after two opens, 2026-10-10T22:54:30Z:
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6103059175; the one
+  step that `Log::open` also calls, ruled 2026-10-10T23:17:42Z:
+  https://github.com/synnaxlabs/foundation/pull/2317#issuecomment-6103236920, approved
+  2026-10-10T23:33:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2317#issuecomment-6103353737. Supersedes
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950 for what
+  the one private function of condition 1 does, and for the result of `scan_log_dir`).
