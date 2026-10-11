@@ -90,14 +90,13 @@
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6069608203).
   Supersedes the `node::Config::key` clause of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066571400.
-  The request bodies and read opens that one hub holds are at most
-  `hub::serve::BODIES_BYTES_MAX`, 2 × `BODY_BYTES_MAX` (32 MiB). A link reserves a
-  body's declared length when it decodes the `Request`, before it allocates or reads a
-  byte of the body, and the reservation ends when the caller sends or drops its `Reply`.
-  After that, the caller holds the body. A body that does not fit stops with `BUSY`
-  (`serve::Error::Bodies`), and the link takes its next request. Lost: pool blocks for a
-  body, which take the blocks that live writes need; a cap on links as the bound, 16 MiB
-  times the links. Decided by
+  The request bodies that one hub holds are at most `hub::serve::BODIES_BYTES_MAX`, 2 ×
+  `BODY_BYTES_MAX` (32 MiB). A link reserves a body's declared length when it decodes
+  the `Request`, before it allocates or reads a byte of the body, and the reservation
+  ends when the caller sends or drops its `Reply`. After that, the caller holds the
+  body. A body that does not fit stops with `BUSY` (`serve::Error::Bodies`), and the
+  link takes its next request. Lost: pool blocks for a body, which take the blocks that
+  live writes need; a cap on links as the bound, 16 MiB times the links. Decided by
   `laptop.architect` (2026-10-08T21:34:56Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483); the
   names, and the drop of the node bound, by `laptop.architect` (2026-10-09T03:49:08Z,
