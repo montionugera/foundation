@@ -45,7 +45,11 @@ pub(crate) async fn read<const N: usize>(
         return Ok(Held::Foreign);
     }
     let bytes = bytes(&file).await?;
-    Ok(written(&bytes, tag).map_or(Held::Foreign, Held::Written))
+    Ok(if written(&bytes, tag) {
+        Held::Written(bytes)
+    } else {
+        Held::Foreign
+    })
 }
 
 /// Makes `path` in `files` with `bytes`, which [`checksum`] completed, and makes it
@@ -72,12 +76,11 @@ pub(crate) async fn publish<const N: usize>(
     files.sync_dir(Path::new("")).await
 }
 
-/// `bytes`, when a node wrote them to a file whose tag is `tag`: they start with the
-/// tag, and their checksum matches.
-pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> Option<[u8; N]> {
+/// Whether a node wrote `bytes` to a file whose tag is `tag`: they start with the tag,
+/// and their checksum matches.
+pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> bool {
     let (body, sum) = bytes.split_at(N - 4);
-    (body.starts_with(tag) && crc32c::crc32c(body).to_le_bytes() == *sum)
-        .then_some(*bytes)
+    body.starts_with(tag) && crc32c::crc32c(body).to_le_bytes() == *sum
 }
 
 /// Writes the CRC32C of the bytes of `bytes` before its last 4 into those 4.
@@ -99,9 +102,11 @@ pub(crate) fn check<const N: usize>(
     tag: &[u8],
     encode: impl Fn(&[u8; N]) -> [u8; N],
 ) {
-    match written(bytes, tag) {
-        Some(given) => assert_eq!(encode(&given), *bytes, "decodes {bytes:02x?}"),
-        None => assert_ne!(encode(bytes), *bytes, "refuses {bytes:02x?}"),
+    let valid = encode(bytes) == *bytes;
+    if written(bytes, tag) {
+        assert!(valid, "decodes {bytes:02x?}");
+    } else {
+        assert!(!valid, "refuses {bytes:02x?}");
     }
 }
 

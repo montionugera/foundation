@@ -100,7 +100,11 @@ mod tests {
 
     /// The name in the file of `bytes`.
     fn read(bytes: &[u8; LEN]) -> Result<Option<Name>, Error> {
-        decode(&sector::written(bytes, TAG).map_or(Held::Foreign, Held::Written))
+        decode(&if sector::written(bytes, TAG) {
+            Held::Written(*bytes)
+        } else {
+            Held::Foreign
+        })
     }
 
     #[test]

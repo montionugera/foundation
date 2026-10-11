@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn refuses_zero_bytes() {
-        assert_eq!(sector::written(&[0; LEN], TAG), None);
+        assert!(!sector::written(&[0; LEN], TAG));
     }
 
     proptest! {
@@ -195,7 +195,8 @@ mod tests {
             opener in any::<[u8; 32]>(),
         ) {
             let bytes = encode(&identity(key, private_key, opener));
-            let decoded = fields(&sector::written(&bytes, TAG).expect("takes"));
+            prop_assert!(sector::written(&bytes, TAG));
+            let decoded = fields(&bytes);
             prop_assert_eq!(decoded.key.as_u128(), key);
             prop_assert_eq!(decoded.private_key.0, private_key);
             prop_assert_eq!(decoded.opener.expose(), &opener);
@@ -210,7 +211,7 @@ mod tests {
         ) {
             let mut bytes = encode(&identity(key, private_key, opener));
             bytes[bit / 8] ^= 1 << (bit % 8);
-            prop_assert_eq!(sector::written(&bytes, TAG), None);
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]
@@ -224,7 +225,7 @@ mod tests {
             check(&bytes);
             bytes[bit / 8] ^= 1 << (bit % 8);
             sector::checksum(&mut bytes);
-            prop_assert_eq!(sector::written(&bytes, TAG), None);
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]

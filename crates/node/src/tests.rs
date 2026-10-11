@@ -3370,8 +3370,7 @@ mod port {
                 })
                 .expect("the run ends")?;
             let tag = b"foundation/key/2";
-            let key = crate::sector::written(&bytes, tag);
-            assert!(key.is_some(), "a key: {bytes:02x?}");
+            assert!(crate::sector::written(&bytes, tag), "a key: {bytes:02x?}");
             Some(bytes.to_vec())
         }
 
