@@ -2508,13 +2508,17 @@ mod tests {
         });
     }
 
-    #[test]
-    fn names_gives_the_name_of_each_founding_member() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
-            assert_eq!(mesh.names(), BTreeSet::from(names));
-        });
+    mod names {
+        use super::*;
+
+        #[test]
+        fn gives_the_name_of_each_founding_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
+                assert_eq!(mesh.names(), BTreeSet::from(names));
+            });
+        }
     }
 
     // One `Ready` holds the entry of the second proposal and commits the first home.
