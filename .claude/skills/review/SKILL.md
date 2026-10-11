@@ -218,15 +218,16 @@ nothing checked again. So when round 1 led to fix commits:
    comment lists it under a line `Text fixes:` after its findings. That text of a
    deferral or a later step is the body of the issue that the author files for it, or
    the author's comment on an existing issue, never text that another session wrote. A
-   test in it is the code of the test, and each sentence that states what the test
-   asserts or what must pass. An item that gives only facts and links, or that asks the
-   author to find a fact or give a reason, is a finding. The author applies each item as
-   given, by a commit that changes no code (Round comment), in the PR title or body, in
-   that text of a deferral or a later step, or by an edit of the round comment that
-   holds the line and in the same line of the `Text fixes:` round. That needs no further
-   round, and the `reviewer` of the next round, when one runs, checks it where the
-   author applied it. An item still needs each approval that its file needs (Round 1,
-   `docs/factory.md`).
+   text that states a deferral in a risk crate is no text place, also when it states a
+   later step or another deferral. A test in it is the code of the test, and each
+   sentence that states what the test asserts or what must pass. An item that gives only
+   facts and links, or that asks the author to find a fact or give a reason, is a
+   finding. The author applies each item as given, by a commit that changes no code
+   (Round comment), in the PR title or body, in that text of a deferral or a later step,
+   or by an edit of the round comment that holds the line and in the same line of the
+   `Text fixes:` round. That needs no further round, and the `reviewer` of the next
+   round, when one runs, checks it where the author applied it. An item still needs each
+   approval that its file needs (Round 1, `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its
