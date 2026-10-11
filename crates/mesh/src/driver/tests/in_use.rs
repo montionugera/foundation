@@ -1726,6 +1726,65 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     );
 }
 
+// `settle` writes the spec in use for a taken spec and `behind` for a failed one. The
+// test above holds the first.
+#[test]
+fn used_keeps_the_spec_at_the_stop_when_a_failed_read_ends_after_it() {
+    let a = create_subjects(&["plant.a"], 1);
+    let first = pointer(1, &a);
+    let mut between = 0;
+    for seed in 0..32 {
+        let mut sim = Sim::new(sim::Config {
+            seed,
+            ..sim::Config::default()
+        });
+        let node = sim.node(sim::node::Config::default());
+        let applied = a.clone();
+        let behind = sim
+            .run_on(&node, move |node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                node.fail_file(Path::new(used::SPEC), Operation::SyncDir);
+                assert_eq!(commit(&mesh, base(), &applied).await, first);
+                let stopped = super::fail_sync(&node);
+                let c = create_subjects(&["plant.c"], 1);
+                let settled = mesh.settle_spec(
+                    first,
+                    pointer(2, &c).root,
+                    BTreeSet::new(),
+                    [key(1)].into(),
+                    BTreeMap::new(),
+                );
+                assert_eq!(settled.await, Err(Error::Stopped(stopped.clone())));
+                let at = mesh.used();
+                let cause = files::Error::Io {
+                    path: used::SPEC.into(),
+                    operation: Operation::SyncDir,
+                    code: 5,
+                };
+                let behind = Spec {
+                    behind: Some(Behind {
+                        pointer: first,
+                        cause: Cause::Files(cause),
+                    }),
+                    ..in_use(base(), &BTreeMap::new())
+                };
+                let given = [in_use(base(), &BTreeMap::new()), behind];
+                assert!(given.contains(&at), "seed {seed}: {at:?}");
+                assert_eq!(mesh.spec().await, Err(stopped));
+                node.clock().sleep(seconds(3)).await;
+                assert_eq!(mesh.used(), at, "seed {seed}");
+                at.behind.is_some()
+            })
+            .unwrap();
+        let made = listed(&mut sim, &node).contains(&name(first));
+        between += usize::from(made && !behind);
+    }
+    assert!(
+        between > 0,
+        "no stop came between the file of v1 and its failed sync"
+    );
+}
+
 #[test]
 fn used_keeps_the_spec_at_a_stop_at_each_time_after_a_change() {
     let (a, b) = (

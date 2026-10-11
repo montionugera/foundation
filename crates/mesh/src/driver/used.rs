@@ -557,8 +557,10 @@ impl Mesh {
         .await
     }
 
-    /// The spec that this node uses now. It answers also after the group stops, from
-    /// the view at the stop.
+    /// The spec that this node uses now. [`Mesh::spec`] waits for the read of a
+    /// committed pointer, and this call does not. A task that `spec` or a [`Watch`]
+    /// gave a spec finds that spec here, or a later one. It answers also after the
+    /// group stops, from the view at the stop.
     #[must_use]
     pub fn used(&self) -> Spec {
         self.group.borrow().used.spec.clone()
