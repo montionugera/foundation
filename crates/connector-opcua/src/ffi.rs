@@ -1,4 +1,5 @@
-//! The C functions of open62541 and `shim.c` that Rust calls, each declared once.
+//! The C functions of open62541, `shim.c`, and `server.c` that Rust calls, each
+//! declared once.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 

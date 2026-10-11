@@ -1,5 +1,6 @@
 //! Compiles the open62541 copy in `patches/open62541/` and `src/shim.c`, with the
-//! feature `open62541`, under the sanitizers of the Rust build.
+//! feature `open62541`, and `src/server.c` with `sim`, under the sanitizers of the Rust
+//! build.
 
 #[cfg(feature = "open62541")]
 #[path = "build/compiler.rs"]
@@ -34,6 +35,7 @@ fn build() {
     let copy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../patches/open62541");
     println!("cargo::rerun-if-changed={}", copy.display());
     println!("cargo::rerun-if-changed=src/shim.c");
+    println!("cargo::rerun-if-changed=src/server.c");
     println!("cargo::rerun-if-changed=src/alloc.h");
     let read = |name| {
         let path = copy.join(name);
