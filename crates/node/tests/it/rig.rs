@@ -691,7 +691,8 @@ fn gone() -> u32 {
 #[cfg(unix)]
 fn left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
     let temp = std::env::temp_dir();
-    let draft = temp.join(format!("left-{}-{pid}-{test}", std::process::id()));
+    // Named for this run, so a sweep keeps it while the run lives.
+    let draft = temp.join(format!("{PREFIX}{}-left-{pid}-{test}", std::process::id()));
     let data = draft.join("foundation-data/data");
     std::fs::create_dir_all(&data).expect("make the directory");
     fill(&data);
@@ -741,7 +742,9 @@ fn a_rig_removes_a_directory_that_a_test_left_read_only() {
 fn a_sweep_passes_over_a_directory_that_a_process_writes_in() {
     // In the rig's directory, which no other sweep reads.
     let rig = Rig::new();
-    let made = rig.dir.join(format!("{PREFIX}{}-made-0", std::process::id()));
+    let made = rig
+        .dir
+        .join(format!("{PREFIX}{}-made-0", std::process::id()));
     let dead = rig.dir.join(format!("{PREFIX}{}-busy-0", gone()));
     for dir in [&made, &dead] {
         std::fs::create_dir(dir).expect("make the directory");
