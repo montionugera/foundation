@@ -2583,10 +2583,10 @@ pub(crate) async fn session(net: &Net, remote: SocketAddr) -> [[u8; 16]; 2] {
     for field in [0_u32, 0, 1, 0, 600_000] {
         opn.extend(field.to_le_bytes());
     }
-    write(stream, &frame(b"OPNF", &opn)).await;
+    write(stream, &frame(*b"OPNF", &opn)).await;
     let opened = message(stream).await;
     let at = 12 + 4 + NONE.len() + 4 + 4 + 8;
-    let opened = response(&opened, b"OPNF", at, [0x01, 0, 0xC1, 0x01]);
+    let opened = response(&opened, *b"OPNF", at, [0x01, 0, 0xC1, 0x01]);
     let mut create = opened[4..12].to_vec(); // channel id and token id
     for field in [2_u32, 2] {
         create.extend(field.to_le_bytes());
@@ -2609,11 +2609,12 @@ pub(crate) async fn session(net: &Net, remote: SocketAddr) -> [[u8; 16]; 2] {
     }
     create.extend(60_000_f64.to_le_bytes());
     create.extend(0_u32.to_le_bytes());
-    write(stream, &frame(b"MSGF", &create)).await;
+    write(stream, &frame(*b"MSGF", &create)).await;
     let created = message(stream).await;
-    let created = response(&created, b"MSGF", 24, [0x01, 0, 0xD0, 0x01]);
+    let created = response(&created, *b"MSGF", 24, [0x01, 0, 0xD0, 0x01]);
     drop(poll_fn(|cx| stream.poll_close(cx)).await);
-    [guid(&created[..19]), guid(&created[19..38])]
+    let (session, token) = created.split_at(19);
+    [guid(session), guid(token)]
 }
 
 /// Adds the length of `text` and its bytes to `bytes`, or -1 for a null string.
@@ -2635,7 +2636,7 @@ fn request_header(bytes: &mut Vec<u8>) {
 }
 
 /// Gives the message of `kind` with `body`, in one final chunk.
-fn frame(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+fn frame(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
     let length = u32::try_from(8 + body.len()).expect("a short message");
     let mut bytes = kind.to_vec();
     bytes.extend(length.to_le_bytes());
@@ -2667,15 +2668,10 @@ async fn read_exact(stream: &mut Tcp, mut bytes: &mut [u8]) {
 ///
 /// # Panics
 ///
-/// If `message` is not a final chunk of `chunk`, the type is not `kind`, or the
-/// service result is not `Good`.
-fn response<'a>(
-    message: &'a [u8],
-    chunk: &[u8; 4],
-    at: usize,
-    kind: [u8; 4],
-) -> &'a [u8] {
-    assert_eq!(&message[..4], chunk, "{message:?}");
+/// If the chunk of `message` is not `chunk`, its type is not `kind`, or its service
+/// result is not `Good`.
+fn response(message: &[u8], chunk: [u8; 4], at: usize, kind: [u8; 4]) -> &[u8] {
+    assert_eq!(message[..4], chunk, "{message:?}");
     assert_eq!(message[at..at + 4], kind, "{message:?}");
     let header = &message[at + 4..at + 28];
     let result = u32::from_le_bytes(header[12..16].try_into().expect("4 bytes"));
@@ -2683,10 +2679,11 @@ fn response<'a>(
     &message[at + 28..]
 }
 
-/// Gives the GUID of `id`, a node id of namespace 1.
+/// Gives the GUID of the node id of namespace 1 at the start of `id`.
 fn guid(id: &[u8]) -> [u8; 16] {
-    assert_eq!(id[..3], [0x04, 1, 0], "a GUID of namespace 1: {id:?}");
-    id[3..].try_into().expect("16 bytes")
+    let (encoding, guid) = id.split_at(3);
+    assert_eq!(encoding, [0x04, 1, 0], "a GUID of namespace 1: {id:?}");
+    guid[..16].try_into().expect("16 bytes")
 }
 
 #[test]
