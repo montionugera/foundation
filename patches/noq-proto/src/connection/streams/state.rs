@@ -2438,7 +2438,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_before_0rtt_rejection_sends_no_data() {
+    fn reset_before_retry_sends_no_data() {
         let mut client = make(Side::Client);
         let id = open_with_credit(&mut client);
         let mut retransmits = Retransmits::default();
