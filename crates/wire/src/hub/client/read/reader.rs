@@ -56,6 +56,16 @@ impl Reader {
     /// the caller stops it.
     pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromNode<'m>, Error> {
         match &mut self.next {
+            Next::Home(reader) => reader.decode(message).map(FromNode::Home),
+            Next::Places | Next::Run { .. } => self.places(message),
+        }
+    }
+
+    /// Decodes a message before the last place.
+    #[cold]
+    #[inline(never)]
+    fn places<'m>(&mut self, message: &'m [u8]) -> Result<FromNode<'m>, Error> {
+        match &mut self.next {
             Next::Places => {
                 let places = Places::decode(message)?;
                 self.next = Next::Run {
@@ -67,17 +77,24 @@ impl Reader {
             Next::Run { places, remain } => {
                 let run = place::decode(message)?;
                 let rest = rest_of_run(*remain, run.len())?;
-                // `remain` is at most `count`.
-                let first = places.count.wrapping_sub(*remain);
-                let at = places.index.checked_sub(first);
-                stamped(at.and_then(|at| run.get(usize::try_from(at).ok()?)))?;
+                let first = (places.count.checked_sub(*remain))
+                    .expect("remain is at most count");
+                let index = (places.index.checked_sub(first))
+                    .and_then(|at| run.get(usize::try_from(at).ok()?));
+                if let Some(index) = index
+                    && index.data_type != Type::Scalar(Scalar::Stamp)
+                {
+                    return Err(Error::Unstamped {
+                        sample: index.data_type,
+                    });
+                }
                 *remain = rest;
                 if rest == 0 {
                     self.next = Next::Home(hub::Reader::of(places.count, self.latest));
                 }
                 Ok(FromNode::Run(run))
             }
-            Next::Home(reader) => reader.decode(message).map(FromNode::Home),
+            Next::Home(_) => unreachable!("the session decodes after the last place"),
         }
     }
 
@@ -103,17 +120,5 @@ impl Reader {
             Next::Home(reader) => reader.end(),
             Next::Places | Next::Run { .. } => Err(Error::Finished),
         }
-    }
-}
-
-/// Checks `index`, the index place when the message holds it.
-fn stamped(index: Option<&Place>) -> Result<(), Error> {
-    match index {
-        Some(place) if place.data_type != Type::Scalar(Scalar::Stamp) => {
-            Err(Error::Unstamped {
-                sample: place.data_type,
-            })
-        }
-        Some(_) | None => Ok(()),
     }
 }

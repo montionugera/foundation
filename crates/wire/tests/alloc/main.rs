@@ -1,7 +1,8 @@
 //! The hub messages on a frame's path, the blob heads, and the body counters of client
 //! requests and blob chunks, make no heap allocation, and the place messages of a read
-//! make a known count. This binary has no test harness: the count covers each thread,
-//! and a harness allocates on its own thread at any time.
+//! make a known count. A frame after the run of a read makes none. This binary has no
+//! test harness: the count covers each thread, and a harness allocates on its own
+//! thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -228,6 +229,7 @@ fn blob_heads() {
 
 /// The cut and the encode of a run of 3 places, one place a message. Each place is
 /// formatted once at each cut that tries it and once at its encode: 8 times in all.
+/// The decode of a frame after the run allocates nothing.
 fn place_messages() {
     use wire::hub::client::{FromNode, Mode, Place, Places, Reader, place};
 
@@ -265,4 +267,26 @@ fn place_messages() {
         rest = after;
     }
     assert_eq!(decoded, places, "the run round trips");
+    let mut head = [0; 18];
+    Reply::Head(Head {
+        path: Path::Live,
+        range: Range { seq: 0, count: 1 },
+        series: 1,
+    })
+    .encode(&mut head);
+    let mut run = [0; ends::LEN];
+    ends::encode([(0, 4)], &mut run);
+    let body = [7; 4];
+    let (at, allocations) = ALLOCATOR.count(|| {
+        for message in [[1].as_slice(), &head, &run] {
+            reader.decode(message).expect("the frame decodes");
+        }
+        let at = reader.body();
+        match reader.decode(&body) {
+            Ok(FromNode::Home(FromHome::Body { last: true, .. })) => at,
+            other => panic!("the body did not decode: {other:?}"),
+        }
+    });
+    assert_eq!(allocations, 0, "a frame after the run allocated");
+    assert_eq!(at, Some(0), "the body starts the frame");
 }

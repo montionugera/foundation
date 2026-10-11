@@ -68,7 +68,7 @@ impl Reader {
     ///
     /// When `places` is 0.
     pub(in crate::hub) fn of(places: u32, latest: bool) -> Self {
-        assert!(places > 0, "an open names at least one channel");
+        assert!(places > 0, "a session has at least one place");
         Self {
             places,
             latest,
@@ -99,6 +99,7 @@ impl Reader {
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
+    #[inline]
     pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
         let (event, next) = match self.next {
             Next::Opened | Next::Head | Next::Ended => self.reply(message)?,
@@ -717,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an open names at least one channel")]
+    #[should_panic(expected = "a session has at least one place")]
     fn panics_on_an_open_of_no_channel() {
         drop(Reader::new(&open(0)));
     }

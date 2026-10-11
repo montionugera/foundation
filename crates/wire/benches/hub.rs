@@ -7,8 +7,8 @@ use types::{
     frame::{self, Path, Range},
 };
 use wire::hub::{
-    Credit, Error, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply, ends,
-    keys,
+    Credit, Error, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply, client,
+    ends, keys,
 };
 
 const SERIES: [u32; 4] = [1, 3, 1_000, 100_000];
@@ -153,6 +153,57 @@ fn decode_a_body(bencher: Bencher<'_, '_>, messages: u32) {
             let at = reader.body().expect("the body comes next");
             match decode(&mut reader, divan::black_box(message)) {
                 Ok(FromHome::Body { bytes, .. }) => sum.wrapping_add(at + bytes.len()),
+                other => panic!("the body did not decode: {other:?}"),
+            }
+        })
+    };
+    frame();
+    bencher.bench_local(frame);
+}
+
+/// [`client::Reader::decode`], out of line as [`decode`] is.
+#[inline(never)]
+fn decode_at_the_program<'m>(
+    reader: &mut client::Reader,
+    message: &'m [u8],
+) -> Result<client::FromNode<'m>, Error> {
+    reader.decode(message)
+}
+
+/// As [`decode_a_body`], through the decoder of a read stream at the program, after
+/// its run of one place.
+#[divan::bench(args = [1, 8, 64])]
+fn decode_a_body_at_the_program(bencher: Bencher<'_, '_>, messages: u32) {
+    let mut first = [0; client::Places::LEN];
+    client::Places { count: 1, index: 0 }.encode(&mut first);
+    let places = [client::Place {
+        key: channel::Key::from_u128(1),
+        data_type: "timestamp".parse().expect("a sample type"),
+        name: "a".parse().expect("a name"),
+    }];
+    let message = client::place::messages(&places, usize::MAX)
+        .next()
+        .expect("one place is one message");
+    let mut place = vec![0; message.encoded_len()];
+    message.encode(&mut place);
+    let mut reader = client::Reader::new(client::Mode::Latest);
+    for message in [first.as_slice(), &place, &[1]] {
+        decode_at_the_program(&mut reader, message).expect("the session opens");
+    }
+    let mut out = [0; 18];
+    head(1).encode(&mut out);
+    let mut run = [0; ends::LEN];
+    ends::encode([(0, messages * 1_024)], &mut run);
+    let body = vec![7; usize::try_from(messages * 1_024).expect("a u32 fits a usize")];
+    let mut frame = || {
+        decode_at_the_program(&mut reader, &out).expect("the head decodes");
+        decode_at_the_program(&mut reader, &run).expect("the ends decode");
+        body.chunks(1_024).fold(0, |sum: usize, message| {
+            let at = reader.body().expect("the body comes next");
+            match decode_at_the_program(&mut reader, divan::black_box(message)) {
+                Ok(client::FromNode::Home(FromHome::Body { bytes, .. })) => {
+                    sum.wrapping_add(at + bytes.len())
+                }
                 other => panic!("the body did not decode: {other:?}"),
             }
         })
