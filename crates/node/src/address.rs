@@ -1,6 +1,6 @@
 //! How a program on the node's host reaches the node, in the file `address` of the
-//! data directory. The file is there while shard 0 serves the node's port, and after
-//! a crash.
+//! data directory. The file holds the address while shard 0 serves the node's port,
+//! and after a crash, and zero bytes after a clean stop.
 //!
 //! The file is 99 bytes: the tag, the node key (big-endian), the public key that the
 //! node's transport proves, the family of the IP (4 or 6), the IP in 16 bytes (an
@@ -15,7 +15,7 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use std::path::Path;
 use std::pin::Pin;
 
-use env::files::Files;
+use env::files::{File, Files};
 use types::ed25519::PublicKey;
 
 use crate::{Error, sector};
@@ -52,35 +52,43 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
     udp.expect("invariant: a port binds a UDP socket")
 }
 
-/// Holds the file `address` of `files` with `address` while `serve` runs: makes it,
-/// awaits `serve`, and removes it. A read meanwhile sees the file whole or no file.
-/// When the file cannot be made, does not poll `serve`, and removes the file `address`
-/// that the try left; the next start removes an `address.new` that it left. Call it
-/// under the lock of the data directory.
+/// Holds the file `address` of `files` with `address` while `serve` runs: writes it in
+/// place, awaits `serve`, and writes it empty. The first hold on a data directory
+/// makes the file, and a later one writes in its room, so it needs no free bytes.
+/// Writes over a file of another length after it removes it. When the write fails,
+/// does not poll `serve`. Call it under the lock of the data directory.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] for a file call that fails: one of the make, else the remove.
+/// [`Error::Directory`] for a file call that fails: one of the write, else the empty
+/// write.
 pub(crate) async fn hold(
     files: &Files,
     address: &Address,
     serve: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), Error> {
-    let published = publish(files, address).await;
-    if published.is_ok() {
+    let file = open(files).await.map_err(Error::Directory)?;
+    let written = sector::write(files, &file, &encode(address)).await;
+    if written.is_ok() {
         serve.await;
     }
-    // Also after a publish whose last call failed, which leaves the file.
-    let removed = files.remove(Path::new(FILE)).await;
-    published.and(removed).map_err(Error::Directory)
+    // Also after a write that failed, which can leave the address.
+    let emptied = sector::clear::<LEN>(&file).await;
+    written.and(emptied).map_err(Error::Directory)
 }
 
-/// Makes the file with `address`, in place of one that a crash left, and makes it
-/// durable.
-async fn publish(files: &Files, address: &Address) -> Result<(), env::files::Error> {
+/// Opens the file to write, made of zero bytes when it is not there, and made again
+/// when it has another length.
+async fn open(files: &Files) -> Result<File, env::files::Error> {
     let path = Path::new(FILE);
-    files.remove(path).await?;
-    sector::publish(files, path, &encode(address)).await
+    let opened = match sector::open::<LEN>(files, path, TAG).await {
+        Err(env::files::Error::Length { .. }) => {
+            files.remove(path).await?;
+            sector::open(files, path, TAG).await
+        }
+        opened => opened,
+    };
+    Ok(opened?.0)
 }
 
 /// The bytes of the file that holds `address`.

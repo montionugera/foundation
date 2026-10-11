@@ -194,12 +194,12 @@ impl Node {
     /// founds the root region and reads or makes `admin.key`), then writes the file
     /// `address` in the data directory, with the node's key, the public key of its
     /// transport, and the bound address, then serves the port until its transport or
-    /// the mesh's group stops, which stops the node. It removes `address` when it stops
-    /// serving, before the lock drops; a crash leaves the file. It admits each member
-    /// of the region, and gives other peers at most 256 places at once: one for each
-    /// session of a program, and one for the key of a node. At the bound, the oldest
-    /// place frees for a new peer, and its session closes unless its peer is now a
-    /// member, so a peer outside the region keeps its session until 256 later peers
+    /// the mesh's group stops, which stops the node. It writes `address` empty when it
+    /// stops serving, before the lock drops; a crash leaves the address. It admits each
+    /// member of the region, and gives other peers at most 256 places at once: one for
+    /// each session of a program, and one for the key of a node. At the bound, the
+    /// oldest place frees for a new peer, and its session closes unless its peer is now
+    /// a member, so a peer outside the region keeps its session until 256 later peers
     /// took a place. Returns once each shard runs or one has failed to start. No shard
     /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
     /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
@@ -368,7 +368,7 @@ impl Node {
     /// until it completes or shard 0 ends, which drops it. A panic in a task ends shard
     /// 0 and fails the node: [`Node::join`] gives [`Error::Panicked`], unless the node
     /// saw the transport or the mesh's group stop first, which gives
-    /// [`Error::Transport`] or [`Error::Group`], or did not make the file `address`,
+    /// [`Error::Transport`] or [`Error::Group`], or did not write the file `address`,
     /// which gives [`Error::Directory`].
     pub fn spawn<F>(&self, task: impl FnOnce(hub::Hub) -> F + Send + 'static)
     where
@@ -433,9 +433,9 @@ impl Node {
     /// [`Error::Mesh`] for a stored region or a mesh that did not open,
     /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
     /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
-    /// else [`Error::Directory`] for a file `address` that shard 0 could not remove,
-    /// else [`Error::Panicked`] for the first shard by core that panicked. Any failed
-    /// shard stops the node.
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
+    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
+    /// failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -946,7 +946,7 @@ impl Serve {
     /// each spec that takes effect later, runs each connector that the spec in use
     /// places on this node ([`connectors::Runs`]), and serves the node's port, until
     /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
-    /// of [`end`], with the file `address` of `files` there while it serves
+    /// of [`end`], with the address in the file `address` of `files` while it serves
     /// ([`address::hold`]). A transport or a group that ends it goes into `failed`
     /// before it drops the tasks given that still run, and the error of `address`
     /// after it, unless one is there. Before it returns, it drops the tasks, the
@@ -988,8 +988,7 @@ impl Serve {
             .endpoint
             .open(identity, files.clone(), pool, tasks.clone());
         let (transport, mesh) = opened.await;
-        let freed = transport.ended();
-        let (inbox, time) = (self.inbox, self.time);
+        let (freed, inbox, time) = (transport.ended(), self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
         // ends, on each path, or is a task of the mesh, awaited below, a task of the
         // hub, which ends as `hub::Hub::new` states, or a task that a connector's run
@@ -999,39 +998,41 @@ impl Serve {
             let Ok(mesh) = mesh.map_err(&fail) else {
                 return None;
             };
-            let region = mesh.clone().map(|mesh| hub::Region {
-                mesh,
-                transport: Rc::clone(&transport),
-            });
-            let hub = hub::Hub::new(hub::Config {
-                home,
-                interner,
-                tasks: tasks.clone(),
-                node: key,
-                time: time.clone(),
-                entropy: entropy.clone(),
-                region,
-            });
-            let parts = mesh.as_ref().map(|mesh| {
-                let kinds = Arc::new(kinds());
-                let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
-                let config = connector::supervisor::Config {
-                    kinds,
-                    clock: clock.clone(),
-                    entropy,
-                    net,
-                    tasks: tasks.clone(),
-                    hub: hub.clone(),
-                };
-                (ops, (mesh, runs(mesh, key, config)))
-            });
-            let (ops, runs) = parts.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let group = follow(runs, hub.clone()).await;
-            let port =
-                route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
-            let stop = until(guard, port, group, fail);
-            let serve = pin!(inbox.serve(task::Handles { hub, ops }, tasks, stop));
+            let serve = pin!(async move {
+                let region = mesh.clone().map(|mesh| hub::Region {
+                    mesh,
+                    transport: Rc::clone(&transport),
+                });
+                let hub = hub::Hub::new(hub::Config {
+                    home,
+                    interner,
+                    tasks: tasks.clone(),
+                    node: key,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
+                    region,
+                });
+                let parts = mesh.as_ref().map(|mesh| {
+                    let kinds = Arc::new(kinds());
+                    let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
+                    let config = connector::supervisor::Config {
+                        kinds,
+                        clock: clock.clone(),
+                        entropy,
+                        net,
+                        tasks: tasks.clone(),
+                        hub: hub.clone(),
+                    };
+                    (ops, (mesh, runs(mesh, key, config)))
+                });
+                let (ops, runs) = parts.unzip();
+                let group = follow(runs, hub.clone()).await;
+                let port =
+                    route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
+                let stop = until(guard, port, group, fail);
+                inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
+            });
             // Before `serve` drops its tasks, so that `join` ranks the error above a
             // panic in a task's drop. After a stop that failed the node, its error
             // stands.
@@ -1222,7 +1223,7 @@ pub enum Error {
     },
     /// A file call that locks the data directory, reads or records its shard count or
     /// the node's name or its budgets, reads or writes the node's key or the first
-    /// admin's key, or writes or removes the file `address`, failed.
+    /// admin's key, or writes the file `address`, failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),

@@ -3,13 +3,10 @@ use std::rc::Rc;
 use super::*;
 use crate::address::{self, Address, FILE, LEN};
 
-/// The file that `sector::publish` renames to [`FILE`].
-const NEW: &str = "address.new";
-
-/// What a data directory that [`keyed`] made holds after a clean stop of a node with
-/// no region on two cores.
-const STOPPED: [&str; 7] = [
-    "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+/// What a data directory that [`keyed`] made holds while a node with no region runs
+/// on two cores, and after it stops.
+const STOPPED: [&str; 8] = [
+    "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
 ];
 
 /// Starts a node with no region on `host`, which [`keyed`] made, with its port at
@@ -51,26 +48,59 @@ fn meanwhile<T: Send + 'static, F: Future<Output = T> + 'static>(
     value.expect("the body ends in a millisecond")
 }
 
+/// The bytes of the file `address` of `files`, or `None` when the file is not there.
+///
+/// # Panics
+///
+/// When the file has another length.
+async fn read(files: &env::files::Files) -> Option<[u8; LEN]> {
+    let file = match files.open(Path::new(FILE), env::files::Mode::Read).await {
+        Err(env::files::Error::NotFound { .. }) => return None,
+        file => file.expect("opens"),
+    };
+    assert_eq!(file.len(), LEN as u64, "a file of 99 bytes");
+    let pool = block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
+    let into = pool.alloc(LEN).expect("a block");
+    let bytes = file.read_at(0, into).await.expect("reads").to_vec();
+    Some(bytes.try_into().expect("a read of 99 bytes"))
+}
+
+/// The bytes of the file `address` of `host`, as [`read`] gives them. A node on
+/// `host` can run meanwhile.
+fn bytes(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<[u8; LEN]> {
+    meanwhile(sim, host, |files| async move { read(&files).await })
+}
+
 /// The address in the file `address` of `host`, or `None` when the file is not
-/// there. A node on `host` can run meanwhile.
+/// there or holds zero bytes. A node on `host` can run meanwhile.
 ///
 /// # Panics
 ///
 /// When the file is not one that a node wrote whole.
 fn held(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Address> {
-    meanwhile(sim, host, |files| async move {
-        let file = match files.open(Path::new(FILE), env::files::Mode::Read).await {
-            Err(env::files::Error::NotFound { .. }) => return None,
-            file => file.expect("opens"),
-        };
-        assert_eq!(file.len(), LEN as u64, "a file of 99 bytes");
-        let pool =
-            block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
-        let into = pool.alloc(LEN).expect("a block");
-        let bytes = file.read_at(0, into).await.expect("reads").to_vec();
-        let bytes: [u8; LEN] = bytes.try_into().expect("a read of 99 bytes");
-        Some(address::decode(&bytes).expect("a file that a node wrote"))
-    })
+    let bytes = bytes(sim, host)?;
+    (bytes != [0; LEN])
+        .then(|| address::decode(&bytes).expect("a file that a node wrote"))
+}
+
+/// Makes a file that takes each free byte of the disk of `host`, as another writer
+/// can.
+fn fill(sim: &mut sim::Sim, host: &sim::node::Node) {
+    let free = sim
+        .run_on(host, |host, _| async move {
+            let files = host.files();
+            files.sync_dir(Path::new("")).await.expect("syncs");
+            let len = files.free().await.expect("the free bytes");
+            let mode = env::files::Mode::Create { len };
+            let file = files.open(Path::new("other"), mode).await;
+            let file = file.expect("the file of the other writer opens");
+            file.sync().await.expect("syncs");
+            file.close().await;
+            files.sync_dir(Path::new("")).await.expect("syncs");
+            files.free().await.expect("the free bytes")
+        })
+        .expect("the run ends");
+    assert_eq!(free, 0);
 }
 
 /// The entries of the data directory of `host`, sorted. A node on `host` can run
@@ -84,13 +114,6 @@ fn entries(sim: &mut sim::Sim, host: &sim::node::Node) -> Vec<PathBuf> {
     });
     entries.sort();
     entries
-}
-
-/// What [`entries`] gives while a node with no region runs on two cores.
-fn running() -> Vec<PathBuf> {
-    let mut running = vec![PathBuf::from(FILE)];
-    running.extend(STOPPED.map(PathBuf::from));
-    running
 }
 
 /// The address of a node on `host` that [`keyed`] made, with its port at `port`.
@@ -137,7 +160,7 @@ fn dial(
 
 /// A node that runs holds its key, the public key of its transport, and the address
 /// that its port is bound at in `address`, and a program that dials them reaches it.
-/// The file is gone after a clean stop.
+/// The file holds no address after a clean stop.
 #[test]
 fn a_running_node_holds_its_keys_and_its_bound_address() {
     for (port, stored) in [(PORT, false), (0, false), (PORT, true), (0, true)] {
@@ -185,16 +208,21 @@ fn a_running_node_holds_the_address_of_the_corpus() {
     assert_eq!(stop(&mut sim, node), Ok(()));
 }
 
-/// A clean stop removes `address`, and leaves no `address.new`.
+/// A clean stop writes `address` empty: the input `address-zeros` of the fuzz
+/// corpus, which holds no address.
 #[test]
-fn a_clean_stop_removes_the_address() {
+fn a_clean_stop_writes_the_address_empty() {
+    let empty: &[u8; LEN] =
+        include_bytes!("../../../../oracles/fuzz/node_identity/address-zeros");
+    assert_eq!(address::decode(empty), None);
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     let node = start(&host, PORT);
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    assert_eq!(entries(&mut sim, &host), running());
+    assert_eq!(entries(&mut sim, &host), STOPPED.map(PathBuf::from));
     assert_eq!(stop(&mut sim, node), Ok(()));
     assert_eq!(listed(&mut sim, &host, ""), STOPPED.map(PathBuf::from));
+    assert_eq!(bytes(&mut sim, &host).as_ref(), Some(empty));
 }
 
 /// Whether a node holds `address` when it has run for `after`: what a process crash
@@ -210,7 +238,7 @@ fn published(after: Span) -> bool {
 }
 
 /// A stop at any point of the start, then a probe that takes the lock as soon as it
-/// is free: the node has removed `address` by then.
+/// is free: `address` holds no address by then.
 #[test]
 fn the_lock_outlives_the_address() {
     let mut seen = [false; 2];
@@ -224,14 +252,13 @@ fn the_lock_outlives_the_address() {
         let found = sim
             .run_on(&host, |host, _| async move {
                 let (lock, _) = take_lock(&host).await;
-                let files = host.files();
-                let found = files.open(Path::new(FILE), env::files::Mode::Read).await;
+                let found = read(&host.files()).await;
                 drop(lock);
-                found.map(drop)
+                found
             })
             .expect("the probe ends");
-        let absent = matches!(found, Err(env::files::Error::NotFound { .. }));
-        assert!(absent, "at {after:?}: {found:?}");
+        let empty = found.is_none_or(|bytes| bytes == [0; LEN]);
+        assert!(empty, "at {after:?}: {found:02x?}");
         let busy = Error::Directory(env::files::Error::Busy {
             path: PathBuf::from("lock"),
         });
@@ -240,7 +267,7 @@ fn the_lock_outlives_the_address() {
         assert!(joined == Ok(()) || joined == Err(busy), "at {after:?}");
         seen[usize::from(published(after))] = true;
     }
-    assert_eq!(seen, [true; 2], "a stop before and after the publish");
+    assert_eq!(seen, [true; 2], "a stop before and after the write");
 }
 
 /// A crash leaves `address`, and the next start writes its own in its place.
@@ -263,18 +290,20 @@ fn a_crash_leaves_the_address_until_the_next_start_writes_its_own() {
     }
 }
 
-/// A start removes an `address.new` that a crash left.
+/// A start makes `address` again when it has another length, as a later form or a
+/// write by hand can leave it.
 #[test]
-fn a_start_removes_a_new_address_that_a_crash_left() {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = keyed(&mut sim, 2);
-    write(&mut sim, &host, NEW, vec![1; 7]);
-    let node = start(&host, PORT);
-    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    assert_eq!(held(&mut sim, &host), Some(of(&host, PORT)));
-    assert_eq!(entries(&mut sim, &host), running());
-    assert_eq!(stop(&mut sim, node), Ok(()));
-    assert_eq!(listed(&mut sim, &host, ""), STOPPED.map(PathBuf::from));
+fn a_start_makes_again_an_address_of_another_length() {
+    for len in [0, 7, 200] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        write(&mut sim, &host, FILE, vec![1; len]);
+        let node = start(&host, PORT);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        assert_eq!(held(&mut sim, &host), Some(of(&host, PORT)), "{len} bytes");
+        assert_eq!(stop(&mut sim, node), Ok(()), "{len} bytes");
+        assert_eq!(held(&mut sim, &host), None, "{len} bytes");
+    }
 }
 
 /// A power cut at any time of a start leaves no `address` or the whole one.
@@ -301,54 +330,77 @@ fn a_power_cut_during_a_start_leaves_no_address_or_the_whole_address() {
             seen[usize::from(whole)] = true;
         }
     }
-    assert_eq!(seen, [true; 2], "a power cut before and after the publish");
+    assert_eq!(seen, [true; 2], "a power cut before and after the write");
 }
 
-/// A failed file call of the publish stops the node with its error, and the next
-/// start publishes.
+/// A failed file call of the write stops the node with its error, and the next start
+/// writes.
 #[test]
-fn a_failed_file_call_of_the_publish_stops_the_node() {
-    use env::files::Operation::{Open, Remove, Rename, Sync, WriteAt};
-    for (path, operation, text) in [
-        (FILE, Remove, "remove of address failed with OS error 5"),
-        (NEW, Remove, "remove of address.new failed with OS error 5"),
-        (NEW, Open, "open of address.new failed with OS error 5"),
-        (
-            NEW,
-            WriteAt,
-            "write_at of address.new failed with OS error 5",
-        ),
-        (NEW, Sync, "sync of address.new failed with OS error 5"),
-        (NEW, Rename, "rename of address.new failed with OS error 5"),
+fn a_failed_file_call_of_the_write_stops_the_node() {
+    use env::files::Operation::{Open, ReadAt, Sync, WriteAt};
+    for (operation, text) in [
+        (Open, "open of address failed with OS error 5"),
+        (ReadAt, "read_at of address failed with OS error 5"),
+        (WriteAt, "write_at of address failed with OS error 5"),
+        (Sync, "sync of address failed with OS error 5"),
     ] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
-        host.fail_file(Path::new(path), operation);
+        host.fail_file(Path::new(FILE), operation);
         let node = start(&host, PORT);
-        assert_eq!(sim.run(), Ok(()), "{operation:?} {path}");
+        assert_eq!(sim.run(), Ok(()), "{operation:?}");
         let error = Error::Directory(env::files::Error::Io {
-            path: PathBuf::from(path),
+            path: PathBuf::from(FILE),
             operation,
             code: 5,
         });
-        assert_eq!(node.join(), Err(error.clone()), "{operation:?} {path}");
+        assert_eq!(node.join(), Err(error.clone()), "{operation:?}");
         assert_eq!(
             error.to_string(),
             format!("cannot use the data directory: {text}")
         );
-        assert_eq!(held(&mut sim, &host), None, "{operation:?} {path}");
+        assert_eq!(held(&mut sim, &host), None, "{operation:?}");
         let node = start(&host, PORT);
         assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-        let next = held(&mut sim, &host);
-        assert_eq!(next, Some(of(&host, PORT)), "{operation:?} {path}");
-        assert_eq!(stop(&mut sim, node), Ok(()), "{operation:?} {path}");
+        assert_eq!(
+            held(&mut sim, &host),
+            Some(of(&host, PORT)),
+            "{operation:?}"
+        );
+        assert_eq!(stop(&mut sim, node), Ok(()), "{operation:?}");
     }
 }
 
-/// A task given whose drop panics, on a node whose publish fails: `join` ranks the
-/// error of the publish above the panic.
+/// A failed remove of an `address` of another length stops the node with its error,
+/// and leaves the file.
 #[test]
-fn a_panic_after_a_failed_publish_gives_the_error_of_the_publish() {
+fn a_failed_remove_of_an_address_of_another_length_stops_the_node() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    write(&mut sim, &host, FILE, vec![1; 7]);
+    host.fail_file(Path::new(FILE), env::files::Operation::Remove);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run(), Ok(()));
+    let error = Error::Directory(env::files::Error::Io {
+        path: PathBuf::from(FILE),
+        operation: env::files::Operation::Remove,
+        code: 5,
+    });
+    assert_eq!(node.join(), Err(error));
+    let len = sim.run_on(&host, |host, _| async move {
+        let file = host
+            .files()
+            .open(Path::new(FILE), env::files::Mode::Read)
+            .await;
+        file.expect("the file stays").len()
+    });
+    assert_eq!(len, Ok(7));
+}
+
+/// A task given whose drop panics, on a node whose write of `address` fails: `join`
+/// ranks the error of the write above the panic.
+#[test]
+fn a_panic_after_a_failed_write_gives_the_error_of_the_write() {
     struct Panics;
     impl Drop for Panics {
         fn drop(&mut self) {
@@ -357,7 +409,7 @@ fn a_panic_after_a_failed_publish_gives_the_error_of_the_publish() {
     }
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    host.fail_file(Path::new(NEW), env::files::Operation::Open);
+    host.fail_file(Path::new(FILE), env::files::Operation::Open);
     let node = start(&host, PORT);
     let panics = Panics;
     node.spawn(move |_| async move { drop(panics) });
@@ -371,7 +423,7 @@ fn a_panic_after_a_failed_publish_gives_the_error_of_the_publish() {
     );
     assert_eq!(sim.run(), Ok(()));
     let error = Error::Directory(env::files::Error::Io {
-        path: PathBuf::from(NEW),
+        path: PathBuf::from(FILE),
         operation: env::files::Operation::Open,
         code: 5,
     });
@@ -379,8 +431,8 @@ fn a_panic_after_a_failed_publish_gives_the_error_of_the_publish() {
 }
 
 /// A sync of the data directory that fails at any time of a start stops the node,
-/// which holds no `address` once it has ended. The last sync of a start is the one
-/// of the publish.
+/// which holds no address in `address` once it has ended. The last sync of a start
+/// is the one of the write.
 #[test]
 fn a_failed_sync_of_the_data_directory_leaves_no_address() {
     let sync = env::files::Error::Io {
@@ -416,25 +468,21 @@ fn a_failed_sync_of_the_data_directory_leaves_no_address() {
             assert_eq!(joined, Ok(()), "a start with no sync left");
         }
     }
-    assert_eq!(
-        last,
-        Some(Error::Directory(sync)),
-        "the sync of the publish"
-    );
+    assert_eq!(last, Some(Error::Directory(sync)), "the sync of the write");
 }
 
-/// A remove of `address` that fails at the stop gives its error at `join` and leaves
-/// the file, and the next start writes its own.
+/// An empty write of `address` that fails at the stop gives its error at `join` and
+/// leaves the address, and the next start writes its own.
 #[test]
-fn a_failed_remove_at_the_stop_fails_the_node() {
+fn a_failed_empty_write_at_the_stop_fails_the_node() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     let node = start(&host, PORT);
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    host.fail_file(Path::new(FILE), env::files::Operation::Remove);
+    host.fail_file(Path::new(FILE), env::files::Operation::WriteAt);
     let error = Error::Directory(env::files::Error::Io {
         path: PathBuf::from(FILE),
-        operation: env::files::Operation::Remove,
+        operation: env::files::Operation::WriteAt,
         code: 5,
     });
     assert_eq!(stop(&mut sim, node), Err(error));
@@ -446,20 +494,79 @@ fn a_failed_remove_at_the_stop_fails_the_node() {
     assert_eq!(held(&mut sim, &host), None);
 }
 
-/// A remove of `address` that fails after the transport stopped the node: `join`
-/// gives the error of the transport.
+/// An empty write of `address` that fails after the transport stopped the node:
+/// `join` gives the error of the transport.
 #[test]
-fn a_failed_remove_after_the_transport_stops_gives_the_transport_error() {
+fn a_failed_empty_write_after_the_transport_stops_gives_the_transport_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    host.fail_file(Path::new(FILE), env::files::Operation::Remove);
+    host.fail_file(Path::new(FILE), env::files::Operation::WriteAt);
     host.fail_udp(listen(&host));
     assert_eq!(sim.run(), Ok(()));
     let error = transport::Error::Network {
         error: env::net::Error::Io { code: 5 },
     };
     assert_eq!(node.join(), Err(Error::Transport(error)));
-    assert!(held(&mut sim, &host).is_some(), "the remove failed");
+    assert!(held(&mut sim, &host).is_some(), "the empty write failed");
+}
+
+/// A node whose rings and `address` are made starts again after another writer
+/// filled the disk.
+#[test]
+fn a_restart_on_a_full_disk_serves() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+    fill(&mut sim, &host);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(held(&mut sim, &host), Some(of(&host, PORT)));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+}
+
+/// After a crash leaves `address`, a start on a disk that another writer filled
+/// writes its own address over the old one.
+#[test]
+fn a_restart_after_a_crash_on_a_full_disk_serves() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    sim.crash(&host, sim::Crash::Process);
+    drop(node);
+    assert_eq!(held(&mut sim, &host), Some(of(&host, PORT)));
+    fill(&mut sim, &host);
+    let node = start(&host, PORT + 1);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(held(&mut sim, &host), Some(of(&host, PORT + 1)));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+}
+
+/// A start whose make of `address` finds no room on the disk stops the node with
+/// [`env::files::Error::Full`] before it serves.
+#[test]
+fn a_start_with_no_room_for_the_address_fails() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+    sim.run_on(&host, |host, _| async move {
+        let files = host.files();
+        files.remove(Path::new(FILE)).await.expect("removes");
+        files.sync_dir(Path::new("")).await.expect("syncs");
+    })
+    .expect("the run ends");
+    fill(&mut sim, &host);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run(), Ok(()));
+    let full = env::files::Error::Full {
+        path: PathBuf::from(FILE),
+    };
+    assert_eq!(node.join(), Err(Error::Directory(full)));
+    assert_eq!(bytes(&mut sim, &host), None);
 }

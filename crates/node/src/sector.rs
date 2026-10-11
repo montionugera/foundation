@@ -115,6 +115,18 @@ pub(crate) async fn write<const N: usize>(
     files.sync_dir(Path::new("")).await
 }
 
+/// Writes `N` zero bytes, which [`open`] reads as [`Held::Nothing`], to `file`, which
+/// [`open`] gave, with no sync.
+///
+/// # Errors
+///
+/// The error of the write.
+pub(crate) async fn clear<const N: usize>(
+    file: &File,
+) -> Result<(), env::files::Error> {
+    file.write_at(0, &[block(&[0; N])]).await
+}
+
 /// `bytes`, when a node wrote them to a file whose tag is `tag`: they start with the
 /// tag, and their checksum matches.
 pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> Option<[u8; N]> {

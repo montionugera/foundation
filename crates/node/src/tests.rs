@@ -832,7 +832,8 @@ mod buffer {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let shards = ["shard-0", "shard-1"];
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
         ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
         for shard in shards {
@@ -1108,8 +1109,9 @@ mod buffer {
             assert_eq!(sim.run(), Ok(()), "at {after:?}");
             assert_eq!(node.join(), Ok(()), "at {after:?}");
             let mut listed = listed(&mut sim, &host, "");
-            let late = ["budget", "node.key"].map(PathBuf::from);
-            // Shard 0 keeps the budgets, then reads the key, once each ring has opened.
+            let late = ["budget", "node.key", "address"].map(PathBuf::from);
+            // Shard 0 keeps the budgets, then reads the key, then writes `address`,
+            // once each ring has opened.
             if listed.contains(&late[0]) {
                 listed.retain(|name| !late.contains(name));
                 assert_eq!(listed, all, "at {after:?}");
@@ -1373,6 +1375,7 @@ mod directory {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
         let made = [
+            "address",
             "budget",
             "lock",
             "name",
@@ -1487,8 +1490,8 @@ mod directory {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", &name,
-            "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            &name, "shards-2",
         ];
         assert_eq!(listed, made.map(PathBuf::from));
     }
@@ -1512,8 +1515,8 @@ mod directory {
             .expect("the run ends");
             assert_eq!(run_on(&mut sim, &host), Ok(()), "{name}");
             let mut made = [
-                "budget", "lock", "name", "node.key", "shard-0", "shard-1", &name,
-                "shards-2",
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                &name, "shards-2",
             ];
             made.sort_unstable();
             let made = made.map(PathBuf::from);
@@ -1955,7 +1958,8 @@ mod lock {
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(first.join(), Ok(()));
         let made = [
-            "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
         ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
     }
@@ -1983,7 +1987,8 @@ mod lock {
             assert_eq!(joined[1 - claimed], Err(busy()), "seed {seed}");
             seen[claimed] = true;
             let made = [
-                "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                "shards-2",
             ];
             let made = made.map(PathBuf::from);
             assert_eq!(listed(&mut sim, &host, ""), made, "seed {seed}");
@@ -3918,7 +3923,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_597_197;
+        const WRITE: i64 = 1_793_612_261;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5181,9 +5186,9 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], the sim runs the group's stop, then
-        /// this task, before the node sees the stop. The task asserts that the group
-        /// stopped before it panics.
+        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// instant make the sim run the group's stop, then this task, before the node
+        /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
         fn a_panic_before_the_node_sees_the_group_stop_gives_the_panic() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -5191,6 +5196,13 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
+            for _ in 0..2 {
+                let own = host.clone();
+                node.spawn(move |_| async move {
+                    own.clock().sleep_until(at).await;
+                    std::future::pending::<()>().await;
+                });
+            }
             let own = host.clone();
             node.operate(move |ops| async move {
                 let mut watch = ops.mesh().watch(INDEX);
@@ -5400,9 +5412,6 @@ mod port {
             let free_bytes = sim
                 .run_on(&host, |host, _| async move {
                     let files = host.files();
-                    // The stop removes `address` with no sync, so the room it held
-                    // frees only at the next sync of the directory.
-                    files.sync_dir(Path::new("")).await.expect("syncs");
                     let free_bytes = files.free().await.expect("the free bytes");
                     let len = free_bytes - (1 << 30) + 1;
                     let mode = env::files::Mode::Create { len };

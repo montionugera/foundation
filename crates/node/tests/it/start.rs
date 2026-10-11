@@ -634,14 +634,21 @@ fn a_listen_that_is_no_socket_address_fails() {
 }
 
 #[test]
-fn a_node_holds_the_file_address_while_it_runs_and_removes_it_at_sigterm() {
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test reads what the binary wrote to the disk"
+)]
+fn a_node_holds_the_file_address_while_it_runs_and_writes_it_empty_at_sigterm() {
     let mut rig = Rig::new();
     let address = rig.dir.join("foundation-data/data/address");
     rig.start();
-    let len = std::fs::metadata(&address)
-        .expect("stat the file address")
-        .len();
-    assert_eq!(len, 99);
+    let held = std::fs::read(&address).expect("read the file address");
+    assert_eq!(held.len(), 99);
+    assert!(
+        held.iter().any(|&byte| byte != 0),
+        "the file holds no address"
+    );
     assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
-    assert!(!address.exists(), "the stop left the file address");
+    let stopped = std::fs::read(&address).expect("read the file address");
+    assert_eq!(stopped, [0; 99]);
 }
