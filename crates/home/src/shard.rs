@@ -380,15 +380,13 @@ impl Shard {
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
         let gate = self.indexes.swap_remove(place).gate;
-        // With no writer open, a holder is a restored one. Each other gate equals a
-        // new one.
+        // With no writer open, a holder is a restored one.
         if gate.holder().is_some() || gate.handoff().is_some() {
             self.kept.insert(slot, gate);
         }
         self.readers.shed(place);
         if place != last {
-            let moved = self.places.values_mut().find(|at| **at == last);
-            *moved.expect("invariant: the last place has a slot") = place;
+            self.places.insert(self.indexes[place].slot, place);
             let claims = self.writers.values_mut().flat_map(|s| &mut s.claims);
             for claim in claims.filter(|claim| claim.place == last) {
                 claim.place = place;
@@ -904,9 +902,9 @@ fn freeze(
 }
 
 /// Appends the unrecorded handoff of the index at each of `places`, each alone, on the
-/// live path at mesh time `mesh`, and marks it recorded. A handoff that
-/// finds no room in the ring or the pool stays unrecorded. Returns whether every
-/// handoff was recorded.
+/// live path at mesh time `mesh`, and marks it recorded. A handoff that finds no room
+/// in the ring or the pool stays unrecorded. Returns whether every handoff was
+/// recorded.
 ///
 /// # Errors
 ///

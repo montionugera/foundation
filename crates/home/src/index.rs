@@ -15,6 +15,7 @@ use crate::{Refusal, split};
 pub(crate) struct Index {
     /// The index's channel.
     pub(crate) key: channel::Key,
+    /// The index's slot in the shard.
     pub(crate) slot: Slot,
     /// Who may write the index.
     pub(crate) gate: Gate,

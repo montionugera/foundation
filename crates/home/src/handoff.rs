@@ -24,8 +24,8 @@ const _: () = assert!(
 );
 
 /// The buffer entry that records `handoff` on the live path of the index `index` at
-/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`, or no part when no
-/// writer holds control.
+/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`,
+/// or no part when no writer holds control.
 ///
 /// # Errors
 ///
