@@ -11,7 +11,7 @@
 - Memory: allocator (mimalloc 3 off the hot path), pool size classes and budget, commit
   and purge policy, queue kinds and capacities, spin windows (0 on a Pi), latest
   mailbox mechanics, a compact copy of the current value (B4), cache-line padding, the
-  cap on the request bodies and read opens that one hub holds
+  cap on the request bodies, read opens, and places of reads that one hub holds
   (`hub::serve::BODIES_BYTES_MAX`, 2 × `BODY_BYTES_MAX`, HUB LINK) and the share of one
   subject (`BODY_BYTES_MAX`).
 - Replication: seq block size, node lease length, check-in period, fence margin, gate

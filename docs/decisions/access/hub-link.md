@@ -90,14 +90,14 @@
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6069608203).
   Supersedes the `node::Config::key` clause of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066571400.
-  The request bodies and read opens that one hub holds are at most
+  The request bodies, read opens, and places of reads that one hub holds are at most
   `hub::serve::BODIES_BYTES_MAX`, 2 × `BODY_BYTES_MAX` (32 MiB). A link reserves a
   body's declared length when it decodes the `Request`, before it allocates or reads a
   byte of the body, and the reservation ends when the caller sends or drops its `Reply`.
   After that, the caller holds the body. A body that does not fit stops with `BUSY`
-  (`serve::Error::Bodies`), and the
-  link takes its next request. Lost: pool blocks for a body, which take the blocks that
-  live writes need; a cap on links as the bound, 16 MiB times the links. Decided by
+  (`serve::Error::Bodies`), and the link takes its next request. Lost: pool blocks for a
+  body, which take the blocks that live writes need; a cap on links as the bound, 16 MiB
+  times the links. Decided by
   `laptop.architect` (2026-10-08T21:34:56Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483); the
   names, and the drop of the node bound, by `laptop.architect` (2026-10-09T03:49:08Z,
@@ -126,12 +126,14 @@
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483).
   A read takes no request turn: a link serves its reads beside its one open request. The
   transport session's `streams_max` bounds the reads of a link; there is no `READS_MAX`.
-  A program holds one of the 256 peer places of `node::route` (its `PLACES` patch) for
-  each session, so while that patch holds, a node holds at most 256 × `streams_max`
-  reads of programs. The size of one read has no bound past the definitions: its
-  selector can match each channel. The node holds the open of a read before it checks
-  its signature, so the open reserves its length under `BODIES_BYTES_MAX` and the
-  subject's share, as a request body does, until the node decoded it; an open that does
+  A program holds one of the 256 peer places of `node::route` (its `PLACES` patch, NODE
+  PORT) for each session, so while that patch holds, a node holds at most 256 ×
+  `streams_max` reads of programs. The size of one read has no bound past the
+  definitions: its selector can match each channel. The node holds the open of a read
+  before it checks its signature, so the open reserves its length under
+  `BODIES_BYTES_MAX` and the subject's share, as a request body does, until the node
+  decoded it. Its places wait for room in the program's window, so they reserve their
+  heap bytes the same way until the node sent them. An open or a run of places that does
   not fit stops with `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an
   unnamed `hub::reader::Reader` for the read, at this node or at the home of another
   node.
