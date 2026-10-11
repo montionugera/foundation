@@ -1,7 +1,6 @@
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::pin::pin;
-use std::rc::Rc;
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -9,7 +8,7 @@ use env::net::Net;
 use env::rng::Rng;
 use sim::{Sim, node};
 
-use super::{Client, Node, Slot, answer};
+use super::{Answer, Client, Node, answer};
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::server::Server;
@@ -69,19 +68,20 @@ fn run<T: Send + 'static>(
     (value, sim.digest())
 }
 
-/// Starts a test server on `node`, with a Double at [`VALUE`] from its random values,
-/// runs `body` while the server runs, then closes the server.
-async fn serve<T>(node: &node::Node, body: impl AsyncFnOnce(Peer) -> T) -> T {
+/// Starts a test server on `node`, with room for `sessions` sessions and a Double at
+/// [`VALUE`] from its random values, runs `body` while the server runs, then closes
+/// the server.
+async fn serve<T>(
+    node: &node::Node,
+    sessions: u16,
+    body: impl AsyncFnOnce(Peer) -> T,
+) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
     let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
         .expect("the port is free");
-    let events = manager.events();
-    // SAFETY: the member takes its own loop.
-    let status = Status(unsafe { (events.members().start)(events.raw()) });
-    assert_eq!(status, Status::GOOD, "open62541 refused the loop");
     // SAFETY: the close below deletes the server before the manager drops.
-    let server = unsafe { Server::start(&manager, "", 4) };
+    let server = unsafe { Server::start(&manager, "", sessions) };
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
     server.add_double(VALUE, value);
     let peer = Peer {
@@ -93,7 +93,7 @@ async fn serve<T>(node: &node::Node, body: impl AsyncFnOnce(Peer) -> T) -> T {
     };
     let out = {
         let mut server_drive = pin!(manager.drive(|_| {
-            events.run();
+            manager.events().run();
             Poll::<()>::Pending
         }));
         let mut body = pin!(body(peer));
@@ -110,7 +110,7 @@ async fn serve<T>(node: &node::Node, body: impl AsyncFnOnce(Peer) -> T) -> T {
 /// The value of [`VALUE`] and the answer of a read of it, in a run of `seed`.
 fn spike(seed: u64) -> ((f64, Result<f64, Status>), u64) {
     run(seed, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             (peer.value, client.read(VALUE).await)
         })
@@ -131,7 +131,7 @@ fn a_client_reads_a_double_and_a_seed_replays() {
 #[test]
 fn a_read_of_an_unknown_node_fails_with_its_status() {
     let (read, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let unknown = Node { key: 1001, ..VALUE };
             client.read(unknown).await
@@ -144,7 +144,7 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
 #[test]
 fn a_read_of_another_type_fails_with_a_type_mismatch() {
     let (read, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             client.read(TIME).await
         })
@@ -156,7 +156,7 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
 #[test]
 fn a_connect_with_no_listener_fails_with_its_status() {
     let (status, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let address = SocketAddr::new(node.addresses()[0], PORT + 1);
             peer.connect(&format!("opc.tcp://{address}")).await.err()
         })
@@ -168,7 +168,7 @@ fn a_connect_with_no_listener_fails_with_its_status() {
 #[test]
 fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
     let (statuses, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let mut statuses = Vec::new();
             for url in ["http://127.0.0.1:4840", "opc.tcp://a\0b:4840"] {
                 statuses.push(peer.connect(url).await.err());
@@ -189,7 +189,7 @@ fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
 #[test]
 fn a_read_after_the_server_closes_fails_with_its_status() {
     let (read, _) = run(0, async |node| {
-        let mut client = serve(&node, async |mut peer| peer.connected().await).await;
+        let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
         client.read(VALUE).await
     });
     assert_eq!(read, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
@@ -200,7 +200,7 @@ fn a_read_after_the_server_closes_fails_with_its_status() {
 #[test]
 fn a_read_after_a_dropped_read_gets_its_own_answer() {
     let (reads, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+        serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             {
                 let mut dropped = pin!(client.read(VALUE));
@@ -226,29 +226,48 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
 }
 
 /// A drop of a client with an active session ends, and calls the callback of each
-/// read in flight, which frees its slot. The server then closes.
+/// read in flight, so the answer of a client must outlive its delete. The server then
+/// closes.
 #[test]
 fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
-    let (slot, _) = run(0, async |node| {
-        serve(&node, async |mut peer| {
+    let (value, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            let slot = Rc::new(Slot::new(None));
-            let data = Rc::into_raw(Rc::clone(&slot));
-            // SAFETY: the client lives. `answer` takes the count at `data`.
+            let outside = Answer::default();
+            let mut request = 0;
+            // SAFETY: the client lives, and `outside` outlives it.
             let status = Status(unsafe {
                 ffi::shim_client_read(
                     client.raw.as_ptr(),
                     VALUE.namespace,
                     VALUE.key,
                     answer,
-                    data.cast_mut().cast(),
+                    std::ptr::from_ref(&outside).cast_mut().cast(),
+                    &raw mut request,
                 )
             });
             assert_eq!(status, Status::GOOD);
+            outside.request.set(Some(request));
             drop(client);
-            (Rc::strong_count(&slot), slot.take())
+            outside.value.take()
         })
         .await
     });
-    assert_eq!(slot, (1, Some(Err(Status::BAD_SESSION_CLOSED))));
+    assert_eq!(value, Some(Err(Status::BAD_SESSION_CLOSED)));
+}
+
+/// A server with room for one session takes a second client only after the first
+/// closes its session.
+#[test]
+fn a_close_frees_the_session_on_the_server_and_a_drop_does_not() {
+    let (connects, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            peer.connected().await.close().await;
+            drop(peer.connected().await);
+            let url = peer.url.clone();
+            peer.connect(&url).await.err()
+        })
+        .await
+    });
+    assert_eq!(connects, Some(Status::BAD_TOO_MANY_SESSIONS));
 }

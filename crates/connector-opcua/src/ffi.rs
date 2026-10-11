@@ -32,6 +32,8 @@ impl Status {
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
     #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);
 
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
@@ -322,7 +324,6 @@ pub(crate) struct Channel(pub(crate) c_int);
 
 impl Channel {
     /// `UA_SECURECHANNELSTATE_CLOSED`.
-    #[cfg(any(test, feature = "sim"))]
     pub(crate) const CLOSED: Self = Self(0);
 }
 
@@ -387,6 +388,7 @@ unsafe extern "C" {
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);
+    pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
         url: *const c_char,
@@ -403,6 +405,7 @@ unsafe extern "C" {
         node: u32,
         callback: Read,
         data: *mut c_void,
+        request: *mut u32,
     ) -> u32;
     pub(crate) fn shim_value_double(value: *const c_void, out: *mut f64) -> u32;
 

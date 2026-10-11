@@ -5,7 +5,6 @@
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::ptr::{self, NonNull};
-use std::rc::Rc;
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -27,15 +26,25 @@ pub(crate) struct Node {
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. A drop closes its connection and waits for
-/// nothing.
+/// nothing, but leaves its session on the server until the session times out; a
+/// [`Client::close`] closes the session too.
 pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
+    /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
+    /// read in flight.
+    answer: Box<Answer>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
 
-/// The answer of a read. C holds one count from a read until its callback.
-type Slot = Cell<Option<Result<f64, Status>>>;
+/// The answer of the read in flight.
+#[derive(Default)]
+struct Answer {
+    /// The request of the read in flight. The callback drops the answer of another
+    /// request, which is a read whose future dropped.
+    request: Cell<Option<u32>>,
+    value: Cell<Option<Result<f64, Status>>>,
+}
 
 impl Client {
     /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
@@ -62,7 +71,11 @@ impl Client {
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
-        let this = Self { raw, connections };
+        let this = Self {
+            raw,
+            answer: Box::default(),
+            connections,
+        };
         // SAFETY: the client lives, and copies the URL.
         let status = Status(unsafe {
             ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr())
@@ -73,7 +86,7 @@ impl Client {
         this.connections
             .drive(|_| {
                 this.connections.events().run();
-                let (session, status) = this.state();
+                let (_, session, status) = this.state();
                 if status != Status::GOOD {
                     Poll::Ready(Err(status))
                 } else if session == ffi::Session::ACTIVATED {
@@ -93,44 +106,62 @@ impl Client {
     /// The status of open62541 when it refuses the request, the status of the answer
     /// or of its value, or `BadTypeMismatch` when the value is not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
-        let slot = Rc::new(Slot::new(None));
-        let data = Rc::into_raw(Rc::clone(&slot));
-        // SAFETY: the client lives. `answer` takes the count at `data`.
+        let mut request = 0;
+        // SAFETY: the client lives, and `answer` outlives it.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
                 node.namespace,
                 node.key,
                 answer,
-                data.cast_mut().cast(),
+                ptr::from_ref::<Answer>(&self.answer).cast_mut().cast(),
+                &raw mut request,
             )
         });
         if status != Status::GOOD {
-            // SAFETY: open62541 refused the request, so it never calls `answer`.
-            drop(unsafe { Rc::from_raw(data) });
             return Err(status);
         }
+        self.answer.request.set(Some(request));
         self.connections
             .drive(|_| {
                 self.connections.events().run();
-                slot.take().map_or(Poll::Pending, Poll::Ready)
+                self.answer.value.take().map_or(Poll::Pending, Poll::Ready)
             })
             .await
     }
 
-    /// Gives the session state and the connect status of the client.
-    fn state(&self) -> (ffi::Session, Status) {
-        let (mut session, mut status) = (ffi::Session(0), 0);
-        // SAFETY: the client lives, and the call writes each output that is not null.
+    /// Closes the session and the connection of the client, and waits until the
+    /// connection is closed.
+    pub(crate) async fn close(self) {
+        // SAFETY: the client lives. On a failure to send, it closes the connection.
+        unsafe { ffi::UA_Client_disconnectAsync(self.raw.as_ptr()) };
+        self.connections
+            .drive(|_| {
+                self.connections.events().run();
+                if self.state().0 == ffi::Channel::CLOSED {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+    }
+
+    /// Gives the channel state, the session state, and the connect status of the
+    /// client.
+    fn state(&self) -> (ffi::Channel, ffi::Session, Status) {
+        let (mut channel, mut session, mut status) =
+            (ffi::Channel(0), ffi::Session(0), 0);
+        // SAFETY: the client lives.
         unsafe {
             ffi::UA_Client_getState(
                 self.raw.as_ptr(),
-                ptr::null_mut(),
+                &raw mut channel,
                 &raw mut session,
                 &raw mut status,
             );
         }
-        (session, Status(status))
+        (channel, session, Status(status))
     }
 }
 
@@ -141,28 +172,32 @@ impl Drop for Client {
     }
 }
 
-/// Puts the answer of a read in its slot.
+/// Puts the answer of `request` in the [`Answer`] at `data` when it is the read in
+/// flight.
 ///
 /// # Safety
 ///
-/// `data` holds the count of a slot that `read` gave, and `value` points at the answer
-/// when `status` is `Good`. open62541 calls it once for each request.
+/// `data` points at a live [`Answer`], and `value` points at the answer when `status`
+/// is `Good`.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
     data: *mut c_void,
-    _: u32,
+    request: u32,
     status: u32,
     value: *mut c_void,
 ) {
-    // SAFETY: `read` gave this call one count of the slot.
-    let slot = unsafe { Rc::from_raw(data.cast_const().cast::<Slot>()) };
+    // SAFETY: the client that holds the answer lives.
+    let answer = unsafe { &*data.cast_const().cast::<Answer>() };
+    if answer.request.get() != Some(request) {
+        return;
+    }
     let mut double = 0.0;
     let mut status = Status(status);
     if status == Status::GOOD {
         // SAFETY: open62541 gives the answer with `Good`.
         status = Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
     }
-    slot.set(Some(if status == Status::GOOD {
+    answer.value.set(Some(if status == Status::GOOD {
         Ok(double)
     } else {
         Err(status)

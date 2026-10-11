@@ -624,7 +624,9 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
 }
 
 /* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
- * `client`. A later run of the loop fails. */
+ * `client`. The loop must hold no other client or server. A later run of the loop
+ * fails. The delete sends no CloseSession, so an active session stays on the server
+ * until it times out. */
 void shim_client_free(UA_Client *client) {
     set_state(UA_Client_getConfig(client)->eventLoop, UA_EVENTLOOPSTATE_STOPPED);
     UA_Client_delete(client);
@@ -651,12 +653,13 @@ UA_StatusCode shim_response_result(const void *response) {
 }
 
 /* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
- * with `data` and the answer. */
+ * with `data` and the answer. Writes the id of the request to `request` when it is not
+ * NULL. */
 UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
-                               void *data) {
+                               void *data, UA_UInt32 *request) {
     return UA_Client_readValueAttribute_async(
-        client, UA_NODEID_NUMERIC(namespace, node), callback, data, NULL);
+        client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no

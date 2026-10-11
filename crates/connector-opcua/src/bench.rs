@@ -252,7 +252,14 @@ impl Manager {
         let data = ptr::from_ref::<Answers>(&self.answers).cast_mut().cast();
         // SAFETY: the client lives, and `answers` outlives it.
         let status = Status(unsafe {
-            ffi::shim_client_read(self.clients[0].as_ptr(), 0, node, answer, data)
+            ffi::shim_client_read(
+                self.clients[0].as_ptr(),
+                0,
+                node,
+                answer,
+                data,
+                ptr::null_mut(),
+            )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the read");
     }
