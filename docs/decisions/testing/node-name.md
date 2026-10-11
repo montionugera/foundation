@@ -61,7 +61,8 @@
   `name::keep` reads the founding under the lock, after the file `name` and before the
   write, through `mesh::founding` with a pool of its own (the shard's buffer is not open
   yet), and takes the card of the key in `node.key`. A founding with no card of that key
-  gives no stored name. So does a data directory with no `node.key`. Lost: a check of
+  gives no stored name. So does a data directory with no `node.key` (both superseded
+  by #2433, below). Lost: a check of
   the name after `Mesh::open`, through `Mesh::member`, which a node that joins by ticket
   can also use; it is a second source beside the founding that `node::name` reads, and
   it adds a mesh that opens and closes at once. A file `name` that holds a whole name
@@ -94,6 +95,35 @@
   Supersedes the trigger "the first operation that renames a node in the region also
   writes this file, or refuses the rename" of
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
+  `name::keep` writes the given name only on a data directory that stores no founding.
+  With no file `name`, a stored founding with no card of the node, because the file
+  `node.key` is not there or its key has no card, stops the start in the claim with
+  `Error::NoCard`, also with `Region::Absent`. That start writes nothing: no file
+  `name`, and no new `node.key`, because the claim stops before the node loads its key.
+  `node::name` with no given name gives the same error. Both read the founding before
+  `node.key`, and read `node.key` also with no founding. A first start makes `node.key`
+  durable before the founding, so a read that sees the founding during a first start
+  also sees the key, and gives no `Error::NoCard`. The CLI prints the error as
+  `node.failed`, as it prints `Error::Key`, and the message states the way out: restore
+  `node.key` from a backup of this node, or give another data directory. Only a loss of
+  files gives the state, such as a removal by hand. A start with a file `name` reads no
+  founding, as before, so a key with no card then gives `Error::Mesh` from the open of
+  the region. Lost: the write as before, stated here and in the text of `node.unnamed`.
+  Once the first `node.key` is back, a start with the card name then gives
+  `Error::Renamed`, and a start with the written name runs on a card with another name
+  (#2355). Lost: no write, and a start that goes on to the open of the region. A start
+  with `Region::Absent` then runs a node with no stored name, a start with no `node.key`
+  makes a key that no region knows, and `node::name` still gives `Error::Unnamed`, whose
+  fix does not help. Lost: `Error::Key` for the state. Its text says that the file is
+  not a key that a node wrote, which is false for a whole key and for no file. Trigger:
+  the join by ticket (#1157). A node that joined has no card in the founding, so the
+  change of the trigger above, which takes the stored name from the node's member in the
+  region, also states when a node then gets `Error::NoCard`. Decided by
+  `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462).
+  Supersedes "A founding with no card of that key gives no stored name. So does a data
+  directory with no `node.key`." of
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495.
   The file is one sector: the tag `foundation/name/1`, the length of the name in one
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
