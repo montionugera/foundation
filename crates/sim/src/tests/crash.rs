@@ -821,6 +821,30 @@ fn a_crash_in_a_create_with_no_room_over_a_durable_file_with_no_bytes_can_remove
     }
 }
 
+// A remove of `a` that is durable at once would give `[]` when the prefix drops `b`.
+#[test]
+fn a_power_cut_can_drop_the_remove_of_a_create_with_no_room() {
+    let mut outcomes = BTreeSet::new();
+    for seed in 0..32 {
+        let (mut sim, node) = disk(seed);
+        crash_after(&mut sim, &node, Crash::Power, |node| async move {
+            drop(create_durable_empty(&node).await);
+            drop(create(&node, "b", 0).await);
+            until_crash(&node).await;
+            let mode = Mode::Create { len: 2 * MIB };
+            hang(node.files().open(Path::new("a"), mode)).await;
+        });
+        let names = sim
+            .run_on(&node, |node, _| async move {
+                node.files().list(Path::new("")).await.unwrap()
+            })
+            .unwrap();
+        outcomes.insert(names);
+    }
+    let expected = [names(&["a"]), names(&["a", "b"]), names(&["b"])];
+    assert_eq!(outcomes, BTreeSet::from(expected));
+}
+
 /// The delay of a file call on `node`. It draws from the files stream, so it shows
 /// how many draws came before it. Unlike the digest, it holds no result of a call.
 fn delay_of_a_call(sim: &mut Sim, node: &node::Node) -> Span {
