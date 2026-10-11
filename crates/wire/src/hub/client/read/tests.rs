@@ -396,6 +396,25 @@ mod run {
             Err(Error::Sample(text::Error::Parse(sample::Error::Syntax)))
         );
     }
+
+    #[test]
+    fn gives_a_bad_sample_type_before_a_missing_name() {
+        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
+        bytes[17] = b'x';
+        bytes.truncate(19);
+        assert_eq!(
+            place::decode(&bytes),
+            Err(Error::Sample(text::Error::Parse(sample::Error::Syntax)))
+        );
+    }
+
+    #[test]
+    fn gives_a_bad_name_before_a_cut_place_after_it() {
+        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
+        bytes[20] = 0xff;
+        bytes.extend_from_slice(&[0; 3]);
+        assert_eq!(place::decode(&bytes), Err(Error::Name(not_utf8(&[0xff]))));
+    }
 }
 
 #[test]
