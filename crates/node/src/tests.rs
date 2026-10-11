@@ -6167,6 +6167,32 @@ mod name {
         );
     }
 
+    /// A reserved name is the first failure, also before a disk budget that holds no
+    /// ring.
+    #[test]
+    fn a_reserved_name_starts_no_shard_and_comes_before_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let node = Node::start(Config {
+            name: name("@x"),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(host.shard_starts().len(), 0);
+        let disk = Size::from_bytes(1);
+        let node = Node::start(Config {
+            name: name("@x"),
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk,
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+    }
+
     /// A file of another length that is not 0, or that `encode` does not give, is
     /// not a name: also one whose padding is not zero, under a checksum that holds.
     #[test]
