@@ -1044,14 +1044,17 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
 
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`
 /// `cargo xtask open62541` lets call the global clock. Outside tests, the Rust names
-/// neither it nor a `UA_Log_Stdout` function. `shim_client_new` gives a client the
-/// logger of its loop, and the stderr tests of `event` check that.
+/// no `UA_Client_new` function, and the production code names no `UA_Log_Stdout`
+/// function. `shim_client_new` gives a client the logger of its loop, and the stderr
+/// tests of `event` check that.
 #[test]
-fn the_rust_outside_tests_gives_no_client_the_stdout_logger() {
-    let named = named_outside_tests(&root(), |name| {
-        name.starts_with("UA_Client_new") || name.starts_with("UA_Log_Stdout")
-    });
-    assert!(named.is_empty(), "the Rust outside tests names {named:?}");
+fn the_production_code_gives_no_client_the_stdout_logger() {
+    let mut named =
+        named_outside_tests(&root(), |name| name.starts_with("UA_Client_new"));
+    named.extend(named_in_production(&root(), |name| {
+        name.starts_with("UA_Log_Stdout")
+    }));
+    assert!(named.is_empty(), "the production code names {named:?}");
 }
 
 /// `cargo xtask open62541` lets `interruptServer` and `UA_random_seed` call the global
