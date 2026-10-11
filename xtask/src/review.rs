@@ -678,7 +678,8 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
-        // Whether each top-level block so far is a paragraph.
+        // Whether each top-level block so far is a paragraph. So it is false at a
+        // paragraph inside another block.
         let mut unbroken = true;
         let mut hiding = Vec::new();
         for node in root.descendants() {
@@ -704,7 +705,7 @@ impl<'a> Shown<'a> {
                     let open = bracket(node, data.sourcepos.end.line);
                     hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
                     let lines = texts(node);
-                    if top && unbroken {
+                    if unbroken {
                         shown.start.push(node, &lines);
                     }
                     shown.text.push(lines);
