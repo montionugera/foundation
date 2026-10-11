@@ -375,13 +375,10 @@ fn performer(text: &[Vec<String>]) -> bool {
 }
 
 /// Whether a top-level paragraph of `shown` after its round heading, other than its end
-/// lines unless it is `old`, has a line `Text fixes:` with a value ([`stated`]).
-fn fixed(shown: &Shown<'_>, old: bool) -> bool {
-    let blocks = match shown.blocks.split_last() {
-        Some((_, before)) if !old => before,
-        _ => &shown.blocks,
-    };
-    blocks
+/// lines, has a line `Text fixes:` with a value ([`stated`]).
+fn fixed(shown: &Shown<'_>) -> bool {
+    shown
+        .unended()
         .iter()
         .flat_map(|block| shown.paragraph(Some(block)))
         .filter_map(|l| l.strip_prefix("Text fixes:"))
@@ -455,7 +452,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
                 )
             })?,
         };
-        let hot = !old && hot(shown.end(), number)?;
+        let hot = shown.end().map_or(Ok(false), |end| hot(end, number))?;
         Ok(Round {
             number,
             reviewers: listed(reviewers.ok_or_else(|| missing("Reviewers"))?),
@@ -463,7 +460,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
-            fixed: fixed(&shown, old),
+            fixed: fixed(&shown),
             hot,
         })
     };
@@ -565,12 +562,17 @@ struct Shown<'a> {
     /// Each line of the comment that can hide text on GitHub or that the check cannot
     /// read, with its cause, in order.
     hiding: Vec<(&'a str, Cause)>,
+    /// Whether the comment was posted before [`CUTOFF`], so has no end lines.
+    old: bool,
 }
 
 impl<'a> Shown<'a> {
     /// Reads `body` ([`normalized`]), posted before [`CUTOFF`] when `old`.
     fn read(body: &'a str, old: bool) -> Self {
-        let mut shown = Self::default();
+        let mut shown = Self {
+            old,
+            ..Self::default()
+        };
         let starts: Vec<usize> = std::iter::once(0)
             .chain(body.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
@@ -643,10 +645,18 @@ impl<'a> Shown<'a> {
         self.paragraph(self.blocks.first())
     }
 
-    /// The end lines: the last block after the fields, or none when it is not a
-    /// paragraph or the fields are the only block.
-    fn end(&self) -> &[String] {
-        self.paragraph(self.blocks.get(1..).and_then(<[_]>::last))
+    /// The end lines: the last block after the fields, or no lines when it is not a
+    /// paragraph or the fields are the only block. `None` when the comment is old.
+    fn end(&self) -> Option<&[String]> {
+        (!self.old).then(|| self.paragraph(self.blocks.get(1..).and_then(<[_]>::last)))
+    }
+
+    /// The blocks after the round heading other than that of the end lines.
+    fn unended(&self) -> &[Option<usize>] {
+        match self.blocks.split_last() {
+            Some((_, before)) if !self.old && !before.is_empty() => before,
+            _ => &self.blocks,
+        }
     }
 
     /// The lines of `block`, one of [`Shown::blocks`], or none when it is not a
