@@ -1,8 +1,9 @@
-//! `node::identity::decode` gives an identity exactly for the bytes of `node.key` with
-//! the tag and the CRC32C, and that identity encodes to the same bytes.
+//! `node::identity::decode` and `node::admin::decode` each give a key exactly for the
+//! bytes of their file, `node.key` or `admin.key`, with the tag and the CRC32C, and
+//! that key encodes to the same bytes.
 //!
-//! Input: the 100 bytes of the file, or its first 96 bytes, to which the target appends
-//! their CRC32C.
+//! Input: the 100 bytes of `node.key` or the 54 bytes of `admin.key`, or the first 96
+//! or 50 bytes, to which the target appends their CRC32C.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]

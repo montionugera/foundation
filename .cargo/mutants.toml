@@ -79,11 +79,17 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
-  # The oracle of the `node_identity` fuzz target and of the property tests, and the
-  # entry of the target. Each panics only when `decode` is wrong, and the mutants of
-  # `decode` show that `check` does.
+  # The oracle of `node.key` in the `node_identity` fuzz target and the property
+  # tests. It panics only when `decode` is wrong, and the mutants of `decode` show that
+  # it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
+  # The oracle of `admin.key` in the same target and tests, for the same reason.
+  'crates/node/src/admin\.rs:.*replace check with \(\)',
+  # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
+  # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
+  # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
+  'crates/node/src/fuzz\.rs:.*replace file -> ',
   # No public call reads the entries that an open leaks. The unit test
   # `an_open_keeps_no_entry_once_it_drops` reads them.
   'crates/hub/src/serve\.rs:.*replace <impl Drop for Opening<._>>::drop with \(\)',
