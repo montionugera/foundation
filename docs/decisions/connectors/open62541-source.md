@@ -512,7 +512,13 @@
   2026-10-10 15:28 UTC), which moves to that function the cfg on `delete_server`
   approved at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
-  2026-10-10 03:05 UTC). The one function: asked by `laptop.architect-2`
+  2026-10-10 03:05 UTC). `server::Server` holds the started test server.
+  `Server::start` is an `unsafe fn` whose caller deletes the server before its manager
+  drops, and it takes the port of the server from the listener of the manager.
+  `Server::close` panics before the stop when its manager does not hold the loop of
+  the server: approved by `laptop.architect-2` at `d6d834286`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
+  2026-10-11 07:40 UTC). The one function: asked by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
   2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
   code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
@@ -527,4 +533,8 @@
   callbacks that still wait are those of the test, which do not read the server. That
   exception: approved by `laptop.architect-2` at `08c753cbe`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6103350388,
-  2026-10-10 23:32 UTC).
+  2026-10-10 23:32 UTC). The test of a close through another manager stops and
+  deletes its server itself, because `Server::close` panics before its stop and takes
+  the server. That exception: approved by `laptop.architect-2` at `d6d834286`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
+  2026-10-11 07:40 UTC).
