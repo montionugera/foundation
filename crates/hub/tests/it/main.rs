@@ -194,10 +194,11 @@ impl Test {
         }
     }
 
-    /// Pauses the hub's tasks, runs `writes`, and sleeps through their commit. Then
-    /// resumes the tasks, and lets the run pick whether main runs again before or
-    /// after the commit task. Gives whether main ran first.
+    /// Lets the hub's tasks settle, pauses them, runs `writes`, and sleeps through
+    /// their commit. Then resumes the tasks, and lets the run pick whether main runs
+    /// again before or after the commit task. Gives whether main ran first.
     async fn race(&self, writes: impl FnOnce()) -> bool {
+        self.clock.sleep(SETTLE).await;
         self.pause.pause();
         writes();
         self.clock.sleep(SETTLE).await;
@@ -1129,7 +1130,6 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
     races(64, (AREA, BODY_MAX), |seed, test| async move {
         let reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
-        test.clock.sleep(SETTLE).await;
         let first = test
             .race(|| {
                 write(&mut writer, &[test.now()], &[1]);
