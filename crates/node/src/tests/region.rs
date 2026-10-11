@@ -550,8 +550,8 @@ fn a_founding_that_does_not_read_after_the_name_file_is_gone_stops_the_node() {
     assert_eq!(kept(&mut sim, &host), None);
 }
 
-/// With no file `name`, a file `node.key` that holds no key, or the key of a node with
-/// no card in the founding, gives no stored name, and one that a node did not write
+/// With no file `name`, no file `node.key`, or the key of a node with no card in the
+/// founding, gives no stored name, and a file `node.key` that a node did not write
 /// gives [`Error::Key`].
 #[test]
 fn the_card_name_is_the_one_of_the_key_in_node_key() {
@@ -566,16 +566,18 @@ fn the_card_name_is_the_one_of_the_key_in_node_key() {
     let mut foreign = own.clone();
     foreign[40] ^= 1;
     let cases = [
-        (Vec::new(), Err(Error::Unnamed)),
-        (vec![0; identity::LEN], Err(Error::Unnamed)),
-        (another.to_vec(), Err(Error::Unnamed)),
-        (foreign, Err(Error::Key)),
-        (vec![0; identity::LEN - 1], Err(Error::Key)),
-        (own, Ok("edge".parse().unwrap())),
+        (None, Err(Error::Unnamed)),
+        (Some(another.to_vec()), Err(Error::Unnamed)),
+        (Some(foreign), Err(Error::Key)),
+        (Some(Vec::new()), Err(Error::Key)),
+        (Some(vec![0; identity::LEN]), Err(Error::Key)),
+        (Some(own), Ok("edge".parse().unwrap())),
     ];
     for (key, name) in cases {
         remove(&mut sim, &host, identity::FILE);
-        write(&mut sim, &host, identity::FILE, key.clone());
+        if let Some(key) = key.clone() {
+            write(&mut sim, &host, identity::FILE, key);
+        }
         assert_eq!(named(&mut sim, &host), name, "{key:?}");
     }
 }
