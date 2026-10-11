@@ -75,7 +75,8 @@ struct StartArgs {
     /// start reads it from there.
     #[arg(long)]
     name: Option<Name>,
-    /// The address of the node's one port.
+    /// The socket address of the node's one port. Port 0 takes a free port. The default
+    /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
 }

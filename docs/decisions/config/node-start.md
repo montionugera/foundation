@@ -3,12 +3,13 @@
   `Command` variant beside `mcp`, not an entry of the operation table: like `mcp`, it
   runs the process and is not an operation of a node. The help names it, and `foundation
   docs` does not. `ops::cli` writes nothing for it and gives `Run::Start(Start { data,
-  json, name })` to `main` in `node`. `--data` is `foundation-data` in the working
-  directory by default, so `cli` reads no environment. `start` has no MCP tool: MCP acts
-  on a running node. The first start on a data directory needs `--name`, and a later one
-  reads the name there (NODE NAME). Once the node has claimed the data directory, a
-  thread of `main` writes `Start::line`: `node edge runs in foundation-data. Stop it
-  with Ctrl-C.`, or `{"name":"edge","data":"foundation-data"}` with `--json`. `data` is
+  json, name, listen })` to `main` in `node`. `--data` is `foundation-data` in the
+  working directory by default, so `cli` reads no environment. `start` has no MCP tool:
+  MCP acts on a running node. The first start on a data directory needs `--name`, and a
+  later one reads the name there (NODE NAME). Once the node has claimed the data
+  directory, a thread of `main` writes `Start::line`: `node edge runs in
+  foundation-data. Stop it with Ctrl-C.`, or `{"name":"edge","data":"foundation-data"}`
+  with `--json`. The line comes after the file `address` holds the address. `data` is
   the path as given, not made absolute, so `cli` stays a function of its arguments. Each
   form writes it lossily, as `Path::to_string_lossy` does. The text form also escapes it
   as `Start::fail` does, each character but a quote as `char::escape_debug` does, so a
@@ -22,8 +23,8 @@
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
-  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot
-  use the data directory as it is": each `os::Error::Dir` whatever its errno, and each
+  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot use
+  the data directory as it is": each `os::Error::Dir` whatever its errno, and each
   `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
   `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
   `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
@@ -95,25 +96,27 @@
   `start --listen` gives `Start::listen`, the address of the node's one port,
   `127.0.0.1:0` by default, so the node takes a free port and no other host reaches it
   until the user gives an address. `main` gives it as `node::Config::listen`. A value
-  that is no socket address is `ops.argument`. A port that does not bind is
-  `node.port`, since the user chose the address: its message is the text of
-  `node::Error::Port`, and its fix "Give `--listen` an address of this host with a
-  port that is free and that this user can bind". Lost: `node.failed`, which gives an
-  agent no fix for a value that it gave. Decided by `laptop.architect-2`
-  (2026-10-11T10:21:07Z,
+  that is no socket address is `ops.argument`. A port that does not bind is `node.port`,
+  since the user chose the address: its message is the text of `node::Error::Port`, and
+  its fix "Give `--listen` an address of this host with a port that is free and that
+  this user can bind". Lost: `node.failed`, which gives an agent no fix for a value that
+  it gave. Decided by `laptop.architect-2` (2026-10-11T10:21:07Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
   Shard 0 writes the file `address` in the data directory in place, after the mesh opens
   and before the port takes a session: the node's key, the public key of its transport,
   and the bound socket address, in one sector with a CRC32C. Its form is private to
   `node`, and the fuzz target `node_identity` takes it by its length. The first start
   makes the file, and the file keeps its sector, so a later start needs no new room and
-  a node starts again on a full disk. When shard 0 stops serving, before the lock drops,
-  it writes the file empty in place (zero bytes of the same length), with no sync. A
-  crash leaves the address, and the next start writes over it. The start does not read
-  the file: it removes a file of another length and makes the file again. A file with no
-  address of a node (no file, an empty one, or one that a write tore) reads as no node
-  that runs. The port can free before the empty write: a program proves the node by its
-  public key, so no reader needs that order. A failed write at the start is
+  a node starts again on a full disk. The start does not fail for what the file holds:
+  it removes a file of another length and makes the file again. When shard 0 stops
+  serving, before the lock drops, it writes the file empty in place (zero bytes of the
+  same length), with no sync. A file with no address of a node (no file, an empty one,
+  or one that a write tore) reads as no node that runs. A file with an address is no
+  proof that a node runs: a crash, a panic of shard 0, or a failed empty write leaves
+  the address, a power cut after a stop can bring it back, and a start that ends before
+  its write leaves what the file held. A start that serves writes over it. So a program
+  takes only a node that proves the public key at the address, the empty write needs no
+  sync, and the port can free before the empty write. A failed write at the start is
   `Error::Directory` and stops the node before it serves; a failed empty write is
   `Error::Directory` unless the node already failed. Lost: a fixed port with no file,
   where two nodes on one host need two flags and the CLI still reads the public key from
@@ -132,4 +135,6 @@
   2026-10-11T10:21:07Z, the remove contract of #1744 PR 2a,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871;
   2026-10-11T10:43:15Z, the write in place,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
+  2026-10-11T10:50:50Z, this text,
+  https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).

@@ -195,11 +195,12 @@ impl Node {
     /// `address` in the data directory, with the node's key, the public key of its
     /// transport, and the bound address, then serves the port until its transport or
     /// the mesh's group stops, which stops the node. It writes `address` empty when it
-    /// stops serving, before the lock drops; a crash leaves the address. It admits each
-    /// member of the region, and gives other peers at most 256 places at once: one for
-    /// each session of a program, and one for the key of a node. At the bound, the
-    /// oldest place frees for a new peer, and its session closes unless its peer is now
-    /// a member, so a peer outside the region keeps its session until 256 later peers
+    /// stops serving, before the lock drops. An address in the file is no proof that a
+    /// node runs: a crash or a failed empty write leaves it. It admits each member of
+    /// the region, and gives other peers at most 256 places at once: one for each
+    /// session of a program, and one for the key of a node. At the bound, the oldest
+    /// place frees for a new peer, and its session closes unless its peer is now a
+    /// member, so a peer outside the region keeps its session until 256 later peers
     /// took a place. Returns once each shard runs or one has failed to start. No shard
     /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
     /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
@@ -358,7 +359,7 @@ impl Node {
     }
 
     /// Calls `task` with the node's hub on shard 0, once each shard has opened its
-    /// buffer, the data directory holds the file `address`, the node takes sessions,
+    /// buffer, the file `address` holds the node's address, the node takes sessions,
     /// and, with a region, the mesh has opened, and after each task given before it,
     /// then runs its future. So the code in its closure body runs in the order of the
     /// calls; the futures that tasks give run in no set order. Does not wait. A node
@@ -948,16 +949,18 @@ impl Serve {
     /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
     /// of [`end`], with the address in the file `address` of `files` while it serves
     /// ([`address::hold`]). A transport or a group that ends it goes into `failed`
-    /// before it drops the tasks given that still run, and the error of `address`
-    /// after it, unless one is there. Before it returns, it drops the tasks, the
-    /// hub, `home`, `guard`, the runs of the connectors, each session and stream
-    /// future, the operations on the mesh, the mesh, and the transport, and waits for
-    /// each task of the mesh to end, with a mesh, and for the transport to free the
-    /// port. Unless the socket broke, the port is freed only after the hub lets go of
-    /// the region, as [`hub::Hub::new`] states, and after each task that a connector's
-    /// run spawned has ended. Runs no task and takes no session when a shard did not
-    /// open, or when the budgets were not kept, the identity did not load, the mesh
-    /// did not open, or `address` was not written, which goes into `failed`.
+    /// before it drops the tasks given that still run. An `address` that was not
+    /// written goes into `failed` before the tasks given drop uncalled. An `address`
+    /// that was not written empty goes into `failed` after the tasks drop, unless an
+    /// error is there. Before it returns, it drops the tasks, the hub, `home`, `guard`,
+    /// the runs of the connectors, each session and stream future, the operations on
+    /// the mesh, the mesh, and the transport, and waits for each task of the mesh to
+    /// end, with a mesh, and for the transport to free the port. Unless the socket
+    /// broke, the port is freed only after the hub lets go of the region, as
+    /// [`hub::Hub::new`] states, and after each task that a connector's run spawned has
+    /// ended. Runs no task and takes no session when a shard did not open, or when the
+    /// budgets were not kept, the identity did not load, the mesh did not open, or
+    /// `address` was not written, which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
@@ -1033,9 +1036,9 @@ impl Serve {
                 let stop = until(guard, port, group, fail);
                 inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
             });
-            // Before `serve` drops its tasks, so that `join` ranks the error above a
-            // panic in a task's drop. After a stop that failed the node, its error
-            // stands.
+            // `hold` leaves `serve` to drop here: after a failed write it still holds
+            // the tasks given, and `join` must rank that error above a panic in a
+            // task's drop. After a stop that failed the node, its error stands.
             if let Err(error) = address::hold(&files, &address, serve).await {
                 failed.get_or_init(|| error);
             }
