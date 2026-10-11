@@ -51,12 +51,18 @@
   Supersedes the 5% of
   https://github.com/synnaxlabs/foundation/issues/462#issuecomment-6074405652 and
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6073190937.
-  Amended (2026-10-11): in a one-host quiet-host run, the result of a bench is, for each
-  commit, the median of the medians of its runs. One run is not a result: the host
-  builds each commit once, before the first run (`scripts/bench-host.sh`), so a
-  difference between two runs of one commit is the host, not the code. A median at or
-  over the cost limit still needs the P1 judgment. Decided by `laptop.director`,
+  Amended (2026-10-11): in a one-host quiet-host run that compares two commits, the
+  result of a bench is, for each commit, the median of the medians of its runs, from
+  three runs or more of each commit. One run is not a result: the host builds each
+  commit once, before the first run (`scripts/bench-host.sh`), so a difference between
+  two runs of one commit is the host, not the code. A slowdown of the head result
+  against the base result that is at or over the cost limit still needs the P1 judgment.
+  The check of two passes of one binary in WAL BENCH
+  (`docs/decisions/delivery/wal-bench.md`) stays. Decided by `laptop.director`,
   2026-10-11T05:56:21Z:
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106022275, on the
   reading of `laptop.architect` in
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6105920017.
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6105920017, with the
+  count of runs, the slowdown, and the scope at 2026-10-11T06:21:14Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106196216. #2367
+  makes `scripts/bench-host.sh` run each commit three times.
