@@ -160,8 +160,20 @@
   the director at 2026-10-07T14:50:33Z
   (https://github.com/synnaxlabs/foundation/pull/1193#issuecomment-6040535575), fixed by
   #1451. An earlier round's skip is taken as written, since a rebase can drop its range
-  from the clone. An earlier round in the fixed format that does not parse fails. A
-  red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the head. The
-  status is `success` on `merge_group`. Decided by the director on #1169
+  from the clone. A later round that does not name `architecture` fails when its range
+  changes a file under `docs/decisions/`: one that the range adds, changes, or removes.
+  The range is read as that of a round with `Breaker: skipped` is read, so a change of
+  the base does not count, and a conflict in that tree in such a file does. Each later
+  round is read, not only the last. A range with an end that names no commit of the
+  clone fails too, and so does an end that holds more than one newest base commit: the
+  `review` skill asks for a merge of the base after round 1, never a rebase. The problem
+  ends with the cause, such as "Its range changes the decision `docs/decisions/x.md`." A
+  round posted before the cutoff `SURFACE_CUTOFF` in `xtask/src/review.rs`
+  (2026-10-13T00:00:00Z) is checked as before, since an author cannot change a round
+  that is posted. Stated by the director at 2026-10-08T22:50:06Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6070608950). An
+  earlier round in the fixed format that does not parse fails. A red-team `oracle` PR
+  also needs ``Director: approved at `<sha>` `` at the head. The status is `success` on
+  `merge_group`. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
   messages on #1193.
