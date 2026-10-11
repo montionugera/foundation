@@ -1253,6 +1253,54 @@ fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
 }
 
 #[test]
+fn a_problem_shows_an_image_in_the_end_of_a_range_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f..c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![format!(
+            "review round 3 ends at c77c67d7![], not at the head {HEAD}. A commit \
+             after the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+}
+
+#[test]
+fn a_problem_of_an_old_round_shows_an_image_in_the_number_that_it_quotes() {
+    let round = ROUND
+        .replace("round 3", "round 3![](x)")
+        .replace("Hot path: none", "Hot path: `send`");
+    assert_eq!(
+        check(&record(vec![old(&round)])),
+        vec![
+            "`## Review round 3![]` has no round number",
+            "review round 3![] names no performance, which this round requires.",
+        ]
+    );
+}
+
+#[test]
+fn a_breaker_skip_problem_shows_an_image_in_a_commit_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f![](x)..c77c67d7");
+    // The phrase of `History::code_change` for a range start that names no commit.
+    let unnamed = |from: &str| format!("has `{from}`, which names no commit");
+    assert_eq!(
+        problems(
+            &record(vec![bot(&round)]),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|from, end| Ok((end != HEAD).then(|| unnamed(from))),
+        ),
+        Ok(vec![
+            "review round 3 skips `breaker`, but its range has `38cba24f![]`, which \
+             names no commit."
+                .to_string()
+        ])
+    );
+}
+
+#[test]
 fn names_a_round_with_no_number() {
     assert_eq!(
         check(&record(vec![bot("## Review round one\nFindings: none")])),

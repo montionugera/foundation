@@ -406,9 +406,10 @@ fn round(comment: &Comment) -> Option<Parsed> {
         .hiding
         .iter()
         .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
-    let number = shown.number.as_deref()?;
+    let number = &quoted(shown.number.as_deref()?);
     let text = &shown.text;
-    let lines = shown.fields().iter().map(String::as_str);
+    let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
+    let lines = fields.iter().map(String::as_str);
     let field = |name| lines.clone().find_map(|l: &str| l.strip_prefix(name));
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
@@ -426,8 +427,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
         })
     };
     let Ok(number) = number.parse::<u32>() else {
-        let problem =
-            format!("`## Review round {}` has no round number", quoted(number));
+        let problem = format!("`## Review round {number}` has no round number");
         return Some(Parsed {
             round: Err(Malformed { binding, problem }),
             performance: performance(None),
@@ -448,8 +448,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
         let range = range.ok_or_else(|| missing("Range"))?.trim_matches('`');
         let (from, end) = range.split_once("..").ok_or_else(|| {
             format!(
-                "review round {number} has the range `{}`, not `<from>..<head>`",
-                quoted(range)
+                "review round {number} has the range `{range}`, not `<from>..<head>`"
             )
         })?;
         let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
@@ -477,8 +476,8 @@ fn count(number: u32, findings: &str) -> Result<u32, String> {
     }
     findings.parse().map_err(|e| {
         format!(
-            "review round {number} has `Findings: {}`, not a count or `none`: {e}",
-            quoted(findings)
+            "review round {number} has `Findings: {findings}`, not a count or `none`: \
+             {e}"
         )
     })
 }
@@ -532,8 +531,8 @@ fn blank(line: &str) -> bool {
     line.chars().all(|c| c == IMAGE || c == ' ')
 }
 
-/// `line`, a line of [`texts`], as a problem quotes it: each image is `![]`, since
-/// [`IMAGE`] shows as nothing.
+/// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
+/// `![]`, since [`IMAGE`] shows as nothing.
 fn quoted(line: &str) -> String {
     line.replace(IMAGE, "![]")
 }
