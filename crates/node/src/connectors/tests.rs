@@ -240,7 +240,14 @@ type Events = Vec<(String, Span, usize)>;
 
 /// Each start of a run until 10 s, as [`record`] gives it.
 fn starts(linger: Option<Span>, steps: Vec<Step>) -> Events {
-    record(0, linger, None, steps, None).starts
+    record(
+        steps,
+        Scene {
+            linger,
+            ..Scene::default()
+        },
+    )
+    .starts
 }
 
 /// What [`record`] gives.
@@ -255,22 +262,33 @@ struct Recorded {
     live: Vec<usize>,
 }
 
-/// Applies each step at its time, on a simulation of `seed`, with the kind `hold`,
-/// whose task ends `linger` after the cancel, the kind `quick`, whose task ends at the
-/// cancel, the kind `brief`, whose run returns at once, and the kinds `source`, a
-/// [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a [`Sink`] of a
-/// selector that matches no channel, on a hub whose first mesh time comes `synced`
-/// after it opened, or at once. Each spec also defines [`data`]. Drops the runs at
-/// `dropped`, if given. Gives each start of a run, each cancel, and each frame got
+/// The options of [`record`].
+#[derive(Clone, Copy, Default)]
+struct Scene {
+    /// The seed of the simulation.
+    seed: u64,
+    /// The time that the task of `hold` ends after the cancel.
+    linger: Option<Span>,
+    /// The time of the first mesh time of the hub after it opened, else at once.
+    synced: Option<Span>,
+    /// The time to drop the runs at.
+    dropped: Option<i64>,
+}
+
+/// Applies each step at its time, in `scene`, with the kind `hold`, the kind `quick`,
+/// whose task ends at the cancel, the kind `brief`, whose run returns at once, and the
+/// kinds `source`, a [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a
+/// [`Sink`] of a selector that matches no channel. Each spec also defines [`data`].
+/// Gives each start of a run, each cancel, and each frame got
 /// until 10 s, from the time the hub opened, in order of time, then of name: the sim
 /// polls the tasks that are ready at one instant in a random order.
-fn record(
-    seed: u64,
-    linger: Option<Span>,
-    synced: Option<Span>,
-    steps: Vec<Step>,
-    dropped: Option<i64>,
-) -> Recorded {
+fn record(steps: Vec<Step>, scene: Scene) -> Recorded {
+    let Scene {
+        seed,
+        linger,
+        synced,
+        dropped,
+    } = scene;
     let config = ::sim::Config {
         seed,
         ..::sim::Config::default()
@@ -281,18 +299,7 @@ fn record(
         let (starts, cancels, got) =
             (Starts::default(), Starts::default(), Starts::default());
         let kinds = kinds(linger, &starts, &cancels, &got);
-        let (config, counted) = if let Some(synced) = synced {
-            create_unsynced(&node, &tasks, kinds, synced).await
-        } else {
-            let env = hub::testing::Env {
-                files: node.files(),
-                clock: node.clock(),
-                wall: node.wall(),
-                entropy: node.entropy(),
-                tasks: tasks.clone(),
-            };
-            count(testing::create_config(env, node.net(), kinds).await)
-        };
+        let (config, counted) = create(&node, &tasks, kinds, synced).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
@@ -545,7 +552,14 @@ fn an_addition_after_a_removal_that_ended_the_loop_starts_at_once() {
 #[test]
 fn a_drop_cancels_each_run() {
     let spec = vec![("plant.a", "hold", NODE, 0), ("plant.b", "quick", NODE, 0)];
-    let cancels = record(0, None, None, vec![on(0, spec)], Some(1_000)).cancels;
+    let cancels = record(
+        vec![on(0, spec)],
+        Scene {
+            dropped: Some(1_000),
+            ..Scene::default()
+        },
+    )
+    .cancels;
     assert_eq!(
         cancels,
         [start("plant.a", 1_000, 0), start("plant.b", 1_000, 0)]
@@ -564,7 +578,14 @@ fn an_apply_drops_each_removed_run_that_ended() {
         on(2_000, vec![]),
         on(5_000, vec![]),
     ];
-    let held = record(0, Some(ms(2_000)), None, steps, None).held;
+    let held = record(
+        steps,
+        Scene {
+            linger: Some(ms(2_000)),
+            ..Scene::default()
+        },
+    )
+    .held;
     let held_a = vec!["plant.a"];
     assert_eq!(held, [held_a.clone(), held_a.clone(), held_a, vec![]]);
 }
@@ -589,7 +610,7 @@ fn many_changes_while_the_old_run_holds_keep_one_future() {
         .zip((0..).step_by(50))
         .map(|(version, at)| on(at, vec![("plant.a", "hold", NODE, version)]))
         .collect();
-    let recorded = record(0, None, None, steps, None);
+    let recorded = record(steps, Scene::default());
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(100, 2);
@@ -606,7 +627,7 @@ fn changes_at_one_instant_keep_one_future() {
             on(at, vec![("plant.a", "hold", NODE, version)])
         })
         .collect();
-    let recorded = record(0, None, None, steps, None);
+    let recorded = record(steps, Scene::default());
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(10, 2);
@@ -679,14 +700,7 @@ fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
             flush,
         };
         let kinds = Table::new().with("write", write);
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let (config, _) = create(&node, &tasks, kinds, None).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
@@ -759,7 +773,7 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
         );
         let clock = node.clock();
         let start = clock.now();
-        let (config, _) = create_unsynced(&node, &tasks, kinds, ms(1_000)).await;
+        let (config, _) = create(&node, &tasks, kinds, Some(ms(1_000))).await;
         let hub = config.hub.clone();
         let runs =
             std::rc::Rc::new(std::cell::RefCell::new(Runs::new(config, name(NODE))));
@@ -796,12 +810,13 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
 }
 
 /// The config of a supervisor on `node` with `kinds`, whose hub gets its first mesh
-/// time `synced` after it opened, and the count of its tasks that have not ended.
-async fn create_unsynced(
+/// time `synced` after it opened, else at once, and the count of its tasks that have
+/// not ended.
+async fn create(
     node: &::sim::node::Node,
     tasks: &env::tasks::Tasks,
     kinds: Table,
-    synced: Span,
+    synced: Option<Span>,
 ) -> (connector::supervisor::Config, Rc<Cell<usize>>) {
     let env = hub::testing::Env {
         files: node.files(),
@@ -810,7 +825,10 @@ async fn create_unsynced(
         entropy: node.entropy(),
         tasks: tasks.clone(),
     };
-    let hub = hub::testing::open_unsynced(env, synced).await;
+    let hub = match synced {
+        Some(synced) => hub::testing::open_unsynced(env, synced).await,
+        None => hub::testing::open(env).await.0,
+    };
     count(connector::supervisor::Config {
         kinds: Arc::new(kinds),
         clock: node.clock(),
@@ -825,7 +843,14 @@ async fn create_unsynced(
 fn got_on_each_seed(steps: impl Fn() -> Vec<Step>) -> Vec<Vec<String>> {
     (0..32)
         .map(|seed| {
-            let got = record(seed, None, None, steps(), None).got;
+            let got = record(
+                steps(),
+                Scene {
+                    seed,
+                    ..Scene::default()
+                },
+            )
+            .got;
             let mut got: Vec<_> = got.into_iter().map(|(name, _, _)| name).collect();
             got.sort_unstable();
             got
@@ -889,7 +914,7 @@ fn each_out_connector_of_an_apply_gets_the_first_frame_of_its_in_connector() {
 #[test]
 fn an_out_connector_whose_reader_open_failed_holds_no_run() {
     let spec = vec![("plant.a", "void", NODE, 0), ("plant.b", "source", NODE, 0)];
-    let recorded = record(0, None, None, vec![on(0, spec)], None);
+    let recorded = record(vec![on(0, spec)], Scene::default());
     assert_eq!(recorded.starts, [start("plant.b", 0, 0)]);
     assert_eq!(recorded.got, []);
 }
@@ -913,7 +938,7 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
         );
         let clock = node.clock();
         let start = clock.now();
-        let (config, live) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+        let (config, live) = create(&node, &tasks, kinds, Some(ms(5_000))).await;
         let hub = config.hub.clone();
         let mut runs = Runs::new(config, name(NODE));
         let placed =
@@ -935,7 +960,15 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
 
 /// [`record`] on `seed`, on a hub whose first mesh time comes at 5 s.
 fn record_unsynced(seed: u64, steps: Vec<Step>) -> Recorded {
-    record(seed, None, Some(ms(5_000)), steps, None)
+    let synced = Some(ms(5_000));
+    record(
+        steps,
+        Scene {
+            seed,
+            synced,
+            ..Scene::default()
+        },
+    )
 }
 
 /// The seeds of 0 to 31 on which no `sink` got a frame, with [`record_unsynced`].
@@ -1040,7 +1073,7 @@ fn change_at_the_mesh_time(seed: u64, yields: usize) -> Option<bool> {
     let run = sim.run_on(&node, move |node, tasks| async move {
         let (starts, got) = (Starts::default(), Starts::default());
         let kinds = kinds(None, &starts, &Starts::default(), &got);
-        let (config, _) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+        let (config, _) = create(&node, &tasks, kinds, Some(ms(5_000))).await;
         let clock = node.clock();
         let start = clock.now();
         let hub = config.hub.clone();
