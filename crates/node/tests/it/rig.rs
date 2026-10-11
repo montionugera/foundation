@@ -1178,6 +1178,53 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
     });
 }
 
+/// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`]
+/// runs.
+const DIES: &str = "RIG_DIES";
+
+/// Aborts while [`left`] fills its draft, as a killed run does. Does nothing when
+/// [`DIES`] is not set.
+#[test]
+#[cfg(unix)]
+fn a_run_dies_while_it_leaves_a_directory() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the parent test sets it for the child"
+    )]
+    if std::env::var_os(DIES).is_some() {
+        left(gone(), "died", |_| std::process::abort());
+    }
+}
+
+/// The draft of a run that died while it left a directory goes at the next sweep.
+#[test]
+#[cfg(unix)]
+fn a_sweep_removes_the_draft_of_a_run_that_died() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "rig::a_run_dies_while_it_leaves_a_directory"])
+        .env(DIES, "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run the test binary");
+    let status = child.wait().expect("wait for the test binary");
+    assert_eq!(status.signal(), Some(6), "the run does not abort in `left`");
+    drop(Rig::new());
+    // Any draft of the child, whatever its name.
+    let pid = format!("{}-", child.id());
+    let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .expect("read the temporary directory")
+        .map(|entry| entry.expect("read the temporary directory").file_name())
+        .filter(|name| {
+            let name = name.to_string_lossy();
+            name.contains(&pid) && name.ends_with("-died")
+        })
+        .collect();
+    assert_eq!(left, Vec::<std::ffi::OsString>::new());
+}
+
 /// A sweep that makes a directory writable while another sweep removes it gives
 /// `NotFound` only once the directory is gone, so it never leaves the directory.
 #[test]
@@ -1203,6 +1250,11 @@ fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
             if let Err(error) = writable(&dir) {
                 break (error.kind(), dir.exists());
             }
+            assert!(
+                !removal.is_finished() || !dir.exists(),
+                "the removal ended and left {}",
+                dir.display()
+            );
         };
         removal.join().expect("join the removal").expect("remove");
         assert_eq!(ended, (ErrorKind::NotFound, false), "run {run}");
