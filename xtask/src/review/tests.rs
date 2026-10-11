@@ -2425,7 +2425,10 @@ fn clean(number: u32, reviewers: &str, range: &str) -> String {
 /// `x.md`.
 const DECISION: &str = "review round 2 names no architecture, which this round \
                         requires. Its range changes the decision \
-                        `docs/decisions/x.md`.";
+                        `docs/decisions/x.md`. Run `architecture` on the range, or on \
+                        the whole PR when the clone cannot read the range. Then edit \
+                        the round comment: add `architecture` to its `Reviewers:` \
+                        line, and add the findings.";
 
 /// What the check gives for `record` at the head of `repo`.
 fn check_at(repo: &Repo, record: &Record) -> Vec<String> {
@@ -2540,7 +2543,10 @@ fn a_later_round_whose_range_names_no_commit_requires_architecture() {
         check_at(&repo, &record(vec![first(END), round])),
         vec![
             "review round 2 names no architecture, which this round requires. Its \
-             range has `abc1234`, which names no commit."
+             range has `abc1234`, which names no commit. Run `architecture` on the \
+             range, or on the whole PR when the clone cannot read the range. Then \
+             edit the round comment: add `architecture` to its `Reviewers:` line, \
+             and add the findings."
         ]
     );
     repo.remove();

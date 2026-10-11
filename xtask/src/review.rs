@@ -86,8 +86,7 @@ const FIXES: &str = "Text fixes";
 const CUTOFF: &str = "2026-10-08T03:00:00Z";
 
 /// A later round posted before this UTC time needs no `architecture` for a range that
-/// changes a public surface, so that the rule does not fail the rounds that came before
-/// it.
+/// changes a decision, so that the rule does not fail the rounds that came before it.
 const SURFACE_CUTOFF: &str = "2026-10-11T16:00:00Z";
 
 /// The record of a PR that the check reads.
@@ -205,8 +204,8 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// written. `code_change` gives the first code change in a range, with a merge of the
 /// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
 /// later round posted at or after `SURFACE_CUTOFF` must name `architecture` when
-/// `surface_change` gives a phrase for its range (`History::surface_change`). A round
-/// comment after the first is a later round, whatever its number.
+/// `surface_change` gives a phrase for its range (`History::surface_change`). For that
+/// rule, a round comment after the first is a later round, whatever its number.
 fn problems(
     record: &Record,
     head: &str,
@@ -313,7 +312,7 @@ fn unended(
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
 /// round with a `surface_change` requires `architecture` too when that gives a phrase
-/// for its range, and its problem ends with the phrase.
+/// for its range, and its problem gives the phrase, then the remedy.
 fn unnamed(
     round: &Round,
     files: &[String],
@@ -349,7 +348,9 @@ fn unnamed(
     {
         problems.push(format!(
             "review round {} names no architecture, which this round requires. Its \
-             range {change}.",
+             range {change}. Run `architecture` on the range, or on the whole PR \
+             when the clone cannot read the range. Then edit the round comment: add \
+             `architecture` to its `Reviewers:` line, and add the findings.",
             round.number
         ));
     }

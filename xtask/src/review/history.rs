@@ -120,9 +120,9 @@ impl<'a> History<'a> {
         self.first_change(tree, &read.end)
     }
 
-    /// The first change of a public surface in the range `<from>..<end>`, as a
-    /// phrase, or `None`, also when the range is empty. A file under `docs/decisions/`
-    /// that the range adds, changes, or removes gives "changes the decision `<path>`".
+    /// The first change of a decision in the range `<from>..<end>`, as a phrase, or
+    /// `None`, also when the range is empty. A file under `docs/decisions/` that the
+    /// range adds, changes, or removes gives "changes the decision `<path>`".
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a
