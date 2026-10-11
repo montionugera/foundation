@@ -50,7 +50,10 @@
   next carry of its slot when the gate holds a restored holder or a handoff that waits,
   and drops each other gate, which equals a new one (`laptop.architect`,
   #2314, 2026-10-10T22:57:44Z, item 2:
-  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268;
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268; "a
+  handoff that waits", for one that waits for mesh time too: `laptop.architect`, #2314,
+  2026-10-11T12:52:20Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109217872;
   supersedes "its control gate goes, and with it a handoff that waits for room" of
   https://github.com/synnaxlabs/foundation/issues/2020#issuecomment-6070259814). Each
   named reader of the index stops holding its position. Its frames stay in the buffer,
