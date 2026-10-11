@@ -53,7 +53,9 @@
   first, 2026-10-11T10:19:18Z,
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495; until the
   node founds a region or joins one, 2026-10-11T11:22:36Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108495169).
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108495169; its
+  `mesh` fact also approved by `laptop.architect`, 2026-10-11T11:36:26Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108605645).
   Supersedes "The file is the only copy of the name on the node" of
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
   `name::keep` reads the founding under the lock, after the file `name` and before the
