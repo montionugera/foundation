@@ -241,6 +241,11 @@ mod tests {
         self, TERM, granted, key, message, public, reply_body, signature, signer,
     };
 
+    /// The position `index` of `TERM`.
+    fn at(index: u64) -> Position {
+        common::at(TERM.0, index)
+    }
+
     fn members(ids: &[u8]) -> impl Fn(node::Key) -> Option<Known> {
         keys(ids, &[])
     }
@@ -539,7 +544,7 @@ mod tests {
     }
 
     fn written() -> Position {
-        common::at(TERM.0, 2)
+        at(2)
     }
 
     fn signed_change() -> Change {
@@ -602,10 +607,7 @@ mod tests {
         let signature = signed_change().signature;
         let members = members(&[1, 2, 3]);
         let joint = joint();
-        let later = Position {
-            index: 3,
-            ..written()
-        };
+        let later = at(3);
         let left = Voters {
             outgoing: BTreeSet::new(),
             ..joint.clone()
@@ -864,7 +866,6 @@ mod tests {
     // An append from leader 2 of `[bytes, change voted by 1, 2 and 3, change voted
     // by 2, 3 and 4, bytes]` at indexes 1 to 4 of `TERM`.
     fn run() -> Message {
-        let at = |index| common::at(TERM.0, index);
         let bytes = |index| raft::Entry {
             at: at(index),
             data: Data::Bytes(index.to_le_bytes().to_vec()),
@@ -917,8 +918,7 @@ mod tests {
         let Body::Append { entries, .. } = &mut message.body else {
             unreachable!()
         };
-        let at = common::at(TERM.0, 3);
-        entries[2] = three_voters_entry(4, at, &[1, 2, 3]);
+        entries[2] = three_voters_entry(4, at(3), &[1, 2, 3]);
         assert_eq!(checked(&mut message, members(&[1, 2, 3])), Ok(()));
         assert_eq!(run_entries(&message), &run_entries(&run())[..2]);
     }
