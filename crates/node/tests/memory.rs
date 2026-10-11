@@ -8,7 +8,7 @@
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 
 /// The most bytes that the call may hold at once: far under the reservation of the pool
-/// of the founding read, and over what the reads of the sector files hold.
+/// of the founding read, and over what the call holds when it finds no file.
 const BOUND: usize = 64 << 10;
 
 fn main() {
