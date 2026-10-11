@@ -10,6 +10,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use env::files::Files;
+use mesh::region::Founding;
 use types::name::Name;
 
 use crate::sector::{self, Held};
@@ -78,10 +79,7 @@ async fn source(files: &Files) -> Result<Source, Error> {
     if let Some(stored) = read(files).await? {
         return Ok(Source::File(stored));
     }
-    let founding =
-        mesh::founding(files, &directory::mesh(), Rc::new(block::Pool::heap(POOL)))
-            .await
-            .map_err(Error::Mesh)?;
+    let founding = founding(files).await?;
     let key = identity::key(files).await?;
     let Some(founding) = founding else {
         return Ok(Source::Nothing);
@@ -91,6 +89,18 @@ async fn source(files: &Files) -> Result<Source, Error> {
     let member = members.find(|member| member.card.key() == key);
     let member = member.ok_or(Error::NoCard)?;
     Ok(Source::Card(member.card.card().name.clone()))
+}
+
+/// The founding that the data directory of `files` stores. Makes the pool of the read,
+/// whose reservation is over 2 MiB, only when the mesh's directory is there.
+async fn founding(files: &Files) -> Result<Option<Founding>, Error> {
+    let dir = directory::mesh();
+    match files.list(&dir).await {
+        Err(env::files::Error::NotFound { .. }) => return Ok(None),
+        listed => listed.map_err(Error::Directory)?,
+    };
+    let pool = Rc::new(block::Pool::heap(POOL));
+    mesh::founding(files, &dir, pool).await.map_err(Error::Mesh)
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is

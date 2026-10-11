@@ -587,6 +587,24 @@ fn a_founding_that_does_not_read_with_no_node_key_fails_the_name() {
     assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
 }
 
+/// With no file `name`, a list of the mesh's directory that fails gives
+/// [`Error::Directory`].
+#[test]
+fn a_mesh_directory_that_does_not_list_gives_its_error() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let operation = env::files::Operation::List;
+    host.fail_file(Path::new("mesh"), operation);
+    let error = env::files::Error::Io {
+        path: PathBuf::from("mesh"),
+        operation,
+        code: 5,
+    };
+    assert_eq!(named(&mut sim, &host), Err(Error::Directory(error)));
+}
+
 /// With no file `name`, a founding that does not read gives its error before a file
 /// `node.key` that a node did not write.
 #[test]
