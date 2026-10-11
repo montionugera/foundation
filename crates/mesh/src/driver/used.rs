@@ -427,6 +427,10 @@ pub(super) async fn keep(
         let done = hold(gave, &files, &held, pointer).await;
         let Some(group) = group.upgrade() else { return };
         let mut group = group.borrow_mut();
+        // `used` keeps the view at the stop, although the file is durable.
+        if group.running().is_err() {
+            return;
+        }
         let moved = group.used.settle(pointer, done);
         group.wake_calls();
         if moved {

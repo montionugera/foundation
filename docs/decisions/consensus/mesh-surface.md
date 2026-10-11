@@ -196,3 +196,10 @@
   window and a call that waits for the hub. Decided by `laptop.architect`
   (2026-10-10T23:49:57Z:
   https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301).
+  The stop fixes the view: after a stop, `keep` does not settle, so `used` keeps the
+  spec that it gave at the stop, as `spec` and each watch do. The file of a read that
+  ends after the stop stays durable, and the next open reads it, as after a power cut
+  at that point. Lost: `used` that moves after the stop with no watch woken, so a
+  caller gets the old or the new spec by the time of its read. Decided by
+  `laptop.architect` (2026-10-11T16:47:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111328950).

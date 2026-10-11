@@ -1654,3 +1654,119 @@ fn used_gives_the_spec_at_the_stop_after_the_group_stops() {
         assert_eq!(mesh.used(), at);
     });
 }
+
+/// Checks a run of `node` whose group stopped while `used` gave the spec of `at`, after
+/// the change to `first`, with `definitions`, committed: after a power cut, the next
+/// open uses the spec of the file that the run left. Gives whether the stop came after
+/// the file of `first` was made and before `used` took it.
+fn open_after_a_stop(
+    sim: &mut Sim,
+    node: &sim::node::Node,
+    at: Option<Pointer>,
+    first: Pointer,
+    definitions: &BTreeMap<Name, Definition>,
+) -> bool {
+    let made = listed(sim, node).contains(&name(first));
+    sim.crash(node, Crash::Power);
+    let definitions = definitions.clone();
+    sim.run_on(node, move |node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let opened = if made {
+            in_use(first, &definitions)
+        } else {
+            in_use(base(), &BTreeMap::new())
+        };
+        assert_eq!(mesh.used(), opened);
+    })
+    .unwrap();
+    made && at == Some(base())
+}
+
+#[test]
+fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
+    let a = create_subjects(&["plant.a"], 1);
+    let first = pointer(1, &a);
+    let mut between = 0;
+    for seed in 0..32 {
+        let mut sim = Sim::new(sim::Config {
+            seed,
+            ..sim::Config::default()
+        });
+        let node = sim.node(sim::node::Config::default());
+        let applied = a.clone();
+        let at = sim
+            .run_on(&node, move |node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                assert_eq!(commit(&mesh, base(), &applied).await, first);
+                let stopped = super::fail_sync(&node);
+                let c = create_subjects(&["plant.c"], 1);
+                let settled = mesh.settle_spec(
+                    first,
+                    pointer(2, &c).root,
+                    BTreeSet::new(),
+                    [key(1)].into(),
+                    BTreeMap::new(),
+                );
+                assert_eq!(settled.await, Err(Error::Stopped(stopped.clone())));
+                let at = mesh.used();
+                let given = [in_use(base(), &BTreeMap::new()), in_use(first, &applied)];
+                assert!(given.contains(&at), "seed {seed}: {at:?}");
+                assert_eq!(mesh.spec().await, Err(stopped));
+                node.clock().sleep(seconds(3)).await;
+                assert_eq!(mesh.used(), at, "seed {seed}");
+                at.pointer
+            })
+            .unwrap();
+        between += usize::from(open_after_a_stop(&mut sim, &node, at, first, &a));
+    }
+    assert!(
+        between > 0,
+        "no stop came between the file of v1 and its use"
+    );
+}
+
+#[test]
+fn used_keeps_the_spec_at_a_stop_at_each_time_after_a_change() {
+    let (a, b) = (
+        create_subjects(&["plant.a"], 1),
+        create_subjects(&["plant.b"], 1),
+    );
+    let first = pointer(1, &a);
+    let mut between = 0;
+    for seed in 0..8 {
+        for offset in (0..=300).step_by(5) {
+            let mut sim = Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let node = sim.node(sim::node::Config::default());
+            let (applied, next) = (a.clone(), b.clone());
+            let at = sim
+                .run_on(&node, move |node, tasks| async move {
+                    let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                    let changed = mesh.apply(base(), applied.clone(), BTreeMap::new());
+                    assert_eq!(changed.await, Ok(first));
+                    node.clock().sleep(Span::from_nanos(offset * 1_000)).await;
+                    let stopped = super::fail_sync(&node);
+                    let settled = mesh.apply(first, next, BTreeMap::new()).await;
+                    assert_eq!(settled, Err(Error::Stopped(stopped.clone())));
+                    let at = mesh.used();
+                    let given =
+                        [in_use(base(), &BTreeMap::new()), in_use(first, &applied)];
+                    assert!(given.contains(&at), "{seed} {offset}: {at:?}");
+                    let mut watch = mesh.watch_spec();
+                    assert_eq!(watch.next().await, Err(stopped.clone()));
+                    assert_eq!(mesh.spec().await, Err(stopped));
+                    node.clock().sleep(seconds(1)).await;
+                    assert_eq!(mesh.used(), at, "{seed} {offset}");
+                    at.pointer
+                })
+                .unwrap();
+            between += usize::from(open_after_a_stop(&mut sim, &node, at, first, &a));
+        }
+    }
+    assert!(
+        between > 0,
+        "no stop came between the file of v1 and its use"
+    );
+}
