@@ -1,25 +1,18 @@
 //! Sessions of a hub whose node is in a region, where the mesh names the home of each
 //! index.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use env::files::Operation;
-use env::tasks::Tasks;
 use hub::reader::Ended;
 use hub::writer::Failure;
 use hub::{Link, serve};
-use mesh::Member;
-use mesh::card::addresses::Addresses;
-use mesh::card::{self, Card};
 use spec::data_type::DataType;
 use transport::stream::Incoming;
-use transport::{Address, Class, Code, Transport};
+use transport::{Class, Code};
 use types::channel;
-use types::ed25519::PrivateKey;
-use types::node::SealKey;
 use types::time::Span;
 use wire::hub::Mode;
 
@@ -32,71 +25,12 @@ use super::{
 };
 use crate::net::{HOME, PEER, own_pool, public_key};
 
-/// The other member of the region, which is not a voter.
-pub(super) const OTHER: types::node::Key = types::node::Key::from_u128(2);
+#[path = "../common/region.rs"]
+mod plant;
+pub(super) use plant::{OTHER, open};
+
 /// The first file of the mesh's log.
 const LOG: &str = "mesh/log/log-0";
-
-/// Region `plant` at [`NODE`] over `transport`, whose one voter is [`NODE`] and whose
-/// other member is [`OTHER`] at `other`.
-pub(super) async fn open(
-    node: &sim::node::Node,
-    tasks: &Tasks,
-    transport: Rc<Transport>,
-    other: Vec<Address>,
-) -> hub::Region {
-    let pool = own_pool();
-    let store = blob::Store::open(blob::Config {
-        files: node.files(),
-        dir: "blob".into(),
-        pool: Rc::clone(&pool),
-        floor_bytes: 0,
-    })
-    .await
-    .expect("the store opens");
-    let config = mesh::Config {
-        key: NODE,
-        private_key: HOME,
-        founding: mesh::region::Founding {
-            prefix: "plant".parse().expect("a prefix"),
-            members: vec![member(NODE, &HOME, Vec::new()), member(OTHER, &PEER, other)],
-            voters: [NODE].into(),
-            definitions: BTreeMap::new(),
-            homes: BTreeMap::new(),
-        },
-        files: node.files(),
-        dir: "mesh".into(),
-        clock: node.clock(),
-        entropy: node.entropy(),
-        tasks: tasks.clone(),
-        pool,
-        transport: Rc::clone(&transport),
-        store: Rc::new(store),
-    };
-    let mesh = mesh::Mesh::open(config).await.expect("the mesh opens");
-    hub::Region { mesh, transport }
-}
-
-/// The member `key` of region `plant` at `addresses`.
-fn member(
-    key: types::node::Key,
-    private_key: &PrivateKey,
-    addresses: Vec<Address>,
-) -> Member {
-    let card = Card {
-        name: format!("plant.node{key}").parse().expect("a name"),
-        public_key: public_key(private_key),
-        seal_key: SealKey::new([9; 32]).expect("a seal key"),
-        addresses: Addresses::new(addresses).expect("addresses"),
-        version: 1,
-    };
-    Member {
-        card: card::Signed::sign(key, card, private_key),
-        admission: [0; 64],
-        ephemeral: None,
-        status: mesh::status::Status::new(BTreeMap::new()).expect("a status"),
-    }
-}
 
 /// Runs `main` on a [`Test`] hub with mesh time, at [`NODE`] in the region of
 /// [`open`].
