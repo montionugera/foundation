@@ -2,9 +2,7 @@
 
 use std::fs::{self, Permissions};
 use std::io::Read;
-use std::os::unix::fs::{
-    FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown, symlink,
-};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -15,7 +13,6 @@ use rustix::io::Errno;
 use crate::cases::{self, Host};
 use crate::disk::{Scratch, mode};
 use crate::files::mkfifo;
-use crate::groups;
 
 fn run(case: fn(&Host<'_>)) {
     let scratch = Scratch::new();
@@ -90,10 +87,10 @@ fn a_write_keeps_the_mode_of_the_file_it_replaces() {
 }
 
 #[test]
-fn a_write_keeps_no_setuid_or_setgid_bit_of_the_file_it_replaces() {
+fn a_write_keeps_no_setuid_setgid_or_sticky_bit_of_the_file_it_replaces() {
     let scratch = Scratch::new();
     let path = scratch.0.join("tool");
-    for old in [0o4755, 0o2755] {
+    for old in [0o4755, 0o2755, 0o1755] {
         fs::write(&path, b"old").unwrap();
         fs::set_permissions(&path, Permissions::from_mode(old)).unwrap();
         assert_eq!(mode(&path), old);
@@ -102,13 +99,18 @@ fn a_write_keeps_no_setuid_or_setgid_bit_of_the_file_it_replaces() {
     }
 }
 
+/// The user of a CI runner on Linux can be in one group. There
+/// `root::paths::a_write_keeps_a_group_of_the_user_on_a_file_of_another_user` has
+/// the kept group.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_write_keeps_a_group_of_the_user_that_a_new_file_does_not_get() {
+    use std::os::unix::fs::{MetadataExt, chown};
     let scratch = Scratch::new();
     let path = scratch.0.join("secret.hcl");
     fs::write(&path, b"old").unwrap();
     let made = fs::metadata(&path).unwrap().gid();
-    let other = groups::other(made);
+    let other = crate::groups::other(made);
     chown(&path, None, Some(other)).unwrap();
     fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
     os::paths().write(&path, b"new").unwrap();
@@ -196,6 +198,19 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
     let long = sealed(&scratch).join("a".repeat(256));
     let code = Errno::NAMETOOLONG.raw_os_error();
     assert_eq!(os::paths().write(&long, b"x"), Err(Error::Io { code }));
+}
+
+#[test]
+fn a_write_leaves_the_old_bytes_at_another_hard_link_of_the_file() {
+    let scratch = Scratch::new();
+    let (path, twin) = (scratch.0.join("plant.hcl"), scratch.0.join("twin.hcl"));
+    fs::write(&path, b"old").unwrap();
+    fs::hard_link(&path, &twin).unwrap();
+    let paths = os::paths();
+    paths.write(&path, b"new").unwrap();
+    let read = [&path, &twin].map(|path| paths.read(path, 3));
+    let [new, old] = [b"new", b"old"].map(|bytes| Ok(Found::File(bytes.to_vec())));
+    assert_eq!(read, [new, old]);
 }
 
 #[test]
