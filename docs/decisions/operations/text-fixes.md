@@ -1,18 +1,23 @@
 - **TEXT FIXES (2026-10-10)** A commit that only applies `Text fixes:` items starts no
   review round. A finding in text only (a `.md` file, a `.rs` comment line that,
   trimmed, starts with `//` and is not a doctest line, the PR title or body, an end line
-  of a round comment, or the body of an issue or a comment that holds a deferral or a
-  later step of the PR, other than a test in it), at any severity, whose fix the
-  `reviewer` gives as the exact new text, is a `Text fixes:` item, not a finding. The
-  author applies it as given, and the `reviewer` of the next round, when one runs,
-  checks it. An item that gives only facts and links, or that asks the author to find a
-  fact or give a reason, is a finding, and its fix gets a round. When that fix changes
-  no code, the round runs `reviewer` alone. A text item still needs each approval that
-  its file needs. In the range after a review round (REVIEW CHECK), code is each change
-  to a file that is not a `.md` file, other than a `.rs` line that, trimmed, is empty or
-  starts with `//`. The last round may end at a commit from which only clean merges of
-  the base and commits that apply its `Text fixes:` items reach the head. `cargo xtask
-  review` checks that each merge after the last round is a clean merge of the base (`git
+  of a round comment, or the text with which the author states a deferral or a later
+  step of the PR, other than a test in it), at any severity, whose fix the `reviewer`
+  gives as the exact new text, is a `Text fixes:` item, not a finding. That text of a
+  deferral or a later step is the body of the issue that the author files for it, or the
+  author's comment on an existing issue, never text that another session wrote. A test
+  in it is the code of the test, and each sentence that states what the test asserts or
+  what must pass. The author applies an item as given, and the `reviewer` of the next
+  round, when one runs, checks it where the author applied it. An item that gives only
+  facts and links, or that asks the author to find a fact or give a reason, is a
+  finding, and its fix gets a round. When that fix changes no code, the round runs
+  `reviewer` alone. A text item still needs each approval that its file needs, and an
+  item in the text of a deferral in a risk crate needs the OK of the crate's architect
+  again. In the range after a review round (REVIEW CHECK), code is each change to a file
+  that is not a `.md` file, other than a `.rs` line that, trimmed, is empty or starts
+  with `//`. The last round may end at a commit from which only clean merges of the base
+  and commits that apply its `Text fixes:` items reach the head. `cargo xtask review`
+  checks that each merge after the last round is a clean merge of the base (`git
   merge-tree`), that the commits after it change no code, and, when one that is not a
   merge follows it, that its round comment has a line `Text fixes:` that is not `Text
   fixes: none` (#2315). It cannot check that a commit applies only those items. Evidence
@@ -33,9 +38,16 @@
   doctest lines out of the items. The director, at 2026-10-11T05:30:51Z
   (https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6105850818), added
   the body of an issue or a comment that holds a deferral or a later step, other than a
-  test in it: round 11 of #2331 ran for one paragraph of #2355 whose new text the
-  `reviewer` gave, and round 10 found that the test of #2355 did not compile. Ruling
-  point 3 and the change to #2315 at 2026-10-10T23:10:40Z
+  test in it: round 12 of #2331 ran for one paragraph of #2355 whose new text the
+  `reviewer` of round 11 gave, and round 10 found that the test of #2355 did not
+  compile. The director, at 2026-10-11T05:56:19Z
+  (https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106022120),
+  replaced that place with the text with which the author states the deferral or the
+  step, because the first text let an item change the body of an issue that another
+  session wrote (#2324). The same decision states what a test in that text is, asks for
+  the OK of the architect again in a risk crate, and makes the `reviewer` check each
+  item where the author applied it. Ruling point 3 and the change to #2315 at
+  2026-10-10T23:10:40Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103182934) added
   the `Text fixes:` line check. The change at 23:21:22Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281)

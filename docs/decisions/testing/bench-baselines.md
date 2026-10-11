@@ -51,3 +51,12 @@
   Supersedes the 5% of
   https://github.com/synnaxlabs/foundation/issues/462#issuecomment-6074405652 and
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6073190937.
+  Amended (2026-10-11): in a one-host quiet-host run, the result of a bench is, for each
+  commit, the median of the medians of its runs. One run is not a result: the host
+  builds each commit once, before the first run (`scripts/bench-host.sh`), so a
+  difference between two runs of one commit is the host, not the code. A median at or
+  over the cost limit still needs the P1 judgment. Decided by `laptop.director`,
+  2026-10-11T05:56:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106022275, on the
+  reading of `laptop.architect` in
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6105920017.
