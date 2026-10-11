@@ -1393,8 +1393,8 @@ mod tests {
             scene.node.clock().sleep(ms(500)).await;
             let held = fill(&hog);
             scene.remove("samples");
-            // Off the status writes at each 1.5 s plus a whole second, where the order
-            // of the two tasks is random.
+            // Off the status writes at 1.5 s plus each whole second, where the order of
+            // the two tasks is random.
             scene.node.clock().sleep(ms(20_100)).await;
             drop(held);
         });
