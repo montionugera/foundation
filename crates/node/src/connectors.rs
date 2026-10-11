@@ -20,9 +20,9 @@ use crate::scope::Scope;
 /// across a removal and an addition. The first run of a connector that an apply adds,
 /// whose name has no loop, starts only once no first open of such a connector is
 /// pending on the node. So the first open of such an out connector resolves before the
-/// first run of such an in connector of its apply, or of a later one, starts. A change,
-/// also an addition of a name that has a loop, opens in the loop of the name and does
-/// not wait.
+/// first run of such an in connector of its apply, or of a later one, starts. A change
+/// before that first run keeps the wait. A later change, also an addition of a name
+/// that has a loop, opens in the loop of the name and does not wait.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     opens: Rc<Opens>,
@@ -141,8 +141,8 @@ impl Runs {
                 ended: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
-            // Counted before any loop of this apply polls. A changed connector, and one
-            // that runs again after `Config`, has no share.
+            // Counted before any loop of this apply polls. A connector changed after its
+            // first run, and one that runs again after `Config`, has no share.
             let first = self.opens.begin();
             let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
             let name = name.clone();
@@ -175,9 +175,13 @@ async fn run(
         let config = connector.config().document();
         let opened = supervisor.open(kind, name.clone(), config, &changed);
         let opened = opened.await;
-        if let Some(first) = first.take() {
-            drop(first);
+        // A change before the first run starts no run, so the next open keeps a share.
+        if first.is_some() && !changed.cancelled() {
+            first = None;
             changed.race(opens.settled()).await;
+            if changed.cancelled() {
+                first = Some(opens.begin());
+            }
         }
         match opened.run().await {
             // The next change of the connector runs it again.

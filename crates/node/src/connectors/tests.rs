@@ -902,3 +902,53 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
     });
     assert_eq!(run, Ok((2, 1)));
 }
+
+/// The seeds of 0 to 31 on which no `sink` got a frame, with the kinds of [`record`]
+/// on a hub whose first mesh time comes at 5 s, at each step.
+fn missed_unsynced(steps: impl Fn() -> Vec<Step>) -> Vec<u64> {
+    let got = |seed| {
+        let config = ::sim::Config {
+            seed,
+            ..::sim::Config::default()
+        };
+        let mut sim = ::sim::Sim::new(config);
+        let node = sim.node(::sim::node::Config::default());
+        let steps = steps();
+        let run = sim.run_on(&node, move |node, tasks| async move {
+            let got = Starts::default();
+            let kinds = kinds(None, &Starts::default(), &Starts::default(), &got);
+            let clock = node.clock();
+            let start = clock.now();
+            let (config, _) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+            let hub = config.hub.clone();
+            let mut runs = Runs::new(config, name(NODE));
+            for (at, spec) in steps {
+                clock.sleep_until(start + at).await;
+                let mut definitions = definitions(&spec);
+                definitions.extend(data());
+                hub.set_definitions(&definitions);
+                runs.apply(&definitions);
+            }
+            clock.sleep_until(start + ms(10_000)).await;
+            drop(runs);
+            got.lock().expect("no panic").len()
+        });
+        run.expect("the run ends")
+    };
+    (0..32).filter(|&seed| got(seed) == 0).collect()
+}
+
+/// Both first opens wait for the mesh time at 5 s. At 1 s, a change of the in
+/// connector, whose first run has not started, keeps its share.
+#[test]
+fn a_change_before_the_first_run_keeps_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 1)];
+    assert_eq!(
+        missed_unsynced(|| vec![on(0, first.clone())]),
+        Vec::<u64>::new()
+    );
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_eq!(missed, Vec::<u64>::new());
+}
