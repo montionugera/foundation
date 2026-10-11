@@ -44,17 +44,20 @@
   the new supervisor" of
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231. A
   connector that a change adds starts once no first open of an added connector is
-  pending on the node (below), unless the last run of its name has not returned: then it
-  starts after that run returned, so no two runs write one set of status channels. A
-  change of a connector whose run waits changes the connector that the run starts with,
-  so a name has at most one run that waits. This supersedes "A connector that the change
-  adds: start its run at once" of item 3 of 6074718616 (`laptop.architect-2`,
-  2026-10-10T15:29:59Z:
+  pending on the node (below), unless its name has a loop (below): then the addition is
+  a change, and the connector starts in that loop after the last run of its name
+  returned, so no two runs write one set of status channels. A change of a connector
+  whose run waits changes the connector that the run starts with, so a name has at most
+  one run that waits. This supersedes "A connector that the change adds: start its run
+  at once" of item 3 of 6074718616 (`laptop.architect-2`, 2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The wait
   for each first open supersedes "starts at once" of the record text that that comment
   approved (`laptop.architect-2`, 2026-10-11T05:23:35Z:
-  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item
-  4). While a first reader open waits for a home, no first run starts on the node
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 4).
+  The loop as the key supersedes "unless the last run of its name has not returned" of
+  that text (`laptop.architect-2`, 2026-10-11T12:42:00Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109132275). While a
+  first reader open waits for a home, no first run starts on the node
   (`laptop.architect-2`, 2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, question
   2). The open waits on the state of the mesh of this node. At each open of the mesh,
