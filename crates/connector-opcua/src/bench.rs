@@ -470,6 +470,34 @@ mod tests {
         assert_eq!(next, fresh.next_u64(), "the scope drew no value");
     }
 
+    /// The server of a scope has one channel for each client and closes the stream of a
+    /// peer, and the count on the rng of the caller passes when a loop starts from a
+    /// constant, so only the generator of open62541 on this thread shows that a scope
+    /// takes the value it draws.
+    #[test]
+    fn each_scope_of_one_rng_draws_other_values() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        let drawn = sim
+            .run_on(&node, move |node, _| async move {
+                let (address, rng) = (node.addresses()[0], &mut Rng::from_seed(1));
+                let mut drawn = Vec::new();
+                for _ in 0..2 {
+                    let body = async |_: &Manager| {
+                        // SAFETY: it draws from the generator of this thread.
+                        unsafe { ffi::test::UA_UInt32_random() }
+                    };
+                    drawn.push(
+                        Manager::scope(node.clock(), node.net(), address, 0, rng, body)
+                            .await,
+                    );
+                }
+                drawn
+            })
+            .expect("the run ends");
+        assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
+    }
+
     /// A scope closes after a panic in its body, so the next scope takes its port.
     #[test]
     fn a_scope_whose_body_panics_frees_its_port() {
