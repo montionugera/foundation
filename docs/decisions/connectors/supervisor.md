@@ -180,8 +180,8 @@
   time starts after a delay (`laptop.architect`, 2026-10-09T19:41:28Z:
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6088003915). The
   status writer that does not open panics on an unknown or remote channel, which is a
-  defect (a remote one comes from an apply that moves a connector until #2337 lands),
-  and gives `Ok` when the mesh stopped (`laptop.architect-2`, 2026-10-09T18:46:26Z:
+  defect, because the plan homes the index on the connector's node (above), and gives
+  `Ok` when the mesh stopped (`laptop.architect-2`, 2026-10-09T18:46:26Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087144669). An
   unknown channel after the cancel of the call also gives `Ok`, because `node` removes
   the status channels of a connector before it cancels its run. This supersedes "a panic
