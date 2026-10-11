@@ -5967,18 +5967,21 @@ mod port {
             assert_eq!(*planned.lock().unwrap(), [Ok(()), Err(unknown.to_owned())]);
         }
 
-        /// The node runs a connector that an apply places on it, and its status gives
-        /// how the run ended: `influx` ends with a config error, and does not restart.
+        /// The node runs a connector that an apply places on it, and runs it again when
+        /// an apply changes its config. Its status gives how the run ended: `influx`
+        /// ends with a config error, and does not restart. The reader opens after the
+        /// first run, because the status channels come with the connector.
         #[test]
         fn a_node_runs_a_connector_that_an_apply_places_on_it() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let founding = region(&[member(OWN, &KEY, &host)]);
-            let (node, definitions) = applied(&mut sim, &host, founding, status());
+            let text = connector("influx");
+            let (node, definitions) = applied(&mut sim, &host, founding, text.clone());
             let read = read_status(&node, &definitions);
             assert_eq!(sim.run_for(TEN), Ok(()));
             node.operate(|ops| async move {
-                apply(&ops, format!("{}{}", status(), connector("influx"))).await;
+                apply(&ops, text.replace("influx:8086", "influx:8087")).await;
             });
             assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
             node.stop();
@@ -5997,9 +6000,9 @@ mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let founding = region(&[member(OWN, &KEY, &host)]);
-            let text = format!("{}{}", status(), connector("influx"));
+            let placed = connector("influx");
             let (node, definitions) =
-                applied(&mut sim, &host, founding.clone(), text.clone());
+                applied(&mut sim, &host, founding.clone(), placed.clone());
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
@@ -6007,8 +6010,8 @@ mod port {
             assert_eq!(sim.run_for(TEN), Ok(()));
             let read = read_status(&node, &definitions);
             assert_eq!(sim.run_for(TEN), Ok(()));
-            let other = "channel \"plant.other\" { kind = \"index\" }\n";
-            let kept = format!("{text}{other}");
+            let other = text("other", &[]);
+            let kept = format!("{placed}{other}");
             let changed = kept.replace("influx:8086", "influx:8087");
             for text in [kept, changed] {
                 node.operate(|ops| async move {
@@ -6056,28 +6059,6 @@ mod port {
         /// `node`.
         const INFLUX: &str = "address = \"http://influx:8086\"\nselect = \"plant.*\"\n\
                               reader {\n  mode = \"complete\"\n}\n";
-
-        /// The text of a spec with the status channels of `plant.influx`, with the
-        /// counts that its kind names, homed on [`OWN`].
-        fn status() -> String {
-            use std::fmt::Write as _;
-            let connector = "plant.influx".parse().expect("a name");
-            let config = config_hcl::read(document::Source(0), INFLUX).expect("HCL");
-            let checked = crate::kinds().check("influx", None, &config);
-            let counts = checked.expect("the config checks").counts;
-            let (index, channels) = connector::status::channels(&connector, &counts)
-                .expect("the names fit");
-            let mut text = format!("channel \"{index}\" {{ kind = \"index\" }}\n");
-            writeln!(text, "placement \"plant\" {{").unwrap();
-            writeln!(text, "  select = \"plant.**\"").unwrap();
-            writeln!(text, "  home = \"plant.node{OWN}\"\n}}").unwrap();
-            for (name, data_type) in channels {
-                writeln!(text, "channel \"{name}\" {{").unwrap();
-                writeln!(text, "  data_type = \"{data_type}\"").unwrap();
-                writeln!(text, "  index = \"{index}\"\n}}").unwrap();
-            }
-            text
-        }
 
         /// The text of a spec with the connector `plant.influx` of `kind` on [`OWN`].
         fn connector(kind: &str) -> String {
