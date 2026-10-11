@@ -631,11 +631,19 @@ fn a_crash_in_a_create_over_a_synced_file_with_no_bytes_keeps_it() {
 }
 
 /// One run of [`cut_creates`].
-type Cut = (u64, Option<u64>, u64, Vec<PathBuf>);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Run {
+    digest: u64,
+    /// The length of `a`, or `None` when no write open of it succeeds.
+    len: Option<u64>,
+    free: u64,
+    /// The names of the data directory.
+    names: Vec<PathBuf>,
+}
 
-/// The digest of each run, the length of `a` after a crash in a create of 1 KiB of
-/// it, the free bytes, and the names of the data directory. `before` runs first.
-fn cut_creates<F, B>(crash: Crash, before: B) -> BTreeSet<Cut>
+/// Each run after a crash in a create of 1 KiB of `a`, over 32 seeds. `before` runs
+/// first.
+fn cut_creates<F, B>(crash: Crash, before: B) -> BTreeSet<Run>
 where
     B: Fn(node::Node) -> F + Copy + Send + 'static,
     F: Future<Output = ()> + 'static,
@@ -655,7 +663,13 @@ where
                 let opened = files.open(Path::new("a"), Mode::Write).await;
                 let len = opened.ok().map(|file| file.len());
                 let free = files.free().await.unwrap();
-                (digest, len, free, files.list(Path::new("")).await.unwrap())
+                let names = files.list(Path::new("")).await.unwrap();
+                Run {
+                    digest,
+                    len,
+                    free,
+                    names,
+                }
             })
             .unwrap()
         })
@@ -667,8 +681,7 @@ fn a_power_crash_in_a_create_over_a_file_with_bytes_has_no_effect() {
     let before =
         |node: node::Node| async move { drop(create(&node, "a", 1_024).await) };
     let power = cut_creates(Crash::Power, before);
-    let lens: BTreeSet<_> =
-        power.iter().map(|&(_, len, free, _)| (len, free)).collect();
+    let lens: BTreeSet<_> = power.iter().map(|run| (run.len, run.free)).collect();
     let unsynced = BTreeSet::from([(None, MIB), (Some(1_024), MIB - 1_024)]);
     assert_eq!(lens, unsynced);
 }
@@ -681,8 +694,7 @@ fn a_create_that_a_power_crash_keeps_frees_the_file_of_the_old_entry() {
         node.files().remove(Path::new("a")).await.unwrap();
     };
     let power = cut_creates(Crash::Power, before);
-    let lens: BTreeSet<_> =
-        power.iter().map(|&(_, len, free, _)| (len, free)).collect();
+    let lens: BTreeSet<_> = power.iter().map(|run| (run.len, run.free)).collect();
     let kept = MIB - 1_024;
     let reached = [
         (None, MIB),
@@ -697,7 +709,7 @@ fn a_create_that_a_power_crash_keeps_frees_the_file_of_the_old_entry() {
 fn a_power_crash_in_a_create_over_a_file_with_no_bytes_can_keep_its_entry() {
     let before = |node: node::Node| async move { drop(create(&node, "a", 0).await) };
     let power = cut_creates(Crash::Power, before);
-    let lens: BTreeSet<_> = power.iter().map(|&(_, len, ..)| len).collect();
+    let lens: BTreeSet<_> = power.iter().map(|run| run.len).collect();
     assert_eq!(lens, BTreeSet::from([None, Some(0), Some(1_024)]));
 }
 
@@ -710,7 +722,7 @@ fn a_power_cut_in_a_create_over_a_synced_file_draws_its_bytes_apart_from_the_pre
     };
     let power = cut_creates(Crash::Power, before);
     let outcomes: BTreeSet<_> = (power.into_iter())
-        .map(|(_, len, _, names)| (len, names))
+        .map(|run| (run.len, run.names))
         .collect();
     let reached = [
         (Some(0), names(&["a"])),
@@ -745,11 +757,11 @@ fn the_digest_holds_the_state_that_a_crash_in_a_create_drew() {
     for crash in [Crash::Process, Crash::Power] {
         let runs = cut_creates(crash, |_| async {});
         let mut states = BTreeMap::new();
-        for (digest, len, ..) in runs {
+        for run in runs {
             states
-                .entry(digest)
+                .entry(run.digest)
                 .or_insert_with(BTreeSet::new)
-                .insert(len);
+                .insert(run.len);
         }
         assert!(
             states.values().all(|lens| lens.len() == 1),
