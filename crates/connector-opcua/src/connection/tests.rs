@@ -2251,13 +2251,12 @@ fn a_server_with_a_host_in_its_url_has_that_url_alone_as_its_discovery_url() {
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
-            let url = c"opc.tcp://plc.example:4840";
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, url, 0) };
+            let server = unsafe { Server::start(&side.manager, "plc.example", 0) };
             // SAFETY: the server lives.
             let first =
                 unsafe { ffi::test::shim_server_discovery_url(server.raw(), 0) };
-            assert_eq!(string(first), url.to_bytes());
+            assert_eq!(string(first), b"opc.tcp://plc.example:4840");
             // SAFETY: the server lives.
             let second =
                 unsafe { ffi::test::shim_server_discovery_url(server.raw(), 1) };
@@ -2559,7 +2558,7 @@ fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+            let server = unsafe { Server::start(&side.manager, "", 1) };
             // SAFETY: the server lives.
             let url = unsafe { ffi::test::shim_server_discovery_url(server.raw(), 0) };
             assert_eq!(string(url), b"opc.tcp://10.0.0.1:4840");
@@ -2604,7 +2603,7 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+            let server = unsafe { Server::start(&side.manager, "", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
             let client = unsafe { ffi::shim_client_new(side.events().raw()) };
             assert!(!client.is_null());
@@ -2707,7 +2706,7 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
             .expect("the port is free");
     let side = Side::of(clock, manager);
     // SAFETY: the server is deleted before `side` drops.
-    let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+    let server = unsafe { Server::start(&side.manager, "", 1) };
     side.drive(Span::SECOND).await;
     (side, extra, server)
 }
@@ -2924,7 +2923,7 @@ fn a_close_through_another_manager_panics_before_the_stop() {
             let side = Side::listening(&node, local(&node));
             let other = Side::new(&node);
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+            let server = unsafe { Server::start(&side.manager, "", 1) };
             let raw = server.raw();
             let mut close = pin!(server.close(&other.manager));
             let panic = poll_fn(|cx| {
@@ -2967,11 +2966,11 @@ fn a_server_takes_the_port_of_the_listener_once() {
             assert_eq!(side.manager.port(), Some(PORT));
             assert_eq!(side.manager.port(), Some(PORT));
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+            let server = unsafe { Server::start(&side.manager, "", 1) };
             assert_eq!(side.manager.port(), None);
             let panic = panic::catch_unwind(AssertUnwindSafe(|| {
                 // SAFETY: the start panics before it makes a server.
-                unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) }
+                unsafe { Server::start(&side.manager, "", 1) }
             }))
             .map(|_| ())
             .expect_err("the second start panics");
@@ -2985,6 +2984,27 @@ fn a_server_takes_the_port_of_the_listener_once() {
     );
 }
 
+/// A server listens on the port of the listener of its manager.
+#[test]
+fn a_server_listens_on_the_port_of_its_listener() {
+    let mut network = Network::new();
+    let url = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let local = SocketAddr::new(node.addresses()[0], PORT + 1);
+            let side = Side::listening(&node, local);
+            // SAFETY: the server is deleted before `side` drops.
+            let server = unsafe { Server::start(&side.manager, "", 1) };
+            // SAFETY: the server lives.
+            let url = unsafe { ffi::test::shim_server_discovery_url(server.raw(), 0) };
+            let url = string(url);
+            server.close(&side.manager).await;
+            url
+        })
+        .expect("the run ends");
+    assert_eq!(url, b"opc.tcp://10.0.0.1:4841");
+}
+
 /// The `CloseSession` service of a running server removes the session after the
 /// service ends, which still writes to it.
 #[test]
@@ -2995,7 +3015,7 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+            let server = unsafe { Server::start(&side.manager, "", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
             let client = unsafe { ffi::shim_client_new(side.events().raw()) };
             assert!(!client.is_null());
@@ -3049,8 +3069,7 @@ fn a_stopped_server_is_deleted_when_no_delayed_callback_waits() {
             .run_on(&network.local.clone(), move |node, _| async move {
                 let side = Side::listening(&node, local(&node));
                 // SAFETY: the server is deleted before `side` drops.
-                let server =
-                    unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 1) };
+                let server = unsafe { Server::start(&side.manager, "", 1) };
                 // SAFETY: the loop outlives the client, which the test deletes.
                 let client = unsafe { ffi::shim_client_new(side.events().raw()) };
                 assert!(!client.is_null());
@@ -3303,8 +3322,7 @@ fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, u
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server =
-                unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 100) };
+            let server = unsafe { Server::start(&side.manager, "", 100) };
             side.drive(Span::from_nanos(2_000_000_000)).await;
             // Less the listen connection.
             let held = (side.connections() - 1, snapshot(&peers));
@@ -3337,8 +3355,7 @@ fn closes_past_the_bound() {
         .run_on(&network.local.clone(), |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server =
-                unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 100) };
+            let server = unsafe { Server::start(&side.manager, "", 100) };
             side.drive(Span::SECOND).await;
             let held = (side.connections(), snapshot(&peers));
             server.close(&side.manager).await;
@@ -3691,8 +3708,7 @@ fn poll_once(
         .run_on(&network.local.clone(), move |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server =
-                unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 100) };
+            let server = unsafe { Server::start(&side.manager, "", 100) };
             side.clock.sleep(Span::from_nanos(2_000_000)).await;
             let count = Arc::new(Wakes::default());
             let waker = Waker::from(Arc::clone(&count));
@@ -3729,8 +3745,7 @@ fn burst(drives: usize) -> (usize, usize, usize) {
         .run_on(&network.local.clone(), move |node, _| async move {
             let side = Side::listening(&node, local(&node));
             // SAFETY: the server is deleted before `side` drops.
-            let server =
-                unsafe { Server::start(&side.manager, c"opc.tcp://:4840", 100) };
+            let server = unsafe { Server::start(&side.manager, "", 100) };
             side.clock.sleep(Span::from_nanos(2_000_000)).await;
             for _ in 0..drives {
                 side.manager

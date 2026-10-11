@@ -2,7 +2,7 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::ffi::CStr;
+use std::ffi::CString;
 use std::ptr::NonNull;
 use std::task::Poll;
 
@@ -19,8 +19,9 @@ pub(crate) struct Server {
 
 impl Server {
     /// Makes the test server on the loop of `manager`, with the minimal config for the
-    /// port of its listener, the one server URL `url`, and room for `sessions` sessions
-    /// and secure channels, and starts it.
+    /// port of its listener, the one server URL `opc.tcp://{host}:{port}`, and room for
+    /// `sessions` sessions and secure channels, and starts it. An empty `host` listens
+    /// on the address of the listener.
     ///
     /// # Safety
     ///
@@ -29,12 +30,13 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If `manager` has no listener that a listen open did not take, or open62541
-    /// refuses the server or its start.
-    pub(crate) unsafe fn start(manager: &Manager, url: &CStr, sessions: u16) -> Self {
+    /// If `manager` has no listener that a listen open did not take, `host` holds a
+    /// NUL, or open62541 refuses the server or its start.
+    pub(crate) unsafe fn start(manager: &Manager, host: &str, sessions: u16) -> Self {
         let port = manager
             .port()
             .expect("a server starts on a manager with a listener that no server took");
+        let url = CString::new(format!("opc.tcp://{host}:{port}")).expect("no NUL");
         let events = manager.events().raw();
         // SAFETY: the loop outlives the server, as the caller ensures.
         let raw =
