@@ -2625,6 +2625,7 @@ mod tests {
         });
     }
 
+    // The `Debug` text is the behavior under test: no other call shows it.
     #[test]
     fn the_debug_text_of_ended_holds_nothing() {
         solo(|node, tasks| async move {
