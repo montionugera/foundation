@@ -77,6 +77,9 @@ impl Cause {
 /// The names of the lines that end each round comment, in order.
 const END: [&str; 3] = ["Deferred", "Public surface", "Hot path"];
 
+/// The name of the line that lists the text fixes of a round.
+const FIXES: &str = "Text fixes";
+
 /// A round comment posted before this UTC time keeps the check from before the end
 /// lines: it needs no end lines, and an earlier free-form one passes. It still needs
 /// `performance` when a `Hot path:` line names a function.
@@ -375,14 +378,16 @@ fn performer(text: &[Vec<String>]) -> bool {
 }
 
 /// Whether a top-level paragraph of `shown` after its round heading, other than its end
-/// lines, has a line `Text fixes:` with a value ([`stated`]).
+/// lines, has a line `Text fixes:` with a value ([`stated`]) that may wrap onto the
+/// lines after it.
 fn fixed(shown: &Shown<'_>) -> bool {
-    shown
-        .unended()
-        .iter()
-        .flat_map(|block| shown.paragraph(Some(block)))
-        .filter_map(|l| l.strip_prefix("Text fixes:"))
-        .any(stated)
+    let start = format!("{FIXES}:");
+    shown.unended().iter().any(|block| {
+        let p = shown.paragraph(Some(block));
+        (0..p.len()).any(|i| {
+            p[i].starts_with(&start) && stated(&entries(&p[i..], &[FIXES]).0[0].1)
+        })
+    })
 }
 
 /// The reviewers that the value of a `Reviewers:` line lists.
@@ -479,7 +484,7 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
 /// line has a value ([`stated`]). The paragraph must be the [`END`] lines in order and
 /// nothing else.
 fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
-    let (values, read) = entries(paragraph);
+    let (values, read) = entries(paragraph, &END);
     let [deferred, surface, hot] = END;
     for (i, name) in END.into_iter().enumerate() {
         let found = values.get(i).map(|(found, _)| *found);
@@ -505,17 +510,17 @@ fn named(text: &[Vec<String>]) -> bool {
     let start = format!("{}:", END[2]);
     text.iter().any(|p| {
         (0..p.len())
-            .any(|i| p[i].starts_with(&start) && stated(&entries(&p[i..]).0[0].1))
+            .any(|i| p[i].starts_with(&start) && stated(&entries(&p[i..], &END).0[0].1))
     })
 }
 
-/// The [`END`] entries at the start of `lines`, each as its name and value, and the
+/// The entries of `names` at the start of `lines`, each as its name and value, and the
 /// number of lines they take. An entry starts at the start of a line with its name,
 /// and may wrap onto the lines after it.
-fn entries(lines: &[String]) -> (Vec<(&'static str, String)>, usize) {
+fn entries<'n>(lines: &[String], names: &[&'n str]) -> (Vec<(&'n str, String)>, usize) {
     let mut values: Vec<(&str, String)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let name = END
+        let name = names
             .iter()
             .find(|name| line.starts_with(&format!("{name}:")));
         match (name, values.last_mut()) {
