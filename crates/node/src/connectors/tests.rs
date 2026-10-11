@@ -814,6 +814,17 @@ fn each_out_connector_gets_the_first_frame_of_an_in_connector_of_a_later_apply()
     assert_eq!(got, vec![both; 32]);
 }
 
+/// Two applies with no await between them: the first adds the out connector, the
+/// second the in connector.
+#[test]
+fn an_out_connector_gets_the_first_frame_of_an_in_connector_of_the_next_apply() {
+    let first = vec![("plant.a", "sink", NODE, 0)];
+    let mut second = first.clone();
+    second.push(("plant.b", "source", NODE, 0));
+    let got = got_on_each_seed(|| vec![on(0, first.clone()), on(0, second.clone())]);
+    assert_eq!(got, vec![vec!["plant.a".to_owned()]; 32]);
+}
+
 /// The reader open of `void` fails, since its selector matches no channel.
 #[test]
 fn an_out_connector_whose_reader_open_failed_holds_no_run() {

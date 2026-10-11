@@ -17,8 +17,10 @@ use crate::scope::Scope;
 /// its connector, and after each change the connector of that change, until a change
 /// removes it. After a run that gave `Config`, the next apply runs the connector again,
 /// also one that came before `run` returned. So no two runs of one name overlap, also
-/// across a removal and an addition. A first run starts only once no open on the node
-/// is pending, so an out connector reads each frame of an in connector of its apply.
+/// across a removal and an addition. The first run of a connector that an apply adds
+/// starts only once no first open of such a connector is pending on the node. So an
+/// out connector reads each frame of each in connector that its apply, or a later
+/// apply, adds.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     opens: Rc<Opens>,
@@ -30,7 +32,7 @@ pub(crate) struct Runs {
     loops: BTreeMap<Name, Rc<RefCell<Loop>>>,
 }
 
-/// The count of the opens on the node that have not resolved.
+/// The count of the first opens of added connectors that have not resolved.
 struct Opens {
     pending: Cell<usize>,
     /// Cancelled, and replaced, each time `pending` goes to 0.
@@ -98,8 +100,8 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. A run starts only once
-    /// the open of each connector that this apply adds resolved.
+    /// its name returned. Each other connector keeps its run. The first run of an
+    /// added connector waits until no first open of an added connector is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
@@ -137,12 +139,12 @@ impl Runs {
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
             let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
-            // Counted before any loop of this apply polls.
-            let mut pending = Some(opens.begin());
+            // Counted before any loop of this apply polls. A changed connector, and one
+            // that runs again after `Config`, has no share.
+            let mut first = Some(opens.begin());
             let name = name.clone();
             self.scope.spawn(Box::pin(async move {
                 loop {
-                    let pending = pending.take().unwrap_or_else(|| opens.begin());
                     let (connector, changed, applied) = {
                         let mut state = state.borrow_mut();
                         let Some(connector) = state.connector.clone() else {
@@ -155,8 +157,10 @@ impl Runs {
                     let config = connector.config().document();
                     let opened = supervisor.open(kind, name.clone(), config, &changed);
                     let opened = opened.await;
-                    drop(pending);
-                    changed.race(opens.settled()).await;
+                    if let Some(first) = first.take() {
+                        drop(first);
+                        changed.race(opens.settled()).await;
+                    }
                     match opened.run().await {
                         // The next change of the connector runs it again.
                         Ok(()) => changed.wait().await,
