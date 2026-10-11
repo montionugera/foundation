@@ -44,9 +44,13 @@
   supersedes the hub test of
   https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
-  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183): the
-  ruling said that no hub test reaches that wake, and it gave the two hub `sim` tests as
-  they were before #2388.
+  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183; the
+  source of each part and Q21, 2026-10-11T11:41:19Z:
+  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108643775):
+  https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119 said that
+  no hub test reaches that wake, and the ruling of #1170 gave the two hub `sim` tests as
+  they were before #2388. The ruling of #1718 above supersedes Q21 ("no change now") of
+  the same #1133 comment.
   The hub `sim` tests `drops_the_commit_it_waits_for_with_the_hub` (64 values),
   `ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit`,
   `gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window`, and
