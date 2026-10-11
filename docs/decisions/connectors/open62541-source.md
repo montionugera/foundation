@@ -158,26 +158,33 @@
   2026-10-11 05:48 UTC). Which prefix the key keeps: stated by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106559609,
   2026-10-11 07:12 UTC). An entry goes in the list only when its instruction reads
-  registers, flags, and memory, and no other state. One exception is the thread pointer,
-  which the thread-local state of the copy needs, and which is an address, as those of
-  the allocator are: `mrs tpidr_el0` on aarch64, and on x86-64 a memory operand through
-  `fs`, which the key does not keep. The check does not see what the memory that an
-  instruction reads holds. So a read at a fixed place from the thread pointer passes on
-  the two architectures. On x86-64 with glibc, the stack guard is at such a place
-  (`fs:0x28`). From C that names no address, a compiler makes such a read only for a
-  thread-local variable and, on x86-64 with glibc, for the stack protector, which the
-  check builds without. A read of another place from the thread pointer in the C of the
-  copy is an edit made to hide, and review of each copy PR covers it. Lost: a key that
-  keeps the segment (`mov fs:`). The thread-local state of the copy needs its entry,
-  which then admits each place from the thread pointer, as `mrs tpidr_el0` does. Lost: a
-  key by the place (`fs:0x28`), a deny list of the places of one libc. The thread
-  pointer: decided by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107930295,
-  2026-10-11 10:10 UTC, and, for the sentences on a fixed place,
-  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522, 2026-10-11
-  10:30 UTC). Lost: a deny list of the instructions that read a clock or randomness,
-  which passes one that it does not name, such as one of a later extension. Decided by
+  registers, flags, and memory, and no other state. A system register that the processor
+  or the OS fills, such as a counter (`cntvct_el0`) or a random number (`rndr`), is
+  other state. One exception is the thread pointer, which the thread-local state of the
+  copy needs, and which is an address, as those of the allocator are: `mrs tpidr_el0` on
+  aarch64, and on x86-64 a memory operand through `fs`, which the key does not keep. The
+  check does not see what the memory that an instruction reads holds. So a read at a
+  fixed place from the thread pointer passes on the two architectures. On x86-64 with
+  glibc, the stack guard is at such a place (`fs:0x28`). From C that names no address, a
+  compiler makes such a read only for a thread-local variable and, on x86-64 with glibc,
+  for the stack protector, which the check builds without. A read of another place from
+  the thread pointer in the C of the copy is an edit made to hide, and review of each
+  copy PR covers it. Lost: a key that keeps the segment (`mov fs:`). The thread-local
+  state of the copy needs its entry, which then admits each place from the thread
+  pointer, as `mrs tpidr_el0` does. Lost: a key by the place (`fs:0x28`), a deny list of
+  the places of one libc. The entry rule and the thread pointer: decided by
   `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107930295,
+  2026-10-11 10:10 UTC, for the sentences on a fixed place,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522, 2026-10-11
+  10:30 UTC, and, for the sentence on a system register,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108643437, 2026-10-11
+  11:41 UTC). Supersedes the entry rule ("only when it reads no clock, randomness, file,
+  network, or process state") of
+  https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499. Lost: a
+  deny list of the instructions that read a clock or randomness, which passes one that
+  it does not name, such as one of a later extension. The closed list, the key of `mrs`
+  and `msr`, and this "Lost": decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
   2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided by
   `laptop.director`
@@ -189,8 +196,8 @@
   with each flag of `flags.txt`, as the objects of the connector are. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
-  2026-10-08 13:31 UTC). The words "each flag of `flags.txt`": stated by
-  `laptop.architect-2`
+  2026-10-08 13:31 UTC). The words "each flag of `flags.txt`, as the objects of the
+  connector are": approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522,
   2026-10-11 10:30 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
   flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`

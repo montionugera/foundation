@@ -1085,9 +1085,9 @@ struct Architecture {
     /// The options of `objdump -d` for it.
     options: &'static [&'static str],
     /// Each key of [`instructions`] that the copy may run. Each reads registers, flags,
-    /// and memory, and no other state. One exception is the thread pointer:
-    /// `mrs tpidr_el0`, and on x86-64 a memory operand through `fs`, which the key
-    /// does not keep.
+    /// and memory, and no other state. A system register that the processor or the OS
+    /// fills is other state. One exception is the thread pointer: `mrs tpidr_el0`, and
+    /// on x86-64 a memory operand through `fs`, which the key does not keep.
     instructions: &'static [&'static str],
 }
 
@@ -1175,7 +1175,8 @@ impl Architecture {
         }
         Some(format!(
             "{file}: {} runs `{}`, which {} does not admit. Add it only when it reads \
-             registers, flags, and memory, and no other state",
+             registers, flags, and memory, and no other state. A system register that \
+             the processor or the OS fills is other state",
             found.place, found.key, self.list
         ))
     }
@@ -1648,7 +1649,8 @@ Disassembly of section .text.stamp:
             x86.refuses("a.c", &found(Some("stamp"), "rdtsc")),
             Some(
                 "a.c: `stamp` runs `rdtsc`, which X86_64 does not admit. Add it only \
-                 when it reads registers, flags, and memory, and no other state"
+                 when it reads registers, flags, and memory, and no other state. A \
+                 system register that the processor or the OS fills is other state"
                     .to_owned()
             )
         );
@@ -1657,7 +1659,8 @@ Disassembly of section .text.stamp:
             Some(
                 "a.c: the section `.text.stamp` runs `mrs cntvct_el0`, which AARCH64 \
                  does not admit. Add it only when it reads registers, flags, and \
-                 memory, and no other state"
+                 memory, and no other state. A system register that the processor or \
+                 the OS fills is other state"
                     .to_owned()
             )
         );
@@ -1665,7 +1668,9 @@ Disassembly of section .text.stamp:
             x86.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
             Some(
                 "a.c: `stamp` runs `mrs tpidr_el0`, which X86_64 does not admit. Add \
-                 it only when it reads registers, flags, and memory, and no other state"
+                 it only when it reads registers, flags, and memory, and no other \
+                 state. A system register that the processor or the OS fills is other \
+                 state"
                     .to_owned()
             )
         );
@@ -1673,7 +1678,8 @@ Disassembly of section .text.stamp:
             arm.refuses("a.c", &found(Some("stamp"), "rep stos")),
             Some(
                 "a.c: `stamp` runs `rep stos`, which AARCH64 does not admit. Add it \
-                 only when it reads registers, flags, and memory, and no other state"
+                 only when it reads registers, flags, and memory, and no other state. \
+                 A system register that the processor or the OS fills is other state"
                     .to_owned()
             )
         );
@@ -2902,12 +2908,15 @@ End of search list.
         &[
             "src/util/ua_util.c: `draw` runs `rdrand`, which X86_64 does not admit. \
              Add it only when it reads registers, flags, and memory, and no other \
+             state. A system register that the processor or the OS fills is other \
              state",
             "src/util/ua_util.c: `stamp` runs `rdtsc`, which X86_64 does not admit. \
              Add it only when it reads registers, flags, and memory, and no other \
+             state. A system register that the processor or the OS fills is other \
              state",
             "src/util/ua_util.c: `stamped` runs `rdtsc`, which X86_64 does not admit. \
              Add it only when it reads registers, flags, and memory, and no other \
+             state. A system register that the processor or the OS fills is other \
              state",
             "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in its \
              caller",
@@ -2930,10 +2939,12 @@ End of search list.
         &[
             "src/util/ua_util.c: `draw` runs `mrs rndr`, which AARCH64 does not admit. \
              Add it only when it reads registers, flags, and memory, and no other \
+             state. A system register that the processor or the OS fills is other \
              state",
             "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does \
-             not admit. Add it only when it reads registers, flags, and memory, and \
-             no other state",
+             not admit. Add it only when it reads registers, flags, and memory, and no \
+             other state. A system register that the processor or the OS fills is \
+             other state",
             "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in its \
              caller",
         ],
