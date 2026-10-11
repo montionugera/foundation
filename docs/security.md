@@ -335,9 +335,12 @@ state on `main`.
   PKCS#8 copy in `tls` is cleared when dropped. `node` does not clear the copies of
   `node.key` that it reads and writes (the encoded bytes, the pool block of each file
   call, and `Held::Written`), so the seal key that `secret::seal::Opener` clears is
-  still in them.
+  still in them. It does not clear the same copies of `admin.key`, or the first
+  admin's `PrivateKey`, which it drops once the founding has its public half.
 - Node key material is on the node's local disk. A local user who can read it (Who
-  attacks) is that node.
+  attacks) is that node. The node that founds the root region keeps the first admin's
+  private key in `admin.key` (NODE MESH), so a local user who can read that file is
+  the first admin.
 - `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
   use it (BQ16, S8). The other adapters (an environment variable or a file, and the
