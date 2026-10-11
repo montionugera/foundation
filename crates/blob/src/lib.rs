@@ -2400,9 +2400,9 @@ mod tests {
         }
 
         // One put at a time, each dropped at a random wait. The floor leaves room for
-        // one chunk.
+        // one chunk, and no put is in flight at the check.
         #[test]
-        fn puts_one_at_a_time_leave_the_floor_less_one_chunk_free() {
+        fn puts_one_at_a_time_keep_the_floor_free() {
             for run in 0..600 {
                 let (mut sim, node) = create_node(run, 1 << 20);
                 sim.run_on(&node, move |node, _| async move {
@@ -2434,7 +2434,7 @@ mod tests {
                     let files = node.files().list(Path::new(DIR)).await.unwrap().len();
                     let free_bytes = node.files().free().await.unwrap();
                     assert!(
-                        free_bytes + 1000 >= floor_bytes,
+                        free_bytes >= floor_bytes,
                         "run {run}: {free_bytes} bytes are free and the floor is \
                          {floor_bytes}; {files} files, {stored} puts stored, \
                          {refused} puts gave Floor"
