@@ -358,6 +358,28 @@ fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     assert!(window.contains(&took), "{took:?}");
 }
 
+/// A read that a server that stops never answers ends with `BadTimeout` at the request
+/// timeout, as a close does.
+#[test]
+fn a_read_of_a_client_whose_server_stops_times_out() {
+    let ((value, took), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            let start = peer.clock.now();
+            let value = client.read(VALUE).await;
+            let took = peer.clock.now() - start;
+            peer.paused.set(false);
+            client.close().await;
+            (value, took)
+        })
+        .await
+    });
+    assert_eq!(value, Err(Status::BAD_TIMEOUT));
+    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(window.contains(&took), "{took:?}");
+}
+
 /// A connect that times out after the server makes its session closes the session, so
 /// a server with room for one session takes the next client. In the run of seed 0, the
 /// server makes the session 3 ms after the connect starts and activates it later.
