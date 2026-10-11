@@ -2919,7 +2919,7 @@ mod tests {
     }
 
     /// A handoff that found no room is not recorded at a resend write: the shard does
-    /// not read a resend frame.
+    /// not read a resend frame. It still waits for the next live write.
     #[test]
     fn keeps_a_waiting_handoff_at_a_resend_write() {
         run(246, |test| async move {
@@ -2934,6 +2934,11 @@ mod tests {
             assert_eq!(shard.write(b, Label::Resend, write), Err(Error::Resend));
             shard.committed().await.expect("the commit ends");
             assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+            let write = frame(&test.pool, &set, &[(2, &[11])]);
+            shard.write(b, LIVE, write).expect("written");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "the live write records the handoff");
         });
     }
 
