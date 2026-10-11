@@ -105,48 +105,46 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (from_sha, end_sha) = match self.ends(from, end)? {
-            Ok(ends) => ends,
-            Err(unnamed) => return Ok(Some(unnamed)),
+        let (from, end, base, newest, merged) = match self.range(from, end)? {
+            Range::Empty => return Ok(None),
+            Range::Unread(phrase) => return Ok(Some(phrase)),
+            Range::Read {
+                from,
+                end,
+                base,
+                newest,
+                merged,
+            } => (from, end, base, newest, merged),
         };
-        if from_sha == end_sha {
-            return Ok(None);
-        }
-        let base = self.base()?;
-        let range = format!("{from_sha}..{end_sha}");
+        let commits = format!("{from}..{end}");
         let chain = self.git(&[
             "rev-list",
             "--reverse",
             "--first-parent",
             "--parents",
-            &range,
+            &commits,
         ])?;
         for line in chain.lines() {
             let Some((first, second)) = self.base_merge(line, &base)? else {
                 continue;
             };
             let merge = line.split(' ').next().unwrap_or_default();
-            let merged = self.merged(first, second)?;
-            if let Some(path) = merged.code_conflict() {
+            let resolved = self.merged(first, second)?;
+            if let Some(path) = resolved.conflict(|path| !text_path(path)) {
                 return Ok(Some(format!(
                     "resolves a conflict in `{path}` in `{merge}`"
                 )));
             }
         }
-        let newest = match self.newest(&end_sha, &base)? {
-            Ok(newest) => newest,
-            Err(many) => return Ok(Some(many)),
-        };
-        let merged = self.merged(&from_sha, &newest)?;
-        if let Some(path) = merged.code_conflict() {
+        if let Some(path) = merged.conflict(|path| !text_path(path)) {
             return Ok(Some(format!(
                 "has a conflict in `{path}` between its start and the base"
             )));
         }
-        if let Some(moved) = self.moved_into_code(&from_sha, &newest, &merged.tree)? {
+        if let Some(moved) = self.moved_into_code(&from, &newest, &merged.tree)? {
             return Ok(Some(moved));
         }
-        self.first_change(&merged.tree, &end_sha)
+        self.first_change(&merged.tree, &end)
     }
 
     /// The first change of a public surface in the range `<from>..<end>`, as a
@@ -168,20 +166,13 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (from_sha, end_sha) = match self.ends(from, end)? {
-            Ok(ends) => ends,
-            Err(unnamed) => return Ok(Some(unnamed)),
+        let (end, merged) = match self.range(from, end)? {
+            Range::Empty => return Ok(None),
+            Range::Unread(phrase) => return Ok(Some(phrase)),
+            Range::Read { end, merged, .. } => (end, merged),
         };
-        if from_sha == end_sha {
-            return Ok(None);
-        }
-        let newest = match self.newest(&end_sha, &self.base()?)? {
-            Ok(newest) => newest,
-            Err(many) => return Ok(Some(many)),
-        };
-        let merged = self.merged(&from_sha, &newest)?;
         let decision = self
-            .diff(&merged.tree, &end_sha)?
+            .diff(&merged.tree, &end)?
             .into_iter()
             .find(|entry| entry.path.starts_with(DECISIONS.as_bytes()));
         Ok(decision.map(|entry| {
@@ -190,46 +181,42 @@ impl<'a> History<'a> {
         }))
     }
 
-    /// The commits that `from` and `end` name, as `code_change` reads them. The inner
-    /// `Err` is the phrase "has `<text>`, which names no commit" for the first of the
-    /// two that names none.
+    /// The range `<from>..<end>`, as `code_change` and `surface_change` read it.
     ///
     /// # Errors
     ///
-    /// A failed `git` command.
-    fn ends(
-        &self,
-        from: &str,
-        end: &str,
-    ) -> Result<Result<(String, String), String>, String> {
-        let unnamed = |text: &str| format!("has `{text}`, which names no commit");
-        let Some(from_sha) = self.named(from)? else {
-            return Ok(Err(unnamed(from)));
+    /// A failed `git` command, also when the base ref does not exist.
+    fn range(&self, from: &str, end: &str) -> Result<Range, String> {
+        let unnamed =
+            |text: &str| Range::Unread(format!("has `{text}`, which names no commit"));
+        let Some(from) = self.named(from)? else {
+            return Ok(unnamed(from));
         };
-        let Some(end_sha) = self.sha(end)? else {
-            return Ok(Err(unnamed(end)));
+        let Some(end) = self.sha(end)? else {
+            return Ok(unnamed(end));
         };
-        Ok(Ok((from_sha, end_sha)))
-    }
-
-    /// The newest commit of `base`, the SHA of the base, that the commit `end` holds.
-    /// The inner `Err` is the phrase "holds the base at more than one newest commit:
-    /// `<commit>`, `<commit>`".
-    ///
-    /// # Errors
-    ///
-    /// A failed `git` command.
-    fn newest(&self, end: &str, base: &str) -> Result<Result<String, String>, String> {
-        let bases = self.git(&["merge-base", "--all", end, base])?;
+        if from == end {
+            return Ok(Range::Empty);
+        }
+        let base = self.base()?;
+        let bases = self.git(&["merge-base", "--all", &end, &base])?;
         let mut bases: Vec<_> = bases.lines().collect();
         bases.sort_unstable();
         let [newest] = bases[..] else {
-            return Ok(Err(format!(
+            return Ok(Range::Unread(format!(
                 "holds the base at more than one newest commit: `{}`",
                 bases.join("`, `")
             )));
         };
-        Ok(Ok(newest.to_string()))
+        let newest = newest.to_string();
+        let merged = self.merged(&from, &newest)?;
+        Ok(Range::Read {
+            from,
+            end,
+            base,
+            newest,
+            merged,
+        })
     }
 
     /// The first code change from the tree-ish `old` to `new`, as `code_change`
@@ -792,13 +779,35 @@ struct Merged {
 }
 
 impl Merged {
-    /// The first conflicted path that is not a `.md` file.
-    fn code_conflict(&self) -> Option<&str> {
+    /// The first conflicted path for which `counts` holds.
+    fn conflict(&self, counts: impl Fn(&str) -> bool) -> Option<&str> {
         self.conflicts
             .iter()
-            .find(|p| !text_path(p))
             .map(String::as_str)
+            .find(|path| counts(path))
     }
+}
+
+/// A range `<from>..<end>` of a round.
+enum Range {
+    /// `from` and `end` name the same commit.
+    Empty,
+    /// The phrase of a range that the check cannot read: "has `<text>`, which names
+    /// no commit" for the first of `from` and `end` that names none, or "holds the
+    /// base at more than one newest commit: `<commit>`, `<commit>`".
+    Unread(String),
+    Read {
+        /// The SHA of `from`.
+        from: String,
+        /// The SHA of `end`.
+        end: String,
+        /// The SHA of the base.
+        base: String,
+        /// The newest commit of the base that `end` holds.
+        newest: String,
+        /// The merge of `from` and `newest`.
+        merged: Merged,
+    },
 }
 
 /// Whether `path`, a path as `git` gives it, is a `.md` file, the one kind of file
