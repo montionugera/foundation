@@ -272,6 +272,38 @@ fn places_an_end_off_the_chain_before_reading_the_base() {
 }
 
 #[test]
+fn places_an_end_before_a_merge_of_an_unrelated_base_commit() {
+    let (repo, end) = Repo::with_pr("unrelated-chain");
+    repo.git(&["switch", "--quiet", "--orphan", "other"]);
+    let other = repo.commit("c.txt", "other\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let unrelated = [
+        "merge",
+        "--quiet",
+        "--no-edit",
+        "--allow-unrelated-histories",
+    ];
+    repo.git(&[&unrelated[..], &["other"]].concat());
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&[&unrelated[..], &[other.as_str()]].concat());
+    let head = repo.head();
+    assert_eq!(repo.place(&end, &head), Ok(Place::Head));
+    // The head holds both roots of the base, so it fails closed.
+    let roots = repo.git(&["merge-base", "--all", &head, "origin/main"]);
+    let mut roots: Vec<_> = roots.lines().collect();
+    roots.sort_unstable();
+    assert_eq!(
+        repo.code_change(&end, &head),
+        Ok(Some(format!(
+            "holds the base at more than one newest commit: `{}`",
+            roots.join("`, `")
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
 fn passes_commits_that_change_no_code_after_the_end() {
     let (repo, _) = Repo::with_pr("text");
     let end = repo.commit("a.rs", "fn a() {}\n");

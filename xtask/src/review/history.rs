@@ -570,7 +570,8 @@ impl<'a> History<'a> {
     }
 
     /// Whether `git merge-tree --write-tree -z` with `args` finds no conflict, and its
-    /// output.
+    /// output. Commits with no common history merge from an empty base, as
+    /// `git merge --allow-unrelated-histories` does.
     ///
     /// # Errors
     ///
@@ -578,7 +579,12 @@ impl<'a> History<'a> {
     fn merge_tree(&self, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
         let output = command(self.root)
             .arg(format!("--attr-source={EMPTY_TREE}"))
-            .args(["merge-tree", "--write-tree", "-z"])
+            .args([
+                "merge-tree",
+                "--write-tree",
+                "-z",
+                "--allow-unrelated-histories",
+            ])
             .args(args)
             .output()
             .map_err(|e| format!("git merge-tree: {e}"))?;
