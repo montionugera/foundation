@@ -23,7 +23,7 @@ pub(crate) struct Channel {
 /// The status of each crate, pulled one time for a sample of each channel.
 struct Pulled {
     clock: clock::Status,
-    blob: blob::Status,
+    store: blob::Status,
 }
 
 /// The node's status channels, a fixed set per release. [`Collector::collect`] gives
@@ -56,12 +56,12 @@ pub(crate) const TABLE: [Channel; 5] = [
     Channel {
         name: "blob.corruptions",
         data_type: Type::Scalar(Scalar::U64),
-        read: |pulled| Some(Value::U64(pulled.blob.corruptions)),
+        read: |pulled| Some(Value::U64(pulled.store.corruptions)),
     },
     Channel {
         name: "blob.failures",
         data_type: Type::Scalar(Scalar::U64),
-        read: |pulled| Some(Value::U64(pulled.blob.failures)),
+        read: |pulled| Some(Value::U64(pulled.store.failures)),
     },
 ];
 
@@ -73,7 +73,8 @@ pub(crate) enum Value {
     Span(Span),
 }
 
-/// Pulls the status of each crate, on the shard of the node's chunk store.
+/// Pulls the status of each crate: the clock through its reader, and the chunk store on
+/// the shard of the store.
 #[derive(Debug)]
 pub(crate) struct Collector {
     clock: clock::Reader,
@@ -81,7 +82,8 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    /// A collector for the shard of `store`, the node's chunk store.
+    /// A collector of `clock` and of `store`, the node's chunk store. It runs on the
+    /// shard of `store`.
     pub(crate) fn new(clock: clock::Reader, store: Rc<blob::Store>) -> Self {
         Self { clock, store }
     }
@@ -92,7 +94,7 @@ impl Collector {
     pub(crate) fn collect(&self) -> [Option<Value>; TABLE.len()] {
         let pulled = Pulled {
             clock: self.clock.status(),
-            blob: self.store.status(),
+            store: self.store.status(),
         };
         TABLE.each_ref().map(|channel| (channel.read)(&pulled))
     }

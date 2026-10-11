@@ -6,12 +6,19 @@
   from a reader that its crate gives; no crate calls `node`. Lost: each crate pushes
   status events to a sink (BQ11b locks pull). Decided in #728.
   Amended (`laptop.architect-2`, 2026-10-11T06:01:45Z,
-  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6106059148): the
-  table also holds `blob.corruptions` and `blob.failures` (each `U64`), the counts of
-  `blob::Status` after the open of the node's chunk store (BLOB STORE). The node does
-  not stop for a failure of the chunk store. Lost: `node::route` stops the node, or
-  counts from the result of `blob::peer::serve` (one of the callers of the store). The
-  collector holds the store and reads it on its shard, shard 0. A node with no region
-  has no chunk store, and gives no sample for the two. Lost: a count of 0 for a node
-  with no store (it says that a store is there). Decided by the builder (#2362,
-  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6107079376).
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6106059148): `node`
+  shows a failed file call of the chunk store as status, which it pulls from the store.
+  A node that runs does not stop for one, and `node::route` does not read the result of
+  `blob::peer::serve` for it. Lost: `node::route` stops the node, or counts from the
+  result of `blob::peer::serve` (one of the callers of the store). The table holds
+  `blob.corruptions` and `blob.failures` (each `U64`), the counts of `blob::Status`
+  after the open of the node's chunk store (BLOB STORE). The names and the type are in
+  the body of #2362. The collector holds the store and reads it on the shard of the
+  store, shard 0, because `blob` gives no reader for other threads (BLOB STORE). A node
+  with no region has no member record (MEMBER RECORD), so it has no status channel and
+  no collector. Lost: an optional store, with no sample for the two (no node collects
+  with no store); the caller of `collect` pulls the status and passes it (the collector
+  is the one place that pulls). Proposed in the plan of #2362 (2026-10-11T08:21:23Z,
+  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6107079376); ruled
+  by `laptop.architect-2` (2026-10-11T10:39:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).

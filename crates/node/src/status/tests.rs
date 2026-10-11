@@ -49,8 +49,8 @@ fn create_pool() -> Rc<block::Pool> {
     Rc::new(block::Pool::new(config, memory))
 }
 
-/// The chunk store of `host`, as a node opens it.
-async fn open(host: &Node, pool: Rc<block::Pool>) -> Rc<blob::Store> {
+/// A chunk store in the chunk directory of `host`, with no floor.
+async fn create_store(host: &Node, pool: Rc<block::Pool>) -> Rc<blob::Store> {
     let config = blob::Config {
         files: host.files(),
         dir: crate::directory::blob(),
@@ -67,7 +67,7 @@ fn run<T: Send + 'static>(
 ) -> T {
     let (mut sim, host) = host();
     let ran = sim.run_on(&host, |host, _| async move {
-        let store = open(&host, create_pool()).await;
+        let store = create_store(&host, create_pool()).await;
         let (mut clock, reader) = Clock::new(host.clock());
         body(&host, &mut clock, &Collector::new(reader, store))
     });
@@ -138,7 +138,7 @@ fn the_error_of_a_clock_in_holdover_grows_by_drift() {
     clock.add();
     assert_eq!(sim.run_for(Span::HOUR), Ok(()));
     let ran = sim.run_on(&host, |host, _| async move {
-        let store = open(&host, create_pool()).await;
+        let store = create_store(&host, create_pool()).await;
         let collector = Collector::new(reader.clone(), store);
         (reader.status(), collector.collect())
     });
@@ -162,11 +162,11 @@ fn a_get_whose_read_fails_gives_one_failure_of_the_chunk_store() {
     let (mut sim, host) = host();
     let ran = sim.run_on(&host, |host, _| async move {
         let pool = create_pool();
-        let store = open(&host, Rc::clone(&pool)).await;
+        let store = create_store(&host, Rc::clone(&pool)).await;
         let (_clock, reader) = Clock::new(host.clock());
         let collector = Collector::new(reader, Rc::clone(&store));
-        let none = [Some(Value::U64(0)), Some(Value::U64(0))];
-        assert_eq!(counts(&collector), none);
+        let zero = Some(Value::U64(0));
+        assert_eq!(counts(&collector), [zero, zero]);
         let mut chunk = pool.alloc(5).expect("a block");
         chunk.copy_from_slice(b"chunk");
         let chunk = chunk.freeze();
@@ -180,7 +180,7 @@ fn a_get_whose_read_fails_gives_one_failure_of_the_chunk_store() {
             code: 5,
         });
         assert_eq!(store.get(digest).await.unwrap_err(), failed);
-        assert_eq!(counts(&collector), [none[0], Some(Value::U64(1))]);
+        assert_eq!(counts(&collector), [zero, Some(Value::U64(1))]);
     });
     assert_eq!(ran, Ok(()));
 }
@@ -197,7 +197,7 @@ fn a_get_of_a_chunk_that_fails_its_check_gives_one_corruption() {
         let file = files.open(&dir.join(digest.to_string()), empty).await;
         file.expect("makes the file").close().await;
         files.sync_dir(&dir).await.expect("syncs");
-        let store = open(&host, create_pool()).await;
+        let store = create_store(&host, create_pool()).await;
         let (_clock, reader) = Clock::new(host.clock());
         let collector = Collector::new(reader, Rc::clone(&store));
         assert!(store.get(digest).await.expect("the get reads").is_none());

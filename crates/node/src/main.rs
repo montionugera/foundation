@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 }
 
 /// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
-/// it stops it.
+/// the process stops it.
 fn node(start: &Start) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;

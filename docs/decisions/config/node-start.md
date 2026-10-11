@@ -96,7 +96,10 @@
   `--listen` and the
   file `address` come with #1744
   (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).
-  A SIGINT or SIGTERM that the caller of the node blocks or ignores does not reach it
-  (ENV SEAMS): a node that `sh -c "foundation start ... &"` starts does not stop at
-  `kill -INT`. Decided by `laptop.architect-2` (2026-10-10T23:40:43Z,
-  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164).
+  A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
+  choice of its parent, does not reach it (ENV SEAMS): a node that
+  `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
+  `laptop.architect-2` (2026-10-10T23:40:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164) and
+  reworded by it (2026-10-11T10:39:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).
