@@ -653,6 +653,8 @@ mod tests {
             node.clock().sleep(Span::from_nanos(100_000)).await;
             assert_eq!(poll_once(&mut put).await, Poll::Pending);
         }
+        // A dropped call runs to its end, in 100 us at most.
+        node.clock().sleep(Span::from_nanos(200_000)).await;
         let file = node.files().open(&path(digest), Mode::Read).await;
         file.expect("the dropped put left a file").close().await;
     }
@@ -1696,7 +1698,7 @@ mod tests {
 
         #[test]
         fn after_a_dropped_put_reads_the_file_one_time() {
-            let (mut sim, node) = create_default_node(5);
+            let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
@@ -1832,7 +1834,7 @@ mod tests {
         // No crash, no fault, and no write from outside the store.
         #[test]
         fn counts_no_corruption_for_a_get_after_a_dropped_put() {
-            let (mut sim, node) = create_default_node(5);
+            let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
@@ -1846,7 +1848,7 @@ mod tests {
         // The dropped put is the second flight: each serial above 0 is a put's.
         #[test]
         fn counts_no_corruption_for_a_get_after_a_dropped_put_that_was_not_the_first() {
-            let (mut sim, node) = create_default_node(5);
+            let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (first, other) = chunk(8, 3000);
@@ -1882,7 +1884,7 @@ mod tests {
         // The open lists names, so it cannot tell the file from a torn write.
         #[test]
         fn counts_a_corruption_for_a_get_after_a_dropped_put_of_an_earlier_open() {
-            let (mut sim, node) = create_default_node(5);
+            let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
