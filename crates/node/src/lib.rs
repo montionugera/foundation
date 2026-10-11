@@ -123,15 +123,17 @@ pub enum Region {
     Stored,
     /// The region `founding`, a patch until a node joins by ticket (#1157). One
     /// founding member has the node's key, and its card holds the public half of the
-    /// node's private key, both from the file `node.key` in the data directory. Only
-    /// `node` reads that file, so only the tests of `node`, and the `acceptance` lab,
-    /// which writes the file first with `create_key`, give it. A start whose mesh log
-    /// holds no record keeps the region in the data directory. A start whose log holds
-    /// a record and that gives another region stops the node, and [`Node::join`] gives
-    /// [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of each task knows each
-    /// channel of the region's spec in use, at the open and after each spec change
-    /// that takes effect. At a start whose log holds no record, that is the founding's
-    /// `definitions`, or no channel when `spec::region::check` gives them problems.
+    /// node's private key, both from the file `node.key` in the data directory. That
+    /// card also holds `Config::name`: it is the stored name when the file `name` is
+    /// gone. Only `node` reads `node.key`, so only the tests of `node`, and the
+    /// `acceptance` lab, which writes the file first with `create_key`, give it. A
+    /// start whose mesh log holds no record keeps the region in the data directory. A
+    /// start whose log holds a record and that gives another region stops the node, and
+    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of
+    /// each task knows each channel of the region's spec in use, at the open and after
+    /// each spec change that takes effect. At a start whose log holds no record, that
+    /// is the founding's `definitions`, or no channel when `spec::region::check` gives
+    /// them problems.
     #[cfg(feature = "sim")]
     Given(mesh::region::Founding),
 }
@@ -1194,7 +1196,8 @@ pub enum Error {
     /// The transport of the node's port stopped, as when the OS breaks its socket.
     /// The node stops.
     Transport(transport::Error),
-    /// The mesh did not open. The node took no session.
+    /// The mesh did not open, or the founding that the data directory stores did not
+    /// read. A node that gives it took no session.
     Mesh(mesh::Error),
     /// The group of the node's mesh stopped, as when a write of its log fails. The
     /// node stops.
