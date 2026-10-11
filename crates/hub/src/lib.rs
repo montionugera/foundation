@@ -107,7 +107,7 @@ struct State {
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
-    commit: commit::Signal,
+    commit: commit::Task,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
     node: types::node::Key,
@@ -154,7 +154,7 @@ impl Hub {
             waiting: hash::Map::default(),
             opened: 0,
             woken: Vec::new(),
-            commit: commit::Signal::new(next),
+            commit: commit::Task::new(next),
             failed: None,
             node,
             time,

@@ -902,9 +902,9 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
     }
 }
 
-/// The commit task that went back to sleep after a commit wakes for the next write.
+/// After a commit wakes a complete reader, the next commit wakes it again.
 #[test]
-fn wakes_the_commit_task_for_a_write_after_a_commit() {
+fn gives_a_complete_reader_the_frame_of_a_later_commit() {
     run(23, |test| async move {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;

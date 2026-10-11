@@ -9,7 +9,7 @@ use std::task::{Poll, Waker};
 
 /// The commit task's part of the state: the commit it waits for, and its waker.
 #[derive(Debug)]
-pub(crate) struct Signal {
+pub(crate) struct Task {
     /// The next group commit of the home, which wakes the task when it resolves. It
     /// holds the ring open, so it drops with the state.
     next: home::Commit,
@@ -17,8 +17,8 @@ pub(crate) struct Signal {
     task: Option<Waker>,
 }
 
-impl Signal {
-    /// Waits for `next`, the next group commit of the home.
+impl Task {
+    /// Holds `next`, the first group commit of the home that the task waits for.
     pub(crate) fn new(next: home::Commit) -> Self {
         Self { next, task: None }
     }
@@ -62,7 +62,7 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
     .await;
 }
 
-impl Drop for Signal {
+impl Drop for Task {
     /// Wakes the task, which then finds the state gone and ends.
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
