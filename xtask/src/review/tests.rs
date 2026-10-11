@@ -966,6 +966,14 @@ fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
 }
 
 #[test]
+fn reads_text_fixes_in_the_last_paragraph_of_an_old_round() {
+    let round = ROUND
+        .replace(END, "\n\nText fixes: in the PR body, write `x`.")
+        .replace("..c77c67d7", &format!("..{TEXT}"));
+    assert_eq!(check(&record(vec![old(&round)])), Vec::<String>::new());
+}
+
+#[test]
 fn passes_a_range_that_ends_before_only_clean_merges_without_text_fixes() {
     let round = ROUND.replace("..c77c67d7", &format!("..{MERGED}"));
     assert_eq!(check(&record(vec![bot(&round)])), Vec::<String>::new());

@@ -374,11 +374,12 @@ fn performer(text: &[Vec<String>]) -> bool {
         .any(|r| listed(r).contains("performance"))
 }
 
-/// Whether a top-level paragraph of `shown` between its fields and its end lines has a
-/// line `Text fixes:` with a value ([`stated`]).
-fn fixed(shown: &Shown<'_>) -> bool {
-    shown
-        .middle()
+/// Whether a top-level paragraph of `shown` after its fields, and before its end lines
+/// unless it is `old`, has a line `Text fixes:` with a value ([`stated`]).
+fn fixed(shown: &Shown<'_>, old: bool) -> bool {
+    let blocks = shown.blocks.get(1..).unwrap_or_default();
+    let blocks = if old { blocks } else { shown.middle() };
+    blocks
         .iter()
         .flat_map(|block| shown.paragraph(Some(block)))
         .filter_map(|l| l.strip_prefix("Text fixes:"))
@@ -460,7 +461,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
-            fixed: fixed(&shown),
+            fixed: fixed(&shown, old),
             hot,
         })
     };
