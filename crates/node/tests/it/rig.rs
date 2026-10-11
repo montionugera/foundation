@@ -686,13 +686,19 @@ fn gone() -> u32 {
     gone.id()
 }
 
+/// The path of the temporary directory `name` of this run, which a sweep keeps while
+/// the run lives and removes once it is gone.
+#[cfg(unix)]
+fn draft(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{PREFIX}{}-{name}", std::process::id()))
+}
+
 /// Makes the directory `foundation-node-<pid>-<test>-0` with the data directory that
 /// `fill` fills. A sweep on another test thread sees it only when it is complete.
 #[cfg(unix)]
 fn left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
     let temp = std::env::temp_dir();
-    // Named for this run, so a sweep keeps it while the run lives.
-    let draft = temp.join(format!("{PREFIX}{}-left-{pid}-{test}", std::process::id()));
+    let draft = draft(&format!("left-{pid}-{test}"));
     let data = draft.join("foundation-data/data");
     std::fs::create_dir_all(&data).expect("make the directory");
     fill(&data);
@@ -1182,8 +1188,8 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts while [`left`] fills its draft, as a killed run does. Does nothing when
-/// [`DIES`] is not set.
+/// Aborts after it made the tree of [`walked`] and while [`left`] fills its draft, as
+/// a killed run does. Does nothing when [`DIES`] is not set.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1192,11 +1198,12 @@ fn a_run_dies_while_it_leaves_a_directory() {
         reason = "the parent test sets it for the child"
     )]
     if std::env::var_os(DIES).is_some() {
+        walked(0);
         left(gone(), "died", |_| std::process::abort());
     }
 }
 
-/// The draft of a run that died while it left a directory goes at the next sweep.
+/// The drafts of a run that died while it left a directory go at the next sweep.
 #[test]
 #[cfg(unix)]
 fn a_sweep_removes_the_draft_of_a_run_that_died() {
@@ -1219,7 +1226,7 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
         .map(|entry| entry.expect("read the temporary directory").file_name())
         .filter(|name| {
             let name = name.to_string_lossy();
-            name.contains(&pid) && name.ends_with("-died")
+            name.contains(&pid) && (name.ends_with("-died") || name.contains("walked-"))
         })
         .collect();
     assert_eq!(left, Vec::<std::ffi::OsString>::new());
@@ -1230,16 +1237,8 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
 #[test]
 #[cfg(unix)]
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
-    let temp = std::env::temp_dir();
     for run in 0..20 {
-        let dir = temp.join(format!("{PREFIX}{}-walked-{run}", std::process::id()));
-        for sub in 0..300 {
-            let sub = dir.join(format!("d{sub}"));
-            std::fs::create_dir_all(&sub).expect("make a directory");
-            for file in 0..10 {
-                std::fs::write(sub.join(format!("f{file}")), "").expect("make a file");
-            }
-        }
+        let dir = walked(run);
         let path = dir.clone();
         #[expect(
             clippy::disallowed_methods,
@@ -1247,16 +1246,32 @@ fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
         )]
         let removal = std::thread::spawn(move || std::fs::remove_dir_all(path));
         let ended = loop {
+            let finished = removal.is_finished();
             if let Err(error) = writable(&dir) {
                 break (error.kind(), dir.exists());
             }
             assert!(
-                !removal.is_finished() || !dir.exists(),
-                "the removal ended and left {}",
+                !finished,
+                "a walk after the removal of {} gave no error",
                 dir.display()
             );
         };
         removal.join().expect("join the removal").expect("remove");
         assert_eq!(ended, (ErrorKind::NotFound, false), "run {run}");
     }
+}
+
+/// Makes the tree that [`a_walk_that_another_sweep_removes_ends_only_when_it_is_gone`]
+/// walks in its `run`: 300 directories of 10 files each.
+#[cfg(unix)]
+fn walked(run: u32) -> PathBuf {
+    let dir = draft(&format!("walked-{run}"));
+    for sub in 0..300 {
+        let sub = dir.join(format!("d{sub}"));
+        std::fs::create_dir_all(&sub).expect("make a directory");
+        for file in 0..10 {
+            std::fs::write(sub.join(format!("f{file}")), "").expect("make a file");
+        }
+    }
+    dir
 }
