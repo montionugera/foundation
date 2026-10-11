@@ -846,3 +846,60 @@ fn an_out_connector_whose_reader_open_failed_holds_no_run() {
     assert_eq!(recorded.starts, [start("plant.b", 0, 0)]);
     assert_eq!(recorded.got, []);
 }
+
+/// The open of `plant.a`, of no kind, resolves at once, and the first open of
+/// `plant.b` waits for the mesh time at 5 s. A removal of `plant.a` at 1 s ends its
+/// wait for that open, and its loop.
+#[test]
+fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let kinds = Table::new().with(
+            "quick",
+            Hold {
+                linger: Some(Span::ZERO),
+                brief: false,
+                starts: Starts::default(),
+                cancels: Starts::default(),
+            },
+        );
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let clock = node.clock();
+        let start = clock.now();
+        let hub = hub::testing::open_unsynced(env, ms(5_000)).await;
+        let live = Rc::new(Cell::new(0));
+        let config = connector::supervisor::Config {
+            kinds: Arc::new(kinds),
+            clock: clock.clone(),
+            entropy: node.entropy(),
+            net: node.net(),
+            tasks: env::tasks::Tasks::new(Counted {
+                tasks: tasks.clone(),
+                live: Rc::clone(&live),
+            }),
+            hub: hub.clone(),
+        };
+        let mut runs = Runs::new(config, name(NODE));
+        let placed =
+            definitions(&[("plant.a", "none", NODE, 0), ("plant.b", "quick", NODE, 0)]);
+        hub.set_definitions(&placed);
+        runs.apply(&placed);
+        clock.sleep_until(start + ms(1_000)).await;
+        let before = live.get();
+        let kept = definitions(&[("plant.b", "quick", NODE, 0)]);
+        hub.set_definitions(&kept);
+        runs.apply(&kept);
+        clock.sleep_until(start + ms(2_000)).await;
+        let after = live.get();
+        drop(runs);
+        (before, after)
+    });
+    assert_eq!(run, Ok((2, 1)));
+}
