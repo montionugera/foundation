@@ -191,10 +191,11 @@
   since our config always has an event loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
   2026-10-08 02:27 UTC). The test server is in `src/server.c`, which only the feature
-  `sim` compiles, and a test fails when the Rust outside tests or another C file of
-  `src/` names `UA_Server` or `UA_ServerConfig`. So no production client reaches
-  `setDefaultConfig`. Lost: a smaller claim for that clock key, which no test then
-  checks. Decided by `laptop.architect-2`
+  `sim` compiles, and a test fails when the Rust outside tests or another `.c` or `.h`
+  file of `src/` names an identifier that starts with `UA_Server`, or `shim_server_new`
+  or `UA_random_seed`. So no production code reaches `setDefaultConfig`,
+  `interruptServer`, or `UA_random_seed`. Lost: a smaller claim for that clock key,
+  which no test then checks. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2309#issuecomment-6103245041,
   2026-10-10 23:18 UTC). A test asserts the pragmas of `shim.c` and `server.c` after
   the preprocessor. It stands against honest code. A `#line` directive or a line marker
