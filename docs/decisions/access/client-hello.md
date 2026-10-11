@@ -117,9 +117,9 @@
   `Copy` (`laptop.director`, 2026-10-11T00:48:05Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407; shape
   approved by `laptop.architect`, 2026-10-11T01:55:44Z,
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). Lost: a
-  `wire::hub::client::Error`. Its reason, that a read stream also gives the errors of
-  its inner reader, is void: the program decodes the replies with the `hub::Reader`
-  that `client::Reader` gives, and gets their errors from it. #2377 splits the type
-  (`laptop.architect`, 2026-10-11T08:26:42Z,
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). A
+  `wire::hub::client::Error` was lost because a read stream also gave the errors of its
+  inner reader. That reason is void: the program decodes the replies with the
+  `hub::Reader` that `client::Reader` gives, and gets their errors from it. The ruling
+  on #2377 adds the type after #2368 merges (`laptop.architect`, 2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794).
