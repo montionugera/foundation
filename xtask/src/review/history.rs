@@ -149,6 +149,47 @@ impl<'a> History<'a> {
         self.first_change(&merged.tree, &end_sha)
     }
 
+    /// The first change of a public surface in the range `<from>..<end>`, as a
+    /// phrase, or `None`, also when the range is empty. A file under `docs/decisions/`
+    /// that the range adds, changes, or removes gives "changes the decision `<path>`".
+    ///
+    /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
+    /// and the newest base commit that `end` holds, as `code_change` reads it: a
+    /// change of the base does not count, and a conflict in that tree does. `from` and
+    /// `end` are as in `code_change`, with its two phrases: "has `<text>`, which names
+    /// no commit", and "holds the base at more than one newest commit: `<commit>`,
+    /// `<commit>`".
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command, also when the base ref does not exist.
+    pub(crate) fn surface_change(
+        &self,
+        from: &str,
+        end: &str,
+    ) -> Result<Option<String>, String> {
+        let (from_sha, end_sha) = match self.ends(from, end)? {
+            Ok(ends) => ends,
+            Err(unnamed) => return Ok(Some(unnamed)),
+        };
+        if from_sha == end_sha {
+            return Ok(None);
+        }
+        let newest = match self.newest(&end_sha, &self.base()?)? {
+            Ok(newest) => newest,
+            Err(many) => return Ok(Some(many)),
+        };
+        let merged = self.merged(&from_sha, &newest)?;
+        let decision = self
+            .diff(&merged.tree, &end_sha)?
+            .into_iter()
+            .find(|entry| entry.path.starts_with(DECISIONS.as_bytes()));
+        Ok(decision.map(|entry| {
+            let path = String::from_utf8_lossy(&entry.path);
+            format!("changes the decision `{path}`")
+        }))
+    }
+
     /// The commits that `from` and `end` name, as `code_change` reads them. The inner
     /// `Err` is the phrase "has `<text>`, which names no commit" for the first of the
     /// two that names none.
@@ -687,6 +728,9 @@ pub(crate) enum Place {
     Off,
 }
 
+/// The folder of the decision records, as the start of a path.
+const DECISIONS: &str = "docs/decisions/";
+
 /// The mode of a submodule.
 const GITLINK: &str = "160000";
 
@@ -823,4 +867,4 @@ fn failure(command: &str, stderr: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

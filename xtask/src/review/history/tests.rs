@@ -4,8 +4,8 @@ use super::*;
 
 /// A git repository in a fresh temporary directory. Each test ends with `remove`, so
 /// a test that fails leaves its directory.
-struct Repo {
-    dir: PathBuf,
+pub(in crate::review) struct Repo {
+    pub(in crate::review) dir: PathBuf,
 }
 
 impl Repo {
@@ -40,14 +40,16 @@ impl Repo {
     }
 
     /// Writes `text` to `file` and commits it on the current branch.
-    fn commit(&self, file: &str, text: &str) -> String {
-        std::fs::write(self.dir.join(file), text).unwrap();
+    pub(in crate::review) fn commit(&self, file: &str, text: &str) -> String {
+        let path = self.dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
         self.git(&["add", file]);
         self.git(&["commit", "--quiet", "-m", file]);
         self.head()
     }
 
-    fn head(&self) -> String {
+    pub(in crate::review) fn head(&self) -> String {
         self.git(&["rev-parse", "HEAD"])
     }
 
@@ -62,7 +64,7 @@ impl Repo {
 
     /// A repository with `main` at one commit and the branch `pr` one commit after
     /// it. Returns the repository and the commit on `pr`.
-    fn with_pr(name: &str) -> (Self, String) {
+    pub(in crate::review) fn with_pr(name: &str) -> (Self, String) {
         let repo = Self::new(name);
         let base = repo.commit("a.txt", "base\n");
         repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
@@ -114,12 +116,16 @@ impl Repo {
         History::new(&self.dir, "main").code_change(from, end)
     }
 
+    fn surface_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
+        History::new(&self.dir, "main").surface_change(from, end)
+    }
+
     /// Removes the directory.
     ///
     /// # Panics
     ///
     /// When the removal fails.
-    fn remove(self) {
+    pub(in crate::review) fn remove(self) {
         if let Err(e) = std::fs::remove_dir_all(&self.dir) {
             panic!("remove {}: {e}", self.dir.display());
         }
@@ -2227,5 +2233,123 @@ fn a_start_with_an_early_commit_time_reads() {
     let end = repo.head();
     assert_eq!(repo.code_change(&from, &end), Ok(None));
     assert_eq!(repo.passes(&from, &end), Ok(true));
+    repo.remove();
+}
+
+/// The phrase of a change to the decision `x.md`.
+const DECISION: &str = "changes the decision `docs/decisions/x.md`";
+
+#[test]
+fn a_range_that_adds_changes_or_removes_a_decision_changes_the_surface() {
+    let (repo, start) = Repo::with_pr("surface-decision");
+    let added = repo.commit("docs/decisions/x.md", "a rule\n");
+    assert_eq!(
+        repo.surface_change(&start, &added),
+        Ok(Some(DECISION.to_string()))
+    );
+    let changed = repo.commit("docs/decisions/x.md", "another rule\n");
+    assert_eq!(
+        repo.surface_change(&added, &changed),
+        Ok(Some(DECISION.to_string()))
+    );
+    repo.git(&["rm", "--quiet", "docs/decisions/x.md"]);
+    repo.git(&["commit", "--quiet", "-m", "remove"]);
+    assert_eq!(
+        repo.surface_change(&changed, &repo.head()),
+        Ok(Some(DECISION.to_string()))
+    );
+    assert_eq!(
+        repo.surface_change(&format!("{added}^"), &added),
+        Ok(Some(DECISION.to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_range_that_changes_no_decision_changes_no_surface() {
+    let (repo, start) = Repo::with_pr("surface-none");
+    repo.commit("docs/decisions.md", "a list\n");
+    repo.commit("docs/x.md", "a doc\n");
+    repo.commit("notes/docs/decisions/x.md", "a note\n");
+    let end = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn an_empty_range_changes_no_surface() {
+    let (repo, _) = Repo::with_pr("surface-empty");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    assert_eq!(repo.surface_change(&end, &end[..7]), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_decision_that_only_the_base_changes_changes_no_surface() {
+    let (repo, start) = Repo::with_pr("surface-base");
+    repo.advance_main("docs/decisions/x.md", "a rule\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let end = repo.commit("b.txt", "changed\n");
+    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_merge_that_resolves_a_conflict_in_a_decision_changes_the_surface() {
+    let repo = Repo::new("surface-conflict");
+    let base = repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
+    repo.advance_main("docs/decisions/x.md", "the rule of the base\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(DECISION.to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_surface_range_end_that_names_no_commit_counts() {
+    let (repo, end) = Repo::with_pr("surface-unnamed");
+    assert_eq!(
+        repo.surface_change("abc1234", &end),
+        Ok(Some("has `abc1234`, which names no commit".to_string()))
+    );
+    assert_eq!(
+        repo.surface_change(&end, "abc1234"),
+        Ok(Some("has `abc1234`, which names no commit".to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_surface_range_that_holds_two_newest_base_commits_counts() {
+    let (repo, from) = Repo::with_pr("surface-two-newest");
+    repo.git(&["switch", "--quiet", "-c", "q", "main"]);
+    let q = repo.commit("q.txt", "q\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let older = repo.commit("c.txt", "c\n");
+    repo.git(&["merge", "--quiet", "--no-ff", "--no-edit", &q]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &older]);
+    repo.git(&["merge", "--quiet", "--no-edit", &q]);
+    let mut newest = [older, q];
+    newest.sort_unstable();
+    assert_eq!(
+        repo.surface_change(&from, &repo.head()),
+        Ok(Some(format!(
+            "holds the base at more than one newest commit: `{}`",
+            newest.join("`, `")
+        )))
+    );
     repo.remove();
 }
