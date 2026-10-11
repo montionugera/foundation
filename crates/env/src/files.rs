@@ -94,7 +94,7 @@ impl Files {
     pub async fn open(&self, path: &Path, mode: Mode) -> Result<File, Error> {
         check(path);
         let descriptor = match self.0.open(path, mode).await {
-            Err(Error::Full { .. }) => {
+            Err(Error::Full { .. }) if matches!(mode, Mode::Create { .. }) => {
                 let dir = path.parent().unwrap_or(Path::new(""));
                 self.0.sync_dir(dir).await?;
                 self.0.open(path, mode).await?
@@ -1253,6 +1253,18 @@ mod tests {
                     "open full Create { len: 4096 }",
                 ]
             );
+        }
+
+        #[test]
+        fn gives_full_of_an_open_to_write_with_no_sync() {
+            let (files, calls) = Fixed::files(0);
+            assert_eq!(
+                ready(files.open(Path::new("ring/full"), Mode::Write)).map(drop),
+                Err(Error::Full {
+                    path: "ring/full".into()
+                })
+            );
+            assert_eq!(*calls.borrow(), ["open ring/full Write"]);
         }
 
         #[test]
