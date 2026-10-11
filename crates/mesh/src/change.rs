@@ -357,8 +357,8 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        digest, home, index, join, key, name, options, public, record, spec,
-        status_bytes, with_status,
+        digest, home, index, join, key, name, options, public, spec, status_bytes,
+        ticket_change, with_status,
     };
 
     fn encoded(change: &Change) -> Vec<u8> {
@@ -403,10 +403,13 @@ mod tests {
         expected.extend(1_000_i64.to_le_bytes());
         expected.push(1);
         expected.extend(60_i64.to_le_bytes());
-        assert_eq!(encoded(&record(7, options("plant.edge", true))), expected);
+        assert_eq!(
+            encoded(&ticket_change(7, options("plant.edge", true))),
+            expected
+        );
         let mut options = options("plant.edge", false);
         options.ephemeral = None;
-        let bytes = encoded(&record(7, options));
+        let bytes = encoded(&ticket_change(7, options));
         assert_eq!(bytes[44..], [0, 0xe8, 0x03, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -654,7 +657,7 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_reusable_byte_that_is_neither_value() {
-        let mut bytes = encoded(&record(7, options("plant.edge", false)));
+        let mut bytes = encoded(&ticket_change(7, options("plant.edge", false)));
         assert_eq!(bytes[44], 0);
         bytes[44] = 2;
         let length = bytes.len();
@@ -719,7 +722,7 @@ mod tests {
             prop::option::of(any::<i64>()),
         )
             .prop_map(|(id, prefix, reusable, expiry, ephemeral)| {
-                record(
+                ticket_change(
                     id,
                     Options {
                         prefix: name(&prefix),

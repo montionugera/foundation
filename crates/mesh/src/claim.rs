@@ -398,7 +398,7 @@ mod tests {
         };
         let change = |leader, at, voters, voted| {
             let Data::Voters(change) =
-                common::change_voted(leader, at, voters, voted).data
+                common::voters_entry_voted(leader, at, voters, voted).data
             else {
                 unreachable!()
             };
@@ -557,7 +557,8 @@ mod tests {
 
     // The change to `voters` that leader 1 wrote at `written`, signed.
     fn signed_change_to(voters: Voters) -> Change {
-        let Data::Voters(change) = common::change(1, written(), voters).data else {
+        let Data::Voters(change) = common::voters_entry(1, written(), voters).data
+        else {
             unreachable!()
         };
         change
@@ -866,7 +867,7 @@ mod tests {
             incoming: [key(1), key(2), key(3)].into(),
             outgoing: BTreeSet::new(),
         };
-        common::change_voted(leader, at, three, voted)
+        common::voters_entry_voted(leader, at, three, voted)
     }
 
     // An append from leader 2 of `[bytes, change voted by 1, 2 and 3, change voted

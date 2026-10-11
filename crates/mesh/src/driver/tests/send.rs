@@ -398,7 +398,7 @@ async fn create_stranger(
     };
     let append = Body::Append {
         prev: Position::default(),
-        entries: vec![common::change(2, at(1), voters)],
+        entries: vec![common::voters_entry(2, at(1), voters)],
         commit: 0,
     };
     (config, proven(2, 1, append))
@@ -471,7 +471,7 @@ fn large(limit: usize) -> (bool, [[bool; 2]; 2]) {
         tasks.spawn(async move {
             accept(serving, transport, streams).await;
         });
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         mesh.propose_data(vec![0; 2000]).await.unwrap();
         pending::<()>().await;
     };
@@ -616,7 +616,7 @@ fn assert_ends_in_a_send<E: Future<Output = ()> + 'static>(
                 serve_first(&mesh, &transport).await;
                 pending::<std::convert::Infallible>().await
             });
-            let mut leading = pin!(lead(&mesh, &clock, home(1)));
+            let mut leading = pin!(lead(&mesh, &clock, home_to(1)));
             poll_fn(|cx| {
                 let Poll::Pending = serving.as_mut().poll(cx);
                 leading.as_mut().poll(cx)
@@ -727,7 +727,7 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
         let mesh = Mesh::open(config).await.unwrap();
         let clock = node.clock();
         serve_each(&mesh, &tasks, transport);
-        lead(&mesh, &clock, home(1)).await;
+        lead(&mesh, &clock, home_to(1)).await;
         clock.sleep(seconds(10)).await;
         for _ in 0..2 {
             assert!(!quiet(&mesh, 2).await, "the task of node 2 does not wait");

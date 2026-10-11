@@ -276,19 +276,9 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::{key, private, public, signed, ticket, voter};
-
-    const EXPIRY: Stamp = Stamp::from_nanos(1_000);
-    const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
-
-    fn options(prefix: &str, reusable: bool) -> Options {
-        Options {
-            prefix: prefix.parse().unwrap(),
-            reusable,
-            expiry: EXPIRY,
-            ephemeral: None,
-        }
-    }
+    use crate::common::{
+        BEFORE_EXPIRY, EXPIRY, key, options, private, public, signed, ticket, voter,
+    };
 
     fn record(id: u8, reusable: bool) -> Record {
         Record::new(ticket(id).public_key(), options("plant.edge", reusable))

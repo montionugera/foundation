@@ -30,7 +30,7 @@ use crate::ticket::{Options, Ticket, Voter};
 pub(crate) const TERM: Term = Term(5);
 
 pub(crate) const EXPIRY: Stamp = Stamp::from_nanos(1_000);
-const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
+pub(crate) const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
 pub(crate) const EPHEMERAL: Span = Span::from_nanos(60);
 
 pub(crate) fn key(id: u8) -> node::Key {
@@ -76,7 +76,7 @@ pub(crate) fn ticket(id: u8) -> Ticket {
     Ticket::new(private(id), "plant".parse().unwrap(), vec![voter()])
 }
 
-/// The record of node `id`, with a card that the node signed.
+/// The member `id`, with a card that the node signed.
 pub(crate) fn member(id: u8) -> Member {
     Member {
         card: signed(id, &format!("plant.node{id}")),
@@ -259,7 +259,8 @@ pub(crate) fn options(prefix: &str, reusable: bool) -> Options {
     }
 }
 
-pub(crate) fn record(id: u8, options: Options) -> Change {
+/// The change that records the ticket of node `id` with `options`.
+pub(crate) fn ticket_change(id: u8, options: Options) -> Change {
     Change::Ticket {
         public_key: public(id),
         options,
@@ -335,14 +336,14 @@ fn votes(term: Term, leader: u8, voted: &[u8]) -> Proof {
 /// # Panics
 ///
 /// When `leader` is not 1, 2 or 3, as [`proven`].
-pub(crate) fn change(leader: u8, at: Position, voters: Voters) -> Entry {
+pub(crate) fn voters_entry(leader: u8, at: Position, voters: Voters) -> Entry {
     assert!((1..=3).contains(&leader), "leader {leader} is not a voter");
-    change_voted(leader, at, voters, &[1, 2, 3])
+    voters_entry_voted(leader, at, voters, &[1, 2, 3])
 }
 
 /// The configuration entry `voters` that `leader` wrote at `at`, with the vote of
 /// each of `voted` in the term of `at`, signed as `sign` signs a change.
-pub(crate) fn change_voted(
+pub(crate) fn voters_entry_voted(
     leader: u8,
     at: Position,
     voters: Voters,

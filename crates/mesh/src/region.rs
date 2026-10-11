@@ -639,8 +639,8 @@ mod tests {
     use super::*;
     use crate::common::{
         EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
-        member, name, options, private, public, record, signed, spec, status, ticket,
-        with_status,
+        member, name, options, private, public, signed, spec, status, ticket,
+        ticket_change, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -665,7 +665,7 @@ mod tests {
     fn state() -> State {
         let mut state =
             create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
-        let recorded = state.apply(record(7, options("plant.edge", false)));
+        let recorded = state.apply(ticket_change(7, options("plant.edge", false)));
         assert_eq!(recorded, Ok(false));
         state
     }
@@ -923,7 +923,10 @@ mod tests {
         let mut members = create_members(&[1, 2]);
         members[1].card = signed(2, "factory.node2");
         let mut state = create_state(Prefix::ROOT, members).unwrap();
-        assert_eq!(state.apply(record(8, options("site_a", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("site_a", false))),
+            Ok(false)
+        );
         let join = join(8, 3, "site_a.pt_1");
         assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
         let names = [1, 2, 3]
@@ -952,7 +955,7 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(7, options("plant", true))),
+            state.apply(ticket_change(7, options("plant", true))),
             Err(Refused::Recorded {
                 public_key: public(7)
             })
@@ -965,14 +968,17 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(8, options("plants.edge", false))),
+            state.apply(ticket_change(8, options("plants.edge", false))),
             Err(Refused::Outside {
                 prefix: name("plants.edge"),
                 region: name("plant").into()
             })
         );
         assert_eq!(state, before);
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -1086,7 +1092,10 @@ mod tests {
     #[test]
     fn a_join_with_a_reserved_name_is_refused_and_counts_no_use() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
         let before = state.clone();
         assert_eq!(
             apply_join(&mut state, join(8, 3, "plant.@changes")),
@@ -1102,7 +1111,10 @@ mod tests {
     #[test]
     fn a_join_with_a_reserved_status_name_is_refused() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         let before = state.clone();
         let mut reserved = join(8, 3, "plant");
         reserved.status = status([(name("@changes"), index(9))]);
@@ -1167,7 +1179,10 @@ mod tests {
     // Member 1 is `plant.node1`. Ticket 8 admits any node under `plant`.
     fn open_state() -> State {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         state
     }
 
@@ -1498,7 +1513,9 @@ mod tests {
             prop::sample::select(vec!["plant.edge", "plant", "factory"]),
             any::<bool>(),
         )
-            .prop_map(|(id, prefix, reusable)| record(id, options(prefix, reusable)));
+            .prop_map(|(id, prefix, reusable)| {
+                ticket_change(id, options(prefix, reusable))
+            });
         let homes = prop::collection::btree_map(0..3_u128, 1..3_u8, 0..3);
         let specs = (0..3_u64, 1..3_u8, 1..4_u8, homes).prop_map(
             |(version, base, root, homes)| {
