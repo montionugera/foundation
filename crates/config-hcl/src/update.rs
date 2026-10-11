@@ -746,26 +746,30 @@ mod tests {
         span
     }
 
-    /// Whether `want` ends in a heredoc and a new line, and `out` equals `want` up to
-    /// that heredoc and holds no new line after it. A heredoc's lines end in `\n`.
+    /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
+    /// its line end, and `out` has the rest of a line and its line end, or the end of
+    /// the text. A heredoc's lines end in `\n`.
     fn quoted_at_end(out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
             .zip(want.chars())
             .find(|((_, a), b)| a != b)
             .map_or(out.len().min(want.len()), |((i, _), _)| i);
-        let Some(heredoc) = want
+        let Some((marker, body)) = want
             .get(start..)
             .and_then(|rest| rest.strip_prefix("<<"))
-            .and_then(|h| h.strip_suffix('\n'))
+            .and_then(|h| h.split_once('\n'))
         else {
             return false;
         };
-        let closed = heredoc.split_once('\n').is_some_and(|(marker, body)| {
-            body.strip_suffix(marker)
-                .is_some_and(|lines| lines.is_empty() || lines.ends_with('\n'))
-        });
-        closed && out.get(start..).is_some_and(|rest| !rest.contains('\n'))
+        let lines = format!("\n{body}");
+        let after = lines
+            .split_once(&format!("\n{marker}\n"))
+            .map(|(_, after)| after);
+        let quoted = out
+            .get(start..)
+            .map(|rest| rest.split_once('\n').map_or("", |(_, after)| after));
+        after.is_some() && after == quoted
     }
 
     proptest! {
@@ -1079,6 +1083,16 @@ mod tests {
         assert_eq!(updated("a = 1", "a = \"x\\n\""), "a = \"x\\n\"");
         assert_eq!(updated("a = 1  ", "a = \"x\\n\""), "a = \"x\\n\"  ");
         assert_eq!(updated("a = 1\n", "a = \"x\\n\""), "a = <<EOT\nx\nEOT\n");
+    }
+
+    #[test]
+    fn quotes_a_value_at_the_end_of_a_text_with_no_line_end_before_an_added_line() {
+        let new = "a = \"\\n\"\nb = false";
+        let out = updated("a = false", new);
+        let want = updated("a = false\n", new);
+        assert_eq!(out, "a = \"\\n\"\nb = false\n");
+        assert_eq!(want, "a = <<EOT\n\nEOT\nb = false\n");
+        assert!(quoted_at_end(&out, &want));
     }
 
     #[test]
