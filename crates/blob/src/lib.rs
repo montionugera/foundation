@@ -1805,6 +1805,24 @@ mod tests {
             .unwrap();
         }
 
+        // A file error that is not `Io`: the rule counts each one but `Full`.
+        #[test]
+        fn counts_a_put_of_a_file_that_another_handle_holds() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let create = Mode::Create { len: 3000 };
+                let held = node.files().open(&path(digest), create).await.unwrap();
+                let error = store.put(digest, &block).await.unwrap_err();
+                let busy = files::Error::Busy { path: path(digest) };
+                assert_eq!(error, Error::Files(busy));
+                assert_eq!(store.status(), status(0, 1));
+                held.close().await;
+            })
+            .unwrap();
+        }
+
         #[test]
         fn counts_a_get_whose_read_fails() {
             let (mut sim, node) = create_default_node(0);
