@@ -13,8 +13,8 @@
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
-//! request or response, so the receiver counts it to find where it ends. No message
-//! follows a body.
+//! request, response, or read, so the receiver counts it to find where it ends. No
+//! message follows the body of a request or a response.
 //!
 //! The program knows the kind of each stream, so it calls the `decode` of the message
 //! that it expects. The node knows the kind of the hello stream only: it decodes the
@@ -60,7 +60,7 @@ const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
 const READ: u8 = 6;
 
-/// Stop code: the hello or request failed the access check. The spec has no such
+/// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
 /// log names which.
 pub const REFUSED: u32 = 20;
