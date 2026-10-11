@@ -169,8 +169,8 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
     assert_eq!(os::paths().write(&long, b"x"), Err(Error::Io { code }));
 }
 
-/// The hidden file has a longer name than `f`, so its path passes the longest path of
-/// the OS where the path of `f` does not.
+/// The name of the hidden file has 21 bytes, so its path passes the longest path of
+/// the OS where a shorter name is at that path.
 #[test]
 fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
     let most = if cfg!(target_os = "macos") {
@@ -181,22 +181,29 @@ fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
     let scratch = Scratch::new();
     // The OS counts the path behind each symbolic link.
     let mut dir = fs::canonicalize(&scratch.0).unwrap();
-    while dir.as_os_str().len() + 204 < most {
+    while dir.as_os_str().len() + 224 < most {
         dir.push("d".repeat(200));
         fs::create_dir(&dir).unwrap();
     }
-    dir.push("e".repeat(most - dir.as_os_str().len() - 3));
-    fs::create_dir(&dir).unwrap();
-    let file = dir.join("f");
-    assert_eq!(file.as_os_str().len(), most);
+    let room = most - dir.as_os_str().len() - 1;
+    let [short, same] = [20, 21].map(|name| {
+        let dir = dir.join("e".repeat(room - name - 1));
+        fs::create_dir(&dir).unwrap();
+        let file = dir.join("f".repeat(name));
+        assert_eq!(file.as_os_str().len(), most);
+        file
+    });
     let paths = os::paths();
     let code = Errno::NAMETOOLONG.raw_os_error();
-    assert_eq!(paths.write(&file, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&file, 3), Err(Error::NotFound));
-    fs::write(&file, b"old").unwrap();
-    assert_eq!(paths.write(&file, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&file, 3), Ok(Found::File(b"old".to_vec())));
-    assert_eq!(paths.read(&dir, most), Ok(Found::Directory(vec![file])));
+    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
+    assert_eq!(paths.read(&short, 3), Err(Error::NotFound));
+    fs::write(&short, b"old").unwrap();
+    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
+    assert_eq!(paths.read(&short, 3), Ok(Found::File(b"old".to_vec())));
+    let dir = short.parent().unwrap();
+    assert_eq!(paths.read(dir, most), Ok(Found::Directory(vec![short])));
+    assert_eq!(paths.write(&same, b"new"), Ok(()));
+    assert_eq!(paths.read(&same, 3), Ok(Found::File(b"new".to_vec())));
 }
 
 #[test]
