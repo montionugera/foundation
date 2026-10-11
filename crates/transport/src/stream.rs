@@ -1249,6 +1249,53 @@ mod tests {
     }
 
     #[test]
+    fn a_send_dropped_behind_a_leaked_send_leaves_its_message_whole() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                {
+                    let mut next = Box::pin(sender.send(side.block(b"b")));
+                    let polled = poll_once(next.as_mut()).await;
+                    assert!(polled.is_none(), "it waits behind the cut message");
+                }
+                assert_eq!(sender.send(side.block(b"c")).await, Ok(()));
+                sender.finish().expect("finished");
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+            |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let receiver = &mut incoming.receiver;
+                let mut lengths = Vec::new();
+                while let Some(message) = receiver.recv().await.expect("read") {
+                    lengths.push(message.len());
+                }
+                let (first, rest) = lengths.split_first().expect("a message");
+                let (last, bodies) = rest.split_last().expect("two messages");
+                assert_eq!((*first, *last), (1, 1));
+                assert!(bodies.iter().all(|&len| len == 60_000), "{bodies:?}");
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
     fn a_cut_send_dropped_after_the_close_does_nothing() {
         let (mut sim, ..) = testing::sessions(
             0,

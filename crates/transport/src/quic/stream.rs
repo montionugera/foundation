@@ -1540,7 +1540,9 @@ impl Streams {
     /// after it, and takes the block. Leaves it while the stream holds part of an
     /// earlier message. `Ready` when the stream holds no message: it took all of
     /// `message`, or with `None`, all of the one before. `Pending` while it holds
-    /// one, and [`Event::Writable`] follows when a later write can take more.
+    /// one, and [`Event::Writable`] follows when a later write can take more. With
+    /// `Some`, the earlier message is not the caller's, whose write that gave it
+    /// never ended: the stream writes its rest by itself, and a cancel leaves it.
     ///
     /// # Errors
     ///
@@ -1553,6 +1555,10 @@ impl Streams {
         parts: &[Part],
         bytes: usize,
     ) -> Result<Poll<()>, Error> {
+        let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        if message.is_some() && half.rest == Rest::Caller {
+            half.rest = Rest::Pump;
+        }
         let resumed = self
             .sending
             .resume(inner, &mut self.halves, sender.key.id)?;
