@@ -501,8 +501,8 @@ pub async fn create_key(
 /// file `name`, and no file `node.key`, no founding, or no card of its key in the
 /// founding. With no file `name`: [`Error::Key`] for a file `node.key` that a node did
 /// not write, and [`Error::Mesh`] for a founding of that key that does not read.
-/// [`Error::Name`] for a file `name` that a node did not write, and [`Error::Directory`]
-/// for a file call that fails.
+/// [`Error::Name`] for a file `name` that a node did not write, and
+/// [`Error::Directory`] for a file call that fails.
 pub async fn name(
     files: &env::files::Files,
     given: Option<types::name::Name>,
