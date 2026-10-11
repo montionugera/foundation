@@ -424,8 +424,8 @@ impl Reader {
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
         let (matched, home) = matched(state, &select).await?;
         let home = match home {
-            Home::Here(slots) => {
-                return Self::local(state, &matched, slots, mode, named, hold);
+            Home::Here(channels) => {
+                return Self::local(state, &matched, channels, mode, named, hold);
             }
             Home::Away(home) => home,
         };
@@ -449,14 +449,14 @@ impl Reader {
     }
 
     /// Opens an unnamed reader on the channels of `matched` at this node, the home of
-    /// their index, with `slots` from [`Home::Here`].
+    /// their index, with `channels` from [`Home::Here`].
     pub(crate) fn here(
         state: &Rc<RefCell<State>>,
         matched: &Matched,
-        slots: Box<[channel::Slot]>,
+        channels: Channels,
         mode: Mode,
     ) -> Result<Self, Error> {
-        Self::local(state, matched, slots, mode, None, Span::ZERO)
+        Self::local(state, matched, channels, mode, None, Span::ZERO)
     }
 
     /// Opens a reader on the channels of `matched` at this node, the home of their
@@ -464,18 +464,13 @@ impl Reader {
     fn local(
         state: &Rc<RefCell<State>>,
         matched: &Matched,
-        slots: Box<[channel::Slot]>,
+        channels: Channels,
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
     ) -> Result<Self, Error> {
         state.borrow_mut().carry(matched.places[matched.index].key);
-        let slot = slots[matched.index];
-        let channels = Channels {
-            keys: matched.places.iter().map(|place| place.key).collect(),
-            slots,
-            index: slot,
-        };
+        let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
         Ok(Self {
             source: Source::Local(local),
@@ -613,9 +608,9 @@ pub(crate) struct Matched {
 /// The home of the index of what a selector matched.
 #[derive(Debug)]
 pub(crate) enum Home {
-    /// This node, with the slot of each of the places, as the frames of a reader hold
-    /// them.
-    Here(Box<[channel::Slot]>),
+    /// This node, with the key and the slot of each of the places, as the frames of a
+    /// reader hold them.
+    Here(Channels),
     /// Another node.
     Away(types::node::Key),
 }
@@ -642,9 +637,14 @@ pub(crate) async fn matched(
     let home = if let Some(home) = away {
         Home::Away(home)
     } else {
-        let keys: Vec<_> = places.iter().map(|place| place.key).collect();
+        let keys: Box<[_]> = places.iter().map(|place| place.key).collect();
         // With no wait since `resolve`, so each of `keys` is defined.
-        Home::Here(state.borrow_mut().assigned(places[index].key, &keys))
+        let slots = state.borrow_mut().assigned(places[index].key, &keys);
+        Home::Here(Channels {
+            index: slots[index],
+            keys,
+            slots,
+        })
     };
     Ok((Matched { places, index }, home))
 }

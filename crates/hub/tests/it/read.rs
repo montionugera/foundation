@@ -304,6 +304,42 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
 
 /// The places of a read hold no reservation, so a read whose places pass the share of
 /// its subject opens and gets its frames.
+/// A read holds the reservation of its open only until the open decodes, so reads
+/// whose opens fit the share one at a time each open.
+#[test]
+fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
+    let home = read_session(
+        316,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
+            agent.sleep(Span::MILLISECOND).await;
+            let mut streams = Vec::new();
+            for _ in 0..2 {
+                let mut stream = agent.read(Mode::Complete, &["value"]).await;
+                let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+                assert_eq!(places, Places { count: 2, index: 1 });
+                streams.push(stream);
+            }
+            drop((held, streams));
+            finish(&mut agent).await;
+        },
+    );
+    let reset = serve::Error::Stream(transport::Error::Reset {
+        code: transport::Code(0),
+    });
+    assert_eq!(
+        home.served,
+        [
+            Err(reset.clone()),
+            Err(reset.clone()),
+            Err(reset),
+            Ok(Got::Ended)
+        ]
+    );
+}
+
 #[test]
 fn opens_a_read_whose_places_pass_the_share() {
     const MANY: usize = 60_000;
@@ -513,11 +549,20 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
 
 /// A read that waits for the home of its index stops with `FAILED` when the mesh
 /// stops.
-#[test]
-fn stops_a_read_on_a_stopped_mesh_as_failed() {
-    let (served, stopped) =
+/// Runs one client session on a synced hub whose mesh names no home of `time`, and
+/// gives what each stream served, then what `then` gave at [`START`].
+fn homeless<T, P>(
+    seed: u64,
+    then: impl AsyncFnOnce(&mut Test) -> T + Send + 'static,
+    program: impl FnOnce(Agent) -> P + Send + 'static,
+) -> (Vec<Result<Got, serve::Error>>, T)
+where
+    T: Send + 'static,
+    P: Future<Output = ()> + 'static,
+{
+    let (served, given) =
         (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
-    let (kept, why) = (Arc::clone(&served), Arc::clone(&stopped));
+    let (kept, giving) = (Arc::clone(&served), Arc::clone(&given));
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
         let region =
@@ -539,26 +584,72 @@ fn stops_a_read_on_a_stopped_mesh_as_failed() {
             &accepted,
         ));
         test.clock.sleep(START).await;
-        *why.lock().expect("not poisoned") = Some(test.stop_mesh().await);
+        *giving.lock().expect("not poisoned") = Some(then(&mut test).await);
         session.closed().await;
         recorded(&node, &kept, accepted.get()).await;
     };
-    run_program(312, home, |node, tasks, at| {
-        as_agent(node, tasks, at, |mut agent| async move {
+    run_program(seed, home, |node, tasks, at| {
+        as_agent(node, tasks, at, program)
+    });
+    let given = given.lock().expect("not poisoned").take().expect("given");
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    (served, given)
+}
+
+#[test]
+fn stops_a_read_on_a_stopped_mesh_as_failed() {
+    let (served, stopped) = homeless(
+        312,
+        async |test| test.stop_mesh().await,
+        |mut agent| async move {
             agent.admit().await;
             let mut stream = agent.read(Mode::Complete, &["value"]).await;
             assert_eq!(stream.recv().await, reset_with(FAILED));
             finish(&mut agent).await;
-        })
-    });
-    let stopped = stopped
-        .lock()
-        .expect("not poisoned")
-        .take()
-        .expect("stopped");
+        },
+    );
     let mesh = serve::Error::Reader(Box::new(reader::Error::Mesh(stopped)));
-    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(served, [Err(mesh), Ok(Got::Ended)]);
+}
+
+/// A read that waits for the home of its index still reads the program's stream: a
+/// finish ends it, a message stops it as `MALFORMED`, and a reset ends it with the
+/// error of the stream.
+#[test]
+fn ends_a_read_whose_program_finishes_or_breaks_its_stream_while_it_waits_for_a_home() {
+    let (served, ()) = homeless(
+        315,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut finished = agent.read(Mode::Complete, &["value"]).await;
+            agent.sleep(QUIET).await;
+            finished.sender.finish().expect("finishes");
+            assert_eq!(finished.recv().await, Ok(None));
+            let mut trailing = agent.read(Mode::Latest, &["value"]).await;
+            agent.sleep(QUIET).await;
+            trailing.send(b"x").await;
+            assert_eq!(trailing.recv().await, reset_with(MALFORMED));
+            let reset = agent.read(Mode::Complete, &["value"]).await;
+            agent.sleep(QUIET).await;
+            reset.sender.reset(transport::Code(7));
+            agent.sleep(QUIET).await;
+            finish(&mut agent).await;
+        },
+    );
+    let trailing = serve::Error::Client(client::Error::Trailing);
+    let reset = transport::Error::Reset {
+        code: transport::Code(7),
+    };
+    assert_eq!(
+        served,
+        [
+            Ok(Got::Ended),
+            Err(trailing),
+            Err(serve::Error::Stream(reset)),
+            Ok(Got::Ended)
+        ]
+    );
 }
 
 /// A node serves a read only of an index whose home it is: a read whose home is

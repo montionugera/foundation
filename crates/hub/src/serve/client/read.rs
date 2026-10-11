@@ -2,14 +2,14 @@
 
 use std::cell::RefCell;
 use std::future::poll_fn;
-use std::pin::pin;
+use std::pin::{Pin, pin};
+use std::rc::Rc;
 use std::task::Poll;
 
 use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
-use types::channel::Slot;
-use types::name::Name;
+use types::name::{Name, Selector};
 use wire::hub::client::{Mode, Open, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
@@ -29,25 +29,35 @@ pub(super) async fn serve(
     receiver: &mut Receiver,
     sender: &mut Sender,
 ) -> Result<(), Error> {
-    let (reader, matched, slots) =
-        open(session, class, subject, read, receiver).await?;
-    let layout = start(&session.state, sender, &matched, slots).await?;
-    relay(&session.state, reader, layout, receiver, sender).await
+    let (select, mode) = open(session, class, subject, read, receiver).await?;
+    let mut program = pin!(async {
+        match receiver.recv().await? {
+            None => Ok(()),
+            Some(_) => Err(Error::Client(wire::hub::client::Error::Trailing)),
+        }
+    });
+    let state = &session.state;
+    let Some((reader, matched, layout)) =
+        here(state, select, mode, program.as_mut()).await?
+    else {
+        sender.finish()?;
+        return Ok(());
+    };
+    start(state, sender, &matched).await?;
+    relay(state, reader, layout, program, sender).await
 }
 
-/// Reads and verifies the open, and opens its reader at this node, the home of its
-/// index, with the slot of each place.
+/// Reads and verifies the open, and gives its selector and mode.
 async fn open(
     session: &Session,
     class: Class,
     subject: Name,
     read: Read,
     receiver: &mut Receiver,
-) -> Result<(Reader, Matched, Box<[Slot]>), Error> {
-    let state = &session.state;
+) -> Result<(Selector, reader::Mode), Error> {
     // A read takes no turn, and its open holds its bytes only until it decodes.
     let open = {
-        let _body = Reserved::new(state, subject.clone(), read.length)?;
+        let _body = Reserved::new(&session.state, subject, read.length)?;
         let bytes = body(receiver, read.body()).await?;
         verify(session, proof::Kind::Read, &bytes, &read.signature)?;
         Open::decode(&bytes)?
@@ -59,26 +69,48 @@ async fn open(
     if class != wanted {
         return Err(Error::Class(class));
     }
-    let refused = |error| Error::Reader(Box::new(error));
-    let (matched, home) = reader::matched(state, &open.select)
-        .await
-        .map_err(refused)?;
-    let slots = match home {
-        Home::Here(slots) => slots,
-        Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
-    };
-    let reader = Reader::here(state, &matched, slots.clone(), mode).map_err(refused)?;
-    Ok((reader, matched, slots))
+    Ok((open.select, mode))
 }
 
-/// Sends the places of `matched`, their run, and `Opened`, and gives the layout of
-/// the frames at those places, with `slots`.
+/// Opens the reader of `select` at this node, the home of its index, and gives it
+/// with its places and their layout, or `None` when `program` finishes first.
+async fn here<F>(
+    state: &Rc<RefCell<State>>,
+    select: Selector,
+    mode: reader::Mode,
+    mut program: Pin<&mut F>,
+) -> Result<Option<(Reader, Matched, Layout)>, Error>
+where
+    F: Future<Output = Result<(), Error>>,
+{
+    let refused = |error| Error::Reader(Box::new(error));
+    let found = {
+        let mut matched = pin!(reader::matched(state, &select));
+        poll_fn(|cx| match program.as_mut().poll(cx) {
+            Poll::Ready(finished) => Poll::Ready(Err(finished)),
+            Poll::Pending => matched.as_mut().poll(cx).map(Ok),
+        })
+        .await
+    };
+    let (matched, home) = match found {
+        Ok(found) => found.map_err(refused)?,
+        Err(finished) => return finished.map(|()| None),
+    };
+    let channels = match home {
+        Home::Here(channels) => channels,
+        Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
+    };
+    let layout = Layout::new(channels.slots.clone(), channels.index);
+    let reader = Reader::here(state, &matched, channels, mode).map_err(refused)?;
+    Ok(Some((reader, matched, layout)))
+}
+
+/// Sends the places of `matched`, their run, and `Opened`.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
     matched: &Matched,
-    slots: Box<[Slot]>,
-) -> Result<Layout, Error> {
+) -> Result<(), Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
         count: u32::try_from(matched.places.len())
@@ -95,25 +127,21 @@ async fn start(
         sender.send(block.freeze()).await?;
     }
     sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
-    let index = slots[matched.index];
-    Ok(Layout::new(slots, index))
+    Ok(())
 }
 
-/// Sends each frame of `reader` until the program finishes the stream, or `Behind`
-/// and the finish when the reader missed a frame.
-async fn relay(
+/// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
+/// when the reader missed a frame.
+async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,
     mut layout: Layout,
-    receiver: &mut Receiver,
+    mut program: Pin<&mut F>,
     sender: &mut Sender,
-) -> Result<(), Error> {
-    let mut program = pin!(async {
-        match receiver.recv().await? {
-            None => Ok(()),
-            Some(_) => Err(Error::Client(wire::hub::client::Error::Trailing)),
-        }
-    });
+) -> Result<(), Error>
+where
+    F: Future<Output = Result<(), Error>>,
+{
     loop {
         let event = {
             let mut next = pin!(reader.next());
