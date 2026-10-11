@@ -588,8 +588,7 @@ fn create_at_a_crash(seed: u64, crash: Crash, empty: bool) -> (Option<u64>, u64,
     let (mut sim, node) = disk(seed);
     crash_after(&mut sim, &node, crash, move |node| async move {
         if empty {
-            drop(create(&node, "a", 0).await);
-            node.files().sync_dir(Path::new("")).await.unwrap();
+            drop(create_durable_empty(&node).await);
         }
         until_crash(&node).await;
         let mode = Mode::Create { len: 1_024 };
@@ -716,8 +715,7 @@ fn a_power_crash_in_a_create_over_a_file_with_no_bytes_can_keep_its_entry() {
 #[test]
 fn a_power_cut_in_a_create_over_a_synced_file_draws_its_bytes_apart_from_the_prefix() {
     let before = |node: node::Node| async move {
-        drop(create(&node, "a", 0).await);
-        node.files().sync_dir(Path::new("")).await.unwrap();
+        drop(create_durable_empty(&node).await);
         drop(create(&node, "b", 0).await);
     };
     let power = cut_creates(Crash::Power, before);
@@ -823,7 +821,7 @@ where
     B: FnOnce(node::Node) -> F + Copy + Send + 'static,
     F: Future<Output = ()> + 'static,
 {
-    let digest = |mode| {
+    let delay = |mode| {
         let (mut sim, node) = disk(seed);
         crash_after(&mut sim, &node, crash, move |node| async move {
             before(node.clone()).await;
@@ -832,7 +830,7 @@ where
         });
         delay_of_a_call(&mut sim, &node)
     };
-    digest(Mode::Create { len }) != digest(Mode::Write)
+    delay(Mode::Create { len }) != delay(Mode::Write)
 }
 
 #[test]
@@ -871,31 +869,43 @@ async fn drop_an_open(node: &node::Node) {
     pend(pin!(node.files().open(Path::new("a"), Mode::Write))).await;
 }
 
+/// The length of `a` after `dropped` runs, and a create of 1 KiB of `a` then ends: in
+/// flight at a crash by `crash`, or with no crash when `None`.
+fn len_after_a_drop<F, B>(seed: u64, crash: Option<Crash>, dropped: B) -> u64
+where
+    B: FnOnce(node::Node) -> F + Send + 'static,
+    F: Future<Output = ()> + 'static,
+{
+    let mode = Mode::Create { len: 1_024 };
+    let (mut sim, node) = disk(seed);
+    let Some(crash) = crash else {
+        let len = sim.run_on(&node, move |node, _| async move {
+            dropped(node.clone()).await;
+            node.files().open(Path::new("a"), mode).await.unwrap().len()
+        });
+        return len.unwrap();
+    };
+    crash_after(&mut sim, &node, crash, move |node| async move {
+        dropped(node.clone()).await;
+        hang(node.files().open(Path::new("a"), mode)).await;
+    });
+    sim.run_on(&node, |node, _| async move {
+        let opened = node.files().open(Path::new("a"), Mode::Read).await;
+        opened.unwrap().len()
+    })
+    .unwrap()
+}
+
 #[test]
 fn a_crash_ends_a_create_after_a_dropped_open_of_its_file_as_a_drop_does() {
-    let mode = Mode::Create { len: 1_024 };
-    let (mut sim, node) = disk(0);
-    let len = sim.run_on(&node, move |node, _| async move {
+    let dropped = |node: node::Node| async move {
         drop(create(&node, "a", 0).await);
+        until_crash(&node).await;
         drop_an_open(&node).await;
-        node.files().open(Path::new("a"), mode).await.unwrap().len()
-    });
-    assert_eq!(len.unwrap(), 1_024);
+    };
+    assert_eq!(len_after_a_drop(0, None, dropped), 1_024);
     let lens: BTreeSet<_> = (0..32)
-        .map(|seed| {
-            let (mut sim, node) = disk(seed);
-            crash_after(&mut sim, &node, Crash::Process, move |node| async move {
-                drop(create(&node, "a", 0).await);
-                until_crash(&node).await;
-                drop_an_open(&node).await;
-                hang(node.files().open(Path::new("a"), mode)).await;
-            });
-            sim.run_on(&node, |node, _| async move {
-                let opened = node.files().open(Path::new("a"), Mode::Read).await;
-                opened.unwrap().len()
-            })
-            .unwrap()
-        })
+        .map(|seed| len_after_a_drop(seed, Some(Crash::Process), dropped))
         .collect();
     assert_eq!(lens, BTreeSet::from([0, 1_024]));
 }
@@ -915,29 +925,15 @@ async fn drop_a_sync(file: env::files::File) {
 
 #[test]
 fn a_crash_ends_a_create_after_a_dropped_sync_of_its_file_as_a_drop_does() {
-    let mode = Mode::Create { len: 1_024 };
-    let (mut sim, node) = disk(0);
-    let len = sim.run_on(&node, move |node, _| async move {
-        drop_a_sync(create_durable_empty(&node).await).await;
-        node.files().open(Path::new("a"), mode).await.unwrap().len()
-    });
-    assert_eq!(len.unwrap(), 1_024);
+    let dropped = |node: node::Node| async move {
+        let file = create_durable_empty(&node).await;
+        until_crash(&node).await;
+        drop_a_sync(file).await;
+    };
+    assert_eq!(len_after_a_drop(0, None, dropped), 1_024);
     for crash in [Crash::Process, Crash::Power] {
         let lens: BTreeSet<_> = (0..32)
-            .map(|seed| {
-                let (mut sim, node) = disk(seed);
-                crash_after(&mut sim, &node, crash, move |node| async move {
-                    let file = create_durable_empty(&node).await;
-                    until_crash(&node).await;
-                    drop_a_sync(file).await;
-                    hang(node.files().open(Path::new("a"), mode)).await;
-                });
-                sim.run_on(&node, |node, _| async move {
-                    let opened = node.files().open(Path::new("a"), Mode::Read).await;
-                    opened.unwrap().len()
-                })
-                .unwrap()
-            })
+            .map(|seed| len_after_a_drop(seed, Some(crash), dropped))
             .collect();
         assert_eq!(lens, BTreeSet::from([0, 1_024]), "{crash:?}");
     }
@@ -1747,9 +1743,8 @@ fn a_power_cut_with_each_change_durable_draws_nothing() {
 fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
     let (mut sim, node) = disk(seed);
     crash_after(&mut sim, &node, crash, move |node| async move {
-        drop(create(&node, "a", 0).await);
+        drop(create_durable_empty(&node).await);
         let files = node.files();
-        files.sync_dir(Path::new("")).await.unwrap();
         files.create_dir(Path::new("d")).await.unwrap();
         until_crash(&node).await;
         hang(files.open(Path::new("a"), mode)).await;
