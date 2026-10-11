@@ -1212,8 +1212,14 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`] runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills its
-/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
+/// The status with which [`a_run_dies_while_it_leaves_a_directory`] exits. The test
+/// binary gives 0 or 101 in each other case.
+const DIED: i32 = 3;
+
+/// Exits with [`DIED`] after it made the tree of [`create_tree`] and while
+/// [`create_left`] fills its draft, as a killed run does: `exit` runs no destructor.
+/// Does nothing when [`DIES`] is not set. It does not abort, because on macOS each
+/// abort writes a crash report that no sweep removes.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1223,7 +1229,12 @@ fn a_run_dies_while_it_leaves_a_directory() {
     )]
     if std::env::var_os(DIES).is_some() {
         create_tree(0);
-        create_left(gone(), "died", |_| std::process::abort());
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::exit,
+            reason = "the child dies with no destructor, as a killed run does"
+        )]
+        create_left(gone(), "died", |_| std::process::exit(DIED));
     }
 }
 
@@ -1231,8 +1242,6 @@ fn a_run_dies_while_it_leaves_a_directory() {
 #[test]
 #[cfg(unix)]
 fn a_sweep_removes_the_draft_of_a_run_that_died() {
-    use std::os::unix::process::ExitStatusExt;
-
     let mut child = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", "rig::a_run_dies_while_it_leaves_a_directory"])
         .env(DIES, "1")
@@ -1242,9 +1251,9 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
         .expect("run the test binary");
     let status = child.wait().expect("wait for the test binary");
     assert_eq!(
-        status.signal(),
-        Some(6),
-        "the run does not abort in `create_left`"
+        status.code(),
+        Some(DIED),
+        "the run does not exit in `create_left`"
     );
     drop(Rig::new());
     // Any draft of the child, whatever its name.
