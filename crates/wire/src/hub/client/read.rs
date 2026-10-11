@@ -251,7 +251,7 @@ pub mod place {
     /// One message of the run: whole places that fit in the `max` of [`messages`].
     #[derive(Clone, Copy, Debug)]
     pub struct Message<'p> {
-        pub(super) places: &'p [Place],
+        places: &'p [Place],
         len: usize,
     }
 

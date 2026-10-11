@@ -69,6 +69,21 @@ fn encode_message(message: place::Message<'_>) -> Vec<u8> {
     out
 }
 
+/// The places that `message` encodes.
+fn decode_message(message: place::Message<'_>) -> Vec<Place> {
+    place::decode(&encode_message(message)).expect("a message of the run decodes")
+}
+
+/// The bytes of `place` in a message of the run.
+fn place_len(place: &Place) -> usize {
+    let [message] = place::messages(std::slice::from_ref(place), usize::MAX)
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("a place is one message");
+    };
+    message.encoded_len()
+}
+
 /// `kind`, then `len - 1` zeros.
 fn zeros(kind: u8, len: usize) -> Vec<u8> {
     let mut bytes = vec![0; len];
@@ -347,7 +362,7 @@ mod run {
         let places = [pt(1, "u8", "a"), pt(2, "u8", "a"), pt(3, "u8", "a")];
         let cut = |max| {
             place::messages(&places, max)
-                .map(|message| message.places.len())
+                .map(|message| decode_message(message).len())
                 .collect::<Vec<_>>()
         };
         assert_eq!(cut(21), vec![1, 1, 1]);
@@ -497,10 +512,20 @@ fn fits_the_largest_place_in_300_bytes() {
         .collect();
     for place in &places {
         let one = std::slice::from_ref(place);
-        let runs: Vec<_> = place::messages(one, 300).map(|run| run.places).collect();
+        let runs: Vec<_> = place::messages(one, 300).map(decode_message).collect();
         assert_eq!(runs, [one], "{}", place.data_type);
     }
-    assert_eq!(places.iter().map(Place::encoded_len).max(), Some(300));
+    assert_eq!(places.iter().map(place_len).max(), Some(300));
+}
+
+#[test]
+#[should_panic(expected = "out has 22 bytes, and the message has 21")]
+fn panics_on_a_message_into_out_of_another_length() {
+    let places = [pt(1, "u8", "a")];
+    let [message] = place::messages(&places, 21).collect::<Vec<_>>()[..] else {
+        panic!("one place is one message");
+    };
+    message.encode(&mut [0; 22]);
 }
 
 #[test]
@@ -615,19 +640,18 @@ proptest! {
         places in places(),
         max in 100..300_usize,
     ) {
-        let messages: Vec<_> = place::messages(&places, max).collect();
-        for message in &messages {
-            prop_assert!(message.encoded_len() <= max);
-            let len = message.places.iter().map(Place::encoded_len).sum::<usize>();
-            prop_assert_eq!(message.encoded_len(), len);
+        let messages: Vec<_> = place::messages(&places, max)
+            .map(|message| (message.encoded_len(), decode_message(message)))
+            .collect();
+        for (len, decoded) in &messages {
+            prop_assert!(*len <= max);
+            prop_assert_eq!(*len, decoded.iter().map(place_len).sum::<usize>());
         }
-        for (message, next) in messages.iter().zip(messages.iter().skip(1)) {
-            let grown = message
-                .encoded_len()
-                .saturating_add(next.places[0].encoded_len());
-            prop_assert!(grown > max);
+        for ((len, _), (_, next)) in messages.iter().zip(messages.iter().skip(1)) {
+            prop_assert!(len.saturating_add(place_len(&next[0])) > max);
         }
-        let cut: Vec<_> = messages.iter().flat_map(|message| message.places).collect();
-        prop_assert_eq!(cut, places.iter().collect::<Vec<_>>());
+        let cut: Vec<_> =
+            messages.into_iter().flat_map(|(_, decoded)| decoded).collect();
+        prop_assert_eq!(cut, places);
     }
 }
