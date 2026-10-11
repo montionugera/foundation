@@ -1964,6 +1964,51 @@ mod lock {
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
     }
 
+    /// A second node at the port of a node that serves on the same data directory: the
+    /// claim comes before the bind, so the data directory refuses it.
+    #[test]
+    fn a_second_node_at_the_port_of_a_running_node_is_refused_by_the_lock() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let second = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        assert_eq!(second.join(), Err(busy()));
+        first.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(first.join(), Ok(()));
+    }
+
+    /// A stop at any point of the start or while the node serves, then a second node
+    /// at once at the same port: the stop holds the lock until the port is free, so
+    /// each node serves or finds the lock held, one of them claims, and no port fails
+    /// to bind.
+    #[test]
+    fn a_start_during_the_stop_of_a_node_at_its_port_never_fails_on_the_port() {
+        let mut seen = [false; 2];
+        let steps = (0..400).map(|step| Span::from_nanos(step * 5_000));
+        for after in steps.chain([Span::SECOND]) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let first = start_on(&host, 0);
+            assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
+            first.stop();
+            let second = start_on(&host, 0);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {after:?}");
+            second.stop();
+            assert_eq!(sim.run(), Ok(()), "at {after:?}");
+            let outcomes = [first, second].map(|node| {
+                let joined = node.join();
+                let outcome = [Ok(()), Err(busy())].iter().position(|o| *o == joined);
+                outcome.unwrap_or_else(|| panic!("at {after:?}: {joined:?}"))
+            });
+            assert_ne!(outcomes, [1, 1], "at {after:?}");
+            seen[outcomes[1]] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
     /// Two nodes that start at once on a new data directory: one claims it, and the
     /// other stops before it reads a name or opens a ring.
     #[test]
@@ -2917,9 +2962,9 @@ mod port {
         drop(held);
     }
 
-    /// The port binds before any shard's pool is built.
+    /// The pool check comes before the bind, which shard 0 does after its claim.
     #[test]
-    fn a_port_that_does_not_bind_wins_over_a_pool_reservation_past_usize_max() {
+    fn a_pool_reservation_past_usize_max_wins_over_a_port_that_does_not_bind() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 1);
         let listen = listen(&host);
@@ -2929,20 +2974,17 @@ mod port {
             recv_buffer_bytes: 1 << 16,
         };
         let held = host.net().udp(&udp).expect("the port binds");
-        let node =
-            Node::start(config(&host, Size::from_bytes(u64::MAX), Box::new(heap)));
+        let pool = Size::from_bytes(u64::MAX);
+        let node = Node::start(config(&host, pool, Box::new(heap)));
         assert_eq!(sim.run(), Ok(()));
-        let error = Error::Port {
-            listen,
-            error: env::net::Error::AddressInUse { local: listen },
-        };
-        assert_eq!(node.join(), Err(error));
+        assert_eq!(node.join(), Err(Error::Pool { pool, cores: 1 }));
         drop(held);
     }
 
-    /// A port that does not bind starts no shard, and `join` gives why.
+    /// A port that does not bind stops the node once shard 0 claimed the data
+    /// directory, and no buffer opens. A later start there at a free port serves.
     #[test]
-    fn a_port_that_does_not_bind_starts_no_shard() {
+    fn a_port_that_does_not_bind_opens_no_buffer() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         let listen = listen(&host);
@@ -2959,7 +3001,8 @@ mod port {
             error: env::net::Error::AddressInUse { local: listen },
         };
         assert_eq!(node.join(), Err(error.clone()));
-        assert_eq!(host.shard_starts().len(), 0);
+        let claimed = ["lock", "name", "shards-2"].map(PathBuf::from);
+        assert_eq!(listed(&mut sim, &host, ""), claimed);
         assert_eq!(
             error.to_string(),
             format!(
@@ -2967,6 +3010,13 @@ mod port {
             )
         );
         drop(held);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let probe = probe(&node);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        assert_eq!(fate(&probe), Fate::Ran);
     }
 
     /// A multicast IP or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address,
