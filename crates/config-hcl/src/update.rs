@@ -754,8 +754,9 @@ mod tests {
             .zip(want.chars())
             .find(|((_, a), b)| a != b)
             .map_or(out.len().min(want.len()), |((i, _), _)| i);
-        let Some(heredoc) = want[start..]
-            .strip_prefix("<<")
+        let Some(heredoc) = want
+            .get(start..)
+            .and_then(|rest| rest.strip_prefix("<<"))
             .and_then(|h| h.strip_suffix(line_end))
         else {
             return false;
@@ -764,7 +765,7 @@ mod tests {
             body.strip_suffix(marker)
                 .is_some_and(|lines| lines.is_empty() || lines.ends_with(line_end))
         });
-        closed && !out[start..].contains('\n')
+        closed && out.get(start..).is_some_and(|rest| !rest.contains('\n'))
     }
 
     proptest! {
