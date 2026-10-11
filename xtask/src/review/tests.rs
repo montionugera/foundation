@@ -2388,3 +2388,9 @@ fn fails_end_lines_in_a_quote_or_a_list() {
         );
     }
 }
+
+#[test]
+fn an_old_round_that_defers_but_names_no_hot_path_needs_no_performance() {
+    let round = ROUND.replace("Deferred: none", "Deferred: #12");
+    assert_eq!(check(&record(vec![old(&round)])), Vec::<String>::new());
+}
