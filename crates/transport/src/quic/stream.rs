@@ -2039,6 +2039,8 @@ mod tests {
     use crate::testing::{self, Shard};
     use crate::tls;
 
+    mod gap;
+
     /// The link delay each way.
     const DELAY: Duration = Duration::from_millis(10);
     /// Long enough for a datagram to go and its reply to come back.
