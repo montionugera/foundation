@@ -94,7 +94,7 @@ const GRACE: Span = Span::from_nanos(10_000_000_000);
 ///     },
 /// })
 /// .await?;
-/// shard.carry(index, stamps);
+/// assert!(shard.carry(index, stamps));
 /// let charge = home::reader::complete::Charge::Whole;
 /// let reader = shard.open_complete(index, 1 << 20, charge);
 ///
