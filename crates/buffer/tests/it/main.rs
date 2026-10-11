@@ -2595,29 +2595,25 @@ fn three_opens_and_a_failed_sync(
 
 /// A limit of opens at once. The first open removes the ring with no checkpoint that
 /// the third left. The second found no ring before, and its create runs before the
-/// directory sync of the first, while the removed ring keeps its room. So it gets
-/// `Full` on a disk with room for one ring and a half, where another open gets `Busy`
-/// on one with room for two. The commit of the open that passes stays.
+/// directory sync of the first, while the removed ring keeps its room. `Files::open`
+/// then syncs the directory and creates again, so a disk with room for one ring and a
+/// half gives what a disk with room for two gives. The commit of the open that passes
+/// stays.
 ///
 /// The run hangs on the delay of each file call. After a change that moves those
 /// delays, the second open can get another result, and this test fails: a search of
 /// the first 20,000 values of `seed` then finds such runs again.
 #[test]
-fn an_open_at_once_with_a_remove_of_another_open_can_get_full() {
+fn an_open_at_once_with_a_remove_of_another_open_gets_the_room_of_the_ring() {
     let len = AREA_START + AREA;
-    let kept = tail(3, Some(30));
     let failed = Error::Files(FileError::Io {
         path: PathBuf::new(),
         operation: Operation::SyncDir,
         code: 5,
     });
-    let full = Error::Files(FileError::Full {
-        path: PathBuf::from(RING),
-    });
-    let tight = three_opens_and_a_failed_sync(218, len + len / 2);
-    assert_eq!(tight, ([Ok(()), Err(full), Err(failed.clone())], kept));
-    let wide = three_opens_and_a_failed_sync(218, 2 * len);
-    assert_eq!(wide, ([Err(busy()), Ok(()), Err(failed)], kept));
+    let expected = ([Err(busy()), Ok(()), Err(failed)], tail(3, Some(30)));
+    assert_eq!(three_opens_and_a_failed_sync(218, len + len / 2), expected);
+    assert_eq!(three_opens_and_a_failed_sync(218, 2 * len), expected);
 }
 
 /// A failed read of the header blocks fails the open with its error and leaves the

@@ -469,19 +469,10 @@ impl<'a> Flight<'a> {
             });
         }
         let mode = Mode::Create { len };
-        let opened = match store.files.open(&path, mode).await {
+        let file = match store.files.open(&path, mode).await {
             // A file of another length at the name is not the chunk.
             Err(files::Error::Length { .. }) => {
                 store.files.remove(&path).await?;
-                store.files.open(&path, mode).await
-            }
-            opened => opened,
-        };
-        let file = match opened {
-            // A removed file keeps its room until the directory syncs, and a remove
-            // can end with no sync: a dropped put, a failed sync, or a crash.
-            Err(files::Error::Full { .. }) => {
-                store.files.sync_dir(&store.dir).await?;
                 store.files.open(&path, mode).await?
             }
             opened => opened?,

@@ -386,8 +386,7 @@ impl Buffer {
     /// gets its slot from `slots`. Starts the commit task. Each tail it reports is
     /// durable. It reads the header and the records from the ring's tail and writes
     /// them again, so its time grows with the records. Open one directory at most one
-    /// time at once. Opens at once can fail with `Busy`, `Files(Length)`, or
-    /// `Files(Full)`.
+    /// time at once. Opens at once can fail with `Busy` or `Files(Length)`.
     ///
     /// # Errors
     ///
