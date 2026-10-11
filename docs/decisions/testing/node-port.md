@@ -186,7 +186,8 @@
   `Code(wire::session::REFUSED)` (superseded by #2325, below). A node's new session
   takes the place of its old one when the old one still holds it at `accept`. The
   transport closes the old session as the new one arrives (ONE SESSION PER PEER), so at
-  the bound another peer can take the place first (superseded by #2325, below)
+  the bound another peer can take the place first (this sentence superseded by #2325,
+  below)
   (`laptop.architect-2`, 15:18 UTC:
   https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
   refuses a member, so a flood of peers outside the region cannot lock a member out
@@ -215,7 +216,9 @@
   `Code(wire::session::REFUSED)`. So `accept` refuses no session for the bound. A place
   is as old as the session that took it. A new session of a node key takes the key's
   place while a session still holds it, and the place keeps its age, so a redial does
-  not make it newer. A peer that proves a right leaves the bound: its place frees and
+  not make it newer. A place holds each session of its peer that runs: the transport
+  keeps the older session of a node key when the newer one has already ended, so the
+  bound closes both. A peer that proves a right leaves the bound: its place frees and
   its sessions stay. Membership is the one proof today, which shard 0 reads again for
   each held place as each new session of a peer outside the region arrives. The client
   hello of #1744 and the ticket join of #1157 must each free the place when its proof

@@ -81,11 +81,11 @@ pub(crate) struct Places {
 }
 
 impl Places {
-    /// The hold of `session` on its place, or `None` when `member` holds for its peer:
-    /// the place that its node key still holds, which keeps its age, else a new place.
-    /// A place whose peer `member` holds for now frees. At [`PLACES`], the oldest
-    /// place frees first, and each session that holds it closes with
-    /// `wire::session::REFUSED`.
+    /// The hold of `session` on its place: the place that its node key still holds,
+    /// which keeps its age, else a new place. `None` when `member` holds for the peer.
+    /// Each place whose peer `member` now holds frees, and its sessions stay. At
+    /// [`PLACES`], the oldest place frees first, and each session that holds it closes
+    /// with `wire::session::REFUSED`.
     pub(crate) fn take(
         &mut self,
         session: &Session,
