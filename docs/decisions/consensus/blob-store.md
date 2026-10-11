@@ -40,7 +40,9 @@
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177. A put
   does not retry a create that gives `Full`: `Files::open` syncs the directory one time
   and opens again (ENV SEAMS, #1622), and a `Full` from `Files::open` is the error of
-  the put. Decided by `laptop.architect-2`, 2026-10-08T00:45:04Z
+  the put. `laptop.architect-2` decided the rule of `Files::open`, 2026-10-08T00:45:04Z
   (https://github.com/synnaxlabs/foundation/issues/1622#issuecomment-6049807597).
-  Supersedes item 4 of
+  `laptop.architect` decided that the put loses its retry (2026-10-11T08:02:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2375#issuecomment-6106938767), which
+  supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177.
