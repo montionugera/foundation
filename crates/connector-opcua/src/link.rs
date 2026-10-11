@@ -569,6 +569,8 @@ fn read_by_rustc(
     let features = features.join(",");
     // rustc checks cfgs only when it emits more than dep-info.
     let out = scan_out();
+    // rustc makes no directory when it stops at a parse error.
+    std::fs::create_dir_all(&out).unwrap();
     let output = std::process::Command::new("rustc")
         .args(["--edition", "2024", "--crate-type", "lib"])
         .arg(format!("-Ctarget-feature={features}"))
@@ -936,6 +938,16 @@ fn the_scan_reads_the_module_that_a_test_mock_shadows() {
 fn the_scan_removes_its_output() {
     let root = create_tree("output", &[("src/lib.rs", "fn named() {}")]);
     read_by_rustc(&root, &[], &[]);
+    assert!(!scan_out().exists(), "{}", scan_out().display());
+}
+
+/// A crate that rustc cannot parse fails the scan with the errors of rustc.
+#[test]
+fn the_scan_of_a_crate_that_does_not_parse_gives_the_errors_of_rustc() {
+    let root = create_tree("unparsed", &[("src/lib.rs", "fn named( {}")]);
+    let refused = std::panic::catch_unwind(|| read_by_rustc(&root, &[], &[]));
+    let message = *refused.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.starts_with("rustc gives no files: "), "{message}");
     assert!(!scan_out().exists(), "{}", scan_out().display());
 }
 
