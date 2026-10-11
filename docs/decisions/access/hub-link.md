@@ -62,6 +62,8 @@
   2026-10-08T19:22:10Z gave as `Message` with `Kind` (`laptop.architect`,
   2026-10-11T11:31:42Z,
   https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108567148).
+  Supersedes `Message` with `Kind` of
+  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6067359431.
   Lost: a node that holds each request stream until it admits a hello, which adds a
   queue, its bound, and its timeout to `hub` to save one round trip for each session.
   Decided by `laptop.architect` (2026-10-08T18:16:38Z,
