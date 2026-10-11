@@ -291,11 +291,7 @@ impl Call<'_> {
         let mut backoff = retry::Backoff::new(clock, entropy.rng(), RESTART);
         let mut first = Some(first);
         loop {
-            if !writer.start().await {
-                break;
-            }
-            // After the start status, so the status shows a run, not a past backoff,
-            // while the open of a restart waits for a home.
+            // Before the start status, so the reader of each run sees that status.
             let opening = match first.take() {
                 Some(opening) => opening,
                 None => self.reader(settings).await,
@@ -303,6 +299,9 @@ impl Call<'_> {
             let Some(reader) = opening else {
                 break;
             };
+            if !writer.start().await {
+                break;
+            }
             let token = Ended(cancel.child());
             let live = Rc::new(Live::default());
             let start = clock.now();
@@ -3521,6 +3520,48 @@ mod tests {
         read.end.expect("ok");
         let behind = Err(hub::reader::Ended::Behind);
         assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+    }
+
+    /// The reader of a restart opens before the start status, as the first reader
+    /// does, so each run reads `state` 0 of its own start. A run that gets no frame in
+    /// 10 s records `None`.
+    #[test]
+    fn the_reader_of_each_run_sees_the_start_of_that_run() {
+        let settings = reader::Settings {
+            select: Selector::new(["plant.write.status.state"]).expect("a selector"),
+            ..settings(Span::ZERO)
+        };
+        let read = read_through(
+            Some(settings),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let clock = ctx.clock().clone();
+                let mut next = pin!(reader.next());
+                let mut late =
+                    pin!(clock.sleep(Span::from_nanos(Span::SECOND.nanos() * 10)));
+                let next = poll_fn(|cx| {
+                    if let Poll::Ready(next) = next.as_mut().poll(cx) {
+                        let next = next.map(|got| series(&got, STATUS.as_u128() + 1));
+                        return Poll::Ready(Some(next));
+                    }
+                    late.as_mut().poll(cx).map(|()| None)
+                })
+                .await;
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push(next);
+                    got.len()
+                };
+                if runs < 3 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |_, _| async {},
+        );
+        read.end.expect("ok");
+        let start = Some(Ok(vec![0]));
+        assert_eq!(read.got, [start.clone(), start.clone(), start]);
     }
 
     /// The diagnostics of `error` when it is [`Error::Config`], else its text.
