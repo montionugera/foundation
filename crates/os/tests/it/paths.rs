@@ -27,6 +27,14 @@ fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+/// A directory that takes no new file: a write that makes one in it gives `EACCES`.
+fn sealed(scratch: &Scratch) -> PathBuf {
+    let dir = scratch.0.join("sealed");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+    dir
+}
+
 cases::tests!(run);
 
 #[test]
@@ -108,6 +116,13 @@ fn a_write_on_a_path_with_no_name_writes_nothing() {
     }
     let entries = Ok(Found::Directory(vec![config.join("c")]));
     assert_eq!(paths.read(&config, 1 << 12), entries);
+}
+
+#[test]
+fn a_write_on_a_path_that_names_a_directory_makes_no_file_beside_it() {
+    let scratch = Scratch::new();
+    let none = sealed(&scratch).join("none/");
+    assert_eq!(os::paths().write(&none, b"x"), Err(Error::NotFound));
 }
 
 #[test]
