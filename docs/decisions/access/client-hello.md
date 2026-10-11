@@ -64,8 +64,13 @@
   name) (`laptop.architect`, 2026-10-10T23:52:16Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103487682), then
   the replies of HUB WIRE from `Opened`. As in HUB WIRE, a message of the run holds
-  whole places; and a latest read needs a stream of class `Latest`, and a complete
-  read one of class `Complete`, else `MALFORMED` (box1.builder-2,
+  whole places, and no more than remain (`laptop.architect`, 2026-10-11T00:45:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921);
+  `client::place::messages` cuts the run into messages, so the sender writes no rule
+  of the run (box1.builder-2, shape decision 5 of
+  https://github.com/synnaxlabs/foundation/pull/2327); and a latest read needs a
+  stream of class `Latest`, and a complete read one of class `Complete`, else
+  `MALFORMED` (box1.builder-2,
   2026-10-10T23:26:58Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402,
   approved by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). The
