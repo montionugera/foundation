@@ -39,6 +39,18 @@ pub(crate) struct Address {
     pub(crate) bound: SocketAddr,
 }
 
+/// Where a program dials `port`: its UDP socket, as it is bound.
+pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
+    let udp = port
+        .addresses()
+        .into_iter()
+        .find_map(|address| match address {
+            transport::Address::Udp(at) => Some(at),
+            transport::Address::Tcp(_) | transport::Address::Relay { .. } => None,
+        });
+    udp.expect("invariant: a port binds a UDP socket")
+}
+
 /// Makes the file `address` of `files` with `address`, in place of one that a crash
 /// left, and makes it durable. A read while it runs sees the old file, no file, or
 /// the new one. Call it under the lock of the data directory.
@@ -91,7 +103,7 @@ fn encode(address: &Address) -> [u8; LEN] {
 
 /// The address in `bytes`, or `None` for bytes that [`encode`] does not write.
 #[cfg(any(test, feature = "sim"))]
-fn decode(bytes: &[u8; LEN]) -> Option<Address> {
+pub(crate) fn decode(bytes: &[u8; LEN]) -> Option<Address> {
     fields(&sector::written(bytes, TAG)?)
 }
 

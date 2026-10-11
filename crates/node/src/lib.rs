@@ -245,9 +245,11 @@ impl Node {
             #[cfg(feature = "sim")]
             Region::Given(founding) => Opening::Given(founding.clone()),
         };
+        let at = address::bound(&bound);
         let part = bound.split(NonZeroUsize::MIN).pop();
         let endpoint = Endpoint {
             part: part.expect("invariant: a port splits into the parts asked for"),
+            bound: at,
             region,
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
@@ -783,6 +785,8 @@ struct Serve {
 struct Endpoint {
     /// The node's part of its port.
     part: transport::port::Part,
+    /// Where the port is bound.
+    bound: SocketAddr,
     region: Opening,
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
@@ -945,9 +949,17 @@ impl Serve {
         };
         let (key, entropy) = (identity.key, self.endpoint.entropy.clone());
         let (clock, net) = (self.endpoint.clock.clone(), self.endpoint.net.clone());
-        let opened = self.endpoint.open(identity, files, pool, tasks.clone());
+        let bound = self.endpoint.bound;
+        let opened = self
+            .endpoint
+            .open(identity, files.clone(), pool, tasks.clone());
         let (transport, mesh) = opened.await;
         let freed = transport.ended();
+        let address = address::Address {
+            key,
+            public_key: transport.public_key(),
+            bound,
+        };
         let (inbox, time) = (self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
         // ends, on each path, or is a task of the mesh, awaited below, a task of the
@@ -987,10 +999,26 @@ impl Serve {
             let (ops, runs) = parts.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
             let group = follow(runs, hub.clone()).await;
-            let port =
-                route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
-            let stop = until(guard, port, group, fail);
-            inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
+            match address::publish(&files, &address).await {
+                Ok(()) => {
+                    let port = route::accept(
+                        transport,
+                        mesh,
+                        hub.clone(),
+                        clock,
+                        tasks.clone(),
+                    );
+                    let stop = until(guard, port, group, fail);
+                    inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
+                }
+                Err(error) => fail(error),
+            }
+            // Also after a publish whose last call failed, which leaves the file.
+            if let Err(error) = address::remove(&files).await
+                && failed.get().is_none()
+            {
+                fail(error);
+            }
             ended
         };
         let ended = served.await;

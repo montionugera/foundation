@@ -15,6 +15,7 @@ use secret::seal::Opener;
 use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
+mod address;
 mod region;
 
 struct Run {
@@ -4125,6 +4126,7 @@ mod port {
                 };
                 let endpoint = Endpoint {
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
+                    bound: listen(&own),
                     region: Opening::Given(region(&members)),
                     clock: own.clock(),
                     entropy: own.entropy(),
@@ -5288,6 +5290,7 @@ mod port {
                 let definitions = founding.definitions.clone();
                 let endpoint = Endpoint {
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
+                    bound: listen(&own),
                     region: Opening::Given(founding),
                     clock: own.clock(),
                     entropy: own.entropy(),
