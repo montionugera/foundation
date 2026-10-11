@@ -70,22 +70,22 @@
   Scope, with the decision unchanged: this states where "only the user who started the
   node can read the key" and "the first `foundation start`" hold. `os` makes `admin.key`
   at mode 0600 and does not change the mode of one that is there, so a wider mode or an
-  ACL of the data directory can open it to another user, as Who attacks in
-  `docs/security.md` states. The start that founds the root region founds with a valid
-  `admin.key` in the data directory. When no `admin.key` is there, it makes one. When
-  the file holds no valid key, the start stops and does not write over it (NODE MESH).
-  "The first `foundation start`" is each start until one makes its founding durable, so
-  it can found with a key that an earlier one of those starts left (NODE MESH). A key
-  there for another reason is outside it: the operator wrote or kept it, or a user that
-  the operator let write to the data directory wrote it (Who attacks in
-  `docs/security.md`). The mode, the ACL, and the start that makes a key or stops:
-  approved by `laptop.architect` at `927af5461` (2026-10-11T01:26:07Z,
+  ACL of the data directory can open it to another user (Who attacks in
+  `docs/security.md`). The start that founds the root region reads a valid `admin.key`
+  in the data directory and founds with it. When no `admin.key` is there, it makes one.
+  When the file holds no valid key, the start stops and does not write over it (NODE
+  MESH). "Only the user who started the node can read the key" holds for a key that a
+  start of the node made, also one that an earlier start left when it stopped before its
+  founding was durable (NODE MESH). It does not hold for a key that another writer put
+  there: the operator, or a user that the operator let write to the data directory (Who
+  attacks in `docs/security.md`). The mode, the ACL, the founding with a valid key, and
+  the start that makes a key or stops: approved by `laptop.architect` at `927af5461`
+  (2026-10-11T01:26:07Z,
   https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104179974). The
-  founding with a valid key and the first `foundation start`: proposed by
-  `laptop.architect-2` in rounds 5 to 7 of #2296 (round 5: 2026-10-11T01:32:23Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104224546; round 6:
-  2026-10-11T01:50:26Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104350424; round 7:
-  2026-10-11T02:00:28Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104422348); approval
+  founding with a key that an earlier start left: decided by `laptop.architect`
+  (2026-10-11T01:03:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194). The scope
+  of the claim: proposed by `laptop.architect-2` in round 8 of #2296
+  (2026-10-11T02:46:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104738063); approval
   of `laptop.architect` owed.
