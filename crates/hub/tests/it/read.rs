@@ -263,9 +263,9 @@ fn stops_a_read_on_a_stream_of_the_other_class_as_malformed() {
     );
 }
 
-/// A read reserves its open under the share of its subject, not the request turn of
-/// its link, until it is verified. The open of `time` and `value` is 14 bytes, and
-/// that of `value` 8, which fills the share.
+/// A read reserves its open under the share of its subject, not the request turn of its
+/// link, until its open decodes after the wait for the home of its index. The open of
+/// `time` and `value` is 14 bytes, and that of `value` 8, which fills the share.
 #[test]
 fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     let home = read_session(
@@ -302,8 +302,9 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     );
 }
 
-/// A read holds the reservation of its open only until the open decodes, so reads
-/// whose opens fit the share one at a time each open.
+/// A read holds the reservation of its open only until the open decodes after the wait
+/// for the home of its index, so reads whose opens fit the share one at a time each
+/// open.
 #[test]
 fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
     let home = read_session(

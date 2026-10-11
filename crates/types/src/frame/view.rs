@@ -88,7 +88,8 @@ impl Mask {
 }
 
 /// What a reader gets: a frame and the entries it wants (M2). It reads as the frame of
-/// only those series. Making one copies nothing and takes no reference count.
+/// only those series, except through [`View::frame`]. Making one copies nothing and
+/// takes no reference count.
 #[derive(Clone, Copy, Debug)]
 pub struct View<'a> {
     frame: &'a Frame,

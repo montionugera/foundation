@@ -127,12 +127,12 @@
   transport session's `streams_max` bounds the reads of a link; there is no `READS_MAX`.
   The node holds the open of a read before it checks its signature, so the open
   reserves its length under `BODIES_BYTES_MAX` and the subject's share, as a request
-  body does, until the node decoded it. An open that does not fit stops with `BUSY`
-  (`serve::Error::Share` or `Bodies`). The node opens an unnamed `hub::reader::Reader`
-  for the read, only at the home of its index. A read whose home is another node stops
-  with `NOT_HOME` (`serve::Error::Reader` with `Remote`) before the node opens a stream
-  to that home, and it interns no key set (#2419). Decided by `laptop.architect`
-  (2026-10-11T15:17:29Z,
+  body does, until it decodes after the wait for the home of its index. An open that
+  does not fit stops with `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an
+  unnamed `hub::reader::Reader` for the read, only at the home of its index. A read
+  whose home is another node stops with `NOT_HOME` (`serve::Error::Reader` with
+  `Remote`) before the node opens a stream to that home, and it interns no key set
+  (#2419). Decided by `laptop.architect` (2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
   3). Supersedes "runs at the local home or at a remote one" of
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402 item 2.
@@ -160,14 +160,21 @@
   home keep their code (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
   2). Supersedes "the code of the home's refusal" of plan item 6 for `MALFORMED`.
-  A read holds the reservation of its open until the home of its index is known and its
-  open decodes after that wait. While it waits, it holds its open and the key of its
+  The program ends a read with the finish of its stream, also while the read waits for
+  the home of its index, and the node then finishes the stream. A message after the open
+  stops the read with `MALFORMED` (`serve::Error::Client` with `Trailing`)
+  (`laptop.architect`, 2026-10-11T17:25:34Z,
+  https://github.com/synnaxlabs/foundation/pull/2425#issuecomment-6111681323). A read
+  holds the reservation of its open until the home of its index is known and its open
+  decodes after that wait. While it waits, it holds its open and the key of its
   index, and no places. After that decode it holds no reservation. A decoded selector
   lives across no wait: the read drops it before the wait for the home, and before it
   sends its first place to the program (`laptop.architect`, 2026-10-11T16:46:33Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6111323686).
   Supersedes "After its open decodes, a read holds no reservation." of
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 4.
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 4,
+  and "until the node decoded it" of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 5.
   Lost: the decoded selector through the wait, which holds about 26 times the bytes of
   the open with no reservation; and a compact `types::name::Selector`, an interface
   change of `types` that still holds a few times the bytes of the open. It holds its
