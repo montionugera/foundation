@@ -54,7 +54,8 @@ struct Answer {
 impl Client {
     /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
-    /// session, and gives it once the session is active.
+    /// session, and gives it once the session is active. On an error, it closes the
+    /// session that it made.
     ///
     /// # Errors
     ///
@@ -89,7 +90,8 @@ impl Client {
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
-        this.connections
+        let connected = this
+            .connections
             .drive(|cx| {
                 this.connections.events().run();
                 let (_, session, status) = this.state();
@@ -103,8 +105,14 @@ impl Client {
                     Poll::Pending
                 }
             })
-            .await?;
-        Ok(this)
+            .await;
+        match connected {
+            Ok(()) => Ok(this),
+            Err(status) => {
+                this.close().await;
+                Err(status)
+            }
+        }
     }
 
     /// Reads the Value of `node`, a scalar Double.

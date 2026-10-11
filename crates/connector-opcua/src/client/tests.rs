@@ -1,7 +1,9 @@
+use std::cell::Cell;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -39,6 +41,8 @@ struct Peer {
     url: String,
     /// The value of [`VALUE`].
     value: f64,
+    /// The server does not run while it is set.
+    paused: Rc<Cell<bool>>,
 }
 
 impl Peer {
@@ -71,8 +75,8 @@ fn run<T: Send + 'static>(
 }
 
 /// Starts a test server on `node`, with room for `sessions` sessions and a Double at
-/// [`VALUE`] from its random values, runs `body` while the server runs, then closes
-/// the server.
+/// [`VALUE`] from its random values, runs `body` while the server runs, except while
+/// [`Peer::paused`] is set, then closes the server.
 async fn serve<T>(
     node: &node::Node,
     sessions: u16,
@@ -92,7 +96,9 @@ async fn serve<T>(
         rng,
         url: format!("opc.tcp://{local}"),
         value,
+        paused: Rc::default(),
     };
+    let paused = Rc::clone(&peer.paused);
     let out = {
         let mut server_drive = pin!(manager.drive(|_| {
             manager.events().run();
@@ -100,7 +106,9 @@ async fn serve<T>(
         }));
         let mut body = pin!(body(peer));
         poll_fn(|cx| {
-            assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
+            if !paused.get() {
+                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
+            }
             body.as_mut().poll(cx)
         })
         .await
@@ -335,34 +343,53 @@ fn a_connect_to_a_listener_that_closes_each_stream_times_out() {
 #[test]
 fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     let (took, _) = run(0, async |node| {
-        let mut rng = node.entropy().rng();
-        let local = SocketAddr::new(node.addresses()[0], PORT);
-        let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
-            .expect("the port is free");
-        // SAFETY: the close below deletes the server before the manager drops.
-        let server = unsafe { Server::start(&manager, c"", 4) };
-        let url = format!("opc.tcp://{local}");
-        let client = {
-            let mut server_drive = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut connect =
-                pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
-            poll_fn(|cx| {
-                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
-                connect.as_mut().poll(cx)
-            })
-            .await
-            .expect("the client connects")
-        };
-        let clock = node.clock();
-        let start = clock.now();
-        client.close().await;
-        let took = clock.now() - start;
-        server.close(&manager).await;
-        took
+        serve(&node, 4, async |mut peer| {
+            let client = peer.connected().await;
+            peer.paused.set(true);
+            let start = peer.clock.now();
+            client.close().await;
+            peer.paused.set(false);
+            peer.clock.now() - start
+        })
+        .await
     });
     let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(window.contains(&took), "{took:?}");
+}
+
+/// A connect that times out after the server makes its session closes the session, so
+/// a server with room for one session takes the next client. In the run of seed 0, the
+/// server makes the session 3 ms after the connect starts and activates it later.
+#[test]
+fn a_connect_that_times_out_closes_its_session() {
+    let (connects, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
+            let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
+            let first = {
+                let mut connect =
+                    pin!(Client::connect(clock, net, &mut peer.rng, &url));
+                let mut made = pin!(peer.clock.sleep(Span::from_nanos(3_000_000)));
+                poll_fn(|cx| {
+                    if !paused.get() && made.as_mut().poll(cx).is_ready() {
+                        paused.set(true);
+                    }
+                    connect.as_mut().poll(cx)
+                })
+                .await
+                .err()
+            };
+            paused.set(false);
+            let second = match peer.connect(&url).await {
+                Ok(client) => {
+                    client.close().await;
+                    None
+                }
+                Err(status) => Some(status),
+            };
+            (first, second)
+        })
+        .await
+    });
+    assert_eq!(connects, (Some(Status::BAD_TIMEOUT), None));
 }
