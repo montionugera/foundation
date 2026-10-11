@@ -62,9 +62,12 @@
   other change of the directory. At a crash of either kind, a create with no room for
   its bytes that the draw keeps whole fails as with no crash: it makes no file, and it
   removes a file with no bytes that it found. After a `Power` crash, the prefix decides
-  whether that remove stays. A cut gives a state that a journaled file system can
-  reach, or a state that only a missing `sync_dir` reaches. Lost: a log for each
-  directory, which gives states that need no missing `sync_dir`.
+  whether that remove stays. Supersedes
+  https://github.com/synnaxlabs/foundation/issues/1264#issuecomment-6044288692 for such
+  a create: after a `Process` crash the file is whole or has no bytes. A cut gives a
+  state that a journaled file system can reach, or a state that only a missing
+  `sync_dir` reaches. Lost: a log for each directory, which gives states that need no
+  missing `sync_dir`.
   Decided by `laptop.architect-2` (2026-10-07T19:20:28Z):
   https://github.com/synnaxlabs/foundation/issues/1551#issuecomment-6045125302; the
   calls in flight, 2026-10-08T02:39:46Z:
@@ -76,4 +79,6 @@
   over a file with no bytes, 2026-10-11T15:44:18Z:
   https://github.com/synnaxlabs/foundation/issues/1687#issuecomment-6110740868; the
   create with no room, 2026-10-11T16:10:18Z:
-  https://github.com/synnaxlabs/foundation/pull/2414#issuecomment-6110981071.
+  https://github.com/synnaxlabs/foundation/pull/2414#issuecomment-6110981071; the text
+  of that create, 2026-10-11T16:44:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2414#issuecomment-6111302856.
