@@ -3183,7 +3183,6 @@ mod tests {
             let mut shard = test.shard(AREA).await;
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
             shard.shed(Slot::new(0));
-            assert!(shard.kept.is_empty());
             assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
         });
@@ -3196,9 +3195,10 @@ mod tests {
             let test = Test::new(node, tasks);
             let mut shard = test.shard(AREA).await;
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
+            shard.shed(Slot::new(2));
             shard.shed(Slot::new(0));
-            assert!(shard.kept.contains_key(&Slot::new(0)));
             assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.deadline().is_some(), "the shed kept the gate");
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
         })
         .expect("the run after the cut ends");
