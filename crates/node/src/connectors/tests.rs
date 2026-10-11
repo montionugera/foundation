@@ -143,7 +143,9 @@ struct Recorded {
 /// Applies each step at its time, with the kind `hold`, whose task ends `linger` after
 /// the cancel, the kind `quick`, whose task ends at the cancel, and the kind `brief`,
 /// whose run returns at once, and drops the runs at `dropped`, if given. Gives each
-/// start of a run and each cancel until 10 s, from the time the hub opened.
+/// start of a run and each cancel until 10 s, from the time the hub opened, in order
+/// of time, then of name: the sim polls the tasks that are ready at one instant in a
+/// random order.
 fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recorded {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
@@ -195,7 +197,9 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         };
         let since = |events: &Starts| {
             let events = events.lock().expect("no panic");
-            events.iter().map(since).collect()
+            let mut events: Events = events.iter().map(since).collect();
+            events.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+            events
         };
         Recorded {
             starts: since(&starts),
@@ -424,9 +428,25 @@ fn a_connector_whose_run_returned_starts_no_run_until_it_changes() {
 
 /// A node gets its first mesh time 1 s after its hub opened, and the spec that the
 /// mesh uses at that time removes the connector whose run waits to open its status.
+/// The sim polls the run and the removal in a random order, so each seed checks that
+/// no run starts after the removal, and some seed removes the connector first.
 #[test]
 fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
-    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let runs: Vec<(usize, usize)> =
+        (0..16).map(removal_as_the_mesh_time_arrives).collect();
+    for (seed, &(removed, started)) in runs.iter().enumerate() {
+        assert_eq!(started, removed, "seed {seed}");
+    }
+    assert!(runs.contains(&(0, 0)), "{runs:?}");
+}
+
+/// Runs the scene of the test above with `seed`. Gives the count of starts at the
+/// removal and at 10 s.
+fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
+    let mut sim = ::sim::Sim::new(::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    });
     let node = sim.node(::sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
         let starts = Starts::default();
@@ -464,9 +484,10 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
         let probe = definitions(&[("plant.b", "quick", "plant.edge", 0)]);
         placed.extend(probe);
         hub.set_definitions(&placed);
-        // The probe waits for the mesh time before the run does, so it removes the
-        // connector in the instant that the time arrives, before the run polls again.
         let (probe_hub, probe_runs) = (hub.clone(), std::rc::Rc::clone(&runs));
+        let removed = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (probe_starts, probe_removed) =
+            (Arc::clone(&starts), std::rc::Rc::clone(&removed));
         tasks.spawn(async move {
             let config = hub::writer::Config {
                 subject: name("plant.probe"),
@@ -479,12 +500,13 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
             let empty = definitions(&[]);
             probe_hub.set_definitions(&empty);
             probe_runs.borrow_mut().apply(&empty);
+            probe_removed.set(Some(probe_starts.lock().expect("no panic").len()));
         });
         runs.borrow_mut().apply(&placed);
         clock.sleep_until(start + ms(10_000)).await;
         let started = starts.lock().expect("no panic").len();
         drop(runs);
-        started
+        (removed.get().expect("the probe removed it"), started)
     });
-    assert_eq!(run, Ok(0));
+    run.expect("the run ends")
 }
