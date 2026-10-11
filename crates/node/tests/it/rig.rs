@@ -46,7 +46,8 @@ impl Rig {
     /// get the same PID. On Unix, first removes the directory of each test process of
     /// this user that is gone, also when a node that it started still runs there. A
     /// directory in which such a node makes a file during the removal stays until a
-    /// later rig. Its data directory keeps a pool budget of 1 GiB and a disk budget of
+    /// later rig, and one whose PID the OS gave to another process stays while that
+    /// process runs. Its data directory keeps a pool budget of 1 GiB and a disk budget of
     /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter of
     /// the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
