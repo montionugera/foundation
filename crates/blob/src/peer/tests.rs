@@ -113,6 +113,7 @@ fn transport(
 
 /// The requester's node and its session to the server.
 struct Peer {
+    clock: env::clock::Clock,
     pool: Rc<Pool>,
     session: Session,
 }
@@ -241,6 +242,7 @@ where
         let transport = transport(&node, &tasks, REQUESTER, MESSAGE);
         let session = transport.dial(SERVER.public(), &[at]).await.expect("dials");
         let peer = Peer {
+            clock: node.clock(),
             pool: create_pool(),
             session: session.clone(),
         };
@@ -498,8 +500,33 @@ fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
 }
 
 #[test]
-fn a_reset_in_a_body_after_a_get_ends_the_stream_and_stores_nothing() {
+fn a_reset_after_a_reply_ends_the_stream() {
     let absent = Digest::of(b"absent");
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Stream(reset(5))));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[absent]).await;
+            assert_eq!(stream.reply().await, Reply::Absent { digest: absent });
+            let Stream {
+                sender,
+                mut receiver,
+                ..
+            } = stream;
+            sender.reset(Code(5));
+            assert_eq!(receiver.recv().await.err(), Some(reset(0)));
+        },
+    );
+}
+
+#[test]
+fn a_reset_in_a_body_ends_the_stream_and_stores_nothing() {
     let (digest, bytes) = chunk(7, 3000);
     run(
         0,
@@ -514,10 +541,11 @@ fn a_reset_in_a_body_after_a_get_ends_the_stream_and_stores_nothing() {
         },
         move |peer| async move {
             let mut stream = peer.open().await;
-            stream.get(&[absent]).await;
-            assert_eq!(stream.reply().await, Reply::Absent { digest: absent });
             stream.put(digest, 3000).await;
             stream.send(&bytes[..1000]).await;
+            // A reset drops the bytes that the server did not read, so the server
+            // reads the head and the part first.
+            peer.clock.sleep(Span::SECOND).await;
             let Stream {
                 sender,
                 mut receiver,
