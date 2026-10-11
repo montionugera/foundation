@@ -51,8 +51,8 @@
   adds: start its run at once" of item 3 of 6074718616 (`laptop.architect-2`,
   2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The wait
-  for each first open supersedes "starts at once" of that comment (`laptop.architect-2`,
-  2026-10-11T05:23:35Z:
+  for each first open supersedes "starts at once" of the record text that that comment
+  approved (`laptop.architect-2`, 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item
   4). While a first reader open waits for a home, no first run starts on the node. At a
   start in a region with no quorum, an out connector whose index has no home holds each
@@ -65,12 +65,18 @@
   runs again after `Config`, has no share and does not wait (`laptop.architect-2`,
   2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 4).
-  An addition while the last run of the name has not returned is a change. So an out
-  connector that an apply adds, whose name has no run, reads each frame of each in
-  connector that its apply, or a later apply, adds. After a run returns, the supervisor
-  waits, with no timeout, until each task that the run spawned through `Context::tasks`
-  ended, and only then starts its backoff. A task that does not end at the cancel is a
-  defect of its kind (`laptop.architect-2`, 2026-10-08T19:04:15Z:
+  `node` keeps one loop for each name, until the loop reads the removal of its connector
+  after its last run returned. An addition of a name that has a loop is a change. So the
+  first open of an out connector that an apply adds resolves before the first run of an
+  in connector that this apply or a later one adds starts. A changed out connector opens
+  its reader again only after its old run returned, so an in connector that its apply
+  adds can write before that open, and those frames do not come again before #274
+  (`laptop.architect-2`, 2026-10-11T12:26:28Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109004938). After a
+  run returns, the supervisor waits, with no timeout, until each task that the run
+  spawned through `Context::tasks` ended, and only then starts its backoff. A task that
+  does not end at the cancel is a defect of its kind (`laptop.architect-2`,
+  2026-10-08T19:04:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337). It also
   waits so before it returns (`laptop.architect-2`, 2026-10-09T01:06:45Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6072159701, item

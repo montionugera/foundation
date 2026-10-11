@@ -19,9 +19,10 @@ use crate::scope::Scope;
 /// also one that came before `run` returned. So no two runs of one name overlap, also
 /// across a removal and an addition. The first run of a connector that an apply adds,
 /// whose name has no loop, starts only once no first open of such a connector is
-/// pending on the node. So such an out connector reads each frame of each in connector
-/// that its apply, or a later apply, adds. A change, also an addition while the last
-/// run of the name has not returned, opens in the loop of the name and does not wait.
+/// pending on the node. So the first open of such an out connector resolves before the
+/// first run of such an in connector of its apply, or of a later one, starts. A change,
+/// also an addition of a name that has a loop, opens in the loop of the name and does
+/// not wait.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     opens: Rc<Opens>,
