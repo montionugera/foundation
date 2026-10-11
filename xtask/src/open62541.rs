@@ -275,9 +275,10 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 }
 
 /// Builds each file of `sources.txt` in `patches/open62541/` from the copy alone,
-/// with its `flags.txt` and then `-g -O0 -fno-stack-protector`, so a call stays in the
-/// function that holds it in the source, except in a function that the compiler
-/// inlines, and the compiler adds no reference to the canary of the stack.
+/// with its `flags.txt` and then `-g -O0 -fno-stack-protector
+/// -fno-dollars-in-identifiers`, so a call stays in the function that holds it in the
+/// source, except in a function that the compiler inlines, the compiler adds no
+/// reference to the canary of the stack, and no C identifier holds `$`.
 ///
 /// # Errors
 ///
@@ -289,9 +290,10 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 /// any reference to a clock function other than a call, such as its address in code or
 /// data, through which any code can call it, each inlined function, an `#include_next`,
 /// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
-/// is not GCC or that builds for neither x86-64 nor aarch64, a symbol whose name holds
-/// a character other than an ASCII letter, a digit, `_`, `.`, or `$`, and each
-/// instruction whose key the list of its architecture does not admit.
+/// is not GCC or that builds for neither x86-64 nor aarch64, a C identifier that
+/// holds `$`, a symbol whose name holds a character other than an ASCII letter, a
+/// digit, `_`, `.`, or `$`, and each instruction whose key the list of its
+/// architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -810,10 +812,13 @@ fn build<'a>(
             // `./` keeps a source such as `-x.c` or `@x.c` from being an option. Else
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
-            // reference to its random canary is one that the C makes.
+            // reference to its random canary is one that the C makes. With no `$` in
+            // an identifier, no function has the name of an aarch64 mapping symbol,
+            // to which objdump gives no header.
             cc.current_dir(copy)
                 .args(flags.lines())
-                .args(["-g", "-O0", "-fno-stack-protector", "-dumpbase"])
+                .args(["-g", "-O0", "-fno-stack-protector"])
+                .args(["-fno-dollars-in-identifiers", "-dumpbase"])
                 .arg(index.to_string())
                 .args(mode);
             spawn(cc.arg(Path::new(".").join(source)))
@@ -3210,6 +3215,32 @@ End of search list.
                      randomness, or process state, add it to FUNCTION_SYMBOLS with \
                      the reason"
                 ),
+            ])
+        );
+    }
+
+    /// On aarch64, `objdump -d` gives no header to a function named `$x` or `$d`, as
+    /// it gives none to a mapping symbol, so its code reads as code of the function
+    /// before it.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_fails_on_a_c_identifier_that_holds_a_dollar() {
+        let (root, repo, result) = run_after("dollar", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, old + "void $x(void) { abort(); }\n").unwrap();
+        let found = check(&root);
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(
+            found,
+            Err(vec![
+                "cc failed: ./src/util/ua_util.c:17:6: error: stray '$' in program\n   \
+                 17 | void $x(void) { abort(); }\n      |      ^\n"
+                    .to_owned()
             ])
         );
     }
