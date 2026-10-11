@@ -96,7 +96,10 @@ Check:
   test of a hand-written `Debug` impl itself (`testing.md`), with no written reason that
   holds? Name the public call that shows the same behavior. A reason that no public call
   or sim run shows the behavior holds only when you tried to show it through each seam
-  that the crate's tests use, and you list each try. When the PR replaces such a
+  that the crate's tests use, and you list each try. When the test is the only kill of
+  a mutant, its reason holds only when it says why no caller or peer can see the mutant
+  (`testing.md`). A mutant that a caller can see and that no seam of the tests reaches
+  is a finding against the seam. When the PR replaces such a
   compare, or another compare of a whole value, or changes the input or the expected
   value of an assertion, name each part or case that the old assertion checked, and the
   test that now fails when a call changes it. A part or case that no `cargo test` test

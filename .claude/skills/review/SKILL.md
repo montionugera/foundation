@@ -55,6 +55,9 @@ compiles C or C++ links a run of `cargo build -p <crate>` on macOS with each fea
 that compiles it. Each run names its machine and a commit after which no commit changes
 that code. When the author has no such machine, a session on the laptop runs it on
 macOS. For another OS, the author asks `laptop.monitor` for a cloud machine (#15).
+When a `.cargo/mutants.toml` entry names a test on such an OS as the kill of its
+mutants, the run also tests one mutant made by hand in each function that the entry
+covers, and the PR links the run in which each one fails.
 
 When a new PR replaces one under review, close the old one first (`gh pr close <old>
 --comment "Replaced by #<new>"`), and link its round comments in the new round 1
@@ -76,7 +79,8 @@ command outside that worktree. Remove each worktree when its agent returns
    what goes wrong, and the fix. It links each test doc that the `reviewer` report names
    as the reason for a hand mutant (`docs/claude/testing.md`). It ends with four lines.
    First `Deferred:` and `none`, or the issue of each deferred finding, each with the
-   link to the architect's OK in a risk crate. Then `Later steps:` and `none`, or each
+   link to the architect's OK in a risk crate. A later round keeps each deferral of the
+   round before it. Then `Later steps:` and `none`, or each
    later step that a round, an architect review, an architect's ruling, or an issue that
    the PR closes names, each with the link to the open issue or the decisions entry that
    holds it ("Done"). Then `Public surface:` and `none`, or each item that
@@ -88,7 +92,10 @@ command outside that worktree. Remove each worktree when its agent returns
    the line gives it `approval owed` in place of the link until a new approval exists.
    A later round keeps each item of the round before it. Then `Hot path:` as the
    `architecture` report gives it, or, in a round with no `architecture` agent, the
-   `reviewer` report.
+   `reviewer` report. A report that comes after its round comment goes in a new round
+   comment, with its findings. Its range is `<head>..<head>`, so it also runs
+   `reviewer` and skips `breaker` (Round comment). The old round adds the reviewer to
+   its `Reviewers:` line, and links the new comment after its findings.
 3. Fix each finding in this PR, or answer it on the PR. A deferral is an issue that
    states the item, linked in the answer, also when the code is already on `main` or
    another crate does the work. A finding whose fix is a small change in a crate or a
@@ -229,8 +236,9 @@ a commit from which only clean merges of `main` and commits that only apply its
 each round comment names each reviewer its round requires (round 1: the table; a later
 round: `reviewer`, `breaker` unless the check counts no code change in its range,
 `architecture` when "Second round" step 1 asks for it, and `performance` with new
-numbers when its `Hot path:` line names a function), the `Deferred:` line of each round
-comment links the OK of each deferral in a risk crate, the `Public surface:` line of the
+numbers when its `Hot path:` line names a function), the `Deferred:` line of the last
+round comment lists each deferral of every round, each with the link to the OK of its
+architect in a risk crate, the `Public surface:` line of the
 last round comment links the approval of each item, at a SHA after which no commit
 changes the item's surface or the meaning of a ruling
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
