@@ -13,7 +13,7 @@ use control::Gate;
 use control::lease::Lease;
 use delivery::Reader;
 use types::channel::{self, Slot};
-use types::frame::key_set::{self, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{self, Draft, Frame, Label, Path};
 use types::hash;
 use types::time::{Interval, Monotonic, Span, Stamp};
@@ -552,7 +552,7 @@ impl Shard {
         let scratch = &mut self.scratch;
         let mut split = scratch.split.split(&session.set, frame);
         while let Some((group, stamps)) = split.next() {
-            let (claim, _) = session.claim(group);
+            let claim = session.claim(group);
             let index = &mut self.indexes[claim.place];
             let checked = index.check(claim.key, path, stamps, now, mesh);
             scratch.checks.push((group, checked, None));
@@ -560,7 +560,7 @@ impl Shard {
         let places = scratch
             .checks
             .iter()
-            .map(|&(group, ..)| session.claim(group).0.place);
+            .map(|&(group, ..)| session.claim(group).place);
         let recorded = record(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
@@ -864,12 +864,10 @@ impl Shard {
 }
 
 impl Session {
-    /// The writer's claim on the index of `group`, and the index's entry in the key
-    /// set.
-    fn claim(&self, group: u32) -> (Claim, &key_set::Entry) {
+    /// The writer's claim on the index of `group`.
+    fn claim(&self, group: u32) -> Claim {
         let group = usize::try_from(group).expect("invariant: a usize holds a u32");
-        let entry = &self.set.entries()[self.set.groups()[group]];
-        (self.claims[group], entry)
+        self.claims[group]
     }
 }
 
@@ -962,9 +960,9 @@ fn spend<'a>(
 ) -> &'a [Outcome] {
     out.clear();
     for (group, checked, frozen) in checks.drain(..) {
-        let (claim, entry) = session.claim(group);
-        let slot = entry.slot;
+        let claim = session.claim(group);
         let index = &mut indexes[claim.place];
+        let slot = index.slot;
         out.push(match checked {
             // A group with no samples stores nothing, so it needs no room.
             Ok(accepted) if accepted.last().is_none() => {
