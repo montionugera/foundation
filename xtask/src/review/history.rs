@@ -105,32 +105,19 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (from, end, base, newest, merged) = match self.range(from, end)? {
+        let read = match self.range(from, end)? {
             Range::Empty => return Ok(None),
             Range::Unread(phrase) => return Ok(Some(phrase)),
-            Range::Read {
-                from,
-                end,
-                base,
-                newest,
-                merged,
-            } => (from, end, base, newest, merged),
+            Range::Read(read) => read,
         };
-        let code = |path: &str| !text_path(path);
-        if let Some((path, merge)) = self.resolved(&from, &end, &base, code)? {
-            return Ok(Some(format!(
-                "resolves a conflict in `{path}` in `{merge}`"
-            )));
+        if let Some(conflict) = self.conflict(&read, "", |path| !text_path(path))? {
+            return Ok(Some(conflict));
         }
-        if let Some(path) = merged.conflict(code) {
-            return Ok(Some(format!(
-                "has a conflict in `{path}` between its start and the base"
-            )));
-        }
-        if let Some(moved) = self.moved_into_code(&from, &newest, &merged.tree)? {
+        let tree = &read.merged.tree;
+        if let Some(moved) = self.moved_into_code(&read.from, &read.newest, tree)? {
             return Ok(Some(moved));
         }
-        self.first_change(&merged.tree, &end)
+        self.first_change(tree, &read.end)
     }
 
     /// The first change of a public surface in the range `<from>..<end>`, as a
@@ -144,10 +131,9 @@ impl<'a> History<'a> {
     /// the decision `<path>` in `<merge>`", and one that this tree has a conflict in
     /// gives "has a conflict in the decision `<path>` between its start and the base",
     /// each also when the conflict leaves no markers or the range ends with the text of
-    /// the base. `from` and
-    /// `end` are as in `code_change`, with its two phrases: "has `<text>`, which names
-    /// no commit", and "holds the base at more than one newest commit: `<commit>`,
-    /// `<commit>`".
+    /// the base. `from` and `end` are as in `code_change`, with its two phrases: "has
+    /// `<text>`, which names no commit", and "holds the base at more than one newest
+    /// commit: `<commit>`, `<commit>`".
     ///
     /// # Errors
     ///
@@ -157,30 +143,17 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (from, end, base, merged) = match self.range(from, end)? {
+        let read = match self.range(from, end)? {
             Range::Empty => return Ok(None),
             Range::Unread(phrase) => return Ok(Some(phrase)),
-            Range::Read {
-                from,
-                end,
-                base,
-                merged,
-                ..
-            } => (from, end, base, merged),
+            Range::Read(read) => read,
         };
         let decision = |path: &str| path.starts_with(DECISIONS);
-        if let Some((path, merge)) = self.resolved(&from, &end, &base, decision)? {
-            return Ok(Some(format!(
-                "resolves a conflict in the decision `{path}` in `{merge}`"
-            )));
-        }
-        if let Some(path) = merged.conflict(decision) {
-            return Ok(Some(format!(
-                "has a conflict in the decision `{path}` between its start and the base"
-            )));
+        if let Some(conflict) = self.conflict(&read, "the decision ", decision)? {
+            return Ok(Some(conflict));
         }
         let decision = self
-            .diff(&merged.tree, &end)?
+            .diff(&read.merged.tree, &read.end)?
             .into_iter()
             .find(|entry| entry.path.starts_with(DECISIONS.as_bytes()));
         Ok(decision.map(|entry| {
@@ -218,13 +191,38 @@ impl<'a> History<'a> {
         };
         let newest = newest.to_string();
         let merged = self.merged(&from, &newest)?;
-        Ok(Range::Read {
+        Ok(Range::Read(Read {
             from,
             end,
             base,
             newest,
             merged,
-        })
+        }))
+    }
+
+    /// The first conflict of `read` in a path for which `counts` holds, as a phrase
+    /// that names the path after `kind`, or `None`: "resolves a conflict in
+    /// <kind>`<path>` in `<merge>`" for a merge of the base in the range, then "has a
+    /// conflict in <kind>`<path>` between its start and the base".
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn conflict(
+        &self,
+        read: &Read,
+        kind: &str,
+        counts: impl Fn(&str) -> bool,
+    ) -> Result<Option<String>, String> {
+        let resolved = self.resolved(&read.from, &read.end, &read.base, &counts)?;
+        if let Some((path, merge)) = resolved {
+            return Ok(Some(format!(
+                "resolves a conflict in {kind}`{path}` in `{merge}`"
+            )));
+        }
+        Ok(read.merged.conflict(counts).map(|path| {
+            format!("has a conflict in {kind}`{path}` between its start and the base")
+        }))
     }
 
     /// The first conflicted path for which `counts` holds in a merge of the base on
@@ -838,18 +836,22 @@ enum Range {
     /// no commit" for the first of `from` and `end` that names none, or "holds the
     /// base at more than one newest commit: `<commit>`, `<commit>`".
     Unread(String),
-    Read {
-        /// The SHA of `from`.
-        from: String,
-        /// The SHA of `end`.
-        end: String,
-        /// The SHA of the base.
-        base: String,
-        /// The newest commit of the base that `end` holds.
-        newest: String,
-        /// The merge of `from` and `newest`.
-        merged: Merged,
-    },
+    /// A range that the check reads.
+    Read(Read),
+}
+
+/// A range `<from>..<end>` that the check reads.
+struct Read {
+    /// The SHA of `from`.
+    from: String,
+    /// The SHA of `end`.
+    end: String,
+    /// The SHA of the base.
+    base: String,
+    /// The newest commit of the base that `end` holds.
+    newest: String,
+    /// The merge of `from` and `newest`.
+    merged: Merged,
 }
 
 /// Whether `path`, a path as `git` gives it, is a `.md` file, the one kind of file
