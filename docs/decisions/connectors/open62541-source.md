@@ -138,7 +138,10 @@
   writes that line after the flags of the release, and the check fails on a `flags.txt`
   without it. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
-  2026-10-11 07:37 UTC). A `#line` directive or a line marker in a copy file fails the
+  2026-10-11 07:37 UTC). The words "read `$` in the same way" and "no C identifier gives
+  a function": stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). A `#line` directive or a line marker in a copy file fails the
   check, because it moves the file that the include check reads. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,
@@ -154,22 +157,42 @@
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
   2026-10-11 05:48 UTC). Which prefix the key keeps: stated by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106559609,
-  2026-10-11 07:12 UTC). An entry goes in the list only when it reads no clock,
-  randomness, file, network, or process state. Lost: a deny list of such instructions,
-  which passes one that it does not name, such as one of a later extension. Until #2330,
-  the check passes such a builtin, and review of each copy PR covers it. Decided by
+  2026-10-11 07:12 UTC). An entry goes in the list only when its instruction reads
+  registers, flags, and memory, and no other state. One exception is the thread pointer,
+  which the thread-local state of the copy needs, and which is an address, as those of
+  the allocator are: `mrs tpidr_el0` on aarch64, and on x86-64 a memory operand through
+  `fs`, which the key does not keep. The check does not see what the memory that an
+  instruction reads holds. So a read at a fixed place from the thread pointer passes on
+  the two architectures. On x86-64 with glibc, the stack guard is at such a place
+  (`fs:0x28`). From C that names no address, a compiler makes such a read only for a
+  thread-local variable and, on x86-64 with glibc, for the stack protector, which the
+  check builds without. A read of another place from the thread pointer in the C of the
+  copy is an edit made to hide, and review of each copy PR covers it. Lost: a key that
+  keeps the segment (`mov fs:`). The thread-local state of the copy needs its entry,
+  which then admits each place from the thread pointer, as `mrs tpidr_el0` does. Lost: a
+  key by the place (`fs:0x28`), a deny list of the places of one libc. The thread
+  pointer: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107930295,
+  2026-10-11 10:10 UTC, and, for the sentences on a fixed place,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522, 2026-10-11
+  10:30 UTC). Lost: a deny list of the instructions that read a clock or randomness,
+  which passes one that it does not name, such as one of a later extension. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
-  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided
-  by `laptop.director`
+  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided by
+  `laptop.director`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060613260,
   2026-10-08 13:10 UTC). `cargo xtask open62541` puts each flag of a compile in
-  `flags.txt` (`-D`, `-I`, `-std`, and `CODE_FLAGS`, the flags that change the code)
-  or in `LEFT_OUT`, a closed list with the reason of each, and fails on any other
-  flag. `build.rs` and the check both read `flags.txt`, so the check reads objects
-  compiled with the flags of the connector. Decided by `laptop.architect-2`
+  `flags.txt` (`-D`, `-I`, `-std`, and `CODE_FLAGS`, the flags that change the code) or
+  in `LEFT_OUT`, a closed list with the reason of each, and fails on any other flag.
+  `build.rs` and the check both read `flags.txt`, so the check reads objects compiled
+  with each flag of `flags.txt`, as the objects of the connector are. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
-  2026-10-08 13:31 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
+  2026-10-08 13:31 UTC). The words "each flag of `flags.txt`": stated by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522,
+  2026-10-11 10:30 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
   flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`
   crate also gives each compile of the connector flags from the profile and the target
   of the Rust build, such as the optimization level, `-fPIC`, and `-g`. The objects of
