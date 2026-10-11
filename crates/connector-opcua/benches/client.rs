@@ -10,7 +10,7 @@ use std::future::{Future as _, poll_fn};
 use std::pin::pin;
 use std::time::{Duration, Instant};
 
-use connector_opcua::bench::Server;
+use connector_opcua::bench::client::Server;
 use sim::Sim;
 
 const WARMUP: usize = 10;

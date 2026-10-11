@@ -9,7 +9,7 @@
 use std::future::{Future as _, poll_fn};
 use std::pin::pin;
 
-use connector_opcua::bench::{Client, Manager, Server};
+use connector_opcua::bench::{Client, Manager, client};
 use sim::Sim;
 use types::time::Span;
 
@@ -142,7 +142,7 @@ fn client_reads() -> Vec<u64> {
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
-        let body = async |server: &Server| {
+        let body = async |server: &client::Server| {
             let mut client = server.connect().await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
@@ -160,7 +160,7 @@ fn client_reads() -> Vec<u64> {
             client.close().await;
             counts.split_off(1)
         };
-        Server::scope(node.clock(), node.net(), address, body).await
+        client::Server::scope(node.clock(), node.net(), address, body).await
     };
     sim.run_on(&node, run).expect("the run ends")
 }

@@ -8,7 +8,7 @@
 
 use std::ffi::c_void;
 
-use connector_opcua::bench::{Client, Server};
+use connector_opcua::bench::{Client, client};
 use sim::Sim;
 
 #[global_allocator]
@@ -141,7 +141,7 @@ fn a_client_frees_what_it_holds() {
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
-        let body = async |server: &Server| {
+        let body = async |server: &client::Server| {
             let mut held = Vec::new();
             for _ in 0..4 {
                 let mut client = server.connect().await;
@@ -151,7 +151,7 @@ fn a_client_frees_what_it_holds() {
             }
             held
         };
-        Server::scope(node.clock(), node.net(), address, body).await
+        client::Server::scope(node.clock(), node.net(), address, body).await
     };
     let held = sim.run_on(&node, run).expect("the run ends");
     assert_eq!(

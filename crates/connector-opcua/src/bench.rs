@@ -1,10 +1,12 @@
-//! Runs the event loop of open62541 alone, a connection manager with a server and
-//! clients on it, and a server with clients that each have their own manager, for
-//! benchmarks and allocation tests. Not part of the contract of the crate.
+//! Runs the event loop of open62541 alone, and a connection manager with a server and
+//! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
+//! clients that each have their own manager. Not part of the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::cell::{Cell, RefCell};
+pub mod client;
+
+use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -19,11 +21,10 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
-use crate::client::{self, Node};
 use crate::connection;
 use crate::event::Loop;
 use crate::ffi::{self, Status};
-use crate::server;
+use crate::server::Server;
 
 /// A client of open62541 on its own event loop, which also runs a count of repeated
 /// timers that do nothing.
@@ -106,7 +107,7 @@ impl Drop for Client {
 /// A timer callback that does nothing.
 unsafe extern "C" fn idle(_: *mut c_void, _: *mut c_void) {}
 
-/// The port of the server of a [`Manager`].
+/// The port of each test server.
 const PORT: u16 = 4840;
 
 /// The time that a [`Manager`] gives its clients to connect. A connect has a timeout
@@ -118,7 +119,7 @@ const CONNECT_TIMEOUT: Span = Span::from_nanos(60_000_000_000);
 /// loop. The first client reads; the others send nothing.
 pub struct Manager {
     clients: Vec<NonNull<ffi::Client>>,
-    server: server::Server,
+    server: Server,
     /// C holds its address while a read waits.
     answers: Box<Answers>,
     /// Only `close` drops it, after it deletes the server and the clients on its loop.
@@ -180,7 +181,7 @@ impl Manager {
         assert_eq!(status, Status::GOOD, "open62541 refused the loop");
         // SAFETY: only `close` drops the manager, after it closes the server. A panic
         // before then leaks it.
-        let server = unsafe { server::Server::start(&manager, c"", sessions) };
+        let server = unsafe { Server::start(&manager, c"", sessions) };
         let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
         let clients = (0..=idle)
             .map(|_| {
@@ -282,7 +283,7 @@ impl Manager {
     ///
     /// # Panics
     ///
-    /// If a channel is not closed after the drive of [`server::Server::close`], as the delete
+    /// If a channel is not closed after the drive of [`Server::close`], as the delete
     /// of its client would then wait for a close that nothing drives.
     async fn close(mut self) {
         for client in &self.clients {
@@ -403,132 +404,6 @@ unsafe extern "C" fn answer(
     }
 }
 
-/// The Double variable of a [`Server`].
-const VALUE: Node = Node {
-    namespace: 1,
-    key: 1000,
-};
-/// The value of [`VALUE`].
-const DOUBLE: f64 = 1.5;
-/// The sessions of a [`Server`].
-const SESSIONS: u16 = 4;
-
-/// A test server of open62541 on its own connection manager over `env::net`, with a
-/// Double variable, for the clients of [`Server::connect`].
-pub struct Server {
-    clock: Clock,
-    net: Net,
-    url: String,
-    /// Gives the seed of each client. The loop of a client seeds the random numbers of
-    /// open62541 on its thread, which the server also draws from, so each has its own.
-    rng: RefCell<Rng>,
-}
-
-impl Server {
-    /// Starts the server on `clock` and `net`, with its listener on `address` and port
-    /// 4840 and room for 4 sessions, runs `body` while the server runs, then closes
-    /// the server.
-    ///
-    /// # Panics
-    ///
-    /// If the port is taken, or if open62541 refuses the server or a step of its
-    /// close. A panic in `body` leaks the server and its manager.
-    pub async fn scope<T>(
-        clock: Clock,
-        net: Net,
-        address: IpAddr,
-        body: impl AsyncFnOnce(&Self) -> T,
-    ) -> T {
-        let local = SocketAddr::new(address, PORT);
-        let mut rng = Rng::from_seed(0);
-        let manager = ManuallyDrop::new(
-            connection::Manager::listening(
-                Clock::clone(&clock),
-                Net::clone(&net),
-                local,
-                u32::from(SESSIONS),
-                &mut rng,
-            )
-            .expect("the port is free"),
-        );
-        // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks the manager.
-        let server = unsafe { server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(VALUE, DOUBLE);
-        let this = Self {
-            clock,
-            net,
-            url: format!("opc.tcp://{local}"),
-            rng: RefCell::new(rng),
-        };
-        let value = {
-            let mut serve = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut body = pin!(body(&this));
-            poll_fn(|cx| {
-                assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
-                body.as_mut().poll(cx)
-            })
-            .await
-        };
-        server.close(&manager).await;
-        drop(ManuallyDrop::into_inner(manager));
-        value
-    }
-
-    /// Connects a client to the server, on its own connection manager.
-    ///
-    /// # Panics
-    ///
-    /// If the connect fails, with its status.
-    pub async fn connect(&self) -> Reader {
-        let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        match client::Client::connect(clock, net, rng, &self.url).await {
-            Ok(client) => Reader(client),
-            Err(status) => panic!("a connect failed: {status:?}"),
-        }
-    }
-}
-
-impl std::fmt::Debug for Server {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Server")
-            .field("url", &self.url)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A client of a [`Server`], as the kind of OPC UA uses it.
-pub struct Reader(client::Client);
-
-impl Reader {
-    /// Reads the Double of the server.
-    ///
-    /// # Panics
-    ///
-    /// If the read fails, with its status, or gives another value.
-    pub async fn read(&mut self) {
-        match self.0.read(VALUE).await {
-            Ok(value) => assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}"),
-            Err(status) => panic!("a read failed: {status:?}"),
-        }
-    }
-
-    /// Closes the session and the connection of the client.
-    pub async fn close(self) {
-        self.0.close().await;
-    }
-}
-
-impl std::fmt::Debug for Reader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Reader").finish_non_exhaustive()
-    }
-}
-
 /// Runs `future` to its end, and gives the panic of a poll in place of a value.
 async fn caught<F: Future>(future: F) -> std::thread::Result<F::Output> {
     let mut future = pin!(future);
@@ -549,7 +424,7 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager, Server, caught};
+    use super::{Client, Manager, caught};
     use crate::ffi;
 
     /// The delay of the default link.
@@ -792,28 +667,6 @@ mod tests {
             assert_eq!(clock.now() - start, Span::from_nanos(60_000_000_000));
             let message = panic.downcast_ref::<String>().map(String::as_str);
             assert_eq!(message, Some("0 of 1 clients connected in 1m"));
-        })
-        .expect("the run ends");
-    }
-
-    #[test]
-    fn a_reader_reads_the_double_of_its_server() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        sim.run_on(&node, move |node, _| async move {
-            let address = node.addresses()[0];
-            let body = async |server: &Server| {
-                let mut reader = server.connect().await;
-                reader.read().await;
-                let debug = format!("{server:?} {reader:?}");
-                reader.close().await;
-                debug
-            };
-            let debug = Server::scope(node.clock(), node.net(), address, body).await;
-            assert_eq!(
-                debug,
-                format!(r#"Server {{ url: "opc.tcp://{address}:4840", .. }} Reader {{ .. }}"#)
-            );
         })
         .expect("the run ends");
     }
