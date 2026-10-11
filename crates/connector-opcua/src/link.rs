@@ -982,60 +982,62 @@ fn the_rust_draws_nothing_from_the_generator_of_the_copy() {
     assert!(drawn.is_empty(), "the Rust names {drawn:?}");
 }
 
-/// Outside tests, the Rust builds no server and names no `UA_random_seed`, so it
-/// reaches none of `setDefaultConfig`, `interruptServer`, and `UA_random_seed`, which
-/// `cargo xtask open62541` lets call the global clock.
+/// Each identifier for which `named` holds in the production code of the crate at
+/// `root`, as [`named_in`] gives it: the Rust of [`named_outside_tests`], and each `.c`
+/// and `.h` file of `src/` but the test server `src/server.c`, which only a build with
+/// `sim` compiles.
+fn named_in_production(
+    root: &std::path::Path,
+    named: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let src = root.join("src");
+    let server = src.join("server.c");
+    let mut found = named_outside_tests(root, &named);
+    for path in [files_under(&src, "c"), files_under(&src, "h")].concat() {
+        if path != server {
+            found.extend(named_in(&path, &named));
+        }
+    }
+    found
+}
+
+/// The production code builds no server and names no `UA_random_seed`, so it reaches
+/// none of `setDefaultConfig`, `interruptServer`, and `UA_random_seed`, which `cargo
+/// xtask open62541` lets call the global clock.
 #[test]
-fn the_rust_outside_tests_builds_no_server() {
-    let named = named_outside_tests(&root(), |name| {
+fn the_production_code_builds_no_server() {
+    let named = named_in_production(&root(), |name| {
         name.starts_with("UA_Server")
             || ["shim_server_new", "UA_random_seed"].contains(&name)
     });
-    assert!(named.is_empty(), "the Rust outside tests names {named:?}");
-}
-
-/// Each name of a server in a `.c` or `.h` file under `dir` but `dir/server.c`, as
-/// [`named_in`] gives it.
-fn servers_in_c(dir: &std::path::Path) -> Vec<String> {
-    let server = dir.join("server.c");
-    let files = [files_under(dir, "c"), files_under(dir, "h")].concat();
-    files
-        .into_iter()
-        .filter(|path| *path != server)
-        .flat_map(|path| named_in(&path, |name| name.starts_with("UA_Server")))
-        .collect()
-}
-
-/// Only a build with `sim` compiles `server.c`, and no other C of `src/` names a
-/// server, so no production client reaches `setDefaultConfig`.
-#[test]
-fn the_c_outside_the_server_file_names_no_server() {
-    let named = servers_in_c(&src());
-    assert!(named.is_empty(), "the C outside server.c names {named:?}");
+    assert!(named.is_empty(), "the production code names {named:?}");
 }
 
 #[test]
-fn the_c_scan_names_each_server_outside_the_server_file() {
+fn the_production_scan_reads_the_c_but_the_server_file() {
     let root = create_tree(
-        "c",
+        "production",
         &[
+            ("src/lib.rs", "fn named() {}"),
             (
-                "shim.c",
+                "src/shim.c",
                 "UA_Client *shim_client_new(UA_EventLoop *el) {\n    \
                  UA_ServerConfig_setMinimal(&config, 4840, NULL);\n",
             ),
-            ("server.c", "UA_Server *shim_server_new(void);"),
-            ("alloc.h", "UA_Server *server;"),
+            ("src/server.c", "UA_Server *shim_server_new(void);"),
+            ("src/alloc.h", "UA_Server *server;"),
         ],
     );
+    let server = |name: &str| name.starts_with("UA_Server") || name == "named";
     assert_eq!(
-        servers_in_c(&root),
+        named_in_production(&root, server),
         [
+            at(&root, "src/lib.rs"),
             format!(
                 "{}:2: UA_ServerConfig_setMinimal",
-                root.join("shim.c").display()
+                root.join("src/shim.c").display()
             ),
-            format!("{}:1: UA_Server", root.join("alloc.h").display()),
+            format!("{}:1: UA_Server", root.join("src/alloc.h").display()),
         ]
     );
 }
@@ -1085,18 +1087,14 @@ fn the_shim_refuses_encryption() {
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
 /// open62541`: the default config of a client with encryption off has only the policy
-/// `None`, and outside tests, neither the Rust nor the C under `src/` names a security
-/// policy.
+/// `None`, and the production code names no security policy.
 #[test]
 fn the_rust_and_the_shim_give_a_client_no_security_policy() {
     let policy = |name: &str| {
         name.starts_with("UA_SecurityPolicy")
             || ["securityPolicies", "authSecurityPolicies"].contains(&name)
     };
-    let mut named = named_outside_tests(&root(), policy);
-    for path in [files_under(&src(), "c"), files_under(&src(), "h")].concat() {
-        named.extend(named_in(&path, policy));
-    }
+    let named = named_in_production(&root(), policy);
     assert!(named.is_empty(), "names {named:?}");
 }
 
