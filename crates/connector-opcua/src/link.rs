@@ -665,13 +665,16 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Each line of `text` with its number, joined to the next while it ends in `\`, as
-/// a C line splice and a Rust string continuation are. A Rust string skips the
-/// whitespace at the start of the next line, so `rust` trims it.
+/// a C line splice and a Rust string continuation are. A Rust string skips each blank
+/// line and the whitespace at the start of the next line, so `rust` skips them too.
 fn joined(text: &str, rust: bool) -> Vec<(usize, String)> {
     let mut lines: Vec<(usize, String)> = Vec::new();
     for (number, line) in (1..).zip(text.lines()) {
         match lines.last_mut() {
             Some((_, last)) if last.ends_with('\\') => {
+                if rust && line.trim_start().is_empty() {
+                    continue;
+                }
                 last.pop();
                 last.push_str(if rust { line.trim_start() } else { line });
             }
@@ -1068,7 +1071,7 @@ fn the_production_scan_joins_a_line_that_ends_in_a_backslash() {
         &[
             (
                 "src/lib.rs",
-                "unsafe extern \"C\" {\n    #[link_name = \"UA_random_\\\n        \
+                "unsafe extern \"C\" {\n    #[link_name = \"UA_random_\\\n\n        \
                  seed\"]\n    fn draw(value: u64);\n}\n",
             ),
             (
