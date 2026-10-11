@@ -4780,24 +4780,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_with_no_block_of_one_sector_does_not_open() {
-        solo(|node, tasks| async move {
-            let budget = block::Config::new(0).expect("the budget fits");
-            let memory = block::Heap::new(budget.reservation());
-            let config = Config {
-                pool: Rc::new(Pool::new(budget, memory)),
-                ..config(&node, &tasks, 1, &IDS, &IDS).await
-            };
-            let cause = block::Error::TooLarge {
-                requested: 512,
-                largest: 0,
-            };
-            let error = Error::Log(log::Error::Pool(cause));
-            assert_eq!(Mesh::start(config).await.err(), Some(error));
-        });
-    }
-
-    #[test]
     fn memory_that_the_system_refuses_holds_a_message_until_it_commits() {
         solo(|node, tasks| async move {
             let budget = block::Config::new(4 << 20).expect("the budget fits");
@@ -5850,6 +5832,76 @@ mod tests {
                 assert_eq!(Mesh::start(config).await.err(), Some(failed));
             });
         }
+
+        #[test]
+        fn refuses_a_pool_with_no_block_of_one_sector() {
+            solo(|node, tasks| async move {
+                let budget = block::Config::new(0).expect("the budget fits");
+                let memory = block::Heap::new(budget.reservation());
+                let config = Config {
+                    pool: Rc::new(Pool::new(budget, memory)),
+                    ..config(&node, &tasks, 1, &IDS, &IDS).await
+                };
+                let cause = block::Error::TooLarge {
+                    requested: 512,
+                    largest: 0,
+                };
+                let error = Error::Log(log::Error::Pool(cause));
+                assert_eq!(Mesh::start(config).await.err(), Some(error));
+            });
+        }
+
+        #[test]
+        fn keeps_the_founding_and_the_log_through_a_power_cut_right_after() {
+            let names = |names: &[&str]| Ok(names.iter().map(PathBuf::from).collect());
+            for seed in 0..32 {
+                let mut sim = Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let node = sim.node(sim::node::Config::default());
+                sim.run_on(&node, |node, tasks| async move {
+                    let config = Config {
+                        dir: "region".into(),
+                        ..config(&node, &tasks, 1, &[1], &[1]).await
+                    };
+                    Mesh::start(config).await.unwrap();
+                })
+                .unwrap();
+                sim.crash(&node, Crash::Power);
+                let listed = sim
+                    .run_on(&node, |node, _| async move {
+                        let files = node.files();
+                        (
+                            files.list(Path::new("")).await,
+                            files.list(Path::new("region")).await,
+                        )
+                    })
+                    .unwrap();
+                let kept = (
+                    names(&[BLOB, "region"]),
+                    names(&[crate::driver::founding::FILE, LOG, used::SPEC]),
+                );
+                assert_eq!(listed, kept, "seed {seed}");
+            }
+        }
+
+        #[test]
+        fn puts_the_log_in_the_directory_of_the_config() {
+            solo(|node, tasks| async move {
+                let dir = Path::new("region");
+                let at = async || Config {
+                    dir: dir.into(),
+                    ..config(&node, &tasks, 1, &[1], &[1]).await
+                };
+                let _mesh = Mesh::start(at().await).await.unwrap();
+                let busy = Mesh::start(at().await).await.err();
+                let path = dir.join(LOG).join("lock");
+                let cause = log::Error::Files(files::Error::Busy { path });
+                assert_eq!(busy, Some(Error::Log(cause)));
+                assert_eq!(open(&node, &tasks, 1, &[1], &[1]).await.err(), None);
+            });
+        }
     }
 
     #[test]
@@ -5994,58 +6046,6 @@ mod tests {
             assert_eq!(watch.next().await, Ok(None));
             assert_eq!(watch.next().await, Err(cause));
             mesh.ended().await;
-        });
-    }
-
-    #[test]
-    fn a_power_cut_right_after_the_open_keeps_the_founding_and_the_log() {
-        let names = |names: &[&str]| Ok(names.iter().map(PathBuf::from).collect());
-        for seed in 0..32 {
-            let mut sim = Sim::new(sim::Config {
-                seed,
-                ..sim::Config::default()
-            });
-            let node = sim.node(sim::node::Config::default());
-            sim.run_on(&node, |node, tasks| async move {
-                let config = Config {
-                    dir: "region".into(),
-                    ..config(&node, &tasks, 1, &[1], &[1]).await
-                };
-                Mesh::start(config).await.unwrap();
-            })
-            .unwrap();
-            sim.crash(&node, Crash::Power);
-            let listed = sim
-                .run_on(&node, |node, _| async move {
-                    let files = node.files();
-                    (
-                        files.list(Path::new("")).await,
-                        files.list(Path::new("region")).await,
-                    )
-                })
-                .unwrap();
-            let kept = (
-                names(&[BLOB, "region"]),
-                names(&[super::founding::FILE, LOG, used::SPEC]),
-            );
-            assert_eq!(listed, kept, "seed {seed}");
-        }
-    }
-
-    #[test]
-    fn the_log_is_in_the_directory_of_the_config() {
-        solo(|node, tasks| async move {
-            let dir = Path::new("region");
-            let at = async || Config {
-                dir: dir.into(),
-                ..config(&node, &tasks, 1, &[1], &[1]).await
-            };
-            let _mesh = Mesh::start(at().await).await.unwrap();
-            let busy = Mesh::start(at().await).await.err();
-            let path = dir.join(LOG).join("lock");
-            let cause = log::Error::Files(files::Error::Busy { path });
-            assert_eq!(busy, Some(Error::Log(cause)));
-            assert_eq!(open(&node, &tasks, 1, &[1], &[1]).await.err(), None);
         });
     }
 
