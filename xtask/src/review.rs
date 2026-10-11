@@ -720,9 +720,9 @@ fn unokayed(deferred: &str) -> Option<String> {
 fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
     value.char_indices().filter_map(move |(at, _)| {
-        let start = at..(at >= end).then(|| issue(value, at)).flatten()?;
-        end = start.end;
-        Some(start)
+        let place = at..(at >= end).then(|| issue(value, at)).flatten()?;
+        end = place.end;
+        Some(place)
     })
 }
 
