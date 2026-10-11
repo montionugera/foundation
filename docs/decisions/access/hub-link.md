@@ -15,8 +15,9 @@
   first byte of the response, so a client that sends its next request when a reply
   ends never gets `MALFORMED`. `Reply::send` panics on a body over `BODY_BYTES_MAX`, a
   precondition that the maker of the body checks. Each order error names its cause,
-  though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request stream
-  before an admitted hello) and `Pending` (a request while one waits for its reply).
+  though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request or read
+  stream before an admitted hello) and `Pending` (a request while one waits for its
+  reply).
   A message of the wrong kind for its stream, such as a hello on a request stream, is
   `serve::Error::Client` with `wire::hub::client::Error::Kind` (`laptop.architect`,
   2026-10-08T15:38:46Z,
@@ -53,11 +54,11 @@
   Supersedes the name `Hub::rules` of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066050140.
   A rule of the client wire, which each SDK follows: a program sends the header of its
-  first request stream once the challenge after its hello comes. The node sends it
-  only after it admits the hello, so this rule also makes the hello stream the first
+  first request or read stream once the challenge after its hello comes. The node sends
+  it only after it admits the hello, so this rule also makes the hello stream the first
   that `Link::serve` gets, in any order of the headers. The node does not check the
   rule. A program that breaks it gets `Unadmitted`, `Client` with `Kind`, or a served
-  request (`laptop.architect`, 2026-10-08T19:22:10Z,
+  request or read (`laptop.architect`, 2026-10-08T19:22:10Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6067359431).
   Supersedes the result for a program that breaks the rule of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066239520.
@@ -89,11 +90,12 @@
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6069608203).
   Supersedes the `node::Config::key` clause of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066571400.
-  The request bodies that one hub holds are at most `hub::serve::BODIES_BYTES_MAX`, 2 ×
-  `BODY_BYTES_MAX` (32 MiB). A link reserves a body's declared length when it decodes
-  the `Request`, before it allocates or reads a byte of the body, and the reservation
-  ends when the caller sends or drops its `Reply`. After that, the caller holds the
-  body. A body that does not fit stops with `BUSY` (`serve::Error::Bodies`), and the
+  The request bodies and read opens that one hub holds are at most
+  `hub::serve::BODIES_BYTES_MAX`, 2 × `BODY_BYTES_MAX` (32 MiB). A link reserves a
+  body's declared length when it decodes the `Request`, before it allocates or reads a
+  byte of the body, and the reservation ends when the caller sends or drops its `Reply`.
+  After that, the caller holds the body. A body that does not fit stops with `BUSY`
+  (`serve::Error::Bodies`), and the
   link takes its next request. Lost: pool blocks for a body, which take the blocks that
   live writes need; a cap on links as the bound, 16 MiB times the links. Decided by
   `laptop.architect` (2026-10-08T21:34:56Z,
@@ -124,23 +126,26 @@
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483).
   A read takes no request turn: a link serves its reads beside its one open request.
   The transport session's `streams_max` bounds the reads of a link; there is no
-  `READS_MAX`. The node holds the open of a read before it checks its signature, so
-  the open reserves its length under `BODIES_BYTES_MAX` and the subject's share, as a
-  request body does, until the node decoded it; an open that does not fit stops with
-  `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an unnamed
-  `hub::reader::Reader` for the read, at this node or at the home of another node.
+  `READS_MAX`. A program holds one of the 256 places of a node (`PLACES` in
+  `node::route`) for each session, so a node holds at most 256 × `streams_max` reads of
+  programs, each with the places that its selector matches. The node holds the open of a
+  read before it checks its signature, so the open reserves its length under
+  `BODIES_BYTES_MAX` and the subject's share, as a request body does, until the node
+  decoded it; an open that does not fit stops with `BUSY` (`serve::Error::Share` or
+  `Bodies`). The node opens an unnamed `hub::reader::Reader` for the read, at this node
+  or at the home of another node.
   `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
   and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
-  exhaustive `match`: `UNKNOWN` for a selector that matches no channel or a removed
-  channel, `MALFORMED` for channels on more than one index, `BUSY` for the pool, and
-  `FAILED` for the buffer, the mesh, and the path to the home (`Stream`, `Transport`,
-  `Message`, `Frame`, `Credit`). `Unsynced`, `Remote`, and `Replaced` cannot come for
-  an unnamed reader, so their arms panic. Decided by `laptop.architect`
+  exhaustive `match`: `UNKNOWN` for a selector that matches no channel, `MALFORMED` for
+  channels on more than one index, and `FAILED` for the path to the home (`Stream`,
+  `Transport`, `Message`, `Frame`, `Credit`). `Unsynced`, `Remote`, and `Replaced`
+  cannot come for an unnamed reader, so their arms panic. Decided by `laptop.architect`
   (2026-10-10T23:31:47Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items
-  2, 5, and 6). A refusal of the home keeps its code, but its `MALFORMED` is `FAILED`:
-  it tells of the path between the nodes, not of the program's read. A complete read
-  that misses a frame gets `Behind` and the finish of the stream, as a HUB WIRE session
-  does, so the arm of `Ended::Behind` panics too (box1.builder-2, 2026-10-11T13:16:54Z,
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6109426348, sent
-  to `laptop.architect`).
+  2, 5, and 6). The ruling approved the plan
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402),
+  which gives the other codes (item 6): `UNKNOWN` for a removed channel, `BUSY` for
+  the pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal
+  for a refusal of the home. A complete read that misses a frame gets `Behind` and the
+  finish of the stream (item 3), as a HUB WIRE session does, so the arm of
+  `Ended::Behind` panics too.
