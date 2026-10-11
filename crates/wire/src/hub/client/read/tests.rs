@@ -3,9 +3,9 @@ use types::name;
 use types::sample::{self, Scalar, Sides};
 
 use super::*;
-use crate::hub::Unread;
 use crate::hub::client::First;
 use crate::hub::client::Request;
+use crate::hub::text;
 
 fn read(length: u64) -> Read {
     Read {
@@ -47,12 +47,12 @@ fn encode_places(places: Places) -> Vec<u8> {
     out
 }
 
-fn not_utf8<E>(bytes: &[u8]) -> Unread<E> {
-    Unread::Utf8(std::str::from_utf8(bytes).unwrap_err())
+fn not_utf8<E>(bytes: &[u8]) -> text::Error<E> {
+    text::Error::Utf8(std::str::from_utf8(bytes).unwrap_err())
 }
 
 fn unselected(error: name::Error) -> Error {
-    Error::Selector(Unread::Parse(Box::new(error)))
+    Error::Selector(text::Error::Parse(Box::new(error)))
 }
 
 fn encode_run(places: &[Place]) -> Vec<u8> {
@@ -367,13 +367,13 @@ mod run {
             (
                 17,
                 b'x',
-                Error::Sample(Unread::Parse(sample::Error::Syntax)),
+                Error::Sample(text::Error::Parse(sample::Error::Syntax)),
             ),
             (17, 0xff, Error::Sample(not_utf8(&[0xff, b'8']))),
             (
                 20,
                 b'*',
-                Error::Name(Unread::Parse(Box::new(name::Error::Wildcard {
+                Error::Name(text::Error::Parse(Box::new(name::Error::Wildcard {
                     input: "*".into(),
                 }))),
             ),
@@ -393,7 +393,7 @@ mod run {
         bytes[19] = 5;
         assert_eq!(
             place::decode(&bytes),
-            Err(Error::Sample(Unread::Parse(sample::Error::Syntax)))
+            Err(Error::Sample(text::Error::Parse(sample::Error::Syntax)))
         );
     }
 }

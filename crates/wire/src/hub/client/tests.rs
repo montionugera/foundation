@@ -3,13 +3,14 @@ use types::name;
 
 use super::*;
 
-/// The cause of `bytes` that are not UTF-8.
-fn unnamed(error: name::Error) -> Unread<Box<name::Error>> {
-    Unread::Parse(Box::new(error))
+/// The cause of a name that does not parse.
+fn unnamed(error: name::Error) -> text::Error<Box<name::Error>> {
+    text::Error::Parse(Box::new(error))
 }
 
-fn not_utf8(bytes: &[u8]) -> Unread<Box<name::Error>> {
-    Unread::Utf8(std::str::from_utf8(bytes).unwrap_err())
+/// The cause of `bytes` that are not UTF-8.
+fn not_utf8(bytes: &[u8]) -> text::Error<Box<name::Error>> {
+    text::Error::Utf8(std::str::from_utf8(bytes).unwrap_err())
 }
 
 const KEY: [u8; 32] = [

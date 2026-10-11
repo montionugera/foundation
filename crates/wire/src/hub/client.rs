@@ -48,7 +48,7 @@ use types::name::Name;
 use types::node;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN, Unread};
+use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN, text};
 use crate::common::{Fields, Writer, body};
 use crate::header::MALFORMED;
 
@@ -280,7 +280,7 @@ impl Signed {
         let expires = stamp(fields.take()?);
         let signature = fields.take()?;
         fields.end()?;
-        let subject: Name = Unread::read(subject).map_err(Error::Subject)?;
+        let subject: Name = text::Error::read(subject).map_err(Error::Subject)?;
         let key = PublicKey::new(key).map_err(|_small| Error::SmallOrder)?;
         Ok(Self {
             hello: Hello {

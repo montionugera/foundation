@@ -6,7 +6,7 @@ use types::sample::Type;
 
 use super::{Body, READ, fields};
 use crate::common::{Fields, Writer};
-use crate::hub::{COMPLETE, Error, LATEST, Unread};
+use crate::hub::{COMPLETE, Error, LATEST, text};
 
 /// The most bytes of the open of a read: 64 KiB.
 pub const OPEN_BYTES_MAX: u64 = 1 << 16;
@@ -150,11 +150,11 @@ impl Open {
         while !fields.is_empty() {
             let len = u16::from_le_bytes(fields.take()?);
             let pattern = std::str::from_utf8(fields.take_slice(usize::from(len))?)
-                .map_err(|error| Error::Selector(Unread::Utf8(error)))?;
+                .map_err(|error| Error::Selector(text::Error::Utf8(error)))?;
             patterns.push(pattern);
         }
         let select = Selector::new(patterns)
-            .map_err(|error| Error::Selector(Unread::Parse(Box::new(error))))?;
+            .map_err(|error| Error::Selector(text::Error::Parse(Box::new(error))))?;
         Ok(Self { mode, select })
     }
 }
@@ -247,7 +247,7 @@ pub mod place {
 
     use super::Place;
     use crate::common::{Fields, Writer};
-    use crate::hub::{Error, Unread};
+    use crate::hub::{Error, text};
 
     /// `places` cut into the messages of the run, in order: each holds as many whole
     /// places as fit in `max` bytes. A place is at most 300 bytes.
@@ -329,10 +329,10 @@ pub mod place {
         while !fields.is_empty() {
             let key = u128::from_le_bytes(fields.take()?);
             let [len] = fields.take()?;
-            let sample = Unread::read(fields.take_slice(usize::from(len))?)
+            let sample = text::Error::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Sample)?;
             let [len] = fields.take()?;
-            let name = Unread::read(fields.take_slice(usize::from(len))?)
+            let name = text::Error::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Name)?;
             places.push(Place {
                 key: channel::Key::from_u128(key),

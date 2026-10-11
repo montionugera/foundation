@@ -30,9 +30,9 @@
 pub mod client;
 mod home;
 mod reader;
+pub mod text;
 
 use std::fmt;
-use std::str::{FromStr, Utf8Error};
 
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
@@ -583,7 +583,7 @@ pub enum Error {
         kind: u8,
     },
     /// The subject of a hello is not a name.
-    Subject(Unread<Box<name::Error>>),
+    Subject(text::Error<Box<name::Error>>),
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
@@ -597,7 +597,7 @@ pub enum Error {
     },
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
-    Selector(Unread<Box<name::Error>>),
+    Selector(text::Error<Box<name::Error>>),
     /// The places of a read name an index place that is not below their count.
     Index {
         /// The place of the index.
@@ -606,9 +606,9 @@ pub enum Error {
         count: u32,
     },
     /// The sample type of a place of a read does not read.
-    Sample(Unread<sample::Error>),
+    Sample(text::Error<sample::Error>),
     /// The name of a place of a read does not read.
-    Name(Unread<Box<name::Error>>),
+    Name(text::Error<Box<name::Error>>),
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
@@ -729,38 +729,6 @@ impl std::error::Error for Error {
         }
     }
 }
-
-/// Why a text field of a message does not read: `E` is the error of its parse.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Unread<E> {
-    /// The bytes are not UTF-8.
-    Utf8(Utf8Error),
-    /// The text does not parse.
-    Parse(E),
-}
-
-impl<E> Unread<E> {
-    /// Reads `bytes` as UTF-8, then parses the text as a `T`.
-    pub(crate) fn read<T: FromStr>(bytes: &[u8]) -> Result<T, Self>
-    where
-        E: From<T::Err>,
-    {
-        let text = std::str::from_utf8(bytes).map_err(Self::Utf8)?;
-        text.parse()
-            .map_err(|error: T::Err| Self::Parse(error.into()))
-    }
-}
-
-impl<E: fmt::Display> fmt::Display for Unread<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Utf8(error) => error.fmt(f),
-            Self::Parse(error) => error.fmt(f),
-        }
-    }
-}
-
-impl<E: std::error::Error> std::error::Error for Unread<E> {}
 
 impl From<Length> for Error {
     fn from(Length { len }: Length) -> Self {
@@ -1452,7 +1420,7 @@ mod tests {
         let not_utf8 = vec![0xff];
         let cases = [
             (
-                Error::Subject(Unread::Parse(Box::new(name::Error::Empty))),
+                Error::Subject(text::Error::Parse(Box::new(name::Error::Empty))),
                 "the subject of the hello is not a name: a name or pattern is empty",
             ),
             (
@@ -1467,7 +1435,7 @@ mod tests {
                 "the body has 16777217 bytes, over the cap of 16777216",
             ),
             (
-                Error::Selector(Unread::Parse(Box::new(name::Error::NoInclude))),
+                Error::Selector(text::Error::Parse(Box::new(name::Error::NoInclude))),
                 "the selector of the read does not read: a selector includes no names",
             ),
             (
@@ -1475,12 +1443,14 @@ mod tests {
                 "the places of the read put the index at place 3 of 3",
             ),
             (
-                Error::Sample(Unread::Parse(sample::Error::Syntax)),
+                Error::Sample(text::Error::Parse(sample::Error::Syntax)),
                 "the sample type of a place of the read does not read: expected a \
                  sample type such as f64, f32[3], list<u8, 16>, string, or bytes",
             ),
             (
-                Error::Name(Unread::Utf8(std::str::from_utf8(&not_utf8).unwrap_err())),
+                Error::Name(text::Error::Utf8(
+                    std::str::from_utf8(&not_utf8).unwrap_err(),
+                )),
                 "the name of a place of the read does not read: invalid utf-8 sequence \
                  of 1 bytes from index 0",
             ),
@@ -1501,8 +1471,8 @@ mod tests {
     #[test]
     fn gives_the_cause_of_a_text_that_does_not_read() {
         use std::error::Error as _;
-        let name = Unread::Parse(Box::new(name::Error::NoInclude));
-        let sample = Unread::Parse(sample::Error::Syntax);
+        let name = text::Error::Parse(Box::new(name::Error::NoInclude));
+        let sample = text::Error::Parse(sample::Error::Syntax);
         let errors = [
             (Error::Subject(name.clone()), name.to_string()),
             (Error::Selector(name.clone()), name.to_string()),
