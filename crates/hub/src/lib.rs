@@ -253,8 +253,7 @@ impl Hub {
         &self,
         config: reader::Config,
     ) -> Result<Reader, reader::Error> {
-        let (reader, _) = Reader::open(&self.0, config, reader::Reach::Mesh).await?;
-        Ok(reader)
+        Reader::open(&self.0, config).await
     }
 
     /// Sets the access rules that each later hello and request is checked against.

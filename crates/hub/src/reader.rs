@@ -307,15 +307,6 @@ impl From<::home::reader::Unsynced> for Error {
     }
 }
 
-/// Where an unnamed reader may open: a named one opens only at the home of its index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reach {
-    /// At this node, or at the home of another node.
-    Mesh,
-    /// Only at this node, the home of its index, else [`Error::Remote`].
-    Home,
-}
-
 /// A reader session through the reader's channels. Dropping it closes the session;
 /// frames that wait do not go out.
 #[derive(Debug)]
@@ -406,8 +397,7 @@ impl Local {
 }
 
 impl Reader {
-    /// Opens a reader on the channels that `config.select` matches, where `reach`
-    /// allows, and gives what it matched.
+    /// Opens a reader on the channels that `config.select` matches.
     ///
     /// # Panics
     ///
@@ -415,8 +405,7 @@ impl Reader {
     pub(crate) async fn open(
         state: &Rc<RefCell<State>>,
         config: Config,
-        reach: Reach,
-    ) -> Result<(Self, Matched), Error> {
+    ) -> Result<Self, Error> {
         let Config {
             select,
             mode,
@@ -433,42 +422,67 @@ impl Reader {
             "a hold of {hold} for a reader that is unnamed or latest"
         );
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
-        let (matched, away) = matched(state, &select).await?;
-        let index = matched.places[matched.index].key;
-        if let Some(home) = away {
-            if named.is_some() || reach == Reach::Home {
-                return Err(Error::Remote { home });
+        let (matched, home) = matched(state, &select).await?;
+        let home = match home {
+            Home::Here(slots) => {
+                return Self::local(state, &matched, slots, mode, named, hold);
             }
-            let data = matched
-                .places
-                .iter()
-                .filter(|place| place.key != index)
-                .map(|place| (place.key, place.data_type))
-                .collect();
-            let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
-            let reader = Self {
-                index: slot,
-                source: Source::Remote(Box::new(remote)),
-                given: Cell::new(None),
-                frame: None,
-            };
-            return Ok((reader, matched));
+            Home::Away(home) => home,
+        };
+        if named.is_some() {
+            return Err(Error::Remote { home });
         }
-        state.borrow_mut().carry(index);
-        let slot = matched.slots[matched.index];
+        let index = matched.places[matched.index].key;
+        let data = matched
+            .places
+            .into_iter()
+            .filter(|place| place.key != index)
+            .map(|place| (place.key, place.data_type))
+            .collect();
+        let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
+        Ok(Self {
+            index: slot,
+            source: Source::Remote(Box::new(remote)),
+            given: Cell::new(None),
+            frame: None,
+        })
+    }
+
+    /// Opens an unnamed reader on the channels of `matched` at this node, the home of
+    /// their index, with `slots` from [`Home::Here`].
+    pub(crate) fn here(
+        state: &Rc<RefCell<State>>,
+        matched: &Matched,
+        slots: Box<[channel::Slot]>,
+        mode: Mode,
+    ) -> Result<Self, Error> {
+        Self::local(state, matched, slots, mode, None, Span::ZERO)
+    }
+
+    /// Opens a reader on the channels of `matched` at this node, the home of their
+    /// index.
+    fn local(
+        state: &Rc<RefCell<State>>,
+        matched: &Matched,
+        slots: Box<[channel::Slot]>,
+        mode: Mode,
+        named: Option<::home::reader::named::Key>,
+        hold: Span,
+    ) -> Result<Self, Error> {
+        state.borrow_mut().carry(matched.places[matched.index].key);
+        let slot = slots[matched.index];
         let channels = Channels {
             keys: matched.places.iter().map(|place| place.key).collect(),
-            slots: matched.slots.clone(),
+            slots,
             index: slot,
         };
         let local = Local::open(state, channels, mode, named, hold)?;
-        let reader = Self {
+        Ok(Self {
             source: Source::Local(local),
             index: slot,
             given: Cell::new(None),
             frame: None,
-        };
-        Ok((reader, matched))
+        })
     }
 
     /// The next frame, as a view of the reader's channels. The view borrows the
@@ -594,16 +608,24 @@ pub(crate) struct Matched {
     pub(crate) places: Vec<Place>,
     /// The position of the index in `places`.
     pub(crate) index: usize,
-    /// The slot of each of `places`, as the frames of the reader hold them.
-    pub(crate) slots: Box<[channel::Slot]>,
 }
 
-/// What `select` matches once the home of its index is known, and that home when it
-/// is another node. While it waits for the home, it holds only the key of the index.
-async fn matched(
+/// The home of the index of what a selector matched.
+#[derive(Debug)]
+pub(crate) enum Home {
+    /// This node, with the slot of each of the places, as the frames of a reader hold
+    /// them.
+    Here(Box<[channel::Slot]>),
+    /// Another node.
+    Away(types::node::Key),
+}
+
+/// What `select` matches once the home of its index is known, and that home. While it
+/// waits for the home, it holds only the key of the index.
+pub(crate) async fn matched(
     state: &Rc<RefCell<State>>,
     select: &Selector,
-) -> Result<(Matched, Option<types::node::Key>), Error> {
+) -> Result<(Matched, Home), Error> {
     let (places, index, away) = loop {
         let index = matching(&state.borrow(), select)?[0].1.index();
         let away = match crate::homes(state, &[index]).await {
@@ -617,17 +639,14 @@ async fn matched(
             break (places, at, away);
         }
     };
-    let keys: Vec<_> = places.iter().map(|place| place.key).collect();
-    // With no wait since `resolve`, so each of `keys` is defined.
-    let slots = state.borrow_mut().assigned(places[index].key, &keys);
-    Ok((
-        Matched {
-            places,
-            index,
-            slots,
-        },
-        away,
-    ))
+    let home = if let Some(home) = away {
+        Home::Away(home)
+    } else {
+        let keys: Vec<_> = places.iter().map(|place| place.key).collect();
+        // With no wait since `resolve`, so each of `keys` is defined.
+        Home::Here(state.borrow_mut().assigned(places[index].key, &keys))
+    };
+    Ok((Matched { places, index }, home))
 }
 
 /// The channels that `select` matches, in name order, each on one index.

@@ -8,15 +8,15 @@ use std::task::Poll;
 use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
+use types::channel::Slot;
 use types::name::Name;
-use types::time::Span;
 use wire::hub::client::{Mode, Open, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
 use crate::State;
 use crate::link::Session;
-use crate::reader::{self, Matched, Reader};
-use crate::serve::{Error, Layout, alloc, reply};
+use crate::reader::{self, Home, Matched, Reader};
+use crate::serve::{Error, Event, Layout, alloc, reply};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
 /// reader, and sends its places, then each frame of the reader until the program
@@ -29,19 +29,21 @@ pub(super) async fn serve(
     receiver: &mut Receiver,
     sender: &mut Sender,
 ) -> Result<(), Error> {
-    let (reader, matched) = open(session, class, subject, read, receiver).await?;
-    let layout = start(&session.state, sender, matched).await?;
+    let (reader, matched, slots) =
+        open(session, class, subject, read, receiver).await?;
+    let layout = start(&session.state, sender, &matched, slots).await?;
     relay(&session.state, reader, layout, receiver, sender).await
 }
 
-/// Reads and verifies the open, and opens its reader.
+/// Reads and verifies the open, and opens its reader at this node, the home of its
+/// index, with the slot of each place.
 async fn open(
     session: &Session,
     class: Class,
     subject: Name,
     read: Read,
     receiver: &mut Receiver,
-) -> Result<(Reader, Matched), Error> {
+) -> Result<(Reader, Matched, Box<[Slot]>), Error> {
     let state = &session.state;
     // A read takes no turn, and its open holds its bytes only until it decodes.
     let open = {
@@ -57,24 +59,25 @@ async fn open(
     if class != wanted {
         return Err(Error::Class(class));
     }
-    let config = reader::Config {
-        select: open.select,
-        mode,
-        subject,
-        name: None,
-        hold: Span::ZERO,
-    };
-    Reader::open(state, config, reader::Reach::Home)
+    let refused = |error| Error::Reader(Box::new(error));
+    let (matched, home) = reader::matched(state, &open.select)
         .await
-        .map_err(|error| Error::Reader(Box::new(error)))
+        .map_err(refused)?;
+    let slots = match home {
+        Home::Here(slots) => slots,
+        Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
+    };
+    let reader = Reader::here(state, &matched, slots.clone(), mode).map_err(refused)?;
+    Ok((reader, matched, slots))
 }
 
 /// Sends the places of `matched`, their run, and `Opened`, and gives the layout of
-/// the frames at those places.
+/// the frames at those places, with `slots`.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    matched: Matched,
+    matched: &Matched,
+    slots: Box<[Slot]>,
 ) -> Result<Layout, Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
@@ -92,8 +95,8 @@ async fn start(
         sender.send(block.freeze()).await?;
     }
     sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
-    let index = matched.slots[matched.index];
-    Ok(Layout::new(matched.slots, index))
+    let index = slots[matched.index];
+    Ok(Layout::new(slots, index))
 }
 
 /// Sends each frame of `reader` until the program finishes the stream, or `Behind`
@@ -116,28 +119,28 @@ async fn relay(
             let mut next = pin!(reader.next());
             // The program polls first, so the node takes no frame after its message.
             poll_fn(|cx| match program.as_mut().poll(cx) {
-                Poll::Ready(finished) => Poll::Ready(Err(finished)),
-                Poll::Pending => next.as_mut().poll(cx).map(Ok),
+                Poll::Ready(finished) => Poll::Ready(Event::Finished(finished)),
+                Poll::Pending => next.as_mut().poll(cx).map(Event::Frame),
             })
             .await
         };
         match event {
-            Err(finished) => {
+            Event::Finished(finished) => {
                 finished?;
                 sender.finish()?;
                 return Ok(());
             }
-            Ok(Ok(taken)) => {
+            Event::Frame(Ok(taken)) => {
                 layout
                     .send(state, sender, taken.view().frame(), taken.set())
                     .await?;
             }
-            Ok(Err(reader::Ended::Behind)) => {
+            Event::Frame(Err(reader::Ended::Behind)) => {
                 sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
                 sender.finish()?;
                 return Ok(());
             }
-            Ok(Err(ended)) => return Err(Error::Ended(Box::new(ended))),
+            Event::Frame(Err(ended)) => return Err(Error::Ended(Box::new(ended))),
         }
     }
 }

@@ -344,10 +344,11 @@ async fn serve(
     }
 }
 
-enum Event<F> {
+/// What the loop of a served session or read wakes for.
+enum Event<F, S> {
     /// The peer finished, or broke the stream or HUB WIRE.
     Finished(Result<(), Error>),
-    Frame(Result<F, Stop>),
+    Frame(Result<F, S>),
 }
 
 /// Reads what the peer sends after the keys run, and grants each credit. Returns when
