@@ -18,10 +18,10 @@ pub(crate) struct Server {
 }
 
 impl Server {
-    /// Makes the test server on the loop of `manager`, with the minimal config for the
-    /// port of its listener, the one server URL `opc.tcp://{host}:{port}`, and room for
-    /// `sessions` sessions and secure channels, and starts it. An empty `host` listens
-    /// on the address of the listener.
+    /// Makes the test server on the loop of `manager`, with the minimal config, the one
+    /// server URL `opc.tcp://{host}:{port}` on the port of the listener of `manager`,
+    /// and room for `sessions` sessions and secure channels, and starts it. An empty
+    /// `host` gives the address of the listener as the host of the URL.
     ///
     /// # Safety
     ///
@@ -36,11 +36,12 @@ impl Server {
         let port = manager
             .port()
             .expect("a server starts on a manager with a listener that no server took");
-        let url = CString::new(format!("opc.tcp://{host}:{port}")).expect("no NUL");
+        let host = CString::new(host).expect("no NUL");
         let events = manager.events().raw();
         // SAFETY: the loop outlives the server, as the caller ensures.
-        let raw =
-            unsafe { ffi::test::shim_server_new(events, port, url.as_ptr(), sessions) };
+        let raw = unsafe {
+            ffi::test::shim_server_new(events, port, host.as_ptr(), sessions)
+        };
         let raw = NonNull::new(raw).expect("open62541 refused the server");
         // SAFETY: the server lives.
         let status = Status(unsafe { ffi::test::UA_Server_run_startup(raw.as_ptr()) });

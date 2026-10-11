@@ -145,7 +145,8 @@ impl Manager {
     /// server, a client, or a step of the close, if a channel of a client is not
     /// closed after the close, or if the port is taken. A panic of the close leaks the
     /// loop and its connections, and each server and client that it has not deleted,
-    /// and replaces a panic of the connect or `body`.
+    /// and replaces a panic of the connect or `body`. A panic before the connect leaks
+    /// the manager, the server, and each client made.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,

@@ -191,7 +191,7 @@ unsafe extern "C" {
     pub(crate) fn shim_server_new(
         el: *mut EventLoop,
         port: u16,
-        url: *const std::ffi::c_char,
+        host: *const std::ffi::c_char,
         sessions: u16,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
