@@ -24,10 +24,15 @@
   session). The limit is fixed for the session, so a size defect shows in every state
   of the stream
   (https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6035220831).
-  The stream decides what a dropped future cancels: only a message that the stream
-  holds and whose rest the next `send` or `send_parts` writes. A message of
-  `try_send`, one that the stream holds at `finish`, and one of a leaked future that a
-  later send waits behind stay, and the caller passes no flag. Decided by
+  The stream decides what a dropped future cancels, and the caller passes no flag:
+  only the message of that future. A message of `try_send` stays. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1490#issuecomment-6043749494,
-  2026-10-07T17:59:23Z), #1533.
+  2026-10-07T17:59:23Z), #1533. Two cases follow. A `send` or `send_parts` that
+  panics after `finish` drops its future, and that drop changes nothing. A future
+  that leaks, as with `mem::forget`, cancels nothing: the stream writes the rest of
+  its message when the caller uses the sender again, and the drop of a later send
+  that waits behind that message changes nothing. Lost: a reset of the stream at
+  that drop. No byte of the dropped send went, so the rule above says that it
+  changes nothing (`laptop.architect-2`, 2026-10-11T12:39:23Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6109111453).
