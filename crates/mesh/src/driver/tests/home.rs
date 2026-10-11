@@ -10,6 +10,8 @@ use transport::stream::{Incoming, Receiver, Sender};
 use super::apply::Counted;
 use super::send::{self, LIMIT, Peer, at, create_config, stop};
 use super::*;
+use crate::applied::Outcome;
+use crate::change::Undecoded;
 
 impl Cluster {
     /// Node `node` sets `home` as the home at its next tick.
@@ -1320,4 +1322,38 @@ fn a_call_that_is_cut_off_while_it_waits_for_the_answer_returns_after_the_heal()
         let took = (board.led, board.at);
         assert_eq!(took, (vec![leader], vec![after(at, 3)]), "run {run}");
     }
+}
+
+// It reads `applied`: a call shows this refusal only when a leader writes other bytes
+// at the position that it answered, and `set_home` then panics.
+#[test]
+fn a_committed_body_that_does_not_decode_is_refused_with_its_kind_and_length() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let floor = mesh.group.borrow_mut().applied.open();
+        let mut cut = encoded(&home_to(2));
+        cut.pop();
+        let undecoded = Undecoded {
+            kind: 1,
+            length: 32,
+        };
+        let append = Body::Append {
+            prev: Position::default(),
+            entries: vec![Entry {
+                at: at(1),
+                data: Data::Bytes(cut),
+            }],
+            commit: 1,
+        };
+        assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
+        let reply = mesh.outgoing(key(2)).await.unwrap();
+        assert_eq!(reply, message(1, 2, Body::AppendReply { last: 1 }));
+        let outcome = mesh.group.borrow().applied.outcome(&floor, at(1));
+        assert_eq!(outcome, Outcome::Applied(Err(Refused::Body(undecoded))));
+        assert_eq!(
+            Refused::Body(undecoded).to_string(),
+            "a change of kind 1 and 32 bytes is not in the byte form of its kind"
+        );
+        mesh.group.borrow_mut().applied.close(&floor);
+    });
 }
