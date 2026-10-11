@@ -3451,6 +3451,7 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Route`, departs from {OK}, approved in {OK}"),
         format!("`hub::Route` ({OK}), and `hub::Send` (departs from {OK})"),
         "none, since the doc of `hub::Route` departs from no ruling".to_string(),
+        format!("`hub::Route`, approval owedé ({OK})"),
         SURFACE_2372.to_string(),
     ] {
         assert_eq!(check(&surface), Vec::<String>::new(), "{surface}");
@@ -3467,6 +3468,9 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Route`: approved in {OK}; approval at the head (OWED)."),
         format!("`hub::Route`, {OK}; the P1 judgment: `owed`"),
         format!("`hub::Route`, departs from {OK}, owed"),
+        format!("`hub::Route` ({OK}); `hub::Send`, approval owed…"),
+        format!("`hub::Route` ({OK}); `hub::Send`, approval “owed”"),
+        format!("`hub::Route` ({OK}); `hub::Send`, approval owed![](x)"),
     ] {
         assert_eq!(check(&surface), vec![OWED_PROBLEM], "{surface}");
     }

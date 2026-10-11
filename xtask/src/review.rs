@@ -749,11 +749,12 @@ fn undigited(text: &str) -> Option<&str> {
 }
 
 /// The problem when `surface`, the value of the `Public surface:` line of round
-/// `number`, holds the word [`OWED`], in each ASCII case and with the punctuation at
-/// its ends removed, or names items ([`stated`]) with no approval ([`approved`]).
+/// `number`, holds the word [`OWED`], in each ASCII case and with the characters at
+/// its ends removed that are no letter and no number, or names items ([`stated`])
+/// with no approval ([`approved`]).
 fn unapproved(number: u32, surface: &str) -> Option<String> {
     let owed = |word: &str| {
-        let word = word.trim_matches(|c: char| c.is_ascii_punctuation());
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
         word.eq_ignore_ascii_case(OWED)
     };
     if surface.split(' ').any(owed) {
