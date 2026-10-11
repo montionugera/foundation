@@ -53,10 +53,14 @@
   first, 2026-10-11T10:19:18Z,
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495; until the
   node founds a region or joins one, 2026-10-11T11:22:36Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108495169; its
-  `mesh` fact also approved by `laptop.architect`, 2026-10-11T11:36:26Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108605645).
-  Supersedes "The file is the only copy of the name on the node" of
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108495169; its `mesh`
+  fact also approved by `laptop.architect`, 2026-10-11T11:36:26Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108605645; "in the
+  claim", approved by `laptop.architect-2` at `45f5176e9`, 2026-10-11T23:09:41Z,
+  https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114941259).
+  Supersedes "so a start with a file `name` reads no founding:" of
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495. Supersedes
+  "The file is the only copy of the name on the node" of
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
   `name::keep` reads the founding under the lock, after the file `name` and before the
   write, through `mesh::founding` with a pool of its own (the shard's buffer is not open
@@ -124,20 +128,22 @@
   `Error::NoCard`. Decided by `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462; rule 1,
   2026-10-11T21:02:22Z,
-  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491). The
-  three sentences on a start with a file `name`: given by `laptop.architect`
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491).
+  Supersedes "A founding with no card of that key gives no stored name. So does a data
+  directory with no `node.key`." of
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495. The three
+  sentences on a start with a file `name`: given by `laptop.architect`
   (2026-10-11T22:58:15Z,
   https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114847005), approved
   by `laptop.architect-2` at `5ac58719e` (2026-10-11T23:00:19Z,
   https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114863408). They
-  supersede "A start with a file `name` reads no founding, as before, so a key with no
-  card then gives `Error::Mesh` from the open of the region." of
-  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462.
-  Supersedes "A founding with no card of that key gives no stored name. So does a data
-  directory with no `node.key`." of
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495.
-  The file is one sector: the tag `foundation/name/1`, the length of the name in one
-  byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
+  supersede rule 7, "A start with a file `name` does not change: it reads no founding,
+  and a key with no card gives `Error::Mesh` with `NotMember` from the open of the
+  region.", and "A start with a file `name` reads no founding, as before, so a key with
+  no card then gives `Error::Mesh` from the open of the region." of
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462. The file
+  is one sector: the tag `foundation/name/1`, the length of the name in one byte, the
+  name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
   `node::name(files, given)` gives the name before the start: the given one, else the
   stored name (the file, else the card above, #2355), else `Error::Unnamed` with no
