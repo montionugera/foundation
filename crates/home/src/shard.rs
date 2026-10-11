@@ -457,7 +457,8 @@ impl Shard {
 
     /// Opens `writer` on each index of its key set, and appends a handoff for each
     /// index where it takes control. A handoff that finds no room waits for the next
-    /// append on its index. A failed commit fails the next write.
+    /// write, writer open or close, or end of a lease or a grace on its index. A failed
+    /// commit fails the next write.
     ///
     /// # Errors
     ///
@@ -912,7 +913,8 @@ fn freeze(
 
 /// Appends the unrecorded handoff of the index of each of `groups` of `session`, each
 /// alone, on the live path at mesh time `mesh`, and marks it recorded. A handoff that
-/// finds no room in the ring or the pool waits for the next append on its index.
+/// finds no room in the ring or the pool waits for the next write, writer open or
+/// close, or end of a lease or a grace on its index.
 /// Returns whether every handoff was recorded.
 ///
 /// # Errors
@@ -2855,7 +2857,7 @@ mod tests {
         });
     }
 
-    /// A handoff that found no room waits for the next append on its index.
+    /// A handoff that found no room is not recorded at an advance with no deadline.
     #[test]
     fn appends_no_waiting_handoff_at_an_advance_with_no_deadline() {
         run(240, |test| async move {
@@ -2894,8 +2896,8 @@ mod tests {
         });
     }
 
-    /// A handoff that found no room waits for the next append on its index, also when
-    /// the end of a lease of its writer on another index records a handoff.
+    /// A handoff that found no room waits, also when the end of a lease of its writer
+    /// on another index records a handoff.
     #[test]
     fn keeps_a_waiting_handoff_at_the_end_of_a_lease_on_another_index() {
         run(241, |test| async move {
@@ -2958,8 +2960,8 @@ mod tests {
         });
     }
 
-    /// A handoff at the end of a lease that finds no room waits for the next append on
-    /// its index.
+    /// A handoff at the end of a lease that finds no room is recorded at the next frame
+    /// of its index.
     #[test]
     fn keeps_the_handoff_of_a_lease_end_with_no_room_for_the_next_frame() {
         run(242, |test| async move {

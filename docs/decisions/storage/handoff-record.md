@@ -1,10 +1,12 @@
 - **HANDOFF RECORD (#191)** The home records each handoff that `Gate::handoff` gives
   (GATE RULES) as a buffer entry on the live path of the index, with tag `HANDOFF`,
   `len` 0, and `first` at the live tail. It records a handoff after the gate input that
-  gave it and before the next input or frame. Its bytes are empty when no writer holds
-  control, else `[authority: u8]` then the holder's subject as UTF-8; the entry length
-  gives the subject's length. A restart or a failover starts the gate from the last
-  record (X18): `Gate::recover` with its holder, or `Gate::new` when it names none.
+  gave it and before the next stored frame of its index. It records it before the next
+  input too, except for a handoff with no room and, until #2314, an index with no open
+  writer (below). Its bytes are empty when no writer holds control, else
+  `[authority: u8]` then the holder's subject as UTF-8; the entry length gives the
+  subject's length. A restart or a failover starts the gate from the last record
+  (X18): `Gate::recover` with its holder, or `Gate::new` when it names none.
   `Shard::open` restores each gate, with `GRACE` (10 s) from the open, and the gate
   moves in at the first carry of its slot, also after the grace (`laptop.architect`,
   #275, 2026-10-10T04:04:50Z:
@@ -14,13 +16,14 @@
   2026-10-10T04:04:50Z, item 4). A lease or a grace that ends with no call records its
   handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
   on the monotonic clock of the hub's `clock::Reader`. A handoff is not on disk while
-  the ring or the pool has no room for it, and a power cut in that time restores the
-  earlier holder with the grace. Only room held back for one handoff of each index, in
-  the pool and in the ring, closes this. Trigger to look again: a measured case where a
-  ring or a pool stays full across a handoff in a workload on the milestone path. Until
-  #2385, such a handoff waits for the next append on its index (INDEX FRAMES), also
-  after the room comes back (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, the OK of
-  the deferral, item 4, and the trigger of its "Lost" list:
+  the ring or the pool has no room for it, and a restart or a failover in that time
+  starts the gate from the record before it. Only room held back for one handoff of
+  each index, in the pool and in the ring, closes this. Trigger to look again: a
+  measured case where a ring or a pool stays full across a handoff in a workload on the
+  milestone path. Until #2385, such a handoff waits for the next write, writer open or
+  close, or end of a lease or a grace on its index (INDEX FRAMES), also after the room
+  comes back (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, the OK of the deferral,
+  item 4, and the trigger of its "Lost" list:
   https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587). Until
   #2314, an index with no open writer records its handoff at the next open of a writer
   on it (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
