@@ -116,9 +116,10 @@ pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
     sum.copy_from_slice(&crc32c::crc32c(body).to_le_bytes());
 }
 
-/// Checks that `bytes` start with `tag` and match their checksum exactly when
-/// `encode` gives them back: `encode` makes the file again from the fields of
-/// `bytes`, whatever their tag and checksum.
+/// Checks that `bytes` start with `tag`, match their checksum, and hold fields that a
+/// value has exactly when `encode` gives them back: `encode` makes the file again from
+/// the fields of `bytes`, whatever their tag and checksum, or gives `None` for fields
+/// that no value has.
 ///
 /// # Panics
 ///
@@ -127,10 +128,11 @@ pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
 pub(crate) fn check<const N: usize>(
     bytes: &[u8; N],
     tag: &[u8],
-    encode: impl Fn(&[u8; N]) -> [u8; N],
+    encode: impl Fn(&[u8; N]) -> Option<[u8; N]>,
 ) {
-    let valid = encode(bytes) == *bytes;
-    if written(bytes, tag) {
+    let encoded = encode(bytes);
+    let valid = encoded == Some(*bytes);
+    if written(bytes, tag) && encoded.is_some() {
         assert!(valid, "decodes {bytes:02x?}");
     } else {
         assert!(!valid, "refuses {bytes:02x?}");
@@ -193,22 +195,24 @@ mod tests {
 
     #[test]
     fn checks_a_file_that_encode_gives_back() {
-        check(&file(), b"t", encode);
+        check(&file(), b"t", |bytes| Some(encode(bytes)));
         let mut other = file();
         other[1] ^= 1;
-        check(&other, b"t", encode);
+        check(&other, b"t", |bytes| Some(encode(bytes)));
+        check(&file(), b"u", |_| None);
+        check(&file(), b"t", |_| None);
     }
 
     #[test]
     #[should_panic(expected = "decodes [74, 01, 02, 03,")]
     fn panics_when_a_decode_gives_bytes_that_encode_does_not() {
-        check(&file(), b"t", |_| [0; 12]);
+        check(&file(), b"t", |_| Some([0; 12]));
     }
 
     #[test]
     #[should_panic(expected = "refuses [74, 01, 02, 03,")]
     fn panics_when_a_decode_refuses_bytes_that_encode_gives() {
-        check(&file(), b"u", encode);
+        check(&file(), b"u", |bytes| Some(encode(bytes)));
     }
 
     #[test]

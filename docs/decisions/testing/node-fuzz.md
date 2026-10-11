@@ -26,8 +26,9 @@
   test founds a region with the key of `admin-valid`.
   The target also checks the decode of the file `address` (NODE START), on 99 bytes as
   they are, or on 95 bytes with their CRC32C appended, with `address::check` as its
-  oracle, which the property tests of `address` share. The inputs `address-*` are its
-  form. A node that runs holds the bytes of `address-valid`, a clean stop leaves those
+  oracle, which the property tests of `address` share. It gives `sector::check` its
+  tag and the `encode` of its fields, or `None` for fields that no address has. The
+  inputs `address-*` are its form. A node that runs holds the bytes of `address-valid`, a clean stop leaves those
   of `address-zeros`, and a test decodes `address-valid-v6`. By `laptop.architect-2`
   (#1744, plan revision 4, PR 2a, 2026-10-11 07:10 UTC:
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).

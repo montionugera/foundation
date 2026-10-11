@@ -130,7 +130,7 @@ fn encode(address: &Address) -> [u8; LEN] {
 }
 
 /// The address in `bytes`, or `None` for bytes that [`encode`] does not write.
-#[cfg(any(test, feature = "sim"))]
+#[cfg(test)]
 pub(crate) fn decode(bytes: &[u8; LEN]) -> Option<Address> {
     if sector::written(bytes, TAG) {
         fields(bytes)
@@ -169,22 +169,17 @@ fn fields(bytes: &[u8; LEN]) -> Option<Address> {
     })
 }
 
-/// Checks that `decode` gives an address exactly for the bytes that `encode` writes,
-/// and that the address encodes to `bytes`.
+/// Checks that `decode` takes `bytes` exactly when `encode` of their fields gives them
+/// back.
 ///
 /// # Panics
 ///
-/// When a check fails.
+/// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    let valid = fields(bytes).is_some_and(|address| encode(&address) == *bytes);
-    match decode(bytes) {
-        Some(address) => {
-            assert!(valid, "decodes {bytes:02x?}");
-            assert_eq!(encode(&address), *bytes, "encodes {bytes:02x?}");
-        }
-        None => assert!(!valid, "refuses {bytes:02x?}"),
-    }
+    sector::check(bytes, TAG, |bytes| {
+        fields(bytes).map(|address| encode(&address))
+    });
 }
 
 #[cfg(test)]
