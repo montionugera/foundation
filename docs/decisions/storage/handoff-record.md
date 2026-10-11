@@ -13,9 +13,13 @@
   that needs another value, makes `GRACE` a `Config` field (`laptop.architect`, #275,
   2026-10-10T04:04:50Z, item 4). A lease or a grace that ends with no call records its
   handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
-  on the monotonic clock of the hub's `clock::Reader`. Until #2314, an index with no
-  open writer records its handoff at the next open of a writer on it
-  (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
+  on the monotonic clock of the hub's `clock::Reader`. With no room in the ring or the
+  pool then, the handoff waits for the next append on its index (INDEX FRAMES), and a
+  power cut before that append restores the earlier holder with the grace, until #2385
+  (`laptop.architect`, 2026-10-11T08:16:48Z:
+  https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587). Until
+  #2314, an index with no open writer records its handoff at the next open of a writer
+  on it (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102872368 and
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411;
   its scope until #2314: `laptop.architect`, 2026-10-11T00:56:34Z,

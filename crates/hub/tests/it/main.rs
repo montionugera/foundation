@@ -879,8 +879,9 @@ fn records_the_end_of_the_lease_of_a_writer_that_opens_as_a_lease_ends() {
 }
 
 /// A holder that closes at the instant its lease ends races the gate task. In each
-/// order, the leased waiter takes control, and the gate task records the end of its
-/// lease, which only the wake at the close lets it see when the task runs first.
+/// order, the leased waiter takes control at the end of the lease, and the timer of the
+/// gate task records the end of the waiter's lease. No order needs the wake at the
+/// close.
 #[test]
 fn records_the_end_of_the_lease_of_a_waiter_when_a_holder_closes_as_its_lease_ends() {
     for seed in 0..32 {
