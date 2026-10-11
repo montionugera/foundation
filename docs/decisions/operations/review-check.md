@@ -119,10 +119,12 @@
   Supersedes ruling 1 of
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989
   (2026-10-07T06:15:46Z). The line counts when it starts a line of a top-level paragraph
-  after the round heading, other than the end lines (the check reads none in a round
-  posted before the cutoff), and when the first word of its value, read as that of an
-  end line, is not `none`. Decided by the director at 2026-10-11T00:54:34Z
-  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358). A merge
+  after the round heading, other than the end lines (the check reads no end lines in a
+  round posted before the cutoff), and when the first word of its value, read as that of
+  an end line, is not `none`. Decided by the director at 2026-10-11T00:54:34Z
+  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358) and
+  2026-10-11T01:16:17Z
+  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A merge
   of the base is not clean when the base moves a path that the PR changed since their
   merge base, and that is not code, to a code path, by the rename detection of the
   merge. A base move of a path that the PR did not change stays clean. Decided by the
