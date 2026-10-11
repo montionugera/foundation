@@ -71,7 +71,15 @@
   Supersedes the sentence "the node never counts a wrong key" of
   https://github.com/synnaxlabs/foundation/issues/1382#issuecomment-6046807570).
   Two joins below that entry still strand a follower under a leader that the real
-  node elected, until #336 builds the voter that checks a join before it stamps it.
+  node elected. Since the voter checks a join before it stamps it (MEMBER RECORD), a
+  peer with no ticket gets no join into the log of an honest voter. A peer with a
+  valid ticket can still name the key of a node whose join is not applied, because
+  the node key is not bound to the card's public key: a known result. #2345 ends the
+  strand under a leader that does not lie: the leader refuses a second public key for
+  one node key (`Error::Contested`). A leader that lies can still write both joins.
+  After #2345, a ticket holder can take only a key that it learns out of band, and only
+  when its join gets to the leader first (`laptop.architect`, 2026-10-11T03:31:12Z,
+  https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526).
   A hard proof that lost such a claim can be no quorum at a node with a newer
   configuration, which then learns the term from the leader. A follower answers a
   cut run with the last entry it kept, and the leader sends the rest from there.
@@ -189,18 +197,19 @@
   also after each `Mesh` drops (MESH SURFACE). `member` has no error (#562): it gives
   the record that the node holds, also after a stop (approved by the architect,
   2026-10-07T08:07:48Z:
-  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). A stopped
-  group does not start again: the node opens the mesh again, and the open makes durable
-  what it gives (MESH LOG). The task ends soon after the last `Mesh` drops, a write in
-  progress ends first, and a write that waits for a block ends at the next tick; until
-  then a new open gives `Error::Log`. Each open applies the log from index 1, until
-  snapshots (#253). A watch does not keep the group running, and a dropped watch leaves
-  no waker. `open` refuses a node or a voter that is not a member (`Error::NotMember`),
-  and a private key that is not the key of this node's member (`Error::WrongKey`).
-  `Config.founding.members` is a list, and the region state holds each record under the
-  key of its card, so the key of a member has one copy. `open` is the one check of a
-  list for two records of one node: a decoder of a join answer passes its records on and
-  does not check them again (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
+  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). `stamp`
+  gives `Unstamped::Stopped` (MEMBER RECORD). A stopped group does not start again: the
+  node opens the mesh again, and the open makes durable what it gives (MESH LOG). The
+  task ends soon after the last `Mesh` drops, a write in progress ends first, and a
+  write that waits for a block ends at the next tick; until then a new open gives
+  `Error::Log`. Each open applies the log from index 1, until snapshots (#253). A watch
+  does not keep the group running, and a dropped watch leaves no waker. `open` refuses a
+  node or a voter that is not a member (`Error::NotMember`), and a private key that is
+  not the key of this node's member (`Error::WrongKey`). `Config.founding.members` is a
+  list, and the region state holds each record under the key of its card, so the key of
+  a member has one copy. `open` is the one check of a list for two records of one node:
+  a decoder of a join answer passes its records on and does not check them again
+  (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
   https://github.com/synnaxlabs/foundation/issues/1259#issuecomment-6033747312, which
   reverses the map of the ruling below). The key of a member is the key that its card's
   signature covers, and `open` refuses a member that the region cannot hold, or two
