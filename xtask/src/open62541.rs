@@ -1262,12 +1262,17 @@ fn headers(depfile: &str) -> Vec<PathBuf> {
 }
 
 /// The names of the symbols that `nm` with `flags` gives for `objects`, each whole,
-/// also when it holds a space.
+/// also when it holds a space, and also each that `nm` takes as a mapping symbol.
 fn symbols<'a>(
     objects: impl IntoIterator<Item = &'a Path>,
     flags: &[&str],
 ) -> Result<BTreeSet<String>, String> {
-    let text = exec(Command::new("nm").arg("-j").args(flags).args(objects))?;
+    let text = exec(
+        Command::new("nm")
+            .args(["-j", "--special-syms"])
+            .args(flags)
+            .args(objects),
+    )?;
     Ok(text.lines().map(str::to_owned).collect())
 }
 
@@ -3158,6 +3163,44 @@ End of search list.
             ])
         );
         remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// On aarch64, `nm` hides each symbol whose name starts with `$x.` or `$d.`, as
+    /// it hides a mapping symbol.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_refuses_an_odd_name_that_looks_like_a_mapping_symbol() {
+        let (root, repo, result) = run_after("mapping", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        let asm = r#"__asm__(".pushsection .text.g,\"ax\"\n.globl g\ng:\n"
+        "bl \"$x.h-0x4\"\nbl \"$x.getpid\"\nret\n.popsection");
+"#;
+        std::fs::write(&path, old + asm).unwrap();
+        let file = "src/util/ua_util.c";
+        let found = check(&root);
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(
+            found,
+            Err(vec![
+                format!(
+                    "{file}: the symbol `$x.h-0x4` holds a character other than a \
+                     letter, a digit, `_`, `.`, or `$`, so objdump cannot show it \
+                     exactly"
+                ),
+                format!(
+                    "{file}: `g` calls `$x.getpid`, which no list admits. Find whether \
+                     a node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with \
+                     the reason"
+                ),
+            ])
+        );
     }
 
     #[test]
