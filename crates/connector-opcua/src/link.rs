@@ -461,9 +461,9 @@ const SIM: &str = "feature=\"sim\"";
 
 /// Each identifier for which `named` holds, as `path: identifier`, in the Rust
 /// outside tests of the crate at `root`: each `.rs` file outside `tests/` and each
-/// file that a build of the library reads ([`built`]), less each file that a test
-/// build, with `test` and [`SIM`] on, reads and no build of the library reads.
-/// Comments and inline modules count.
+/// file that a build of the library reads ([`built`]), less each file that a build
+/// with [`SIM`] on reads ([`tested`]) and no build of the library reads. Comments
+/// and inline modules count.
 fn named_outside_tests(
     root: &std::path::Path,
     named: impl Fn(&str) -> bool,
@@ -483,10 +483,14 @@ fn named_outside_tests(
         .collect()
 }
 
-/// Each file that a test build of the crate at `root`, with `test` and [`SIM`] on,
-/// reads, sorted.
+/// Each file that a build of the crate at `root` with [`SIM`] on, with `test` on or
+/// off, reads, sorted.
 fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    built(root, &on(&["test".to_owned(), SIM.to_owned()])).0
+    let (mut files, _) = built(root, &on(&[SIM.to_owned()]));
+    files.extend(built(root, &on(&["test".to_owned(), SIM.to_owned()])).0);
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// Each file that a build of the library of the crate at `root` with the flags `base`
@@ -905,7 +909,7 @@ fn the_scan_builds_with_the_target_features_of_the_build() {
 }
 
 /// The builds of the library set each cfg that the crate tests and rustc does not
-/// know, less [`SIM`], and only the test build reads the code behind [`SIM`].
+/// know, less [`SIM`], and only the builds with [`SIM`] on read the code behind it.
 #[test]
 fn the_scan_builds_each_cfg_of_the_crate() {
     let (library, cfgs) = built(&root(), &[]);
@@ -960,6 +964,35 @@ fn the_scan_cuts_off_the_files_of_each_test_build() {
             let named = named_outside_tests(&root, |name| name == "named");
             assert_eq!(named, Vec::<String>::new(), "{parent}, {case}");
         }
+    }
+}
+
+/// A file behind [`SIM`] that only a build without `test` reads, as of a benchmark or
+/// a fuzz target, is cut off.
+#[test]
+fn the_scan_cuts_off_the_sim_files_of_a_build_without_test() {
+    for (case, lib, b) in [
+        (
+            "nested",
+            "#[cfg(feature = \"sim\")]\nmod m;\n",
+            "src/m/b.rs",
+        ),
+        (
+            "all",
+            "#[cfg(all(feature = \"sim\", not(test)))]\nmod b;\n",
+            "src/b.rs",
+        ),
+    ] {
+        let root = create_tree(
+            &format!("untested-{case}"),
+            &[
+                ("src/lib.rs", lib),
+                ("src/m.rs", "#[cfg(not(test))]\nmod b;\n"),
+                (b, "fn named() {}"),
+            ],
+        );
+        let named = named_outside_tests(&root, |name| name == "named");
+        assert_eq!(named, Vec::<String>::new(), "{case}");
     }
 }
 
