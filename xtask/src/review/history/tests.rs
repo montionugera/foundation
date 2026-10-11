@@ -1059,6 +1059,7 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
         Some("fn unreviewed() {}")
     );
     assert_eq!(repo.passes(&end, &merge), Ok(false));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Off));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
@@ -2744,4 +2745,27 @@ fn a_probe_line_in_a_decision_of_the_base_is_no_move_into_the_decisions() {
         assert_eq!(repo.decision_change(&start, &end), Ok(None), "{name}");
         repo.remove();
     }
+}
+
+#[test]
+fn a_probe_line_in_a_decision_of_the_pr_is_no_move_into_the_decisions() {
+    let (repo, _) = Repo::with_pr("decision-probe-first");
+    let draft = DRAFT.repeat(4);
+    repo.advance_main("docs/drafts/x.md", &draft);
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let second =
+        repo.advance_main("docs/drafts/x.md", &draft.replacen("one\n", "ONE\n", 1));
+    repo.git(&["mv", "docs/drafts/x.md", "docs/drafts/y.md"]);
+    let start = repo.commit(
+        "docs/decisions/z.md",
+        &format!("{draft}xtask-review-probe {second} 0\n"),
+    );
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let end = repo.head();
+    assert_eq!(
+        repo.git(&["diff", "--name-only", &start, &end]),
+        "docs/drafts/y.md"
+    );
+    assert_eq!(repo.decision_change(&start, &end), Ok(None));
+    repo.remove();
 }
