@@ -206,9 +206,10 @@ impl Node {
     /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
     /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
     /// bytes ([`Error::Pool`]), when the port does not bind ([`Error::Port`]), when
-    /// [`Config::listen`] has a multicast or broadcast IP ([`Error::Listen`]), or when
-    /// [`Config::name`] has a reserved segment ([`Error::Reserved`]). Any failure stops
-    /// the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// [`Config::listen`] has a multicast IP or the IPv4 broadcast IP
+    /// ([`Error::Listen`]), or when [`Config::name`] has a reserved segment
+    /// ([`Error::Reserved`]). Any failure stops the node, and [`Node::join`] gives the
+    /// first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -425,10 +426,10 @@ impl Node {
     /// # Errors
     ///
     /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
-    /// [`Error::Listen`] for a multicast or broadcast IP to bind at,
-    /// [`Error::Disk`] for a disk budget that holds no ring on each shard,
-    /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
-    /// pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// [`Error::Listen`] for a [`Config::listen`] with a multicast IP or the IPv4
+    /// broadcast IP, [`Error::Disk`] for a disk budget that holds no ring on each
+    /// shard, [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part
+    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
     /// a data directory that shard 0 could not claim, else [`Error::Name`],
@@ -1285,7 +1286,8 @@ pub enum Error {
     /// file.
     Admin,
     /// [`Config::listen`] has an IP at which no peer reaches one node: a multicast IP
-    /// or the IPv4 broadcast IP. The node bound no port, and no shard started.
+    /// or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address. The node bound no
+    /// port, and no shard started.
     Listen {
         /// The address that the node refused.
         listen: SocketAddr,
