@@ -495,7 +495,7 @@ impl Disk {
             Ok(Target::New { .. }) => true,
             Ok(Target::File(inode)) => match &self.inodes[&inode] {
                 Inode::File(file) => len != 0 && file.len == 0,
-                Inode::Dir(_) => false,
+                Inode::Dir(_) => unreachable!("invariant: target {inode} is a file"),
             },
             Err(_) => false,
         }
