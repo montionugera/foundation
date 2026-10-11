@@ -171,7 +171,7 @@ fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
             let first = test.hub.reader(open).await.expect("opens");
             let mut writer = test.writer("w", &["value"]).await;
             test.clock.sleep(SETTLE).await;
-            test.paused.pause();
+            test.pause.pause();
             if queued {
                 write(&mut writer, &[test.now()], &[7]);
                 drop(first);
@@ -181,7 +181,7 @@ fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
             }
             let open = named("a", "r", Mode::Complete, Span::SECOND);
             let mut reader = test.hub.reader(open).await.expect("opens");
-            test.paused.resume();
+            test.pause.resume();
             let ended = reader.next().await.expect_err("behind");
             assert_eq!(ended, Ended::Behind, "queued: {queued}");
         });

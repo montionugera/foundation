@@ -1,7 +1,7 @@
 use types::frame::{Path, Range};
 
-use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends, rest_of_run};
-use crate::common::body;
+use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
+use crate::common::{body, rest_of_run};
 
 /// The decoder of the replies of a reader session, at the reader's node and at the
 /// program, which gets it from [`client::Reader`](crate::hub::client::Reader). It

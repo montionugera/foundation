@@ -524,6 +524,7 @@ fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
             };
             let served = serve(&store, incoming).await;
             assert_eq!(served, Err(Error::Store(crate::Error::Files(io))));
+            assert_eq!(store.status().failures, 1);
             assert!(store.get(digest).await.unwrap().is_none());
         },
         move |peer| async move {
@@ -852,6 +853,7 @@ fn a_failed_read_of_the_store_ends_the_stream_with_code_0() {
             };
             let served = serve(&store, incoming).await;
             assert_eq!(served, Err(Error::Store(crate::Error::Files(io))));
+            assert_eq!(store.status().failures, 1);
         },
         move |peer| async move {
             let mut stream = peer.open().await;

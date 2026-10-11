@@ -1,3 +1,4 @@
+use super::history::tests::Repo;
 use super::*;
 
 /// The head of #1089 when it merged.
@@ -93,6 +94,7 @@ fn check(record: &Record) -> Vec<String> {
             let text = head(from) || [COMMENTS, MERGED, TEXT].contains(&from);
             Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
         },
+        &|_, _| Ok(None),
     )
     .unwrap()
 }
@@ -1208,6 +1210,100 @@ fn takes_a_count_of_zero_as_no_findings() {
 }
 
 #[test]
+fn reads_no_invisible_character_in_a_code_span() {
+    for c in ['\u{200B}', '\u{FFF8}'] {
+        let head = format!("{NAME}\nQuality: 8/10\n`{c}`");
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("has no summary line after its `Quality:` line"),
+            "summary {:X}",
+            u32::from(c)
+        );
+        let comment = ROUND.replace(
+            "Hot path: none",
+            &format!("`{c}Hot path:` `send`\nHot path: none"),
+        );
+        assert_eq!(
+            check(&record(vec![bot(&comment)])),
+            vec!["review round 3 has a second `Hot path:` line in its end lines."],
+            "end line {:X}",
+            u32::from(c)
+        );
+    }
+}
+
+#[test]
+fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
+    let round = ROUND.replace("Findings: none", "Findings: 2![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![
+            "review round 3 has `Findings: 2![]`, not a count or `none`: invalid digit \
+             found in string"
+        ]
+    );
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["review round 3 has the range `c77c67d7![]`, not `<from>..<head>`"]
+    );
+    let round = ROUND.replace("round 3", "round 3![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["`## Review round 3![]` has no round number"]
+    );
+}
+
+#[test]
+fn a_problem_shows_an_image_in_the_end_of_a_range_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f..c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![format!(
+            "review round 3 ends at c77c67d7![], not at the head {HEAD}. A commit \
+             after the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+}
+
+#[test]
+fn a_problem_of_an_old_round_shows_an_image_in_the_number_that_it_quotes() {
+    let round = ROUND
+        .replace("round 3", "round 3![](x)")
+        .replace("Hot path: none", "Hot path: `send`");
+    assert_eq!(
+        check(&record(vec![old(&round)])),
+        vec![
+            "`## Review round 3![]` has no round number",
+            "review round 3![] names no performance, which this round requires.",
+        ]
+    );
+}
+
+#[test]
+fn a_breaker_skip_problem_shows_an_image_in_a_commit_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f![](x)..c77c67d7");
+    // The phrase of `History::code_change` for a range start that names no commit.
+    let unnamed = |from: &str| format!("has `{from}`, which names no commit");
+    assert_eq!(
+        problems(
+            &record(vec![bot(&round)]),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|from, end| Ok((end != HEAD).then(|| unnamed(from))),
+            &|_, _| Ok(None),
+        ),
+        Ok(vec![
+            "review round 3 skips `breaker`, but its range has `38cba24f![]`, which \
+             names no commit."
+                .to_string()
+        ])
+    );
+}
+
+#[test]
 fn names_a_round_with_no_number() {
     assert_eq!(
         check(&record(vec![bot("## Review round one\nFindings: none")])),
@@ -1283,7 +1379,8 @@ fn a_breaker_skip_on_a_range_that_changes_only_a_script_fails() {
             &record(vec![bot(ROUND)]),
             HEAD,
             &|_| Ok(Place::Head),
-            &script
+            &script,
+            &|_, _| Ok(None)
         ),
         Ok(vec![
             "review round 3 skips `breaker`, but its range changes code at `a.sh:1`."
@@ -1303,7 +1400,13 @@ fn a_red_team_pr_with_no_oracle_label_needs_no_approval() {
 fn returns_a_failure_to_read_history() {
     let failed = |_: &str| Err("git rev-parse: bad".to_string());
     assert_eq!(
-        problems(&record(vec![bot(ROUND)]), HEAD, &failed, &|_, _| Ok(None)),
+        problems(
+            &record(vec![bot(ROUND)]),
+            HEAD,
+            &failed,
+            &|_, _| Ok(None),
+            &|_, _| Ok(None)
+        ),
         Err("git rev-parse: bad".to_string())
     );
     let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
@@ -1312,7 +1415,8 @@ fn returns_a_failure_to_read_history() {
             &record(vec![bot(ROUND)]),
             HEAD,
             &|_| Ok(Place::Head),
-            &failed
+            &failed,
+            &|_, _| Ok(None)
         ),
         Err("git diff: bad".to_string())
     );
@@ -2393,4 +2497,549 @@ fn fails_end_lines_in_a_quote_or_a_list() {
 fn an_old_round_that_defers_but_names_no_hot_path_needs_no_performance() {
     let round = ROUND.replace("Deferred: none", "Deferred: #12");
     assert_eq!(check(&record(vec![old(&round)])), Vec::<String>::new());
+}
+
+/// A name line.
+const NAME: &str = "**laptop.integrator-2** · integrator, #1211";
+
+/// A summary line.
+const SUMMARY: &str = "The fixes close each round 1 finding.";
+
+/// `ROUND` with `head` before its round heading, posted at `created`.
+fn headed_at(head: &str, created: &str) -> Comment {
+    let (_, rest) = ROUND.split_once("## Review round").unwrap();
+    Comment {
+        created: created.to_string(),
+        ..bot(&format!("{head}\n\n## Review round{rest}"))
+    }
+}
+
+/// `ROUND` with `head` before its round heading, posted at the cutoff of the rating.
+fn headed(head: &str) -> Comment {
+    headed_at(head, RATING_CUTOFF)
+}
+
+/// The problem of round 3 that asks for `what`.
+fn unrated(what: &str) -> Vec<String> {
+    vec![format!(
+        "review round 3 {what}. Write the round in the format of \
+         .claude/skills/review/SKILL.md, \"Round comment\"."
+    )]
+}
+
+#[test]
+fn passes_a_round_that_starts_with_its_name_line_and_rating() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10\n{SUMMARY}"),
+        format!("{NAME}\n\nQuality: 8/10\n\n{SUMMARY}\nA second line."),
+        format!("{NAME}\nQuality: 1/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 10/10\n{SUMMARY}"),
+        format!("  {NAME}  \n  Quality:  8/10\n{SUMMARY}"),
+        "__box1.builder-3__ · builder\nQuality: 5/10\nIt works.".to_string(),
+    ] {
+        let found = check(&record(vec![headed(&head)]));
+        assert_eq!(found, Vec::<String>::new(), "{head}");
+    }
+}
+
+#[test]
+fn fails_a_round_that_does_not_start_with_a_name_line() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    for head in [
+        String::new(),
+        rating.clone(),
+        format!("laptop.integrator-2 · integrator\n{rating}"),
+        format!("**laptop.integrator-2** integrator\n{rating}"),
+        format!("**laptop.integrator-2** ·\n{rating}"),
+        format!("**laptop.integrator-2**\n{rating}"),
+        format!("**laptop.integrator-2 · integrator**\n{rating}"),
+        format!("**\u{200b}** · integrator\n{rating}"),
+        format!("A note.\n{NAME}\n{rating}"),
+        format!("A note.\n\n{NAME}\n{rating}"),
+        format!("A note. {NAME}\n{rating}"),
+        format!("```\n{NAME}\n{rating}\n```"),
+        format!("    {NAME}\n    {rating}"),
+        format!("> {NAME}\n> {rating}"),
+        format!("- {NAME}\n  {rating}"),
+        format!("- a\n\n{NAME}\n{rating}"),
+        format!("# **laptop.integrator-2** notes\n\n{NAME}\n{rating}"),
+        format!("**a** note · role\n{rating}"),
+        format!("*laptop.integrator-2* · integrator\n{rating}"),
+        format!("`laptop.integrator-2` · integrator\n{rating}"),
+        format!("**![](x)** · integrator\n{rating}"),
+        format!("**![](x) ![](y)** · integrator\n{rating}"),
+        format!("**laptop.integrator-2** · ![](x)\n{rating}"),
+        format!("**laptop.integrator-2** · ![](x) ![](y)\n{rating}"),
+        format!(
+            "laptop.integrator-2 · integrator\n{rating}\n\n**laptop.integrator-2** \
+             wrote this round."
+        ),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("does not start with a name line `**<session>** · <role>`"),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_no_rating_from_1_to_10_after_its_name_line() {
+    for head in [
+        NAME.to_string(),
+        format!("{NAME}\n{SUMMARY}"),
+        format!("{NAME}\n{SUMMARY}\nQuality: 8/10"),
+        format!("{NAME}\nQuality: 0/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 11/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/9\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8\n{SUMMARY}"),
+        format!("{NAME}\nQuality: +8/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 08/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8 / 10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10, up from 6/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10. {SUMMARY}"),
+        format!("{NAME}\nquality: 8/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality 8/10\n{SUMMARY}"),
+        format!("{NAME}\n\n- Quality: 8/10\n\n{SUMMARY}"),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated(
+                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                 name line"
+            ),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_no_summary_line_after_its_rating() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10"),
+        format!("{NAME}\nQuality: 8/10\n\u{200b}"),
+        format!("{NAME}\nQuality: 8/10\n\n- {SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10\n\n> {SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10\n![](x)"),
+        format!("{NAME}\nQuality: 8/10\n![](x) ![](y)"),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("has no summary line after its `Quality:` line"),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn reads_an_emoji_name_in_a_summary_line_as_text() {
+    let head = format!("{NAME}\nQuality: 8/10\n:octocat:");
+    assert_eq!(check(&record(vec![headed(&head)])), Vec::<String>::new());
+}
+
+#[test]
+fn a_round_posted_before_the_cutoff_of_the_rating_needs_no_name_line() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    let before = headed_at(&rating, "2026-10-11T15:59:59Z");
+    assert_eq!(check(&record(vec![before])), Vec::<String>::new());
+    for created in [
+        RATING_CUTOFF,
+        "2026-10-11T16:00:01Z",
+        "2026-10-14T09:30:00Z",
+    ] {
+        assert_eq!(
+            check(&record(vec![headed_at(&rating, created)])),
+            unrated("does not start with a name line `**<session>** · <role>`"),
+            "{created}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_a_block_that_is_not_a_paragraph_between_its_three_lines() {
+    let name = "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                name line";
+    let summary = "has no summary line after its `Quality:` line";
+    for between in [
+        "- The breaker found a defect.",
+        "> a",
+        "```\na\n```",
+        "| a |\n|---|\n| b |",
+        "## Notes",
+        "---",
+    ] {
+        for (head, what) in [
+            (
+                format!("{NAME}\n\n{between}\n\nQuality: 8/10\n{SUMMARY}"),
+                name,
+            ),
+            (
+                format!("{NAME}\nQuality: 8/10\n\n{between}\n\n{SUMMARY}"),
+                summary,
+            ),
+        ] {
+            assert_eq!(check(&record(vec![headed(&head)])), unrated(what), "{head}");
+        }
+    }
+}
+
+#[test]
+fn names_raw_html_before_the_name_line_of_a_rated_round_as_raw_html() {
+    let head = format!("<details>\n\n{NAME}\nQuality: 8/10\n{SUMMARY}");
+    assert_eq!(check(&record(vec![headed(&head)])), vec![raw("<details>")]);
+}
+
+#[test]
+fn fails_each_round_with_no_name_line_and_names_it_before_a_missing_field() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    let free = Comment {
+        created: RATING_CUTOFF.to_string(),
+        ..bot(&format!("{rating}\n\n## Review round 2\n\nNo field."))
+    };
+    let last = headed(&format!("{NAME}\n{rating}"));
+    assert_eq!(
+        check(&record(vec![free, last])),
+        vec![
+            "review round 2 does not start with a name line `**<session>** · <role>`. \
+             Write the round in the format of .claude/skills/review/SKILL.md, \"Round \
+             comment\"."
+        ]
+    );
+}
+
+#[test]
+fn fails_a_round_that_github_starts_with_a_code_block_after_a_footnote() {
+    let head = format!("[^1]: x\n \n    Junk\n\n{NAME}\nQuality: 8/10\n{SUMMARY}");
+    assert_eq!(
+        check(&record(vec![headed(&head)])),
+        unrated("does not start with a name line `**<session>** · <role>`")
+    );
+}
+
+#[test]
+fn fails_a_rating_that_github_shows_with_a_backslash_after_it() {
+    for end in ["\\ ", "\\\t", "\\ \t "] {
+        let head = format!("{NAME}\nQuality: 8/10{end}\n{SUMMARY}");
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated(
+                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                 name line"
+            ),
+            "{end:?}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_that_github_ends_with_a_code_block_after_a_footnote() {
+    let tail = ROUND.to_string() + "\n\n[^1]: x\n \n    Hot path: `send`";
+    assert_eq!(check(&record(vec![bot(&tail)])), vec![unended("Deferred")]);
+}
+
+#[test]
+fn reads_the_character_u_fffc_as_text_not_as_an_image() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10\n\u{FFFC}"),
+        format!("{NAME}\nQuality: 8/10\n&#xFFFC;"),
+        format!("**\u{FFFC}** · integrator\nQuality: 8/10\n{SUMMARY}"),
+        format!("**laptop.integrator-2** · \u{FFFC}\nQuality: 8/10\n{SUMMARY}"),
+    ] {
+        let found = check(&record(vec![headed(&head)]));
+        assert_eq!(found, Vec::<String>::new(), "{head:?}");
+    }
+}
+
+/// `body` after a name line, a rating, and a summary.
+fn rated(body: &str) -> String {
+    format!("{NAME}\nQuality: 8/10\n{SUMMARY}\n\n{body}")
+}
+
+/// A rated comment by the bot, posted at the decision cutoff.
+fn bound(body: &str) -> Comment {
+    Comment {
+        created: DECISION_CUTOFF.to_string(),
+        ..bot(&rated(body))
+    }
+}
+
+/// A round comment with no finding.
+fn clean(number: u32, reviewers: &str, range: &str) -> String {
+    format!(
+        "## Review round {number}\n\nReviewers: {reviewers}\nRange: `{range}`\n\
+         Findings: none{END}"
+    )
+}
+
+/// The problem of round 2 with no `architecture`, whose range changes the decision
+/// `x.md`.
+const DECISION: &str = "review round 2 names no architecture, which this round \
+                        requires. Run `architecture` on its range, or on the whole PR \
+                        when the clone cannot read the range, then edit the round \
+                        comment: add `architecture` to `Reviewers:` and add its \
+                        findings. Its range changes the decision \
+                        `docs/decisions/x.md`.";
+
+/// The phrase of `DECISION` for what its range does.
+const CHANGE: &str = "changes the decision `docs/decisions/x.md`";
+
+/// What the check gives for `record` at the head of `repo`.
+fn check_at(repo: &Repo, record: &Record) -> Vec<String> {
+    problems_in(&repo.dir, record, &repo.head()).unwrap()
+}
+
+#[test]
+fn a_later_round_whose_range_changes_a_decision_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let range = format!("{start}..{end}");
+    let rounds =
+        |reviewers| record(vec![first(END), bound(&clean(2, reviewers, &range))]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, breaker")),
+        vec![DECISION]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("performance")),
+        vec![
+            "review round 2 names no reviewer, breaker, which this round requires.",
+            DECISION
+        ]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture, breaker")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_that_adds_a_decision_in_another_case_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision-case");
+    let end = repo.commit("docs/Decisions/x.md", "a rule\n");
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &end]),
+        "a.txt\nb.txt\ndocs/Decisions/x.md"
+    );
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace("docs/decisions/x.md", "docs/Decisions/x.md")]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_of_a_text_pr_whose_range_changes_a_decision_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision-text");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let range = format!("{start}..{end}");
+    let rounds = |reviewers| Record {
+        files: vec!["docs/decisions/x.md".to_string()],
+        ..record(vec![
+            bound(&clean(1, "reviewer", &range)),
+            bound(&clean(2, reviewers, &range)),
+        ])
+    };
+    assert_eq!(check_at(&repo, &rounds("reviewer")), vec![DECISION]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_requires_architecture_too() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let rounds = |reviewers| Record {
+        files: vec!["docs/decisions/x.md".to_string()],
+        ..record(vec![
+            bound(&clean(1, "reviewer", &format!("a..{start}"))),
+            bound(&clean(1, reviewers, &format!("{start}..{end}"))),
+        ])
+    };
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer")),
+        vec![DECISION.replace("round 2", "round 1")]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_that_is_not_the_last_requires_architecture_too() {
+    let (repo, start) = Repo::with_pr("review-decision-earlier");
+    let middle = repo.commit("docs/decisions/x.md", "a rule\n");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let record = record(vec![
+        first(END),
+        bound(&clean(
+            2,
+            "reviewer, breaker",
+            &format!("{start}..{middle}"),
+        )),
+        bound(&clean(3, "reviewer, breaker", &format!("{middle}..{end}"))),
+    ]);
+    assert_eq!(check_at(&repo, &record), vec![DECISION]);
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_posted_before_the_decision_cutoff_keeps_its_reviewers() {
+    let (repo, start) = Repo::with_pr("review-decision-cutoff");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let round = |created: &str| Comment {
+        created: created.to_string(),
+        ..bot(&rated(&clean(
+            2,
+            "reviewer, breaker",
+            &format!("{start}..{end}"),
+        )))
+    };
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T15:59:59Z")])
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T16:00:01Z")])
+        ),
+        vec![DECISION]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_of_a_code_pr_gets_one_problem() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered-code");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let record = record(vec![
+        bound(&clean(
+            1,
+            "reviewer, architecture, breaker",
+            &format!("a..{start}"),
+        )),
+        bound(&clean(1, "reviewer, breaker", &format!("{start}..{end}"))),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec!["review round 1 names no architecture, which this round requires."]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_merge_moves_pr_text_into_a_decision_requires_architecture() {
+    let (repo, _) = Repo::with_pr("review-decision-move");
+    let (_, start, end) = repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace(
+            CHANGE,
+            "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
+             decision `docs/decisions/x.md`"
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_range_names_no_commit_requires_architecture() {
+    let (repo, end) = Repo::with_pr("review-decision-unnamed");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("abc1234..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace(CHANGE, "has `abc1234`, which names no commit")]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_ends_before_a_code_commit_fails_at_the_head() {
+    let (repo, start) = Repo::with_pr("review-end-code");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    let record = record(vec![first(END), round]);
+    assert_eq!(check_at(&repo, &record), Vec::<String>::new());
+    let head = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 2 ends at `{end}`, and the range from it to the head \
+             `{head}` changes code at `a.rs:1`. A commit that changes code needs a \
+             new round."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_ends_off_the_chain_of_the_head_fails() {
+    let (repo, start) = Repo::with_pr("review-end-off");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    repo.git(&["reset", "--quiet", "--hard", &start]);
+    let head = repo.commit("docs/y.md", "another doc\n");
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![format!(
+            "review round 2 ends at {end}, not at the head {head}. A commit after \
+             the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_skips_the_breaker_on_a_range_that_changes_code_fails() {
+    let (repo, start) = Repo::with_pr("review-skip-code");
+    let skip =
+        "reviewer\nBreaker: skipped, the check counts no code change in the range";
+    let text = repo.commit("docs/x.md", "a doc\n");
+    let round = |end: &str| {
+        let round = bound(&clean(2, skip, &format!("{start}..{end}")));
+        record(vec![first(END), round])
+    };
+    assert_eq!(check_at(&repo, &round(&text)), Vec::<String>::new());
+    let code = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &round(&code)),
+        vec!["review round 2 skips `breaker`, but its range changes code at `a.rs:1`."]
+    );
+    repo.remove();
+}
+
+#[test]
+fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
+    let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
+    let check = |comments| {
+        problems(
+            &record(comments),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|_, _| Ok(None),
+            &failed,
+        )
+    };
+    let range = format!("a..{HEAD}");
+    let one = bound(&clean(1, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![one]), Ok(Vec::new()));
+    let named = bound(&clean(2, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![named]), Ok(Vec::new()));
+    let earlier = bot(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![earlier]), Ok(Vec::new()));
+    let later = bound(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
 }

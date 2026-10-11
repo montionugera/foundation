@@ -424,7 +424,9 @@ fn refuses_a_response_whose_body_ends_early() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"abcd").await,
-                    Err(Error::Message(wire::hub::Error::Unfinished { remain: 2 }))
+                    Err(Error::Message(wire::hub::client::Error::Unfinished {
+                        remain: 2
+                    }))
                 );
             })
         },
@@ -460,7 +462,9 @@ fn gives_the_turn_after_a_response_that_is_not_valid() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"ab").await,
-                    Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                    Err(Error::Message(wire::hub::client::Error::Kind {
+                        kind: 0xff
+                    }))
                 );
                 let next = within(&node.clock(), QUIET, client.request(b"cd")).await;
                 assert_eq!(next, Some(Ok(b"dc".to_vec())));
@@ -648,7 +652,9 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
             node.clock().sleep(LIFE).await;
             assert_eq!(
                 client.request(b"ab").await,
-                Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
             );
         },
     );
@@ -670,7 +676,9 @@ fn gives_the_error_of_the_renewal_to_each_later_request() {
         |node, tasks, at| async move {
             let client = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock().sleep(LIFE).await;
-            let ended = Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }));
+            let ended = Err(Error::Message(wire::hub::client::Error::Kind {
+                kind: 0xff,
+            }));
             assert_eq!(client.request(b"ab").await, ended);
             assert_eq!(client.request(b"cd").await, ended);
         },
@@ -695,7 +703,9 @@ fn gives_the_error_of_the_renewal_to_a_request_in_flight() {
             let client = connect(&node, tasks, at, AGENT).await.expect("connects");
             assert_eq!(
                 client.request(b"ab").await,
-                Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
             );
         },
     );
@@ -1196,7 +1206,7 @@ fn names_each_error() {
             "the session failed: the peer stopped answering",
         ),
         (
-            Error::Message(wire::hub::Error::Empty),
+            Error::Message(wire::hub::client::Error::Empty),
             "the node sent a message that is not valid: the hub message is empty",
         ),
         (

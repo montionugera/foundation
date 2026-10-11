@@ -85,9 +85,12 @@ exclude_re = [
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
   'crates/node/src/admin\.rs:.*replace check with \(\)',
-  # The check that `identity::check` and `admin::check` call, for the same reason. The
-  # unit tests `panics_when_a_decode_*` in `sector.rs` show that it panics.
+  # The check that `identity::check`, `admin::check`, and `address::check` call, for
+  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
+  # it panics.
   'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # The oracle of `address` in the same target and tests, for the same reason.
+  'crates/node/src/address\.rs:.*replace check with \(\)',
   # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
@@ -102,6 +105,11 @@ exclude_re = [
   # Only a counting allocator sees the buffer that a skipped free leaks, and no public
   # call reaches the manager until #435 PR 6c, whose memory test removes this entry.
   'crates/connector-opcua/src/connection\.rs:.*replace <impl Drop for Buffer>::drop with \(\)',
+  # Only LSan sees the client that a skipped free leaks, since no public call reaches
+  # a client. The sanitizers job runs
+  # `client::tests::a_client_reads_a_double_and_a_seed_replays`, which then fails. The
+  # memory test of the client in #435 PR 6c3 removes this entry.
+  'crates/connector-opcua/src/client\.rs:.*replace <impl Drop for Client>::drop with \(\)',
   # A fence changes the order of memory operations around a counter read, and no
   # result a test can see. Loom does not model a counter read.
   'crates/os/src/clock\.rs:.*replace (settle|hold) with \(\)',

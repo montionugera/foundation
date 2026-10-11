@@ -15,12 +15,18 @@
   though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request stream
   before an admitted hello) and `Pending` (a request while one waits for its reply).
   A message of the wrong kind for its stream, such as a hello on a request stream, is
-  `serve::Error::Message` with `wire::hub::Error::Kind` (`laptop.architect`,
+  `serve::Error::Client` with `wire::hub::client::Error::Kind` (`laptop.architect`,
   2026-10-08T15:38:46Z,
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704), and a
-  body that ends early is `Message` with `Unfinished` (`laptop.architect`,
+  body that ends early is `Client` with `Unfinished` (`laptop.architect`,
   2026-10-08T16:52:55Z,
   https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697).
+  `serve::Error::Client` holds each of them (CLIENT HELLO; `laptop.architect`,
+  2026-10-11T10:16:56Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027, item
+  4). Supersedes `serve::Error::Message` for them, of
+  https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704 and
+  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697.
   Supersedes item 5 (`serve::Error::Hello`) of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6058789738.
   Lost: a `Config::clock` beside `time`, with a loop in `hub` that knows the slew;
@@ -47,11 +53,17 @@
   first request stream once the challenge after its hello comes. The node sends it
   only after it admits the hello, so this rule also makes the hello stream the first
   that `Link::serve` gets, in any order of the headers. The node does not check the
-  rule. A program that breaks it gets `Unadmitted`, `Message` with `Kind`, or a served
+  rule. A program that breaks it gets `Unadmitted`, `Client` with `Kind`, or a served
   request (`laptop.architect`, 2026-10-08T19:22:10Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6067359431).
   Supersedes the result for a program that breaks the rule of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066239520.
+  After the split of CLIENT HELLO, `Client` holds the `Kind` that the comment of
+  2026-10-08T19:22:10Z gave as `Message` with `Kind` (`laptop.architect`,
+  2026-10-11T11:31:42Z,
+  https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108567148).
+  Supersedes `Message` with `Kind` of
+  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6067359431.
   Lost: a node that holds each request stream until it admits a hello, which adds a
   queue, its bound, and its timeout to `hub` to save one round trip for each session.
   Decided by `laptop.architect` (2026-10-08T18:16:38Z,
