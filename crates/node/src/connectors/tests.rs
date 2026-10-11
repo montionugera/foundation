@@ -1182,27 +1182,35 @@ fn rekeyed(kind: &str, version: usize, first: u128) -> BTreeMap<Name, Definition
     definitions
 }
 
-/// Applies `plant.a` with status keys from 1, then at 1 s the spec in use after an
-/// apply that removed it and one that placed it again at `version`, which
+/// What [`rekey`] gives.
+struct Rekeyed {
+    /// The status frames on the new channels.
+    frames: usize,
+    starts: Events,
+}
+
+/// Applies `plant.a` of `kind` with status keys from 1, then at 1 s the spec in use
+/// after an apply that removed it and one that placed it again at `version`, which
 /// `mesh::used::Watch::next` gives as one change. The status channels then have new
-/// keys from 1001. Gives the count of status frames on the new channels until 10 s.
-fn frames_after_rekey(version: usize) -> usize {
+/// keys from 1001. The task of `hold` ends `linger` after the cancel. Gives the status
+/// frames on the new channels and each start until 10 s, as [`record`] does.
+fn rekey(kind: &'static str, version: usize, linger: Option<Span>) -> Rekeyed {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
         let (starts, cancels, got) =
             (Starts::default(), Starts::default(), Starts::default());
-        let kinds = kinds(None, &starts, &cancels, &got);
+        let kinds = kinds(linger, &starts, &cancels, &got);
         let (config, _) = create(&node, &tasks, kinds, Mesh::Synced).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
         let mut runs = Runs::new(config, name(NODE));
-        let first = rekeyed("quick", 0, 1);
+        let first = rekeyed(kind, 0, 1);
         hub.set_definitions(&first);
         runs.apply(&first);
         clock.sleep_until(start + ms(1_000)).await;
-        let again = rekeyed("quick", version, 1_001);
+        let again = rekeyed(kind, version, 1_001);
         hub.set_definitions(&again);
         let open = ::hub::reader::Config {
             select: types::name::Selector::new(["plant.a.status.state"])
@@ -1223,7 +1231,14 @@ fn frames_after_rekey(version: usize) -> usize {
         runs.apply(&again);
         clock.sleep_until(start + ms(10_000)).await;
         drop(runs);
-        frames.get()
+        let starts = starts.lock().expect("no panic");
+        let since = |(connector, at, version): &(String, Monotonic, usize)| {
+            (connector.clone(), *at - start, *version)
+        };
+        Rekeyed {
+            frames: frames.get(),
+            starts: starts.iter().map(since).collect(),
+        }
     });
     run.expect("the run ends")
 }
@@ -1232,12 +1247,26 @@ fn frames_after_rekey(version: usize) -> usize {
 /// them.
 #[test]
 fn a_change_with_new_status_keys_writes_the_new_status() {
-    assert_eq!(frames_after_rekey(1), 1, "`state` running");
+    let rekeyed = rekey("quick", 1, None);
+    assert_eq!(rekeyed.frames, 1, "`state` running");
 }
 
 /// A removal and a placement again of the same connector, which the node sees as one
 /// spec in use, start a run that writes the status channels of the new keys.
 #[test]
 fn a_removal_and_a_placement_in_one_spec_in_use_writes_the_new_status() {
-    assert_eq!(frames_after_rekey(0), 1, "`state` running");
+    let rekeyed = rekey("quick", 0, None);
+    assert_eq!(rekeyed.frames, 1, "`state` running");
+    let starts = [start("plant.a", 0, 0), start("plant.a", 1_000, 0)];
+    assert_eq!(rekeyed.starts, starts);
+}
+
+/// The run of the new keys starts only after the old run returned, so no two runs of
+/// one name write its status.
+#[test]
+fn a_placement_again_starts_after_the_old_run_ended() {
+    let rekeyed = rekey("hold", 0, Some(ms(2_000)));
+    assert_eq!(rekeyed.frames, 1, "`state` running");
+    let starts = [start("plant.a", 0, 0), start("plant.a", 3_000, 0)];
+    assert_eq!(rekeyed.starts, starts);
 }
