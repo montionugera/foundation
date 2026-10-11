@@ -188,7 +188,9 @@
   the new one arrives (ONE SESSION PER PEER), so at the bound another peer can take the
   place first (`laptop.architect-2`, 15:18 UTC:
   https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
-  refuses a member, so a flood of peers outside the region cannot lock a member out.
+  refuses a member, so a flood of peers outside the region cannot lock a member out
+  (`laptop.architect`, 2026-10-11 01:03 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194).
   Trigger: the PR that adds the change kind that removes a member (MESH DRIVER). That
   change also closes each session of that node, with the code of a refused session, and
   so ends its `Hub` and `Mesh` streams. The node then admits it again as any other peer.
