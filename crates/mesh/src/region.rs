@@ -19,7 +19,7 @@ use crate::bytes::{
     take_count, take_key, take_keys, take_name, take_prefix, take_rising,
 };
 use crate::card;
-use crate::change::{self, Change, Join, Malformed};
+use crate::change::{self, Change, Join, Undecoded};
 use crate::member::Member;
 use crate::status::Status;
 use crate::ticket::{self, Options, Record};
@@ -501,13 +501,8 @@ pub(crate) enum Refused {
         voters: usize,
     },
     /// The bytes of a committed entry of a known kind are not the body of that kind,
-    /// as [`Malformed::Body`].
-    Body {
-        /// The kind byte.
-        kind: u8,
-        /// The length of the bytes.
-        length: usize,
-    },
+    /// as [`change::Malformed::Body`].
+    Body(Undecoded),
 }
 
 impl From<Unfit> for Refused {
@@ -540,11 +535,7 @@ impl fmt::Display for Refused {
                 "{held} of {voters} voters hold the chunks of a spec change, not a \
                  majority"
             ),
-            Self::Body { kind, length } => Malformed::Body {
-                kind: *kind,
-                length: *length,
-            }
-            .fmt(f),
+            Self::Body(undecoded) => undecoded.fmt(f),
         }
     }
 }
@@ -1425,10 +1416,10 @@ mod tests {
                 ),
             ),
             (
-                Refused::Body {
+                Refused::Body(Undecoded {
                     kind: 2,
                     length: 40,
-                },
+                }),
                 "a change of kind 2 and 40 bytes is not in the byte form of its kind"
                     .to_owned(),
             ),

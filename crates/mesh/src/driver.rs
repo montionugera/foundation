@@ -900,9 +900,7 @@ impl Group {
                 Data::Bytes(bytes) => match Change::decode(&bytes) {
                     Ok(change) => self.apply_change(change),
                     // Every node of this build judges a body the same way.
-                    Err(Malformed::Body { kind, length }) => {
-                        Err(Refused::Body { kind, length })
-                    }
+                    Err(Malformed::Body(undecoded)) => Err(Refused::Body(undecoded)),
                     Err(Malformed::Unknown(cause)) => {
                         return Err(Stopped::Change { at, cause });
                     }

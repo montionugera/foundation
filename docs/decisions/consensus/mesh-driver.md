@@ -182,7 +182,11 @@
   an entry, and a newer build can. An entry with no change (the first entry of a leader)
   is not a change of 0 bytes. A committed entry of a known kind whose body does not
   decode is `Refused::Body` on every node, and the group goes on, so one voter that
-  proposes bad bytes cannot halt the region. From the first stable release (C9d), a
+  proposes bad bytes cannot halt the region. One `pub(crate)` type of `change` holds
+  the kind and the length of such a body: `Malformed::Body` and `Refused::Body` each
+  hold it, and the driver moves it from one to the other. Decided by
+  `laptop.architect` (2026-10-11):
+  https://github.com/synnaxlabs/foundation/issues/1509#issuecomment-6108834570. From the first stable release (C9d), a
   change to the body or to a cap of a known kind (the 64 status entries of a `Join`)
   takes a new kind, which writers use only after the format flag (C9d) allows it; a
   node of an older build stops at it and never applies it differently. Decided by
