@@ -113,5 +113,14 @@ fn a_part_holds_its_block_while_a_byte_of_it_is_in_the_window() {
     let window = 256 << 10;
     let most = window / VIEW_MIN + 2;
     let held = held(0, window, VIEW_MIN, 4 * most, Span::ZERO);
+    assert!(held > window / BLOCK + 2, "{held} blocks");
     assert!(held <= most, "{held} blocks");
+}
+
+#[test]
+fn a_part_shorter_than_a_view_holds_only_the_block_in_hand() {
+    let window = 256 << 10;
+    let count = 4 * (window / VIEW_MIN + 2);
+    let held = held(0, window, VIEW_MIN - 1, count, Span::ZERO);
+    assert!(held <= 1, "{held} blocks");
 }
