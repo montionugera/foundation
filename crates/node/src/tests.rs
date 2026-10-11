@@ -5064,6 +5064,44 @@ mod port {
             assert_eq!(node.join(), Err(Error::Mesh(error)));
         }
 
+        /// A node whose chunk store holds each founding chunk starts again after
+        /// another writer took the disk under 1 GiB free: the puts of its founding
+        /// chunks take no new room.
+        #[test]
+        fn a_restart_on_a_disk_under_the_free_floor_opens_the_mesh() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let node = start(&host, region.clone());
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move {
+                    let files = host.files();
+                    let free_bytes = files.free().await.expect("the free bytes");
+                    let len = free_bytes - (1 << 30) + 1;
+                    let mode = env::files::Mode::Create { len };
+                    let file = files.open(Path::new("other"), mode).await;
+                    let file = file.expect("the file of the other writer opens");
+                    file.sync().await.expect("syncs");
+                    file.close().await;
+                    files.sync_dir(Path::new("")).await.expect("syncs");
+                    files.free().await.expect("the free bytes")
+                })
+                .expect("the run ends");
+            assert_eq!(free_bytes, (1 << 30) - 1);
+            let node = start(&host, region);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
         /// Takes the lock of `host` as soon as it is free, then binds the node's port
         /// and opens the mesh's log to write. Gives whether the lock was held, the
         /// bind, the open of the log, and the file closes of `host` before the
