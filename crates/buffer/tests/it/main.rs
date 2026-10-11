@@ -1629,6 +1629,164 @@ fn committed_waits_for_an_entry_appended_during_a_commit() {
 }
 
 #[test]
+fn next_commit_on_an_idle_buffer_waits_for_an_append_and_its_commit() {
+    run_on_memory(24, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let mut next = pin!(buffer.next_commit());
+        shard.clock.sleep(commits(21)).await;
+        let polled = poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await;
+        assert_eq!(polled, Poll::Pending, "no append, no commit");
+        buffer
+            .append([entry(1, a, Path::Live, 0, 3, Some(30), Parts::default())])
+            .expect("queues");
+        let before = shard.clock.now();
+        next.await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
+        assert_eq!(shard.clock.now() - before, COMMIT, "one deadline");
+    });
+}
+
+#[test]
+fn next_commit_during_a_commit_resolves_at_its_end() {
+    run_on_memory(25, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let sync = Span::from_nanos(4_000_000);
+        shard.memory().slow_syncs(shard.clock.clone(), sync);
+        buffer
+            .append([entry(1, a, Path::Live, 0, 1, Some(1), Parts::default())])
+            .expect("queues");
+        shard
+            .clock
+            .sleep(Span::from_nanos(COMMIT.nanos() + sync.nanos() / 2))
+            .await;
+        let before = shard.clock.now();
+        buffer.next_commit().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+        assert_eq!(
+            shard.clock.now() - before,
+            Span::from_nanos(sync.nanos() / 2)
+        );
+        assert_eq!(shard.memory().syncs(), 3, "the commit in flight only");
+    });
+}
+
+#[test]
+fn next_commit_after_a_failed_commit_gives_its_error_at_once() {
+    let (mut sim, node) = create_node(120);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = node_config(&node, tasks, DIR);
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        node.fail_file(FilePath::new(RING), Operation::Sync);
+        buffer
+            .append([entry(1, a, Path::Live, 0, 3, Some(30), Parts::default())])
+            .expect("queues");
+        let failed = FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        };
+        assert_eq!(buffer.committed().await, Err(failed.clone()));
+        let mut next = pin!(buffer.next_commit());
+        let polled = poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await;
+        assert_eq!(polled, Poll::Ready(Err(failed)));
+    })
+    .expect("the buffer ends");
+}
+
+#[test]
+fn next_commit_held_past_the_drop_of_an_idle_buffer_resolves_at_its_end() {
+    run_on_memory(26, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let next = buffer.next_commit();
+        let ended = buffer.ended();
+        drop(buffer);
+        ended.await.expect("ends");
+        assert_eq!(next.await, Ok(()));
+        assert_eq!(shard.memory().syncs(), 2, "no commit after the open");
+    });
+}
+
+/// A `next_commit` whose sync was in flight at its call gives `Ok` past the drop, also
+/// when a later sync ends the task with an error.
+#[test]
+fn next_commit_held_past_the_drop_gives_ok_when_a_later_sync_fails() {
+    run_on_memory(27, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        shard.memory().slow_syncs(shard.clock.clone(), tenths(4));
+        buffer
+            .append([entry(1, a, Path::Live, 0, 1, Some(1), Parts::default())])
+            .expect("queues");
+        shard.clock.sleep(tenths(12)).await;
+        let mut next = pin!(buffer.next_commit());
+        buffer
+            .append([entry(1, a, Path::Live, 1, 1, Some(2), Parts::default())])
+            .expect("queues while the first sync runs");
+        let late = buffer.committed();
+        shard.memory().fail_syncs();
+        let ended = buffer.ended();
+        drop(buffer);
+        shard.clock.sleep(tenths(3)).await;
+        let polled = poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await;
+        assert_eq!(polled, Poll::Pending, "the task has not ended");
+        let failed = FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        };
+        assert_eq!(ended.await, Err(failed.clone()));
+        assert_eq!(next.await, Ok(()));
+        assert_eq!(late.await, Err(failed));
+    });
+}
+
+#[test]
+fn next_commit_held_past_the_drop_gives_the_error_of_its_failed_sync() {
+    run_on_memory(28, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        shard.memory().slow_syncs(shard.clock.clone(), tenths(4));
+        shard.memory().fail_syncs();
+        buffer
+            .append([entry(1, a, Path::Live, 0, 1, Some(1), Parts::default())])
+            .expect("queues");
+        shard.clock.sleep(tenths(12)).await;
+        let next = buffer.next_commit();
+        drop(buffer);
+        let failed = FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        };
+        assert_eq!(next.await, Err(failed));
+    });
+}
+
+#[test]
 fn an_entry_below_the_tail_is_a_broken_invariant() {
     let (mut sim, _handle) = start(9, |shard| async move {
         let mut slots = Slots::new();
@@ -3548,8 +3706,8 @@ fn a_failed_record_write_ends_the_buffer_with_its_error() {
     .expect("the buffer ends");
 }
 
-/// A `Commit` answers only for the entries appended before its call: past the drop,
-/// a later failed write does not change its result.
+/// The `Commit` that `committed` gives answers only for the entries appended before
+/// its call: past the drop, a later failed write does not change its result.
 #[test]
 fn a_commit_held_past_the_drop_gives_ok_when_a_later_write_fails() {
     let (mut sim, node) = create_node(113);

@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn decode_refuses_an_unknown_kind() {
         let mut bytes = encoded(&home(1, 2));
-        for kind in [0, 5] {
+        for kind in std::iter::once(0).chain(SPEC + 1..=u8::MAX) {
             bytes[0] = kind;
             let error = Change::decode(&bytes).unwrap_err();
             assert_eq!(error, Malformed::Unknown(Unknown::Kind { kind }));
