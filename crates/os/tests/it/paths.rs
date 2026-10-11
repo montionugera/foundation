@@ -2,15 +2,18 @@
 
 use std::fs::{self, Permissions};
 use std::io::Read;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{
+    FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown, symlink,
+};
 use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found};
 use rustix::io::Errno;
 
 use crate::cases::{self, Host};
-use crate::disk::Scratch;
+use crate::disk::{Scratch, mode};
 use crate::files::mkfifo;
+use crate::groups;
 
 fn run(case: fn(&Host<'_>)) {
     let scratch = Scratch::new();
@@ -23,10 +26,6 @@ fn run(case: fn(&Host<'_>)) {
 
 fn make_dir(path: &Path) {
     fs::create_dir(path).unwrap();
-}
-
-fn mode(path: &Path) -> u32 {
-    fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
 /// A directory that takes no new file: a write that makes one in it gives `EACCES`.
@@ -86,6 +85,33 @@ fn a_write_keeps_the_mode_of_the_file_it_replaces() {
         os::paths().write(path, b"new").unwrap();
     }
     assert_eq!((mode(&private), mode(&open)), (0o600, 0o664));
+}
+
+#[test]
+fn a_write_keeps_no_setuid_or_setgid_bit_of_the_file_it_replaces() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("tool");
+    for old in [0o4755, 0o2755] {
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(old)).unwrap();
+        assert_eq!(mode(&path), old);
+        os::paths().write(&path, b"new").unwrap();
+        assert_eq!(mode(&path), 0o755, "{old:o}");
+    }
+}
+
+#[test]
+fn a_write_keeps_a_group_of_the_user_that_a_new_file_does_not_get() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("secret.hcl");
+    fs::write(&path, b"old").unwrap();
+    let made = fs::metadata(&path).unwrap().gid();
+    let other = groups::other(made);
+    chown(&path, None, Some(other)).unwrap();
+    fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
+    os::paths().write(&path, b"new").unwrap();
+    let new = fs::metadata(&path).unwrap();
+    assert_eq!((new.gid(), mode(&path)), (other, 0o640));
 }
 
 #[test]

@@ -1,6 +1,6 @@
-//! `os` with `sudo`: files on a small filesystem that the test mounts, and a listener
-//! that an operator aborts. Only one CI step on a GitHub-hosted runner runs this
-//! target.
+//! `os` with `sudo`: files on a small filesystem that the test mounts, a listener
+//! that an operator aborts, and a write on a file of another user or group. Only one
+//! CI step on a GitHub-hosted runner runs this target.
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 #![cfg(target_os = "linux")]
@@ -11,10 +11,16 @@ use std::process::Command;
 
 use env::files::{Error, Files, Mode};
 
+#[path = "../common/mod.rs"]
+#[expect(dead_code, reason = "this binary only makes a scratch directory")]
+mod disk;
 #[path = "../it/free.rs"]
 mod free;
+#[path = "../common/groups.rs"]
+mod groups;
 #[path = "../it/kept.rs"]
 mod kept;
+mod paths;
 #[path = "../common/seccomp.rs"]
 mod seccomp;
 #[path = "../common/sockets.rs"]

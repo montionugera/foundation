@@ -17,6 +17,9 @@ mod entropy;
 mod files;
 #[cfg(target_os = "macos")]
 mod free;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "../common/groups.rs"]
+mod groups;
 #[cfg(target_os = "linux")]
 mod kept;
 #[cfg(target_os = "linux")]

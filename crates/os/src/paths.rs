@@ -1,8 +1,8 @@
 //! The files of the host by the paths that a user gave.
 
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{self, File, Metadata, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::path::Path;
 
 use env::entropy::Driver as _;
@@ -24,8 +24,8 @@ impl env::paths::Driver for Driver {
             // Such a path resolves only to a directory, so the open fails.
             return in_place(path, bytes).map_err(|e| error(&e));
         }
-        let kept = match fs::symlink_metadata(path) {
-            Ok(old) if old.is_file() => Some(old.permissions()),
+        let old = match fs::symlink_metadata(path) {
+            Ok(old) if old.is_file() => Some(old),
             Ok(_) => return in_place(path, bytes).map_err(|e| error(&e)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(error(&e)),
@@ -35,7 +35,7 @@ impl env::paths::Driver for Driver {
         let name = format!(".{:016x}.new", u64::from_le_bytes(key));
         let new = path.with_file_name(name);
         let file = open(&new).map_err(|e| error(&e))?;
-        fill(file, bytes, kept)
+        fill(file, bytes, old.as_ref())
             .and_then(|()| fs::rename(&new, path))
             .or_else(|e| fs::remove_file(&new).and(Err(e)))
             .map_err(|e| error(&e))
@@ -95,13 +95,42 @@ fn in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Writes `bytes` to `file`, synced, so a power cut after the rename leaves the
-/// whole file. `kept` is the mode of the file that it replaces.
-fn fill(mut file: File, bytes: &[u8], kept: Option<Permissions>) -> io::Result<()> {
-    if let Some(kept) = kept {
-        file.set_permissions(kept)?;
-    }
+/// whole file. `old` is the file that it replaces. Its bits come after the bytes, so
+/// only this user reads a part of them.
+fn fill(mut file: File, bytes: &[u8], old: Option<&Metadata>) -> io::Result<()> {
     file.write_all(bytes)?;
+    if let Some(old) = old {
+        let group = own(&file, old)?.gid();
+        file.set_permissions(Permissions::from_mode(bits(old, group)))?;
+    }
     file.sync_all()
+}
+
+/// Gives `file` the owner and the group of `old`, or its group only, and returns what
+/// `file` then has.
+fn own(file: &File, old: &Metadata) -> io::Result<Metadata> {
+    let group = Some(old.gid());
+    match fchown(file, Some(old.uid()), group).or_else(|_| fchown(file, None, group)) {
+        // The OS refuses an owner to a user that is not root, and a group that the
+        // user is not in. `bits` closes the file to a group that it did not get.
+        Ok(()) | Err(_) => file.metadata(),
+    }
+}
+
+/// The permission bits of a file with the group `group` that replaces `old`: those of
+/// `old`, with none for the group when it is not the group of `old`.
+fn bits(old: &Metadata, group: u32) -> u32 {
+    let bits = old.mode() & 0o777;
+    if group == old.gid() {
+        bits
+    } else {
+        ungrouped(bits)
+    }
+}
+
+/// `bits` with no access for the group.
+fn ungrouped(bits: u32) -> u32 {
+    bits & !0o070
 }
 
 fn error(e: &io::Error) -> Error {

@@ -11,10 +11,10 @@
 #[expect(dead_code, reason = "this binary only makes a scratch directory")]
 mod disk;
 
-use std::fs;
-use std::os::unix::fs::symlink;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::{PermissionsExt, symlink};
 
-use disk::Scratch;
+use disk::{Scratch, mode};
 use env::paths::{Error, Found};
 use rustix::io::Errno;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
@@ -44,6 +44,9 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     symlink(&behind, &link).unwrap();
     let kept = scratch.0.join("kept");
     fs::create_dir(&kept).unwrap();
+    let open = kept.join("plant");
+    fs::write(&open, b"old plan").unwrap();
+    fs::set_permissions(&open, Permissions::from_mode(0o644)).unwrap();
     #[cfg(target_os = "macos")]
     append_only(&kept, true);
 
@@ -59,8 +62,7 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     };
     setrlimit(Resource::Fsize, small).unwrap();
     let paths = os::paths();
-    let written = [&file, &link, &kept.join("plant")]
-        .map(|path| paths.write(path, b"a new plan"));
+    let written = [&file, &link, &open].map(|path| paths.write(path, b"a new plan"));
     setrlimit(Resource::Fsize, limit).unwrap();
     #[cfg(target_os = "macos")]
     append_only(&kept, false);
@@ -82,8 +84,11 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     #[cfg(target_os = "linux")]
     let (refused, left) = (Errno::FBIG.raw_os_error(), 0);
     assert_eq!(written[2], Err(Error::Io { code: refused }));
-    let Ok(Found::Directory(hidden)) = paths.read(&kept, 1 << 12) else {
+    let Ok(Found::Directory(mut hidden)) = paths.read(&kept, 1 << 12) else {
         panic!("`kept` is a directory");
     };
+    hidden.retain(|entry| *entry != open);
     assert_eq!(hidden.len(), left, "{hidden:?}");
+    // The part of the bytes that stays does not have the bits of the old file yet.
+    assert!(hidden.iter().all(|part| mode(part) == 0o600));
 }
