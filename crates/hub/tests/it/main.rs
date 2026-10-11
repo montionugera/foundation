@@ -309,11 +309,21 @@ impl Pause {
     }
 }
 
-/// Panics unless main ran first, as [`Pause::race`] gives, in some of `firsts` and
-/// second in others.
-fn assert_both(firsts: &[bool]) {
-    let first = firsts.iter().filter(|&&first| first).count();
-    let second = firsts.len() - first;
+/// Runs `main` as [`run_on`] does, once for each value of `sim::Config::seed` below
+/// `values`. Panics unless main ran first, as `main` gives from [`Pause::race`], in
+/// some runs and second in others.
+fn races<F>(
+    values: u64,
+    ring: (u64, usize),
+    main: impl Fn(u64, Test) -> F + Clone + Send + 'static,
+) where
+    F: Future<Output = bool> + 'static,
+{
+    let (first, second): (Vec<u64>, Vec<u64>) = (0..values).partition(|&seed| {
+        let main = main.clone();
+        run_on(seed, ring, move |test| main(seed, test))
+    });
+    let (first, second) = (first.len(), second.len());
     assert!(
         first > 0 && second > 0,
         "main ran first in {first} runs and second in {second}"
@@ -331,13 +341,12 @@ impl env::tasks::Driver for Counted {
 }
 
 /// Runs `main` on a hub of one shard of a simulated node, once the node has mesh
-/// time. Gives what `main` gives.
-fn run<T, F>(seed: u64, main: impl FnOnce(Test) -> F + Send + 'static) -> T
+/// time.
+fn run<F>(seed: u64, main: impl FnOnce(Test) -> F + Send + 'static)
 where
-    T: Send + 'static,
-    F: Future<Output = T> + 'static,
+    F: Future<Output = ()> + 'static,
 {
-    run_on(seed, (AREA, BODY_MAX), main)
+    run_on(seed, (AREA, BODY_MAX), main);
 }
 
 /// Runs `main` as [`run`] does, on a ring of the area and body max in `ring`.
@@ -356,14 +365,12 @@ where
     })
 }
 
-/// Runs `main` on a hub of one shard of a simulated node with no mesh time. Gives
-/// what `main` gives.
-fn unsynced<T, F>(seed: u64, main: impl FnOnce(Test) -> F + Send + 'static) -> T
+/// Runs `main` on a hub of one shard of a simulated node with no mesh time.
+fn unsynced<F>(seed: u64, main: impl FnOnce(Test) -> F + Send + 'static)
 where
-    T: Send + 'static,
-    F: Future<Output = T> + 'static,
+    F: Future<Output = ()> + 'static,
 {
-    unsynced_on(seed, (AREA, BODY_MAX), main)
+    unsynced_on(seed, (AREA, BODY_MAX), main);
 }
 
 /// Runs `main` as [`unsynced`] does, on a ring of the area and body max in `ring`.
@@ -924,45 +931,40 @@ fn ends_the_commit_task_in_its_commit_wait_once_the_hub_drops() {
 /// ring open until it drops. The commit task ends.
 #[test]
 fn drops_the_commit_it_waits_for_with_the_hub() {
-    let firsts: Vec<bool> = (0..64)
-        .map(|seed| {
-            run(seed, move |test| async move {
-                let reader = test.reader(&["value"], Mode::Complete).await;
-                let mut writer = test.writer("a", &["value"]).await;
-                test.clock.sleep(SETTLE).await;
-                test.pause.pause();
-                write(&mut writer, &[test.now()], &[1]);
-                test.clock.sleep(SETTLE).await;
-                let first = test.pause.race().await;
-                let Test {
-                    node,
-                    clock,
-                    ended,
-                    mut commit,
-                    hub,
-                    ..
-                } = test;
-                drop((hub, reader, writer));
-                assert_eq!((&mut commit).await, Ok(()));
-                let open = || async {
-                    node.files()
-                        .open(FilePath::new(RING), env::files::Mode::Write)
-                        .await
-                        .map(drop)
-                };
-                let busy = env::files::Error::Busy {
-                    path: PathBuf::from(RING),
-                };
-                assert_eq!(open().await, Err(busy), "seed {seed}");
-                drop(commit);
-                assert_eq!(open().await, Ok(()), "seed {seed}");
-                clock.sleep(Span::from_nanos(1)).await;
-                assert_eq!(ended.get(), 1, "the commit task ended");
-                first
-            })
-        })
-        .collect();
-    assert_both(&firsts);
+    races(64, (AREA, BODY_MAX), |seed, test| async move {
+        let reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        test.clock.sleep(SETTLE).await;
+        test.pause.pause();
+        write(&mut writer, &[test.now()], &[1]);
+        test.clock.sleep(SETTLE).await;
+        let first = test.pause.race().await;
+        let Test {
+            node,
+            clock,
+            ended,
+            mut commit,
+            hub,
+            ..
+        } = test;
+        drop((hub, reader, writer));
+        assert_eq!((&mut commit).await, Ok(()));
+        let open = || async {
+            node.files()
+                .open(FilePath::new(RING), env::files::Mode::Write)
+                .await
+                .map(drop)
+        };
+        let busy = env::files::Error::Busy {
+            path: PathBuf::from(RING),
+        };
+        assert_eq!(open().await, Err(busy), "seed {seed}");
+        drop(commit);
+        assert_eq!(open().await, Ok(()), "seed {seed}");
+        clock.sleep(Span::from_nanos(1)).await;
+        assert_eq!(ended.get(), 1, "the commit task ended");
+        first
+    });
 }
 
 /// After a commit wakes a complete reader, the next commit wakes it again.
@@ -1571,115 +1573,100 @@ fn poll_flagged<F: Future>(next: Pin<&mut F>) -> (Poll<F::Output>, Arc<Flag>) {
 
 #[test]
 fn ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit() {
-    let firsts: Vec<bool> = (0..32)
-        .zip([1, 2].into_iter().cycle())
-        .map(|(seed, commits)| {
-            run_on(seed, (WIDE_AREA, WIDE_BODY_MAX), move |test| async move {
-                let mut reader = test.reader(&["value"], Mode::Complete).await;
-                let mut writer = test.writer("a", &["value"]).await;
-                let now = test.now();
-                test.pause.pause();
-                write_samples(&mut writer, now, PAST_WINDOW);
-                test.clock.sleep(SETTLE).await;
-                let first = test.pause.race().await;
-                let charge = charge(&reader.next().await.expect("a frame").view());
-                assert!(charge > WINDOW, "{charge} bytes spend the window");
-                // The reader holds the frame, so the next waits for credit.
-                for n in 0..commits {
-                    write_samples(&mut writer, now + PAST_WINDOW + n, 1);
-                    test.clock.sleep(SETTLE).await;
-                }
-                let next = reader.next().await;
-                if commits == 1 {
-                    let range = next.expect("the call gives credit").view().range(0);
-                    let seq = PAST_WINDOW.cast_unsigned();
-                    assert_eq!(range, Some(Range { seq, count: 1 }));
-                } else {
-                    assert_behind(&next.expect_err("the reader missed a frame"));
-                }
-                first
-            })
-        })
-        .collect();
-    assert_both(&firsts);
+    races(32, (WIDE_AREA, WIDE_BODY_MAX), |seed, test| async move {
+        let commits = (seed % 2 + 1).cast_signed();
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        test.pause.pause();
+        write_samples(&mut writer, now, PAST_WINDOW);
+        test.clock.sleep(SETTLE).await;
+        let first = test.pause.race().await;
+        let charge = charge(&reader.next().await.expect("a frame").view());
+        assert!(charge > WINDOW, "{charge} bytes spend the window");
+        // The reader holds the frame, so the next waits for credit.
+        for n in 0..commits {
+            write_samples(&mut writer, now + PAST_WINDOW + n, 1);
+            test.clock.sleep(SETTLE).await;
+        }
+        let next = reader.next().await;
+        if commits == 1 {
+            let range = next.expect("the call gives credit").view().range(0);
+            let seq = PAST_WINDOW.cast_unsigned();
+            assert_eq!(range, Some(Range { seq, count: 1 }));
+        } else {
+            assert_behind(&next.expect_err("the reader missed a frame"));
+        }
+        first
+    });
 }
 
 #[test]
 fn gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window() {
-    let firsts: Vec<bool> = (0..32)
-        .map(|seed| {
-            run(seed, move |test| async move {
-                let mut reader = test.reader(&["value"], Mode::Complete).await;
-                let mut writer = test.writer("a", &["value"]).await;
-                let now = test.now();
-                test.pause.pause();
-                for n in 0..200 {
-                    write_wide(&mut writer, now, n);
+    races(32, (AREA, BODY_MAX), |_, test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        test.pause.pause();
+        for n in 0..200 {
+            write_wide(&mut writer, now, n);
+        }
+        test.clock.sleep(SETTLE).await;
+        let first = test.pause.race().await;
+        let mut spent = 0;
+        for n in 0..200 {
+            let received = reader.next().await.expect("a frame");
+            let range = received.view().range(0).expect("the index is present");
+            assert_eq!(
+                range,
+                Range {
+                    seq: n * 1000,
+                    count: 1000
                 }
-                test.clock.sleep(SETTLE).await;
-                let first = test.pause.race().await;
-                let mut spent = 0;
-                for n in 0..200 {
-                    let received = reader.next().await.expect("a frame");
-                    let range = received.view().range(0).expect("the index is present");
-                    assert_eq!(
-                        range,
-                        Range {
-                            seq: n * 1000,
-                            count: 1000
-                        }
-                    );
-                    spent += charge(&received.view());
-                }
-                assert!(spent > WINDOW, "{spent} bytes pass the window");
-                let (polled, _) = poll_flagged(pin!(reader.next()));
-                assert!(polled.is_pending(), "no frame waits");
-                first
-            })
-        })
-        .collect();
-    assert_both(&firsts);
+            );
+            spent += charge(&received.view());
+        }
+        assert!(spent > WINDOW, "{spent} bytes pass the window");
+        let (polled, _) = poll_flagged(pin!(reader.next()));
+        assert!(polled.is_pending(), "no frame waits");
+        first
+    });
 }
 
 #[test]
 fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
-    let firsts: Vec<bool> = (0..32)
-        .map(|seed| {
-            run(seed, move |test| async move {
-                let mut reader = test.reader(&["value"], Mode::Complete).await;
-                let mut writer = test.writer("a", &["value"]).await;
-                let now = test.now();
-                test.pause.pause();
-                for n in 0..20 {
-                    write_wide(&mut writer, now, n);
-                }
-                test.clock.sleep(SETTLE).await;
-                let first = test.pause.race().await;
-                let frame = reader.next().await.expect("a frame");
-                let range = frame.view().range(0).expect("the index is present");
-                assert_eq!(
-                    range,
-                    Range {
-                        seq: 0,
-                        count: 1000
-                    }
-                );
-                for n in 20..200 {
-                    write_wide(&mut writer, now, n);
-                }
-                test.clock.sleep(SETTLE).await;
-                // The frames past the window miss at this commit.
-                write_wide(&mut writer, now, 200);
-                test.clock.sleep(SETTLE).await;
-                let (charges, ended) = take_all(&mut reader).await;
-                assert_behind(&ended);
-                let taken = 1 + charges.len();
-                assert!(20 < taken && taken < 200, "{taken}");
-                first
-            })
-        })
-        .collect();
-    assert_both(&firsts);
+    races(32, (AREA, BODY_MAX), |_, test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        test.pause.pause();
+        for n in 0..20 {
+            write_wide(&mut writer, now, n);
+        }
+        test.clock.sleep(SETTLE).await;
+        let first = test.pause.race().await;
+        let frame = reader.next().await.expect("a frame");
+        let range = frame.view().range(0).expect("the index is present");
+        assert_eq!(
+            range,
+            Range {
+                seq: 0,
+                count: 1000
+            }
+        );
+        for n in 20..200 {
+            write_wide(&mut writer, now, n);
+        }
+        test.clock.sleep(SETTLE).await;
+        // The frames past the window miss at this commit.
+        write_wide(&mut writer, now, 200);
+        test.clock.sleep(SETTLE).await;
+        let (charges, ended) = take_all(&mut reader).await;
+        assert_behind(&ended);
+        let taken = 1 + charges.len();
+        assert!(20 < taken && taken < 200, "{taken}");
+        first
+    });
 }
 
 #[test]
