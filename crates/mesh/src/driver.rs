@@ -2614,17 +2614,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn the_debug_text_of_ended_holds_nothing() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut ended = mesh.ended();
-            let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
-            assert_eq!(polled, Poll::Pending);
-            assert_eq!(format!("{ended:?}"), "Ended { .. }");
-        });
-    }
-
     mod apply;
     mod founding;
     mod home;
@@ -4397,39 +4386,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(4), reply), Ok(()));
             });
         }
-
-        mod propose_voters {
-            use super::*;
-
-            #[test]
-            fn refuses_a_node_that_is_not_a_member() {
-                solo(|node, tasks| async move {
-                    let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-                    let at = lead(&mesh, &node.clock(), home(1)).await;
-                    let refused = mesh.propose_voters([key(1), key(3)].into()).await;
-                    assert_eq!(refused, Err(Error::NotMember(key(3))));
-                    let text = format!("node {} is not a member of the region", key(3));
-                    assert_eq!(refused.unwrap_err().to_string(), text);
-                    let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
-                    assert_eq!(proposed, Ok(after(at, 1)));
-                });
-            }
-
-            #[test]
-            fn refuses_a_node_whose_join_is_not_applied() {
-                solo(|node, tasks| async move {
-                    let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
-                    write(&mesh, changes(&[join(3)])).await;
-                    let refused = mesh.propose_voters([key(2), key(3)].into()).await;
-                    assert_eq!(refused, Err(Error::NotMember(key(3))));
-                    let follower = raft::Error::NotLeader {
-                        leader: Some(key(2)),
-                    };
-                    let proposed = mesh.propose_voters([key(2)].into()).await;
-                    assert_eq!(proposed, Err(Error::Raft(follower)));
-                });
-            }
-        }
     }
 
     #[test]
@@ -5530,6 +5486,40 @@ mod tests {
         });
     }
 
+    mod propose_voters {
+        use super::unapplied::{changes, write};
+        use super::*;
+
+        #[test]
+        fn refuses_a_node_that_is_not_a_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let at = lead(&mesh, &node.clock(), home(1)).await;
+                let refused = mesh.propose_voters([key(1), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let text = format!("node {} is not a member of the region", key(3));
+                assert_eq!(refused.unwrap_err().to_string(), text);
+                let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
+                assert_eq!(proposed, Ok(after(at, 1)));
+            });
+        }
+
+        #[test]
+        fn refuses_a_node_whose_join_is_not_applied() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
+                write(&mesh, changes(&[join(3)])).await;
+                let refused = mesh.propose_voters([key(2), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let follower = raft::Error::NotLeader {
+                    leader: Some(key(2)),
+                };
+                let proposed = mesh.propose_voters([key(2)].into()).await;
+                assert_eq!(proposed, Err(Error::Raft(follower)));
+            });
+        }
+    }
+
     mod member {
         use super::*;
 
@@ -5931,7 +5921,7 @@ mod tests {
         }
 
         #[test]
-        fn an_ended_polled_twice_holds_one_waker() {
+        fn polled_twice_holds_one_waker() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
                 let held = Arc::new(Idle);
@@ -5948,7 +5938,7 @@ mod tests {
         }
 
         #[test]
-        fn a_dropped_ended_leaves_no_waker() {
+        fn leaves_no_waker_when_dropped() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
                 let held = Arc::new(Idle);
@@ -5960,6 +5950,18 @@ mod tests {
                 drop(waker);
                 assert_eq!(Arc::strong_count(&held), 1);
                 drop(mesh);
+            });
+        }
+
+        #[test]
+        fn debug_text_holds_nothing() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut ended = mesh.ended();
+                let polled =
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
+                assert_eq!(polled, Poll::Pending);
+                assert_eq!(format!("{ended:?}"), "Ended { .. }");
             });
         }
     }
@@ -6096,7 +6098,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn a_dropped_watch_leaves_no_waker() {
+        fn leaves_no_waker_when_dropped() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
                 let (kept, dropped) = (Arc::new(Idle), Arc::new(Idle));
@@ -6121,7 +6123,7 @@ mod tests {
         }
 
         #[test]
-        fn a_watch_gives_the_cause_when_each_mesh_drops() {
+        fn gives_the_cause_when_each_mesh_drops() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let mut watch = mesh.watch(INDEX);
@@ -6146,7 +6148,7 @@ mod tests {
         }
 
         #[test]
-        fn a_watch_keeps_the_cause_of_a_stop_after_each_mesh_drops() {
+        fn keeps_the_cause_of_a_stop_after_each_mesh_drops() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let mut watch = mesh.watch(INDEX);
@@ -6162,7 +6164,7 @@ mod tests {
         }
 
         #[test]
-        fn a_watch_that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
+        fn that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 lead(&mesh, &node.clock(), home(1)).await;
