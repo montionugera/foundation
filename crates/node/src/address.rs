@@ -56,8 +56,8 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
 /// place, awaits `serve`, and writes it empty. The first hold on a data directory
 /// makes the file, and a later one writes in its room, so it needs no free bytes.
 /// Writes over a file of another length after it removes it. When the write fails,
-/// does not poll `serve`. Does not drop `serve`: the caller drops it after it has read
-/// the error. Call it under the lock of the data directory.
+/// does not poll `serve`, and writes the file empty. Does not drop `serve`: the caller
+/// drops it after it has read the error. Call it under the lock of the data directory.
 ///
 /// # Errors
 ///
