@@ -766,7 +766,8 @@ fn drops_the_home_once_the_hub_and_each_session_drop() {
 }
 
 /// Sessions that outlive the hub keep the commit task: it ends once the last drops.
-/// The hub drops while the task sleeps, so the write after it must wake the task.
+/// The hub drops while the task waits, so the commit of the write after it must wake
+/// the task.
 #[test]
 fn ends_the_commit_task_once_each_session_that_outlives_the_hub_drops() {
     run(23, |test| async move {
@@ -810,11 +811,50 @@ fn does_not_wake_the_commit_task_for_the_writes_during_a_commit() {
             write(&mut writer, &[test.now()], &[value]);
             test.clock.sleep(Span::from_nanos(1)).await;
         }
-        assert_eq!(
-            test.polls.get() - before,
-            1,
-            "one wake, for the first write"
-        );
+        assert_eq!(test.polls.get() - before, 0, "no wake for a write");
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.polls.get() - before, 1, "one wake, for the commit");
+    });
+}
+
+/// A group commit that ends before the first poll of the commit task still wakes a
+/// complete reader, as the hub takes its first commit at the start.
+#[test]
+fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
+    unsynced(23, |mut test| async move {
+        test.paused.pause();
+        test.sync().await;
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[5]);
+        test.clock.sleep(SETTLE).await;
+        test.paused.resume();
+        test.clock.sleep(Span::from_nanos(1)).await;
+        let Poll::Ready(received) = poll_once(reader.next()) else {
+            panic!("the commit before the first poll woke no reader");
+        };
+        assert_eq!(samples(&received.expect("a frame"), 2), [5]);
+    });
+}
+
+/// Writes that append nothing do not wake the commit task, as no commit follows them.
+#[test]
+fn does_not_wake_the_commit_task_for_writes_with_no_samples() {
+    run(23, |test| async move {
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[0]);
+        test.clock.sleep(SETTLE).await;
+        let empty = Outcome::Applied {
+            slot: Slot::new(0),
+            range: Range { seq: 1, count: 0 },
+        };
+        let before = test.polls.get();
+        for _ in 0..1000 {
+            assert_eq!(write(&mut writer, &[], &[]), std::slice::from_ref(&empty));
+            test.clock.sleep(Span::from_nanos(1)).await;
+        }
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.polls.get() - before, 0);
     });
 }
 
@@ -883,9 +923,9 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
     }
 }
 
-/// The commit task that went back to sleep after a commit wakes for the next write.
+/// After a commit wakes a complete reader, the next commit wakes it again.
 #[test]
-fn wakes_the_commit_task_for_a_write_after_a_commit() {
+fn gives_a_complete_reader_the_frame_of_a_later_commit() {
     run(23, |test| async move {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;

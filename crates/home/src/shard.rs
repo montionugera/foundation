@@ -270,11 +270,10 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Resolves when every group applied and every handoff appended before
-/// [`Shard::committed`] is on disk, or with the error that ended the buffer first. It
-/// does not borrow the shard, and it holds the shard's ring open until it drops. Held
-/// past the drop of the shard, it resolves only once the buffer ended, with an error
-/// or with none. Its result is only for what was appended before the call.
+/// The future of [`Shard::committed`] and [`Shard::next_commit`]. It does not borrow
+/// the shard, and it holds the shard's ring open until it drops. Held past the drop of
+/// the shard, it resolves once the buffer ended: with the error that ended the buffer
+/// when that came before what it waits for was durable, else with `Ok`.
 #[derive(Debug)]
 pub struct Commit(buffer::Commit);
 
@@ -563,6 +562,15 @@ impl Shard {
     /// those groups and handoffs were on disk.
     pub fn committed(&self) -> Commit {
         Commit(self.buffer.committed())
+    }
+
+    /// Resolves at the end of the next group commit after the call, also one in
+    /// flight, or gives the file error that ended the buffer. It does not resolve
+    /// while nothing is appended. [`Commit`] says when one held past the drop of the
+    /// shard resolves.
+    #[must_use]
+    pub fn next_commit(&self) -> Commit {
+        Commit(self.buffer.next_commit())
     }
 
     /// Opens an unnamed complete reader on the index at `slot`, with a credit of
@@ -4865,6 +4873,23 @@ mod tests {
             assert_eq!(polled(&mut commit), Poll::Pending);
             assert_eq!(find(&test.ring().await, &handoff).len(), 0);
             commit.await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff).len(), 2);
+        });
+    }
+
+    #[test]
+    fn resolves_a_next_commit_once_a_later_handoff_is_on_disk() {
+        run(2323, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let mut next = shard.next_commit();
+            test.clock.sleep(SYNC).await;
+            assert_eq!(polled(&mut next), Poll::Pending);
+            shard
+                .open_writer(writer("subject-a", 1, &set))
+                .expect("synced");
+            next.await.expect("the commit ends");
+            let handoff = handoff_to("subject-a");
             assert_eq!(find(&test.ring().await, &handoff).len(), 2);
         });
     }
