@@ -512,7 +512,7 @@ impl Source {
             return shared.slice(range);
         }
         // The `Shared` arm does not run. A `let else` in its place costs 2 to 6 ns
-        // a message.
+        // on each message with a run over 1452 bytes (box2).
         let shared = match mem::take(self) {
             Self::Block(block) => Bytes::from_owner(Body(block)),
             Self::Shared(bytes) => bytes,
