@@ -339,6 +339,35 @@ fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
     );
 }
 
+/// A read frees the share of its open before it sends its places, so a read whose
+/// program does not take its places holds no share.
+#[test]
+fn frees_the_share_of_the_open_of_a_read_before_its_places_go_out() {
+    const MANY: usize = 10_000;
+    let ready = async |test: &Test| {
+        let long = "x".repeat(240);
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{long}.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }));
+    };
+    read_session(318, ready, |mut agent| async move {
+        agent.admit().await;
+        let held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
+        agent.sleep(Span::MILLISECOND).await;
+        let mut wide = agent.read(Mode::Complete, &["w.**"]).await;
+        agent.sleep(Span::from_nanos(10_000_000)).await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        agent.sleep(Span::from_nanos(10_000_000)).await;
+        opened(&mut wide, Mode::Complete).await;
+        let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+        assert_eq!(places, Places { count: 2, index: 1 });
+        drop((held, wide, stream));
+        finish(&mut agent).await;
+    });
+}
+
 /// The places of a read hold no reservation, so a read whose places pass the share of
 /// its subject opens and gets its frames.
 #[test]
