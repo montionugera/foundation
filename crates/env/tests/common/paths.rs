@@ -157,6 +157,11 @@ pub(crate) fn a_path_that_ends_in_a_slash_or_a_dot_names_a_directory(host: &Host
         let on_dir = Err(Error::Io { code: DIRECTORY });
         assert_eq!(paths.write(&named, b"y"), on_dir, "{end}");
     }
+    let dots = file.join("x/..");
+    assert_eq!(paths.read(&dots, 1), Err(through));
+    assert_eq!(paths.write(&dots, b"y"), Err(through));
+    let none = dir.join("none/x/..");
+    assert_eq!(paths.write(&none, b"y"), Err(Error::NotFound));
     assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
     let entries = vec![config, file];
     assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(entries)));

@@ -455,7 +455,7 @@
   a directory on another device than its holder, the sync of the holder at each call of
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440.
   Amended (2026-10-11, #1744): `env::paths` gives the files of the host by the paths
-  that a user gave, as on a command line: a read, up to a bound, of a file or of a
+  that a user gave, as on a command line: a read of a file, up to a bound, or of a
   directory's entries, and a write of a whole file. Each call blocks its thread. A
   `Paths` goes only to `ops::cli`, never to a shard or to `ops::serve`, so a path that a
   remote program names never reaches the disk of the node. `os` writes a file beside the
@@ -468,4 +468,12 @@
   07:10 UTC, plan revision 4, decision 4,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913), with
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
+  bound holds for a read: the bytes of a file, or the bytes of the entry paths of a
+  directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty
+  path names nothing. On `os`, a new file gives the group and other users no access, a
+  file that a write replaces keeps its mode, and a symbolic link, a device, or a pipe
+  at the path takes the bytes in place, with no rename. Lost: a second bound for the
+  count of entries; a rename over each thing at the path, which replaces `/dev/null`
+  with a file for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058).
