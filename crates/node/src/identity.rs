@@ -3,8 +3,7 @@
 //!
 //! The file is 100 bytes: the tag, the node key (big-endian), the Ed25519 private key,
 //! the X25519 seal private key, and the CRC32C of those 96 bytes (little-endian), in
-//! one sector ([`crate::sector`]). 100 zero bytes are a key that a crash kept from
-//! being written.
+//! one sector ([`crate::sector`]).
 
 use std::path::Path;
 
@@ -34,28 +33,22 @@ pub(crate) struct Identity {
     pub(crate) opener: Opener,
 }
 
-/// The identity in `node.key` of `files`. When the file is not there, has no bytes,
-/// or holds 100 zero bytes, makes a new one at mesh time from `clock`, once it has
-/// mesh time, and from `entropy`. Writes the identity back and makes it durable
-/// before it returns, also one it read: a failed sync of an earlier start can leave
-/// a key that a read sees but a crash loses. Never writes another key over a file
-/// that holds one.
+/// The identity in `node.key` of `files`. When the file is not there, makes a new one
+/// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
+/// it. Call it under the lock of the data directory, after the claim has made the
+/// directory durable, so that a key that `publish` made is durable when it reads it.
 ///
 /// # Errors
 ///
-/// [`Error::Key`] for a file of another length that is not 0, or of another tag or
-/// checksum, and [`Error::Directory`] for a file call that fails.
+/// [`Error::Key`] for a file of another length, tag, or checksum, and
+/// [`Error::Directory`] for a file call that fails.
 pub(crate) async fn load(
     files: &Files,
     clock: &clock::Reader,
     entropy: &env::entropy::Entropy,
 ) -> Result<Identity, Error> {
-    let opened = sector::open(files, Path::new(FILE), TAG).await;
-    let (file, held) = opened.map_err(|error| match error {
-        env::files::Error::Length { .. } => Error::Key,
-        error => Error::Directory(error),
-    })?;
-    let identity = match held {
+    let held = sector::read(files, Path::new(FILE), TAG).await;
+    match held.map_err(Error::Directory)? {
         Held::Nothing => {
             clock.reach(Stamp::from_nanos(i64::MIN)).await;
             let now = match clock.status() {
@@ -66,37 +59,46 @@ pub(crate) async fn load(
                     unreachable!("invariant: mesh time has come")
                 }
             };
-            create(now, entropy)
+            let identity = create(now, entropy);
+            store(files, &identity).await?;
+            Ok(identity)
         }
-        Held::Written(bytes) => fields(&bytes),
-        Held::Foreign => return Err(Error::Key),
-    };
-    sector::write(files, &file, &encode(&identity))
-        .await
-        .map_err(Error::Directory)?;
-    Ok(identity)
+        Held::Written(bytes) => Ok(fields(&bytes)),
+        Held::Foreign => Err(Error::Key),
+    }
 }
 
-/// Writes `identity` to `node.key` in `files` when the file is not there, has no
-/// bytes, or holds 100 zero bytes, and makes it durable.
+/// Publishes `identity` as `node.key` in `files`, where no `node.key` is. Call it as
+/// [`sector::publish`] says.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file holds 100
-/// bytes that are not all zero, with [`env::files::Error::Length`] when it has another
-/// length that is not 0, and with the error of each other file call that fails.
-#[cfg(feature = "sim")]
-pub(crate) async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
-    let (file, held) = sector::open::<LEN>(files, Path::new(FILE), TAG)
-        .await
-        .map_err(Error::Directory)?;
-    if held != Held::Nothing {
-        let path = std::path::PathBuf::from(FILE);
-        return Err(Error::Directory(env::files::Error::Exists { path }));
-    }
-    sector::write(files, &file, &encode(identity))
+/// [`Error::Directory`] with the error of the first file call that fails.
+async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
+    sector::publish(files, Path::new(FILE), &encode(identity))
         .await
         .map_err(Error::Directory)
+}
+
+/// Publishes `identity` as `node.key` in `files`, a data directory that no node runs
+/// on, when no `node.key` is there.
+///
+/// # Errors
+///
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when a file is there, before
+/// it writes anything. [`Error::Directory`] with the error of each other file call that
+/// fails.
+#[cfg(feature = "sim")]
+pub(crate) async fn write_new(files: &Files, identity: &Identity) -> Result<(), Error> {
+    match sector::read::<LEN>(files, Path::new(FILE), TAG).await {
+        Ok(Held::Nothing) => store(files, identity).await,
+        Ok(Held::Written(_) | Held::Foreign) => {
+            Err(Error::Directory(env::files::Error::Exists {
+                path: FILE.into(),
+            }))
+        }
+        Err(error) => Err(Error::Directory(error)),
+    }
 }
 
 /// A new identity: a UUIDv7 key at `now`, and a random private key and seal key.
@@ -125,12 +127,6 @@ pub(crate) fn encode(identity: &Identity) -> [u8; LEN] {
     bytes
 }
 
-/// The identity in `bytes`, or `None` for another tag or checksum.
-#[cfg(any(test, feature = "sim"))]
-fn decode(bytes: &[u8; LEN]) -> Option<Identity> {
-    sector::written(bytes, TAG).map(|bytes| fields(&bytes))
-}
-
 /// The keys in `bytes`, whatever its tag and checksum.
 fn fields(bytes: &[u8; LEN]) -> Identity {
     Identity {
@@ -144,22 +140,15 @@ fn fields(bytes: &[u8; LEN]) -> Identity {
     }
 }
 
-/// Checks that `decode` gives an identity exactly for the bytes that `encode` writes,
-/// and that the identity encodes to `bytes`.
+/// Checks that `sector::written` takes `bytes` exactly when `encode` of their fields
+/// gives them back.
 ///
 /// # Panics
 ///
-/// When a check fails.
+/// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    let valid = encode(&fields(bytes)) == *bytes;
-    match decode(bytes) {
-        Some(identity) => {
-            assert!(valid, "decodes {bytes:02x?}");
-            assert_eq!(encode(&identity), *bytes, "encodes {bytes:02x?}");
-        }
-        None => assert!(!valid, "refuses {bytes:02x?}"),
-    }
+    sector::check(bytes, TAG, |bytes| encode(&fields(bytes)));
 }
 
 #[cfg(test)]
@@ -195,7 +184,7 @@ mod tests {
 
     #[test]
     fn refuses_zero_bytes() {
-        assert!(decode(&[0; LEN]).is_none());
+        assert!(!sector::written(&[0; LEN], TAG));
     }
 
     proptest! {
@@ -206,7 +195,8 @@ mod tests {
             opener in any::<[u8; 32]>(),
         ) {
             let bytes = encode(&identity(key, private_key, opener));
-            let decoded = decode(&bytes).expect("decodes");
+            prop_assert!(sector::written(&bytes, TAG));
+            let decoded = fields(&bytes);
             prop_assert_eq!(decoded.key.as_u128(), key);
             prop_assert_eq!(decoded.private_key.0, private_key);
             prop_assert_eq!(decoded.opener.expose(), &opener);
@@ -221,7 +211,7 @@ mod tests {
         ) {
             let mut bytes = encode(&identity(key, private_key, opener));
             bytes[bit / 8] ^= 1 << (bit % 8);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]
@@ -235,7 +225,7 @@ mod tests {
             check(&bytes);
             bytes[bit / 8] ^= 1 << (bit % 8);
             sector::checksum(&mut bytes);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         #[test]

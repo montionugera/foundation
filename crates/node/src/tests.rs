@@ -3340,6 +3340,9 @@ mod port {
         use super::*;
         use crate::identity::{FILE, LEN};
 
+        /// The file that `sector::publish` renames to [`FILE`].
+        const NEW: &str = "node.key.new";
+
         /// Through the public fuzz entry, which panics when the decode is wrong.
         #[test]
         fn a_key_decodes_and_a_key_with_another_tag_does_not() {
@@ -3366,19 +3369,33 @@ mod port {
             .expect("the run ends")
         }
 
-        /// Whether `node.key` holds a key.
-        fn key_written(sim: &mut sim::Sim, host: &sim::node::Node) -> bool {
-            sim.run_on(host, |host, _| async move {
-                let mode = env::files::Mode::Create { len: LEN as u64 };
-                let file = host.files().open(Path::new(FILE), mode).await;
-                let pool = block::Pool::heap(
-                    block::Config::new(4096).expect("the budget fits"),
-                );
-                let into = pool.alloc(LEN).expect("a block");
-                let read = file.expect("opens").read_at(0, into).await;
-                read.expect("reads").starts_with(b"foundation/key/2")
-            })
-            .expect("the run ends")
+        /// The identity in `node.key` on `host`, or `None` when the file is not
+        /// there. Opens it to read only, so it makes nothing. It checks the file
+        /// between a crash and a start, where no public call reads it.
+        ///
+        /// # Panics
+        ///
+        /// When the file holds no key.
+        fn found(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Vec<u8>> {
+            let bytes = sim
+                .run_on(host, |host, _| async move {
+                    let mode = env::files::Mode::Read;
+                    let file = match host.files().open(Path::new(FILE), mode).await {
+                        Err(env::files::Error::NotFound { .. }) => return None,
+                        file => file.expect("opens"),
+                    };
+                    assert_eq!(file.len(), LEN as u64, "the length of a key");
+                    let pool = block::Pool::heap(
+                        block::Config::new(4096).expect("the budget fits"),
+                    );
+                    let into = pool.alloc(LEN).expect("a block");
+                    let read = file.read_at(0, into).await.expect("reads");
+                    Some(<[u8; LEN]>::try_from(&*read).expect("a read fills it"))
+                })
+                .expect("the run ends")?;
+            let tag = b"foundation/key/2";
+            assert!(crate::sector::written(&bytes, tag), "a key: {bytes:02x?}");
+            Some(bytes.to_vec())
         }
 
         /// The bytes of the identity [`OWN`], [`KEY`].
@@ -3507,36 +3524,71 @@ mod port {
             proves(valid, &PrivateKey([7; 32]));
         }
 
-        /// 100 zero bytes are a key that a crash kept from being written.
+        /// The node never leaves a `node.key` with no bytes or with 100 zero bytes, so
+        /// such a file stops the node, which keeps it.
         #[test]
-        fn a_node_makes_a_key_over_zero_bytes() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            write_key(&mut sim, &host, vec![0; LEN]);
-            assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-            assert_eq!(&read(&mut sim, &host)[..16], b"foundation/key/2");
+        fn a_zero_or_empty_key_stops_the_node() {
+            for bytes in [Vec::new(), vec![0; LEN]] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, FILE, bytes.clone());
+                assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Key));
+                assert_eq!(read(&mut sim, &host), bytes, "keeps the file");
+            }
         }
 
-        /// A `node.key` with no bytes is a key not yet written.
+        /// A start removes the file `node.key.new` that a crash left, of any length,
+        /// and makes the key.
         #[test]
-        fn a_node_makes_a_key_over_an_empty_file() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            sim.run_on(&host, |host, _| async move {
-                let files = host.files();
-                let mode = env::files::Mode::Create { len: 0 };
-                let file = files.open(Path::new(FILE), mode).await.expect("opens");
-                file.sync().await.expect("syncs");
-                files.sync_dir(Path::new("")).await.expect("syncs");
-            })
-            .expect("the run ends");
-            assert_eq!(read(&mut sim, &host), Vec::<u8>::new());
-            assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-            assert_eq!(&read(&mut sim, &host)[..16], b"foundation/key/2");
+        fn a_start_removes_a_new_key_that_a_crash_left() {
+            for bytes in [Vec::new(), vec![7; LEN], vec![7; 3]] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, NEW, bytes);
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+                assert!(found(&mut sim, &host).is_some(), "a key");
+                assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
+            }
         }
 
-        /// A file of another length that is not 0, or of another tag or checksum, stops
-        /// the node, which keeps the file.
+        /// A crash every 25 µs of the first start, on seeds 0 to 7, leaves no key or a
+        /// whole one, and a start after a crash that left one proves it.
+        #[test]
+        fn a_crash_during_the_first_start_leaves_no_key_or_a_whole_key() {
+            let crashes = [sim::Crash::Process, sim::Crash::Power];
+            for (seed, crash) in
+                (0..8).flat_map(|seed| crashes.map(|crash| (seed, crash)))
+            {
+                for after in (0..).step_by(25_000).map(Span::from_nanos) {
+                    let at = format!("seed {seed}: {crash:?} at {after:?}");
+                    let mut sim = sim::Sim::new(sim::Config {
+                        seed,
+                        ..sim::Config::default()
+                    });
+                    let host = host(&mut sim, 2);
+                    let node =
+                        Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                    assert_eq!(sim.run_for(after), Ok(()), "{at}");
+                    sim.crash(&host, crash);
+                    drop(node);
+                    let Some(made) = found(&mut sim, &host) else {
+                        continue;
+                    };
+                    let public = PrivateKey(made[32..64].try_into().unwrap()).public();
+                    let node =
+                        Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                    let dialed = dial(&mut sim, &host, public);
+                    assert_eq!(dialed, Ok(Peer::Node(public)), "{at}");
+                    node.stop();
+                    assert_eq!(sim.run(), Ok(()), "{at}");
+                    assert_eq!(node.join(), Ok(()), "{at}");
+                    break;
+                }
+            }
+        }
+
+        /// A file of another length, or of another tag or checksum, stops the node,
+        /// which keeps the file.
         #[test]
         fn a_key_that_is_not_valid_stops_the_node() {
             // Each tag byte with one bit changed, and the tag of the next form.
@@ -3602,27 +3654,21 @@ mod port {
             assert_eq!(identity::encode(&identity), *made);
         }
 
-        /// Each start proves the key that `create_key` writes, also over 100 zero
-        /// bytes, and keeps its seal key.
+        /// Each start proves the key that `create_key` writes, and keeps its seal key.
         #[test]
         fn a_node_proves_the_key_that_create_key_writes() {
-            for before in [None, Some(vec![0; LEN])] {
-                let mut sim = sim::Sim::new(sim::Config::default());
-                let host = host(&mut sim, 2);
-                if let Some(bytes) = before {
-                    write_key(&mut sim, &host, bytes);
-                }
-                let seal_key = create(&mut sim, &host, KEY).expect("creates");
-                let made = read(&mut sim, &host);
-                assert_created(&made, seal_key);
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
-                let public = KEY.public();
-                assert_eq!(dial(&mut sim, &host, public), Ok(Peer::Node(public)));
-                node.stop();
-                assert_eq!(sim.run(), Ok(()));
-                assert_eq!(node.join(), Ok(()));
-                assert_eq!(read(&mut sim, &host), made);
-            }
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let seal_key = create(&mut sim, &host, KEY).expect("creates");
+            let made = read(&mut sim, &host);
+            assert_created(&made, seal_key);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            let public = KEY.public();
+            assert_eq!(dial(&mut sim, &host, public), Ok(Peer::Node(public)));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(read(&mut sim, &host), made);
         }
 
         /// Two calls of `create_key` on two hosts make two seal keys.
@@ -3634,56 +3680,57 @@ mod port {
             assert_ne!(made[0], made[1]);
         }
 
-        /// `create_key` writes nothing over a file that holds a key, valid or not.
+        /// `create_key` writes nothing over a file that is there: a key, valid or
+        /// not, a file of another length, and one with no bytes or 100 zero bytes. It
+        /// leaves no `node.key.new`, which would hold its keys.
         #[test]
-        fn create_key_writes_nothing_over_a_key() {
+        fn create_key_writes_nothing_over_a_file() {
             let mut changed = own();
             changed[40] ^= 1;
+            let short = own()[..LEN - 1].to_vec();
             let exists = env::files::Error::Exists {
                 path: PathBuf::from("node.key"),
             };
-            for bytes in [own(), changed] {
+            for bytes in [own(), changed, short, Vec::new(), vec![0; LEN]] {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
-                write_key(&mut sim, &host, bytes.clone());
+                write(&mut sim, &host, FILE, bytes.clone());
                 let created = create(&mut sim, &host, PrivateKey([9; 32]));
                 assert_eq!(created, Err(Error::Directory(exists.clone())));
                 assert_eq!(read(&mut sim, &host), bytes, "keeps the file");
+                let staged = PathBuf::from(NEW);
+                assert!(
+                    !listed(&mut sim, &host, "").contains(&staged),
+                    "no staged key"
+                );
             }
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            let short = own()[..LEN - 1].to_vec();
-            write_key(&mut sim, &host, short.clone());
-            let length = env::files::Error::Length {
-                path: PathBuf::from("node.key"),
-                expected: 100,
-                found: 99,
-            };
-            assert_eq!(create(&mut sim, &host, KEY), Err(Error::Directory(length)));
-            assert_eq!(read(&mut sim, &host), short, "keeps the file");
             assert_eq!(
                 Error::Directory(exists).to_string(),
                 "cannot use the data directory: path node.key is already there"
             );
         }
 
-        /// `create_key` writes its key into a `node.key` with no bytes, as into no
-        /// file.
+        /// A power cut after `create_key` finds a file leaves no `node.key.new` with
+        /// its keys, also after a start.
         #[test]
-        fn create_key_writes_into_an_empty_file() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            sim.run_on(&host, |host, _| async move {
-                let files = host.files();
-                let mode = env::files::Mode::Create { len: 0 };
-                let file = files.open(Path::new(FILE), mode).await.expect("opens");
-                file.sync().await.expect("syncs");
-                files.sync_dir(Path::new("")).await.expect("syncs");
-            })
-            .expect("the run ends");
-            assert_eq!(read(&mut sim, &host), Vec::<u8>::new());
-            let seal_key = create(&mut sim, &host, KEY).expect("creates");
-            assert_created(&read(&mut sim, &host), seal_key);
+        fn a_power_cut_after_create_key_finds_a_file_leaves_no_staged_key() {
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, FILE, own());
+                let created = create(&mut sim, &host, PrivateKey([9; 32]));
+                let exists = env::files::Error::Exists {
+                    path: PathBuf::from("node.key"),
+                };
+                assert_eq!(created, Err(Error::Directory(exists)), "seed {seed}");
+                sim.crash(&host, sim::Crash::Power);
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, NEW), None, "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, FILE), Some(own()), "seed {seed}");
+            }
         }
 
         /// A power cut after `create_key` keeps the key.
@@ -3701,12 +3748,14 @@ mod port {
             }
         }
 
-        /// A failed file call of `create_key` gives its error.
+        /// A failed file call of `create_key` gives its error, and leaves no
+        /// `node.key`.
         #[test]
         fn a_failed_file_call_of_create_key_gives_its_error() {
-            use env::files::Operation::{Open, ReadAt, Sync, SyncDir, WriteAt};
-            let calls = [Open, ReadAt, WriteAt, Sync].map(|call| (FILE, call));
-            for (path, operation) in calls.into_iter().chain([("", SyncDir)]) {
+            use env::files::Operation::{Open, Remove, Rename, Sync, SyncDir, WriteAt};
+            let calls = [Remove, Open, WriteAt, Sync, Rename].map(|call| (NEW, call));
+            let others = [(FILE, Open), ("", SyncDir)];
+            for (path, operation) in calls.into_iter().chain(others) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
                 host.fail_file(Path::new(path), operation);
@@ -3717,29 +3766,48 @@ mod port {
                 };
                 let created = create(&mut sim, &host, KEY);
                 assert_eq!(created, Err(Error::Directory(error)), "{operation:?}");
+                if operation != SyncDir {
+                    assert_eq!(found(&mut sim, &host), None, "{operation:?}");
+                }
             }
         }
 
-        /// A failed file call on a new key stops the node, and the next start makes
-        /// one.
+        /// A failed file call on `node.key`, or on the `node.key.new` that makes it,
+        /// stops the node, and the next start proves a key. A failed read keeps the
+        /// key that the file holds.
         #[test]
         fn a_failed_file_call_on_the_key_stops_the_node() {
-            use env::files::Operation::{Open, ReadAt, Sync, WriteAt};
-            for operation in [Open, ReadAt, WriteAt, Sync] {
+            use env::files::Operation::{Open, ReadAt, Remove, Rename, Sync, WriteAt};
+            for (path, operation) in [
+                (NEW, Remove),
+                (NEW, Open),
+                (NEW, WriteAt),
+                (NEW, Sync),
+                (NEW, Rename),
+                (FILE, Open),
+                (FILE, ReadAt),
+            ] {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
-                host.fail_file(Path::new(FILE), operation);
+                if path == FILE {
+                    write_key(&mut sim, &host, own());
+                }
+                host.fail_file(Path::new(path), operation);
                 let error = env::files::Error::Io {
-                    path: PathBuf::from(FILE),
+                    path: PathBuf::from(path),
                     operation,
                     code: 5,
                 };
                 assert_eq!(
                     start_and_stop(&mut sim, &host),
-                    Err(Error::Directory(error))
+                    Err(Error::Directory(error)),
+                    "{operation:?} {path}"
                 );
-                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-                assert_eq!(&read(&mut sim, &host)[..16], b"foundation/key/2");
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{operation:?}");
+                let made = found(&mut sim, &host).expect("a key");
+                if path == FILE {
+                    assert_eq!(made, own(), "{operation:?} {path}");
+                }
             }
         }
 
@@ -3825,52 +3893,57 @@ mod port {
                 assert_eq!(sim.run_for(Span::SECOND), Ok(()));
                 node.stop();
                 assert_eq!(sim.run(), Ok(()));
-                node.join() == error && key_written(&mut sim, &host)
+                node.join() == error && found(&mut sim, &host).is_some()
             });
             assert!(stopped, "no start stopped at the sync of the directory");
         }
 
-        /// A failed sync of a new key stops the node, and can leave the key in the
-        /// cache only. A start that proves that key makes it durable, so a power cut
-        /// after it keeps the key.
+        /// A process crash can leave a key that a read sees but a power cut loses.
+        /// The claim of the next start makes it durable, also when the start fails
+        /// after it. Takes the first crash time, on seeds 0 to 7, at which a read sees
+        /// the key, and checks that a power cut then can lose it.
         #[test]
-        fn a_key_proven_after_a_failed_sync_survives_a_power_cut() {
-            let mut tried = Vec::new();
-            for seed in 0..16 {
+        fn a_later_start_makes_the_key_durable() {
+            let mut lost = 0;
+            let crashed = |seed, after| {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
-                host.fail_file(Path::new(FILE), env::files::Operation::Sync);
+                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                assert_eq!(sim.run_for(after), Ok(()), "seed {seed} at {after:?}");
+                sim.crash(&host, sim::Crash::Process);
+                drop(node);
+                let made = found(&mut sim, &host);
+                (sim, host, made)
+            };
+            for seed in 0..8 {
+                let (after, made) = (0..)
+                    .step_by(5_000)
+                    .map(Span::from_nanos)
+                    .find_map(|after| crashed(seed, after).2.map(|made| (after, made)))
+                    .expect("a crash leaves the key");
+                let (mut sim, host, _) = crashed(seed, after);
+                sim.crash(&host, sim::Crash::Power);
+                if found(&mut sim, &host).is_none() {
+                    lost += 1;
+                }
+                let (mut sim, host, _) = crashed(seed, after);
+                let operation = env::files::Operation::Open;
+                host.fail_file(Path::new(FILE), operation);
                 let error = env::files::Error::Io {
                     path: PathBuf::from(FILE),
-                    operation: env::files::Operation::Sync,
+                    operation,
                     code: 5,
                 };
-                assert_eq!(
-                    start_and_stop(&mut sim, &host),
-                    Err(Error::Directory(error))
-                );
-                let made = read(&mut sim, &host);
-                if made == [0; LEN] {
-                    continue;
-                }
-                let public = PrivateKey(made[32..64].try_into().unwrap()).public();
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
-                let dialed = dial(&mut sim, &host, public);
-                node.stop();
-                assert_eq!(sim.run(), Ok(()));
-                assert_eq!(node.join(), Ok(()));
-                if dialed.is_err() {
-                    continue;
-                }
-                tried.push(seed);
+                let started = start_and_stop(&mut sim, &host);
+                let at = format!("seed {seed} at {after:?}");
+                assert_eq!(started, Err(Error::Directory(error)), "{at}");
                 sim.crash(&host, sim::Crash::Power);
-                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-                assert_eq!(read(&mut sim, &host), made, "seed {seed}");
+                assert_eq!(found(&mut sim, &host), Some(made), "{at}");
             }
-            assert!(!tried.is_empty(), "no seed kept the key in the cache");
+            assert!(lost > 0, "no power cut lost the key");
         }
     }
 
@@ -3917,7 +3990,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_633_776;
+        const WRITE: i64 = 1_793_498_387;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5184,7 +5257,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5194,7 +5267,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..2 {
+            for _ in 0..7 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
