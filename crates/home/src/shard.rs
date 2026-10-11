@@ -457,8 +457,8 @@ impl Shard {
 
     /// Opens `writer` on each index of its key set, and appends a handoff for each
     /// index where it takes control. A handoff that finds no room waits for the next
-    /// write, writer open or close, or end of a lease or a grace on its index. A failed
-    /// commit fails the next write.
+    /// write, writer open or close, or end of a lease on its index. A failed commit
+    /// fails the next write.
     ///
     /// # Errors
     ///
@@ -914,8 +914,7 @@ fn freeze(
 /// Appends the unrecorded handoff of the index of each of `groups` of `session`, each
 /// alone, on the live path at mesh time `mesh`, and marks it recorded. A handoff that
 /// finds no room in the ring or the pool waits for the next write, writer open or
-/// close, or end of a lease or a grace on its index.
-/// Returns whether every handoff was recorded.
+/// close, or end of a lease on its index. Returns whether every handoff was recorded.
 ///
 /// # Errors
 ///
