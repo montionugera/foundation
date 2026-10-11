@@ -924,5 +924,30 @@ mod tests {
                  shard-2/ring failed with OS error 28"
             )
         );
+        let founding = mesh::Error::Files(io("mesh/founding", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Mesh(founding)),
+            failed(
+                "the node's mesh did not open: open of mesh/founding failed with OS \
+                 error 28"
+            )
+        );
+        let chunk = blob::Error::Files(io("blob/chunk", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Blob(chunk)),
+            failed(
+                "cannot open the node's chunk store: open of blob/chunk failed with OS \
+                 error 28"
+            )
+        );
+        let log = mesh::log::Error::Files(io("mesh/log/log-0", ENOSPC));
+        let stopped = node::Error::Group(mesh::Stopped::Write(log));
+        assert_eq!(
+            of(&stopped),
+            failed(
+                "the group of the node's mesh stopped: open of mesh/log/log-0 failed \
+                 with OS error 28"
+            )
+        );
     }
 }
