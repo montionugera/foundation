@@ -217,7 +217,16 @@ impl Gate {
     /// at [`Gate::deadline`]. After it, [`Gate::deadline`] is `None` or later than
     /// `now`. Returns whether anything came due.
     pub fn advance(&mut self, now: Monotonic) -> bool {
-        let mut due = false;
+        if self.deadline().is_none_or(|due| now < due) {
+            return false;
+        }
+        self.expire(now);
+        true
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn expire(&mut self, now: Monotonic) {
         // A lease taken at the last monotonic reading ends at that reading.
         while self.deadline().is_some_and(|at| at <= now) {
             if let Seat::Held { key, .. } = self.seat {
@@ -225,9 +234,7 @@ impl Gate {
                 self.claims[i].expired = true;
             }
             self.elect(now);
-            due = true;
         }
-        due
     }
 
     /// When the gate next changes on its own, or `None` when only an input can change
@@ -649,7 +656,7 @@ mod tests {
             let c = gate.open(writer("c", 50), None, at(2));
             assert_eq!(write(&mut gate, b, at(3)), Err(Error::Waiting));
             gate.close(c, at(4));
-            gate.advance(at(5));
+            assert!(!gate.advance(at(5)));
             assert_eq!(gate.deadline(), Some(at(10)));
         }
     }
