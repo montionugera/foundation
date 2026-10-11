@@ -180,7 +180,10 @@ mod tests {
             })
             .expect("the run ends");
         assert_ne!(drawn[0].0, drawn[1].0, "two scopes drew the same value");
-        assert_ne!(drawn[0].1, drawn[1].1, "the clients of two scopes drew the same");
+        assert_ne!(
+            drawn[0].1, drawn[1].1,
+            "the clients of two scopes drew the same"
+        );
     }
 
     #[test]
