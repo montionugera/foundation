@@ -102,6 +102,8 @@ _Static_assert(sizeof(UA_LifecycleState) == sizeof(int), "UA_LifecycleState chan
 _Static_assert(UA_NODEIDTYPE_NUMERIC == 0, "UA_NODEIDTYPE_NUMERIC moved");
 _Static_assert(sizeof(enum UA_NodeIdType) == sizeof(int), "UA_NodeIdType changed");
 _Static_assert(sizeof(UA_SessionState) == sizeof(int), "UA_SessionState changed");
+_Static_assert(UA_SESSIONSTATE_CREATE_REQUESTED == 1,
+               "UA_SESSIONSTATE_CREATE_REQUESTED moved");
 _Static_assert(UA_SESSIONSTATE_ACTIVATED == 4, "UA_SESSIONSTATE_ACTIVATED moved");
 _Static_assert(sizeof(UA_EventSourceType) == sizeof(int), "UA_EventSourceType changed");
 _Static_assert(sizeof(UA_EventSourceState) == sizeof(int),

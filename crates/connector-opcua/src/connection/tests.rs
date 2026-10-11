@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use env::clock::{Clock, Driver, Sleep, Timer};
 use env::net::{self, Tcp, tcp};
-use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::{Monotonic, Span};
 
@@ -28,6 +27,7 @@ use crate::ffi::test::{
     UA_findDataType, shim_map_set_strings,
 };
 use crate::ffi::{self, Bytes, ConnectionState, KeyValueMap, Status};
+use crate::peer::{hel, write};
 use crate::server::Server;
 
 const PORT: u16 = 4840;
@@ -153,14 +153,14 @@ impl Side {
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
         let manager =
-            Manager::new(Clock::clone(&clock), node.net(), &mut Rng::from_seed(0));
+            Manager::new(Clock::clone(&clock), node.net(), &mut node.entropy().rng());
         Self::of(clock, manager)
     }
 
     /// A side whose manager accepts on a listener at `local`.
     fn listening(node: &node::Node, local: SocketAddr) -> Self {
         let clock = node.clock();
-        let rng = &mut Rng::from_seed(0);
+        let rng = &mut node.entropy().rng();
         let manager =
             Manager::listening(Clock::clone(&clock), node.net(), local, 512, rng)
                 .expect("the port is free");
@@ -668,16 +668,6 @@ async fn hold(
         taken.store(sent, Ordering::Relaxed);
     }
     clock.sleep(Span::from_nanos(1_000_000_000_000)).await;
-}
-
-async fn write(stream: &mut Tcp, bytes: &[u8]) {
-    let mut sent = 0;
-    while sent < bytes.len() {
-        let parts = [std::io::IoSlice::new(&bytes[sent..])];
-        sent += poll_fn(|cx| stream.poll_write(cx, &parts))
-            .await
-            .expect("the write works");
-    }
 }
 
 /// The test counts the connections through the private table, since no public call
@@ -2539,19 +2529,6 @@ fn a_listen_on_a_port_other_than_the_listener_aborts() {
     );
 }
 
-/// Gives the `HEL` message of a client that asks for `url`, with buffers of 64 KiB
-/// and no limit on a message or its chunks.
-fn hel(url: &str) -> Vec<u8> {
-    let length = u32::try_from(32 + url.len()).expect("a short URL");
-    let url_length = u32::try_from(url.len()).expect("a short URL");
-    let mut bytes = b"HELF".to_vec();
-    for field in [length, 0, 1 << 16, 1 << 16, 0, 0, url_length] {
-        bytes.extend(field.to_le_bytes());
-    }
-    bytes.extend(url.as_bytes());
-    bytes
-}
-
 #[test]
 fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
     let mut network = Network::new();
@@ -2702,7 +2679,7 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
         inner: node.clock(),
         extra: Arc::clone(&extra),
     });
-    let rng = &mut Rng::from_seed(0);
+    let rng = &mut node.entropy().rng();
     let manager =
         Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
             .expect("the port is free");
@@ -3121,7 +3098,7 @@ fn a_manager_that_listens_at_a_taken_address_fails() {
         .run_on(&network.local.clone(), |node, _| async move {
             let local = local(&node);
             let _side = Side::listening(&node, local);
-            let rng = &mut Rng::from_seed(0);
+            let rng = &mut node.entropy().rng();
             let second = Manager::listening(node.clock(), node.net(), local, 4, rng);
             (second.err(), local)
         })
