@@ -498,9 +498,10 @@ pub async fn create_key(
 /// # Errors
 ///
 /// When `given` is `None`: [`Error::Unnamed`] when the data directory holds no name,
-/// [`Error::Name`] for a file `name` that a node did not write, [`Error::Mesh`] for a
-/// founding that does not read, [`Error::Key`] for a file `node.key` that a node did
-/// not write, and [`Error::Directory`] for a file call that fails.
+/// also when it holds no file `node.key`, which reads no founding, [`Error::Name`] for
+/// a file `name` that a node did not write, [`Error::Key`] for a file `node.key` that a
+/// node did not write, [`Error::Mesh`] for a founding that does not read when
+/// `node.key` holds a key, and [`Error::Directory`] for a file call that fails.
 pub async fn name(
     files: &env::files::Files,
     given: Option<types::name::Name>,

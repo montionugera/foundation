@@ -113,8 +113,9 @@ async fn card(files: &Files) -> Result<Option<Name>, Error> {
     let Some(key) = identity::key(files).await? else {
         return Ok(None);
     };
-    let pool = Rc::new(block::Pool::heap(POOL));
-    let founding = mesh::founding(files, &directory::mesh(), pool).await;
+    let founding =
+        mesh::founding(files, &directory::mesh(), Rc::new(block::Pool::heap(POOL)))
+            .await;
     let Some(founding) = founding.map_err(Error::Mesh)? else {
         return Ok(None);
     };
