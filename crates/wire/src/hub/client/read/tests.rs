@@ -696,6 +696,74 @@ mod reader {
         }
     }
 
+    /// The messages of a fuzz input: each a length byte and then that many bytes.
+    fn input(mut bytes: &[u8]) -> Vec<&[u8]> {
+        let mut messages = Vec::new();
+        while let Some((&len, rest)) = bytes.split_first() {
+            let (message, rest) = rest.split_at(usize::from(len).min(rest.len()));
+            messages.push(message);
+            bytes = rest;
+        }
+        messages
+    }
+
+    /// The bytes of the input `$file` of the fuzz target `wire_hub_client`.
+    macro_rules! corpus {
+        ($file:literal) => {
+            include_bytes!(concat!(
+                "../../../../../../oracles/fuzz/wire_hub_client/",
+                $file
+            ))
+        };
+    }
+
+    /// Each run input of the fuzz target starts with `Places { count: 2, index: 0 }`,
+    /// and its second message gives the result.
+    #[test]
+    fn gives_the_result_of_each_run_input_of_the_fuzz_target() {
+        let places = Places { count: 2, index: 0 };
+        let cases: [(&[u8], Result<Event, Error>); 7] = [
+            (
+                corpus!("reader_place"),
+                Ok(Event::Last(vec![
+                    pt(1, "timestamp", "a.time"),
+                    pt(2, "f32[3]", "a.b"),
+                ])),
+            ),
+            (corpus!("reader_place_cut"), Err(Error::Length { len: 21 })),
+            (
+                corpus!("reader_place_name"),
+                Err(Error::Name(text::Error::Parse(Box::new(
+                    name::Error::Segment {
+                        input: "!".into(),
+                        segment: "!".into(),
+                    },
+                )))),
+            ),
+            (
+                corpus!("reader_place_name_text"),
+                Err(Error::Name(not_utf8(&[0xff]))),
+            ),
+            (
+                corpus!("reader_place_text"),
+                Err(Error::Sample(not_utf8(&[0xff]))),
+            ),
+            (
+                corpus!("reader_place_type"),
+                Err(Error::Sample(text::Error::Parse(sample::Error::Syntax))),
+            ),
+            (corpus!("reader_run_empty"), Err(Error::Empty)),
+        ];
+        for (bytes, result) in cases {
+            let [first, second] = input(bytes)[..] else {
+                panic!("an input of two messages: {bytes:?}");
+            };
+            let mut reader = Reader::new(Mode::Complete);
+            assert_eq!(event(&mut reader, first), Ok(Event::Places(places)));
+            assert_eq!(event(&mut reader, second), result, "{bytes:?}");
+        }
+    }
+
     /// After the last place, the session reads a `Places` or a run message as a reply.
     #[test]
     fn refuses_places_or_a_run_after_the_last_place() {
