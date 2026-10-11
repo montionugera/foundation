@@ -54,12 +54,20 @@
   for each first open supersedes "starts at once" of the record text that that comment
   approved (`laptop.architect-2`, 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item
-  4). While a first reader open waits for a home, no first run starts on the node. At a
-  start in a region with no quorum, an out connector whose index has no home holds each
-  connector of the node until the region names that home (#2380). A region of one node
-  names each home with its own vote (`laptop.architect-2`, 2026-10-11T07:34:44Z:
+  4). While a first reader open waits for a home, no first run starts on the node
+  (`laptop.architect-2`, 2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, question
-  2). So `node` holds one count of the first opens of the connectors that each apply
+  2). The open waits on the state of the mesh of this node. At each open of the mesh,
+  that state starts at the founding, and it moves on only after the node hears a leader
+  (MESH SURFACE). At a start in a region with no quorum, an out connector whose index
+  has no founding home holds each connector of the node. It does so also when the
+  region gave that index a home before the stop. The hold ends when the node hears a
+  leader and applies the change that gives the home (#2380). #1770 makes the node apply
+  its stored log at the open. Then only a home that the node never applied holds them.
+  In a region of one node, the node leads and applies its log with its own vote
+  (`laptop.architect`, 2026-10-11T12:28:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109025201). So
+  `node` holds one count of the first opens of the connectors that each apply
   adds, pending from that apply until `Supervisor::open` resolves, and starts the first
   run of such a connector only once the count is 0. A changed connector, and one that
   runs again after `Config`, has no share and does not wait (`laptop.architect-2`,
