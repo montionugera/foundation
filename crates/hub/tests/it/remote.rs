@@ -1737,18 +1737,15 @@ fn a_reader_whose_pool_has_no_room_for_a_message_of_keys_stops_the_stream_with_b
             let full = async {
                 test.clock.sleep(Span::from_nanos(100_000_000)).await;
                 let blocks = fill(&test.pool);
+                // Before the reset of the stream gives back its blocks.
+                let keys = MESSAGE_MIN / 16 * 16;
+                let expected = test.pool.alloc(keys).expect_err("the pool is full");
                 steps.full.store(true, Ordering::Relaxed);
-                blocks
+                (blocks, expected)
             };
-            let (opened, blocks) =
+            let (opened, (blocks, expected)) =
                 both(test.hub.reader(unnamed(&names, Mode::Latest)), full).await;
             let error = opened.expect_err("the pool has no room for the keys");
-            let reader::Error::Pool(block::Error::Exhausted { requested, .. }) = error
-            else {
-                panic!("not an exhausted pool: {error:?}");
-            };
-            assert_eq!(requested, MESSAGE_MIN / 16 * 16, "a full message of keys");
-            let expected = test.pool.alloc(requested).expect_err("the pool is full");
             drop(blocks);
             assert_eq!(error, reader::Error::Pool(expected));
             until(&test.clock, &steps.stopped).await;
