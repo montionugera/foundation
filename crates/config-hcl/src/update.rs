@@ -1191,6 +1191,8 @@ mod tests {
             let ended = format!("{text}\r\n");
             let (out, want) = (updated(text, new), updated(&ended, new));
             assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
+            let kept = format!("{out}\r\n");
+            assert!(!quoted_at_end(text, &kept, &want), "{kept:?}");
         }
     }
 
