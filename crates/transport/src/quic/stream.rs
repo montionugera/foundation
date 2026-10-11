@@ -3364,6 +3364,8 @@ mod tests {
                     let written = pair::try_write(endpoint, now, &sender, message);
                     assert_eq!(written.map(|left| left.is_none()), Ok(true));
                 }
+                // Only the half shows that the header went: `spend` opened the
+                // stream, and the peer reads only whole messages.
                 assert!(half(&mut pair.client, &sender).sent(), "the header went");
                 pair.client.endpoint.cancel(now, &sender);
                 pair.run(RUN);
