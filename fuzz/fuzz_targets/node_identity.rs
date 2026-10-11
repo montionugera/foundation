@@ -1,6 +1,6 @@
-//! `node::identity::decode` and `node::admin::decode` each give a key exactly for the
-//! bytes of their file, `node.key` or `admin.key`, with the tag and the CRC32C, and
-//! that key encodes to the same bytes.
+//! `node::sector::written` takes the bytes of `node.key` or `admin.key` exactly when
+//! they have the tag of their file and the CRC32C, and the encode of their fields gives
+//! them back.
 //!
 //! Input: the 100 bytes of `node.key` or the 54 bytes of `admin.key`, or the first 96
 //! or 50 bytes, to which the target appends their CRC32C.

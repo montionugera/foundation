@@ -176,6 +176,8 @@ const IDLE: Span = Span::from_nanos(30_000_000_000);
 /// The largest message of a stream, when the pool holds it, a patch as [`WINDOW`]
 /// is.
 const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
+/// The bytes the blob store leaves free on the disk, a patch as [`WINDOW`] is.
+const FLOOR: u64 = 1 << 30;
 
 impl Node {
     /// Binds the node's port at [`Config::listen`], then starts one shard per core,
@@ -196,13 +198,15 @@ impl Node {
     /// founds the root region and reads or makes `admin.key`), then serves the port
     /// until its transport or the mesh's group stops, which stops the node. It admits
     /// each member of the region, and gives other peers at most 256 places at once: one
-    /// for each session of a program, and one for the key of a node. Returns once each
-    /// shard runs or one has failed to start. No shard starts when the disk budget
-    /// holds no ring on each shard ([`Error::Disk`]), when a shard's part of the pool
-    /// budget gives a reservation of more than `usize::MAX` bytes ([`Error::Pool`]),
-    /// when the port does not bind ([`Error::Port`]), or when [`Config::name`] has a
-    /// reserved segment ([`Error::Reserved`]). Any failure stops the node, and
-    /// [`Node::join`] gives the first one (its `# Errors`).
+    /// for each session of a program, and one for the key of a node. At the bound, the
+    /// oldest place frees for a new peer, so a peer outside the region keeps its
+    /// session until 256 later peers took a place. Returns once each shard runs or one
+    /// has failed to start. No shard starts when the disk budget holds no ring on each
+    /// shard ([`Error::Disk`]), when a shard's part of the pool budget gives a
+    /// reservation of more than `usize::MAX` bytes ([`Error::Pool`]), when the port
+    /// does not bind ([`Error::Port`]), or when [`Config::name`] has a reserved segment
+    /// ([`Error::Reserved`]). Any failure stops the node, and [`Node::join`] gives the
+    /// first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -465,9 +469,8 @@ impl Stopper {
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there and
-/// holds a key, and [`Error::Directory`] for a file call that fails. It writes nothing
-/// over a key.
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when a file is there, before
+/// it writes anything, and [`Error::Directory`] for a file call that fails.
 #[cfg(feature = "sim")]
 pub async fn create_key(
     files: &env::files::Files,
@@ -482,7 +485,7 @@ pub async fn create_key(
         private_key,
         opener,
     };
-    identity::store(files, &identity).await?;
+    identity::write_new(files, &identity).await?;
     Ok(seal_key)
 }
 
@@ -882,6 +885,7 @@ impl Endpoint {
             files: files.clone(),
             dir: directory::blob(),
             pool: Rc::clone(&pool),
+            floor_bytes: FLOOR,
         });
         let store = match store.await {
             Ok(store) => store,
@@ -1170,7 +1174,8 @@ pub enum Error {
     },
     /// A file call that locks the data directory, reads or records its shard count or
     /// the node's name or its budgets, or reads or writes the node's key or the first
-    /// admin's key, failed.
+    /// admin's key, failed. Also [`env::files::Error::Exists`] when `create_key` finds
+    /// a file at `node.key`, with no file call that failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),
@@ -1205,9 +1210,9 @@ pub enum Error {
     /// The chunk store did not open. The node took no session.
     Blob(blob::Error),
     /// The file `node.key` in the data directory is not a key that a node wrote:
-    /// another length that is not 0, or another tag or checksum. The node took no
-    /// session and does not write over the file, because a new key is a new node to its
-    /// region.
+    /// another length, also no bytes, or another tag or checksum, also 100 zero bytes.
+    /// The node took no session and does not write over the file, because a new key is
+    /// a new node to its region.
     Key,
     /// At a start that founds the root region, the file `admin.key` in the data
     /// directory is not a key that a node wrote: another length, also no bytes, or

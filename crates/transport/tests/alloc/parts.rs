@@ -1,34 +1,23 @@
 //! A `send_parts` allocates as a `send` of one block of the same bytes, plus one
 //! allocation for the copy of each stretch over 1452 bytes, one when noq-proto first
 //! takes such a copy in part, one for each growth of the segment queue of noq-proto,
-//! and one for each growth of the stretch buffer of the connection.
+//! and one for each growth of the stretch buffer of the connection. A message of more
+//! than 1452 bytes that gives noq-proto no slice of the block saves the shared count
+//! that the slice of a `send` makes.
 
 use std::iter;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::pin::{Pin, pin};
-use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use block::{Block, Heap, Pool};
+use block::Pool;
 use env::clock::Clock;
-use sim::Sim;
-use sim::node::Node;
 use transport::stream::{Part, Sender};
-use transport::{Address, Class, Code, Config, Error, Session, Transport};
-use types::ed25519::PrivateKey;
-use types::time::Span;
+use transport::{Class, Error};
 
 use crate::ALLOCATOR;
-use crate::common::{CLIENT, PORT, SERVER, filled, part};
-
-/// Long enough for the peer to read and acknowledge a message.
-const PAUSE: Span = Span::from_nanos(100_000_000);
-const CLOSED: Error = Error::PeerClosed { code: Code(0) };
-/// The sends of each kind before the counted ones.
-const WARMUP: usize = 8;
-const ROUNDS: usize = 8;
+use crate::common::filled;
+use crate::session::{NARROW, PAUSE, ROUNDS, WARMUP, WIDE, poll, run};
 
 /// The parts of a message, and the allocations of its `send_parts` over those of a
 /// `send`, with their cause.
@@ -59,8 +48,9 @@ fn shapes() -> [Shape; 6] {
         Shape {
             name: "1000 ranges of 8 B",
             parts: spaced(1000, 8, 16),
-            over: 1,
-            cause: "the copy of the stretch",
+            over: 0,
+            cause: "the copy of the stretch, in place of the shared count of the \
+                    slice that a send gives noq-proto",
         },
         Shape {
             name: "a stretch of 1452 bytes with zeros",
@@ -71,8 +61,9 @@ fn shapes() -> [Shape; 6] {
         Shape {
             name: "a range of 1452 bytes, then 1 byte and a zero",
             parts: vec![series(0..1452, 0), series(2000..2001, 1)],
-            over: 1,
-            cause: "the copy of the stretch of 1454 bytes",
+            over: 0,
+            cause: "the copy of the stretch of 1454 bytes, in place of the shared \
+                    count of the slice that a send gives noq-proto",
         },
         Shape {
             name: "two adjacent ranges of 1000 bytes",
@@ -94,23 +85,6 @@ fn spaced(ranges: usize, len: usize, stride: usize) -> Vec<Part> {
         .map(|at| series(at * stride..at * stride + len, 0))
         .collect()
 }
-
-/// The limits of a transport: its largest message and its window.
-#[derive(Clone, Copy)]
-struct Limits {
-    message: usize,
-    window: usize,
-}
-
-const WIDE: Limits = Limits {
-    message: 1 << 17,
-    window: 1 << 20,
-};
-/// The smallest window for the largest message: twice its size.
-const NARROW: Limits = Limits {
-    message: 16_000,
-    window: 32_000,
-};
 
 impl Shape {
     /// The bytes of the message.
@@ -201,34 +175,6 @@ pub(crate) fn main() {
     });
 }
 
-/// Runs `client` on a session of a client and a server with `limits`, then closes the
-/// session.
-fn run(
-    limits: Limits,
-    client: impl AsyncFnOnce(Session, Rc<Pool>, Clock) + Send + 'static,
-) {
-    let mut sim = Sim::new(sim::Config::default());
-    let node = sim.node(sim::node::Config::default());
-    let server = sim.node(sim::node::Config::default());
-    let at = SocketAddr::new(server.addresses()[0], PORT);
-    serve(&server, limits);
-    sim.run_on(&node, move |node, tasks| async move {
-        let config = config(&node, tasks, CLIENT, limits);
-        let pool = Rc::clone(&config.pool);
-        let transport = Transport::new(config, part(&node, 0)).expect("a transport");
-        let session = transport
-            .dial(SERVER.public(), &[Address::Udp(at)])
-            .await
-            .expect("a session");
-        let clock = node.clock();
-        client(session.clone(), pool, clock.clone()).await;
-        clock.sleep(PAUSE).await;
-        session.close(Code(0));
-        clock.sleep(Span::MILLISECOND).await;
-    })
-    .expect("the test runs");
-}
-
 /// Sends messages of `shape` and of a single block of the same bytes, and checks the
 /// allocations of each after warm-up.
 ///
@@ -263,10 +209,13 @@ async fn measure(sender: &mut Sender, pool: &Pool, clock: &Clock, shape: &Shape)
 ///
 /// # Panics
 ///
-/// When the first write of the stretch does not allocate as that of the block plus
-/// the buffer of the stretch and the shared count that `bytes` makes when noq-proto
-/// first takes the buffer in part, or the later writes do not allocate as those of
-/// the block.
+/// When the first write of the block does not allocate 4 times or the later writes
+/// once, noq-proto's allocations included: a stream that did not keep its parts
+/// list grows it again. When the first write of the stretch does not allocate as
+/// that of the block plus the buffer of the stretch and the shared count that
+/// `bytes` makes when noq-proto first takes the buffer in part, less the shared
+/// count of the block's slice, or the later writes do not allocate as those of the
+/// block.
 async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
     let parts = spaced(NARROW.message / 8, 8, 16);
     for round in 0..WARMUP + ROUNDS {
@@ -280,11 +229,17 @@ async fn cut(sender: &mut Sender, pool: &Pool, clock: &Clock) {
         let parted = cut_send(clock, pin!(sender.send_parts(block, &parts))).await;
         if round >= WARMUP {
             assert_eq!(
+                sent,
+                [4, 1],
+                "the allocations of the first write and of the later writes of a \
+                 send, noq-proto's included: the stream keeps its parts list"
+            );
+            assert_eq!(
                 parted,
-                [sent[0] + 2, sent[1]],
+                [sent[0] + 1, sent[1]],
                 "a stretch that the window takes in parts, over send: the copy of \
-                 the stretch and the shared count of bytes at the first cut, then no \
-                 copy of the rest"
+                 the stretch and the shared count of bytes at the first cut, less the \
+                 shared count of the block's slice, then no copy of the rest"
             );
         }
     }
@@ -323,63 +278,5 @@ async fn cut_send(
             sent.expect("the send goes");
             return [first, after];
         }
-    }
-}
-
-/// Polls a send of `parts` of `block` once, or of all of it when `parts` is empty.
-///
-/// # Panics
-///
-/// When the send waits or fails.
-fn poll(sender: &mut Sender, block: Block, parts: &[Part]) {
-    let mut cx = Context::from_waker(Waker::noop());
-    let polled = if parts.is_empty() {
-        pin!(sender.send(block)).poll(&mut cx)
-    } else {
-        pin!(sender.send_parts(block, parts)).poll(&mut cx)
-    };
-    match polled {
-        Poll::Ready(sent) => sent.expect("the send goes"),
-        Poll::Pending => panic!("a send waited on its first poll"),
-    }
-}
-
-fn serve(node: &Node, limits: Limits) {
-    let own = node.clone();
-    let shard = env::shards::Config {
-        name: "server".into(),
-        core: None,
-    };
-    let started = node.shards().start(shard, move |tasks| async move {
-        let config = config(&own, tasks.clone(), SERVER, limits);
-        let transport = Transport::new(config, part(&own, PORT)).expect("a transport");
-        let session = transport.accept().await.expect("a session");
-        let mut receiver = session.accept().await.expect("a stream").receiver;
-        loop {
-            match receiver.recv().await {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(error) => panic!("the server failed to read: {error}"),
-            }
-        }
-        assert_eq!(session.closed().await, CLOSED, "the client closes");
-    });
-    drop(started.expect("a shard"));
-}
-
-/// [`crate::common::config`] with `limits` and a pool of 4 MiB.
-fn config(
-    node: &Node,
-    tasks: env::tasks::Tasks,
-    key: PrivateKey,
-    limits: Limits,
-) -> Config {
-    let pool = block::Config::new(1 << 22).expect("the budget fits");
-    let memory = Heap::new(pool.reservation());
-    Config {
-        message_bytes_max: NonZeroUsize::new(limits.message).expect("not zero"),
-        window_bytes: limits.window,
-        pool: Rc::new(Pool::new(pool, memory)),
-        ..crate::common::config(node, tasks, key)
     }
 }

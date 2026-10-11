@@ -162,11 +162,6 @@ mod tests {
 
     use super::*;
 
-    /// The name in the file of `bytes`.
-    fn read(bytes: &[u8; LEN]) -> Result<Option<Name>, Error> {
-        decode(&sector::written(bytes, TAG).map_or(Held::Foreign, Held::Written))
-    }
-
     #[test]
     fn writes_the_tag_the_length_the_name_and_the_checksum() {
         let bytes = encode(&"site_a.edge".parse().unwrap());
@@ -186,12 +181,14 @@ mod tests {
         let name: Name = "a".repeat(Name::MAX_BYTES).parse().unwrap();
         let bytes = encode(&name);
         assert_eq!(bytes[17], 255);
-        assert_eq!(read(&bytes).unwrap(), Some(name));
+        assert!(sector::written(&bytes, TAG));
+        assert_eq!(decode(&Held::Written(bytes)).unwrap(), Some(name));
     }
 
     #[test]
     fn zero_bytes_are_not_a_name() {
-        assert!(matches!(read(&[0; LEN]), Err(Error::Name)));
+        assert!(!sector::written(&[0; LEN], TAG));
+        assert!(matches!(decode(&Held::Foreign), Err(Error::Name)));
     }
 
     proptest! {
@@ -204,9 +201,11 @@ mod tests {
             flip in 1..=u8::MAX,
         ) {
             let mut bytes = encode(&name.parse().unwrap());
-            prop_assert_eq!(read(&bytes).unwrap(), Some(name.parse().unwrap()));
+            prop_assert!(sector::written(&bytes, TAG));
+            let decoded = decode(&Held::Written(bytes)).unwrap();
+            prop_assert_eq!(decoded, Some(name.parse().unwrap()));
             bytes[at] ^= flip;
-            prop_assert!(matches!(read(&bytes), Err(Error::Name)));
+            prop_assert!(!sector::written(&bytes, TAG));
         }
 
         /// Bytes that no encode gives are not a name.
@@ -214,7 +213,7 @@ mod tests {
         fn other_bytes_are_not_a_name(bytes in prop::array::uniform32(any::<u8>())) {
             let mut file = [0; LEN];
             file[..32].copy_from_slice(&bytes);
-            prop_assert!(matches!(read(&file), Err(Error::Name)));
+            prop_assert!(!sector::written(&file, TAG));
         }
     }
 }

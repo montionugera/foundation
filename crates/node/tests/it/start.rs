@@ -447,11 +447,7 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
     rig.start();
     rig.stop();
     let mode = |mode| std::fs::Permissions::from_mode(mode);
-    for (file, call) in [
-        ("node.key", "open"),
-        ("shard-0/ring", "open"),
-        ("mesh/log/log-0", "open"),
-    ] {
+    for (file, call) in [("shard-0/ring", "open"), ("mesh/log/log-0", "open")] {
         let path = rig.dir.join("foundation-data/data").join(file);
         std::fs::set_permissions(&path, mode(0o400)).expect("make it read-only");
         let output = rig.run(&["start"], b"");
@@ -473,6 +469,21 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
             "{file}"
         );
     }
+}
+
+/// A start only reads `node.key`, so a key that the user cannot write starts.
+#[test]
+fn a_key_that_the_user_cannot_write_starts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let path = rig.dir.join("foundation-data/data/node.key");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+        .expect("make it read-only");
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
 }
 
 #[test]

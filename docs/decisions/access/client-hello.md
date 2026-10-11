@@ -75,14 +75,35 @@
   latest read needs a stream of class `Latest`, and a complete read one of class
   `Complete`, else `MALFORMED` (box1.builder-2, 2026-10-10T23:26:58Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402, approved
-  by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). The program sends
-  no credit: the stream's flow control bounds the frames in flight. The program knows
-  the kind of each stream that it opens; the node knows the kind of the hello stream
-  only, and decodes the first message of each later stream with `client::First::decode`,
-  which gives a `Request` or a `Read` and refuses each other kind with `Error::Kind`.
-  The lost reason above, that each caller checks the kind again, does not apply: both
-  variants come, and the node handles each. Supersedes, for the node, the rule that each
-  side knows the kind of each stream, of
+  by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
+  `client::Reader` decodes the start of a read stream: `Places`, then the run. With the
+  last place it gives the `hub::Reader` of their count and the read's mode, and the
+  program decodes each reply with it. Only `wire` builds that reader, so the program
+  side builds no `Open` with a grant that it never sends. `client::Reader` refuses an
+  index place whose sample type is not `Stamp` with `Error::Unstamped`
+  (`laptop.architect`, 2026-10-11T00:45:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). The
+  caller gives `Error::Finished` for a stream that the node finishes before the last
+  place, and a call of `client::Reader` after that place panics. Lost: one decoder for
+  the whole stream. Its copy of each reply cost the program 6.9 ns for each message
+  (644.7 against 188.6 ns for a frame of 66 messages). `#[inline]` on
+  `hub::Reader::decode` removed that cost, and cost the node 0.31 ns for each message
+  (188.6 to 209.0 ns) and 5.1 ns for a head (8.7 to 13.8 ns), on box1 under load
+  (https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106494175;
+  `laptop.architect`, 2026-10-11T07:53:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729).
+  Supersedes `FromNode::Home`, `body`, `end`, and item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921.
+  `client::Reader` is the one public path that decodes `Places` and the run
+  (`laptop.architect`, 2026-10-11T01:56:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669). The
+  program sends no credit: the stream's flow control bounds the frames in flight. The
+  program knows the kind of each stream that it opens; the node knows the kind of the
+  hello stream only, and decodes the first message of each later stream with
+  `client::First::decode`, which gives a `Request` or a `Read` and refuses each other
+  kind with `Error::Kind`. The lost reason above, that each caller checks the kind
+  again, does not apply: both variants come, and the node handles each. Supersedes, for
+  the node, the rule that each side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
   17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each SDK
@@ -96,6 +117,10 @@
   `Copy` (`laptop.director`, 2026-10-11T00:48:05Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407; shape
   approved by `laptop.architect`, 2026-10-11T01:55:44Z,
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). Lost: a
-  `wire::hub::client::Error`, because a read stream also gives the errors of its inner
-  reader, so it would wrap `hub::Error` or copy its variants.
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). A
+  `wire::hub::client::Error` was lost because a read stream also gave the errors of its
+  inner reader. That reason is void: the program decodes the replies with the
+  `hub::Reader` that `client::Reader` gives, and gets their errors from it. The ruling
+  on #2377 adds the type, and makes `wire::hub::Error` `Copy`, after #2368 merges
+  (`laptop.architect`, 2026-10-11T08:26:42Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794).
