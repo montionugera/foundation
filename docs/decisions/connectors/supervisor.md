@@ -23,12 +23,12 @@
   disk (the test:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). These
   sentences are approved by `laptop.architect` (2026-10-11T07:34:36Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Proposed
-  in https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6106461072, with
-  no ruling of `laptop.architect-2` yet. Each run gets a child of the caller's token,
-  which the supervisor cancels once the run returns or its future drops, so each task
-  that the run spawned to wait on it ends with the run (`laptop.architect-2`,
-  2026-10-08T17:58:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Decided
+  by `laptop.architect-2` (2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). Each run
+  gets a child of the caller's token, which the supervisor cancels once the run returns
+  or its future drops, so each task that the run spawned to wait on it ends with the run
+  (`laptop.architect-2`, 2026-10-08T17:58:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6065930789). A drop of
   the future of `Opened::run` cancels the run and does not wait for its tasks
   (`laptop.architect-2`, 2026-10-09T01:30:51Z:
