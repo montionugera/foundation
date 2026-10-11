@@ -577,8 +577,8 @@ struct Shown<'a> {
     /// Each line of the comment that can hide text on GitHub or that the check cannot
     /// read, with its cause, in order.
     hiding: Vec<(&'a str, Cause)>,
-    /// Whether the comment was posted before [`CUTOFF`], so the check reads no end lines
-    /// in it.
+    /// Whether the comment was posted before [`CUTOFF`], so the check reads no end
+    /// lines in it.
     old: bool,
 }
 
