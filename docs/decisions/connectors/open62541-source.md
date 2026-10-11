@@ -79,10 +79,18 @@
   symbol, access), read from `objdump -dr` as the clock check reads a call. The function
   is the whole label of the function symbol, such as `parse.0` for a nested function,
   and the access is a call or an address. So a listed symbol in a new function of a file
-  fails, and so does the address of a listed symbol that its function only calls.
-  `FUNCTION_SYMBOLS` lists these keys, the clock calls among them. A reference from
-  outside a function fails when `SYMBOLS` does not admit it. Decided by
-  `laptop.architect`
+  fails, and so does the address of a listed symbol that its function only calls. A
+  function that has the address of a listed name is that listed function: a weak alias
+  gives one function two names. An empty listed function before a new one gives the new
+  one its address only with no `-ffunction-sections`. That is an edit made to hide, and
+  review of each copy PR covers it. The function at the address of a listed name:
+  decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). `FUNCTION_SYMBOLS` lists these keys, the clock calls among
+  them. A reference from outside a function fails when `SYMBOLS` does not admit it.
+  Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094336509,
   2026-10-10 05:46 UTC). The whole label and the access: approved by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094746609,
@@ -93,7 +101,9 @@
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
   2026-10-10 15:36 UTC). Supersedes the (file, symbol) pairs of
   https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. The text
-  from "When `SYMBOLS` does not admit" to here: approved by `laptop.architect-2`
+  from "When `SYMBOLS` does not admit" to here, less the three sentences from "A
+  function that has the address of a listed name" that `laptop.architect-2` decided on
+  2026-10-11: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
   2026-10-10 15:36 UTC); approved by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099229278,
@@ -106,8 +116,33 @@
   check stands against a clock reference that the compiler makes from C in the copy,
   from a new tag or from our patch. It does not stand against an edit made to hide
   from it, such as assembly that stores a function's address: review of each copy PR
-  covers that. A `#line` directive or a line marker in a copy file fails the check,
-  because it moves the file that the include check reads. Decided by
+  covers that. The check reads each symbol name from the text of `nm` and `objdump`, and
+  `objdump` does not show each name exactly: `g+0x1` is a name, or `g` with an addend.
+  So the check fails on each symbol whose name holds a character other than an ASCII
+  letter, a digit, `_`, `.`, or `$`. A name that holds a newline reads as two names in
+  `nm`, so this rule does not see it. No C identifier gives such a name: it is an edit
+  made to hide, and review of each copy PR covers it. Lost: a second tool and a second
+  parser (`readelf -sW`) for that one name. The symbol name rule: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). The copy compiles with `-fno-dollars-in-identifiers`, a line of
+  `flags.txt`, so the connector and the check read `$` in the same way and no C
+  identifier gives a function a name that holds `$`: on aarch64, `objdump` gives no
+  function header to a function named `$x` or `$d`, as it gives none to a mapping
+  symbol, and in a section that holds another function, the code of such a function
+  reads as code of the function before it. `cc` reads a macro name only up to its `$`,
+  in the two builds alike. The symbol name rule still admits `$`, because each mapping
+  symbol holds one. Lost: the extent of each function from the symbol table, a second
+  parser for a name that no file of the copy has. Lost: the flag in the check alone,
+  with which the two builds read `#define X$ 1` in two ways. `cargo xtask open62541`
+  writes that line after the flags of the release, and the check fails on a `flags.txt`
+  without it. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC). The words "read `$` in the same way" and "no C identifier gives
+  a function": stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). A `#line` directive or a line marker in a copy file fails the
+  check, because it moves the file that the include check reads. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,
   2026-10-08 10:42 UTC). A builtin or an intrinsic that reads a clock or randomness,
@@ -115,29 +150,85 @@
   honest C. So the check reads each instruction of `objdump -d` and fails on each
   mnemonic outside a closed list for the architecture of the build, with the file, the
   function, and the mnemonic. A move of a system register (`mrs`, `msr`) is keyed by its
-  register too. An entry goes in the list only when it reads no clock, randomness,
-  file, network, or process state. Lost: a deny list of such instructions, which passes
-  one that it does not name, such as one of a later extension. Until #2330, the check
-  passes such a builtin, and review of each copy PR covers it. Decided by
+  register too. The key of an x86 instruction keeps each prefix that `objdump -d` shows
+  as a word before the mnemonic (`rep stos`, `notrack jmp`), so such a prefix has its
+  own entry. A prefix that `objdump` shows in an operand, such as the segment of
+  `fs:0x0`, is not in the key. The prefix rule: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). Which prefix the key keeps: stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106559609,
+  2026-10-11 07:12 UTC). An entry goes in the list only when its instruction reads
+  registers, flags, and memory, and no other state. A system register that the processor
+  or the OS fills, such as a counter (`cntvct_el0`) or a random number (`rndr`), is
+  other state. One exception is the thread pointer, which the thread-local state of the
+  copy needs, and which is an address, as those of the allocator are: `mrs tpidr_el0` on
+  aarch64, and on x86-64 a memory operand through `fs`, which the key does not keep. The
+  check does not see what the memory that an instruction reads holds. So a read at a
+  fixed place from the thread pointer passes on the two architectures. On x86-64 with
+  glibc, the stack guard is at such a place (`fs:0x28`). From C that names no address, a
+  compiler makes such a read only for a thread-local variable and, on x86-64 with glibc,
+  for the stack protector, which the check builds without. A read of another place from
+  the thread pointer in the C of the copy is an edit made to hide, and review of each
+  copy PR covers it. Lost: a key that keeps the segment (`mov fs:`). The thread-local
+  state of the copy needs its entry, which then admits each place from the thread
+  pointer, as `mrs tpidr_el0` does. Lost: a key by the place (`fs:0x28`), a deny list of
+  the places of one libc. The entry rule and the thread pointer: decided by
   `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107930295,
+  2026-10-11 10:10 UTC, for the sentences on a fixed place,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522, 2026-10-11
+  10:30 UTC, and, for the sentence on a system register,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108643437, 2026-10-11
+  11:41 UTC). Supersedes the entry rule ("only when it reads no clock, randomness, file,
+  network, or process state") of
+  https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499. Lost: a
+  deny list of the instructions that read a clock or randomness, which passes one that
+  it does not name, such as one of a later extension. The closed list, the key of `mrs`
+  and `msr`, and this "Lost": decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
-  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided
-  by `laptop.director`
+  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided by
+  `laptop.director`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060613260,
   2026-10-08 13:10 UTC). `cargo xtask open62541` puts each flag of a compile in
-  `flags.txt` (`-D`, `-I`, `-std`, and `CODE_FLAGS`, the flags that change the code)
-  or in `LEFT_OUT`, a closed list with the reason of each, and fails on any other
-  flag. `build.rs` and the check both read `flags.txt`, so the check reads objects
-  compiled with the flags of the connector. Decided by `laptop.architect-2`
+  `flags.txt` (`-D`, `-I`, `-std`, and `CODE_FLAGS`, the flags that change the code) or
+  in `LEFT_OUT`, a closed list with the reason of each, and fails on any other flag.
+  `build.rs` and the check both read `flags.txt`, so the check reads objects compiled
+  with each flag of `flags.txt`, as the objects of the connector are. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
-  2026-10-08 13:31 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
-  flags below are the only flags of `build.rs` outside `flags.txt`, so the objects of
-  the check do not have them. The check adds `-g -O0` and `-fno-stack-protector`
-  (above), and no other flag that changes the code. This sentence: approved by
-  `laptop.architect`
-  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6093693327,
-  2026-10-10 04:19 UTC). A `-W` flag with no `,` is a warning, which changes no code, so
-  `collect` leaves it out by that pattern, not by name. Decided by `laptop.architect-2`
+  2026-10-08 13:31 UTC). The words "each flag of `flags.txt`, as the objects of the
+  connector are": approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522,
+  2026-10-11 10:30 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
+  flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`
+  crate also gives each compile of the connector flags from the profile and the target
+  of the Rust build, such as the optimization level, `-fPIC`, and `-g`. It adds the
+  `CFLAGS` of the environment too. The check takes none of these flags from `build.rs`
+  or from the `cc` crate. It adds its own `-g -O0` and `-fno-stack-protector` (above),
+  and no other flag that changes the code. So the two builds differ in the macros that a
+  flag of one build alone changes, such as `__OPTIMIZE__`, `__PIE__`, and
+  `_FORTIFY_SOURCE`. Until #2381, the check does not read code that a file of the copy
+  puts under such a macro. The two builds also differ in macros that no flag makes, such
+  as `__FILE__` and `__clang__`. The check names each source `./` and its path in the
+  copy, and `build.rs` names it by an absolute path. The check compiles only with GCC.
+  `clang` compiles the connector when the `cc` crate picks it, and always with the
+  address sanitizer or under `cfg(fuzzing)` (below). Until #2381, the check does not
+  read code that only the connector build compiles for the value of such a macro. The
+  two builds also differ with no macro. The check compiles at `-O0`, where
+  `__builtin_constant_p` of a local that holds a constant is 0. A release build of the
+  connector compiles at `-O3`, where it is 1. Until #2381, the check does not read code
+  that only the connector build compiles from the same preprocessed text. These
+  sentences: stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108238957, 2026-10-11
+  10:49 UTC, for the flags of the `cc` crate and of the check, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108737600, 2026-10-11
+  11:53 UTC, for the difference with no macro, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6109104654, 2026-10-11
+  12:38 UTC, for the macros that no flag makes and the words "that holds a constant"). A
+  `-W` flag with no `,` is a warning, which changes no code, so `collect` leaves it out
+  by that pattern, not by name. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
   2026-10-08 13:57 UTC) and `laptop.director`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061540779,

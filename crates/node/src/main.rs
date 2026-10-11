@@ -2,7 +2,6 @@
 //! node until SIGINT or SIGTERM.
 
 use std::io::{self, Write};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -28,6 +27,7 @@ const RESERVED: Code = Code::new("node.reserved");
 const DISK: Code = Code::new("node.disk");
 const MEMORY: Code = Code::new("node.memory");
 const BUDGET: Code = Code::new("node.budget");
+const PORT: Code = Code::new("node.port");
 const FAILED: Code = Code::new("node.failed");
 
 fn main() -> ExitCode {
@@ -85,7 +85,7 @@ fn node(start: &Start) -> Result<(), Failure> {
         }),
         entropy: os::entropy(),
         net: net(),
-        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        listen: start.listen,
         region: node::Region::Stored,
         name: known.name.clone(),
     });
@@ -363,6 +363,13 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             NAME,
             format!("the file `name` in the data directory {data} is not a node name"),
             "Remove it, and start the node with its name".to_owned(),
+        ),
+        error @ node::Error::Port { .. } => (
+            PORT,
+            error.to_string(),
+            "Give `--listen` an address of this host with a port that is free and that \
+             this user can bind"
+                .to_owned(),
         ),
         node::Error::Budget => (
             BUDGET,

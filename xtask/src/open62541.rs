@@ -3,6 +3,7 @@
 //! [`EXTRA`].
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -210,6 +211,12 @@ const LEFT_OUT: [&str; 4] = [
     "-fno-fat-lto-objects",
 ];
 
+/// The flag of our own that `flags.txt` holds, so the connector and the check read `$`
+/// in the same way. With it, `cc` takes no `$` in an identifier, so no C identifier
+/// gives a function a name that holds `$`: objdump gives no header to a function named
+/// as a mapping symbol of aarch64 (`$x`, `$d`).
+const NO_DOLLARS: &str = "-fno-dollars-in-identifiers";
+
 /// The symbols outside the copy that any file of it may reference. Each reads no clock,
 /// file, network, randomness, or process state, except the allocator, with its reason.
 /// A new symbol outside the copy also goes in `OUTSIDE` in `connector-opcua`, which
@@ -242,9 +249,9 @@ const SYMBOLS: [&str; 16] = [
 /// replaces `patches/open62541/` with its compiled sources, the headers in the clone
 /// that they include, each file of [`EXTRA`], `LICENSE`, `sources.txt` (each `.c`
 /// file), `flags.txt` (the `-D`, `-I`, and `-std` flags and the [`CODE_FLAGS`] of each
-/// compile), and `VERSION` (tag and commit).
+/// compile, then [`NO_DOLLARS`]), and `VERSION` (tag and commit).
 /// Then it gives what [`check`] gives for the new copy. Needs Linux, `git`, `cmake`,
-/// Python 3, GCC as `cc`, and GNU `objdump` and `nm`.
+/// Python 3, GCC as `cc` for x86-64 or aarch64, and GNU `objdump` and `nm`.
 ///
 /// # Errors
 ///
@@ -280,14 +287,18 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 ///
 /// # Errors
 ///
-/// A line of `flags.txt` other than a `-D`, `-I`, or `-std` flag with its value or one
-/// of [`CODE_FLAGS`], a build that fails, an `#include` or `#import` of a header
-/// outside both the copy and the system directories, a reference to a symbol outside
-/// the copy that neither [`SYMBOLS`] nor [`FUNCTION_SYMBOLS`] admits, a listed key
-/// with no reference, a reference outside a function that [`SYMBOLS`] does not admit,
-/// any reference to a clock function other than a call, such as its address in code or
-/// data, through which any code can call it, each inlined function, an `#include_next`,
-/// and a `#line` directive or line marker in a `.c` or `.h` file of the copy.
+/// A line of `flags.txt` other than a `-D`, `-I`, or `-std` flag with its value, one of
+/// [`CODE_FLAGS`], or [`NO_DOLLARS`], a `flags.txt` with no line [`NO_DOLLARS`], a
+/// build that fails, an `#include` or `#import` of a header outside both the copy and
+/// the system directories, a reference to a symbol outside the copy that neither
+/// [`SYMBOLS`] nor [`FUNCTION_SYMBOLS`] admits, a listed key with no reference, a
+/// reference outside a function that [`SYMBOLS`] does not admit, any reference to a
+/// clock function other than a call, such as its address in code or data, through which
+/// any code can call it, each inlined function, an `#include_next`, a `#line` directive
+/// or line marker in a `.c` or `.h` file of the copy, a `cc` that is not GCC or that
+/// builds for neither x86-64 nor aarch64, a symbol whose name holds a character other
+/// than an ASCII letter, a digit, `_`, `.`, or `$`, and each instruction whose key the
+/// list of its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -442,22 +453,31 @@ impl Trees<'_> {
     }
 }
 
-/// An error for each line of `flags`, the text of `flags.txt`, that [`kept`] refuses.
+/// An error for each line of `flags`, the text of `flags.txt`, that is not
+/// [`NO_DOLLARS`] and that [`kept`] refuses, and one when no line is [`NO_DOLLARS`].
 fn unkept(flags: &str) -> Vec<String> {
+    let absent = (!flags.lines().any(|flag| flag == NO_DOLLARS)).then(|| {
+        format!(
+            "flags.txt: has no line `{NO_DOLLARS}` (NO_DOLLARS), with which no C \
+             identifier gives a function a name that holds `$`. Make the copy again \
+             with `cargo xtask open62541 <tag>`"
+        )
+    });
     flags
         .lines()
-        .filter(|flag| !kept(flag))
+        .filter(|flag| *flag != NO_DOLLARS && !kept(flag))
         .map(|flag| {
             format!(
-                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, or \
-                 one of CODE_FLAGS"
+                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, \
+                 one of CODE_FLAGS, or NO_DOLLARS"
             )
         })
+        .chain(absent)
         .collect()
 }
 
-/// Whether `flags.txt` may hold `flag`: a `-D`, `-I`, or `-std` flag with its value,
-/// or one of [`CODE_FLAGS`].
+/// Whether `flags.txt` keeps the flag `flag` of a compile: a `-D`, `-I`, or `-std`
+/// flag with its value, or one of [`CODE_FLAGS`].
 fn kept(flag: &str) -> bool {
     CODE_FLAGS.contains(&flag)
         // A value that starts with `-` makes a flag such as `-I-`, which changes how
@@ -558,6 +578,7 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
             .and_then(wait)
             .map_err(|e| vec![e])?;
     gcc(&macros).map_err(|e| vec![e])?;
+    let architecture = Architecture::read(&macros).map_err(|e| vec![e])?;
     let dirs = system_dirs(&verbose);
     let objects = build(copy, &sources, &flags, out, cc).map_err(|e| vec![e])?;
     let exported = symbols(
@@ -568,8 +589,15 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
     let mut uses = Uses::default();
     let mut problems = line_directives(copy, Path::new("")).map_err(|e| vec![e])?;
     for (source, object, preprocessed) in objects {
-        let disassembly = exec(Command::new("objdump").arg("-dr").arg(&object))
-            .map_err(|e| vec![e])?;
+        let mut objdump = Command::new("objdump");
+        problems.extend(odd_symbols(source, &object).map_err(|e| vec![e])?);
+        objdump.arg("-dr").args(architecture.options).arg(&object);
+        let disassembly = exec(&mut objdump).map_err(|e| vec![e])?;
+        problems.extend(
+            instructions(&disassembly)
+                .iter()
+                .filter_map(|found| architecture.refuses(source, found)),
+        );
         let relocations = exec(Command::new("objdump").arg("-r").arg(&object));
         let outside = symbols([object.as_path()], &["--undefined-only"])
             .map_err(|e| vec![e])?
@@ -600,6 +628,26 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// An error for each symbol of `object`, built from `source`, whose name holds a
+/// character other than an ASCII letter, a digit, `_`, `.`, or `$`. objdump can show
+/// such a name as an addend or a function header.
+fn odd_symbols(source: &str, object: &Path) -> Result<Vec<String>, String> {
+    Ok(symbols([object], &[])?
+        .into_iter()
+        .filter(|name| {
+            !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
+        })
+        .map(|name| {
+            format!(
+                "{source}: the symbol `{name}` holds a character other than an ASCII \
+                 letter, a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+            )
+        })
+        .collect())
 }
 
 /// An error for each `#line` directive or line marker in a `.c` or `.h` file under
@@ -830,14 +878,38 @@ fn inlined(info: &str) -> Vec<String> {
 /// address.
 const CALLS: [&str; 3] = ["R_X86_64_PLT32", "R_AARCH64_CALL26", "R_AARCH64_JUMP26"];
 
-/// A relocation against a symbol outside the copy or a function of [`CLOCKS`].
+/// The section of a reference or an instruction, and the function symbol that labels
+/// it. It displays as the subject of an error.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Reference {
-    /// The section that holds it.
+struct Place {
     section: String,
     /// The function symbol that labels it in `objdump -d`, whole, such as `parse.0`
     /// for a nested function, or `None` when no function symbol labels it.
     function: Option<String>,
+}
+
+impl Place {
+    fn new(section: &str, function: Option<&str>) -> Self {
+        Self {
+            section: section.to_owned(),
+            function: function.map(str::to_owned),
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.function {
+            Some(function) => write!(f, "`{function}`"),
+            None => write!(f, "the section `{}`", self.section),
+        }
+    }
+}
+
+/// A relocation against a symbol outside the copy or a function of [`CLOCKS`].
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Reference {
+    place: Place,
     access: Access,
     symbol: String,
 }
@@ -872,15 +944,12 @@ fn references(
 ) -> BTreeSet<Reference> {
     let mut found = BTreeSet::new();
     let mut code = BTreeSet::new();
-    let mut section = "";
-    let mut function = None;
     let mut add = |section: &str, function: Option<&str>, line: &str| {
         if let Some((kind, symbol)) = relocation(line)
             && (outside.contains(symbol) || CLOCKS.contains(&symbol))
         {
             found.insert(Reference {
-                section: section.to_owned(),
-                function: function.map(str::to_owned),
+                place: Place::new(section, function),
                 access: if CALLS.contains(&kind) {
                     Access::Call
                 } else {
@@ -890,23 +959,17 @@ fn references(
             });
         }
     };
-    for line in disassembly.lines() {
-        if let Some(name) = line.strip_prefix("Disassembly of section ") {
-            section = name.trim_end_matches(':');
-            function = None;
-            code.insert(section);
-        } else if let Some(name) =
-            line.strip_suffix(">:").and_then(|l| l.split_once(" <"))
-        {
-            // A section with no symbol at its start shows as `<.text>`.
-            function = Some(name.1).filter(|name| !name.starts_with('.'));
-        } else {
-            add(section, function, line);
-        }
+    for (section, function, line) in places(disassembly) {
+        code.insert(section);
+        add(section, function, line);
     }
+    let mut section = "";
     for line in relocations.lines() {
-        if let Some(name) = line.strip_prefix("RELOCATION RECORDS FOR [") {
-            section = name.trim_end_matches("]:");
+        if let Some(name) = line
+            .strip_prefix("RELOCATION RECORDS FOR [")
+            .and_then(|name| name.strip_suffix("]:"))
+        {
+            section = name;
         } else if !code.contains(section) {
             add(section, None, line);
         }
@@ -928,28 +991,27 @@ impl Uses {
     /// reference outside a function that [`SYMBOLS`] does not admit.
     fn add(&mut self, file: &str, found: Reference) -> Option<String> {
         let Reference {
-            section,
-            function,
+            place,
             access,
             symbol,
         } = found;
         if CLOCKS.contains(&symbol.as_str()) && access == Access::Address {
-            let site = function
-                .map_or(format!("the section `{section}`"), |function| {
-                    format!("`{function}`")
-                });
             return Some(format!(
-                "{file}: {site} takes the address of `{symbol}`, so a call through it \
-                 escapes FUNCTION_SYMBOLS"
+                "{file}: {place} takes the address of `{symbol}`, so a call through \
+                 it escapes FUNCTION_SYMBOLS"
             ));
         }
         if SYMBOLS.contains(&symbol.as_str()) {
             return None;
         }
-        let Some(function) = function else {
+        let Place {
+            function: Some(function),
+            ..
+        } = place
+        else {
             return Some(format!(
-                "{file}: the section `{section}` references `{symbol}` outside a \
-                 function, so a use through it escapes FUNCTION_SYMBOLS"
+                "{file}: {place} references `{symbol}` outside a function, so a use \
+                 through it escapes FUNCTION_SYMBOLS"
             ));
         };
         self.keys
@@ -1002,11 +1064,196 @@ impl Uses {
     }
 }
 
-/// The type and the symbol of a line of `objdump -r` that holds a relocation.
+/// The type and the symbol of a line of `objdump -r` or `objdump -dr` that holds a
+/// relocation: an offset, a type, and the symbol to the end of the line, less its
+/// addend. The name holds no `+` or `-`: [`odd_symbols`] refuses one.
 fn relocation(line: &str) -> Option<(&str, &str)> {
-    let mut words = line.split_whitespace();
-    let kind = words.find(|word| word.starts_with("R_"))?;
-    Some((kind, words.next_back()?.split(['+', '-']).next()?))
+    let (_, rest) = line.trim_start().split_once([' ', '\t'])?;
+    let (kind, symbol) = rest.trim_start().split_once([' ', '\t'])?;
+    if !kind.starts_with("R_") {
+        return None;
+    }
+    Some((kind, symbol.trim().split(['+', '-']).next()?))
+}
+
+/// An architecture that the check builds for.
+struct Architecture {
+    /// The macro that GCC defines for it.
+    macro_name: &'static str,
+    /// The name of [`Architecture::instructions`] in errors.
+    list: &'static str,
+    /// The options of `objdump -d` for it.
+    options: &'static [&'static str],
+    /// Each key of [`instructions`] that the copy may run. Each reads registers, flags,
+    /// and memory, and no other state. A system register that the processor or the OS
+    /// fills is other state. One exception is the thread pointer: `mrs tpidr_el0`, and
+    /// on x86-64 a memory operand through `fs`, which the key does not keep.
+    instructions: &'static [&'static str],
+}
+
+/// The architectures that the check builds for.
+const ARCHITECTURES: [Architecture; 2] = [
+    Architecture {
+        macro_name: "__x86_64__",
+        list: "X86_64",
+        // Intel syntax gives a mnemonic with no size suffix.
+        options: &["-M", "intel"],
+        instructions: &X86_64,
+    },
+    Architecture {
+        macro_name: "__aarch64__",
+        list: "AARCH64",
+        options: &[],
+        instructions: &AARCH64,
+    },
+];
+
+/// [`Architecture::instructions`] of x86-64.
+#[rustfmt::skip]
+const X86_64: [&str; 109] = [
+    "adc", "add", "addsd", "addss", "and", "call", "cdq", "cdqe", "cmp", "comisd",
+    "comiss", "cqo", "cvtsi2sd", "cvtsi2ss", "cvtss2sd", "cvttsd2si", "cwde", "div",
+    "divsd", "divss", "idiv", "imul", "lea", "leave", "mov", "movabs", "movapd",
+    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movzx", "mul",
+    "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret", "ror", "sar",
+    "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss", "xor",
+    // A copy of memory, and a fill of it.
+    "rep movs", "rep stos",
+    // `endbr64` marks the target of an indirect jump; `notrack jmp` is an indirect jump
+    // whose target needs no mark.
+    "endbr64", "notrack jmp",
+    "jmp", "ja", "jae", "jb", "jbe", "je", "jg", "jge", "jl", "jle", "jne", "jno",
+    "jnp", "jns", "jo", "jp", "js",
+    "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl", "setle", "setne",
+    "setno", "setnp", "setns", "seto", "setp", "sets",
+    "cmova", "cmovae", "cmovb", "cmovbe", "cmove", "cmovg", "cmovge", "cmovl", "cmovle",
+    "cmovne", "cmovno", "cmovnp", "cmovns", "cmovo", "cmovp", "cmovs",
+];
+
+/// [`Architecture::instructions`] of aarch64.
+#[rustfmt::skip]
+const AARCH64: [&str; 85] = [
+    "adc", "add", "adds", "adr", "adrp", "and", "asr", "b", "bfi", "bfxil", "bl", "blr",
+    "br", "cmn", "cmp", "cneg", "csel", "cset", "csneg", "eor", "fadd", "fcmp", "fcmpe",
+    "fcvt", "fcvtzs", "fcvtzu", "fdiv", "fmov", "fmul", "fsub", "ldp", "ldr", "ldrb",
+    "ldrh", "ldrsb", "ldrsh", "ldrsw", "ldur", "lsl", "lsr", "mov", "movi", "movk",
+    "mul", "mvn", "neg", "negs", "nop", "orr", "ret", "ror", "scvtf", "sdiv", "smulh",
+    "smull", "stp", "str", "strb", "strh", "stur", "sub", "sxtb", "sxth", "sxtw",
+    "ubfiz", "ubfx", "ucvtf", "udiv", "umulh", "umull",
+    "b.cc", "b.cs", "b.eq", "b.ge", "b.gt", "b.hi", "b.le", "b.ls", "b.lt", "b.mi",
+    "b.ne", "b.pl", "b.vc", "b.vs",
+    // The thread pointer, which locates thread-local storage.
+    "mrs tpidr_el0",
+];
+
+/// The x86 prefixes that `objdump -d` shows as a word before the mnemonic.
+const PREFIXES: [&str; 16] = [
+    "addr32", "bnd", "cs", "data16", "ds", "es", "fs", "gs", "lock", "notrack", "rep",
+    "repnz", "repz", "ss", "xacquire", "xrelease",
+];
+
+impl Architecture {
+    /// The architecture of `macros`, the output of `cc -dM -E`.
+    fn read(macros: &str) -> Result<&'static Self, String> {
+        ARCHITECTURES
+            .iter()
+            .find(|architecture| {
+                let prefix = format!("#define {} ", architecture.macro_name);
+                macros.lines().any(|line| line.starts_with(&prefix))
+            })
+            .ok_or_else(|| {
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            })
+    }
+
+    /// The error of `found`, an instruction of `file`, when this architecture does not
+    /// admit its key.
+    fn refuses(&self, file: &str, found: &Instruction) -> Option<String> {
+        if self.instructions.contains(&found.key.as_str()) {
+            return None;
+        }
+        Some(format!(
+            "{file}: {} runs `{}`, which {} does not admit. Add it only when it reads \
+             registers, flags, and memory, and no other state. A system register that \
+             the processor or the OS fills is other state",
+            found.place, found.key, self.list
+        ))
+    }
+}
+
+/// An instruction of a function or a section, as [`instructions`] keys it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Instruction {
+    place: Place,
+    /// Its mnemonic in lowercase, after each prefix of [`PREFIXES`] before it, and
+    /// with the system register of `mrs` and `msr`, which reads a counter or the
+    /// thread pointer.
+    key: String,
+}
+
+/// Each instruction of `disassembly`, the output of `objdump -d`, once for each
+/// section, function, and key.
+fn instructions(disassembly: &str) -> BTreeSet<Instruction> {
+    places(disassembly)
+        .filter_map(|(section, function, line)| {
+            // `address:\tbytes\tinstruction`. A relocation has no address, and the
+            // continuation of the bytes of a long instruction has no instruction.
+            let mut fields = line.split('\t');
+            let address = fields.next()?.trim();
+            fields.next();
+            if !address.ends_with(':') {
+                return None;
+            }
+            Some(Instruction {
+                place: Place::new(section, function),
+                key: key(&fields.collect::<Vec<_>>().join(" "))?,
+            })
+        })
+        .collect()
+}
+
+/// The key of `instruction`, the text of an instruction in `objdump -d`, as
+/// [`Instruction::key`] gives it, or `None` when it is empty.
+fn key(instruction: &str) -> Option<String> {
+    let instruction = instruction.to_lowercase();
+    let mut words = instruction.split_whitespace();
+    let mut key = Vec::new();
+    for word in words.by_ref() {
+        key.push(word);
+        if !PREFIXES.contains(&word) {
+            break;
+        }
+    }
+    match *key.last()? {
+        "mrs" => key.extend(words.nth(1)),
+        "msr" => key.extend(words.next().map(|word| word.trim_end_matches(','))),
+        _ => {}
+    }
+    Some(key.join(" "))
+}
+
+/// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
+/// it and the function symbol that labels it, or `None` when no function symbol does.
+fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
+    let (mut section, mut function) = ("", None);
+    disassembly.lines().map(move |line| {
+        if let Some(name) = line
+            .strip_prefix("Disassembly of section ")
+            .and_then(|name| name.strip_suffix(':'))
+        {
+            section = name;
+            function = None;
+        } else if let Some(name) = line
+            .strip_suffix(">:")
+            .and_then(|l| l.split_once(" <"))
+            .filter(|_| line.starts_with(|c: char| c.is_ascii_hexdigit()))
+        {
+            // A section with no symbol at its start shows as `<.text>`.
+            function = Some(name.1).filter(|name| !name.starts_with('.'));
+        }
+        (section, function, line)
+    })
 }
 
 /// Each header that a Make depfile names, with its escapes read: `\ ` for a space,
@@ -1034,17 +1281,17 @@ fn headers(depfile: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The names of the symbols that `nm -P` with `flags` gives for `objects`.
+/// The names of the symbols that `nm` with `flags` gives for `objects`, each whole,
+/// also when it holds a space or a carriage return, and also each that `nm` takes as a
+/// mapping symbol.
 fn symbols<'a>(
     objects: impl IntoIterator<Item = &'a Path>,
     flags: &[&str],
 ) -> Result<BTreeSet<String>, String> {
-    let text = exec(Command::new("nm").arg("-P").args(flags).args(objects))?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_owned)
-        .collect())
+    let mut nm = Command::new("nm");
+    nm.args(["-j", "--special-syms"]).args(flags).args(objects);
+    let (text, _) = wait(spawn(&mut nm)?)?;
+    Ok(text.split_terminator('\n').map(str::to_owned).collect())
 }
 
 /// Writes the copy of `found` to `stage`, with `LICENSE` from `src`.
@@ -1061,7 +1308,7 @@ fn write(stage: &Path, src: &Path, found: &Found, version: &str) -> Result<(), S
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         std::fs::copy(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
-    let flags = found.flags.join("\n") + "\n";
+    let flags = found.flags.join("\n") + "\n" + NO_DOLLARS + "\n";
     std::fs::write(stage.join("sources.txt"), sources)
         .and_then(|()| std::fs::write(stage.join("flags.txt"), flags))
         .and_then(|()| std::fs::write(stage.join("VERSION"), format!("{version}\n")))
@@ -1084,10 +1331,12 @@ fn exec(command: &mut Command) -> Result<String, String> {
     Ok(out.trim().to_owned())
 }
 
-/// Starts `command` with no input, and with its output captured.
+/// Starts `command` with no input, with its output captured, and in the C locale, so
+/// its text is the same on each machine.
 fn spawn(command: &mut Command) -> Result<(String, Child), String> {
     let name = command.get_program().to_string_lossy().into_owned();
     command
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1122,7 +1371,7 @@ mod tests {
         symbol: &str,
     ) -> Reference {
         Reference {
-            function: Some(function.to_owned()),
+            place: Place::new(section, Some(function)),
             ..unlabeled(section, access, symbol)
         }
     }
@@ -1130,8 +1379,7 @@ mod tests {
     /// A reference from `section` that no function labels.
     fn unlabeled(section: &str, access: Access, symbol: &str) -> Reference {
         Reference {
-            section: section.to_owned(),
-            function: None,
+            place: Place::new(section, None),
             access,
             symbol: symbol.to_owned(),
         }
@@ -1218,6 +1466,228 @@ Disassembly of section .text:
         assert_eq!(
             Vec::from_iter(found.iter().map(|found| found.symbol.as_str())),
             ["UA_DateTime_now", "strtod"]
+        );
+    }
+
+    /// `.text` holds only its headers, with no blank line after them. No `check` test
+    /// shows this: objdump writes a blank line after each section header.
+    #[test]
+    fn references_reads_no_relocation_of_a_disassembled_section_again() {
+        let disassembly = "\
+Disassembly of section .text:
+0000000000000000 <f>:
+Disassembly of section .text.g:
+0000000000000000 <g>:
+   0:\tc3\tret
+";
+        let relocations = "\
+RELOCATION RECORDS FOR [.text]:
+0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004
+RELOCATION RECORDS FOR [.text.g]:
+0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, relocations, &BTreeSet::new())),
+            []
+        );
+    }
+
+    /// A relocation against a symbol named `y <h>:` ends in `>:`, as a function header
+    /// does.
+    #[test]
+    fn references_reads_no_relocation_line_as_a_function_header() {
+        let disassembly = "\
+Disassembly of section .text:
+
+0000000000000000 <f>:
+   0:\t90000000 \tadrp\tx0, 0 <f>
+\t\t\t0: R_AARCH64_ADR_PREL_PG_HI21\ty <h>:
+   4:\t94000000 \tbl\t0 <clock_gettime>
+\t\t\t4: R_AARCH64_CALL26\tclock_gettime
+";
+        let outside = BTreeSet::from(["clock_gettime".to_owned()]);
+        assert_eq!(
+            Vec::from_iter(references(disassembly, "", &outside)),
+            [labeled(".text", "f", Access::Call, "clock_gettime")]
+        );
+    }
+
+    /// A quoted symbol of top-level `asm` can hold spaces.
+    #[test]
+    fn references_reads_no_relocation_in_a_header() {
+        let disassembly = "\
+Disassembly of section R_X86_64_PLT32 UA_DateTime_now+:
+
+0000000000000000 <f R_X86_64_PLT32 UA_DateTime_now+>:
+   0:\tc3                   \tret
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, "", &BTreeSet::new())),
+            []
+        );
+    }
+
+    #[test]
+    fn relocation_reads_the_symbol_to_the_end_of_the_line() {
+        let lines = [
+            "0000000000000000 R_AARCH64_CALL26  h i",
+            "\t\t\t4: R_AARCH64_CALL26\th i",
+            "0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004",
+            "\t\t\t1: R_X86_64_PLT32\tUA_DateTime_now+0x4",
+            "   8:\t94000000 \tbl\t0 <f R_AARCH64_CALL26 UA_DateTime_now>",
+            "OFFSET           TYPE              VALUE",
+        ];
+        assert_eq!(
+            lines.map(relocation),
+            [
+                Some(("R_AARCH64_CALL26", "h i")),
+                Some(("R_AARCH64_CALL26", "h i")),
+                Some(("R_X86_64_PLT32", "UA_DateTime_now")),
+                Some(("R_X86_64_PLT32", "UA_DateTime_now")),
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn references_reads_each_section_name_to_its_end() {
+        let disassembly = "\
+Disassembly of section .text:
+
+0000000000000000 <f>:
+   0:\tc3                   \tret
+
+Disassembly of section .text::
+
+0000000000000000 <g>:
+   0:\tc3                   \tret
+";
+        let relocations = "\
+RELOCATION RECORDS FOR [.text:]:
+0000000000000000 R_X86_64_64       UA_DateTime_now
+RELOCATION RECORDS FOR [.text]:]:
+0000000000000000 R_X86_64_64       UA_DateTime_now
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, relocations, &BTreeSet::new())),
+            [Reference {
+                place: Place::new(".text]:", None),
+                access: Access::Address,
+                symbol: "UA_DateTime_now".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn instructions_keys_each_instruction_by_its_section_and_function() {
+        let disassembly = "\
+0.o:     file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <.text>:
+   0:\tf3 0f 1e fa          \tendbr64
+   4:\t0f 31                \trdtsc
+
+Disassembly of section .text.stamp:
+
+0000000000000000 <stamp>:
+   0:\t0f 31                \trdtsc
+   2:\t0f 31                \trdtsc
+   4:\te8 00 00 00 00       \tcall   9 <stamp+0x9>
+\t\t\t5: R_X86_64_PLT32\tUA_DateTime_now-0x4
+   9:\t48 c7 05 00 00 00 00 \tmov    QWORD PTR [rip+0x0],0x0
+  10:\t00 00 00 00 
+  14:\tf3 48 ab             \trep stos QWORD PTR es:[rdi],rax
+  17:\t3e ff e0             \tnotrack jmp rax
+  1a:\tf3 c3                \trepz ret
+  1c:\tf0 0f c7 f0          \tLOCK RDRAND eax
+0000000000000040 <count>:
+  40:\td53be040 \tmrs\tx0, cntvct_el0
+  44:\td51bd040 \tmsr\ttpidr_el0, x0
+  48:\t54000040 \tb.eq\t50 <count+0x10>  // b.none
+";
+        let found = |section: &str, function: Option<&str>, key: &str| Instruction {
+            place: Place::new(section, function),
+            key: key.to_owned(),
+        };
+        let stamp = |key| found(".text.stamp", Some("stamp"), key);
+        let count = |key| found(".text.stamp", Some("count"), key);
+        assert_eq!(
+            Vec::from_iter(instructions(disassembly)),
+            [
+                found(".text", None, "endbr64"),
+                found(".text", None, "rdtsc"),
+                count("b.eq"),
+                count("mrs cntvct_el0"),
+                count("msr tpidr_el0"),
+                stamp("call"),
+                stamp("lock rdrand"),
+                stamp("mov"),
+                stamp("notrack jmp"),
+                stamp("rdtsc"),
+                stamp("rep stos"),
+                stamp("repz ret"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_architecture_refuses_each_key_outside_its_list() {
+        let [x86, arm] = &ARCHITECTURES;
+        let found = |function: Option<&str>, key: &str| Instruction {
+            place: Place::new(".text.stamp", function),
+            key: key.to_owned(),
+        };
+        assert_eq!(x86.refuses("a.c", &found(Some("stamp"), "rep stos")), None);
+        assert_eq!(
+            arm.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
+            None
+        );
+        assert_eq!(
+            x86.refuses("a.c", &found(Some("stamp"), "rdtsc")),
+            Some(unadmitted("a.c", "`stamp`", "rdtsc", "X86_64"))
+        );
+        assert_eq!(
+            arm.refuses("a.c", &found(None, "mrs cntvct_el0")),
+            Some(unadmitted(
+                "a.c",
+                "the section `.text.stamp`",
+                "mrs cntvct_el0",
+                "AARCH64"
+            ))
+        );
+        assert_eq!(
+            x86.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
+            Some(unadmitted("a.c", "`stamp`", "mrs tpidr_el0", "X86_64"))
+        );
+        assert_eq!(
+            arm.refuses("a.c", &found(Some("stamp"), "rep stos")),
+            Some(unadmitted("a.c", "`stamp`", "rep stos", "AARCH64"))
+        );
+    }
+
+    #[test]
+    fn architecture_read_gives_the_architecture_of_the_macros() {
+        let read = |name| {
+            Architecture::read(&format!("#define __GNUC__ 13\n#define {name} 1\n"))
+        };
+        assert_eq!(read("__x86_64__").map(|found| found.list), Ok("X86_64"));
+        assert_eq!(read("__aarch64__").map(|found| found.list), Ok("AARCH64"));
+        assert_eq!(
+            read("__riscv").map(|found| found.list),
+            Err(
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            read("__x86_64").map(|found| found.list),
+            Err(
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            )
         );
     }
 
@@ -1400,7 +1870,10 @@ Disassembly of section .text:
         let dir = temp("clang");
         create_files(
             &dir,
-            &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", "")],
+            &[
+                ("copy/sources.txt", "a.c\n"),
+                ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
+            ],
         );
         // GCC's macros on standard error make a check that reads the wrong stream
         // pass.
@@ -1408,6 +1881,78 @@ Disassembly of section .text:
                       echo '#define __GNUC__ 4'\n\
                       echo '#define __clang__ 1'\n\
                       echo '#define __GNUC__ 13' >&2\n";
+        let cc = create_cc(&dir, script);
+        assert_eq!(
+            inspect(&dir.join("copy"), &dir.join("out"), &cc),
+            Err(vec!["cc is not GCC, which the check needs".to_owned()])
+        );
+        remove(&dir).unwrap();
+    }
+
+    #[test]
+    fn check_fails_on_a_copy_whose_flags_have_no_line_of_no_dollars() {
+        let dir = temp("no-dollars");
+        let absent = "flags.txt: has no line `-fno-dollars-in-identifiers` \
+                      (NO_DOLLARS), with which no C identifier gives a function a name \
+                      that holds `$`. Make the copy again with `cargo xtask open62541 \
+                      <tag>`";
+        for (flags, problems) in [
+            ("", vec![absent.to_owned()]),
+            ("-DA\n-std=c99\n", vec![absent.to_owned()]),
+            ("-DA=-fno-dollars-in-identifiers\n", vec![absent.to_owned()]),
+            (
+                "-U-fno-dollars-in-identifiers\n-fno-dollars-in-identifiers\n",
+                vec![
+                    "flags.txt: `-U-fno-dollars-in-identifiers` is not a -D, -I, or \
+                     -std flag with its value, one of CODE_FLAGS, or NO_DOLLARS"
+                        .to_owned(),
+                ],
+            ),
+            (
+                "-fno-dollars-in-identifiers=1\n",
+                vec![
+                    "flags.txt: `-fno-dollars-in-identifiers=1` is not a -D, -I, or \
+                     -std flag with its value, one of CODE_FLAGS, or NO_DOLLARS"
+                        .to_owned(),
+                    absent.to_owned(),
+                ],
+            ),
+        ] {
+            create_files(
+                &dir,
+                &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", flags)],
+            );
+            assert_eq!(
+                inspect(&dir.join("copy"), &dir.join("out"), Path::new("/no/cc")),
+                Err(problems),
+                "{flags:?}"
+            );
+        }
+        remove(&dir).unwrap();
+    }
+
+    /// The check reads the text of each tool, and the locale changes that text.
+    #[test]
+    #[cfg(unix)]
+    fn check_runs_each_tool_in_the_c_locale() {
+        let dir = temp("locale");
+        create_files(
+            &dir,
+            &[
+                ("copy/sources.txt", "a.c\n"),
+                ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
+            ],
+        );
+        let cc = create_cc(&dir, "#!/bin/sh\necho \"LC_ALL=$LC_ALL\" >&2\nexit 1\n");
+        assert_eq!(
+            inspect(&dir.join("copy"), &dir.join("out"), &cc),
+            Err(vec![format!("{} failed: LC_ALL=C\n", cc.display())])
+        );
+        remove(&dir).unwrap();
+    }
+
+    /// Writes the shell script `script` as `cc` in `dir`, and gives its path.
+    fn create_cc(dir: &Path, script: &str) -> PathBuf {
         let cc = dir.join("cc");
         // A child writes it: while this process holds it open for writing, a process
         // that another test forks holds it open too, and running it fails with
@@ -1419,11 +1964,7 @@ Disassembly of section .text:
                 .arg(script),
         )
         .unwrap();
-        assert_eq!(
-            inspect(&dir.join("copy"), &dir.join("out"), &cc),
-            Err(vec!["cc is not GCC, which the check needs".to_owned()])
-        );
-        remove(&dir).unwrap();
+        cc
     }
 
     #[test]
@@ -1556,7 +2097,14 @@ End of search list.
             trees.flags(&["cc", "-I/w/build"].map(str::to_owned)),
             Err("/w/build is outside the clone".to_owned())
         );
-        for flag in ["-fplugin=x", "-Wl,-z", "x.c", "-include", "-D"] {
+        for flag in [
+            "-fplugin=x",
+            "-Wl,-z",
+            "x.c",
+            "-include",
+            "-D",
+            "-fno-dollars-in-identifiers",
+        ] {
             assert_eq!(
                 trees.flags(&["cc", flag].map(str::to_owned)),
                 Err(format!("`{flag}` is in neither CODE_FLAGS nor LEFT_OUT"))
@@ -1651,6 +2199,16 @@ End of search list.
             "{file}: `{function}` calls `UA_DateTime_now`, a global clock function. \
              Find whether a node runs it; if not, add it to FUNCTION_SYMBOLS with the \
              reason and a check of the reason in connector-opcua"
+        )
+    }
+
+    /// The error of [`Architecture::refuses`] for the key `key` that `place` runs and
+    /// the list `list` does not admit.
+    fn unadmitted(file: &str, place: &str, key: &str, list: &str) -> String {
+        format!(
+            "{file}: {place} runs `{key}`, which {list} does not admit. Add it only \
+             when it reads registers, flags, and memory, and no other state. A system \
+             register that the processor or the OS fills is other state"
         )
     }
 
@@ -2013,7 +2571,7 @@ End of search list.
         assert_eq!(
             read("flags.txt"),
             "-DNAME=\"a b\"\n-Iinclude\n-Isrc_generated\n-DNDEBUG\n-std=gnu99\n\
-             -fno-strict-aliasing\n"
+             -fno-strict-aliasing\n-fno-dollars-in-identifiers\n"
         );
         let mut git = Command::new("git");
         let commit = exec(git.arg("-C").arg(&repo).args(["rev-parse", "v1"])).unwrap();
@@ -2295,8 +2853,8 @@ End of search list.
         );
         let refused = |flag: &str| {
             format!(
-                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, or \
-                 one of CODE_FLAGS"
+                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, \
+                 one of CODE_FLAGS, or NO_DOLLARS"
             )
         };
         assert_eq!(
@@ -2323,6 +2881,89 @@ End of search list.
             check(&root),
             Err(vec![unlisted_clock("src/util/ua_util.c", "hidden")])
         );
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// C that reads a clock and randomness through a builtin and an `asm` statement,
+    /// with the errors that it gives in `src/util/ua_util.c`.
+    #[cfg(target_arch = "x86_64")]
+    fn reads() -> (&'static str, Vec<String>) {
+        let refused = |function: &str, key: &str| {
+            unadmitted(
+                "src/util/ua_util.c",
+                &format!("`{function}`"),
+                key,
+                "X86_64",
+            )
+        };
+        (
+            "#include <x86intrin.h>\n\
+             unsigned long long stamp(void) { return __rdtsc(); }\n\
+             __attribute__((target(\"rdrnd\"))) int draw(unsigned *n) {\n\
+                 return __builtin_ia32_rdrand32_step(n);\n\
+             }\n\
+             unsigned stamped(void) {\n\
+                 unsigned low, high;\n\
+                 __asm__ volatile(\"rdtsc\" : \"=a\"(low), \"=d\"(high));\n\
+                 return low ^ high;\n\
+             }\n",
+            vec![
+                refused("draw", "rdrand"),
+                refused("stamp", "rdtsc"),
+                refused("stamped", "rdtsc"),
+                "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in \
+                 its caller"
+                    .to_owned(),
+            ],
+        )
+    }
+
+    /// C that reads a clock and randomness through a builtin and an `asm` statement,
+    /// with the errors that it gives in `src/util/ua_util.c`.
+    #[cfg(target_arch = "aarch64")]
+    fn reads() -> (&'static str, Vec<String>) {
+        let refused = |function: &str, key: &str| {
+            unadmitted(
+                "src/util/ua_util.c",
+                &format!("`{function}`"),
+                key,
+                "AARCH64",
+            )
+        };
+        (
+            "#include <arm_acle.h>\n\
+             __attribute__((target(\"+rng\"))) int draw(unsigned long *n) {\n\
+                 return __rndr(n);\n\
+             }\n\
+             unsigned long stamped(void) {\n\
+                 unsigned long n;\n\
+                 __asm__ volatile(\"mrs %0, cntvct_el0\" : \"=r\"(n));\n\
+                 return n;\n\
+             }\n",
+            vec![
+                refused("draw", "mrs rndr"),
+                refused("stamped", "mrs cntvct_el0"),
+                "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in \
+                 its caller"
+                    .to_owned(),
+            ],
+        )
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_builtin_and_an_asm_statement_that_read_a_clock() {
+        let (root, repo, result) = run_after("instructions", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        let (text, errors) = reads();
+        std::fs::write(&path, old + text).unwrap();
+        assert_eq!(check(&root), Err(errors));
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
@@ -2556,6 +3197,196 @@ End of search list.
             )])
         );
         remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// Names that only `asm` makes: symbols that objdump cannot show exactly, and
+    /// sections whose names end in `:` and `]:`. `g` calls `y <h>:` with no addend, so
+    /// its relocation line ends in `>:`: on x86-64, `+4` cancels the addend of a call,
+    /// and `@PLT` keeps the relocation a call. The global `getpid x` is there so that a
+    /// read of a defined name to its first space would admit the call of `getpid`, and
+    /// `getpid\r` so that a read of a line without its carriage return would. ` h` is
+    /// the first name of `nm`, which a trim of its output would cut. `a$b` is plain.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_reads_each_name_to_its_end() {
+        let (root, repo, result) = run_after("names", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        let (call, header) = if cfg!(target_arch = "x86_64") {
+            ("call", r#"\"y <h>:\"@PLT+4"#)
+        } else {
+            ("bl", r#"\"y <h>:\""#)
+        };
+        let asm = format!(
+            r#"__asm__(".pushsection .data\n.quad \"h i\"\n.quad \"h-0x4\"\n"
+        ".quad \"k+0x1\"\n.quad \" h\"\n.quad \"é\"\n.globl \"getpid x\"\n"
+        "\"getpid x\":\n.globl \"getpid\r\"\n\"getpid\r\":\n.globl \"a$b\"\n"
+        "\"a$b\":\n.popsection\n"
+        ".pushsection \".text]:\",\"aw\"\n.quad UA_DateTime_now\n.popsection\n"
+        ".pushsection \".text.g:\",\"ax\"\ng:\n{call} {header}\n"
+        "{call} UA_DateTime_now\n{call} getpid\nret\n.popsection");
+"#
+        );
+        std::fs::write(&path, old + &asm).unwrap();
+        let file = "src/util/ua_util.c";
+        let refused = |name: &str| {
+            format!(
+                "{file}: the symbol `{name}` holds a character other than an ASCII \
+                 letter, a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+            )
+        };
+        assert_eq!(
+            check(&root),
+            Err(vec![
+                refused(" h"),
+                refused("getpid\r"),
+                refused("getpid x"),
+                refused("h i"),
+                refused("h-0x4"),
+                refused("k+0x1"),
+                refused("y <h>:"),
+                refused("é"),
+                format!(
+                    "{file}: the section `.data` references `h i` outside a function, \
+                     so a use through it escapes FUNCTION_SYMBOLS"
+                ),
+                format!(
+                    "{file}: the section `.data` references `é` outside a function, \
+                     so a use through it escapes FUNCTION_SYMBOLS"
+                ),
+                format!(
+                    "{file}: the section `.text]:` takes the address of \
+                     `UA_DateTime_now`, so a call through it escapes FUNCTION_SYMBOLS"
+                ),
+                unlisted_clock(file, "g"),
+                format!(
+                    "{file}: `g` calls `getpid`, which no list admits. Find whether a \
+                     node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with the \
+                     reason"
+                ),
+                format!(
+                    "{file}: `g` calls `y <h>:`, which no list admits. Find whether a \
+                     node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with the \
+                     reason"
+                ),
+            ])
+        );
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// On aarch64, `nm` hides each symbol whose name starts with `$x.` or `$d.`, as
+    /// it hides a mapping symbol.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_refuses_an_odd_name_that_looks_like_a_mapping_symbol() {
+        let (root, repo, result) = run_after("mapping", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        let asm = r#"__asm__(".pushsection .text.g,\"ax\"\n.globl g\ng:\n"
+        "bl \"$x.h-0x4\"\nbl \"$x.getpid\"\nret\n.popsection");
+"#;
+        std::fs::write(&path, old + asm).unwrap();
+        let file = "src/util/ua_util.c";
+        let found = check(&root);
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(
+            found,
+            Err(vec![
+                format!(
+                    "{file}: the symbol `$x.h-0x4` holds a character other than an \
+                     ASCII letter, a digit, `_`, `.`, or `$`, so objdump cannot show \
+                     it exactly"
+                ),
+                format!(
+                    "{file}: `g` calls `$x.getpid`, which no list admits. Find whether \
+                     a node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with \
+                     the reason"
+                ),
+            ])
+        );
+    }
+
+    /// On aarch64, `objdump -d` gives no header to a function named `$x` or `$d`, as
+    /// it gives none to a mapping symbol, so its code reads as code of the function
+    /// before it.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_fails_on_a_c_identifier_that_holds_a_dollar() {
+        let (root, repo, result) = run_after("dollar", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, old + "void $x(void) { abort(); }\n").unwrap();
+        let found = check(&root);
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(
+            found,
+            Err(vec![
+                "cc failed: ./src/util/ua_util.c:17:6: error: stray '$' in program\n   \
+                 17 | void $x(void) { abort(); }\n      |      ^\n"
+                    .to_owned()
+            ])
+        );
+    }
+
+    /// `cc` reads the macro name `UA_HIDE$` up to its `$` only with
+    /// `-fno-dollars-in-identifiers`, so a build with that flag and a build with no
+    /// such flag compile other C from this input.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives() {
+        let (root, repo, result) = run_after("macro", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let copy = root.join("patches/open62541");
+        let source = "src/util/ua_util.c";
+        let read = |name: &str| std::fs::read_to_string(copy.join(name)).unwrap();
+        let hidden = "#define UA_HIDE$ 1\n#ifndef UA_HIDE\n\
+                      void hide(void) { (void)getpid(); }\n#endif\n";
+        std::fs::write(copy.join(source), read(source) + hidden).unwrap();
+        let found = check(&root);
+        let index = read("sources.txt").lines().position(|s| s == source);
+        let checked = root.join(format!("target/open62541/check/{}.o", index.unwrap()));
+        let flags = read("flags.txt");
+        let built = |name: &str, flags: &mut dyn Iterator<Item = &str>| {
+            let object = root.join(name);
+            let mut cc = Command::new("cc");
+            cc.current_dir(&copy).args(flags).args(["-c", source, "-o"]);
+            exec(cc.arg(&object)).unwrap();
+            symbols([object.as_path()], &[]).unwrap()
+        };
+        let connector = built("connector.o", &mut flags.lines());
+        let other = built(
+            "other.o",
+            &mut flags.lines().filter(|flag| *flag != NO_DOLLARS),
+        );
+        let checked = symbols([checked.as_path()], &[]).unwrap();
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(found, Ok(()));
+        assert_eq!(checked, connector);
+        let hide = ["getpid", "hide"].map(str::to_owned);
+        assert_eq!(
+            other.difference(&connector).cloned().collect::<Vec<_>>(),
+            hide
+        );
     }
 
     #[test]

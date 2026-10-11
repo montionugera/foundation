@@ -162,9 +162,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
 
-    use raft::{
-        Answer, Body, Data, Grant, Link, Position, Proof, Signature, Term, Voters,
-    };
+    use raft::{Answer, Body, Data, Grant, Link, Proof, Signature, Term, Voters};
     use spec::Pointer;
 
     use super::*;
@@ -172,8 +170,8 @@ mod tests {
     use types::digest::Digest;
 
     use crate::bytes::{put_change, put_position};
-    use crate::change::{CHUNKS_MAX, Malformed};
-    use crate::common::key;
+    use crate::change::{CHUNKS_MAX, Malformed, Undecoded};
+    use crate::common::{at, key};
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -262,10 +260,10 @@ mod tests {
         over.extend(digest(CHUNKS_MAX).0);
         assert_eq!(inputs["spec_chunks_1025"], over);
         for (name, bytes) in &inputs {
-            let body = Malformed::Body {
+            let body = Malformed::Body(Undecoded {
                 kind: 4,
                 length: bytes.len(),
-            };
+            });
             assert_eq!(Change::decode(bytes), Err(body), "{name}");
             assert_eq!(round_trip_change(bytes), None, "{name}");
         }
@@ -315,10 +313,10 @@ mod tests {
             [("spec_chunks_1025", 4), ("spec_holders_out_of_order", 2)]
         {
             let whole = [inputs[name], &vec![0; lacked]].concat();
-            let body = Malformed::Body {
+            let body = Malformed::Body(Undecoded {
                 kind: 4,
                 length: whole.len(),
-            };
+            });
             assert_eq!(Change::decode(&whole), Err(body), "{name}");
         }
     }
@@ -356,10 +354,10 @@ mod tests {
         assert_eq!(inputs["spec_holders_equal"], twice);
         for (name, bytes) in inputs {
             let homed = homed(bytes);
-            let body = Malformed::Body {
+            let body = Malformed::Body(Undecoded {
                 kind: 4,
                 length: homed.len(),
-            };
+            });
             assert_eq!(Change::decode(&homed), Err(body), "{name}");
             assert_eq!(round_trip_change(&homed), None, "{name}");
         }
@@ -386,10 +384,10 @@ mod tests {
         bytes.extend(key(65).as_u128().to_le_bytes());
         assert_eq!(inputs["spec_holders_65"], bytes);
         let homed = homed(&bytes);
-        let body = Malformed::Body {
+        let body = Malformed::Body(Undecoded {
             kind: 4,
             length: homed.len(),
-        };
+        });
         assert_eq!(Change::decode(&homed), Err(body));
     }
 
@@ -448,10 +446,10 @@ mod tests {
         ] {
             let bytes = homed(homes);
             assert_eq!(inputs[name], bytes, "{name}");
-            let body = Malformed::Body {
+            let body = Malformed::Body(Undecoded {
                 kind: 4,
                 length: bytes.len(),
-            };
+            });
             assert_eq!(Change::decode(&bytes), Err(body), "{name}");
             assert_eq!(round_trip_change(&bytes), None, "{name}");
         }
@@ -469,13 +467,6 @@ mod tests {
     // The byte form `unhomed` gave, with a count of 0 homes.
     fn homed(unhomed: &[u8]) -> Vec<u8> {
         [unhomed, &[0, 0]].concat()
-    }
-
-    fn at(term: u64, index: u64) -> Position {
-        Position {
-            term: Term(term),
-            index,
-        }
     }
 
     fn proof() -> Proof {

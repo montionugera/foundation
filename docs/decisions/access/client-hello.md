@@ -113,14 +113,59 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608. A text
   field of the client wire that does not read keeps its cause. `Error::Subject`,
   `Error::Selector`, and `Error::Name` hold a `text::Error<Box<name::Error>>`, and
-  `Error::Sample` holds a `text::Error<sample::Error>`. So `wire::hub::Error` is not
-  `Copy` (`laptop.director`, 2026-10-11T00:48:05Z,
+  `Error::Sample` holds a `text::Error<sample::Error>` (`laptop.director`,
+  2026-10-11T00:48:05Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407; shape
   approved by `laptop.architect`, 2026-10-11T01:55:44Z,
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). A
-  `wire::hub::client::Error` was lost because a read stream also gave the errors of its
-  inner reader. That reason is void: the program decodes the replies with the
-  `hub::Reader` that `client::Reader` gives, and gets their errors from it. The ruling
-  on #2377 adds the type, and makes `wire::hub::Error` `Copy`, after #2368 merges
-  (`laptop.architect`, 2026-10-11T08:26:42Z,
-  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794).
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). The
+  errors of the client wire are `wire::hub::client::Error`, and `text` is
+  `wire::hub::client::text`. `wire::hub::Error` holds the errors of the home wire
+  only, holds no `Box`, and is `Copy`, with a check at compile time. A variant that
+  decoders of both wires give (`Empty`, `Kind`, `Length`, `Body`, `Unfinished`) is in
+  each type, with the same fields and message. `Run` keeps one message, and the doc of
+  each names its own items. `client::Error::Finished` is "the node finished the read
+  stream before its last place", which the caller of `client::Reader` gives;
+  `hub::Error::Finished` stays the home's. No variant of `client::Error` holds a
+  `hub::Error`: the program gets the errors of the replies from the `hub::Reader` that
+  `client::Reader` gives. `hub::client::Error::Message` holds a
+  `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
+  and `serve::Error::Message` keeps the errors from a reader's node. Lost: a variant
+  `client::Error::Hub(hub::Error)`, which brings back two levels of error and puts
+  each variant that only a frame decoder gives in the type of the client wire. Why: a
+  `hub::Error` that is not `Copy` cost each frame that a node or a program decodes, and
+  bought nothing, because each text error keeps its cause in both forms. Against the
+  `Copy` form, `main` gave +0.78 ns on `decode_ends/3` (each pass apart). It gave
+  +0.59 ns on `decode_a_frame/1` and +0.34 ns on `decode_a_frame/3` (the passes of the
+  two commits overlap on both). Each is of three passes of each commit on
+  c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
+  (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
+  The split, at 7000b19ba, then ran against its parent d7a67a52e, with the flags of
+  BENCH BASELINES. Each bench got three passes of each commit on one c7i.metal-24xl
+  (Xeon Platinum 8488C, CPU 2). Each result is the median of the head passes against
+  that of the base passes. In `wire` `hub`
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108713214),
+  `decode_ends/3` gave -0.55 ns (4.257 to 4.292 against 4.41 to 4.87 ns, passes apart).
+  The passes of each other line overlap: `decode_a_body/1` -0.53 ns, `/8` -0.02 ns,
+  `/64` -2.1 ns; `decode_a_credit` 0.00 ns; `decode_a_frame/1` -0.07 ns, `/3` +0.23 ns,
+  `/1000` +0.2 ns, `/100000` 0.00 µs; `decode_ends/1` +0.02 ns, `/1000` +1.4 ns,
+  `/100000` +0.01 µs; `encode_and_decode_a_head` +0.23 ns; `encode_ends/1` 0.00 ns, `/3`
+  0.00 ns, `/1000` -0.1 ns, `/100000` +0.02 µs; `encode_ends_by_place/1` +0.02 ns, `/3`
+  +0.01 ns, `/1000` 0.00 µs, `/100000` -1.6 µs. In `hub` `serve`
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108750674), by p50
+  in ns per frame, `narrow 64k` gave -36 (2288 to 2296 against 2307 to 2331, passes
+  apart), and `timer` gave +1 (15 against 14 in each pass, passes apart). The passes of
+  each other line overlap: `narrow 1472` -42, `wide 1472` +2, `complete 1472` -8,
+  `complete half 1472` -6, `one set 1472` -20, `two sets 1472` -18, `wide 64k` -11. Each
+  line keeps its allocations. `timer` times an empty closure, so no line that times
+  product code is slower with its passes apart. `laptop.architect` accepted each line
+  that is slower by the median (2026-10-11T12:22:17Z,
+  https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108970867).
+  Decided by `laptop.architect` (2026-10-11T08:26:42Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;
+  surface approved 2026-10-11T10:16:56Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027).
+  Supersedes item 2 (one `wire::hub::Error`, and no `wire::hub::client::Error`) and,
+  for `wire::hub::Error`, the "not `Copy`" of Text fix 3 and of the Public surface
+  line, of https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686,
+  and item 4 ("remove `Copy`") of
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407.

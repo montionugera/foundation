@@ -16,9 +16,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1467#issuecomment-6051244793). The
   check reads the comment as GitHub does, by `comrak` (chosen by the person, as
   `laptop.monitor` relayed it at 2026-10-09T01:15:32Z,
-  https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6072253988), with the
-  spaces and tabs at the end of each line removed, and each tab in the spaces, tabs, and
-  `>` at the start of a line replaced by spaces to the next multiple of 4 columns: as
+  https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6072253988), with
+  each tab in the spaces, tabs, and `>` at the start of a line replaced by spaces to the
+  next multiple of 4 columns, and with the spaces and tabs at the end of a line kept: as
   CommonMark with the GitHub extensions tables, footnotes, task lists, and
   strikethrough. Each field and end line is read in the text that GitHub shows on its
   line: with its escapes and entities read, without the marks of emphasis and code
@@ -88,7 +88,10 @@
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6052414062,
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6052814147,
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053059328, and
-  https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053208426. A round
+  https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053208426. The words
+  on the spaces and tabs at the end of a line: approved by the director at
+  2026-10-11T10:51:12Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108250288). A round
   comment posted before the cutoff `CUTOFF` in
   `xtask/src/review.rs` (2026-10-08T03:00:00Z) is checked as before, except that a
   paragraph that `comrak` places in the wrong lines fails. Otherwise an earlier
@@ -164,4 +167,32 @@
   red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the head. The
   status is `success` on `merge_group`. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
-  messages on #1193.
+  messages on #1193. A round comment fails when it does not start with its name line
+  `**<session>** · <role>`, then `Quality: <n>/10` with `n` from 1 to 10, then a summary
+  line. Stated by the director at 2026-10-08T01:47:11Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6050487121), and
+  ruled at 2026-10-11T10:03:22Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6107851789). The
+  check reads the lines of the top-level paragraphs with which the comment starts, as
+  GitHub shows them. It stops at the round heading and at the first block that is not a
+  paragraph, so a list, a quote, a code block, a table, or a heading between the three
+  lines fails the round. The first block of the comment is a paragraph that starts with
+  the session name in bold, then ` · `, then a role. The second line is the rating, with
+  nothing after it. The third line is not empty. A blank line between two of them
+  changes nothing. A session name, a role, or a summary line that holds only images and
+  the spaces between them is empty. An emoji name such as `:octocat:` is text to the
+  check, also one that GitHub shows as an image. Lost: a list of those names in the
+  check, since GitHub can change it. Ruled by the director at 2026-10-11T11:24:24Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108509497) and
+  2026-10-11T11:25:49Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108520648).
+  Supersedes the sentence on an image of
+  https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6107851789
+  (2026-10-11T10:03:22Z). The check reads neither the session name nor the role against
+  a list. A round posted before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs`
+  (2026-10-11T16:00:00Z) is checked as before, so that the new rule does not fail the
+  rounds that came before it. The cutoff is a fixed time: it stays when the rule merges
+  after it. A round that fails by this rule gets an edit of its round comment that adds
+  the lines, with the rating and the summary of its `reviewer` report as given. When
+  that report is lost, a new run of `reviewer` on the range of the round gives them, and
+  the edit says so.

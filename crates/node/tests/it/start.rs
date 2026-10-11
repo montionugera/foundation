@@ -603,3 +603,61 @@ fn a_node_whose_standard_output_nobody_reads_exits_0_at_sigterm() {
     drop(reader);
     assert_eq!(status.code(), Some(0));
 }
+
+#[test]
+fn a_start_on_a_port_that_another_socket_holds_fails() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a process test holds a port that the node then asks for"
+    )]
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a socket");
+    let at = held.local_addr().expect("the bound address").to_string();
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge", "--listen", &at], b"")),
+        (
+            Some(1),
+            "",
+            &*format!(
+                "error[node.port]: cannot bind the node's port at {at}: address {at} \
+                 is in use\n\
+                 fix: Give `--listen` an address of this host with a port that is free \
+                 and that this user can bind\n"
+            )
+        )
+    );
+}
+
+#[test]
+fn a_listen_that_is_no_socket_address_fails() {
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge", "--listen", "x"], b"")),
+        (
+            Some(2),
+            "",
+            "error[ops.argument]: invalid value for one of the arguments: \
+             `--listen <LISTEN>`: invalid socket address syntax\n\
+             fix: Match the arguments to `foundation --help` or \
+             `foundation <operation> --help`\n"
+        )
+    );
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test reads what the binary wrote to the disk"
+)]
+fn a_node_holds_the_file_address_while_it_runs_and_writes_it_empty_at_sigterm() {
+    let mut rig = Rig::new();
+    let address = rig.dir.join("foundation-data/data/address");
+    rig.start();
+    let held = std::fs::read(&address).expect("read the file address");
+    assert_eq!(held.len(), 99);
+    assert_eq!(held[..20], *b"foundation/address/1");
+    assert_eq!(held[95..], crc32c::crc32c(&held[..95]).to_le_bytes());
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    let stopped = std::fs::read(&address).expect("read the file address");
+    assert_eq!(stopped, [0; 99]);
+}

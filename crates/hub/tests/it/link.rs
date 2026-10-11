@@ -587,7 +587,9 @@ fn stops_a_hello_on_a_request_stream() {
     assert_eq!(
         home.served,
         [
-            Err(serve::Error::Message(wire::hub::Error::Kind { kind: 4 })),
+            Err(serve::Error::Client(wire::hub::client::Error::Kind {
+                kind: 4
+            })),
             Ok(Got::Request(name(SUBJECT), b"ab".to_vec())),
             Err(serve::Error::Stream(closed_with(0))),
         ]
@@ -610,17 +612,18 @@ fn stops_a_request_whose_body_did_not_come() {
         stream.sender.finish().expect("finishes");
         assert_eq!(stream.recv().await, reset_with(MALFORMED));
     });
-    let unfinished = wire::hub::Error::Unfinished { remain: 6 };
+    let unfinished = wire::hub::client::Error::Unfinished { remain: 6 };
     assert_eq!(
         home.served,
         [
-            Err(serve::Error::Message(unfinished.clone())),
+            Err(serve::Error::Client(unfinished.clone())),
             Err(serve::Error::Stream(closed_with(0))),
         ]
     );
     assert_eq!(
-        serve::Error::Message(unfinished).to_string(),
-        "a hub message is not valid: the stream ended with 6 bytes of its body to come"
+        serve::Error::Client(unfinished).to_string(),
+        "a client message is not valid: the stream ended with 6 bytes of its body to \
+         come"
     );
 }
 
@@ -953,7 +956,7 @@ fn closes_the_session_on_a_request_on_the_hello_stream() {
     });
     assert_eq!(
         home.served,
-        [Err(serve::Error::Message(wire::hub::Error::Kind {
+        [Err(serve::Error::Client(wire::hub::client::Error::Kind {
             kind: 5
         }))]
     );
@@ -970,7 +973,7 @@ fn closes_the_session_on_a_request_before_the_first_hello() {
     });
     assert_eq!(
         home.served,
-        [Err(serve::Error::Message(wire::hub::Error::Kind {
+        [Err(serve::Error::Client(wire::hub::client::Error::Kind {
             kind: 5
         }))]
     );
