@@ -422,8 +422,9 @@ impl Shard {
     /// Before the node first has mesh time, such a handoff waits as one with no room
     /// does. Call it at [`deadline`](Self::deadline); an earlier call changes nothing.
     /// After it, [`deadline`](Self::deadline) is `None` or later than the shard's
-    /// monotonic time at the call. Takes O(n) time for n carried indexes, plus the
-    /// append of each handoff.
+    /// monotonic time at the call. Takes O(n) time for n carried indexes. Each holder
+    /// that loses control adds O(w) time for the w open writers of its index, and the
+    /// append of its handoff.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
