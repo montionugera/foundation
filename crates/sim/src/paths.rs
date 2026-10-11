@@ -68,11 +68,10 @@ impl Paths {
     /// the way to it.
     fn check(&mut self, node: usize, path: &Path) -> Result<PathBuf, Error> {
         let at = absolute(path);
-        let key = (node, at);
-        if let Some(code) = self.faults.get_mut(&key).and_then(VecDeque::pop_front) {
+        let fault = self.faults.get_mut(&(node, at.clone()));
+        if let Some(code) = fault.and_then(VecDeque::pop_front) {
             return Err(Error::Io { code });
         }
-        let (_, at) = key;
         let mut through = at.ancestors().skip(1);
         if through.any(|above| self.files.contains_key(&(node, above.into()))) {
             return Err(Error::Io {
