@@ -1,4 +1,5 @@
-//! The root region that a node founds alone at its first start.
+//! The root region that a node founds alone at a start whose data directory holds no
+//! founding.
 
 use std::collections::BTreeMap;
 
