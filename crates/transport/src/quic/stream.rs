@@ -36,10 +36,10 @@ pub(crate) struct Key {
 
 /// The sending half of a stream. The caller gives it to each write call, and to
 /// [`Endpoint::reset`](super::Endpoint::reset) to end it. The connection keeps the
-/// stream's message in hand. It sends the rest by itself once the stream finished or
-/// when the message came from a write that does not wait, and else at the caller's
-/// next write. Dropping the sender does nothing to the stream, so finish or reset it
-/// first: until then, the message in hand keeps its send budget and its turn.
+/// stream's message in hand. It sends the rest by itself once the stream finished, or
+/// when no write comes back for the message, and else at the caller's next write.
+/// Dropping the sender does nothing to the stream, so finish or reset it first: until
+/// then, the message in hand keeps its send budget and its turn.
 #[derive(Debug)]
 pub(crate) struct Sender {
     key: Key,
@@ -1171,9 +1171,9 @@ impl Sending {
 
     /// Writes the rest of the message that `half` holds to `inner`, before the next
     /// `message` of a write. `Ready` once it holds no message, and `Pending` while it
-    /// holds one. A `Some` while the caller writes the rest shows that the write that
-    /// gave it never ended, as a leaked future: the stream then writes that rest by
-    /// itself, and a cancel leaves it.
+    /// holds one. A `Some` while the rest is the caller's shows that the write that
+    /// gave it never ended, as a leaked future, and the rest becomes the stream's
+    /// ([`Rest::Pump`]): the stream writes it by itself, and a cancel leaves it.
     ///
     /// # Errors
     ///
@@ -1573,6 +1573,24 @@ impl Streams {
         Ok(self.sending.write(inner, half, Some(parts)))
     }
 
+    /// Writes the rest of the message that `sender`'s stream of `inner` holds, for a
+    /// write of `message` that the size check refused. When the rest is the caller's,
+    /// the write that gave it never ended, as a leaked future, and the rest becomes
+    /// the stream's: the stream writes it by itself, and a cancel leaves it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Half::check`].
+    pub(super) fn refuse(
+        &mut self,
+        inner: &mut noq_proto::Connection,
+        sender: &Sender,
+        message: &Block,
+    ) -> Result<(), Error> {
+        let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        self.sending.resume(inner, half, Some(message)).map(drop)
+    }
+
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, then
     /// takes the block out of `message` and puts its `parts` on the stream, a message
     /// of `bytes`, when the stream can take it now: it holds no part of an earlier
@@ -1622,8 +1640,8 @@ impl Streams {
     /// Gives each stream that got room or the turn [`Event::Writable`] in `events`,
     /// so that its caller writes the rest. A stream whose rest no write comes back
     /// for, or that the caller finished, writes the rest to `inner` itself, and gets
-    /// the event once noq-proto took it all. A finished stream then
-    /// finishes, with no event.
+    /// the event once noq-proto took it all. A finished stream then finishes, with no
+    /// event.
     pub(super) fn pump(
         &mut self,
         inner: &mut noq_proto::Connection,

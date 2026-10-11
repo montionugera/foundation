@@ -42,4 +42,10 @@
   panic is a defect of the caller, and a release build aborts at it. Lost: a lookup
   of the stream ahead of the range check on each send, and state in the future
   (`laptop.architect-2`, 2026-10-11T15:05:16Z:
-  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6110385022).
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6110385022). A `send`,
+  `try_send`, `send_parts`, or `try_send_parts` that gives `Error::TooLarge` is a use of
+  the sender: it sends nothing of its message, and the stream writes the rest of a
+  leaked message from then, with no later use. Lost: a rest that waits for the next use
+  that passes the size check. The use shows that the future is gone, and only the path
+  of the error pays for the hand-over (`laptop.architect-2`, 2026-10-11T17:14:00Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6111576412).

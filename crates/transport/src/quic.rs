@@ -374,7 +374,9 @@ impl Endpoint {
     ///
     /// [`Error::TooLarge`] when the message, the sum of the range lengths and the
     /// zeros, is over the peer's largest message. Nothing of it is sent, and the
-    /// block stays in `message`. Then the error of the connection's
+    /// block stays in `message`. When the stream holds a message whose rest the caller
+    /// was to write, the stream writes that rest by itself from then, as after a write
+    /// that passes. Then the error of the connection's
     /// [`Event::Closed`] once it ended. Then [`Error::Reset`] with `Code(0)` after an
     /// [`Endpoint::cancel`] reset the stream, and [`Error::Stopped`] when the peer
     /// stopped it; each later write gives it too.
@@ -394,7 +396,11 @@ impl Endpoint {
             .as_ref()
             .map_or(0, |block| crate::stream::size(parts, block.len()));
         sender.check_open();
-        stream::check_size(bytes, sender.bytes_max())?;
+        if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
+            let message = message.as_ref().expect("invariant: an empty write fits");
+            self.refuse(now, sender, message);
+            return Err(error);
+        }
         let key = sender.key().connection;
         self.streams(
             now,
@@ -428,7 +434,10 @@ impl Endpoint {
     ) -> Result<Option<Block>, Error> {
         let bytes = crate::stream::size(parts, message.len());
         sender.check_open();
-        stream::check_size(bytes, sender.bytes_max())?;
+        if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
+            self.refuse(now, sender, &message);
+            return Err(error);
+        }
         let key = sender.key().connection;
         let mut message = Some(message);
         self.streams(
@@ -580,12 +589,12 @@ impl Endpoint {
         self.drive(key.handle, self.instant(now));
     }
 
-    /// Cancels the message of the last [`Endpoint::write`] on `sender`, while the
-    /// stream holds it and the caller writes its rest. When no byte of it went, its
-    /// header included, the message drops and the stream stays open. Else the stream
-    /// resets with `Code(0)`, as [`Endpoint::reset`] does, and each later write and
-    /// finish gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the
-    /// turn of the message come back now. Does nothing when the stream holds no such
+    /// Cancels the message that the stream of `sender` took from an [`Endpoint::write`]
+    /// and holds, while the caller writes its rest. When no byte of it went, its header
+    /// included, the message drops and the stream stays open. Else the stream resets
+    /// with `Code(0)`, as [`Endpoint::reset`] does, and each later write and finish
+    /// gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn
+    /// of the message come back now. Does nothing when the stream holds no such
     /// message, as a message of [`Endpoint::try_write`], after a finish or reset of
     /// `sender`, or when the connection ended. Calls `now` for the time only when it
     /// takes a message.
@@ -665,6 +674,19 @@ impl Endpoint {
             .open(&mut connection.inner, key, dir, class);
         self.drive(key.handle, self.instant(now));
         sender
+    }
+
+    /// Hands the rest of a leaked write of `sender`'s stream to the stream, for a
+    /// write of `message` that the size check refused ([`Streams::refuse`]). Does
+    /// nothing once the connection ended, and drops the state error of the stream.
+    fn refuse(&mut self, now: Monotonic, sender: &Sender, message: &Block) {
+        let key = sender.key().connection;
+        let closed = sender.closed().cloned();
+        let refused = self.streams(now, key, closed, |streams, inner, _, _| {
+            streams.refuse(inner, sender, message)
+        });
+        // The caller gets `TooLarge` in each state of the stream.
+        drop(refused);
     }
 
     /// Runs `call` on the streams of `key`'s connection with the pool and the event
