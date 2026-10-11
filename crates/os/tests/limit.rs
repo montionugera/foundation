@@ -20,8 +20,9 @@ use rustix::io::Errno;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
 /// Makes `dir` take new files and refuse each remove and rename, or takes that back.
-/// On Linux only root can make such a directory, so there the error of a remove that
-/// fails has no test.
+/// On Linux only root can make such a directory, so there
+/// `root::paths::a_write_past_the_size_limit_gives_the_error_of_a_remove_that_fails`
+/// has the error of a remove that fails.
 #[cfg(target_os = "macos")]
 fn append_only(dir: &std::path::Path, on: bool) {
     use std::os::unix::ffi::OsStrExt;
