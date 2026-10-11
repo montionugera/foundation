@@ -72,7 +72,7 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .or_else(|e| fs::remove_file(&new).and(Err(e)))
 }
 
-/// Makes a file at `path` that only this user can read or write.
+/// Makes a file at `path` whose permission bits give only this user access.
 fn open(path: &Path) -> io::Result<File> {
     #[expect(clippy::disallowed_methods, reason = "os writes the user's files")]
     OpenOptions::new()

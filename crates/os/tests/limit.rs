@@ -89,6 +89,6 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     };
     hidden.retain(|entry| *entry != open);
     assert_eq!(hidden.len(), left, "{hidden:?}");
-    // Only this user reads the part of the bytes that stays.
+    // The mode gives the part of the bytes that stays to this user only.
     assert!(hidden.iter().all(|part| mode(part) == 0o600));
 }

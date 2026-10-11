@@ -473,11 +473,13 @@
   directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty path
   names nothing. `env::paths::names_directory` holds the rule for the text of a path,
   and each driver asks it. Lost: a copy in each driver. The copy of `os` lost its `..`
-  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424). It
-  splits the text where `std::path::is_separator` says, as `Path` does, so on Windows it
-  also splits at `\`. Each other form of a Windows path that names no file, as a drive
-  or a device name, is for the Windows driver of `os::paths`, which is not there yet.
-  Lost: a split at `/` only, which on Windows takes `a\` as the name of a file
+  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424;
+  `laptop.architect-2`, 2026-10-11T20:23:25Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113352507, item 2).
+  It splits the text where `std::path::is_separator` says, as `Path` does, so on Windows
+  it also splits at `\`. Each other form of a Windows path that names no file, as a
+  drive or a device name, is for the Windows driver of `os::paths`, which is not there
+  yet. Lost: a split at `/` only, which on Windows takes `a\` as the name of a file
   (`laptop.architect-2`, 2026-10-11T20:49:35Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113601546). On `os`,
   the permission bits of a file that a write makes give the group and other users no
