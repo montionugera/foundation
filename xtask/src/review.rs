@@ -160,19 +160,19 @@ struct Round {
     /// The comment has a line `Text fixes:` that is not `Text fixes: none`, so commits
     /// that apply its items may follow the round.
     fixed: bool,
-    lines: End,
+    /// `None` for an old round, which has no end lines: [`Parsed`] checks its hot path.
+    lines: Option<End>,
 }
 
-/// What the end lines of a round comment state. An old round has the default, which
-/// [`Parsed`] checks for its hot path.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// The end lines of a round comment.
+#[derive(Debug, PartialEq, Eq)]
 struct End {
+    /// The value of the `Deferred:` line.
+    deferred: String,
+    /// The value of the `Public surface:` line.
+    surface: String,
     /// The `Hot path:` line names a function, so the round requires `performance`.
     hot: bool,
-    /// The first issue of the `Deferred:` line with no OK ([`deferral`]).
-    deferral: Option<String>,
-    /// What the `Public surface:` line lacks ([`unapproved`]).
-    unapproved: Option<String>,
 }
 
 /// A round comment that does not parse.
@@ -313,8 +313,8 @@ fn problems(
             ));
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
-        if *created >= LINK_CUTOFF {
-            problems.extend(unlinked(round, &record.files));
+        if let Some(lines) = round.lines.as_ref().filter(|_| *created >= LINK_CUTOFF) {
+            problems.extend(unlinked(round.number, lines, &record.files));
         }
     }
     if record.branch.starts_with("red-team/")
@@ -356,34 +356,26 @@ fn unended(
     }))
 }
 
-/// The problems with the links on the end lines of the last round, `round`, of a PR
-/// that changes `files`: on its `Deferred:` line when a file is in a risk crate
-/// ([`RISK`]), and on its `Public surface:` line.
-fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
-    let number = round.number;
+/// The problems with the links on the end lines `lines` of the last round, round
+/// `number`, of a PR that changes `files`: the first issue of its `Deferred:` line
+/// with no OK ([`deferral`]) when a file is in a risk crate ([`RISK`]), and what its
+/// `Public surface:` line lacks ([`unapproved`]).
+fn unlinked(number: u32, lines: &End, files: &[String]) -> Vec<String> {
     let risky = files.iter().any(|file| {
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let deferral = round
-        .lines
-        .deferral
-        .as_ref()
-        .filter(|_| risky)
-        .map(|issue| {
-            format!(
-                "review round {number} defers to {issue} with no link to the OK of \
-                 the architect after it on its `Deferred:` line. Add the link, or the \
-                 words `{UNRISKY}` after the issue when its work is in no risk crate. \
-                 {LINK}"
-            )
-        });
-    let unapproved = round
-        .lines
-        .unapproved
-        .as_ref()
-        .map(|lack| format!("review round {number} {lack}"));
-    deferral.into_iter().chain(unapproved).collect()
+    let deferral = deferral(&lines.deferred).filter(|_| risky).map(|issue| {
+        format!(
+            "review round {number} defers to {issue} with no link to the OK of the \
+             architect after it on its `Deferred:` line. Add the link, or the words \
+             `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
+        )
+    });
+    deferral
+        .into_iter()
+        .chain(unapproved(number, &lines.surface))
+        .collect()
 }
 
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
@@ -449,7 +441,7 @@ fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     if code {
         required.push("breaker");
     }
-    if round.lines.hot {
+    if round.lines.as_ref().is_some_and(|lines| lines.hot) {
         required.push("performance");
     }
     required
@@ -582,7 +574,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             end: end.to_string(),
             findings,
             fixed: fixed(&shown),
-            lines: lines.unwrap_or_default(),
+            lines,
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
@@ -673,15 +665,17 @@ fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
             ));
         }
     }
-    if let Some((name, _)) = values.get(END.len()) {
-        return Err(format!(
-            "review round {number} has a second `{name}:` line in its end lines."
-        ));
-    }
+    let [(_, deferred), (_, surface), (_, hot)] =
+        <[_; 3]>::try_from(values).map_err(|values| {
+            let name = values[END.len()].0;
+            format!(
+                "review round {number} has a second `{name}:` line in its end lines."
+            )
+        })?;
     Ok(End {
-        hot: stated(&values[2].1),
-        deferral: deferral(&values[0].1),
-        unapproved: unapproved(&values[1].1),
+        deferred,
+        surface,
+        hot: stated(&hot),
     })
 }
 
@@ -724,23 +718,23 @@ fn undigited(text: &str) -> Option<&str> {
     (rest.len() < text.len()).then_some(rest)
 }
 
-/// What `surface`, the value of a `Public surface:` line, lacks, as the words of a
-/// problem, or `None`: it names items ([`stated`]) and holds the words [`OWED`] or no
-/// comment link ([`link`]).
-fn unapproved(surface: &str) -> Option<String> {
+/// The problem when `surface`, the value of the `Public surface:` line of round
+/// `number`, names items ([`stated`]) and holds the words [`OWED`] or no comment link
+/// ([`link`]).
+fn unapproved(number: u32, surface: &str) -> Option<String> {
     if !stated(surface) {
         return None;
     }
     if surface.to_ascii_lowercase().contains(OWED) {
         return Some(format!(
-            "has `{OWED}` on its `Public surface:` line. Get each approval, then put \
-             its link in the line."
+            "review round {number} has `{OWED}` on its `Public surface:` line. Get \
+             each approval, then put its link in the line."
         ));
     }
     link(surface).is_none().then(|| {
         format!(
-            "names items on its `Public surface:` line with no link to an approval. \
-             {LINK}"
+            "review round {number} names items on its `Public surface:` line with no \
+             link to an approval. {LINK}"
         )
     })
 }
