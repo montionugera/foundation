@@ -1,6 +1,7 @@
 //! `os::paths` on the real files of the host.
 
 use std::fs::{self, Permissions};
+use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
@@ -107,6 +108,19 @@ fn a_write_on_a_path_with_no_name_writes_nothing() {
     }
     let entries = Ok(Found::Directory(vec![config.join("c")]));
     assert_eq!(paths.read(&config, 1 << 12), entries);
+}
+
+#[test]
+fn a_write_leaves_the_old_file_whole_for_a_reader_that_has_it_open() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("plant.hcl");
+    fs::write(&path, b"old").unwrap();
+    #[expect(clippy::disallowed_methods, reason = "the test holds the old file")]
+    let mut old = fs::File::open(&path).unwrap();
+    os::paths().write(&path, b"new").unwrap();
+    let mut bytes = Vec::new();
+    old.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"old");
 }
 
 #[test]
