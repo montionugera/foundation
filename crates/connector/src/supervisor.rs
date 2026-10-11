@@ -3567,7 +3567,7 @@ mod tests {
 
     #[test]
     fn writes_no_status_when_an_opened_connector_drops() {
-        let (runs, statuses) = run_on(|node, tasks| async move {
+        let (runs, statuses, debug) = run_on(|node, tasks| async move {
             let runs = Arc::new(AtomicUsize::new(0));
             let counter = Arc::clone(&runs);
             let kind = reading(settings(Span::ZERO), move |_| {
@@ -3585,11 +3585,19 @@ mod tests {
             let opened = supervisor
                 .open("read", name("plant.write"), &config, &token)
                 .await;
+            let debug = format!("{opened:?}");
             drop(opened);
             node.clock().sleep(Span::SECOND).await;
-            (runs.load(Ordering::Relaxed), statuses.borrow().clone())
+            (
+                runs.load(Ordering::Relaxed),
+                statuses.borrow().clone(),
+                debug,
+            )
         });
         assert_eq!((runs, statuses), (0, Vec::new()));
+        assert!(debug.starts_with("Opened { call: Call { "), "{debug}");
+        assert!(debug.contains("kind: \"read\""), "{debug}");
+        assert!(debug.ends_with(", .. }"), "{debug}");
     }
 
     #[test]
