@@ -2902,6 +2902,62 @@ mod tests {
         });
     }
 
+    /// The handoff that an end of a lease on another index keeps waiting is recorded at
+    /// the next frame of its index.
+    #[test]
+    fn records_the_kept_handoff_at_the_next_frame_of_its_index() {
+        run(243, |test| async move {
+            let index = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[],
+            }]);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard.open_writer(writer("c", 1, &index)).expect("synced");
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            let b = shard.open_writer(leased).expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.close_writer(c);
+            drop(blocks);
+            test.clock.sleep(Span::from_nanos(400_000)).await;
+            shard.advance();
+            let write = frame(&test.pool, &set, &[(2, &[10])]);
+            assert_eq!(shard.write(b, LIVE, write), Ok(&[applied(2, 0, 1)][..]));
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(
+                handoffs.len(),
+                2,
+                "the frame on slot 2 records the kept one"
+            );
+        });
+    }
+
+    /// A handoff at the end of a lease that finds no room waits for the next append on
+    /// its index.
+    #[test]
+    fn keeps_the_handoff_of_a_lease_end_with_no_room_for_the_next_frame() {
+        run(242, |test| async move {
+            let (mut shard, _, set) = test.leased().await;
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.advance();
+            drop(blocks);
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
+            assert_eq!(shard.write(b, LIVE, write), Ok(&[applied(0, 0, 1)][..]));
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "the frame on slot 0 records its handoff");
+        });
+    }
+
     /// `advance` drops each restored holder whose grace ended, so it leaves no
     /// deadline that came due.
     #[test]
