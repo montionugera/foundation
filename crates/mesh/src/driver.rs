@@ -2323,8 +2323,19 @@ mod tests {
         Stopped::Write(log::Error::Files(cause))
     }
 
+    // For a test in which no message shows the term: a refused message gets no
+    // reply, a node with no voters sends nothing, and a served stream or a test
+    // peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
+    }
+
+    /// The term of the next message of `mesh` to node `to`, which is a heartbeat
+    /// reply.
+    async fn reply_term(mesh: &Mesh, to: u8) -> Term {
+        let reply = mesh.outgoing(key(to)).await.unwrap();
+        assert_eq!(reply.body, Body::HeartbeatReply);
+        reply.term
     }
 
     /// The term for which `mesh` asks node `to` for a pre-vote: the term after its
@@ -3519,7 +3530,7 @@ mod tests {
                 write(&mesh, data).await;
                 let proven = heartbeat(4, later(), &[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(4), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 4).await, later());
             });
         }
 
@@ -3548,7 +3559,7 @@ mod tests {
                 assert_eq!(mesh.receive(public(2), unproven), Err(Error::Raft(error)));
                 let proven = heartbeat(2, later(), &[(2, 2), (3, 3), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 2).await, later());
             });
         }
 
@@ -3561,11 +3572,9 @@ mod tests {
                 write(&mesh, changes(&[stale_join()])).await;
                 let proven = heartbeat(2, later(), &[(2, 2), (3, 3), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 2).await, later());
                 let stale = message(2, 1, Body::Heartbeat { commit: 0 });
                 assert_eq!(mesh.receive(public(2), stale), Ok(()));
-                let reply = mesh.outgoing(key(2)).await.unwrap();
-                assert_eq!((reply.body, reply.term), (Body::HeartbeatReply, later()));
                 let answer = mesh.outgoing(key(2)).await.unwrap();
                 let voters = answer.proof.map(|proof| proof.voters.into_keys());
                 let voters: Option<Vec<_>> = voters.map(Iterator::collect);
@@ -3579,7 +3588,6 @@ mod tests {
                 let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
                 let heartbeat = proven(2, 1, Body::Heartbeat { commit: 0 });
                 assert_eq!(mesh.receive(public(2), heartbeat), Ok(()));
-                assert_eq!(term(&mesh), common::TERM);
                 let mut stale = message(2, 1, Body::Heartbeat { commit: 0 });
                 stale.term = Term(common::TERM.0 - 1);
                 assert_eq!(mesh.receive(public(2), stale), Ok(()));
@@ -4019,7 +4027,7 @@ mod tests {
                 write(&mesh, changes(&[stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 5)]);
                 assert_eq!(mesh.receive(public(2), elected), Ok(()));
-                assert_eq!(term(&mesh), Term(later().0 + 1));
+                assert_eq!(reply_term(&mesh, 2).await, Term(later().0 + 1));
             });
         }
 
@@ -4031,7 +4039,7 @@ mod tests {
                 write(&mesh, changes(&[join(4)])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), elected), Ok(()));
-                assert_eq!(term(&mesh), Term(later().0 + 1));
+                assert_eq!(reply_term(&mesh, 2).await, Term(later().0 + 1));
             });
         }
 
@@ -6705,7 +6713,6 @@ mod tests {
                 let mesh = open(&node, &tasks, 1, members, &FOUNDERS).await.unwrap();
                 assert_eq!(mesh.receive(public(3), heartbeat), expected);
                 if expected.is_ok() {
-                    assert_eq!(term(&mesh), Term(6));
                     let reply = mesh.outgoing(key(3)).await.unwrap();
                     let mut expected = message(1, 3, Body::HeartbeatReply);
                     expected.term = Term(6);
