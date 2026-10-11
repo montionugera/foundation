@@ -3492,6 +3492,37 @@ mod tests {
         }
     }
 
+    /// The reader of each restart keeps the hold of its settings: a run within the hold
+    /// opens at the held position and gets `Behind`, while the home keeps no frame
+    /// there. #274 makes the third run read from the held position.
+    #[test]
+    fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await.map(|received| values(&received));
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push(next);
+                    got.len()
+                };
+                if runs < 3 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| {
+                let samples = (1..=600).map(|i| (ms(100 * i), i));
+                write_at(hub, clock, samples.collect())
+            },
+        );
+        read.end.expect("ok");
+        let behind = Err(hub::reader::Ended::Behind);
+        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+    }
+
     /// The diagnostics of `error` when it is [`Error::Config`], else its text.
     fn diagnostics(error: Error) -> Result<Vec<Diagnostic>, String> {
         match error {
