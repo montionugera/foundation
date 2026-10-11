@@ -368,6 +368,7 @@ impl<'a> SendStream<'a> {
         // send. We leave flow control alone because the peer's responsible for issuing additional
         // credit based on the final offset communicated in the RESET_STREAM frame we send.
         self.state.unacked_data -= stream.pending.held();
+        stream.pending.clear();
         stream.reset();
         self.pending.reset_stream.push((self.id, error_code));
 

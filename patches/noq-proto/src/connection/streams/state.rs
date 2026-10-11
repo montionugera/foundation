@@ -639,9 +639,9 @@ impl StreamsState {
                 let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
                     continue;
                 };
-                if stream.pending.is_fully_acked() && !stream.fin_pending {
+                if stream.is_reset() || (stream.pending.is_fully_acked() && !stream.fin_pending) {
                     // Stream data can't be acked in 0-RTT, so we must not have sent anything on
-                    // this stream
+                    // this stream. A reset stream sends no data.
                     continue;
                 }
                 if !stream.is_pending() {
@@ -2262,16 +2262,16 @@ mod tests {
         assert_eq!(stream.write(&data), Err(WriteError::Blocked));
     }
 
-    /// A stream of `server`, with a peer that gives credit with no limit.
-    fn open_with_credit(server: &mut StreamsState) -> StreamId {
-        server.set_params(&TransportParameters {
+    /// A stream of `state`, with a peer that gives credit with no limit.
+    fn open_with_credit(state: &mut StreamsState) -> StreamId {
+        state.set_params(&TransportParameters {
             initial_max_data: VarInt::MAX,
             initial_max_stream_data_uni: VarInt::MAX,
             initial_max_streams_uni: VarInt::from_u32(100),
             ..TransportParameters::default()
         });
         Streams {
-            state: server,
+            state,
             conn_state: &ConnState::established(),
         }
         .open(Dir::Uni)
@@ -2347,5 +2347,36 @@ mod tests {
         stream.reset(0u32.into()).expect("the stream resets");
         assert_eq!(stream.state.unacked_data, 0);
         assert_eq!(stream.state.write_limit(), window);
+
+        server.retransmit(frame::StreamMeta {
+            id,
+            offsets: 0..1200,
+            fin: false,
+        });
+        let send = server.send[&id].as_ref().expect("a send stream");
+        assert_eq!((send.pending.held(), send.pending.offset()), (0, window));
+        assert!(!send.pending.has_unsent_data());
+    }
+
+    #[test]
+    fn reset_before_0rtt_rejection_sends_no_data() {
+        let mut client = make(Side::Client);
+        let id = open_with_credit(&mut client);
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        let mut stream = SendStream {
+            id,
+            state: &mut client,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        assert_eq!(stream.write(&[0xFF; 1200]), Ok(1200));
+        stream.finish().expect("the stream finishes");
+        stream.reset(0u32.into()).expect("the stream resets");
+
+        client.retransmit_all_for_0rtt();
+        let send = client.send[&id].as_ref().expect("a send stream");
+        assert_eq!((send.pending.held(), send.pending.offset()), (0, 1200));
+        assert!(!send.pending.has_unsent_data());
     }
 }
