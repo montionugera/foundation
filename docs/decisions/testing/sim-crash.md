@@ -26,15 +26,15 @@
   https://github.com/synnaxlabs/foundation/issues/1449#issuecomment-6040629508; the
   text, 2026-10-07 17:35 UTC:
   https://github.com/synnaxlabs/foundation/pull/1503#issuecomment-6043326214.
-  Amended (2026-10-07, #1264): a `Mode::Create` open in flight at a crash that makes a
-  file draws its state. After a `Process` crash the file is whole or has no bytes. After
-  a `Power` crash there is no file, or the file with no bytes or whole, with the
-  entries of its directory durable, as when the file system commits its journal by
-  itself or the `fsync` of the open commits it. The commit acts as a `sync_dir` of the
-  directory, so it also keeps each earlier change there, a rename too, and the digest
-  holds the drawn state. Lost: a create in two calls, one that makes the entry and one
-  that allocates; it doubles the calls of each create, changes the stream of each run,
-  and adds a step that `env` does not have.
+  Amended (2026-10-07, #1264, text of #1687): a `Mode::Create` open in flight at a crash
+  that makes a file draws its state. After a `Process` crash the file is whole or has no
+  bytes. After a `Power` crash the open has no effect, or leaves the file with no bytes
+  or whole, with the entries of its directory durable, as when the file system commits
+  its journal by itself or the `fsync` of the open commits it. The commit acts as a
+  `sync_dir` of the directory, so it also keeps each earlier change there, a rename too,
+  and the digest holds the drawn state. Lost: a create in two calls, one that makes the
+  entry and one that allocates; it doubles the calls of each create, changes the stream
+  of each run, and adds a step that `env` does not have.
   Decided by `laptop.architect-2` (2026-10-07T18:31:29Z, the entries of the
   directory at 2026-10-07T19:22:31Z):
   https://github.com/synnaxlabs/foundation/issues/1264#issuecomment-6044288692 and
