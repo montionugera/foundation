@@ -51,7 +51,9 @@
   (2026-10-11T07:44:40Z,
   https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760; the file
   first, 2026-10-11T10:19:18Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495).
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495; until the
+  node founds a region or joins one, 2026-10-11T11:22:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108495169).
   Supersedes "The file is the only copy of the name on the node" of
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
   `name::keep` reads the founding under the lock, after the file `name` and before the

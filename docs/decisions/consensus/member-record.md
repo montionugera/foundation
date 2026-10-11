@@ -14,7 +14,9 @@
   gives a member another name. So `node` reads the name of a founding member there when
   its file `name` is gone (NODE NAME, which holds the trigger; `laptop.architect-2`,
   #2355, 2026-10-11T07:44:40Z,
-  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760). The
+  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760; the file
+  first, 2026-10-11T10:19:18Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495). The
   founding holds no card of a node that joined (`laptop.architect`,
   2026-10-11T10:58:48Z,
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108309120).
