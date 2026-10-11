@@ -1,7 +1,11 @@
+use std::rc::Rc;
+
 use clock::{Clock, Status};
+use env::files::{self, Operation};
 use estimate::Measurement;
 use proptest::prelude::*;
 use sim::node::Node;
+use types::digest::Digest;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
@@ -24,6 +28,7 @@ fn ms(n: i64) -> Span {
 fn data_type(value: Value) -> Type {
     match value {
         Value::U8(_) => Type::Scalar(Scalar::U8),
+        Value::U64(_) => Type::Scalar(Scalar::U64),
         Value::Span(_) => Type::Scalar(Scalar::Span),
     }
 }
@@ -39,17 +44,25 @@ fn typed(sample: [Option<Value>; TABLE.len()]) -> [Option<Value>; TABLE.len()] {
 }
 
 #[test]
-fn lists_the_clock_channels() {
+fn lists_the_channels() {
     let names: Vec<&str> = TABLE.iter().map(|c| c.name).collect();
-    assert_eq!(names, ["clock.status", "clock.offset", "clock.error"]);
+    let expected = [
+        "clock.status",
+        "clock.offset",
+        "clock.error",
+        "blob.corruptions",
+        "blob.failures",
+    ];
+    assert_eq!(names, expected);
 }
 
 #[test]
 fn an_unsynced_clock_gives_only_its_status() {
     let (_sim, host) = host();
     let (_clock, reader) = Clock::new(host.clock());
-    let collector = Collector::new(reader);
-    assert_eq!(typed(collector.collect()), [Some(Value::U8(0)), None, None]);
+    let collector = Collector::new(reader, None);
+    let [status, offset, error, ..] = typed(collector.collect());
+    assert_eq!([status, offset, error], [Some(Value::U8(0)), None, None]);
 }
 
 #[test]
@@ -58,9 +71,10 @@ fn a_synced_clock_gives_its_offset_and_error() {
     let (mut clock, reader) = Clock::new(host.clock());
     let source = clock.add();
     clock.push(source, measure(&host, Span::HOUR, ms(2)));
-    let collector = Collector::new(reader);
+    let collector = Collector::new(reader, None);
+    let [status, offset, error, ..] = typed(collector.collect());
     assert_eq!(
-        typed(collector.collect()),
+        [status, offset, error],
         [
             Some(Value::U8(1)),
             Some(Value::Span(Span::HOUR)),
@@ -77,9 +91,10 @@ fn a_clock_in_holdover_keeps_its_offset() {
     clock.push(source, measure(&host, Span::HOUR, ms(2)));
     // One of two sources has no measurement, so no majority agrees.
     clock.add();
-    let collector = Collector::new(reader);
+    let collector = Collector::new(reader, None);
+    let [status, offset, error, ..] = typed(collector.collect());
     assert_eq!(
-        typed(collector.collect()),
+        [status, offset, error],
         [
             Some(Value::U8(2)),
             Some(Value::Span(Span::HOUR)),
@@ -100,8 +115,90 @@ fn the_error_of_a_clock_in_holdover_grows_by_drift() {
         panic!("a clock with no majority holds over");
     };
     assert!(m.error() > ms(2), "{:?}", m.error());
-    let [_, _, error] = typed(Collector::new(reader).collect());
+    let [_, _, error, ..] = typed(Collector::new(reader, None).collect());
     assert_eq!(error, Some(Value::Span(m.error())));
+}
+
+fn create_pool() -> Rc<block::Pool> {
+    let config = block::Config::new(1 << 20).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    Rc::new(block::Pool::new(config, memory))
+}
+
+/// The chunk store of `host`, as a node opens it.
+async fn open(host: &Node, pool: Rc<block::Pool>) -> Rc<blob::Store> {
+    let config = blob::Config {
+        files: host.files(),
+        dir: crate::directory::blob(),
+        pool,
+        floor_bytes: 0,
+    };
+    Rc::new(blob::Store::open(config).await.expect("the store opens"))
+}
+
+/// The two counts of the chunk store that `collector` gives.
+fn counts(collector: &Collector) -> [Option<Value>; 2] {
+    let [.., corruptions, failures] = typed(collector.collect());
+    [corruptions, failures]
+}
+
+#[test]
+fn a_node_with_no_chunk_store_gives_no_count_of_one() {
+    let (_sim, host) = host();
+    let (_clock, reader) = Clock::new(host.clock());
+    assert_eq!(counts(&Collector::new(reader, None)), [None, None]);
+}
+
+#[test]
+fn a_get_whose_read_fails_gives_one_failure_of_the_chunk_store() {
+    let (mut sim, host) = host();
+    let ran = sim.run_on(&host, |host, _| async move {
+        let pool = create_pool();
+        let store = open(&host, Rc::clone(&pool)).await;
+        let (_clock, reader) = Clock::new(host.clock());
+        let collector = Collector::new(reader, Some(Rc::clone(&store)));
+        let none = [Some(Value::U64(0)), Some(Value::U64(0))];
+        assert_eq!(counts(&collector), none);
+        let mut chunk = pool.alloc(5).expect("a block");
+        chunk.copy_from_slice(b"chunk");
+        let chunk = chunk.freeze();
+        let digest = Digest::of(&chunk);
+        store.put(digest, &chunk).await.expect("the put stores");
+        let path = crate::directory::blob().join(digest.to_string());
+        host.fail_file(&path, Operation::ReadAt);
+        let failed = blob::Error::Files(files::Error::Io {
+            path,
+            operation: Operation::ReadAt,
+            code: 5,
+        });
+        assert_eq!(store.get(digest).await.unwrap_err(), failed);
+        assert_eq!(counts(&collector), [none[0], Some(Value::U64(1))]);
+    });
+    assert_eq!(ran, Ok(()));
+}
+
+#[test]
+fn a_get_of_a_chunk_that_fails_its_check_gives_one_corruption() {
+    let (mut sim, host) = host();
+    let ran = sim.run_on(&host, |host, _| async move {
+        let digest = Digest::of(b"chunk");
+        let dir = crate::directory::blob();
+        let files = host.files();
+        files.create_dir(&dir).await.expect("makes the directory");
+        let empty = files::Mode::Create { len: 0 };
+        let file = files.open(&dir.join(digest.to_string()), empty).await;
+        file.expect("makes the file").close().await;
+        files.sync_dir(&dir).await.expect("syncs");
+        let store = open(&host, create_pool()).await;
+        let (_clock, reader) = Clock::new(host.clock());
+        let collector = Collector::new(reader, Some(Rc::clone(&store)));
+        assert!(store.get(digest).await.expect("the get reads").is_none());
+        assert_eq!(
+            counts(&collector),
+            [Some(Value::U64(1)), Some(Value::U64(0))]
+        );
+    });
+    assert_eq!(ran, Ok(()));
 }
 
 proptest! {
@@ -115,7 +212,7 @@ proptest! {
         let source = clock.add();
         let m = measure(&host, Span::from_nanos(offset), Span::from_nanos(error));
         clock.push(source, m);
-        let [_, offset, error] = typed(Collector::new(reader).collect());
+        let [_, offset, error, ..] = typed(Collector::new(reader, None).collect());
         prop_assert_eq!(offset, Some(Value::Span(m.offset())));
         prop_assert_eq!(error, Some(Value::Span(m.error())));
     }

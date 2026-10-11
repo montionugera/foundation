@@ -4,6 +4,8 @@
 #[cfg(not(loom))]
 mod tests;
 
+use std::rc::Rc;
+
 use clock::Status;
 use estimate::Measurement;
 use types::sample::{Scalar, Type};
@@ -16,17 +18,24 @@ pub(crate) struct Channel {
     pub(crate) name: &'static str,
     pub(crate) data_type: Type,
     /// The channel's value from the pulled status, or `None` for no sample.
-    read: fn(Status) -> Option<Value>,
+    read: fn(&Pulled) -> Option<Value>,
+}
+
+/// The status of each crate, pulled one time for a sample of each channel.
+struct Pulled {
+    clock: Status,
+    /// `None` when the node has no chunk store.
+    store: Option<blob::Status>,
 }
 
 /// The node's status channels, a fixed set per release. [`Collector::collect`] gives
 /// a value for each, in this order.
-pub(crate) const TABLE: [Channel; 3] = [
+pub(crate) const TABLE: [Channel; 5] = [
     Channel {
         name: "clock.status",
         data_type: Type::Scalar(Scalar::U8),
-        read: |status| {
-            let code = match status {
+        read: |pulled| {
+            let code = match pulled.clock {
                 Status::Unsynced(_) => 0,
                 Status::Synced(_) => 1,
                 Status::Holdover(..) => 2,
@@ -38,13 +47,23 @@ pub(crate) const TABLE: [Channel; 3] = [
     Channel {
         name: "clock.offset",
         data_type: Type::Scalar(Scalar::Span),
-        read: |status| time(status).map(|m| Value::Span(m.offset())),
+        read: |pulled| time(pulled.clock).map(|m| Value::Span(m.offset())),
     },
     // An unknown error is the bound that `estimate::Measurement::unknown` gives.
     Channel {
         name: "clock.error",
         data_type: Type::Scalar(Scalar::Span),
-        read: |status| time(status).map(|m| Value::Span(m.error())),
+        read: |pulled| time(pulled.clock).map(|m| Value::Span(m.error())),
+    },
+    Channel {
+        name: "blob.corruptions",
+        data_type: Type::Scalar(Scalar::U64),
+        read: |pulled| pulled.store.map(|status| Value::U64(status.corruptions)),
+    },
+    Channel {
+        name: "blob.failures",
+        data_type: Type::Scalar(Scalar::U64),
+        read: |pulled| pulled.store.map(|status| Value::U64(status.failures)),
     },
 ];
 
@@ -52,6 +71,7 @@ pub(crate) const TABLE: [Channel; 3] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Value {
     U8(u8),
+    U64(u64),
     Span(Span),
 }
 
@@ -59,19 +79,25 @@ pub(crate) enum Value {
 #[derive(Debug)]
 pub(crate) struct Collector {
     clock: clock::Reader,
+    store: Option<Rc<blob::Store>>,
 }
 
 impl Collector {
-    pub(crate) fn new(clock: clock::Reader) -> Self {
-        Self { clock }
+    /// A collector for the shard of `store`, the node's chunk store, or `None` for a
+    /// node with no region.
+    pub(crate) fn new(clock: clock::Reader, store: Option<Rc<blob::Store>>) -> Self {
+        Self { clock, store }
     }
 
     /// The value of each channel in [`TABLE`] now, in its order, or `None` for a
     /// channel with no sample now. Reads each crate once. An unsynced clock has no
-    /// offset or error.
+    /// offset or error, and a node with no chunk store has no count of one.
     pub(crate) fn collect(&self) -> [Option<Value>; TABLE.len()] {
-        let status = self.clock.status();
-        TABLE.each_ref().map(|channel| (channel.read)(status))
+        let pulled = Pulled {
+            clock: self.clock.status(),
+            store: self.store.as_deref().map(blob::Store::status),
+        };
+        TABLE.each_ref().map(|channel| (channel.read)(&pulled))
     }
 }
 
