@@ -2598,3 +2598,55 @@ fn a_base_move_is_a_decision_change_only_from_outside_the_decisions_into_them() 
         repo.remove();
     }
 }
+
+#[test]
+fn the_directory_rename_setting_of_the_clone_changes_no_decision_change() {
+    for value in ["conflict", "false", "true"] {
+        let repo = Repo::new(&format!("decision-directory-{value}"));
+        repo.commit("docs/drafts/a.md", "a draft\n");
+        let base = repo.commit("docs/drafts/b.md", "another draft\n");
+        repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+        repo.git(&["switch", "--quiet", "-c", "pr"]);
+        let start = repo.commit("docs/drafts/x.md", "a rule of the PR\n");
+        repo.git(&["switch", "--quiet", "main"]);
+        repo.git(&["mv", "docs/drafts", "docs/decisions"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["switch", "--quiet", "pr"]);
+        // With `true`, the merge moves the file of the PR with no conflict.
+        let merge = ["merge", "--quiet", "--no-edit", "origin/main"];
+        repo.git(&[&["-c", "merge.directoryRenames=true"][..], &merge].concat());
+        let end = repo.head();
+        assert_eq!(
+            repo.git(&["show", &format!("{end}:docs/decisions/x.md")]),
+            "a rule of the PR"
+        );
+        repo.git(&["config", "merge.directoryRenames", value]);
+        assert_eq!(
+            repo.decision_change(&start, &end),
+            Ok(Some(format!("resolves a {CONFLICT} in `{end}`"))),
+            "{value}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_clone_with_rename_detection_off_reads_a_base_move_into_a_decision() {
+    for key in ["merge.renames", "diff.renames"] {
+        let (repo, _) = Repo::with_pr(&format!("decision-{key}"));
+        let (_, changed, end) =
+            repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+        repo.git(&["config", key, "false"]);
+        assert_eq!(
+            repo.decision_change(&changed, &end),
+            Ok(Some(
+                "has `docs/drafts/x.md`, which the PR changes and the base moves into \
+                 the decision `docs/decisions/x.md`"
+                    .to_string()
+            )),
+            "{key}"
+        );
+        repo.remove();
+    }
+}

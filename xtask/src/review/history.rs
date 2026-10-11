@@ -866,7 +866,8 @@ fn rust_path(path: &str) -> bool {
 /// A `git` command in `root` that reads no inherited `GIT_*` variable and no global
 /// or system config or attributes file, so the machine's settings cannot change a
 /// verdict and no variable such as `GIT_DIR` can point it elsewhere. It still reads
-/// the repository's own `.git/config` and `.git/info/attributes`.
+/// the repository's own `.git/config` and `.git/info/attributes`, but a merge finds
+/// each move as `git` does with no setting.
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
@@ -880,6 +881,8 @@ fn command(root: &Path) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_ATTR_NOSYSTEM", "1")
         .args(["-c", "core.attributesFile=/dev/null"])
+        .args(["-c", "merge.renames=true"])
+        .args(["-c", "merge.directoryRenames=conflict"])
         // So a walk for merge bases reads only parents and commit times
         // (`History::commit`).
         .args(["-c", "core.commitGraph=false"]);
