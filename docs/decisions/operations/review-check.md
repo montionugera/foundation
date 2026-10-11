@@ -109,9 +109,10 @@
   (`git merge-tree`) and the range to the head changes no code, read as the range of a
   round with `Breaker: skipped` is read. When a commit that is not a merge follows it,
   its round comment has a line `Text fixes:` that is not `Text fixes: none`
-  (TEXT FIXES). The line counts at the start of a line of a top-level paragraph between
-  the fields and the end lines, and the first word of its value, read as that of an end
-  line, is not `none`. Decided by the director at 2026-10-10T23:01:29Z
+  (TEXT FIXES). The line counts at the start of a line of a top-level paragraph after
+  the fields and before the end lines (in a round posted before the cutoff, after the
+  fields), and the first word of its value, read as that of an end line, is not `none`.
+  Decided by the director at 2026-10-10T23:01:29Z
   (https://github.com/synnaxlabs/foundation/issues/2315), 2026-10-10T23:21:22Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281), and
   2026-10-10T23:29:42Z
