@@ -1,8 +1,9 @@
-//! The cost of the blob heads that come once per chunk: a put and a reply.
+//! The cost of the blob heads that come once per chunk, a put and a reply, and of a
+//! get.
 
 use divan::Bencher;
 use types::digest::Digest;
-use wire::blob::{Error, FromRequester, Put, Reply, Requester, Server};
+use wire::blob::{Error, FromRequester, Put, Reply, Requester, Server, get};
 
 const CHUNK_BYTES_MAX: usize = 1 << 20;
 
@@ -38,6 +39,20 @@ fn decode_a_put(bencher: Bencher<'_, '_>) {
     bencher.bench_local(|| match decode_at_server(&server, divan::black_box(&put)) {
         Ok(FromRequester::Put(put)) => put,
         other => panic!("a put decodes as a put: {other:?}"),
+    });
+}
+
+#[divan::bench(args = [1, 64])]
+fn decode_a_get(bencher: Bencher<'_, '_>, digests: usize) {
+    let digests = vec![Digest([7; 32]); digests];
+    let mut message = vec![0; get::encoded_len(digests.len())];
+    get::encode(&digests, &mut message);
+    let server = Server::new(CHUNK_BYTES_MAX);
+    bencher.bench_local(|| {
+        match decode_at_server(&server, divan::black_box(&message)) {
+            Ok(FromRequester::Get(digests)) => digests.len(),
+            other => panic!("a get decodes as a get: {other:?}"),
+        }
     });
 }
 

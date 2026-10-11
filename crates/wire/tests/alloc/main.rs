@@ -1,6 +1,6 @@
-//! The hub messages on a frame's path, and the body counters of client requests and
-//! blob chunks, make no heap allocation. This binary has no test harness: the count
-//! covers each thread, and a harness allocates on its own thread at any time.
+//! The hub messages on a frame's path, the blob heads, and the body counters of client
+//! requests and blob chunks, make no heap allocation. This binary has no test harness:
+//! the count covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -34,6 +34,7 @@ fn main() {
     ends_by_place();
     client_body();
     blob_body();
+    blob_heads();
 }
 
 /// A reader that has decoded `Opened` and a head of `series` series.
@@ -174,4 +175,45 @@ fn blob_body() {
     });
     assert_eq!(allocations, 0, "the take of a blob body allocated");
     assert_eq!(taken, body.len(), "the whole body was taken");
+}
+
+/// The decode of a put and a get at the server, and of each reply at the requester.
+fn blob_heads() {
+    use types::digest::Digest;
+    use wire::blob::{FromRequester, Put, Reply, Requester, Server, get};
+
+    let digest = Digest([7; 32]);
+    let mut put = [0; Put::LEN];
+    Put { digest, len: 64 }.encode(&mut put);
+    let mut get = vec![0; get::encoded_len(2)];
+    get::encode(&[digest, digest], &mut get);
+    let server = Server::new(1 << 20);
+    let (decoded, allocations) = ALLOCATOR.count(|| {
+        [put.as_slice(), &get].map(|message| match server.decode(message) {
+            Ok(FromRequester::Put(put)) => put.digest == digest,
+            Ok(FromRequester::Get(mut digests)) => digests.all(|got| got == digest),
+            other => panic!("a put or a get: {other:?}"),
+        })
+    });
+    assert_eq!(allocations, 0, "the decode of a blob request allocated");
+    assert_eq!(decoded, [true, true], "the put and the get decoded");
+
+    let replies =
+        [Reply::Chunk { digest, len: 64 }, Reply::Stored { digest }].map(|reply| {
+            let mut out = vec![0; reply.encoded_len()];
+            reply.encode(&mut out);
+            out
+        });
+    let requester = Requester::new(1 << 20);
+    let (decoded, allocations) = ALLOCATOR.count(|| {
+        replies
+            .each_ref()
+            .map(|message| match requester.decode(message) {
+                Ok(Reply::Chunk { digest: got, len }) => got == digest && len == 64,
+                Ok(Reply::Stored { digest: got }) => got == digest,
+                other => panic!("a reply: {other:?}"),
+            })
+    });
+    assert_eq!(allocations, 0, "the decode of a blob reply allocated");
+    assert_eq!(decoded, [true, true], "each reply decoded");
 }
