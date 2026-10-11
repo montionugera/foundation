@@ -554,8 +554,9 @@
   drives its manager until the channel is closed. Its drop calls `shim_client_free`,
   which stops the loop, then deletes the client. On a stopped loop the delete makes no
   synchronous call, so it sends no CloseSession, and the session stays on the server
-  until it times out. So the loop of a client holds no other client or server. A read
-  keeps its answer in the client, which outlives the delete that calls the callback of
-  each read in flight, and the callback drops the answer of a request that is not the
-  read in flight. Proposed in https://github.com/synnaxlabs/foundation/pull/2397, for
-  `laptop.architect-2` to approve.
+  until it times out. Since the drop stops the whole loop, the loop of a client holds
+  no other client or server. A read keeps its answer in the client, which outlives the
+  delete that calls the callback of each read in flight, and the callback drops the
+  answer of a request that is not the read in flight. Proposed in
+  https://github.com/synnaxlabs/foundation/pull/2397, for `laptop.architect-2` to
+  approve.
