@@ -680,16 +680,15 @@ fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
 }
 
 /// The first issue (`#` and its digits, in a word with no `://`) of `deferred`, the
-/// value of a `Deferred:` line, with no OK: no comment link ([`link`]) is after it in
-/// the value, and the words [`UNRISKY`] are not between it and the next issue.
+/// value of a `Deferred:` line, with no OK: no comment link ([`linked`]) is after it
+/// in the value, and the words [`UNRISKY`] are not between it and the next issue.
 fn deferral(deferred: &str) -> Option<String> {
     let lower = deferred.to_ascii_lowercase();
-    let linked = link(deferred);
     let mut issues = issues(deferred).peekable();
     while let Some(issue) = issues.next() {
         let next = issues.peek().map_or(deferred.len(), |next| next.start);
         let marked = lower[issue.end..next].contains(UNRISKY);
-        if !marked && linked.is_none_or(|link| link < issue.start) {
+        if !marked && !linked(&deferred[issue.end..]) {
             return Some(deferred[issue].to_string());
         }
     }
@@ -720,7 +719,7 @@ fn undigited(text: &str) -> Option<&str> {
 
 /// The problem when `surface`, the value of the `Public surface:` line of round
 /// `number`, names items ([`stated`]) and holds the words [`OWED`] or no comment link
-/// ([`link`]).
+/// ([`linked`]).
 fn unapproved(number: u32, surface: &str) -> Option<String> {
     if !stated(surface) {
         return None;
@@ -731,7 +730,7 @@ fn unapproved(number: u32, surface: &str) -> Option<String> {
              each approval, then put its link in the line."
         ));
     }
-    link(surface).is_none().then(|| {
+    (!linked(surface)).then(|| {
         format!(
             "review round {number} names items on its `Public surface:` line with no \
              link to an approval. {LINK}"
@@ -739,11 +738,13 @@ fn unapproved(number: u32, surface: &str) -> Option<String> {
     })
 }
 
-/// The place of the last comment link in `value`: [`HOST`] and the path of a comment
+/// Whether `value` holds a comment link: [`HOST`] and the path of a comment
 /// ([`comment`]).
-fn link(value: &str) -> Option<usize> {
-    let mut links = value.rmatch_indices(HOST).map(|(at, _)| at);
-    links.find(|at| comment(&value[at + HOST.len()..]))
+fn linked(value: &str) -> bool {
+    let mut paths = value
+        .match_indices(HOST)
+        .map(|(at, _)| &value[at + HOST.len()..]);
+    paths.any(comment)
 }
 
 /// The start of each comment link.
