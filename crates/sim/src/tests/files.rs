@@ -286,13 +286,13 @@ fn a_create_takes_the_room_of_a_removed_file_that_no_sync_dir_covers() {
 /// The digest after a create that finds no room for `b` in a directory with a removed
 /// file and no `sync_dir`, made as one create or as its calls one by one. A write open
 /// of the missing `b` stands for the driver's create, which `Files::open` would retry.
-fn create_with_no_room(seed: u64, one_by_one: bool) -> (bool, u64) {
+fn create_with_no_room(seed: u64, one_by_one: bool) -> (Result<(), Error>, u64) {
     let mut sim = sim(seed);
     let node = sim.node(node::Config {
         disk_bytes: MIB,
         ..node::Config::default()
     });
-    let failed = sim
+    let result = sim
         .run_on(&node, move |node, _| async move {
             let (files, b) = (node.files(), Path::new("b"));
             drop(create(&node, "a", MIB).await);
@@ -301,22 +301,24 @@ fn create_with_no_room(seed: u64, one_by_one: bool) -> (bool, u64) {
             if one_by_one {
                 drop(files.open(b, Mode::Write).await);
                 files.sync_dir(Path::new("")).await.unwrap();
-                files.open(b, Mode::Write).await.is_err()
+                files.open(b, Mode::Write).await.map(drop)
             } else {
                 let mode = Mode::Create { len: MIB + 4 * KIB };
-                files.open(b, mode).await.is_err()
+                files.open(b, mode).await.map(drop)
             }
         })
         .unwrap();
-    (failed, sim.digest())
+    (result, sim.digest())
 }
 
 #[test]
 fn a_create_that_finds_no_room_syncs_the_directory_once() {
     for seed in 0..16 {
-        let one = create_with_no_room(seed, false);
-        assert_eq!(one, create_with_no_room(seed, true), "seed {seed}");
-        assert!(one.0, "seed {seed}");
+        let (created, digest) = create_with_no_room(seed, false);
+        let (opened, calls) = create_with_no_room(seed, true);
+        assert_eq!(digest, calls, "seed {seed}");
+        assert_eq!(created, Err(Error::Full { path: "b".into() }), "seed {seed}");
+        assert_eq!(opened, Err(Error::NotFound { path: "b".into() }), "seed {seed}");
     }
 }
 
