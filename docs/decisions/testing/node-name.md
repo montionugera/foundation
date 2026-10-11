@@ -46,29 +46,30 @@
   node in it holds the name too. Then the stored name is the one in the file `name`,
   else the one in the card, so a start with a file `name` reads no founding: a start
   with another name gives `Error::Renamed` and writes no file, and a start whose file
-  `name` is gone writes it again from the card. Decided by `laptop.architect-2`,
-  #2355 (2026-10-11T07:44:40Z,
-  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760).
+  `name` is gone writes it again from the card. Decided by `laptop.architect-2`, #2355
+  (2026-10-11T07:44:40Z,
+  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760; the file
+  first, 2026-10-11T10:19:18Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495).
   Supersedes "The file is the only copy of the name on the node" of
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
   `name::keep` reads the founding under the lock, after the file `name` and before the
-  write, through `mesh::founding` with a pool of its own (the shard's buffer is not
-  open yet), and takes the card of the key in `node.key`. A founding with no card of
-  that key gives no stored name. So does a data directory with no `node.key`. A file
-  `name` that holds a whole name other than the card name comes only from a write by
-  hand; the start gives `Error::Renamed` with the file name. Lost: a check of the name
-  after `Mesh::open`, through `Mesh::member`, which a node that joins by ticket can
-  also use; it is a second source beside the founding that `node::name` reads, and it
-  adds a mesh that opens and closes at once. In the region, `card.name` is the one
-  copy (MEMBER RECORD). Trigger: the join by ticket (#1157), and the first operation
-  that gives a member a card with a new name. From either, the stored name comes from
-  the node's member in the region, not from the founding, and that operation also
-  writes this file, or refuses the rename. The pool, no card, and the file name:
-  proposed in the plan of #2355 (2026-10-11T08:11:24Z,
-  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6107004445). These,
-  no `node.key`, and the trigger: approved by `laptop.architect-2` at `0dfab9514`
-  (2026-10-11T10:19:18Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495).
+  write, through `mesh::founding` with a pool of its own (the shard's buffer is not open
+  yet), and takes the card of the key in `node.key`. A founding with no card of that key
+  gives no stored name. So does a data directory with no `node.key`. Lost: a check of
+  the name after `Mesh::open`, through `Mesh::member`, which a node that joins by ticket
+  can also use; it is a second source beside the founding that `node::name` reads, and
+  it adds a mesh that opens and closes at once. A file `name` that holds a whole name
+  other than the card name comes only from a write by hand; the start gives
+  `Error::Renamed` with the file name. Proposed in the revised plan of #2355
+  (2026-10-11T08:11:24Z,
+  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6107004445);
+  approved by `laptop.architect-2` at `0dfab9514` (2026-10-11T10:19:18Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495). In the
+  region, `card.name` is the one copy (MEMBER RECORD). Trigger: the join by ticket
+  (#1157), and the first operation that gives a member a card with a new name. From
+  either, the stored name comes from the node's member in the region, not from the
+  founding, and that operation also writes this file, or refuses the rename.
   The file is one sector: the tag `foundation/name/1`, the length of the name in one
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
