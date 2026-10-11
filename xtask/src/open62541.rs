@@ -1482,8 +1482,24 @@ Disassembly of section .text.stamp:
                     .to_owned()
             )
         );
-        assert!(x86.refuses("a.c", found(None, "mrs tpidr_el0")).is_some());
-        assert!(arm.refuses("a.c", found(None, "rep stos")).is_some());
+        assert_eq!(
+            x86.refuses("a.c", found(Some("stamp"), "mrs tpidr_el0")),
+            Some(
+                "a.c: `stamp` runs `mrs tpidr_el0`, which X86_64 does not admit. Add \
+                 it only when it reads no clock, file, network, randomness, or process \
+                 state"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            arm.refuses("a.c", found(Some("stamp"), "rep stos")),
+            Some(
+                "a.c: `stamp` runs `rep stos`, which AARCH64 does not admit. Add it \
+                 only when it reads no clock, file, network, randomness, or process \
+                 state"
+                    .to_owned()
+            )
+        );
     }
 
     #[test]
