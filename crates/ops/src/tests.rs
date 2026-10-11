@@ -512,6 +512,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
 mod start {
     use std::ffi::OsString;
     use std::io::{self, Write};
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
 
     use document::diagnostic::Code;
@@ -530,6 +531,10 @@ mod start {
         let run = crate::cli(args, io::empty(), &mut stdout, &mut stderr);
         assert_eq!((stdout, stderr), (Vec::new(), Vec::new()), "writes nothing");
         run
+    }
+
+    fn local() -> SocketAddr {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
     }
 
     fn edge() -> types::name::Name {
@@ -553,6 +558,7 @@ mod start {
                 data: PathBuf::from("foundation-data"),
                 json: false,
                 name: None,
+                listen: local(),
             })
         );
     }
@@ -560,11 +566,20 @@ mod start {
     #[test]
     fn start_gives_its_flags() {
         assert_eq!(
-            start(&["--data", "/srv/a", "--name", "site_a.edge", "--json"]),
+            start(&[
+                "--data",
+                "/srv/a",
+                "--name",
+                "site_a.edge",
+                "--listen",
+                "[::1]:7000",
+                "--json",
+            ]),
             Run::Start(Start {
                 data: PathBuf::from("/srv/a"),
                 json: true,
                 name: Some("site_a.edge".parse().unwrap()),
+                listen: "[::1]:7000".parse().unwrap(),
             })
         );
     }
@@ -583,14 +598,29 @@ mod start {
     }
 
     #[test]
+    fn a_listen_that_is_no_socket_address_is_an_argument_error() {
+        assert_eq!(
+            cli(&["start", "--listen", "x"]),
+            failed(
+                "error[ops.argument]: invalid value for one of the arguments: \
+                 `--listen <LISTEN>`: invalid socket address syntax\n\
+                 fix: Match the arguments to `foundation --help` or \
+                 `foundation <operation> --help`\n"
+            )
+        );
+    }
+
+    #[test]
     fn the_help_of_start_names_its_flags() {
         let exit = cli(&["start", "--help"]);
         assert_eq!((exit.status, exit.stderr.as_str()), (0, ""));
         for flag in [
             "--data <DATA>",
             "--name <NAME>",
+            "--listen <LISTEN>",
             "--json",
             "[default: foundation-data]",
+            "[default: 127.0.0.1:0]",
         ] {
             assert!(exit.stdout.contains(flag), "{flag}: {}", exit.stdout);
         }
@@ -626,6 +656,7 @@ mod start {
             data: PathBuf::from("foundation-data"),
             json: false,
             name: None,
+            listen: local(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -644,6 +675,7 @@ mod start {
             data: PathBuf::from("a.\nnode cloud runs in b\\ce\u{301}"),
             json: false,
             name: None,
+            listen: local(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -659,6 +691,7 @@ mod start {
             data: PathBuf::from(data),
             json: false,
             name: None,
+            listen: local(),
         };
         let shown = "it's \"b\\\\c\"\\ne\\u{301}";
         assert_eq!(
@@ -689,6 +722,7 @@ mod start {
             data: PathBuf::from(std::ffi::OsStr::from_bytes(b"a\xf0\x9f\x98b\xffc")),
             json: true,
             name: None,
+            listen: local(),
         };
         assert_eq!(
             start.line(&edge()),
