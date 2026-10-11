@@ -9,8 +9,8 @@ use std::task::Poll;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 
-/// A started test server of open62541 on the loop of a connection manager. Only
-/// [`Server::close`] deletes it: a drop leaks it.
+/// A started test server of open62541 on the loop of a connection manager. A drop
+/// leaks it.
 pub(crate) struct Server {
     raw: NonNull<ffi::test::Server>,
     /// The loop that the server lives on.
@@ -18,21 +18,25 @@ pub(crate) struct Server {
 }
 
 impl Server {
-    /// Makes the test server on the loop of `manager`, with the minimal config for
-    /// `port`, the one server URL `url`, and room for `sessions` sessions and secure
-    /// channels, and starts it.
+    /// Makes the test server on the loop of `manager`, with the minimal config for the
+    /// port of its listener, the one server URL `url`, and room for `sessions` sessions
+    /// and secure channels, and starts it.
+    ///
+    /// # Safety
+    ///
+    /// The server is deleted before `manager` drops: by [`Server::close`], or by a
+    /// delete through [`Server::raw`].
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the server or its start.
-    pub(crate) fn start(
-        manager: &Manager,
-        port: u16,
-        url: &CStr,
-        sessions: u16,
-    ) -> Self {
+    /// If `manager` has no listener that a listen open did not take, or open62541
+    /// refuses the server or its start.
+    pub(crate) unsafe fn start(manager: &Manager, url: &CStr, sessions: u16) -> Self {
+        let port = manager
+            .port()
+            .expect("a server starts on a manager with a listener that no server took");
         let events = manager.events().raw();
-        // SAFETY: the loop outlives the server, as `close` asserts.
+        // SAFETY: the loop outlives the server, as the caller ensures.
         let raw =
             unsafe { ffi::test::shim_server_new(events, port, url.as_ptr(), sessions) };
         let raw = NonNull::new(raw).expect("open62541 refused the server");

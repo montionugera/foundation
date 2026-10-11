@@ -175,7 +175,8 @@ impl Manager {
         // SAFETY: the member takes its own loop.
         let status = Status(unsafe { (events.members().start)(events.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the loop");
-        let server = Server::start(&manager, PORT, c"opc.tcp://:4840", sessions);
+        // SAFETY: only `close` drops the manager, after it closes the server.
+        let server = unsafe { Server::start(&manager, c"opc.tcp://:4840", sessions) };
         let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
         let clients = (0..=idle)
             .map(|_| {
