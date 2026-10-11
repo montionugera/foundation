@@ -20,6 +20,9 @@ fuzz_target!(|bytes: &[u8]| {
         assert_eq!(second.entries, first.entries, "the entries changed");
         let third = mesh::testing::scan_log_dir(&second.files)
             .expect("an open refused the files that an open left");
-        assert_eq!(third.files, second.files, "the files changed after two opens");
+        assert_eq!(
+            third.files, second.files,
+            "the files changed after two opens"
+        );
     }
 });
