@@ -827,13 +827,7 @@ fn a_power_cut_can_drop_the_remove_of_a_create_with_no_room() {
     let mut outcomes = BTreeSet::new();
     for seed in 0..32 {
         let (mut sim, node) = disk(seed);
-        crash_after(&mut sim, &node, Crash::Power, |node| async move {
-            drop(create_durable_empty(&node).await);
-            drop(create(&node, "b", 0).await);
-            until_crash(&node).await;
-            let mode = Mode::Create { len: 2 * MIB };
-            hang(node.files().open(Path::new("a"), mode)).await;
-        });
+        crash_after(&mut sim, &node, Crash::Power, create_with_no_room_after_b);
         let names = sim
             .run_on(&node, |node, _| async move {
                 node.files().list(Path::new("")).await.unwrap()
@@ -850,22 +844,22 @@ fn a_power_cut_can_drop_the_remove_of_a_create_with_no_room() {
 // the prefix too, whether the draw keeps `a` whole or with no bytes.
 #[test]
 fn a_power_cut_draws_the_prefix_after_a_create_with_no_room() {
-    let delays = |seed, crash| {
-        let (mut sim, node) = disk(seed);
-        crash_after(&mut sim, &node, crash, |node| async move {
-            drop(create_durable_empty(&node).await);
-            drop(create(&node, "b", 0).await);
-            until_crash(&node).await;
-            let mode = Mode::Create { len: 2 * MIB };
-            hang(node.files().open(Path::new("a"), mode)).await;
-        });
-        [(); 2].map(|()| delay_of_a_call(&mut sim, &node))
-    };
     for seed in 0..16 {
-        let [cut, _] = delays(seed, Crash::Power);
-        let [_, twice] = delays(seed, Crash::Process);
+        let [cut, _] = delays_after(seed, Crash::Power, create_with_no_room_after_b);
+        let [_, twice] =
+            delays_after(seed, Crash::Process, create_with_no_room_after_b);
         assert_eq!(cut, twice, "{seed}");
     }
+}
+
+/// Makes `a` durable with no bytes and `b` with no `sync_dir`, then hangs in a create
+/// of `a` for which the disk has no room.
+async fn create_with_no_room_after_b(node: node::Node) {
+    drop(create_durable_empty(&node).await);
+    drop(create(&node, "b", 0).await);
+    until_crash(&node).await;
+    let mode = Mode::Create { len: 2 * MIB };
+    hang(node.files().open(Path::new("a"), mode)).await;
 }
 
 /// The delay of a file call on `node`. It draws from the files stream, so it shows
@@ -1801,26 +1795,36 @@ fn a_power_cut_with_each_change_durable_draws_nothing() {
     }
 }
 
-/// The delays of two file calls after a crash by `crash` with a write open of `a` in
-/// flight, over a log of one change.
-fn delays_after(seed: u64, crash: Crash) -> [Span; 2] {
+/// The delays of two file calls after a crash by `crash` after `body`.
+fn delays_after<F>(
+    seed: u64,
+    crash: Crash,
+    body: impl FnOnce(node::Node) -> F + Send + 'static,
+) -> [Span; 2]
+where
+    F: Future<Output = ()> + 'static,
+{
     let (mut sim, node) = disk(seed);
-    crash_after(&mut sim, &node, crash, move |node| async move {
-        drop(create_durable_empty(&node).await);
-        let files = node.files();
-        files.create_dir(Path::new("d")).await.unwrap();
-        until_crash(&node).await;
-        hang(files.open(Path::new("a"), Mode::Write)).await;
-    });
+    crash_after(&mut sim, &node, crash, body);
     [(); 2].map(|()| delay_of_a_call(&mut sim, &node))
+}
+
+/// Makes `a` durable with no bytes and the directory `d`, then hangs in a write open
+/// of `a`: a log of one change.
+async fn write_in_flight_after_d(node: node::Node) {
+    drop(create_durable_empty(&node).await);
+    let files = node.files();
+    files.create_dir(Path::new("d")).await.unwrap();
+    until_crash(&node).await;
+    hang(files.open(Path::new("a"), Mode::Write)).await;
 }
 
 // A `Process` crash draws nothing, so its second call is one draw after the crash.
 #[test]
 fn a_power_cut_over_a_log_that_is_not_empty_draws_once() {
     for seed in 0..8 {
-        let [cut, _] = delays_after(seed, Crash::Power);
-        let [_, once] = delays_after(seed, Crash::Process);
+        let [cut, _] = delays_after(seed, Crash::Power, write_in_flight_after_d);
+        let [_, once] = delays_after(seed, Crash::Process, write_in_flight_after_d);
         assert_eq!(cut, once, "{seed}");
     }
 }
