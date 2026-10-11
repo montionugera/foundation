@@ -1135,6 +1135,24 @@ fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
     });
 }
 
+/// Only a new carry can make the home's deadline earlier, so only the first open of
+/// a reader on an index polls the gate task.
+#[test]
+fn polls_the_gate_task_at_a_reader_open_only_when_its_index_is_new() {
+    run(23, |test| async move {
+        test.clock.sleep(SETTLE).await;
+        let before = test.pause.polls.get();
+        let first = test.reader(&["value"], Mode::Latest).await;
+        test.clock.sleep(SETTLE).await;
+        let new = test.pause.polls.get() - before;
+        let second = test.reader(&["value"], Mode::Latest).await;
+        test.clock.sleep(SETTLE).await;
+        let carried = test.pause.polls.get() - before - new;
+        assert_eq!((new, carried), (1, 0));
+        drop((first, second));
+    });
+}
+
 /// Writes that append nothing do not wake the commit task, as no commit follows them.
 #[test]
 fn does_not_wake_the_commit_task_for_writes_with_no_samples() {
