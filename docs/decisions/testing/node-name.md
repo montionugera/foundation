@@ -10,6 +10,15 @@
   and the node keeps the file. Another name stops the start with `Error::Renamed {
   stored, given }` (the CLI code is `node.renamed`, #1732). The node never writes
   another name over a name.
+  A name with a segment that starts with `@` is reserved, and a region refuses it in a
+  card. So `Node::start` stops with `Error::Reserved { name }` before the claim, also
+  with `Region::Absent`: it starts no shard, and the data directory keeps no name that
+  its founding refuses (the CLI code is `node.reserved`). No release kept such a name,
+  so no other path out is needed. Lost: a check in `ops::cli`, which covers one caller
+  and leaves `node` free to keep the name; a write of the name only after the region
+  opens, which moves the order of the claim and leaves the error at `node.failed`.
+  Decided by `laptop.architect-2` (2026-10-11T01:19:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104132104).
   The file is the only copy of the name on the node, and the source of the name that
   the node puts in its card when it founds a region (#1744) or joins one by ticket
   (#1157). In the region, `card.name` is the one copy (MEMBER RECORD). Trigger: the
