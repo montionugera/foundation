@@ -1,6 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::rig::Rig;
+use crate::rig::{self, Rig};
 use crate::text;
 
 /// The exit status, the standard output, and the standard error of `output`.
@@ -52,9 +52,8 @@ fn a_data_directory_with_a_newline_prints_one_line() {
         clippy::disallowed_methods,
         reason = "the test reads what the rig wrote to the disk"
     )]
-    let budget = std::fs::read(data.join("data/budget")).expect("read the budget file");
-    let disk = u64::from_le_bytes(budget[27..35].try_into().expect("8 bytes"));
-    assert_eq!(disk, rig.disk);
+    let kept = std::fs::read(data.join("data/budget")).expect("read the budget file");
+    assert_eq!(kept, rig::budget(rig::POOL, rig.disk));
     // The disk budget bounds the length of each ring, not the other files of the node.
     let entries =
         std::fs::read_dir(data.join("data")).expect("read the data directory");
