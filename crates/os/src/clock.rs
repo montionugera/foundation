@@ -90,11 +90,7 @@ impl env::clock::Driver for Driver {
     }
 
     fn timer(&self) -> Pin<Box<dyn env::clock::Timer>> {
-        Box::pin(Timer {
-            driver: self.clone(),
-            sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
-            armed: None,
-        })
+        Box::pin(Timer::new(self.clone()))
     }
 }
 
@@ -150,13 +146,25 @@ fn read_ns(clock: libc::clockid_t) -> u64 {
 /// slews on Linux, so a sleep completes late by at most this much from either.
 const ARM_MAX: Duration = Duration::from_secs(1);
 
-/// A Tokio sleep that fires at or after a deadline on the boot clock. Each poll
-/// checks the boot clock and re-arms the sleep from it.
+/// A Tokio sleep that fires at or after a deadline on the boot clock. A poll for a new
+/// deadline, or after the sleep fired, checks the boot clock and arms the sleep from
+/// it.
 struct Timer {
     driver: Driver,
     sleep: Pin<Box<Sleep>>,
     /// The deadline the sleep is armed for.
     armed: Option<Monotonic>,
+}
+
+impl Timer {
+    /// A timer on `driver`, armed for no deadline.
+    fn new(driver: Driver) -> Self {
+        Self {
+            driver,
+            sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            armed: None,
+        }
+    }
 }
 
 impl env::clock::Timer for Timer {
@@ -167,21 +175,25 @@ impl env::clock::Timer for Timer {
     ) -> Poll<()> {
         let this = self.get_mut();
         loop {
+            // Ends by the second pass: a sleep armed from Tokio's now is pending. While
+            // it is, the clock is not read, since the sleep fires late by at most
+            // `ARM_MAX`. The poll is outside the coop budget, since a spent budget
+            // makes it pending after the sleep fired.
+            let mut sleep = tokio::task::coop::unconstrained(this.sleep.as_mut());
+            if this.armed == Some(deadline)
+                && Pin::new(&mut sleep).poll(cx).is_pending()
+            {
+                return Poll::Pending;
+            }
             let now = env::clock::Driver::now(&this.driver);
             if now >= deadline {
                 return Poll::Ready(());
             }
-            if this.armed != Some(deadline) {
-                let wait = Duration::from_nanos(deadline.0 - now.0).min(ARM_MAX);
-                let at = tokio::time::Instant::now() + wait;
-                this.sleep.as_mut().reset(at);
-                this.armed = Some(deadline);
-            }
-            // Ends by the second pass: a sleep armed from Tokio's now is pending.
-            match this.sleep.as_mut().poll(cx) {
-                Poll::Ready(()) => this.armed = None,
-                Poll::Pending => return Poll::Pending,
-            }
+            let wait = Duration::from_nanos(deadline.0 - now.0).min(ARM_MAX);
+            this.sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + wait);
+            this.armed = Some(deadline);
         }
     }
 }
@@ -193,6 +205,31 @@ mod tests {
     use super::*;
 
     const SECOND: u64 = 1_000_000_000;
+
+    /// A deadline past a second is armed for a second, so a slew or a suspend of
+    /// Tokio's clock makes the sleep late by at most that. No public call shows the
+    /// cap, since a sleep of any length ends at its deadline, so the test reads the
+    /// armed deadline.
+    #[test]
+    fn a_poll_arms_a_far_deadline_for_a_second() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let driver = Driver::new();
+        let mut timer = Box::pin(Timer::new(driver.clone()));
+        let far = env::clock::Driver::now(&driver).0 + 5 * SECOND;
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let before = tokio::time::Instant::now();
+        let polled =
+            env::clock::Timer::poll_until(timer.as_mut(), Monotonic(far), &mut cx);
+        let after = tokio::time::Instant::now();
+        assert_eq!(polled, Poll::Pending);
+        let armed = timer.sleep.deadline();
+        assert!(before + ARM_MAX <= armed, "{armed:?} before {before:?}");
+        assert!(armed <= after + ARM_MAX, "{armed:?} after {after:?}");
+    }
 
     #[test]
     fn a_resume_adds_the_time_asleep_to_the_raw_clock() {

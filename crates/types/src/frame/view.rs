@@ -55,9 +55,16 @@ impl Mask {
     /// `set`.
     #[must_use]
     pub fn new(set: &KeySet, wanted: impl IntoIterator<Item = channel::Slot>) -> Self {
-        let mut entries: Vec<u32> = wanted
-            .into_iter()
-            .filter_map(|slot| set.find(slot))
+        Self::of_entries(set, wanted.into_iter().filter_map(|slot| set.find(slot)))
+    }
+
+    /// The `entries` of `set`, and the index of each, as [`Mask::new`] gives for their
+    /// slots, with no search of `set`.
+    pub(super) fn of_entries(
+        set: &KeySet,
+        entries: impl Iterator<Item = usize>,
+    ) -> Self {
+        let mut entries: Vec<u32> = entries
             .flat_map(|entry| [entry, set.index(entry)].map(to_u32))
             .collect();
         entries.sort_unstable();
@@ -152,7 +159,7 @@ impl<'a> View<'a> {
     /// [`Frame::body`], in the order of [`View::iter`]. The bounds are in the frame's
     /// body, not in a frame of only these series: [`split`](super::split) cannot cut
     /// with them. Time is as for [`View::iter`].
-    pub fn bounds(
+    pub(crate) fn bounds(
         &self,
     ) -> impl Iterator<Item = (usize, std::ops::Range<usize>)> + use<'a> {
         let (_, descriptors, _) = parts(&self.frame.0);
@@ -246,7 +253,7 @@ impl<const N: usize> Iterator for Join<'_, N> {
 
 /// The first position in `items` where `before` is false, as `slice::partition_point`
 /// gives it, in time logarithmic in that position.
-fn gallop<T>(items: &[T], mut before: impl FnMut(&T) -> bool) -> usize {
+pub(super) fn gallop<T>(items: &[T], mut before: impl FnMut(&T) -> bool) -> usize {
     let mut high = 1;
     while items.get(high).is_some_and(&mut before) {
         high *= 2;
@@ -276,9 +283,15 @@ mod tests {
         }
     }
 
+    /// The slot of key `n` in `set`.
+    fn slot(set: &KeySet, n: u32) -> Slot {
+        let entry = set.entries().iter().find(|entry| entry.key == key(n));
+        entry.expect("the set holds the key").slot
+    }
+
     /// A frame of [`two_groups`] with all four series: index key 1 (entry 0) with 3
     /// bytes, key 2 (entry 1) with 10, index key 3 (entry 2) with 5, and key 4 (entry
-    /// 3) with 1. Each byte is its entry. Key `n` has slot `n`.
+    /// 3) with 1. Each byte is its entry.
     fn full(set: &KeySet) -> Frame {
         let series = [(0, 3), (1, 10), (2, 5), (3, 1)];
         let mut draft =
@@ -292,7 +305,7 @@ mod tests {
     #[test]
     fn holds_each_wanted_entry_and_its_index() {
         let set = two_groups();
-        let mask = Mask::new(&set, [Slot::new(4)]);
+        let mask = Mask::new(&set, [slot(&set, 4)]);
         assert_eq!(held(&set, &mask), [2, 3]);
         assert!(!mask.is_empty());
     }
@@ -300,13 +313,13 @@ mod tests {
     #[test]
     fn holds_an_index_without_its_data() {
         let set = two_groups();
-        assert_eq!(held(&set, &Mask::new(&set, [Slot::new(1)])), [0]);
+        assert_eq!(held(&set, &Mask::new(&set, [slot(&set, 1)])), [0]);
     }
 
     #[test]
     fn wants_nothing_of_a_key_set_without_a_wanted_slot() {
         let set = two_groups();
-        let mask = Mask::new(&set, [5, 6].map(Slot::new));
+        let mask = Mask::new(&set, [0, 3].map(Slot::new));
         assert!(mask.is_empty());
         assert_eq!(held(&set, &mask), Vec::<usize>::new());
     }
@@ -320,7 +333,8 @@ mod tests {
     #[test]
     fn holds_every_entry_without_a_list() {
         let set = two_groups();
-        let mask = Mask::new(&set, [4, 2, 3, 1, 4, 9].map(Slot::new));
+        let wanted = [4, 2, 3, 1, 4].map(|n| slot(&set, n));
+        let mask = Mask::new(&set, wanted.into_iter().chain([Slot::new(0)]));
         assert!(matches!(mask.held, Held::Every));
         assert!(!mask.is_empty());
     }
@@ -329,7 +343,7 @@ mod tests {
     fn reads_as_the_frame_of_only_the_held_series() {
         let set = two_groups();
         let frame = full(&set);
-        let mask = Mask::new(&set, [Slot::new(4)]);
+        let mask = Mask::new(&set, [slot(&set, 4)]);
         let view = View::new(&frame, &mask);
         let read: Vec<(usize, &[u8])> = view.iter().collect();
         assert_eq!(read, [(2, &[2; 5][..]), (3, &[3])]);
@@ -345,8 +359,8 @@ mod tests {
     fn bounds_each_held_series_in_the_body_of_the_frame() {
         let set = two_groups();
         let frame = full(&set);
-        let bounds = |slots: &[u32]| {
-            let mask = Mask::new(&set, slots.iter().map(|&slot| Slot::new(slot)));
+        let bounds = |keys: &[u32]| {
+            let mask = Mask::new(&set, keys.iter().map(|&n| slot(&set, n)));
             View::new(&frame, &mask).bounds().collect::<Vec<_>>()
         };
         assert_eq!(bounds(&[4]), [(2, 24..29), (3, 32..33)]);
@@ -371,7 +385,7 @@ mod tests {
         }]);
         let draft = Draft::new(&pool(1 << 16), &second, Form::Raw, &[(0, 0)]).unwrap();
         let frame = draft.freeze(Path::Live);
-        let mask = Mask::new(&first, [Slot::new(1)]);
+        let mask = Mask::new(&first, [slot(&first, 1)]);
         let _view = View::new(&frame, &mask);
     }
 

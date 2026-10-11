@@ -3,14 +3,14 @@
 
 #![deny(clippy::wildcard_enum_match_arm)]
 
+pub mod named;
 mod readers;
 
 use std::fmt;
 
-use types::name::Name;
 use types::time::{Span, Stamp};
 
-pub use readers::{Key, Readers, complete, latest};
+pub use readers::{Key, Next, Readers, complete, latest};
 
 /// A reader's position on one index: on each path, the seq of the first sample it has
 /// not received. It has every sample below it.
@@ -39,12 +39,12 @@ impl fmt::Display for Position {
 pub enum Reader {
     /// A reader without a name. It holds data only while its session is open.
     Unnamed,
-    /// A reader with a name. It has at most one session at a time. After the session
-    /// closes, the reader keeps its position and holds its data for `hold`. A hold of
-    /// zero ends at the close.
+    /// A reader with a name, which belongs to the subject that opens it. It has at most
+    /// one session at a time. After the session closes, the reader keeps its position
+    /// and holds its data for `hold`. A hold of zero ends at the close.
     Named {
-        /// The reader's name.
-        name: Name,
+        /// The reader's subject and name.
+        reader: named::Key,
         /// How long the reader holds its data after its session closes: zero or more.
         hold: Span,
     },
@@ -67,12 +67,12 @@ pub enum Start {
     },
 }
 
-/// A named reader's state, for the index log. The last record of a reader replaces the
-/// ones before it.
+/// A named reader's state, for the index log. The last record of a reader, by its
+/// key, replaces the ones before it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
-    /// The reader's name.
-    pub reader: Name,
+    /// The reader's subject and name.
+    pub reader: named::Key,
     /// The reader's position.
     pub position: Position,
     /// How long the reader holds its data after its session closes.
@@ -84,7 +84,7 @@ pub struct Record {
 /// An input from a reader that breaks the delivery rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// An acknowledged position dropped a path, added one, or moved back on one.
+    /// An acknowledged position dropped a path or added one.
     Ack {
         /// The session's position.
         from: Position,
@@ -98,8 +98,8 @@ impl fmt::Display for Error {
         match self {
             Self::Ack { from, to } => write!(
                 f,
-                "acknowledged position must keep the reader's paths and never move \
-                 back: from {from} to {to}"
+                "acknowledged position must keep the reader's paths: from {from} to \
+                 {to}"
             ),
         }
     }
@@ -134,13 +134,13 @@ mod tests {
             },
             to: Position {
                 live: 9,
-                backfill: Some(4),
+                backfill: None,
             },
         };
         assert_eq!(
             error.to_string(),
-            "acknowledged position must keep the reader's paths and never move back: \
-             from live 10, backfill 4 to live 9, backfill 4"
+            "acknowledged position must keep the reader's paths: from live 10, backfill \
+             4 to live 9"
         );
     }
 }

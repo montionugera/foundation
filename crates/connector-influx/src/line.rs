@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::Write as _;
 
 use types::time::Stamp;
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory as _};
 
 /// One measurement's name, tags, and field keys, checked and escaped once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +22,8 @@ impl Measurement {
     ///
     /// - [`Error::Empty`] for an empty name, key, or tag value.
     /// - [`Error::Character`] for one with a backslash, a newline, a carriage
-    ///   return, a tab, or NUL.
+    ///   return, a tab, NUL, U+FFFD, or a character outside the general categories
+    ///   L, M, N, P, and S other than the space U+0020.
     /// - [`Error::Reserved`] for a name or key that starts with `_`, or a key
     ///   `time`.
     /// - [`Error::Comment`] for a name that starts with `#`.
@@ -90,7 +92,6 @@ impl Measurement {
             let wrote = match value {
                 Value::Float(Float(float)) => write!(out, "{float:e}"),
                 Value::Integer(integer) => write!(out, "{integer}i"),
-                Value::Unsigned(unsigned) => write!(out, "{unsigned}u"),
                 Value::Boolean(boolean) => {
                     out.push(if boolean { b't' } else { b'f' });
                     Ok(())
@@ -107,15 +108,14 @@ impl Measurement {
     }
 }
 
-/// One field value, in InfluxDB's types.
+/// One field value, in a type that InfluxDB 1, 2, and 3 each store, so no unsigned
+/// integer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// A 64-bit float.
     Float(Float),
     /// A signed 64-bit integer.
     Integer(i64),
-    /// An unsigned 64-bit integer.
-    Unsigned(u64),
     /// A boolean.
     Boolean(bool),
 }
@@ -244,10 +244,7 @@ fn escape(
     if text.is_empty() {
         return Err(Error::Empty(part));
     }
-    if let Some(character) = text
-        .chars()
-        .find(|c| matches!(c, '\\' | '\n' | '\r' | '\t' | '\0'))
-    {
+    if let Some(character) = text.chars().find(|&c| refused(c)) {
         return Err(Error::Character {
             part,
             text: text.into(),
@@ -263,5 +260,17 @@ fn escape(
     Ok(())
 }
 
+/// Past the backslash, this is what InfluxDB 1 and 2 with `validate-keys` drop. The
+/// newline, carriage return, tab, and NUL are in `Other`.
+fn refused(c: char) -> bool {
+    c == '\\'
+        || c == char::REPLACEMENT_CHARACTER
+        || (c != ' '
+            && matches!(
+                c.general_category_group(),
+                GeneralCategoryGroup::Separator | GeneralCategoryGroup::Other
+            ))
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

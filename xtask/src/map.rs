@@ -1,4 +1,4 @@
-//! The crate map. It must match section 4 of `docs/decisions.md`.
+//! The crate map. It must match `docs/decisions/crate-map.md`.
 
 /// One crate in the map.
 pub(crate) struct Crate {
@@ -19,11 +19,19 @@ pub(crate) enum Deps {
 
 /// Crates any crate may use as a dev-dependency, for tests. A normal dependency on
 /// one must be named in the crate's [`Deps`].
-pub(crate) const TEST_ONLY: &[&str] = &["sim", "counting"];
+pub(crate) const TEST_ONLY: &[&str] = &["sim", "counting", "waker"];
 
 /// Edges, each as `(user, dep)`, that `user` may take only as a dev-dependency.
-pub(crate) const TEST_EDGES: &[(&str, &str)] =
-    &[("connector-ni", "daqmx-stub"), ("hub", "buffer")];
+pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
+    ("connector-ni", "daqmx-stub"),
+    ("hub", "buffer"),
+    ("hub", "blob"),
+    ("access", "document"),
+    ("config", "config-hcl"),
+    ("config", "connector-influx"),
+    ("ops", "config-hcl"),
+    ("ops", "transport"),
+];
 
 /// Every crate with its layer and the workspace crates it may depend on.
 pub(crate) const CRATES: &[Crate] = &[
@@ -40,6 +48,11 @@ pub(crate) const CRATES: &[Crate] = &[
     },
     Crate {
         name: "counting",
+        layer: 1,
+        deps: Deps::Only(&[]),
+    },
+    Crate {
+        name: "waker",
         layer: 1,
         deps: Deps::Only(&[]),
     },
@@ -170,6 +183,7 @@ pub(crate) const CRATES: &[Crate] = &[
         name: "hub",
         layer: 2,
         deps: Deps::Only(&[
+            "access",
             "env",
             "types",
             "block",
@@ -306,6 +320,7 @@ mod tests {
         for (name, dep, allowed) in [
             ("secret", "counting", false),
             ("node", "counting", false),
+            ("buffer", "waker", false),
             ("node", "sim", false),
             ("ops", "sim", true),
             ("secret", "block", true),
@@ -317,30 +332,19 @@ mod tests {
     }
 
     #[test]
-    fn allows_buffer_to_hub_only_as_a_dev_dependency() {
+    fn allows_a_test_edge_only_to_its_user_as_a_dev_dependency() {
         for (name, dep, kind, expected) in [
             ("hub", "buffer", Some("dev"), true),
             ("hub", "buffer", None, false),
             ("hub", "buffer", Some("build"), false),
             ("connector-modbus", "buffer", Some("dev"), false),
-        ] {
-            assert_eq!(
-                allowed(name, dep, kind),
-                expected,
-                "{name} -> {dep} {kind:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn allows_a_crate_on_itself_only_as_a_dev_dependency() {
-        assert!(allowed("home", "home", Some("dev")));
-        assert!(!allowed("home", "home", None));
-    }
-
-    #[test]
-    fn allows_a_stub_only_to_its_user_as_a_dev_dependency() {
-        for (name, dep, kind, expected) in [
+            ("access", "document", Some("dev"), true),
+            ("access", "document", None, false),
+            ("access", "document", Some("build"), false),
+            ("codec", "document", Some("dev"), false),
+            ("access", "buffer", Some("dev"), false),
+            ("hub", "connector-modbus", Some("dev"), false),
+            ("buffer", "hub", Some("dev"), false),
             ("connector-ni", "daqmx-stub", Some("dev"), true),
             ("connector-ni", "daqmx-stub", None, false),
             ("connector-ni", "daqmx-stub", Some("build"), false),
@@ -355,6 +359,12 @@ mod tests {
                 "{name} -> {dep} {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn allows_a_crate_on_itself_only_as_a_dev_dependency() {
+        assert!(allowed("home", "home", Some("dev")));
+        assert!(!allowed("home", "home", None));
     }
 
     #[test]
@@ -375,6 +385,7 @@ mod tests {
     fn describes_the_allowed_dependencies() {
         for (name, text) in [
             ("counting", "no workspace crates"),
+            ("waker", "no workspace crates"),
             ("sim", "env, types, block"),
             ("secret", "any layer 1 crate that is not test-only"),
             (

@@ -1,7 +1,7 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
-//! shape: its slots, its entry count, and whether it closes the open record. This
-//! binary has no test harness: the count covers each thread, and a harness
-//! allocates on its own thread at any time.
+//! shape: its slots, its entry count, and whether it closes the open record. Nor
+//! does a `Commit` that waits and drops. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -84,6 +84,19 @@ fn read_once(buffer: &Buffer, slot: channel::Slot) -> (Read, u64) {
     (read.expect("reads"), allocations)
 }
 
+/// Polls a `Commit` of queued entries once and drops it. From commit `WARM` on,
+/// checks that it made no allocation.
+fn wait_once(buffer: &Buffer, commit: u64) {
+    let (polled, allocations) = ALLOCATOR.count(|| {
+        let waiter = pin!(buffer.committed());
+        waiter.poll(&mut Context::from_waker(Waker::noop()))
+    });
+    assert!(polled.is_pending(), "a commit of queued entries waits");
+    if commit >= WARM {
+        assert_eq!(allocations, 0, "a wait allocated at commit {commit}");
+    }
+}
+
 fn main() {
     assert_eq!(
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
@@ -101,7 +114,7 @@ fn main() {
     let handle = node
         .shards()
         .start(config, move |tasks| async move {
-            let config = block::Config { budget: 1 << 21 };
+            let config = block::Config::new(1 << 21).expect("the budget fits");
             let pool =
                 Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
             let mut slots = Slots::new();
@@ -118,7 +131,7 @@ fn main() {
             };
             let buffer = Buffer::open(config, &mut slots).await.expect("opens");
             for index in 0..WIDE {
-                slots.assign(channel::Key::from_u128(u128::from(index)));
+                slots.index(channel::Key::from_u128(u128::from(index)));
             }
             let parts = Parts::from(pool.alloc(256).expect("a block").freeze());
             let half = Parts::from(pool.alloc(BODY_MAX / 2).expect("a block").freeze());
@@ -135,6 +148,7 @@ fn main() {
                         );
                     }
                 }
+                wait_once(&buffer, commit);
                 buffer.committed().await.expect("commits");
             }
             let (read, allocations) = read_once(&buffer, channel::Slot::new(1));

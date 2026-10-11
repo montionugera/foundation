@@ -1,6 +1,6 @@
 //! The region's record of one node.
 
-use types::node::PublicKey;
+use types::ed25519::PublicKey;
 use types::time::Span;
 
 use crate::bytes::{put_optional_span, take, take_optional_span};
@@ -12,7 +12,8 @@ use crate::status::Status;
 pub struct Member {
     /// What the node states about itself.
     pub card: card::Signed,
-    /// The join ticket's signature over the node's first card.
+    /// The join ticket's signature over the node's first card. A founding member, which
+    /// no ticket admitted, has 64 zero bytes.
     pub admission: [u8; 64],
     /// For an ephemeral node, the time offline after which the region removes it.
     pub ephemeral: Option<Span>,
@@ -32,10 +33,6 @@ impl Member {
     /// a presence byte and then `ephemeral` as 8 little-endian bytes, signed, a count
     /// of status entries as 8 little-endian bytes, and each entry in the byte order of
     /// its name: the name behind a length byte, then the channel key.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join answer of #336 is the first user")
-    )]
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.card.encode(out);
         out.extend(self.admission);
@@ -46,10 +43,6 @@ impl Member {
     /// Takes one record from the start of `bytes`. `None` when the bytes do not start
     /// with what [`Member::encode`] gives, or when the card's signature does not hold;
     /// `bytes` is then at no known place.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join answer of #336 is the first user")
-    )]
     pub(crate) fn decode(bytes: &mut &[u8]) -> Option<Self> {
         let card = card::Signed::decode(bytes)?;
         let admission = take(bytes)?;

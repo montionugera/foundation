@@ -1,12 +1,12 @@
 use document::diagnostic::{Code, Diagnostic};
-use document::value::{self, Value};
-use document::{Block, Span, read};
+use document::value::Value;
+use document::{Block, read};
 use spec::channel::{Data, Edge, Error, Kind};
 use spec::data_type::DataType;
 use spec::unit::Unit;
 use types::name::Name;
 
-use crate::{Definition, Found, Reported};
+use crate::{Definition, Found, Reported, span};
 
 const BAD_CHANNEL_KIND: Code = Code::new("config.bad-channel-kind");
 const BAD_DATA_TYPE: Code = Code::new("config.bad-data-type");
@@ -18,11 +18,14 @@ const DATA_KEYS: [&str; 5] = ["kind", "data_type", "index", "quality", "unit"];
 /// The check of the attributes of one kind of channel.
 type Attributes = fn(&mut Found<'_>, &Block) -> Option<Kind<Name>>;
 
-/// Checks a `channel` block and gives its channel, with each edge as a name. A bad
-/// `kind` stops the check of each attribute but the edges, because the others depend
-/// on it.
-pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> {
-    found.unknown_blocks(block);
+/// Checks a `channel` block and gives its channel, with each edge as a name. After a
+/// bad `kind`, it reports each attribute that no kind knows, and leaves each other
+/// attribute, since its problem depends on the kind.
+pub(crate) fn check(
+    found: &mut Found<'_>,
+    block: &Block,
+    _: Option<&Name>,
+) -> Option<Definition> {
     let attributes = found.attribute(block, "kind", |value| -> Result<Attributes, _> {
         match text(value, BAD_CHANNEL_KIND, "the channel kind", "\"index\"")? {
             "index" => Ok(index),
@@ -36,9 +39,10 @@ pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> 
         }
     });
     let Ok(attributes) = attributes else {
-        for each in [Edge::Index, Edge::Quality, Edge::Error, Edge::Control] {
-            drop(edge(found, block, each));
-        }
+        let mut keys: Vec<&str> = INDEX_KEYS.into_iter().chain(DATA_KEYS).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        drop(found.unknown(block, &keys));
         return None;
     };
     let attributes = attributes.unwrap_or(data);
@@ -46,7 +50,7 @@ pub(crate) fn check(found: &mut Found<'_>, block: &Block) -> Option<Definition> 
 }
 
 fn index(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
-    let unknown = found.unknown_attributes(block, &INDEX_KEYS);
+    let unknown = found.unknown(block, &INDEX_KEYS);
     let error = edge(found, block, Edge::Error);
     let control = edge(found, block, Edge::Control);
     let (Ok(()), Ok(error), Ok(control)) = (unknown, error, control) else {
@@ -56,7 +60,7 @@ fn index(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
 }
 
 fn data(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
-    let unknown = found.unknown_attributes(block, &DATA_KEYS);
+    let unknown = found.unknown(block, &DATA_KEYS);
     let index = edge(found, block, Edge::Index).and_then(|index| {
         index.ok_or_else(|| {
             let fix = "Add an `index` attribute with the name of an index channel, \
@@ -119,12 +123,7 @@ fn edge(
     block: &Block,
     edge: Edge,
 ) -> Result<Option<Name>, Reported> {
-    let key = match edge {
-        Edge::Index => "index",
-        Edge::Quality => "quality",
-        Edge::Error => "error",
-        Edge::Control => "control",
-    };
+    let key = attribute(edge);
     match found.attribute(block, key, read::name)? {
         Some(to) if !found.channels.contains(&to) => {
             found.diagnostics.push(Diagnostic::new(
@@ -139,9 +138,14 @@ fn edge(
     }
 }
 
-/// The span of the value of `key` in `block`.
-fn span(block: &Block, key: &str) -> Option<Span> {
-    block.body.attributes.get(key)?.value.span
+/// The attribute of a `channel` block that holds `edge`.
+pub(crate) const fn attribute(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Index => "index",
+        Edge::Quality => "quality",
+        Edge::Error => "error",
+        Edge::Control => "control",
+    }
 }
 
 /// The text of a string or a reference. Another value gives `code`, with `what` in
@@ -152,7 +156,7 @@ fn text<'v>(
     what: &str,
     example: &str,
 ) -> Result<&'v str, Diagnostic> {
-    written(value).ok_or_else(|| {
+    value.kind.text().ok_or_else(|| {
         Diagnostic::new(
             code,
             value.span,
@@ -163,13 +167,4 @@ fn text<'v>(
             format!("Write a string such as {example}"),
         )
     })
-}
-
-/// The text of a string or a reference, as the file wrote it.
-fn written(value: &Value) -> Option<&str> {
-    match &value.kind {
-        value::Kind::String(text) => Some(text),
-        value::Kind::Reference(name) => Some(name.as_str()),
-        _ => None,
-    }
 }

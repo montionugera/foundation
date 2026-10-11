@@ -140,7 +140,14 @@ impl Sim {
 
     /// Adds a node. Its clocks read the values in `config` now, and its entropy is
     /// its own stream from the seed.
+    ///
+    /// # Panics
+    ///
+    /// When `config.arm_max` is zero or negative.
     pub fn node(&mut self, config: node::Config) -> Node {
+        if let Some(max) = config.arm_max {
+            assert!(max > Span::ZERO, "arm_max {max:?} is not positive");
+        }
         let entropy = Rng::from_seed(self.streams.next_u64());
         let node = lock(&self.shared).add(config, entropy);
         let shared = Arc::clone(&self.shared);
@@ -572,12 +579,17 @@ pub enum Crash {
     ///   made durable, or its bytes after any one write on it since then, a write
     ///   in flight too. Where writes in flight at once overlap, it can keep a part
     ///   of one of them.
+    /// - Each file call in flight takes effect as for `Process`, and the prefix
+    ///   decides whether its change stays, except a `sync` or `sync_dir`, which has
+    ///   no effect.
     /// - Each directory goes back to its entries when its last `sync_dir` ended,
-    ///   and what those entries no longer reach is gone.
-    /// - A [`Mode::Create`](env::files::Mode::Create) open in flight that makes a
-    ///   file leaves the file with no bytes or whole, with the entries of its
-    ///   directory durable, or, when its entry was not durable, no file.
-    /// - Other file calls in flight have no effect.
+    ///   with the changes of one prefix, for the whole disk, of the creates,
+    ///   removes, and renames that no `sync_dir` of their directory covered, in the
+    ///   order that their calls ended. A rename is one change. What those entries no
+    ///   longer reach is gone.
+    /// - A `sync_dir` makes durable only the changes of its directory. A journaled
+    ///   file system can commit more; `sim` does not, so a missing `sync_dir`
+    ///   shows.
     /// - The monotonic clock reads [`node::Config::monotonic`] again. The wall
     ///   clock runs on.
     /// - Each packet that waits to be sent on a link from the node is lost.
