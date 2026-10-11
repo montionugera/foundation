@@ -133,12 +133,6 @@ impl Remote {
         let keys = data.iter().map(|&(key, _)| key).chain([index]).collect();
         let queue = Rc::new(RefCell::new(Queue::default()));
         state.borrow_mut().remotes.add(keys, &queue);
-        let mut held = hash::Set::default();
-        held.insert(index);
-        let data: Vec<_> = data
-            .into_iter()
-            .filter(|&(key, _)| held.insert(key))
-            .collect();
         let group = Group { index, data: &data };
         let set = state.borrow_mut().interner.intern(&[group]);
         let task = session(
