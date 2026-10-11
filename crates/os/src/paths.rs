@@ -21,7 +21,8 @@ impl env::paths::Driver for Driver {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         if names_directory(path) {
-            // As an open of the path: nothing, a file on the way, or a directory.
+            // Such a path resolves only to a directory, so a stat that succeeds finds
+            // one.
             let directory = Error::Io {
                 code: Errno::ISDIR.raw_os_error(),
             };
@@ -33,17 +34,10 @@ impl env::paths::Driver for Driver {
         let new = path.with_file_name(name);
         let kept = fs::metadata(path).ok().map(|old| old.permissions());
         let file = open(&new).map_err(|e| error(&e))?;
-        let written = fill(file, bytes, kept).and_then(|()| fs::rename(&new, path));
-        if let Err(e) = written {
-            match fs::remove_file(&new) {
-                Ok(()) => {}
-                // The file stays, as `os::paths` states. The error of the write says
-                // why the write failed.
-                Err(_kept) => {}
-            }
-            return Err(error(&e));
-        }
-        Ok(())
+        fill(file, bytes, kept)
+            .and_then(|()| fs::rename(&new, path))
+            .or_else(|e| fs::remove_file(&new).and(Err(e)))
+            .map_err(|e| error(&e))
     }
 }
 

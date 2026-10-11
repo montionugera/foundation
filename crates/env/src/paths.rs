@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The files of the host by the paths that a user gave, as on a command line. A
-/// relative path is relative to the working directory of the process. Each call
-/// blocks its thread until the OS answers, so a shard never calls one: the files of
-/// a node are [`crate::files`].
+/// relative path is relative to the working directory of the process. A path that
+/// ends in `/`, `.`, or `..` names a directory, and the empty path names nothing.
+/// Each call blocks its thread until the OS answers, so a shard never calls one: the
+/// files of a node are [`crate::files`].
 ///
 /// ```
 /// use std::path::Path;
@@ -58,8 +59,7 @@ impl Paths {
     }
 
     /// Writes `bytes` as the file at `path`, whole or not at all, in place of a file
-    /// that is there. A path that ends in `/`, `.`, or `..` names a directory, and a
-    /// write on it writes nothing.
+    /// that is there.
     ///
     /// # Errors
     ///
