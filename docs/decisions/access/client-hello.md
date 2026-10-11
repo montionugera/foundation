@@ -113,14 +113,33 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608. A text
   field of the client wire that does not read keeps its cause. `Error::Subject`,
   `Error::Selector`, and `Error::Name` hold a `text::Error<Box<name::Error>>`, and
-  `Error::Sample` holds a `text::Error<sample::Error>`. So `wire::hub::Error` is not
-  `Copy` (`laptop.director`, 2026-10-11T00:48:05Z,
+  `Error::Sample` holds a `text::Error<sample::Error>` (`laptop.director`,
+  2026-10-11T00:48:05Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407; shape
   approved by `laptop.architect`, 2026-10-11T01:55:44Z,
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). A
-  `wire::hub::client::Error` was lost because a read stream also gave the errors of its
-  inner reader. That reason is void: the program decodes the replies with the
-  `hub::Reader` that `client::Reader` gives, and gets their errors from it. The ruling
-  on #2377 adds the type, and makes `wire::hub::Error` `Copy`, after #2368 merges
-  (`laptop.architect`, 2026-10-11T08:26:42Z,
-  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794).
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). The
+  errors of the client wire are `wire::hub::client::Error`, and `text` is
+  `wire::hub::client::text`. `wire::hub::Error` holds the errors of the home wire
+  only, holds no `Box`, and is `Copy`, with a check at compile time. A variant that
+  decoders of both wires give (`Empty`, `Kind`, `Length`, `Body`, `Unfinished`) is in
+  each type, with the same fields and message. `Run` keeps one message, and the doc of
+  each names its own items. `client::Error::Finished` is "the node finished the read
+  stream before its last place", which the caller of `client::Reader` gives;
+  `hub::Error::Finished` stays the home's. No variant of `client::Error` holds a
+  `hub::Error`: the program gets the errors of the replies from the `hub::Reader` that
+  `client::Reader` gives. `hub::client::Error::Message` holds a
+  `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
+  and `serve::Error::Message` keeps the errors from a reader's node. Lost: a variant
+  `client::Error::Hub(hub::Error)`, which brings back two levels of error and puts
+  each variant that only a frame decoder gives in the type of the client wire. Why:
+  a `hub::Error` that is not `Copy` cost each frame that a node or a program decodes,
+  and bought nothing, since each text error keeps its cause in both forms. Against the
+  `Copy` form, `main` gave +0.78 ns on `decode_ends/3` (each pass apart), +0.59 ns on
+  `decode_a_frame/1`, and +0.34 ns on `decode_a_frame/3`, three passes of each commit
+  on c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
+  (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
+  Decided by `laptop.architect` (2026-10-11T08:26:42Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;
+  surface approved 2026-10-11T10:16:56Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027).
+  Supersedes the ruling of #2327 that `wire::hub::Error` is not `Copy`.

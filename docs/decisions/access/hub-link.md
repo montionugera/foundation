@@ -15,12 +15,15 @@
   though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request stream
   before an admitted hello) and `Pending` (a request while one waits for its reply).
   A message of the wrong kind for its stream, such as a hello on a request stream, is
-  `serve::Error::Message` with `wire::hub::Error::Kind` (`laptop.architect`,
+  `serve::Error::Client` with `wire::hub::client::Error::Kind` (`laptop.architect`,
   2026-10-08T15:38:46Z,
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704), and a
-  body that ends early is `Message` with `Unfinished` (`laptop.architect`,
+  body that ends early is `Client` with `Unfinished` (`laptop.architect`,
   2026-10-08T16:52:55Z,
-  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697).
+  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697). The
+  variant was `Message` until the split of `wire::hub::client::Error` (CLIENT HELLO;
+  `laptop.architect`, 2026-10-11T10:16:56Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027).
   Supersedes item 5 (`serve::Error::Hello`) of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6058789738.
   Lost: a `Config::clock` beside `time`, with a loop in `hub` that knows the slew;
