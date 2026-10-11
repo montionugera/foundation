@@ -131,12 +131,13 @@
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
   `node::name(files, given)` gives the name before the start: the given one, else the
-  stored name (the file, else the card above, #2355), else `Error::Unnamed`. It does
-  not check `given`: the start does (above; approved by `laptop.architect` at
-  `9deea732c`, 2026-10-11T03:18:10Z,
+  stored name (the file, else the card above, #2355), else `Error::Unnamed` with no
+  stored founding, or `Error::NoCard` with a stored founding that holds no card of the
+  node (above, #2433). It does not check `given`: the start does (above; approved by
+  `laptop.architect` at `9deea732c`, 2026-10-11T03:18:10Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104953177). It reads
-  only when no name is given, and opens each file to read only, so it makes nothing
-  and waits for no lock. So the first start needs a name, and a later one does not
+  only when no name is given, and opens each file to read only, so it makes nothing and
+  waits for no lock. So the first start needs a name, and a later one does not
   (`laptop.architect-2`, 2026-10-08T05:00:46Z,
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6052649826).
   Lost: `main` owns the name, and reads and writes the file before `Node::start`. The
