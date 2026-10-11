@@ -3,8 +3,7 @@
 //!
 //! The file is 100 bytes: the tag, the node key (big-endian), the Ed25519 private key,
 //! the X25519 seal private key, and the CRC32C of those 96 bytes (little-endian), in
-//! one sector ([`crate::sector`]). 100 zero bytes are a key that a crash kept from
-//! being written.
+//! one sector ([`crate::sector`]).
 
 use std::path::Path;
 
@@ -34,28 +33,22 @@ pub(crate) struct Identity {
     pub(crate) opener: Opener,
 }
 
-/// The identity in `node.key` of `files`. When the file is not there, has no bytes,
-/// or holds 100 zero bytes, makes a new one at mesh time from `clock`, once it has
-/// mesh time, and from `entropy`. Writes the identity back and makes it durable
-/// before it returns, also one it read: a failed sync of an earlier start can leave
-/// a key that a read sees but a crash loses. Never writes another key over a file
-/// that holds one.
+/// The identity in `node.key` of `files`. When the file is not there, makes a new one
+/// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
+/// it. Call it under the lock of the data directory, after the claim has made the
+/// directory durable, so that a key that it reads is durable.
 ///
 /// # Errors
 ///
-/// [`Error::Key`] for a file of another length that is not 0, or of another tag or
-/// checksum, and [`Error::Directory`] for a file call that fails.
+/// [`Error::Key`] for a file of another length, tag, or checksum, and
+/// [`Error::Directory`] for a file call that fails.
 pub(crate) async fn load(
     files: &Files,
     clock: &clock::Reader,
     entropy: &env::entropy::Entropy,
 ) -> Result<Identity, Error> {
-    let opened = sector::open(files, Path::new(FILE), TAG).await;
-    let (file, held) = opened.map_err(|error| match error {
-        env::files::Error::Length { .. } => Error::Key,
-        error => Error::Directory(error),
-    })?;
-    let identity = match held {
+    let held = sector::read(files, Path::new(FILE), TAG).await;
+    match held.map_err(Error::Directory)? {
         Held::Nothing => {
             clock.reach(Stamp::from_nanos(i64::MIN)).await;
             let now = match clock.status() {
@@ -66,35 +59,27 @@ pub(crate) async fn load(
                     unreachable!("invariant: mesh time has come")
                 }
             };
-            create(now, entropy)
+            let identity = create(now, entropy);
+            sector::publish(files, Path::new(FILE), &encode(&identity))
+                .await
+                .map_err(Error::Directory)?;
+            Ok(identity)
         }
-        Held::Written(bytes) => fields(&bytes),
-        Held::Foreign => return Err(Error::Key),
-    };
-    sector::write(files, &file, &encode(&identity))
-        .await
-        .map_err(Error::Directory)?;
-    Ok(identity)
+        Held::Written(bytes) => Ok(fields(&bytes)),
+        Held::Foreign => Err(Error::Key),
+    }
 }
 
-/// Writes `identity` to `node.key` in `files` when the file is not there, has no
-/// bytes, or holds 100 zero bytes, and makes it durable.
+/// Publishes `identity` as `node.key` in `files`. Call it under the lock of the data
+/// directory.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file holds 100
-/// bytes that are not all zero, with [`env::files::Error::Length`] when it has another
-/// length that is not 0, and with the error of each other file call that fails.
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there, and
+/// with the error of each other file call that fails.
 #[cfg(feature = "sim")]
 pub(crate) async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
-    let (file, held) = sector::open::<LEN>(files, Path::new(FILE), TAG)
-        .await
-        .map_err(Error::Directory)?;
-    if held != Held::Nothing {
-        let path = std::path::PathBuf::from(FILE);
-        return Err(Error::Directory(env::files::Error::Exists { path }));
-    }
-    sector::write(files, &file, &encode(identity))
+    sector::publish(files, Path::new(FILE), &encode(identity))
         .await
         .map_err(Error::Directory)
 }

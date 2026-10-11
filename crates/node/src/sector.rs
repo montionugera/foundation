@@ -1,8 +1,6 @@
 //! A file of the data directory that fits one sector. It starts with a tag, and its
 //! last 4 bytes are the CRC32C of the bytes before them (little-endian). A file that
-//! [`write`] changes in place is whole or old after a crash, since a crash keeps a
-//! sector whole or old. A file that [`publish`] makes is whole or not there, also to
-//! a read while the write runs.
+//! [`publish`] makes is whole or not there, also to a read while the write runs.
 
 use std::path::{Path, PathBuf};
 
@@ -18,37 +16,12 @@ const POOL: block::Config = match block::Config::new(4096) {
 /// What a file of `N` bytes holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Held<const N: usize> {
-    /// No file. For [`open`], also no bytes or `N` zero bytes: a crash kept a write
-    /// in place from its end.
+    /// No file.
     Nothing,
     /// The bytes that a node wrote, with the tag and a checksum that matches.
     Written([u8; N]),
-    /// A file that no node wrote: another tag or checksum. For [`read`], also another
-    /// length.
+    /// A file that no node wrote: another length, tag, or checksum.
     Foreign,
-}
-
-/// Opens `path` in `files` to write, made of `N` zero bytes when it is not there or
-/// has no bytes, and reads what it holds. Call it under the lock of the data
-/// directory.
-///
-/// # Errors
-///
-/// The error of each file call that fails: [`env::files::Error::Length`] for a file
-/// of another length that is not 0.
-pub(crate) async fn open<const N: usize>(
-    files: &Files,
-    path: &Path,
-    tag: &[u8],
-) -> Result<(File, Held<N>), env::files::Error> {
-    let file = files.open(path, Mode::Create { len: N as u64 }).await?;
-    let bytes = bytes(&file).await?;
-    let held = if bytes == [0; N] {
-        Held::Nothing
-    } else {
-        written(&bytes, tag).map_or(Held::Foreign, Held::Written)
-    };
-    Ok((file, held))
 }
 
 /// What `path` in `files`, which [`publish`] makes, holds. Opens it to read only, so
@@ -96,22 +69,6 @@ pub(crate) async fn publish<const N: usize>(
     let mut file = files.open(&staged, Mode::Create { len: N as u64 }).await?;
     file.write_at(0, &[block(bytes)]).await?;
     file.rename(path).await?;
-    files.sync_dir(Path::new("")).await
-}
-
-/// Writes `bytes`, which [`checksum`] completed, to `file` of `files`, which
-/// [`open`] gave, and makes the file and its name durable.
-///
-/// # Errors
-///
-/// The error of the first file call that fails.
-pub(crate) async fn write<const N: usize>(
-    files: &Files,
-    file: &File,
-    bytes: &[u8; N],
-) -> Result<(), env::files::Error> {
-    file.write_at(0, &[block(bytes)]).await?;
-    file.sync().await?;
     files.sync_dir(Path::new("")).await
 }
 

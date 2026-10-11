@@ -460,9 +460,9 @@ impl Stopper {
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there and
-/// holds a key, and [`Error::Directory`] for a file call that fails. It writes nothing
-/// over a key.
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there,
+/// and [`Error::Directory`] for a file call that fails. It writes nothing over a file
+/// that is there.
 #[cfg(feature = "sim")]
 pub async fn create_key(
     files: &env::files::Files,
