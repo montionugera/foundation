@@ -5266,7 +5266,7 @@ mod tests {
             assert_eq!(records.get(&4), Some(&admitted), "node {id}");
         }
         for (id, mut state) in board.states {
-            let uses = state.ticket(public(8)).map(|record| record.uses);
+            let uses = state.ticket(public(8)).map(ticket::Record::uses);
             assert_eq!(uses, Some(1), "node {id}");
             let again = state.apply(repeat.clone()).unwrap_err();
             let duplicate = Refused::from(Unfit::Duplicate { key: key(4) });
@@ -5457,8 +5457,8 @@ mod tests {
             let text = format!("no ticket {} is recorded", public(9));
             assert_eq!(unknown.to_string(), text);
             let group = mesh.group.borrow();
-            assert_eq!(group.state.ticket(public(7)).unwrap().uses, 0);
-            assert_eq!(group.state.ticket(public(8)).unwrap().uses, 1);
+            assert_eq!(group.state.ticket(public(7)).unwrap().uses(), 0);
+            assert_eq!(group.state.ticket(public(8)).unwrap().uses(), 1);
             assert_eq!(group.state.member(key(5)), None);
         });
     }

@@ -131,8 +131,7 @@ pub(crate) struct Record {
     pub(crate) public_key: PublicKey,
     /// What the ticket admits.
     pub(crate) options: Options,
-    /// How many nodes the ticket admitted.
-    pub(crate) uses: u64,
+    uses: u64,
 }
 
 impl Record {
@@ -145,8 +144,19 @@ impl Record {
         }
     }
 
-    /// Checks that the ticket admits `card` with `admission` at mesh time `at`. The
-    /// caller counts the use in [`Record::uses`].
+    /// How many nodes the ticket admitted.
+    #[cfg(test)]
+    pub(crate) const fn uses(&self) -> u64 {
+        self.uses
+    }
+
+    /// Counts one node that the ticket admitted, after [`Record::check`] passes. The
+    /// count saturates at [`u64::MAX`].
+    pub(crate) const fn count(&mut self) {
+        self.uses = self.uses.saturating_add(1);
+    }
+
+    /// Checks that the ticket admits `card` with `admission` at mesh time `at`.
     ///
     /// # Errors
     ///
@@ -338,7 +348,7 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
         }
-        record.uses = 1;
+        record.count();
         assert_eq!(
             record.check(&card, &admission, BEFORE_EXPIRY),
             Err(Refused::Used {
@@ -354,6 +364,16 @@ mod tests {
         let card = signed(3, "plant.edge.a");
         let admitted = record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
         assert_eq!(admitted, Ok(()));
+    }
+
+    #[test]
+    fn the_use_count_saturates() {
+        let mut record = record(7, true);
+        record.count();
+        assert_eq!(record.uses(), 1);
+        record.uses = u64::MAX;
+        record.count();
+        assert_eq!(record.uses(), u64::MAX);
     }
 
     #[test]
