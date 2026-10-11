@@ -144,7 +144,11 @@
   pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal for a
   refusal of the home. A complete read that misses a frame gets `Behind` and the finish
   of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
-  panics too.
+  panics too. A home's `MALFORMED` gives `FAILED`, as the program's open was well
+  formed; `UNKNOWN`, `NOT_HOME`, `BUSY`, and `FAILED` of the home keep their code
+  (`laptop.architect`, 2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
+  2). Supersedes "the code of the home's refusal" of plan item 6 for `MALFORMED`.
   Proposed in #2407, approval owed: the places of a read wait for room in the program's
   window, so they reserve their heap bytes under `BODIES_BYTES_MAX` and the subject's
   share until the node sent them, and a run of places that does not fit stops with

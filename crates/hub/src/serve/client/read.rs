@@ -200,11 +200,11 @@ pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
     }
 }
 
-/// The refusal of a read whose remote home refused it with `refusal`: the same code.
+/// The refusal of a read whose remote home refused it with `refusal`: the same code,
+/// but `FAILED` for `MALFORMED`, as the program's open was well formed.
 fn from_home(refusal: wire::hub::Refusal) -> Refusal {
     match refusal {
-        wire::hub::Refusal::Malformed => Refusal::Malformed,
-        wire::hub::Refusal::Failed => Refusal::Failed,
+        wire::hub::Refusal::Malformed | wire::hub::Refusal::Failed => Refusal::Failed,
         wire::hub::Refusal::Unknown => Refusal::Unknown,
         wire::hub::Refusal::NotHome => Refusal::NotHome,
         wire::hub::Refusal::Busy => Refusal::Busy,
