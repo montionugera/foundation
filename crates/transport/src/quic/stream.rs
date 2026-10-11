@@ -1173,7 +1173,7 @@ impl Sending {
     /// `message` of a write. `Ready` once it holds no message, and `Pending` while it
     /// holds one. A `Some` while the rest is the caller's shows that the write that
     /// gave it never ended, as a leaked future, and the rest becomes the stream's
-    /// ([`Rest::Pump`]): the stream writes it by itself, and a cancel leaves it.
+    /// ([`Rest::Pump`]).
     ///
     /// # Errors
     ///
@@ -1576,7 +1576,7 @@ impl Streams {
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, for a
     /// write of `message` that the size check refused. When the rest is the caller's,
     /// the write that gave it never ended, as a leaked future, and the rest becomes
-    /// the stream's: the stream writes it by itself, and a cancel leaves it.
+    /// the stream's ([`Rest::Pump`]).
     ///
     /// # Errors
     ///
