@@ -27,9 +27,8 @@ impl env::paths::Driver for Driver {
         let kept = match fs::symlink_metadata(path) {
             Ok(old) if old.is_file() => Some(old.permissions()),
             Ok(_) => return in_place(path, bytes).map_err(|e| error(&e)),
-            // Nothing is at `path`, or the open of the hidden file fails for the same
-            // cause.
-            Err(_) => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(error(&e)),
         };
         let mut key = [0; 8];
         entropy::Driver.fill(&mut key);

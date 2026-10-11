@@ -6,6 +6,7 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found};
+use rustix::io::Errno;
 
 use crate::cases::{self, Host};
 use crate::disk::Scratch;
@@ -123,6 +124,14 @@ fn a_write_on_a_path_that_names_a_directory_makes_no_file_beside_it() {
     let scratch = Scratch::new();
     let none = sealed(&scratch).join("none/");
     assert_eq!(os::paths().write(&none, b"x"), Err(Error::NotFound));
+}
+
+#[test]
+fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
+    let scratch = Scratch::new();
+    let long = sealed(&scratch).join("a".repeat(256));
+    let code = Errno::NAMETOOLONG.raw_os_error();
+    assert_eq!(os::paths().write(&long, b"x"), Err(Error::Io { code }));
 }
 
 #[test]
