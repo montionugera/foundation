@@ -317,20 +317,20 @@ impl Log {
         entries: &[Entry],
     ) -> Result<(), Error> {
         let held = "invariant: a write starts with the end file";
+        let current = file.as_ref().expect(held);
         if let Some((at, end)) = self.stale {
-            let file = file.as_ref().expect(held);
             // A scan reads bytes that stay after a later record as its next header.
             // The zeros get their own sync: with one sync, a power cut can keep the
             // record and not the zeros.
             let zeros = vec![0; narrow(end.saturating_sub(at))];
-            self.blocks.write(file, at, &mut &zeros[..]).await?;
-            file.sync().await?;
+            self.blocks.write(current, at, &mut &zeros[..]).await?;
+            current.sync().await?;
             self.stale = None;
         }
         let record = encode(self.next, hard, entries);
         let len = wide(record.len());
         let mut start = wide(start(narrow(self.offset)));
-        if start.saturating_add(len) > file.as_ref().expect(held).len() {
+        if start.saturating_add(len) > current.len() {
             // A file with no record is made again, larger: a scan refuses a file
             // with no record before another file.
             let empty = self.offset == 0;
@@ -3030,15 +3030,11 @@ mod tests {
                 .run_on(&node, |node, _| async move {
                     let (mut log, _) = open(&node).await.unwrap();
                     let large = [bytes(1, LARGE)];
-                    {
-                        let mut write = pin!(log.write(None, &large));
-                        let poll =
-                            poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx))).await;
-                        assert!(poll.is_pending());
-                    }
+                    assert!(cut(log.write(None, &large), 0).await.is_none());
                     drop(log);
                     // An open that lists `log-0` before the remove ends gets
-                    // `NotFound` from its open of `log-0`, which waits for it.
+                    // `NotFound` from its open of `log-0`, which waits for it
+                    // (#1186).
                     let opened = match open(&node).await {
                         Err(Error::Files(files::Error::NotFound { path }))
                             if path == file("log-0") =>
