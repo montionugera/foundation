@@ -15,12 +15,12 @@
   handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
   on the monotonic clock of the hub's `clock::Reader`. A handoff is not on disk while
   the ring or the pool has no room for it, and a power cut in that time restores the
-  earlier holder with the grace (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, item
-  4: https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587).
-  Until #2385, such a handoff waits for the next append on its index (INDEX FRAMES),
-  also after the room comes back. Until #2314, an index with no open writer records its
-  handoff at the next open of a writer on it (`laptop.architect`, #2307,
-  2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
+  earlier holder with the grace. Until #2385, such a handoff waits for the next append
+  on its index (INDEX FRAMES), also after the room comes back (`laptop.architect`,
+  #2385, 2026-10-11T08:16:48Z, the OK of the deferral and item 4:
+  https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587). Until
+  #2314, an index with no open writer records its handoff at the next open of a writer
+  on it (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102872368 and
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411;
   its scope until #2314: `laptop.architect`, 2026-10-11T00:56:34Z,
