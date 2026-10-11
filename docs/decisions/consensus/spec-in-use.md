@@ -13,9 +13,10 @@
   does not read leaves the last spec in use (SPEC CHANGE). After a missing chunk, a
   retry each second (`RETRY`, on the `env` clock) gets only that chunk, and reads again
   only when the store gives it. A failed store call or file call is read again each
-  second. The state is at most two trees: the chunks of the spec in use, from
-  `spec::region::tree` of its definitions, and the chunks of the tree of the newest
-  committed pointer that the task got. A newer pointer drops the chunks of the one it
+  second. The state is at most two trees: the chunks of the spec in use, which
+  `spec::region::definitions` gives (REGION CHECK), or `spec::region::tree` of the
+  founding definitions, and the chunks of the tree of the newest committed pointer that
+  the task got. A newer pointer drops the chunks of the one it
   replaces. The base tree of `Mesh::apply` comes from `Config::store` only, never from
   the chunks of the spec in use. The pointer in use is one empty file `<version>-<root>`
   in `<Config::dir>/spec`. A spec takes effect after the create and the sync of the
