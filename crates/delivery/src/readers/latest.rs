@@ -135,11 +135,10 @@ impl Readers {
     /// The open latest session `key`, or `None` when it closed. Panics on a key never
     /// given.
     fn find_latest(&self, key: Key) -> Option<usize> {
-        match self.latest.binary_search_by_key(&key, |s| s.key) {
-            Ok(i) => Some(i),
-            Err(_) if key.0 >= self.next_latest => never_open(key.into()),
-            Err(_) => None,
+        if key.0 >= self.next_latest {
+            never_open(key.into());
         }
+        self.latest.binary_search_by_key(&key, |s| s.key).ok()
     }
 }
 
