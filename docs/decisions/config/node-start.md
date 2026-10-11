@@ -102,24 +102,34 @@
   agent no fix for a value that it gave. Decided by `laptop.architect-2`
   (2026-10-11T10:21:07Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
-  Shard 0 writes the file `address` in the data directory whole, as
-  `admin.key` is written, after the mesh opens and before the port takes a session:
-  the node's key, the public key of its transport, and the bound socket address, in
-  one sector with a CRC32C. Its form is private to `node`, and the fuzz target
-  `node_identity` takes it by its length. Shard 0 removes it when it stops serving,
-  before the lock drops, with no sync of the directory. A crash leaves it, and the
-  next start writes it again. The port can free before the remove: a program proves
-  the node by its public key, so no reader needs that order. A failed write is
-  `Error::Directory` and stops the node before it serves; a failed remove is
+  Shard 0 writes the file `address` in the data directory in place, after the mesh opens
+  and before the port takes a session: the node's key, the public key of its transport,
+  and the bound socket address, in one sector with a CRC32C. Its form is private to
+  `node`, and the fuzz target `node_identity` takes it by its length. The first start
+  makes the file, and the file keeps its sector, so a later start needs no new room and
+  a node starts again on a full disk. When shard 0 stops serving, before the lock drops,
+  it writes the file empty in place (zero bytes of the same length), with no sync. A
+  crash leaves the address, and the next start writes over it. The start does not read
+  the file: it removes a file of another length and makes the file again. A file with no
+  address of a node (no file, an empty one, or one that a write tore) reads as no node
+  that runs. The port can free before the empty write: a program proves the node by its
+  public key, so no reader needs that order. A failed write at the start is
+  `Error::Directory` and stops the node before it serves; a failed empty write is
   `Error::Directory` unless the node already failed. Lost: a fixed port with no file,
-  where two nodes on one host need two flags and the CLI still reads the public key
-  from the data directory; the address in `lock`, whose open by a reader races with a
-  start. Decided by `laptop.architect-2` (2026-10-08T05:42:09Z,
+  where two nodes on one host need two flags and the CLI still reads the public key from
+  the data directory; the address in `lock`, whose open by a reader races with a start;
+  a file made new at each start and removed at the stop (the new file needs new room, so
+  a node did not start again once another writer filled the disk; round 1 of #2391); a
+  start on a full disk that fails (a node whose rings are made runs on a full disk); a
+  failed write that does not stop the node (no program reaches the node, and the failure
+  hides); no write at the stop (after a clean stop, a program dials a port that no node
+  holds). Decided by `laptop.architect-2` (2026-10-08T05:42:09Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935;
   2026-10-11T07:10:55Z, plan revision 4,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913;
-  2026-10-11T08:01:23Z, the remove before the lock drops but not before the port
-  frees,
+  2026-10-11T08:01:23Z, the remove before the lock drops but not before the port frees,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106927243;
   2026-10-11T10:21:07Z, the remove contract of #1744 PR 2a,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871;
+  2026-10-11T10:43:15Z, the write in place,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079).

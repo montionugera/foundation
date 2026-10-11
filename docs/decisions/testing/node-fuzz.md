@@ -21,12 +21,12 @@
   PR 1b-3, the trigger that `laptop.architect` moved from PR 1b-1, 2026-10-10 04:15
   UTC: https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093666647). A
   test founds a region with the key of `admin-valid`.
-  The target also checks the decode of the file `address` (NODE START), on 99 bytes
-  as they are, or on 95 bytes with their CRC32C appended, with `address::check` as its
+  The target also checks the decode of the file `address` (NODE START), on 99 bytes as
+  they are, or on 95 bytes with their CRC32C appended, with `address::check` as its
   oracle, which the property tests of `address` share. The inputs `address-*` are its
-  form. A node that runs holds the bytes of `address-valid`, and a test decodes
-  `address-valid-v6`. By `laptop.architect-2` (#1744, plan revision 4, PR 2a,
-  2026-10-11 07:10 UTC:
+  form. A node that runs holds the bytes of `address-valid`, a clean stop leaves those
+  of `address-zeros`, and a test decodes `address-valid-v6`. By `laptop.architect-2`
+  (#1744, plan revision 4, PR 2a, 2026-10-11 07:10 UTC:
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
   Lost: property tests only, with a sentence in `docs/security.md` that the decode
   needs no target.
