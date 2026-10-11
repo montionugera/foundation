@@ -41,11 +41,11 @@
   frame until a later commit past its window ends, gets each frame before the miss, then
   `Ended::Behind`. Decided by `laptop.architect` (2026-10-08T07:23:30Z:
   https://github.com/synnaxlabs/foundation/issues/1170#issuecomment-6054827276).
+  Supersedes https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
   https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183): the
   ruling said that no hub test reaches that wake, and it gave the two hub `sim` tests as
   they were before #2388.
-  Supersedes https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   The hub `sim` tests `drops_the_commit_it_waits_for_with_the_hub` (64 values),
   `ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit`,
   `gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window`, and
@@ -60,10 +60,10 @@
   tests (2026-10-11T10:05:33Z:
   https://github.com/synnaxlabs/foundation/issues/2388#issuecomment-6107876336).
   The three hub `serve` tests of the wake of a session that missed a frame with none
-  waiting run one order for each value: the serve task waits, then the wake wakes it.
+  waiting run, at each value, one order: the serve task waits, then the wake wakes it.
   The other order needs a message of the peer at the instant of the miss commit, which
-  the transport times, and there the message polls the serve task, so the wake does no
-  work. Decided by `laptop.director` (2026-10-11T10:55:43Z:
+  the transport times. In that order the serve task polls because of the message, so the
+  wake does no work. Decided by `laptop.director` (2026-10-11T10:55:43Z:
   https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108286003).
   After a warmup, a write and `next` make no heap allocation, while frames wait, while a
   reader waits, and in the write that wakes a latest reader, which a counting allocator
