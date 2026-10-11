@@ -2,10 +2,12 @@
 //! 1 with node 2 as a raw peer that plays its leader.
 
 use std::future::pending;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
 
+use super::apply::Counted;
 use super::send::{self, LIMIT, Peer, create_config, stop};
 use super::*;
 
@@ -354,14 +356,14 @@ async fn create_leader(node: &sim::node::Node, tasks: &Tasks) -> Mesh {
     mesh
 }
 
-// A count of 3 means that the group holds a clone of the waker, which it does only
-// while the call waits for the outcome of its entry. The failed write stops the group
-// with no change of the term, which would wake each call too.
+// After the write, a count of 3 means that the group holds a clone of the waker for
+// the outcome of the entry. The failed write stops the group with no change of the
+// term, which would wake each call too.
 #[test]
 fn a_call_that_waits_for_its_entry_gets_the_cause_when_the_group_stops() {
     solo(|node, tasks| async move {
         let mesh = create_leader(&node, &tasks).await;
-        let held = Arc::new(Idle);
+        let held = Arc::new(Counted(AtomicUsize::new(0)));
         let waker = Waker::from(Arc::clone(&held));
         let mut cx = Context::from_waker(&waker);
         let mut call = Box::pin(mesh.set_home(INDEX, key(2)));
@@ -370,9 +372,11 @@ fn a_call_that_waits_for_its_entry_gets_the_cause_when_the_group_stops() {
         clock.sleep(TICK).await;
         assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!(Arc::strong_count(&held), 3);
+        let woken = held.0.load(Ordering::Relaxed);
         let stopped = Error::Stopped(fail_sync(&node));
         assert_eq!(mesh.propose_data(vec![9]).await, Err(stopped.clone()));
         assert_eq!(Arc::strong_count(&held), 2);
+        assert_eq!(held.0.load(Ordering::Relaxed), woken + 1);
         let cause = Poll::Ready(Err(stopped));
         assert_eq!(call.as_mut().poll(&mut cx), cause);
     });
