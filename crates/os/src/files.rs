@@ -552,6 +552,8 @@ mod tests {
     }
 
     /// `/sys/fs/cgroup` is a mount point under sysfs, which cannot sync a directory.
+    /// Runs without root, on a holder that cannot sync (`EINVAL`), the case that the
+    /// root test of `os::files` does not reach.
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "needs sysfs")]
     fn make_of_a_mount_point_does_not_sync_its_holder() {
