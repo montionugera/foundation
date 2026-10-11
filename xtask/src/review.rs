@@ -202,10 +202,7 @@ fn problems(
         .comments
         .iter()
         .filter(|c| c.author == BOT)
-        .filter_map(|c| {
-            let old = c.created.as_str() < CUTOFF;
-            round(&c.body, old).map(|round| (old, round))
-        })
+        .filter_map(|c| round(c).map(|round| (c.created.as_str(), round)))
         .collect();
     if rounds.is_empty() {
         problems.push(format!(
@@ -213,14 +210,14 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (old, parsed)) in rounds.iter().enumerate() {
+    for (i, &(created, ref parsed)) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
                 problems.extend(unnamed(round, &record.files, last, code_change)?);
             }
             Err(e) => {
-                if !*old || last || e.binding {
+                if created >= CUTOFF || last || e.binding {
                     problems.push(e.problem.clone());
                 }
             }
@@ -392,12 +389,13 @@ fn listed(reviewers: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Parses `body` as a round comment. `None` when it has no round heading
+/// Parses `comment` as a round comment. `None` when it has no round heading
 /// ([`Shown::number`]). The fields are the first block after the heading, so the
 /// findings text cannot set them. The last block is the end lines ([`END`]), unless the
-/// comment is `old`, posted before [`CUTOFF`].
-fn round(body: &str, old: bool) -> Option<Parsed> {
-    let body = normalized(body);
+/// comment is old, posted before [`CUTOFF`].
+fn round(comment: &Comment) -> Option<Parsed> {
+    let old = comment.created.as_str() < CUTOFF;
+    let body = normalized(&comment.body);
     let shown = Shown::read(&body, old);
     // An old round is taken as written, except where the check cannot read it.
     let hiding = shown
