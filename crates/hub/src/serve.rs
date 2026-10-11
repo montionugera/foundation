@@ -765,8 +765,10 @@ mod tests {
     }
 
     /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
-    /// its code. A refusal of the home keeps its code. No `it` test reaches a refusal
-    /// of a home until #2409, so this test pins those arms.
+    /// its code. A refusal of the home keeps its code. Only a remote reader gives a
+    /// refusal, `Error::Pool`, `Transport`, and `Message`, and `Ended::Pool`,
+    /// `Stream`, `Message`, `Frame`, and `Credit`. No `it` test reaches a remote
+    /// reader until #2409, so this test pins those arms.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn each_error_of_the_reader_of_a_read_has_its_code() {

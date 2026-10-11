@@ -311,7 +311,7 @@ impl Test {
     }
 
     /// Makes the mesh stop at its next write of the log, and gives why it stopped.
-    async fn stop_mesh(&self) -> mesh::Stopped {
+    pub(super) async fn stop_mesh(&self) -> mesh::Stopped {
         self.node.fail_file(Path::new(LOG), Operation::Sync);
         let region = self.region.as_ref().expect("a region");
         match region.mesh.set_home(TIME, NODE).await {

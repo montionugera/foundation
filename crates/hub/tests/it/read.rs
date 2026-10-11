@@ -1,7 +1,10 @@
 //! The read streams of a client session that `Link::serve` serves, over a real
 //! transport from a program to a simulated node.
 
+use std::cell::Cell;
 use std::path::{Path as FilePath, PathBuf};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use access::proof::{Error as Refusal, Kind};
 use env::files::Operation;
@@ -19,11 +22,12 @@ use wire::hub::{BUSY, FAILED, FromHome, UNKNOWN};
 use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
 use super::serve::{decoded, got, next, places as placed};
 use super::{
-    COMMIT, DataType, I64, POOL, RING, STAMP, Test, channels, without, write,
-    write_wide,
+    AREA, BODY_MAX, COMMIT, DataType, I64, POOL, RING, STAMP, Test, channels, region,
+    without, write, write_wide,
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
-use crate::sessions::{Got, rules};
+use crate::net::{HOME, own_pool, transport};
+use crate::sessions::{Got, recorded, rules, run_program, serve_each};
 
 /// How long after the home accepts the session its first write or change comes, so
 /// the program has opened its read by then.
@@ -463,4 +467,54 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// A read that waits for the home of its index stops with `FAILED` when the mesh
+/// stops.
+#[test]
+fn stops_a_read_on_a_stopped_mesh_as_failed() {
+    let (served, stopped) =
+        (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+    let (kept, why) = (Arc::clone(&served), Arc::clone(&stopped));
+    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
+        let region =
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+        let mut test =
+            Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
+        test.sync().await;
+        test.hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = test.hub.link(session.clone());
+        let accepted = Rc::new(Cell::new(0));
+        tasks.spawn(serve_each(
+            &session,
+            &link,
+            &tasks,
+            &node.clock(),
+            &kept,
+            &accepted,
+        ));
+        test.clock.sleep(START).await;
+        *why.lock().expect("not poisoned") = Some(test.stop_mesh().await);
+        session.closed().await;
+        recorded(&node, &kept, accepted.get()).await;
+    };
+    run_program(312, home, |node, tasks, at| {
+        as_agent(node, tasks, at, |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            assert_eq!(stream.recv().await, reset_with(FAILED));
+            finish(&mut agent).await;
+        })
+    });
+    let stopped = stopped
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("stopped");
+    let mesh = serve::Error::Reader(Box::new(reader::Error::Mesh(stopped)));
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    assert_eq!(served, [Err(mesh), Ok(Got::Ended)]);
 }
