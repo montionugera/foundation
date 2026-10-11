@@ -3051,3 +3051,78 @@ fn a_free_does_not_wait_for_a_remove_through_a_handle_whose_future_lives() {
         "{runs:?}"
     );
 }
+
+/// The names that a list gives while a remove of `a` is in flight, whose future drops
+/// after the list starts, and whether `a` is there a millisecond later.
+fn list_with_remove_dropped_in_flight(value: u64) -> (Vec<PathBuf>, bool) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        drop(create(&node, "a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let mut list = Box::pin(files.list(Path::new("")));
+        pend(list.as_mut()).await;
+        drop(remove);
+        let names = list.await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        let there = files.open(Path::new("a"), Mode::Read).await.is_ok();
+        (names, there)
+    })
+}
+
+#[test]
+fn a_list_does_not_wait_for_a_remove_that_drops_while_the_list_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(list_with_remove_dropped_in_flight).collect();
+    assert!(runs.contains(&(vec!["a".into()], false)), "{runs:?}");
+}
+
+/// The bytes free before a create of `a` of 64 KiB, and while it is in flight, whose
+/// future drops after the `free` starts.
+fn free_with_create_dropped_in_flight(value: u64) -> (u64, u64) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let before = files.free().await.unwrap();
+        let len = 64 * KIB;
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        let mut free = Box::pin(files.free());
+        pend(free.as_mut()).await;
+        drop(made);
+        let after = free.await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        (before, after)
+    })
+}
+
+#[test]
+fn a_free_does_not_wait_for_a_create_that_drops_while_the_free_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(free_with_create_dropped_in_flight).collect();
+    assert!(
+        runs.iter().any(|(before, after)| after == before),
+        "{runs:?}"
+    );
+}
+
+/// Whether a create of `a` opens while a remove of `a` is in flight, whose future drops
+/// after the create starts, and the names in the data directory a millisecond later.
+fn create_with_remove_dropped_in_flight(value: u64) -> (bool, Vec<PathBuf>) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let len = KIB;
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        drop(remove);
+        let made = made.await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let made = made.map(drop).is_ok();
+        (made, files.list(Path::new("")).await.unwrap())
+    })
+}
+
+#[test]
+fn a_create_does_not_wait_for_a_remove_that_drops_while_the_create_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(create_with_remove_dropped_in_flight).collect();
+    assert!(runs.contains(&(true, vec![])), "{runs:?}");
+}
