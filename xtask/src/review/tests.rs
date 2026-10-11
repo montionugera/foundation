@@ -2522,7 +2522,7 @@ fn a_later_round_posted_before_the_surface_cutoff_keeps_its_reviewers() {
     let (repo, start) = Repo::with_pr("review-decision-cutoff");
     let end = repo.commit("docs/decisions/x.md", "a rule\n");
     let round = Comment {
-        created: "2026-10-12T23:59:59Z".to_string(),
+        created: "2026-10-11T15:59:59Z".to_string(),
         ..bot(&clean(2, "reviewer, breaker", &format!("{start}..{end}")))
     };
     assert_eq!(

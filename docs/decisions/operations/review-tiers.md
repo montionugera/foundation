@@ -7,3 +7,7 @@
   Supersedes: BREAKER REVIEW.
   Amended (2026-10-10, TEXT FIXES): a commit that only applies `Text fixes:` items
   gets no second round.
+  Amended (2026-10-11, REVIEW CHECK): a later round whose range changes a file under
+  `docs/decisions/` also runs `architecture`, and the `review` check fails one that does
+  not name it (the director,
+  https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591).

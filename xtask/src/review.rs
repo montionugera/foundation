@@ -86,8 +86,9 @@ const FIXES: &str = "Text fixes";
 const CUTOFF: &str = "2026-10-08T03:00:00Z";
 
 /// A later round posted before this UTC time needs no `architecture` for a range that
-/// changes a public surface: an author cannot change a round that is posted.
-const SURFACE_CUTOFF: &str = "2026-10-13T00:00:00Z";
+/// changes a public surface, so that the rule does not fail the rounds that came before
+/// it.
+const SURFACE_CUTOFF: &str = "2026-10-11T16:00:00Z";
 
 /// The record of a PR that the check reads.
 #[derive(Debug)]
