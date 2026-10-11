@@ -598,8 +598,9 @@ impl Endpoint {
             return;
         };
         let Connection { inner, streams, .. } = connection;
-        streams.cancel(inner, sender);
-        self.drive(key.handle, self.instant(now));
+        if streams.cancel(inner, sender) {
+            self.drive(key.handle, self.instant(now));
+        }
     }
 
     /// Stops `receiver`'s stream with `code`. The messages not read yet drop, and the

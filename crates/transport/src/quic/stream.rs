@@ -1694,15 +1694,15 @@ impl Streams {
     /// writes its rest, and gives back its send budget and its turn. When a byte of
     /// it went, its header included, it also resets the stream with `Code(0)`, and
     /// each later write and finish gives [`Error::Reset`]. Does nothing to a stream
-    /// that holds no such message.
+    /// that holds no such message. Returns whether it took a message.
     pub(super) fn cancel(
         &mut self,
         inner: &mut noq_proto::Connection,
         sender: &Sender,
-    ) {
+    ) -> bool {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
         if half.rest != Rest::Caller || !half.holds() {
-            return;
+            return false;
         }
         if half.sent() {
             reset(inner, half.key.id, Code(0));
@@ -1712,6 +1712,7 @@ impl Streams {
             half.started = false;
         }
         self.sending.end(half);
+        true
     }
 
     /// Stops `receiver`'s stream of `inner` with `code`, drops the message in its
