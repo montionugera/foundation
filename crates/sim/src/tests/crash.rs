@@ -845,6 +845,29 @@ fn a_power_cut_can_drop_the_remove_of_a_create_with_no_room() {
     assert_eq!(outcomes, BTreeSet::from(expected));
 }
 
+// A `Process` crash draws the state of `a` and no prefix, so its second call is one
+// draw after the crash. A `Power` cut that keeps the log after the `Full` remove draws
+// the prefix too, whether the draw keeps `a` whole or with no bytes.
+#[test]
+fn a_power_cut_draws_the_prefix_after_a_create_with_no_room() {
+    let delays = |seed, crash| {
+        let (mut sim, node) = disk(seed);
+        crash_after(&mut sim, &node, crash, |node| async move {
+            drop(create_durable_empty(&node).await);
+            drop(create(&node, "b", 0).await);
+            until_crash(&node).await;
+            let mode = Mode::Create { len: 2 * MIB };
+            hang(node.files().open(Path::new("a"), mode)).await;
+        });
+        [(); 2].map(|()| delay_of_a_call(&mut sim, &node))
+    };
+    for seed in 0..16 {
+        let [cut, _] = delays(seed, Crash::Power);
+        let [_, twice] = delays(seed, Crash::Process);
+        assert_eq!(cut, twice, "{seed}");
+    }
+}
+
 /// The delay of a file call on `node`. It draws from the files stream, so it shows
 /// how many draws came before it. Unlike the digest, it holds no result of a call.
 fn delay_of_a_call(sim: &mut Sim, node: &node::Node) -> Span {
