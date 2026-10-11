@@ -2866,8 +2866,8 @@ mod tests {
         });
     }
 
-    /// `advance` drops a restored holder whose grace ended, so it leaves no deadline
-    /// that came due.
+    /// `advance` drops each restored holder whose grace ended, so it leaves no
+    /// deadline that came due.
     #[test]
     fn advances_past_the_end_of_the_grace_before_the_node_has_mesh_time() {
         let (mut sim, node) = cut_after(237, false);
@@ -2875,6 +2875,21 @@ mod tests {
             let test = Test::new(node, tasks);
             let mut shard = test.unsynced().await;
             shard.carry(Slot::new(0));
+            shard.carry(Slot::new(2));
+            test.clock.sleep(GRACE).await;
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn advances_past_the_end_of_each_grace_with_no_open_writer() {
+        let (mut sim, node) = cut_after(237, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
             test.clock.sleep(GRACE).await;
             assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
             shard.advance();
