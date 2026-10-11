@@ -289,8 +289,8 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 /// data, through which any code can call it, each inlined function, an `#include_next`,
 /// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
 /// is not GCC or that builds for neither x86-64 nor aarch64, a symbol whose name holds
-/// a character other than a letter, a digit, `_`, `.`, or `$`, and each instruction
-/// whose key the list of its architecture does not admit.
+/// a character other than an ASCII letter, a digit, `_`, `.`, or `$`, and each
+/// instruction whose key the list of its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -614,8 +614,8 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
 }
 
 /// An error for each symbol of `object`, built from `source`, whose name holds a
-/// character other than a letter, a digit, `_`, `.`, or `$`. objdump can show such a
-/// name as an addend or a function header.
+/// character other than an ASCII letter, a digit, `_`, `.`, or `$`. objdump can show
+/// such a name as an addend or a function header.
 fn odd_symbols(source: &str, object: &Path) -> Result<Vec<String>, String> {
     Ok(symbols([object], &[])?
         .into_iter()
@@ -626,8 +626,8 @@ fn odd_symbols(source: &str, object: &Path) -> Result<Vec<String>, String> {
         })
         .map(|name| {
             format!(
-                "{source}: the symbol `{name}` holds a character other than a letter, \
-                 a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+                "{source}: the symbol `{name}` holds a character other than an ASCII \
+                 letter, a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
             )
         })
         .collect())
@@ -1262,18 +1262,16 @@ fn headers(depfile: &str) -> Vec<PathBuf> {
 }
 
 /// The names of the symbols that `nm` with `flags` gives for `objects`, each whole,
-/// also when it holds a space, and also each that `nm` takes as a mapping symbol.
+/// also when it holds a space or a carriage return, and also each that `nm` takes as a
+/// mapping symbol.
 fn symbols<'a>(
     objects: impl IntoIterator<Item = &'a Path>,
     flags: &[&str],
 ) -> Result<BTreeSet<String>, String> {
-    let text = exec(
-        Command::new("nm")
-            .args(["-j", "--special-syms"])
-            .args(flags)
-            .args(objects),
-    )?;
-    Ok(text.lines().map(str::to_owned).collect())
+    let mut nm = Command::new("nm");
+    nm.args(["-j", "--special-syms"]).args(flags).args(objects);
+    let (text, _) = wait(spawn(&mut nm)?)?;
+    Ok(text.split_terminator('\n').map(str::to_owned).collect())
 }
 
 /// Writes the copy of `found` to `stage`, with `LICENSE` from `src`.
@@ -3097,8 +3095,11 @@ End of search list.
 
     /// Names that only `asm` makes: symbols that objdump cannot show exactly, and
     /// sections whose names end in `:` and `]:`. `g` calls `y <h>:` with no addend, so
-    /// its relocation line ends in `>:`. The global `getpid x` is there so that a read
-    /// of a defined name to its first space would admit the call of `getpid`.
+    /// its relocation line ends in `>:`: on x86-64, `+4` cancels the addend of a call,
+    /// and `@PLT` keeps the relocation a call. The global `getpid x` is there so that a
+    /// read of a defined name to its first space would admit the call of `getpid`, and
+    /// `getpid\r` so that a read of a line without its carriage return would. ` h` is
+    /// the first name of `nm`, which a trim of its output would cut. `a$b` is plain.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[cfg_attr(
@@ -3111,13 +3112,15 @@ End of search list.
         let path = root.join("patches/open62541/src/util/ua_util.c");
         let old = std::fs::read_to_string(&path).unwrap();
         let (call, header) = if cfg!(target_arch = "x86_64") {
-            ("call", r#"\"y <h>:\"+4"#)
+            ("call", r#"\"y <h>:\"@PLT+4"#)
         } else {
             ("bl", r#"\"y <h>:\""#)
         };
         let asm = format!(
             r#"__asm__(".pushsection .data\n.quad \"h i\"\n.quad \"h-0x4\"\n"
-        ".quad \"k+0x1\"\n.globl \"getpid x\"\n\"getpid x\":\n.popsection\n"
+        ".quad \"k+0x1\"\n.quad \" h\"\n.quad \"é\"\n.globl \"getpid x\"\n"
+        "\"getpid x\":\n.globl \"getpid\r\"\n\"getpid\r\":\n.globl \"a$b\"\n"
+        "\"a$b\":\n.popsection\n"
         ".pushsection \".text]:\",\"aw\"\n.quad UA_DateTime_now\n.popsection\n"
         ".pushsection \".text.g:\",\"ax\"\ng:\n{call} {header}\n"
         "{call} UA_DateTime_now\n{call} getpid\nret\n.popsection");
@@ -3127,20 +3130,27 @@ End of search list.
         let file = "src/util/ua_util.c";
         let refused = |name: &str| {
             format!(
-                "{file}: the symbol `{name}` holds a character other than a letter, a \
-                 digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+                "{file}: the symbol `{name}` holds a character other than an ASCII \
+                 letter, a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
             )
         };
         assert_eq!(
             check(&root),
             Err(vec![
+                refused(" h"),
+                refused("getpid\r"),
                 refused("getpid x"),
                 refused("h i"),
                 refused("h-0x4"),
                 refused("k+0x1"),
                 refused("y <h>:"),
+                refused("é"),
                 format!(
                     "{file}: the section `.data` references `h i` outside a function, \
+                     so a use through it escapes FUNCTION_SYMBOLS"
+                ),
+                format!(
+                    "{file}: the section `.data` references `é` outside a function, \
                      so a use through it escapes FUNCTION_SYMBOLS"
                 ),
                 format!(
@@ -3189,9 +3199,9 @@ End of search list.
             found,
             Err(vec![
                 format!(
-                    "{file}: the symbol `$x.h-0x4` holds a character other than a \
-                     letter, a digit, `_`, `.`, or `$`, so objdump cannot show it \
-                     exactly"
+                    "{file}: the symbol `$x.h-0x4` holds a character other than an \
+                     ASCII letter, a digit, `_`, `.`, or `$`, so objdump cannot show \
+                     it exactly"
                 ),
                 format!(
                     "{file}: `g` calls `$x.getpid`, which no list admits. Find whether \
