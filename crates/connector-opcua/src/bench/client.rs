@@ -161,9 +161,14 @@ mod tests {
                 let address = node.addresses()[0];
                 let mut drawn = Vec::new();
                 for start in [1, 2] {
-                    let body = async |_: &Server| {
+                    let body = async |server: &Server| {
                         // SAFETY: it draws from the generator of this thread.
-                        unsafe { crate::ffi::test::UA_UInt32_random() }
+                        let before = unsafe { crate::ffi::test::UA_UInt32_random() };
+                        let client = server.connect().await;
+                        // SAFETY: as above.
+                        let after = unsafe { crate::ffi::test::UA_UInt32_random() };
+                        client.close().await;
+                        (before, after)
                     };
                     let rng = Rng::from_seed(start);
                     drawn.push(
@@ -174,7 +179,8 @@ mod tests {
                 drawn
             })
             .expect("the run ends");
-        assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
+        assert_ne!(drawn[0].0, drawn[1].0, "two scopes drew the same value");
+        assert_ne!(drawn[0].1, drawn[1].1, "the clients of two scopes drew the same");
     }
 
     #[test]
