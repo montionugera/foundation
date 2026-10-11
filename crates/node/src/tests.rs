@@ -4063,7 +4063,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_452_501;
+        const WRITE: i64 = 1_793_706_886;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5326,7 +5326,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5336,7 +5336,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..2 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6548,41 +6548,46 @@ mod port {
         /// seq of the first frame that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = keyed(&mut sim, 2);
-            let founding = region(&[member(OWN, &KEY, &host)]);
-            let placed = connector("influx");
-            let (node, definitions) =
-                applied(&mut sim, &host, founding.clone(), placed.clone());
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let node = start(&host, founding);
-            assert_eq!(sim.run_for(TEN), Ok(()));
-            let read = read_status(&node, &definitions);
-            assert_eq!(sim.run_for(TEN), Ok(()));
-            let other = text("other", &[]);
-            let kept = format!("{placed}{other}");
-            let changed = kept.replace("influx:8086", "influx:8087");
-            for text in [kept, changed] {
-                node.operate(|ops| async move {
-                    apply(&ops, text).await;
+            for seed in 0..16 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
                 });
-                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                let host = keyed(&mut sim, 2);
+                let founding = region(&[member(OWN, &KEY, &host)]);
+                let placed = connector("influx");
+                let (node, definitions) =
+                    applied(&mut sim, &host, founding.clone(), placed.clone());
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let node = start(&host, founding);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let read = read_status(&node, &definitions);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let other = text("other", &[]);
+                let kept = format!("{placed}{other}");
+                let changed = kept.replace("influx:8086", "influx:8087");
+                for text in [kept, changed] {
+                    node.operate(|ops| async move {
+                        apply(&ops, text).await;
+                    });
+                    assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                }
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let read = read.lock().unwrap();
+                let runs = [
+                    (6, 0, 0),
+                    (7, 3, 1),
+                    (8, 2, 1),
+                    (9, 0, 0),
+                    (10, 3, 1),
+                    (11, 2, 1),
+                ];
+                assert_eq!(*read, runs, "seed {seed}");
             }
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let read = read.lock().unwrap();
-            let runs = [
-                (6, 0, 0),
-                (7, 3, 1),
-                (8, 2, 1),
-                (9, 0, 0),
-                (10, 3, 1),
-                (11, 2, 1),
-            ];
-            assert_eq!(*read, runs);
         }
 
         /// A connector that an apply moves from another member to this node keeps its

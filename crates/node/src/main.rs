@@ -1,5 +1,5 @@
 //! The `foundation` binary. It runs the command line, and `foundation start` runs a
-//! node until SIGINT or SIGTERM.
+//! node until a SIGINT or SIGTERM that reaches it.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -46,7 +46,8 @@ fn main() -> ExitCode {
     })
 }
 
-/// Runs a node on the data directory of `start` until SIGINT or SIGTERM stops it.
+/// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
+/// the process stops it.
 fn node(start: &Start) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;
@@ -929,6 +930,31 @@ mod tests {
             failed(
                 "cannot open the buffer of shard-2: a file call failed: open of \
                  shard-2/ring failed with OS error 28"
+            )
+        );
+        let founding = mesh::Error::Files(io("mesh/founding", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Mesh(founding)),
+            failed(
+                "the node's mesh did not open: open of mesh/founding failed with OS \
+                 error 28"
+            )
+        );
+        let chunk = blob::Error::Files(io("blob/chunk", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Blob(chunk)),
+            failed(
+                "cannot open the node's chunk store: open of blob/chunk failed with OS \
+                 error 28"
+            )
+        );
+        let log = mesh::log::Error::Files(io("mesh/log/log-0", ENOSPC));
+        let stopped = node::Error::Group(mesh::Stopped::Write(log));
+        assert_eq!(
+            of(&stopped),
+            failed(
+                "the group of the node's mesh stopped: open of mesh/log/log-0 failed \
+                 with OS error 28"
             )
         );
     }

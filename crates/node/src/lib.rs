@@ -88,8 +88,11 @@ pub struct Config<M> {
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
     /// `name`. Get it with [`name`] before the start. A later start with another name
-    /// fails with [`Error::Renamed`], and a name with a reserved segment starts no
-    /// shard ([`Error::Reserved`]). [`Node::join`] gives the first failure.
+    /// than the stored one fails with [`Error::Renamed`], and a name with a reserved
+    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores a
+    /// founding with the node's card, that card holds the name too, and a start whose
+    /// file `name` is gone writes it again from the card. [`Node::join`] gives the
+    /// first failure.
     pub name: types::name::Name,
 }
 
@@ -122,15 +125,17 @@ pub enum Region {
     Stored,
     /// The region `founding`, a patch until a node joins by ticket (#1157). One
     /// founding member has the node's key, and its card holds the public half of the
-    /// node's private key, both from the file `node.key` in the data directory. Only
-    /// `node` reads that file, so only the tests of `node`, and the `acceptance` lab,
-    /// which writes the file first with `create_key`, give it. A start whose mesh log
-    /// holds no record keeps the region in the data directory. A start whose log holds
-    /// a record and that gives another region stops the node, and [`Node::join`] gives
-    /// [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of each task knows each
-    /// channel of the region's spec in use, at the open and after each spec change
-    /// that takes effect. At a start whose log holds no record, that is the founding's
-    /// `definitions`, or no channel when `spec::region::check` gives them problems.
+    /// node's private key, both from the file `node.key` in the data directory. That
+    /// card also holds `Config::name`: it is the stored name when the file `name` is
+    /// gone. Only `node` reads `node.key`, so only the tests of `node`, and the
+    /// `acceptance` lab, which writes the file first with `create_key`, give it. A
+    /// start whose mesh log holds no record keeps the region in the data directory. A
+    /// start whose log holds a record and that gives another region stops the node, and
+    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of
+    /// each task knows each channel of the region's spec in use, at the open and after
+    /// each spec change that takes effect. At a start whose log holds no record, that
+    /// is the founding's `definitions`, or no channel when `spec::region::check` gives
+    /// them problems.
     #[cfg(feature = "sim")]
     Given(mesh::region::Founding),
 }
@@ -433,18 +438,18 @@ impl Node {
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
     /// a data directory that shard 0 could not claim, else [`Error::Name`],
-    /// [`Error::Renamed`], or [`Error::Directory`] for a file `name` that it could not
-    /// read or keep, else [`Error::Buffer`] for the first shard by core whose
-    /// buffer, or the home over it, did not open, [`Error::Budget`] or
-    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
-    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
-    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
-    /// [`Error::Mesh`] for a stored region or a mesh that did not open,
-    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
-    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
-    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
-    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
-    /// failed shard stops the node.
+    /// [`Error::Renamed`], [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`]
+    /// for a stored name that it could not read or a name it could not keep, else
+    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
+    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
+    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
+    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
+    /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
+    /// mesh that did not open, [`Error::Directory`] for a file `address` that shard 0
+    /// could not write, or [`Error::Transport`] or [`Error::Group`], whichever the node
+    /// sees stop first, else [`Error::Directory`] for a file `address` that shard 0
+    /// could not write empty, else [`Error::Panicked`] for the first shard by core that
+    /// panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -496,22 +501,26 @@ pub async fn create_key(
 }
 
 /// The name of the node of the data directory `files`: `given`, else the one that the
-/// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
-/// reads also while another node runs on `files`. It does not check `given`: the
-/// start does ([`Config::name`]).
+/// file `name` holds, else the one in the node's card in the founding that the data
+/// directory stores. Reads only when `given` is `None`, writes nothing, and reads
+/// also while another node runs on `files`. It does not check `given`: the start
+/// does ([`Config::name`]).
 ///
 /// # Errors
 ///
-/// When `given` is `None`: [`Error::Unnamed`] when the file holds no name,
-/// [`Error::Name`] for a file `name` that a node did not write, and
-/// [`Error::Directory`] for a file call that fails.
+/// When `given` is `None`: [`Error::Unnamed`] when the data directory holds no name: no
+/// file `name`, and no file `node.key`, no founding, or no card of the key of
+/// `node.key` in the founding. With no file `name`: [`Error::Key`] for a file
+/// `node.key` that a node did not write, and [`Error::Mesh`] for a founding that does
+/// not read when `node.key` holds a key. [`Error::Name`] for a file `name` that a node
+/// did not write, and [`Error::Directory`] for a file call that fails.
 pub async fn name(
     files: &env::files::Files,
     given: Option<types::name::Name>,
 ) -> Result<types::name::Name, Error> {
     match given {
         Some(given) => Ok(given),
-        None => name::read(files).await?.ok_or(Error::Unnamed),
+        None => name::stored(files).await?.ok_or(Error::Unnamed),
     }
 }
 
@@ -1267,7 +1276,8 @@ pub enum Error {
     /// The transport of the node's port stopped, as when the OS breaks its socket.
     /// The node stops.
     Transport(transport::Error),
-    /// The mesh did not open. The node took no session.
+    /// The mesh did not open, or the founding that the data directory stores did not
+    /// read. A node that gives it took no session.
     Mesh(mesh::Error),
     /// The group of the node's mesh stopped, as when a write of its log fails. The
     /// node stops.
@@ -1301,7 +1311,9 @@ pub enum Error {
     /// The file `name` in the data directory is not a name that a node wrote. The node
     /// does not write over it.
     Name,
-    /// The data directory holds the node `stored`, and the start gave `given`.
+    /// The data directory holds the node `stored`, and the start gave `given`. The
+    /// stored name is the one in the file `name`, else the one in the node's card in
+    /// the founding that the data directory stores.
     Renamed {
         /// The name in the data directory.
         stored: types::name::Name,
@@ -1311,7 +1323,8 @@ pub enum Error {
     /// The data directory holds no node name, and the start gave none.
     Unnamed,
     /// The start gave `name`, which has a segment that starts with `@`. A region
-    /// refuses it, so no shard started and the data directory keeps no name.
+    /// refuses it, so no shard started and the data directory keeps no name that its
+    /// founding refuses.
     Reserved {
         /// The name the start gave.
         name: types::name::Name,

@@ -924,8 +924,7 @@ fn connect(url: &CStr) {
     let client = unsafe { ffi::shim_client_new(f.events.raw()) };
     assert!(!client.is_null());
     // SAFETY: the client lives, and `url` ends with a NUL.
-    let status =
-        Status(unsafe { ffi::test::UA_Client_connectAsync(client, url.as_ptr()) });
+    let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
     assert_eq!(status.name(), "BadTcpEndpointUrlInvalid");
     // SAFETY: the client lives, and the loop outlives it.
     unsafe { ffi::UA_Client_delete(client) };

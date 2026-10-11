@@ -47,3 +47,34 @@
   supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177.
   `Store::put` also keeps a free floor on the disk (BLOB PEER).
+  Amended (`laptop.architect`, 2026-10-11T06:20:32Z,
+  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288):
+  `Store::status` gives `blob::Status`, the counts of the store after its open.
+  `corruptions` counts the gets that read a file whose bytes did not hash to its digest.
+  `failures` counts the gets and puts that gave `Error::Files` other than `Full`. `node`
+  pulls it on the shard of the store (STATUS CHANNELS). Supersedes the crate-private
+  count of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6043124789. Lost:
+  the names `Faults` and `Store::faults` (`transport` and `clock` name the value that
+  `node` pulls `Status`); one method for each count (two reads for one pulled value); a
+  reader for other threads, as `clock::Reader` (one collector reads the counts, and
+  `node` owns where it runs); a cause with each failure (no caller reads one).
+  Amended (`laptop.architect`, 2026-10-11T10:40:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108172602):
+  `corruptions` counts the times a get made a digest absent because the bytes of its
+  file did not hash to it. A get whose read ran into a put of the digest adds none,
+  because `env::files` gives unknown bytes for calls in flight on one range. A file that
+  a put of this open left before its end adds none, because a dropped put is no fault,
+  and `blob::peer::serve` drops a put when its stream ends. A file that a put of an
+  earlier open left adds one, as a torn write does: the open lists names and cannot tell
+  the two. Lost: each get that read bytes that do not hash counts (the count then rises
+  on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
+  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288) and its
+  doc of the field.
+  `Store::get` and `Store::put` are not a hot path. Each runs one time for each chunk
+  call of `blob::peer` and of `mesh`. A chunk holds bytes of a spec tree or of an
+  upgrade binary (BQ1). So a chunk message is a control message, and its rate does not
+  grow with the data. Lost: a benchmark of the two. Trigger: a decision that gives
+  `blob` bytes whose count grows with the data makes the two a hot path, and its PR adds
+  the benchmark. Ruled by `laptop.architect` (2026-10-11T11:49:10Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
