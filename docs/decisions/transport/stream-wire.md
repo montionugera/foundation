@@ -259,7 +259,8 @@
   stretch that is only the last part, of at most 1452 bytes with no zeros, goes to noq
   from the block. Each other stretch of at most 1452 bytes goes to noq from the buffer,
   and noq copies it in the same `write` (design point 2 of 6044783047). A longer one is
-  copied into a new buffer of its length, which noq keeps until the ACK. A partial write
+  copied into a new buffer of its length, which noq keeps until the peer acknowledges
+  it and each byte before it on its stream, or the stream resets. A partial write
   of it keeps the rest and copies nothing again. Lost: writes of at most 1452 bytes,
   because noq-proto allocates about 3 times for each segment that they fill (1.87x
   copy-then-send and 13 allocations over `send` for 1000 ranges of 8 B); and writes of

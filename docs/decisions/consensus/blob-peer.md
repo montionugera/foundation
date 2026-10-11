@@ -12,7 +12,8 @@
   each byte of it and each byte before it on the stream, so a get can hold more than one
   chunk. The bound is `transport`'s (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): at most
-  `window_bytes / 65536` chunks for each session, plus two for each get
+  `window_bytes` of chunk bytes for each session, in at most `window_bytes / 1453`
+  chunks, plus two for each get
   (`laptop.architect-2`, 2026-10-11T17:39:39Z,
   https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
   refusal stops the stream with its code: `wire::blob::Error::code` for a decode error,
