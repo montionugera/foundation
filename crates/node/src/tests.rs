@@ -4519,7 +4519,9 @@ mod port {
         }
 
         /// A node outside the region that holds a place, and that is a member now, frees
-        /// its place and keeps its session: at the bound, no session closes.
+        /// its place and keeps its session: at the bound, no session closes. It calls
+        /// `Places::take`, since no path makes a node a member at run time until the
+        /// join of #336, so no session through `accept` can show it.
         #[test]
         fn a_peer_that_is_a_member_now_frees_its_place() {
             let mut sim = sim::Sim::new(sim::Config::default());

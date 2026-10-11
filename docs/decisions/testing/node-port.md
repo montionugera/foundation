@@ -216,19 +216,23 @@
   is as old as the session that took it. A new session of a node key takes the key's
   place while a session still holds it, and the place keeps its age, so a redial does
   not make it newer. A peer that proves a right leaves the bound: its place frees and
-  its sessions stay. Membership is the one proof today. The client hello of #1744 and
-  the ticket join of #1157 must each free the place when its proof holds. Guarantee: a
-  peer outside the region keeps its session until 256 later peers took a place, so the
-  bound never closes a peer that proves its right before that. Limit: a flood that
-  takes 256 places in the time that a peer needs to prove closes that peer's session.
-  Only a limit on handshakes before admission bounds that rate (#563). The stop rule
-  holds: no clone of a session lives outside a future that shard 0 drops. Supersedes,
-  in the #1628 amendment, the close of each session that gets no place and the sentence
-  that at the bound another peer can take the place first, and the lockout until #2325
-  of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280. Lost:
-  a time bound on an unproven place with a share of places by source, since one IPv6
-  /56 holds 256 /64s, a count by source after the handshake is in the wrong crate
-  (#563), and the programs behind one NAT address would share one share; the proof in
-  the handshake, since the client hello answers a challenge of the node that a 1-RTT
-  handshake cannot carry without a new replay defense, and it moves `access` checks
-  into `transport`; a reserved place for a join, by the ruling on #2153.
+  its sessions stay. Membership is the one proof today, which shard 0 reads again for
+  each held place as each new session of a peer outside the region arrives. The client
+  hello of #1744 and the ticket join of #1157 must each free the place when its proof
+  holds. Guarantee: a peer outside the region keeps its session until 256 later peers
+  took a place, so the bound never closes a peer that proves its right before that.
+  Limit: a flood that takes 256 places in the time that a peer needs to prove closes
+  that peer's session. Only a limit on handshakes before admission bounds that rate
+  (#563). The stop rule holds: no clone of a session lives outside a future that shard 0
+  drops. Supersedes the close of each session that gets no place of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
+  first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
+  (2026-10-09 15:18 UTC), and the lockout until #2325 of
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280 (2026-10-10
+  23:40 UTC). Lost: a time bound on an unproven place with a share of places by source,
+  since one IPv6 /56 holds 256 /64s, a count by source after the handshake is in the
+  wrong crate (#563), and the programs behind one NAT address would share one share; the
+  proof in the handshake, since the client hello answers a challenge of the node that a
+  1-RTT handshake cannot carry without a new replay defense, and it moves `access`
+  checks into `transport`; a reserved place for a join, by the ruling on #2153.
