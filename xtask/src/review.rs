@@ -663,15 +663,18 @@ impl<'a> Shown<'a> {
     /// The end lines: the last block after the fields, or no lines when it is not a
     /// paragraph or the fields are the only block. `None` when the comment is old.
     fn end(&self) -> Option<&[String]> {
-        (!self.old).then(|| self.paragraph(self.blocks.get(1..).and_then(<[_]>::last)))
+        (!self.old).then(|| self.paragraph(self.end_block().map(|i| &self.blocks[i])))
     }
 
     /// The blocks after the round heading other than that of the end lines.
     fn before_end(&self) -> &[Option<usize>] {
-        match self.blocks.split_last() {
-            Some((_, before)) if !self.old && !before.is_empty() => before,
-            _ => &self.blocks,
-        }
+        &self.blocks[..self.end_block().unwrap_or(self.blocks.len())]
+    }
+
+    /// The index in [`Shown::blocks`] of the end lines: the last block after the
+    /// fields, or none when the comment is old or the fields are the only block.
+    fn end_block(&self) -> Option<usize> {
+        (!self.old && self.blocks.len() > 1).then(|| self.blocks.len() - 1)
     }
 
     /// The lines of `block`, one of [`Shown::blocks`], or none when it is not a
