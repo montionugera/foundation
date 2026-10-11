@@ -147,9 +147,35 @@ impl std::fmt::Debug for Client {
 
 #[cfg(test)]
 mod tests {
+    use env::rng::Rng;
     use sim::{Sim, node};
 
     use super::Server;
+
+    #[test]
+    fn each_scope_draws_from_its_rng() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        let drawn = sim
+            .run_on(&node, move |node, _| async move {
+                let address = node.addresses()[0];
+                let mut drawn = Vec::new();
+                for start in [1, 2] {
+                    let body = async |_: &Server| {
+                        // SAFETY: it draws from the generator of this thread.
+                        unsafe { crate::ffi::test::UA_UInt32_random() }
+                    };
+                    let rng = Rng::from_seed(start);
+                    drawn.push(
+                        Server::scope(node.clock(), node.net(), address, rng, body)
+                            .await,
+                    );
+                }
+                drawn
+            })
+            .expect("the run ends");
+        assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
+    }
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {

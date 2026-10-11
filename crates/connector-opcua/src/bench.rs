@@ -427,6 +427,7 @@ mod tests {
     use std::panic::{self, AssertUnwindSafe};
 
     use env::clock::Clock;
+    use env::rng::Rng;
     use sim::{Sim, node};
     use types::time::Span;
 
@@ -452,6 +453,31 @@ mod tests {
     }
 
     /// A scope closes after a panic in its body, so the next scope takes its port.
+    #[test]
+    fn each_scope_draws_from_its_rng() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        let drawn = sim
+            .run_on(&node, move |node, _| async move {
+                let address = node.addresses()[0];
+                let mut drawn = Vec::new();
+                for start in [1, 2] {
+                    let body = async |_: &Manager| {
+                        // SAFETY: it draws from the generator of this thread.
+                        unsafe { ffi::test::UA_UInt32_random() }
+                    };
+                    let rng = &mut Rng::from_seed(start);
+                    drawn.push(
+                        Manager::scope(node.clock(), node.net(), address, 0, rng, body)
+                            .await,
+                    );
+                }
+                drawn
+            })
+            .expect("the run ends");
+        assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
+    }
+
     #[test]
     fn a_scope_whose_body_panics_frees_its_port() {
         let mut sim = Sim::new(sim::Config::default());
