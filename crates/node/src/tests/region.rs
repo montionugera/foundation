@@ -370,20 +370,38 @@ fn a_founding_that_does_not_read_stops_the_node() {
     assert_eq!(bytes(&mut sim, &host, FILE), None);
 }
 
-/// Removes the file `name` on `host` and makes the removal durable.
-fn remove_name(sim: &mut sim::Sim, host: &sim::node::Node) {
-    sim.run_on(host, |host, _| async move {
+/// Removes the file `path` on `host` and makes the removal durable.
+fn remove(sim: &mut sim::Sim, host: &sim::node::Node, path: &'static str) {
+    sim.run_on(host, move |host, _| async move {
         let files = host.files();
-        files
-            .remove(Path::new(crate::name::FILE))
-            .await
-            .expect("removes");
+        files.remove(Path::new(path)).await.expect("removes");
         files.sync_dir(Path::new("")).await.expect("syncs");
     })
     .expect("the run ends");
 }
 
-/// The name in the file `name` on `host`.
+/// Removes the file `name` on `host` and makes the removal durable.
+fn remove_name(sim: &mut sim::Sim, host: &sim::node::Node) {
+    remove(sim, host, crate::name::FILE);
+}
+
+/// The name that [`crate::name`] gives on `host` with no name given.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "a test helper panics on a run that does not end"
+)]
+fn named(
+    sim: &mut sim::Sim,
+    host: &sim::node::Node,
+) -> Result<types::name::Name, Error> {
+    let named = sim.run_on(host, |host, _| async move {
+        crate::name(&host.files(), None).await
+    });
+    named.expect("the run ends")
+}
+
+/// The name in the file `name` on `host`. It reads the file alone, as
+/// [`crate::name`] also gives the card name.
 fn kept(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<types::name::Name> {
     let kept = sim.run_on(host, |host, _| async move {
         crate::name::read(&host.files()).await
@@ -530,4 +548,72 @@ fn a_founding_that_does_not_read_after_the_name_file_is_gone_stops_the_node() {
     });
     assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Mesh(error)));
     assert_eq!(kept(&mut sim, &host), None);
+}
+
+/// With no file `name`, a file `node.key` that holds no key, or the key of a node with
+/// no card in the founding, gives no stored name, and one that a node did not write
+/// gives [`Error::Key`].
+#[test]
+fn the_card_name_is_the_one_of_the_key_in_node_key() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+    let mut another: [u8; identity::LEN] = own.clone().try_into().unwrap();
+    another[31] ^= 1;
+    crate::sector::checksum(&mut another);
+    let mut foreign = own.clone();
+    foreign[40] ^= 1;
+    let cases = [
+        (Vec::new(), Err(Error::Unnamed)),
+        (vec![0; identity::LEN], Err(Error::Unnamed)),
+        (another.to_vec(), Err(Error::Unnamed)),
+        (foreign, Err(Error::Key)),
+        (vec![0; identity::LEN - 1], Err(Error::Key)),
+        (own, Ok("edge".parse().unwrap())),
+    ];
+    for (key, name) in cases {
+        remove(&mut sim, &host, identity::FILE);
+        write(&mut sim, &host, identity::FILE, key.clone());
+        assert_eq!(named(&mut sim, &host), name, "{key:?}");
+    }
+}
+
+/// A start with no file `name`, whose file `node.key` does not read, stops the node
+/// and writes no name.
+#[test]
+fn a_node_key_that_does_not_read_after_the_name_file_is_gone_stops_the_node() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(identity::FILE), operation);
+    let error = env::files::Error::Io {
+        path: PathBuf::from(identity::FILE),
+        operation,
+        code: 5,
+    };
+    assert_eq!(
+        start_and_stop(&mut sim, &host),
+        Err(Error::Directory(error))
+    );
+    assert_eq!(kept(&mut sim, &host), None);
+}
+
+/// A file `name` gives the stored name, also when the node's card holds another one.
+#[test]
+fn the_name_file_comes_before_the_card_name() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let mut body = [0; crate::name::LEN - 4];
+    body[..17].copy_from_slice(b"foundation/name/1");
+    body[17] = 5;
+    body[18..23].copy_from_slice(b"other");
+    let file: [u8; crate::name::LEN] = crate::sector::summed(&body).expect("a body");
+    write(&mut sim, &host, crate::name::FILE, file.to_vec());
+    assert_eq!(named(&mut sim, &host), Ok("other".parse().unwrap()));
 }
