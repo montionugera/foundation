@@ -4031,25 +4031,24 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_sender_gives_back_its_blocks_when_the_peer_acknowledges() {
+    fn a_reset_sender_gives_back_its_blocks_at_once() {
         testing::run(1, |shard| {
             let mut pair = connected(shard);
             // noq-proto copies a write of 1452 bytes or less, and holds a larger one
-            // until the peer acknowledges it. A 2000-byte block takes 2112 bytes of
-            // the budget.
+            // until the peer acknowledges it or the stream resets. A 2000-byte block
+            // takes 2112 bytes of the budget.
             let config = block::Config::new(3000).expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Pool::new(config, memory);
             let mut sender = open_sender(&mut pair, Class::Complete);
             let (now, message) = (pair.now(), pool.alloc(2000).expect("room").freeze());
             write(&mut pair.client, now, &mut sender, &[message]);
-            pair.client.endpoint.reset(now, &mut sender, Code(9));
             let exhausted = block::Error::Exhausted {
                 requested: 2000,
                 available: 888,
             };
             assert_eq!(pool.alloc(2000).err(), Some(exhausted));
-            pair.run(RUN);
+            pair.client.endpoint.reset(now, &mut sender, Code(9));
             assert_eq!(pool.alloc(2000).err(), None);
         });
     }
