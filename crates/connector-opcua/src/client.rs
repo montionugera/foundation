@@ -55,15 +55,14 @@ impl Client {
     /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
     /// session, and gives it once the session is active. On an error, it closes the
-    /// session that it made with [`Client::close`], so an error can come after the
-    /// request timeout.
+    /// session that it made with [`Client::close`] first, which can take up to two more
+    /// request timeouts.
     ///
     /// # Errors
     ///
     /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
     /// is not active after the request timeout of the client (5 s), else the status of
-    /// open62541 when it refuses `url` or the connect fails. The close after an error
-    /// waits at most one more request timeout.
+    /// open62541 when it refuses `url` or the connect fails.
     ///
     /// # Panics
     ///
