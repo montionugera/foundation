@@ -47,8 +47,8 @@
   (https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6031464116). Amended
   (2026-10-08T22:24:43Z, #2020): `Shard::shed` stops carrying an index, the pair of
   `carry`. A shed changes no control: the shard keeps the gate of the index for the
-  next carry of its slot when the gate holds a restored holder or a handoff that waits
-  for room, and drops each other gate, which equals a new one (`laptop.architect`,
+  next carry of its slot when the gate holds a restored holder or a handoff that waits,
+  and drops each other gate, which equals a new one (`laptop.architect`,
   #2314, 2026-10-10T22:57:44Z, item 2:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268;
   supersedes "Its control gate goes, and with it a handoff that waits for room"). Each

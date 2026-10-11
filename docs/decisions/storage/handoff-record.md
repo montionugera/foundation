@@ -28,7 +28,9 @@
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103202889,
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103276258, and
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103996718).
-  Before the node first has mesh time, such a handoff waits as one with no room does.
+  Before the node first has mesh time, such a handoff waits as one with no room does
+  (`laptop.architect`, #2314, 2026-10-11T12:52:20Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109217872).
   Lost: the channel key in `buffer::Stored`, which each read on the data path makes,
   for one control case. A handoff is not on disk while the ring or the pool has no
   room for it, and a restart or a failover in that time starts the gate from the last

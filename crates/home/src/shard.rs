@@ -362,8 +362,8 @@ impl Shard {
     /// its position. Its frames stay in the buffer, so a later [`carry`](Self::carry)
     /// of `slot` continues each path from its tail in the buffer: the last entry
     /// appended, on disk or not. The shard also keeps the control gate for that carry
-    /// when the gate holds a restored holder or a handoff that waits for room, so a
-    /// shed changes no control. It does nothing when the shard does not carry `slot`.
+    /// when the gate holds a restored holder or a handoff that waits, so a shed
+    /// changes no control. It does nothing when the shard does not carry `slot`.
     ///
     /// # Panics
     ///
