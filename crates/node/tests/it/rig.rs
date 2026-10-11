@@ -762,6 +762,30 @@ fn a_sweep_passes_over_a_directory_that_a_process_writes_in() {
     assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
+/// A sweep passes over a directory that is gone before its remove, and panics on any
+/// other error of the remove.
+#[test]
+#[cfg(unix)]
+fn a_sweep_panics_when_a_remove_fails_with_another_error() {
+    let rig = Rig::new();
+    let made = rig
+        .dir
+        .join(format!("{PREFIX}{}-made-0", std::process::id()));
+    let dead = rig.dir.join(format!("{PREFIX}{}-denied-0", gone()));
+    for dir in [&made, &dead] {
+        std::fs::create_dir(dir).expect("make the directory");
+    }
+    sweep(&made, |_| Err(ErrorKind::NotFound.into()));
+    let swept = std::panic::AssertUnwindSafe(|| {
+        sweep(&made, |_| Err(ErrorKind::PermissionDenied.into()));
+    });
+    let panic = std::panic::catch_unwind(swept).expect_err("the sweep panics");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some(&*format!("remove {}: permission denied", dead.display()))
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_rig_keeps_a_file_with_the_name_of_a_directory() {
