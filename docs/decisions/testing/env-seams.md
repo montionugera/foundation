@@ -470,8 +470,11 @@
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
   bound holds for a read: the bytes of a file, or the bytes of the entry paths of a
-  directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty
-  path names nothing. On `os`, a file that a write makes gives the group and other users
+  directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty path
+  names nothing. `env::paths::names_directory` holds the rule for the text of a path,
+  and each driver asks it. Lost: a copy in each driver. The copy of `os` lost its `..`
+  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424). On
+  `os`, the permission bits of a file that a write makes give the group and other users
   no access, also when it replaces a file, and a symbolic link, a device, or a pipe at
   the path takes the bytes in place, with no rename. Lost: a second bound for the count
   of entries; a rename over each thing at the path, which replaces `/dev/null` with a
@@ -484,9 +487,9 @@
   2026-10-11T15:51:21Z:
   https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110806235; the docs,
   2026-10-11T16:24:16Z:
-  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111115118).
-  In place, a reader can also see a part of the bytes, and two writes at one time can
-  leave a mix of the two (`laptop.architect-2`, 2026-10-11T16:37:30Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111115118). In place,
+  a reader can also see a part of the bytes, and two writes at one time can leave a mix
+  of the two (`laptop.architect-2`, 2026-10-11T16:37:30Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158). On `os`,
   the file that a write makes is a new file of the user, also when it replaces a file.
   It takes nothing from the old file: not its owner, its group, its permission bits, or
@@ -506,4 +509,18 @@
   Supersedes "keeps its mode" of
   https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058 and the
   kept bits, owner, and group of
-  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158.
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158. `os` reads
+  and sets no access control list. A file that a write makes takes the entries that its
+  directory gives to its new files, as each file that a tool makes there does. On macOS
+  such an entry is then on the file, also when the file that it replaces had none, and
+  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424).
+  The entry is the operator's (`docs/security.md`, "Other local user"). Lost: an empty
+  list on the hidden file on macOS. `rustix` and `libc` give no call for it. A clear
+  after the open leaves a time in which a user that the entry names opens the file, and
+  that user reads the bytes through its handle. It also removes the entries that the
+  operator gave the directory for its new files. The look at a caller that writes a file
+  that the user made takes this case too. Supersedes "it gives no user more than the old
+  file gave, with or without a list" of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6111675216
+  (`laptop.architect-2`, 2026-10-11T20:23:25Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113352507).

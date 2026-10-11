@@ -168,8 +168,10 @@ pub fn net() -> env::net::Net {
 /// The file that a write makes is a new file of this user, with permission bits that
 /// give the group and other users no access, also when it replaces a file that gave
 /// more. It takes nothing from the file that it replaces: not its owner, its group, its
-/// permission bits, or its access control list. Each other hard link of that file keeps
-/// the old bytes.
+/// permission bits, or its access control list. `os` sets no access control list, so
+/// the file takes the entries that its directory gives to its new files: on macOS, such
+/// an entry can open the file to another user. Each other hard link of the replaced
+/// file keeps the old bytes.
 ///
 /// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
 /// hidden file and no rename: a reader, a crash, or a failed write can see or leave a

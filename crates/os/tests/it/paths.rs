@@ -87,6 +87,34 @@ fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
     }
 }
 
+/// `os` sets no access control list.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files() {
+    use std::process::Command;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("plant.hcl");
+    fs::write(&path, b"old").unwrap();
+    fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+    let entries = || {
+        let listed = Command::new("ls").arg("-le").arg(&path).output().unwrap();
+        assert!(listed.status.success(), "{listed:?}");
+        let listed = String::from_utf8(listed.stdout).unwrap();
+        listed
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(entries(), [""; 0]);
+    let mut chmod = Command::new("chmod");
+    chmod.args(["+a", "everyone allow read,file_inherit"]);
+    assert!(chmod.arg(&scratch.0).status().unwrap().success());
+    os::paths().write(&path, b"new").unwrap();
+    assert_eq!(entries(), [" 0: group:everyone inherited allow read"]);
+    assert_eq!(mode(&path), 0o600);
+}
+
 #[test]
 fn a_write_on_a_path_that_ends_in_a_slash_keeps_the_files_inside() {
     let scratch = Scratch::new();
