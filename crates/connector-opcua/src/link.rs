@@ -948,6 +948,8 @@ fn the_scan_of_a_crate_that_does_not_parse_gives_the_errors_of_rustc() {
     let refused = std::panic::catch_unwind(|| read_by_rustc(&root, &[], &[]));
     let message = *refused.unwrap_err().downcast::<String>().unwrap();
     assert!(message.starts_with("rustc gives no files: "), "{message}");
+    let file = format!("{}:1:", root.join("src/lib.rs").display());
+    assert!(message.contains(&file), "{message}");
     assert!(!scan_out().exists(), "{}", scan_out().display());
 }
 
