@@ -266,6 +266,24 @@ fn a_failed_create_leaves_no_file() {
 }
 
 #[test]
+fn a_create_takes_the_room_of_a_removed_file_that_no_sync_dir_covers() {
+    let found = run(0, MIB, |node, _| async move {
+        let files = node.files();
+        files.create_dir(Path::new("d")).await.unwrap();
+        drop(create(&node, "d/a", MIB - 4 * KIB).await);
+        files.sync_dir(Path::new("d")).await.unwrap();
+        files.remove(Path::new("d/a")).await.unwrap();
+        let mode = Mode::Create { len: MIB - 4 * KIB };
+        let len = files
+            .open(Path::new("d/b"), mode)
+            .await
+            .map(|file| file.len());
+        (len, files.list(Path::new("d")).await.unwrap())
+    });
+    assert_eq!(found, (Ok(MIB - 4 * KIB), vec!["b".into()]));
+}
+
+#[test]
 fn create_allocates_an_empty_file_that_is_there_once_no_writer_holds_it() {
     let found = run(0, MIB, |node, _| async move {
         let (pool, files) = (pool(), node.files());
