@@ -3706,8 +3706,8 @@ fn a_failed_record_write_ends_the_buffer_with_its_error() {
     .expect("the buffer ends");
 }
 
-/// A `Commit` answers only for the entries appended before its call: past the drop,
-/// a later failed write does not change its result.
+/// The `Commit` that `committed` gives answers only for the entries appended before
+/// its call: past the drop, a later failed write does not change its result.
 #[test]
 fn a_commit_held_past_the_drop_gives_ok_when_a_later_write_fails() {
     let (mut sim, node) = create_node(113);
