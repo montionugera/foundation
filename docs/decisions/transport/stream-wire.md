@@ -21,7 +21,16 @@
   about 54 MiB for a window of 1 MiB, and to count the held bytes under a second limit
   beside the window, which is this rule with a larger window and one more limit
   (`laptop.architect-2`, 2026-10-11T17:39:39Z,
-  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). On a
+  path that reorders packets, a small window costs speed. Measured on box2 in sim time
+  (16 MiB as 256 messages of 64 KiB, 12.5 MB/s, 10 ms each way, 1 ms of jitter on both
+  links, the mean of 8 runs): a window of 256 KiB, 1 MiB, 1.5 MiB, and 2 MiB sends in
+  4340 ms, 2536 ms, 2308 ms, and 2151 ms, and holds at most 5, 17, 25, and 33 blocks of
+  64 KiB. The count before this rule sends in 2203 ms and 2094 ms at 256 KiB and 1 MiB,
+  and holds up to 29 and 136 blocks: it got its speed from bytes that it did not count.
+  With 100 µs of jitter the two differ by under 1% (`laptop.architect-2`,
+  2026-10-11T20:30:16Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6113419278). A
   message that QUIC does not take in full waits its turn, by class, then oldest first.
   Only the first sender in turn writes, and only it wakes when QUIC has room. A write
   of a class ahead of every waiter goes first; any other write waits, and a `try_send`

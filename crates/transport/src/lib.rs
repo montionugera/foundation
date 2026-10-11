@@ -332,8 +332,11 @@ pub struct Config {
     /// holds at most this many sent bytes against any peer. While the window is full,
     /// the session takes no new byte to send, of any class. Each held run of over 1452
     /// bytes of a block holds the whole block: at most `window_bytes / 1453` blocks,
-    /// plus two for each stream. Size it near bandwidth times round trip. Must be at
-    /// least twice the message limit (the smaller of `message_bytes_max` and
+    /// plus two for each stream. Size it near bandwidth times round trip, and larger
+    /// for a path that loses or reorders packets, where each gap holds the window until
+    /// its repair: with 1 ms of jitter at 12.5 MB/s and a round trip of 20 ms, a window
+    /// of about 1, 4, and 8 times that product sent 16 MiB in 4.3 s, 2.5 s, and 2.2 s.
+    /// Must be at least twice the message limit (the smaller of `message_bytes_max` and
     /// `pool.largest()`), so a message of one class leaves room for a message of the
     /// other.
     pub window_bytes: usize,
