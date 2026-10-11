@@ -195,15 +195,19 @@
   2026-10-11 10:30 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
   flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`
   crate also gives each compile of the connector flags from the profile and the target
-  of the Rust build, such as the optimization level, `-fPIC`, and `-g`. The objects of
-  the check have none of these flags. The check adds `-g -O0` and `-fno-stack-protector`
-  (above), and no other flag. So the two builds differ in the macros that these flags
-  set, such as `__OPTIMIZE__`, `__PIE__`, and `_FORTIFY_SOURCE`. Until #2381, the check
-  does not read code that a file of the copy puts under such a macro. These sentences:
-  stated by `laptop.architect`
+  of the Rust build, such as the optimization level, `-fPIC`, and `-g`. It adds the
+  `CFLAGS` of the environment too. The check takes none of these flags from `build.rs`
+  or from the `cc` crate. It adds its own `-g -O0` and `-fno-stack-protector` (above),
+  and no other flag that changes the code. So the two builds differ in the macros that a
+  flag of one build alone changes, such as `__OPTIMIZE__`, `__PIE__`, and
+  `_FORTIFY_SOURCE`. Until #2381, the check does not read code that a file of the copy
+  puts under such a macro. These sentences: stated by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
-  2026-10-11 08:23 UTC). A `-W` flag with no `,` is a warning, which changes no code, so
-  `collect` leaves it out by that pattern, not by name. Decided by `laptop.architect-2`
+  2026-10-11 08:23 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108238957, 2026-10-11
+  10:49 UTC, for the flags of the `cc` crate and of the check). A `-W` flag with no `,`
+  is a warning, which changes no code, so `collect` leaves it out by that pattern, not
+  by name. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
   2026-10-08 13:57 UTC) and `laptop.director`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061540779,
