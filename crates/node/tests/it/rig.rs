@@ -309,6 +309,10 @@ fn sweep(made: &Path) {
         };
         // A test thread of this run or of another run can remove it first.
         let gone = |error: &std::io::Error| error.kind() == ErrorKind::NotFound;
+        // A node that the test started can still make files in it. The next sweep
+        // removes it.
+        let busy =
+            |error: &std::io::Error| error.kind() == ErrorKind::DirectoryNotEmpty;
         let path = entry.path();
         let mine = match entry.metadata() {
             Ok(metadata) => metadata.is_dir() && metadata.uid() == owner,
@@ -319,7 +323,9 @@ fn sweep(made: &Path) {
             continue;
         }
         match remove(&path) {
-            Err(error) if !gone(&error) => panic!("remove {}: {error}", path.display()),
+            Err(error) if !gone(&error) && !busy(&error) => {
+                panic!("remove {}: {error}", path.display())
+            }
             _ => {}
         }
     }
@@ -674,12 +680,17 @@ fn gone() -> u32 {
     gone.id()
 }
 
-/// Makes the directory `foundation-node-<pid>-<test>-0` with a data directory.
+/// Makes the directory `foundation-node-<pid>-<test>-0` with the data directory that
+/// `fill` fills. A sweep on another test thread sees it only when it is complete.
 #[cfg(unix)]
-fn left(pid: u32, test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("{PREFIX}{pid}-{test}-0"));
-    std::fs::create_dir_all(dir.join("foundation-data/data"))
-        .expect("make the directory");
+fn left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
+    let temp = std::env::temp_dir();
+    let draft = temp.join(format!("left-{}-{test}", std::process::id()));
+    let data = draft.join("foundation-data/data");
+    std::fs::create_dir_all(&data).expect("make the directory");
+    fill(&data);
+    let dir = temp.join(format!("{PREFIX}{pid}-{test}-0"));
+    std::fs::rename(draft, &dir).expect("move the directory");
     dir
 }
 
@@ -692,9 +703,9 @@ fn a_rig_removes_the_directory_of_a_test_process_that_is_gone() {
         .spawn()
         .expect("start sleep");
     let sleep = Process(sleep);
-    let dead = left(gone(), "sweep");
-    let own = left(std::process::id(), "sweep");
-    let other = left(sleep.0.id(), "sweep");
+    let dead = left(gone(), "sweep", |_| {});
+    let own = left(std::process::id(), "sweep", |_| {});
+    let other = left(sleep.0.id(), "sweep", |_| {});
     let _rig = Rig::new();
     assert!(!dead.exists(), "{} is still there", dead.display());
     for live in [own, other] {
@@ -708,13 +719,40 @@ fn a_rig_removes_the_directory_of_a_test_process_that_is_gone() {
 fn a_rig_removes_a_directory_that_a_test_left_read_only() {
     use std::os::unix::fs::PermissionsExt;
 
-    let dead = left(gone(), "read-only");
-    let data = dead.join("foundation-data/data");
-    keep(&data.join("budget"), POOL, 1);
-    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o555))
-        .expect("make it read-only");
+    let dead = left(gone(), "read-only", |data| {
+        keep(&data.join("budget"), POOL, 1);
+        std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o555))
+            .expect("make it read-only");
+    });
     let _rig = Rig::new();
     assert!(!dead.exists(), "{} is still there", dead.display());
+}
+
+#[test]
+#[cfg(unix)]
+fn a_rig_keeps_a_directory_that_a_process_writes_in() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let dead = left(gone(), "busy", |_| {});
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let (dead, stop) = (dead.clone(), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            for file in 0.. {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The sweep removes the directory between two writes.
+                let _ = std::fs::write(dead.join(format!("{file}")), "");
+            }
+        })
+    };
+    for _ in 0..20 {
+        drop(Rig::new());
+    }
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("join the writer");
+    let _ = std::fs::remove_dir_all(dead);
 }
 
 #[test]
