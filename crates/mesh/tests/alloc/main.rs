@@ -24,8 +24,8 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 /// The definitions of the smaller spec. The larger has twice as many.
 const FEW: usize = 512;
 /// The tenths of a tree build that the allocations of an apply and a read of one more
-/// definition stay under. One build at the apply and one in the root check of the
-/// read give 42.8, and a second build at the read gives 52.8.
+/// definition stay under. The bound covers each allocation of the apply and the read,
+/// not the tree builds alone: they give 42.8, and a second build at the read adds 10.
 const BUILDS: u64 = 48;
 
 fn main() {
@@ -40,7 +40,8 @@ fn main() {
     assert!(
         mesh * 10 < tree * BUILDS,
         "an apply and a read of {FEW} more definitions make {mesh} more allocations, \
-         and a build of their tree {tree}",
+         and a build of their tree {tree}: a second build, or a new allocation for \
+         each definition",
     );
 }
 
