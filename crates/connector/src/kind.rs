@@ -193,6 +193,10 @@ impl<C> Context<C> {
     /// `connector.no-channel` for no name, and `connector.lease` for a lease that is
     /// not longer than zero. [`Error::Retry`] with the hub's error when the home of an
     /// index is another node, or the mesh stopped.
+    ///
+    /// # Panics
+    ///
+    /// When the hub gives an error that its contract excludes for this open.
     pub async fn writer(
         &self,
         channels: Vec<Name>,
@@ -223,7 +227,8 @@ impl<C> Context<C> {
     /// # Panics
     ///
     /// As [`hub::Hub::reader`]: when `settings.hold` is negative, or is not zero in
-    /// `Latest` mode. [`reader::read`] gives neither.
+    /// `Latest` mode. [`reader::read`] gives neither. When the hub gives an error
+    /// that its contract excludes for this open.
     pub async fn reader(
         &self,
         settings: &reader::Settings,
@@ -382,23 +387,21 @@ const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
 
-/// The class of `error` of a named reader at the home of its index.
+/// The class of `error` of the open of a named reader.
 ///
 /// # Panics
 ///
-/// For an error that such an open never gives.
+/// For `Unsynced`, since a run starts only once the node has mesh time, and for an
+/// error of a reader away from its home, since a named reader opens only at its home.
 fn reader_error(error: hub::reader::Error) -> Error {
     use hub::reader::Error as Hub;
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
         Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
-        Hub::Unsynced
-        | Hub::Transport(_)
-        | Hub::Refused(_)
-        | Hub::Message(_)
-        | Hub::Pool(_) => {
-            panic!("invariant: a named reader at the home of its index gave {error}")
+        Hub::Unsynced => panic!("invariant: a run started before mesh time: {error}"),
+        Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
+            panic!("invariant: a named reader away from its home gave: {error}")
         }
     };
     config_error(code, &error, fix)
@@ -418,7 +421,7 @@ fn writer_error(error: hub::writer::Error) -> Error {
         Hub::Home(home @ Home::Lease { .. }) => (LEASE, home.fix()),
         Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
         Hub::Home(Home::Unsynced) => {
-            panic!("invariant: a writer of the hub gave {error}")
+            panic!("invariant: a writer of the hub gave: {error}")
         }
     };
     config_error(code, &error, fix)
@@ -856,6 +859,11 @@ mod tests {
         assert_eq!(source.as_deref(), Some("timed out"));
     }
 
+    // The Retry and panic tests call the mapping directly: the hub of
+    // `hub::testing` has no region, so it never gives `Remote` or `Mesh`; a run
+    // starts after the status writer opens, so `Unsynced` cannot come through
+    // `Supervisor::run`; and `connector` cannot build a `transport` or `wire` error.
+
     #[test]
     fn retries_a_hub_error_that_the_home_or_the_mesh_can_clear() {
         let home = types::node::Key::from_u128(7);
@@ -884,16 +892,29 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "invariant: a named reader at the home of its index gave the node \
-                    has no mesh time yet: open the named reader again later"
+        expected = "invariant: a run started before mesh time: the node has no mesh \
+                    time yet: open the named reader again later"
     )]
-    fn panics_for_a_reader_error_that_the_open_never_gives() {
+    fn panics_for_a_reader_that_has_no_mesh_time() {
         drop(reader_error(hub::reader::Error::Unsynced));
     }
 
     #[test]
     #[should_panic(
-        expected = "invariant: a writer of the hub gave the node has no mesh time yet"
+        expected = "invariant: a named reader away from its home gave: the pool had no \
+                    block for the open: pool is full: asked for 8 bytes, 0 bytes free"
+    )]
+    fn panics_for_a_reader_error_away_from_its_home() {
+        let pool = block::Error::Exhausted {
+            requested: 8,
+            available: 0,
+        };
+        drop(reader_error(hub::reader::Error::Pool(pool)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a writer of the hub gave: the node has no mesh time yet"
     )]
     fn panics_for_a_writer_error_that_the_hub_never_gives() {
         let unsynced = hub::home::writer::Error::Unsynced;
