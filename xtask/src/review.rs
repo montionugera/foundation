@@ -396,7 +396,7 @@ fn listed(reviewers: &str) -> BTreeSet<String> {
 /// findings text cannot set them. The last block is the end lines ([`END`]), unless the
 /// comment is old, posted before [`CUTOFF`]. A comment posted at or after
 /// [`RATING_CUTOFF`] starts with its name line, its rating, and its summary line
-/// ([`Shown::lacks`]).
+/// ([`lack`]).
 fn round(comment: &Comment) -> Option<Parsed> {
     let old = comment.created.as_str() < CUTOFF;
     let rated = comment.created.as_str() >= RATING_CUTOFF;
@@ -440,7 +440,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
         if let Some(&(line, cause)) = hiding {
             return Err(cause.problem(number, line));
         }
-        if let Some(lack) = shown.lacks().filter(|_| rated) {
+        if let Some(lack) = lack(&shown).filter(|_| rated) {
             return Err(format!(
                 "review round {number} {lack}. Write the round {FORMAT}"
             ));
@@ -486,6 +486,39 @@ fn count(number: u32, findings: &str) -> Result<u32, String> {
 fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
     text.split('\n')
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
+}
+
+/// What the comment `shown` lacks before its round heading, as the words of a problem,
+/// or `None`. Its first three lines of text there are its name line (a bold session
+/// name, ` · `, and a role), `Quality: <n>/10` with `n` from 1 to 10, and a summary
+/// line.
+fn lack(shown: &Shown<'_>) -> Option<&'static str> {
+    let mut lines = shown.start.iter().map(String::as_str);
+    let role = shown
+        .session
+        .as_deref()
+        .zip(lines.next())
+        .and_then(|(s, line)| {
+            line.strip_prefix(s)
+                .filter(|_| !s.is_empty())?
+                .strip_prefix(" · ")
+        });
+    if role.is_none_or(str::is_empty) {
+        return Some("does not start with a name line `**<session>** · <role>`");
+    }
+    let rating = lines
+        .next()
+        .and_then(|line| line.strip_prefix("Quality: ")?.strip_suffix("/10"));
+    if !rating.is_some_and(|n| (1..=10).any(|rating| rating.to_string() == n)) {
+        return Some(
+            "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+             name line",
+        );
+    }
+    if lines.next().is_none_or(str::is_empty) {
+        return Some("has no summary line after its `Quality:` line");
+    }
+    None
 }
 
 /// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
@@ -562,8 +595,9 @@ fn options() -> Options<'static> {
     options
 }
 
-/// A comment read as GitHub reads Markdown: its text from its round heading on, and the
-/// lines that can hide text or that the check cannot read.
+/// A comment read as GitHub reads Markdown: its start before its round heading, its
+/// text from the heading on, and the lines that can hide text or that the check cannot
+/// read.
 #[derive(Debug, Default)]
 struct Shown<'a> {
     /// The round number of the first top-level heading that has one ([`number`]). When
@@ -575,7 +609,8 @@ struct Shown<'a> {
     /// paragraph that starts with one.
     session: Option<String>,
     /// The lines of each top-level paragraph before the heading, as GitHub shows them
-    /// ([`texts`]).
+    /// ([`texts`]). A paragraph that comrak places in the wrong lines ([`misplaced`])
+    /// gives no line.
     start: Vec<String>,
     /// Each top-level block after the heading: the index in `text` of a paragraph, or
     /// `None` for any other block. The footnotes come last, as GitHub shows them.
@@ -618,7 +653,7 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
-        (shown.session, shown.start) = start(root);
+        shown.session = session(root);
         let mut hiding = Vec::new();
         for node in root.descendants() {
             let data = node.data.borrow();
@@ -639,12 +674,13 @@ impl<'a> Shown<'a> {
                     shown.text.push(Vec::new());
                 }
                 NodeValue::Paragraph => {
-                    let last = data.sourcepos.end.line;
-                    hiding.extend(
-                        bracket(node, last)
-                            .map(|line| (line_start(line), Cause::Bracket)),
-                    );
-                    shown.text.push(texts(node));
+                    let open = bracket(node, data.sourcepos.end.line);
+                    hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
+                    let lines = texts(node);
+                    if top && shown.number.is_none() {
+                        shown.start.extend_from_slice(&lines);
+                    }
+                    shown.text.push(lines);
                 }
                 NodeValue::HtmlBlock(_) | NodeValue::HtmlInline(_) => {
                     hiding.push((start, Cause::Raw));
@@ -664,39 +700,6 @@ impl<'a> Shown<'a> {
             })
             .collect();
         shown
-    }
-
-    /// What the comment lacks before its round heading, as the words of a problem, or
-    /// `None`. Its first three lines of text there are its name line (a bold session
-    /// name, ` · `, and a role), `Quality: <n>/10` with `n` from 1 to 10, and a summary
-    /// line.
-    fn lacks(&self) -> Option<&'static str> {
-        let mut lines = self.start.iter().map(String::as_str);
-        let role = self
-            .session
-            .as_deref()
-            .zip(lines.next())
-            .and_then(|(s, line)| {
-                line.strip_prefix(s)
-                    .filter(|_| !s.is_empty())?
-                    .strip_prefix(" · ")
-            });
-        if role.is_none_or(str::is_empty) {
-            return Some("does not start with a name line `**<session>** · <role>`");
-        }
-        let rating = lines
-            .next()
-            .and_then(|line| line.strip_prefix("Quality: ")?.strip_suffix("/10"));
-        if !rating.is_some_and(|n| (1..=10).any(|rating| rating.to_string() == n)) {
-            return Some(
-                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
-                 name line",
-            );
-        }
-        if lines.next().is_none_or(str::is_empty) {
-            return Some("has no summary line after its `Quality:` line");
-        }
-        None
     }
 
     /// The lines of the fields: the first block after the round heading, or none when
@@ -732,22 +735,13 @@ impl<'a> Shown<'a> {
     }
 }
 
-/// The start of the comment `root` ([`Shown::session`], [`Shown::start`]).
-fn start<'n>(root: &'n AstNode<'n>) -> (Option<String>, Vec<String>) {
-    let paragraph = |block: &&'n AstNode<'n>| {
-        matches!(block.data.borrow().value, NodeValue::Paragraph)
-    };
-    let session = root.first_child().filter(paragraph).and_then(|block| {
-        let span = block.first_child()?;
-        matches!(span.data.borrow().value, NodeValue::Strong)
-            .then(|| texts(span).join(" "))
-    });
-    let lines = root
-        .children()
-        .take_while(|block| number(block).is_none())
-        .filter(paragraph)
-        .flat_map(texts);
-    (session, lines.collect())
+/// The text of the bold span that starts the comment `root` ([`Shown::session`]).
+fn session<'n>(root: &'n AstNode<'n>) -> Option<String> {
+    let block = root.first_child()?;
+    let span = block.first_child()?;
+    let bold = matches!(block.data.borrow().value, NodeValue::Paragraph)
+        && matches!(span.data.borrow().value, NodeValue::Strong);
+    bold.then(|| texts(span).join(" "))
 }
 
 /// The first line of `paragraph` before its last line `last` with a span of text that
