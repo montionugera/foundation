@@ -27,11 +27,12 @@
   Only room held back for one handoff of each index, in the pool and in the ring,
   closes this. Trigger to look again: a measured case where a ring or a pool stays full
   across a handoff in a workload on the milestone path. Until #2385, such a handoff
-  waits for the next write, writer open or close, or end of a lease on its index
-  (INDEX FRAMES), also after the room comes back (`laptop.architect`, #2385,
-  2026-10-11T08:16:48Z, the OK of the deferral, item 4, and the trigger of its "Lost"
-  list: https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587).
-  A shed drops it (HOME SURFACE).
+  waits for the next write that is not a resend, writer open or close, or end of a
+  lease on its index (INDEX FRAMES), also after the room comes back
+  (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, the OK of the deferral, item 4,
+  and the trigger of its "Lost" list:
+  https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587). A shed
+  drops it (HOME SURFACE).
   Trimming must keep the last record of each index (#406). Until it does, a trim
   (STORE TRIM) can free that record, and a holder whose record a trim freed gets no
   grace after a restart. Retention deletes nothing (decided by `laptop.architect`,
