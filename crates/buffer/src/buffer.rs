@@ -313,6 +313,12 @@ impl fmt::Debug for Parked {
 }
 
 impl State {
+    /// How the task ended, once it ended: with the error of a failed file call, else
+    /// with `Ok`.
+    fn outcome(&self) -> Option<Result<(), files::Error>> {
+        self.ended.then(|| self.failed.clone().map_or(Ok(()), Err))
+    }
+
     /// Whether nothing is queued.
     fn idle(&self) -> bool {
         self.open.is_empty() && self.queue.is_empty()
@@ -665,6 +671,18 @@ impl Buffer {
         }
     }
 
+    /// Resolves at the end of the next group commit after the call, also one in
+    /// flight, or gives the file error that ended the buffer. It does not resolve
+    /// while nothing is appended. [`Commit`] says what one held past the drop gives.
+    #[must_use]
+    pub fn next_commit(&self) -> Commit {
+        let until = self.shared.state.borrow().commits + 1;
+        Commit {
+            waiter: Waiter::new(&self.shared, Event::Commit),
+            until,
+        }
+    }
+
     /// Resolves once the commit task ended: after the drop, once nothing is queued,
     /// or at a failed file call. Gives the error of that call, so `Ok` means that
     /// each entry appended before the drop is durable.
@@ -987,10 +1005,10 @@ async fn write(shared: &Shared, sealed: &[Sealed]) -> Result<(), files::Error> {
     shared.file.sync().await
 }
 
-/// The future of [`Buffer::committed`]. It does not borrow the buffer, and it holds
-/// the ring open until it drops. Held past the drop of the buffer, it resolves once
-/// the task ended: with `Ok` when the entries appended before its call are durable,
-/// else with the error that ended the task.
+/// The future of [`Buffer::committed`] and [`Buffer::next_commit`]. It does not borrow
+/// the buffer, and it holds the ring open until it drops. Held past the drop of the
+/// buffer, it resolves once the task ended: with the error that ended the task when
+/// that came before what it waits for was durable, else with `Ok`.
 #[derive(Debug)]
 pub struct Commit {
     waiter: Waiter,
@@ -1004,12 +1022,12 @@ impl Future for Commit {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let until = self.until;
         self.waiter.poll(cx, |state| {
-            // Before `failed`: a commit that synced stays well after a later sync
+            // Before `outcome`: a commit that synced stays well after a later sync
             // fails.
             if state.commits >= until && (!state.closed || state.ended) {
                 return Some(Ok(()));
             }
-            state.failed.clone().map(Err)
+            state.outcome()
         })
     }
 }
@@ -1025,11 +1043,7 @@ impl Future for End {
     type Output = Result<(), files::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.waiter.poll(cx, |state| {
-            state
-                .ended
-                .then(|| state.failed.clone().map_or(Ok(()), Err))
-        })
+        self.waiter.poll(cx, State::outcome)
     }
 }
 
