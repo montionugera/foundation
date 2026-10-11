@@ -364,7 +364,7 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             format!("the file `name` in the data directory {data} is not a node name"),
             "Remove it, and start the node with its name".to_owned(),
         ),
-        error @ node::Error::Port { .. } => (
+        error @ (node::Error::Port { .. } | node::Error::Listen { .. }) => (
             PORT,
             error.to_string(),
             "Give `--listen` an address of this host with a port that is free and that \

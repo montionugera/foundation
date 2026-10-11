@@ -196,7 +196,10 @@ fn a_running_node_holds_its_keys_and_its_bound_address() {
 /// host's address at that port reaches it.
 #[test]
 fn a_node_at_the_unspecified_ip_serves() {
-    for ip in [IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::UNSPECIFIED)] {
+    for ip in [
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    ] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
         let node = Node::start(Config {

@@ -35,7 +35,7 @@ mod tests;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::pin::pin;
 use std::rc::Rc;
@@ -81,7 +81,8 @@ pub struct Config<M> {
     /// The network. The node's port binds on it.
     pub net: env::net::Net,
     /// Where the node's one port binds: UDP, and TCP on the same port number once
-    /// the port carries TCP (#77).
+    /// the port carries TCP (#77). A multicast IP or the IPv4 broadcast IP starts no
+    /// shard ([`Error::Listen`]).
     pub listen: SocketAddr,
     /// The region whose mesh the node opens.
     pub region: Region,
@@ -204,7 +205,8 @@ impl Node {
     /// took a place. Returns once each shard runs or one has failed to start. No shard
     /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
     /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
-    /// bytes ([`Error::Pool`]), when the port does not bind ([`Error::Port`]), or when
+    /// bytes ([`Error::Pool`]), when the port does not bind ([`Error::Port`]), when
+    /// [`Config::listen`] has a multicast or broadcast IP ([`Error::Listen`]), or when
     /// [`Config::name`] has a reserved segment ([`Error::Reserved`]). Any failure stops
     /// the node, and [`Node::join`] gives the first one (its `# Errors`).
     ///
@@ -218,6 +220,10 @@ impl Node {
         if config.name.reserved() {
             let name = config.name;
             return Self::failed(Error::Reserved { name }, regional);
+        }
+        if unreachable(config.listen.ip()) {
+            let listen = config.listen;
+            return Self::failed(Error::Listen { listen }, regional);
         }
         let parts = match parts(config.budget.pool, config.budget.disk, cores) {
             Ok(parts) => parts,
@@ -419,6 +425,7 @@ impl Node {
     /// # Errors
     ///
     /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
+    /// [`Error::Listen`] for a multicast or broadcast IP to bind at,
     /// [`Error::Disk`] for a disk budget that holds no ring on each shard,
     /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
     /// pool budget that needs a reservation of more than `usize::MAX` bytes,
@@ -589,6 +596,13 @@ impl Role {
         };
         iter::once(Self::First(Box::new(first))).chain(ends.into_iter().map(Self::Next))
     }
+}
+
+/// Whether no peer reaches one node at `ip`: a multicast IP or the IPv4 broadcast
+/// IP, also as an IPv4-mapped IPv6 address.
+fn unreachable(ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    ip.is_multicast() || ip == Ipv4Addr::BROADCAST
 }
 
 /// The part of `budget` of each shard, and the layout of its ring from its part of
@@ -1270,6 +1284,12 @@ pub enum Error {
     /// another tag or checksum. The node took no session and does not write over the
     /// file.
     Admin,
+    /// [`Config::listen`] has an IP at which no peer reaches one node: a multicast IP
+    /// or the IPv4 broadcast IP. The node bound no port, and no shard started.
+    Listen {
+        /// The address that the node refused.
+        listen: SocketAddr,
+    },
     /// The node's port did not bind. No shard started.
     Port {
         /// The address of the bind.
@@ -1320,6 +1340,7 @@ impl Error {
             | Self::Transport(_)
             | Self::Key
             | Self::Admin
+            | Self::Listen { .. }
             | Self::Port { .. }
             | Self::Name
             | Self::Renamed { .. }
@@ -1376,6 +1397,11 @@ impl fmt::Display for Error {
             Self::Admin => f.write_str(
                 "the file `admin.key` in the data directory is not an admin key; \
                  restore it from a backup, or remove it to make a new admin",
+            ),
+            Self::Listen { listen } => write!(
+                f,
+                "cannot bind the node's port at {listen}: a multicast or broadcast IP \
+                 is not an address of a host"
             ),
             Self::Port { listen, error } => {
                 write!(f, "cannot bind the node's port at {listen}: {error}")
