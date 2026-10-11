@@ -145,15 +145,15 @@ impl Record {
         }
     }
 
-    /// Admits `card` with `admission` at mesh time `at`, and counts one use.
+    /// Checks that the ticket admits `card` with `admission` at mesh time `at`. The
+    /// caller counts the use in [`Record::uses`].
     ///
     /// # Errors
     ///
     /// The first refusal that holds, in this order: [`Refused::Forged`],
-    /// [`Refused::Scope`], [`Refused::Expired`], and [`Refused::Used`]. A refusal
-    /// counts no use.
-    pub(crate) fn admit(
-        &mut self,
+    /// [`Refused::Scope`], [`Refused::Expired`], and [`Refused::Used`].
+    pub(crate) fn check(
+        &self,
         card: &card::Signed,
         admission: &[u8; 64],
         at: Stamp,
@@ -182,7 +182,6 @@ impl Record {
         if !self.options.reusable && self.uses > 0 {
             return Err(Refused::Used { public_key });
         }
-        self.uses = self.uses.saturating_add(1);
         Ok(())
     }
 }
@@ -334,41 +333,35 @@ mod tests {
     #[test]
     fn a_single_use_ticket_admits_one_node() {
         let mut record = record(7, false);
-        let (first, second) = (signed(3, "plant.edge.a"), signed(4, "plant.edge.b"));
-        let at = BEFORE_EXPIRY;
+        let card = signed(3, "plant.edge.a");
+        let admission = ticket(7).admission(&card);
+        for _ in 0..2 {
+            assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
+        }
+        record.uses = 1;
         assert_eq!(
-            record.admit(&first, &ticket(7).admission(&first), at),
-            Ok(())
-        );
-        assert_eq!(
-            record.admit(&second, &ticket(7).admission(&second), at),
+            record.check(&card, &admission, BEFORE_EXPIRY),
             Err(Refused::Used {
                 public_key: public(7)
             })
         );
-        // The count is region state, which every node must agree on.
-        assert_eq!(record.uses, 1);
     }
 
     #[test]
-    fn a_reusable_ticket_admits_each_node() {
+    fn a_reusable_ticket_admits_each_node_after_any_use() {
         let mut record = record(7, true);
-        for (id, name) in [(3, "plant.edge.a"), (4, "plant.edge.b")] {
-            let card = signed(id, name);
-            let admitted =
-                record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
-            assert_eq!(admitted, Ok(()));
-        }
-        // The count is region state, which every node must agree on.
-        assert_eq!(record.uses, 2);
+        record.uses = u64::MAX;
+        let card = signed(3, "plant.edge.a");
+        let admitted = record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
+        assert_eq!(admitted, Ok(()));
     }
 
     #[test]
     fn an_admission_of_another_ticket_is_forged() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edge.a");
         assert_eq!(
-            record.admit(&card, &ticket(8).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(8).admission(&card), BEFORE_EXPIRY),
             Err(Refused::Forged {
                 node: key(3),
                 public_key: public(7)
@@ -378,11 +371,11 @@ mod tests {
 
     #[test]
     fn an_admission_of_another_card_is_forged() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let admission = ticket(7).admission(&signed(3, "plant.edge.a"));
         let other = signed(4, "plant.edge.a");
         assert_eq!(
-            record.admit(&other, &admission, BEFORE_EXPIRY),
+            record.check(&other, &admission, BEFORE_EXPIRY),
             Err(Refused::Forged {
                 node: key(4),
                 public_key: public(7)
@@ -392,10 +385,10 @@ mod tests {
 
     #[test]
     fn a_name_outside_the_prefix_is_out_of_scope() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edger");
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
             Err(Refused::Scope {
                 name: "plant.edger".parse().unwrap(),
                 prefix: "plant.edge".parse().unwrap()
@@ -404,18 +397,18 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_the_first_check_that_fails_and_counts_no_use() {
-        let mut record = record(7, false);
+    fn a_refusal_names_the_first_check_that_fails() {
+        let record = record(7, false);
         let outside = signed(3, "plant.edger");
         assert_eq!(
-            record.admit(&outside, &ticket(8).admission(&outside), EXPIRY),
+            record.check(&outside, &ticket(8).admission(&outside), EXPIRY),
             Err(Refused::Forged {
                 node: key(3),
                 public_key: public(7)
             })
         );
         assert_eq!(
-            record.admit(&outside, &ticket(7).admission(&outside), EXPIRY),
+            record.check(&outside, &ticket(7).admission(&outside), EXPIRY),
             Err(Refused::Scope {
                 name: "plant.edger".parse().unwrap(),
                 prefix: "plant.edge".parse().unwrap()
@@ -423,9 +416,9 @@ mod tests {
         );
         let inside = signed(4, "plant.edge.a");
         let admission = ticket(7).admission(&inside);
-        assert_eq!(record.admit(&inside, &admission, BEFORE_EXPIRY), Ok(()));
+        assert_eq!(record.check(&inside, &admission, BEFORE_EXPIRY), Ok(()));
         assert_eq!(
-            record.admit(&inside, &admission, EXPIRY),
+            record.check(&inside, &admission, EXPIRY),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -436,10 +429,10 @@ mod tests {
 
     #[test]
     fn a_ticket_admits_no_node_from_its_expiry() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edge.a");
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), EXPIRY),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -448,7 +441,7 @@ mod tests {
         );
         let after = Stamp::from_nanos(EXPIRY.nanos() + 1);
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), after),
+            record.check(&card, &ticket(7).admission(&card), after),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -456,7 +449,7 @@ mod tests {
             })
         );
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
             Ok(())
         );
     }
@@ -516,9 +509,9 @@ mod tests {
             let mut card = signed(node_id, "plant.edge.a").card().clone();
             card.version = version;
             let card = card::Signed::sign(key(node_id), card, &private(node_id));
-            let mut record = record(ticket_id, false);
+            let record = record(ticket_id, false);
             let admission = ticket(ticket_id).admission(&card);
-            prop_assert_eq!(record.admit(&card, &admission, BEFORE_EXPIRY), Ok(()));
+            prop_assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
         }
     }
 }

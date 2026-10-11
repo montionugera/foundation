@@ -293,19 +293,23 @@ impl State {
         Ok(())
     }
 
+    /// Checks `join` as [`State::apply`] does, with no change to the state.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refused`] that [`State::apply`] gives for `join`.
+    pub(crate) fn check(&self, join: &Join) -> Result<(), Refused> {
+        self.admitted(join).map(drop)
+    }
+
     // Admits the node of `join`. The ticket counts a use only when all checks pass.
     fn join(&mut self, join: Join) -> Result<(), Refused> {
-        let card = join.card.check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
-        let record =
-            self.tickets
-                .get_mut(&join.ticket.to_bytes())
-                .ok_or(Refused::Unknown {
-                    public_key: join.ticket,
-                })?;
-        record
-            .admit(&card, &join.admission, join.at)
-            .map_err(Refused::Ticket)?;
+        let (card, names) = self.admitted(&join)?;
+        let record = self
+            .tickets
+            .get_mut(&join.ticket.to_bytes())
+            .expect("admitted checks that the ticket is recorded");
+        record.uses = record.uses.saturating_add(1);
         let member = Member {
             card,
             admission: join.admission,
@@ -314,6 +318,23 @@ impl State {
         };
         self.insert(member, names);
         Ok(())
+    }
+
+    // The checked card of `join` and its names from `fits`, when the region admits
+    // it.
+    fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
+        let card = join.card.clone().check().map_err(Refused::Forged)?;
+        let names = self.fits(&card, &join.status)?;
+        let record =
+            self.tickets
+                .get(&join.ticket.to_bytes())
+                .ok_or(Refused::Unknown {
+                    public_key: join.ticket,
+                })?;
+        record
+            .check(&card, &join.admission, join.at)
+            .map_err(Refused::Ticket)?;
+        Ok((card, names))
     }
 
     // Adds `member`, whose names `fits` gave.

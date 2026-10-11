@@ -71,7 +71,10 @@
   Supersedes the sentence "the node never counts a wrong key" of
   https://github.com/synnaxlabs/foundation/issues/1382#issuecomment-6046807570).
   Two joins below that entry still strand a follower under a leader that the real
-  node elected, until #336 builds the voter that checks a join before it stamps it.
+  node elected. Since the voter checks a join before it stamps it (MEMBER RECORD), a
+  peer with no ticket gets no join into the log of an honest voter. A peer with a
+  valid ticket can still name the key of a node whose join is not applied, because
+  the node key is not bound to the card's public key: a known result, until #2345.
   A hard proof that lost such a claim can be no quorum at a node with a newer
   configuration, which then learns the term from the leader. A follower answers a
   cut run with the last entry it kept, and the leader sends the rest from there.

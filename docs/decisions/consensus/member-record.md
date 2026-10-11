@@ -54,8 +54,19 @@
   Windows node with a peer of known error. Decided by `laptop.director`
   (2026-10-07T13:12:52Z):
   https://github.com/synnaxlabs/foundation/issues/1397#issuecomment-6038688551. The
-  stamping voter makes each status key (UUIDv7, X27) from the stamp and its entropy,
-  and the byte form refuses a name twice. Decided by `laptop.architect`
+  voter runs the check of apply on its applied state at the stamp, before it gives the
+  join: `region::State::check`, the one function that apply also calls, never a copy. So
+  a join that its state refuses never gets into the log, which grows on every node until
+  #253, and the joining node gets the exact refusal. A voter whose state lags can refuse
+  a valid request; the node then tries again or tries another voter of its ticket.
+  Decided by `laptop.architect` (2026-10-07T13:11:29Z), ruling 3 of
+  https://github.com/synnaxlabs/foundation/pull/1390#issuecomment-6038661706. After a
+  stop, `stamp` gives the cause first and draws no entropy, because a stamp after a stop
+  has no use. Decided by `laptop.architect` (2026-10-07T14:27:15Z):
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128. The cause
+  is `Unstamped::Stopped`, not `Error::Stopped`, by the `Unstamped` ruling above. The
+  stamping voter makes each status key (UUIDv7, X27) from the stamp and its entropy, and
+  the byte form refuses a name twice. Decided by `laptop.architect`
   (2026-10-07T09:27:39Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6035046918. The voter
   that admits a join answers with the whole `region::Founding`: each founding member,
@@ -88,11 +99,11 @@
   writes the region and the public key only, and it has no `Display`, `Clone`, or
   equality. `Ticket::admission` signs `foundation/admission/1`, the card's node key, and
   the card's byte form. The region's `ticket::Record` holds the public key, the
-  `Options` (prefix, reusable, expiry, ephemeral), and the use count. `Record::admit`
+  `Options` (prefix, reusable, expiry, ephemeral), and the use count. `Record::check`
   refuses, in this order, a forged admission, a name outside the prefix, a join at or
-  after the expiry, and a second use of a single-use ticket, and counts a use only when
-  all checks pass, so a refused join never uses up a ticket. The expiry is the first
-  mesh time at which the ticket admits no node, so the `Expired` text is "ticket
+  after the expiry, and a second use of a single-use ticket. Apply counts a use only
+  when all checks pass, so a refused join never uses up a ticket. The expiry is the
+  first mesh time at which the ticket admits no node, so the `Expired` text is "ticket
   {public_key} expired at {expiry}, and the join is at {at}". The text and the admit
   order approved by `laptop.architect` (2026-10-07T11:03:29Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6036571225. The
