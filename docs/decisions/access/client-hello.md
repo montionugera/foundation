@@ -69,25 +69,33 @@
   approved by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below), and no
   more than remain (`laptop.architect`, 2026-10-11T00:45:04Z,
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921);
-  `client::place::messages` cuts the run into messages, so the sender writes no rule
-  of the run (box1.builder-2, shape decision 5 of
-  https://github.com/synnaxlabs/foundation/pull/2327); and a latest read needs a
-  stream of class `Latest`, and a complete read one of class `Complete`, else
-  `MALFORMED` (box1.builder-2,
-  2026-10-10T23:26:58Z,
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402,
-  approved by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). The
-  program sends no credit: the stream's flow control bounds the frames in flight. The
-  program knows the kind of each stream that it opens; the node knows the kind of the
-  hello stream only, and decodes the first message of each later stream with
-  `client::First::decode`, which gives a `Request` or a `Read` and refuses each other
-  kind with `Error::Kind`. The lost reason above, that each caller checks the kind
-  again, does not apply: both variants come, and the node handles each. Supersedes,
-  for the node, the rule that each side knows the kind of each stream, of
+  `client::place::messages` cuts the run into messages, so the sender writes no rule of
+  the run (`laptop.architect`, 2026-10-11T01:55:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686); and a
+  latest read needs a stream of class `Latest`, and a complete read one of class
+  `Complete`, else `MALFORMED` (box1.builder-2, 2026-10-10T23:26:58Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402, approved
+  by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). The program sends
+  no credit: the stream's flow control bounds the frames in flight. The program knows
+  the kind of each stream that it opens; the node knows the kind of the hello stream
+  only, and decodes the first message of each later stream with `client::First::decode`,
+  which gives a `Request` or a `Read` and refuses each other kind with `Error::Kind`.
+  The lost reason above, that each caller checks the kind again, does not apply: both
+  variants come, and the node handles each. Supersedes, for the node, the rule that each
+  side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
-  17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each
-  SDK writes; and the stream class as the kind of the stream, because a request stream
-  is of class `Complete` and a class sets priority. Decided by
-  `laptop.architect` (2026-10-10T23:31:47Z):
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608.
+  17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each SDK
+  writes; and the stream class as the kind of the stream, because a request stream is of
+  class `Complete` and a class sets priority. Decided by `laptop.architect`
+  (2026-10-10T23:31:47Z):
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608. A text
+  field of the client wire that does not read keeps its cause. `Error::Subject`,
+  `Error::Selector`, and `Error::Name` hold a `text::Error<Box<name::Error>>`, and
+  `Error::Sample` holds a `text::Error<sample::Error>`. So `wire::hub::Error` is not
+  `Copy` (`laptop.director`, 2026-10-11T00:48:05Z,
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407; shape
+  approved by `laptop.architect`, 2026-10-11T01:55:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). Lost: a
+  `wire::hub::client::Error`, because a read stream also gives the errors of its inner
+  reader, so it would wrap `hub::Error` or copy its variants.
