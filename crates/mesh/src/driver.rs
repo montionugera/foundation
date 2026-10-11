@@ -2324,8 +2324,7 @@ mod tests {
     }
 
     /// The term of `mesh`, for a test in which no message shows it: a node with
-    /// no voters sends nothing, and a test peer takes the messages of
-    /// `Mesh::outgoing`.
+    /// no voters sends nothing, and a test peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
     }
@@ -6748,8 +6747,8 @@ mod tests {
 
         // Node 1, a founder in term 0 with an empty log and the keys of `members`,
         // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies.
-        // On an error it stays in term 0: it sends nothing, then asks for a
-        // pre-vote for term 1.
+        // On an error it stays in term 0: it sends nothing, then asks for a pre-vote
+        // for term 1.
         fn takes(
             members: &'static [u8],
             heartbeat: raft::Message,
