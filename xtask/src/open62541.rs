@@ -1317,10 +1317,12 @@ fn exec(command: &mut Command) -> Result<String, String> {
     Ok(out.trim().to_owned())
 }
 
-/// Starts `command` with no input, and with its output captured.
+/// Starts `command` with no input, with its output captured, and in the C locale, so
+/// its text is the same on each machine.
 fn spawn(command: &mut Command) -> Result<(String, Child), String> {
     let name = command.get_program().to_string_lossy().into_owned();
     command
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1876,6 +1878,33 @@ Disassembly of section .text.stamp:
                       echo '#define __GNUC__ 4'\n\
                       echo '#define __clang__ 1'\n\
                       echo '#define __GNUC__ 13' >&2\n";
+        let cc = create_cc(&dir, script);
+        assert_eq!(
+            inspect(&dir.join("copy"), &dir.join("out"), &cc),
+            Err(vec!["cc is not GCC, which the check needs".to_owned()])
+        );
+        remove(&dir).unwrap();
+    }
+
+    /// The check reads the text of each tool, and the locale changes that text.
+    #[test]
+    #[cfg(unix)]
+    fn check_runs_each_tool_in_the_c_locale() {
+        let dir = temp("locale");
+        create_files(
+            &dir,
+            &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", "")],
+        );
+        let cc = create_cc(&dir, "#!/bin/sh\necho \"LC_ALL=$LC_ALL\" >&2\nexit 1\n");
+        assert_eq!(
+            inspect(&dir.join("copy"), &dir.join("out"), &cc),
+            Err(vec![format!("{} failed: LC_ALL=C\n", cc.display())])
+        );
+        remove(&dir).unwrap();
+    }
+
+    /// Writes the shell script `script` as `cc` in `dir`, and gives its path.
+    fn create_cc(dir: &Path, script: &str) -> PathBuf {
         let cc = dir.join("cc");
         // A child writes it: while this process holds it open for writing, a process
         // that another test forks holds it open too, and running it fails with
@@ -1887,11 +1916,7 @@ Disassembly of section .text.stamp:
                 .arg(script),
         )
         .unwrap();
-        assert_eq!(
-            inspect(&dir.join("copy"), &dir.join("out"), &cc),
-            Err(vec!["cc is not GCC, which the check needs".to_owned()])
-        );
-        remove(&dir).unwrap();
+        cc
     }
 
     #[test]
