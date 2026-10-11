@@ -686,10 +686,7 @@ impl<'a> Shown<'a> {
                     hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
                     let lines = texts(node);
                     if top && unbroken {
-                        if node.previous_sibling().is_none() {
-                            shown.session = session(node);
-                        }
-                        shown.start.extend_from_slice(&lines);
+                        shown.lead(node, &lines);
                     }
                     shown.text.push(lines);
                 }
@@ -711,6 +708,15 @@ impl<'a> Shown<'a> {
             })
             .collect();
         shown
+    }
+
+    /// Adds `lines`, those of the top-level paragraph `paragraph`, to the start, and
+    /// reads the session when `paragraph` is the first block of the comment.
+    fn lead<'n>(&mut self, paragraph: &'n AstNode<'n>, lines: &[String]) {
+        if paragraph.previous_sibling().is_none() {
+            self.session = session(paragraph);
+        }
+        self.start.extend_from_slice(lines);
     }
 
     /// The lines of the fields: the first block after the round heading, or none when
