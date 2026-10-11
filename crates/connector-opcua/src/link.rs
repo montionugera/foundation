@@ -666,8 +666,10 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
 
 /// Each line of `text` with its number, joined to the next while it ends in `\`, as
 /// a C line splice and a Rust string continuation are. A Rust string skips each blank
-/// line and the whitespace at the start of the next line, so `rust` skips them too.
+/// line and the whitespace at the start of the next line, so `rust` skips them too. A
+/// bare CR ends a line, as it does for a C compiler.
 fn joined(text: &str, rust: bool) -> Vec<(usize, String)> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines: Vec<(usize, String)> = Vec::new();
     for (number, line) in (1..).zip(text.lines()) {
         match lines.last_mut() {
@@ -1063,7 +1065,8 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
     );
 }
 
-/// The scan reads a name that a C line splice or a Rust string continuation splits.
+/// The scan reads a name that a C line splice or a Rust string continuation splits,
+/// also at a bare CR, and never trims the C line after a splice.
 #[test]
 fn the_production_scan_joins_a_line_that_ends_in_a_backslash() {
     let root = create_tree(
@@ -1076,7 +1079,8 @@ fn the_production_scan_joins_a_line_that_ends_in_a_backslash() {
             ),
             (
                 "src/shim.c",
-                "void f(void) {\n    UA_Ser\\\nver *s = 0;\n}\n",
+                "void f(void) {\n    UA_Ser\\\nver *s = 0;\n    UA_Ser\\\n    ver_x();\n    \
+                 UA_Ser\\\rver_y();\n}\n",
             ),
         ],
     );
@@ -1087,6 +1091,7 @@ fn the_production_scan_joins_a_line_that_ends_in_a_backslash() {
         [
             format!("{}:2: UA_random_seed", root.join("src/lib.rs").display()),
             format!("{}:2: UA_Server", root.join("src/shim.c").display()),
+            format!("{}:6: UA_Server_y", root.join("src/shim.c").display()),
         ]
     );
 }
