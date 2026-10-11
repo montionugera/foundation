@@ -670,7 +670,28 @@ mod reader {
                 "{index}"
             );
             assert_eq!(reader.end(), Err(Error::Finished));
+            assert_eq!(
+                reader.decode(&[OPENED]).err(),
+                Some(Error::Length { len: 1 }),
+                "the reader is still in the run"
+            );
         }
+    }
+
+    /// After the last place, the session reads a `Places` or a run message as a reply.
+    #[test]
+    fn refuses_places_or_a_run_after_the_last_place() {
+        let places = Places { count: 1, index: 0 };
+        let mut reader = after_run(Mode::Complete, places, &[stamp(1)]);
+        assert_eq!(
+            reader.decode(&encode_places(places)).err(),
+            Some(Error::Kind { kind: 6 })
+        );
+        assert_eq!(
+            reader.decode(&encode_run(&[stamp(7)])).err(),
+            Some(Error::Kind { kind: 7 })
+        );
+        assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
     }
 
     #[test]
@@ -983,7 +1004,8 @@ proptest! {
         prop_assert!(matches!(opened, Ok(FromNode::Home(crate::hub::FromHome::Opened))));
     }
 
-    /// A fault after any message of a cut run gives its exact error: a second
+    /// A fault after any message of a cut run but the last gives its exact error: a
+    /// second
     /// `Places` or a reply reads as run bytes too short for a place, and a message of
     /// one more place than remain gives `Run`.
     #[test]

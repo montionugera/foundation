@@ -120,8 +120,12 @@ impl Before {
             Self::Run { places, remain } => {
                 let run = place::decode(message)?;
                 let rest = rest_of_run(*remain, run.len())?;
-                let first = (places.count.checked_sub(*remain))
-                    .expect("remain is at most count");
+                let first = places.count.checked_sub(*remain).unwrap_or_else(|| {
+                    panic!(
+                        "invariant: remain {remain} is at most count {}",
+                        places.count
+                    )
+                });
                 let index = (places.index.checked_sub(first))
                     .and_then(|at| run.get(usize::try_from(at).ok()?));
                 if let Some(index) = index
