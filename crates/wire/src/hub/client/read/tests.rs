@@ -527,15 +527,18 @@ mod reader {
         Last(Vec<Place>),
     }
 
+    /// The event of `decoded`, and the decoder of the replies that the last place
+    /// gives.
+    fn split(decoded: FromNode) -> (Event, Option<hub::Reader>) {
+        match decoded {
+            FromNode::Places(places) => (Event::Places(places), None),
+            FromNode::Run { places, home: None } => (Event::Run(places), None),
+            FromNode::Run { places, home } => (Event::Last(places), home),
+        }
+    }
+
     fn event(reader: &mut Reader, message: &[u8]) -> Result<Event, Error> {
-        reader.decode(message).map(|event| match event {
-            FromNode::Places(places) => Event::Places(places),
-            FromNode::Run { places, home: None } => Event::Run(places),
-            FromNode::Run {
-                places,
-                home: Some(_),
-            } => Event::Last(places),
-        })
+        reader.decode(message).map(|decoded| split(decoded).0)
     }
 
     #[derive(Debug, PartialEq)]
@@ -737,16 +740,10 @@ mod reader {
                 steps.push(Step::Reply(reply(home, message)));
                 continue;
             }
-            let event = reader.decode(message).map(|event| match event {
-                FromNode::Places(places) => Event::Places(places),
-                FromNode::Run { places, home: None } => Event::Run(places),
-                FromNode::Run {
-                    places,
-                    home: Some(given),
-                } => {
-                    home = Some(given);
-                    Event::Last(places)
-                }
+            let event = reader.decode(message).map(|decoded| {
+                let (event, given) = split(decoded);
+                home = given;
+                event
             });
             steps.push(Step::Event(event));
         }
