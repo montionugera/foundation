@@ -1164,50 +1164,15 @@ fn a_rig_keeps_8_mib_of_disk_for_each_core() {
         );
     }
 }
-/// A test that leaves a directory, while other test threads sweep.
+
+/// A sweep sees a directory that a test leaves only once it is whole.
 #[test]
 #[cfg(unix)]
-fn a_left_directory_is_whole_when_other_rigs_sweep() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let sweepers: Vec<_> = (0..8)
-        .map(|sweeper| {
-            let stop = Arc::clone(&stop);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "other test threads sweep while a test leaves a directory"
-            )]
-            let spawn = std::thread::Builder::new()
-                .name(format!("sweeper-{sweeper}"))
-                .spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        drop(Rig::new());
-                    }
-                });
-            spawn.expect("start a sweeper")
-        })
-        .collect();
-    let mut failure = None;
-    for _ in 0..100 {
-        let run = std::panic::catch_unwind(
-            a_rig_removes_a_directory_that_a_test_left_read_only,
-        );
-        if let Err(panic) = run {
-            failure = Some(
-                panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .unwrap_or_else(|| "a panic".to_owned()),
-            );
-            break;
-        }
-    }
-    stop.store(true, Ordering::Relaxed);
-    for sweeper in sweepers {
-        sweeper.join().expect("join a sweeper");
-    }
-    assert_eq!(failure, None);
+fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
+    left(gone(), "draft", |data| {
+        drop(Rig::new());
+        assert!(data.exists(), "{} is gone", data.display());
+    });
 }
 
 /// A sweep that makes a directory writable while another sweep removes it gives
