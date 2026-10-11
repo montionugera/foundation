@@ -2346,6 +2346,57 @@ fn a_decision_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
 }
 
 #[test]
+fn a_decision_that_the_range_removes_and_the_base_changes_changes_the_surface() {
+    let repo = Repo::new("surface-delmod");
+    let base = repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    repo.git(&["rm", "--quiet", "docs/decisions/x.md"]);
+    repo.git(&["commit", "--quiet", "-m", "rm"]);
+    let start = repo.head();
+    repo.advance_main("docs/decisions/x.md", "the rule of the base\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("{CONFLICT} between its start and the base")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_file_of_the_range_that_the_base_moves_into_the_decisions_changes_the_surface() {
+    let repo = Repo::new("surface-location");
+    repo.commit("docs/drafts/a.md", "a draft\n");
+    let base = repo.commit("docs/drafts/b.md", "another draft\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("docs/drafts/x.md", "a rule of the PR\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    repo.git(&["mv", "docs/drafts", "docs/decisions"]);
+    repo.git(&["commit", "--quiet", "-m", "mv"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/decisions/x.md", "a rule of the PR\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("{CONFLICT} between its start and the base")))
+    );
+    repo.remove();
+}
+
+#[test]
 fn a_surface_range_end_that_names_no_commit_counts() {
     let (repo, end) = Repo::with_pr("surface-unnamed");
     assert_eq!(
