@@ -32,8 +32,16 @@ const DIR: &str = "blob";
 /// The pool budget of each store and transport.
 const BUDGET: u64 = 1 << 20;
 
+/// The window of each transport.
+const WINDOW: usize = 1 << 20;
+
 fn create_pool() -> Rc<Pool> {
-    let config = block::Config::new(BUDGET).expect("the budget fits");
+    create_pool_of(BUDGET)
+}
+
+/// A pool that commits at most `budget` bytes.
+fn create_pool_of(budget: u64) -> Rc<Pool> {
+    let config = block::Config::new(budget).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());
     Rc::new(Pool::new(config, memory))
 }
@@ -46,13 +54,6 @@ fn chunk(byte: u8, len: usize) -> (Digest, Vec<u8>) {
 
 fn path(digest: Digest) -> PathBuf {
     Path::new(DIR).join(digest.to_string())
-}
-
-/// A pool whose budget is one block of its largest size.
-fn create_tight_pool() -> Rc<Pool> {
-    let config = block::Config::new(64 + 4096).expect("the budget fits");
-    let memory = block::Heap::new(config.reservation());
-    Rc::new(Pool::new(config, memory))
 }
 
 /// The store of the server's node, which leaves `floor_bytes` free.
@@ -99,7 +100,7 @@ fn transport(
     let config = transport::Config {
         private_key: key,
         message_bytes_max: NonZeroUsize::new(message).expect("not 0"),
-        window_bytes: 1 << 20,
+        window_bytes: WINDOW,
         streams_max: NonZeroU32::new(16).expect("not 0"),
         idle: Span::from_nanos(60 * Span::SECOND.nanos()),
         clock: node.clock(),
@@ -329,6 +330,89 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
     );
 }
 
+/// `serve` holds the chunk that it sends, and `transport` holds each chunk with a
+/// byte in flight: the chunks that fill the window, and one that the peer
+/// acknowledged in part. The pool has room for these and their reply heads, and the
+/// get asks for more than twice that, so a server that reads ahead ends the stream
+/// with a pool error.
+#[test]
+fn a_get_of_many_chunks_holds_the_window_and_two_chunks() {
+    const LEN: usize = 64 << 10;
+    const HELD: usize = WINDOW / LEN + 2;
+    const COUNT: usize = 2 * HELD + 1;
+    let len = u32::try_from(LEN).unwrap();
+    let digest = Digest::of(b"");
+    let head = Reply::Chunk { digest, len }.encoded_len();
+    let budget = HELD * (block::footprint(LEN) + block::footprint(head));
+    assert_eq!(budget, 1_183_104);
+    let chunks: Vec<(Digest, Vec<u8>)> = (0..COUNT)
+        .map(|at| chunk(u8::try_from(at).unwrap(), LEN))
+        .collect();
+    let digests: Vec<Digest> = chunks.iter().map(|(digest, _)| *digest).collect();
+    let expected = chunks.clone();
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_pool_of(budget as u64), 0).await;
+            for (digest, bytes) in &chunks {
+                put(&store, *digest, bytes).await;
+            }
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&digests).await;
+            for (digest, bytes) in expected {
+                assert_eq!(stream.reply().await, Reply::Chunk { digest, len });
+                let mut got = Vec::new();
+                while got.len() < LEN {
+                    got.extend(stream.recv().await.unwrap().unwrap());
+                }
+                assert!(got == bytes, "the bytes of the chunk");
+            }
+            stream.finish().await;
+        },
+    );
+}
+
+#[test]
+fn a_stop_in_the_body_of_a_get_ends_the_stream() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            put(&store, digest, &bytes).await;
+            let stopped = transport::Error::Stopped { code: Code(5) };
+            assert_eq!(serve(&store, incoming).await, Err(Error::Stream(stopped)));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[digest]).await;
+            let chunk = Reply::Chunk { digest, len: 3000 };
+            assert_eq!(stream.reply().await, chunk);
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            let Stream {
+                pool,
+                mut sender,
+                receiver,
+            } = stream;
+            receiver.stop(Code(5));
+            let mut get = vec![0; wire::blob::get::encoded_len(1)];
+            wire::blob::get::encode(&[digest], &mut get);
+            let stopped = loop {
+                let block = pool.copy(&get).expect("the pool has room");
+                if let Err(error) = sender.send(block).await {
+                    break error;
+                }
+            };
+            assert_eq!(stopped, transport::Error::Stopped { code: Code(0) });
+        },
+    );
+}
+
 #[test]
 fn a_put_gives_stored_once_the_chunk_is_durable() {
     let (digest, bytes) = chunk(7, 3000);
@@ -364,6 +448,8 @@ fn a_put_gives_stored_once_the_chunk_is_durable() {
 
 #[test]
 fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
+    // The budget is one block of the largest size of the pool.
+    let create_tight_pool = || create_pool_of(64 + 4096);
     let max = create_tight_pool().largest();
     assert_eq!(max, 4096);
     let (digest, bytes) = chunk(7, max);
