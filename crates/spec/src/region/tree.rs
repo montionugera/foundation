@@ -70,7 +70,8 @@ pub fn definitions(
 /// Why [`definitions`] cannot read a tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A read of the tree failed.
+    /// A read of the tree failed, or the tree is not the tree of its definitions:
+    /// [`tree::Error::Corrupt`] of the root.
     Tree(tree::Error),
     /// The value at `key` is not a definition.
     Definition {
