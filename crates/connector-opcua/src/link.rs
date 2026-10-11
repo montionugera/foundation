@@ -1089,7 +1089,7 @@ fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     assert!(reached.is_empty(), "the test binary keeps {reached:?}");
 }
 
-/// Checks the reason of `encryptUserIdentityTokenEcc` in `CLOCK_CALLS` of `cargo xtask
+/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
 /// open62541`, with [`the_rust_and_the_shim_give_a_client_no_security_policy`].
 #[test]
 fn the_shim_refuses_encryption() {
@@ -1101,7 +1101,7 @@ fn the_shim_refuses_encryption() {
     );
 }
 
-/// Checks the reason of `encryptUserIdentityTokenEcc` in `CLOCK_CALLS` of `cargo xtask
+/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
 /// open62541`: the default config of a client with encryption off has only the policy
 /// `None`, and outside tests, neither the Rust nor the C under `src/` names a security
 /// policy.

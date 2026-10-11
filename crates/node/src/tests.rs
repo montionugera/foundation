@@ -13,7 +13,9 @@ use types::time::Span;
 use secret::seal::Opener;
 
 use crate::identity::{self, Identity};
-use crate::{Budget, Config, Error, Node};
+use crate::{Budget, Config, Error, Node, Region};
+
+mod region;
 
 struct Run {
     seed: u64,
@@ -81,7 +83,7 @@ fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block:
         entropy: host.entropy(),
         net: host.net(),
         listen: listen(host),
-        region: None,
+        region: Region::Absent,
         name: "edge".parse().expect("a name"),
     }
 }
@@ -413,7 +415,7 @@ fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
         format!(
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
-             listen: {listen:?}, region: None, name: Name(\"edge\"), .. }}",
+             listen: {listen:?}, region: Absent, name: Name(\"edge\"), .. }}",
             listen = config.listen,
         )
     );
@@ -579,7 +581,7 @@ fn keyed(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
     host
 }
 
-/// Writes `bytes` to a new file `node.key` on `host`.
+/// Writes `bytes` to a new file `node.key` on `host`, durably.
 fn write_key(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
     sim.run_on(host, move |host, _| async move {
         let files = host.files();
@@ -593,6 +595,7 @@ fn write_key(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
         let block = pool.copy(&bytes).expect("a block");
         file.write_at(0, &[block]).await.expect("writes");
         file.sync().await.expect("syncs");
+        files.sync_dir(Path::new("")).await.expect("syncs");
     })
     .expect("the run ends");
 }
@@ -3848,7 +3851,7 @@ mod port {
         use types::node::SealKey;
 
         use super::*;
-        use crate::{Endpoint, route};
+        use crate::{Endpoint, Opening, route};
 
         /// The key and private key of a second node.
         const OTHER: (types::node::Key, PrivateKey) =
@@ -3869,7 +3872,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_874_296;
+        const WRITE: i64 = 1_793_633_776;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -3915,7 +3918,7 @@ mod port {
         /// Starts the node on `host`, which [`keyed`] made, with `region`.
         fn start(host: &sim::node::Node, region: Founding) -> Node {
             Node::start(Config {
-                region: Some(region),
+                region: Region::Given(region),
                 ..config(host, Size::MEBIBYTE, Box::new(heap))
             })
         }
@@ -4102,7 +4105,7 @@ mod port {
                 };
                 let endpoint = Endpoint {
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Some(region(&members)),
+                    region: Opening::Given(region(&members)),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };
@@ -4822,7 +4825,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], four idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -4832,7 +4835,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..4 {
+            for _ in 0..2 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -5264,7 +5267,7 @@ mod port {
                 let definitions = founding.definitions.clone();
                 let endpoint = Endpoint {
                     part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Some(founding),
+                    region: Opening::Given(founding),
                     clock: own.clock(),
                     entropy: own.entropy(),
                 };
@@ -5892,7 +5895,7 @@ mod port {
             let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
             let disk = Size::from_bytes(smallest);
             let node = Node::start(Config {
-                region: Some(region(&[member(OWN, &KEY, &host)])),
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
                 budget: Budget {
                     pool: Size::MEBIBYTE,
                     disk,
