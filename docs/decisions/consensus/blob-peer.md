@@ -51,3 +51,6 @@
   Amended (`laptop.architect`, 2026-10-11T05:27:01Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6105825342): the
   floor counts new room only, and the bound on the chunks in memory names `transport`.
+  Supersedes the check that counts a listed chunk as new room, of
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073693777, and the
+  rule "Each stream holds at most one chunk in memory" of #1229.
