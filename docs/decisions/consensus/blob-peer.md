@@ -42,8 +42,8 @@
   `sync_dir` and a second `Files::free` before the floor refuses (more file calls and
   their tests, for an error on the safe side); a read of the file's length before each
   put (one more file call on the common path); the list of the open as the source of the
-  length (it holds no length, and the file can change after the open; both
-  `laptop.architect`, 2026-10-11T06:17:38Z:
+  length (it holds no length, and the file can change after the open), the last two
+  approved by `laptop.architect` (2026-10-11T06:17:38Z:
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106171114);
   `recv_into` straight into the chunk's block (a message longer than the rest then fails
   in `transport`, so `blob` would copy the body rule of `wire`). Decided by
