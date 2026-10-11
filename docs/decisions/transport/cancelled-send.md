@@ -24,3 +24,7 @@
   session). The limit is fixed for the session, so a size defect shows in every state
   of the stream
   (https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6035220831).
+  The stream decides what a dropped future cancels: only a message that a write that
+  waits gave and that the stream holds. A message of `try_send` or of a `finish` that
+  the stream holds stays, and the caller passes no flag. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1490#issuecomment-6043749494), #1533.

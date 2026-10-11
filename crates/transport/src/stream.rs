@@ -360,7 +360,7 @@ impl Future for Sending<'_> {
 impl Drop for Sending<'_> {
     fn drop(&mut self) {
         if !self.done {
-            self.session.abandon(self.stream, self.message.is_none());
+            self.session.abandon(self.stream);
         }
     }
 }
@@ -1200,6 +1200,46 @@ mod tests {
                 reply.send(side.block(b"b")).await.expect("sent");
                 let reply = incoming.sender.as_mut().expect("a reply half");
                 reply.send(side.block(b"b")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 100)).await;
+                assert_eq!(until_error(&mut incoming.receiver).await, CANCELLED);
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
+    fn a_send_cut_and_dropped_resets_the_stream_and_keeps_no_waker() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                // The peer accepts the stream only once a byte of it arrives.
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let mut cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                let count = Arc::new(Count(AtomicU32::new(0)));
+                let waker = Waker::from(Arc::clone(&count));
+                let polled = cut.as_mut().poll(&mut Context::from_waker(&waker));
+                assert!(polled.is_pending(), "the send waits");
+                drop(cut);
+                assert_eq!(sender.send(side.block(b"a")).await, Err(CANCELLED));
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+                // The close wakes each write that waits.
+                assert_eq!(count.0.load(Ordering::Relaxed), 0, "no waker");
+            },
+            |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
                 side.node.clock().sleep(spans(Span::MILLISECOND, 100)).await;
                 assert_eq!(until_error(&mut incoming.receiver).await, CANCELLED);
                 side.session.close(Code(4));

@@ -1684,16 +1684,20 @@ impl Streams {
         }
     }
 
-    /// Takes the message in hand out of `sender`'s stream of `inner`, and gives back
-    /// its send budget and its turn. When a byte of it went, its header included,
-    /// it also resets the stream with `Code(0)`, and each later write and finish
-    /// gives [`Error::Reset`].
+    /// Takes the message in hand out of `sender`'s stream of `inner` when the caller
+    /// writes its rest, and gives back its send budget and its turn. When a byte of
+    /// it went, its header included, it also resets the stream with `Code(0)`, and
+    /// each later write and finish gives [`Error::Reset`]. Does nothing to a stream
+    /// that holds no such message.
     pub(super) fn cancel(
         &mut self,
         inner: &mut noq_proto::Connection,
         sender: &Sender,
     ) {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        if half.rest != Rest::Caller || !half.holds() {
+            return;
+        }
         if half.sent() {
             reset(inner, half.key.id, Code(0));
             half.close(Error::Reset { code: Code(0) });
@@ -3331,6 +3335,75 @@ mod tests {
             assert_eq!(written, Err(Error::Reset { code: Code(0) }));
             let finished = pair.client.endpoint.finish(now, &mut sender);
             assert_eq!(finished, Err(Error::Reset { code: Code(0) }));
+        });
+    }
+
+    #[test]
+    fn a_cancel_leaves_a_message_of_a_try_write_or_a_finish_whole() {
+        for finished in [false, true] {
+            testing::run(1, move |shard| {
+                let mut pair = narrow(shard);
+                let mut sender = open_sender(&mut pair, Class::Complete);
+                let left = message::prefix(100).len();
+                let mut sent = spend(&mut pair, shard, &mut sender, left).to_vec();
+                let (now, message) = (pair.now(), shard.block(&[0xc; 100]));
+                if finished {
+                    let mut message = Some(message);
+                    let endpoint = &mut pair.client.endpoint;
+                    let written = pair::write(endpoint, now, &sender, &mut message);
+                    assert_eq!(written, Ok(Poll::Pending));
+                    assert_eq!(endpoint.finish(now, &mut sender), Ok(()));
+                } else {
+                    let endpoint = &mut pair.client.endpoint;
+                    let written = pair::try_write(endpoint, now, &sender, message);
+                    assert_eq!(written.map(|left| left.is_none()), Ok(true));
+                }
+                assert!(half(&mut pair.client, &sender).sent(), "the header went");
+                pair.client.endpoint.cancel(now, &sender);
+                pair.run(RUN);
+                let mut incoming = accept(&mut pair.server);
+                sent.push(100);
+                // The stream stays open: a later message follows the cut one.
+                let mut last = (!finished).then_some(1);
+                let (mut read, mut ended) = (Vec::new(), false);
+                for _ in 0..10 {
+                    let now = pair.now();
+                    let drained = drain(&mut pair.server, now, &mut incoming.receiver);
+                    read.extend(drained.0.iter().map(Vec::len));
+                    ended |= drained.1;
+                    if read.len() == sent.len()
+                        && let Some(len) = last.take()
+                    {
+                        sent.push(len);
+                        let message = &mut Some(shard.block(b"d"));
+                        let endpoint = &mut pair.client.endpoint;
+                        let written = pair::write(endpoint, now, &sender, message);
+                        assert_eq!(written, Ok(Poll::Ready(())));
+                    }
+                    pair.run(RUN);
+                }
+                assert_eq!((read, ended), (sent, finished), "finished {finished}");
+            });
+        }
+    }
+
+    #[test]
+    fn a_cancel_of_a_stream_that_holds_no_message_does_nothing() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let sender = open_sender(&mut pair, Class::Complete);
+            for message in [b"a", b"b"] {
+                let (now, mut message) = (pair.now(), Some(shard.block(message)));
+                let endpoint = &mut pair.client.endpoint;
+                let written = pair::write(endpoint, now, &sender, &mut message);
+                assert_eq!(written, Ok(Poll::Ready(())));
+                endpoint.cancel(now, &sender);
+                pair.run(RUN);
+            }
+            let mut incoming = accept(&mut pair.server);
+            let now = pair.now();
+            let read = drain(&mut pair.server, now, &mut incoming.receiver);
+            assert_eq!(read, (vec![b"a".to_vec(), b"b".to_vec()], false));
         });
     }
 

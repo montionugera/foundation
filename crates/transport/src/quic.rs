@@ -580,13 +580,18 @@ impl Endpoint {
         self.drive(key.handle, self.instant(now));
     }
 
-    /// Cancels the message that `sender`'s stream took from the last
-    /// [`Endpoint::write`] and holds. When no byte of it went, its header included,
-    /// the message drops and the stream stays open. Else the stream resets with
-    /// `Code(0)`, as [`Endpoint::reset`] does, and each later write and finish gives
+    /// Cancels the message that `sender`'s stream took from an [`Endpoint::write`]
+    /// and holds. When no byte of it went, its header included, the message drops
+    /// and the stream stays open. Else the stream resets with `Code(0)`, as
+    /// [`Endpoint::reset`] does, and each later write and finish gives
     /// [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn of
-    /// the message come back now. Does nothing when the connection ended.
+    /// the message come back now. Does nothing when the stream holds no such
+    /// message, as a message of [`Endpoint::try_write`], after a finish or reset of
+    /// `sender`, or when the connection ended.
     pub(crate) fn cancel(&mut self, now: Monotonic, sender: &Sender) {
+        if sender.ended() {
+            return;
+        }
         let key = sender.key().connection;
         let Some(connection) = find(&mut self.connections, key).filter(|c| c.live())
         else {
