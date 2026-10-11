@@ -875,8 +875,8 @@ fn rust_path(path: &str) -> bool {
 /// system config or attributes file, so the machine's settings cannot change a verdict
 /// and no variable such as `GIT_DIR` can point it elsewhere. It still reads the
 /// repository's own `.git/config` and `.git/info/attributes`, but not its
-/// `merge.renames` or `merge.directoryRenames`, which have the values of `git` with no
-/// setting.
+/// `merge.renames`, `merge.directoryRenames`, or `merge.renameLimit`, which have the
+/// values of `git` with no setting.
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
@@ -892,6 +892,7 @@ fn command(root: &Path) -> Command {
         .args(["-c", "core.attributesFile=/dev/null"])
         .args(["-c", "merge.renames=true"])
         .args(["-c", "merge.directoryRenames=conflict"])
+        .args(["-c", "merge.renameLimit=7000"])
         // So a walk for merge bases reads only parents and commit times
         // (`History::commit`).
         .args(["-c", "core.commitGraph=false"]);

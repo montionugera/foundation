@@ -2682,6 +2682,44 @@ fn a_clone_with_rename_detection_off_reads_a_base_move_into_a_decision() {
 }
 
 #[test]
+fn the_rename_limit_of_the_clone_changes_no_decision_change() {
+    let phrase = "has `docs/drafts/x.md`, which the PR changes and the base moves into \
+                  the decision `docs/decisions/y.md`";
+    for key in ["merge.renameLimit", "diff.renameLimit"] {
+        let (repo, _) = Repo::with_pr(&format!("decision-{key}"));
+        let draft = DRAFT.repeat(4);
+        let moved = draft.replacen("one\n", "ONE\n", 1);
+        repo.advance_main("docs/drafts/x.md", &draft);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        let changed =
+            repo.commit("docs/drafts/x.md", &format!("{draft}the rule of the PR\n"));
+        repo.git(&["switch", "--quiet", "main"]);
+        std::fs::create_dir_all(repo.dir.join("docs/decisions")).unwrap();
+        // Another file name: `git` pairs files of one name before it reads the limit.
+        repo.git(&["mv", "docs/drafts/x.md", "docs/decisions/y.md"]);
+        std::fs::write(repo.dir.join("docs/decisions/y.md"), &moved).unwrap();
+        std::fs::write(repo.dir.join("c.txt"), "c\n").unwrap();
+        repo.git(&["add", "docs/decisions/y.md", "c.txt"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["switch", "--quiet", "pr"]);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        assert_eq!(
+            repo.git(&["show", "HEAD:docs/decisions/y.md"]),
+            format!("{moved}the rule of the PR")
+        );
+        let end = repo.commit("docs/decisions/y.md", &moved);
+        repo.git(&["config", key, "1"]);
+        assert_eq!(
+            repo.decision_change(&changed, &end),
+            Ok(Some(phrase.to_string())),
+            "{key}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
 fn a_probe_line_in_a_decision_of_the_base_is_no_move_into_the_decisions() {
     for (name, line) in [
         ("plain", "eleven"),
