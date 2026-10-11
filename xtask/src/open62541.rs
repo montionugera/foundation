@@ -288,8 +288,8 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 /// any reference to a clock function other than a call, such as its address in code or
 /// data, through which any code can call it, each inlined function, an `#include_next`,
 /// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
-/// builds for neither x86-64 nor aarch64, and each instruction whose key the list of
-/// its architecture does not admit.
+/// is not GCC or that builds for neither x86-64 nor aarch64, and each instruction whose
+/// key the list of its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -1412,6 +1412,20 @@ Disassembly of section .text:
         assert_eq!(
             Vec::from_iter(found.iter().map(|found| found.symbol.as_str())),
             ["UA_DateTime_now", "strtod"]
+        );
+    }
+
+    #[test]
+    fn places_gives_each_line_but_the_headers() {
+        let disassembly = "\
+Disassembly of section .text:
+
+0000000000000000 <f>:
+   0:\tc3\tret
+";
+        assert_eq!(
+            Vec::from_iter(places(disassembly)),
+            [(".text", None, ""), (".text", Some("f"), "   0:\tc3\tret")]
         );
     }
 
