@@ -143,9 +143,10 @@
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). A try is
   the reader open of a restart, or, when `check` gives no reader settings, its start
   status. So while that open waits for a home, `state` stays 1 with a `backoff` whose
-  wait has ended. That `backoff` ends at a try is proposed by the `connector` builder
-  in https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106914434, with
-  no ruling yet. It supersedes "the wait from this sample to the next run" of
+  wait has ended. That `backoff` ends at a try is decided by `laptop.architect-2`
+  (2026-10-11T10:17:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107989901). It
+  supersedes "the wait from this sample to the next run" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186, and "the
   time of the next run" of the plan on #420
   (https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074).

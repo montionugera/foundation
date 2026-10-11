@@ -45,7 +45,8 @@ pub struct Config {
     pub hub: hub::Hub,
 }
 
-/// Runs connectors of the kinds in a table, one `run` call at a time per connector.
+/// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
+/// connector.
 /// It is not `Send`: each shard makes its own. Its clones share one config.
 #[derive(Clone, Debug)]
 pub struct Supervisor(Rc<Config>);
@@ -111,19 +112,21 @@ impl fmt::Debug for Opened<'_> {
 impl Opened<'_> {
     /// Runs the connector, and restarts it with backoff after any error but `Config`.
     /// Before each run but the first, after the backoff and before the start status,
-    /// opens the reader again under the connector's name. That open waits while the
-    /// mesh names no home for the index that it selects. A reader open that fails ends
-    /// that run with its error. The waits start again from the first after a run that
-    /// lasted at least a minute. Never starts a run before the last one returned and
-    /// each task it spawned through [`Context::tasks`] ended, or after `cancel` is
-    /// cancelled. Writes the connector's status channels as the connector: the whole
-    /// status at each start and change of state, and a change of counts alone at most
-    /// once each second. Each change of state, a start too, waits until the home
-    /// applied the state before it or `cancel` is cancelled.
+    /// opens the reader again under the connector's name, when `check` gave reader
+    /// settings. That open waits while the mesh names no home for the index that it
+    /// selects. A reader open that fails ends that run with its error. The waits
+    /// start again from the first after a run that lasted at least a minute. Never
+    /// starts a run before the last one returned and each task it spawned through
+    /// [`Context::tasks`] ended, or after `cancel` is cancelled. Writes the
+    /// connector's status channels as the connector: the whole status at each start
+    /// and change of state, and a change of counts alone at most once each second.
+    /// Each change of state, a start too, waits until the home applied the state
+    /// before it or `cancel` is cancelled.
     ///
     /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
     /// channels opened, or when `cancel` is cancelled: at once while the channels are
-    /// not open, and otherwise once the run returned. It returns, with `Ok` or an
+    /// not open, with no new run while the reader open of a restart waits, and
+    /// otherwise once the run returned. It returns, with `Ok` or an
     /// error, only once each task of its last run ended, and the home applied its last
     /// status frame or `cancel` is cancelled. Neither wait holds once the home refused
     /// a status frame because the status channels were removed or its disk failed:
@@ -185,9 +188,15 @@ struct Ready {
     reader: Opening,
 }
 
-/// The reader of one run: `None` when `cancel` is cancelled, so no run starts, and
-/// else the open's result, `Ok(None)` for a kind that reads no channel.
-type Opening = Option<Result<Option<hub::reader::Reader>, Error>>;
+/// The reader open of one run.
+enum Opening {
+    /// `cancel` is cancelled, so no run starts.
+    Cancelled,
+    /// The run ends with this error.
+    Failed(Error),
+    /// The reader, or `None` for a kind that reads no channel.
+    Opened(Option<hub::reader::Reader>),
+}
 
 impl Call<'_> {
     /// The status writer and the first reader of [`Supervisor::open`], or the end of a
@@ -251,7 +260,7 @@ impl Call<'_> {
     /// Opens the reader of `settings` under the connector's name.
     async fn reader(&self, settings: Option<&reader::Settings>) -> Opening {
         let Some(settings) = settings else {
-            return Some(Ok(None));
+            return Opening::Opened(None);
         };
         let config = hub::reader::Config {
             select: settings.select.clone(),
@@ -260,11 +269,11 @@ impl Call<'_> {
             name: Some(self.name.clone()),
             hold: settings.hold,
         };
-        let opened = self
-            .cancel
-            .race(self.supervisor.0.hub.reader(config))
-            .await?;
-        Some(opened.map(Some).map_err(kind::reader_error))
+        match self.cancel.race(self.supervisor.0.hub.reader(config)).await {
+            None => Opening::Cancelled,
+            Some(Ok(reader)) => Opening::Opened(Some(reader)),
+            Some(Err(error)) => Opening::Failed(kind::reader_error(error)),
+        }
     }
 
     /// Runs the connector and restarts it, and writes its status through `writer`
@@ -297,8 +306,10 @@ impl Call<'_> {
                 Some(opening) => opening,
                 None => self.reader(settings).await,
             };
-            let Some(reader) = opening else {
-                break;
+            let reader = match opening {
+                Opening::Cancelled => break,
+                Opening::Failed(error) => Err(error),
+                Opening::Opened(reader) => Ok(reader),
             };
             if !writer.start().await {
                 break;
@@ -879,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_no_backoff_when_the_next_run_passed_before_the_write() {
+    fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =
             refuse_the_last_wait(vec![Step::Hold(ms(2_000))], Span::ZERO);
         let [_, again] = runs[..] else {
@@ -889,7 +900,7 @@ mod tests {
         assert_eq!(samples[..2], [1, 2], "the wait: {statuses:?}");
         assert_eq!(*at, ms(3_000), "written again 1 s after the refusal at 2 s");
         assert_eq!(again, ms(3_000), "the run waits for the write");
-        assert_eq!(samples[3], 0, "the next run passed: {statuses:?}");
+        assert_eq!(samples[3], 0, "the next try passed: {statuses:?}");
     }
 
     #[test]
@@ -1043,7 +1054,7 @@ mod tests {
         let (at, samples, _) = &statuses[5];
         assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
         let (run, again, _) = &statuses[6];
-        assert_eq!(again[0], 0, "the next run: {statuses:?}");
+        assert_eq!(again[0], 0, "the next try: {statuses:?}");
         // `backoff` is the wait by the node's clock. After the step, the hub's time
         // slews toward the wall at the 500 ppm of MESH SLEW.
         let (backoff, wait) = (samples[3], between(*at, *run).nanos());
@@ -3127,7 +3138,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_backoff_that_ends_at_the_next_run_after_a_frame_ahead() {
+    fn writes_a_backoff_that_ends_at_the_next_try_after_a_frame_ahead() {
         let lead = ms(500);
         let (statuses, again) = run_on(move |node, tasks| async move {
             let script = Script {
@@ -3169,7 +3180,7 @@ mod tests {
         let run = Span::from_nanos(again.nanos() - lead.nanos());
         assert_eq!(
             next, run,
-            "the frame's time plus `backoff` is the next run: {statuses:?}"
+            "the frame's time plus `backoff` is the next try: {statuses:?}"
         );
     }
 
