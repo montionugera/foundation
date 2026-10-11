@@ -30,7 +30,7 @@ pub(super) async fn serve(
     sender: &mut Sender,
 ) -> Result<(), Error> {
     let (reader, matched) = open(session, class, subject, read, receiver).await?;
-    let layout = start(&session.state, sender, &matched).await?;
+    let layout = start(&session.state, sender, matched).await?;
     relay(&session.state, reader, layout, receiver, sender).await
 }
 
@@ -72,7 +72,7 @@ async fn open(
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    matched: &Matched,
+    matched: Matched,
 ) -> Result<Layout, Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
@@ -88,10 +88,8 @@ async fn start(
         sender.send(block.freeze()).await?;
     }
     sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
-    let keys: Vec<_> = matched.places.iter().map(|place| place.key).collect();
-    let slots = state.borrow_mut().assigned(matched.key(), &keys);
-    let index = slots[matched.index];
-    Ok(Layout::new(slots, index))
+    let index = matched.slots[matched.index];
+    Ok(Layout::new(matched.slots, index))
 }
 
 /// Sends each frame of `reader` until the program finishes the stream, or `Behind`

@@ -15,7 +15,9 @@ use wire::hub::{BUSY, FromHome, UNKNOWN};
 
 use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
 use super::serve::{decoded, got, next, places as placed};
-use super::{COMMIT, I64, POOL, STAMP, Test, without, write, write_wide};
+use super::{
+    COMMIT, DataType, I64, POOL, STAMP, Test, channels, without, write, write_wide,
+};
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::sessions::{Got, rules};
 
@@ -313,6 +315,44 @@ fn stops_a_read_that_gets_a_message_after_its_open_as_malformed() {
     );
     let trailing = serve::Error::Client(client::Error::Trailing);
     assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
+}
+
+/// The channels of a read are removed while its run of places waits for room in the
+/// program's window.
+#[test]
+fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
+    const MANY: u128 = 10_000;
+    let ready = async |test: &Test| {
+        let long = "x".repeat(240);
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{long}.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }));
+        let (clock, hub) = (test.clock.clone(), test.hub.clone());
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            hub.set_definitions(&channels());
+        });
+    };
+    let home = read_session(309, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["w.**"]).await;
+        agent.sleep(Span::from_nanos(2 * START.nanos())).await;
+        let end = loop {
+            match stream.recv().await {
+                Ok(Some(_)) => {}
+                end => break end,
+            }
+        };
+        assert_eq!(end, reset_with(UNKNOWN));
+        finish(&mut agent).await;
+    });
+    let removed = reader::Ended::Removed(channel::Key::from_u128(100));
+    assert_eq!(
+        home.served,
+        [Err(serve::Error::Ended(removed)), Ok(Got::Ended)]
+    );
 }
 
 /// A complete read whose program does not take its frames misses one, so the node
