@@ -696,6 +696,36 @@ fn a_power_crash_in_a_create_over_a_file_with_no_bytes_can_keep_its_entry() {
 }
 
 #[test]
+fn a_create_in_flight_at_a_power_cut_can_have_no_effect() {
+    let outcomes: BTreeSet<_> = (0..32)
+        .map(|seed| {
+            let (mut sim, node) = disk(seed);
+            crash_after(&mut sim, &node, Crash::Power, |node| async move {
+                drop(create(&node, "a", 0).await);
+                node.files().sync_dir(Path::new("")).await.unwrap();
+                drop(create(&node, "b", 0).await);
+                until_crash(&node).await;
+                let mode = Mode::Create { len: 1_024 };
+                hang(node.files().open(Path::new("a"), mode)).await;
+            });
+            sim.run_on(&node, |node, _| async move {
+                let files = node.files();
+                let a = files.open(Path::new("a"), Mode::Read).await.unwrap();
+                (a.len(), files.list(Path::new("")).await.unwrap())
+            })
+            .unwrap()
+        })
+        .collect();
+    let reached = [
+        (0, names(&["a"])),
+        (0, names(&["a", "b"])),
+        (1_024, names(&["a"])),
+        (1_024, names(&["a", "b"])),
+    ];
+    assert_eq!(outcomes, BTreeSet::from(reached));
+}
+
+#[test]
 fn a_crash_in_a_write_open_of_a_missing_file_makes_no_file() {
     for crash in [Crash::Process, Crash::Power] {
         for seed in 0..32 {
