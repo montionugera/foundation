@@ -244,7 +244,7 @@ const SYMBOLS: [&str; 16] = [
 /// file), `flags.txt` (the `-D`, `-I`, and `-std` flags and the [`CODE_FLAGS`] of each
 /// compile), and `VERSION` (tag and commit).
 /// Then it gives what [`check`] gives for the new copy. Needs Linux, `git`, `cmake`,
-/// Python 3, GCC as `cc`, and GNU `objdump` and `nm`.
+/// Python 3, GCC as `cc` for x86-64 or aarch64, and GNU `objdump` and `nm`.
 ///
 /// # Errors
 ///
@@ -287,7 +287,9 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 /// with no reference, a reference outside a function that [`SYMBOLS`] does not admit,
 /// any reference to a clock function other than a call, such as its address in code or
 /// data, through which any code can call it, each inlined function, an `#include_next`,
-/// and a `#line` directive or line marker in a `.c` or `.h` file of the copy.
+/// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
+/// builds for neither x86-64 nor aarch64, and each instruction whose key the list of
+/// its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -1068,10 +1070,11 @@ const X86_64: [&str; 109] = [
     "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss", "xor",
     // A copy of memory, and a fill of it.
     "rep movs", "rep stos",
-    // Marks of control-flow enforcement, for the targets of indirect jumps.
+    // `endbr64` marks the target of an indirect jump; `notrack jmp` is an indirect jump
+    // whose target needs no mark.
     "endbr64", "notrack jmp",
-    "jmp", "ja", "jae", "jb", "jbe", "je", "jg", "jge", "jl", "jle", "jne", "jno", "jnp",
-    "jns", "jo", "jp", "js",
+    "jmp", "ja", "jae", "jb", "jbe", "je", "jg", "jge", "jl", "jle", "jne", "jno",
+    "jnp", "jns", "jo", "jp", "js",
     "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl", "setle", "setne",
     "setno", "setnp", "setns", "seto", "setp", "sets",
     "cmova", "cmovae", "cmovb", "cmovbe", "cmove", "cmovg", "cmovge", "cmovl", "cmovle",
@@ -1148,7 +1151,7 @@ fn instructions(disassembly: &str) -> BTreeSet<Instruction> {
             // continuation of the bytes of a long instruction has no instruction.
             let mut fields = line.split('\t');
             let address = fields.next()?.trim();
-            fields.next()?;
+            fields.next();
             if !address.ends_with(':') {
                 return None;
             }
@@ -2689,9 +2692,9 @@ End of search list.
             "src/util/ua_util.c: `draw` runs `mrs rndr`, which AARCH64 does not admit. \
              Add it only when it reads no clock, file, network, randomness, or \
              process state",
-            "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does not admit. \
-             Add it only when it reads no clock, file, network, randomness, or \
-             process state",
+            "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does \
+             not admit. Add it only when it reads no clock, file, network, \
+             randomness, or process state",
             "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in its \
              caller",
         ],
