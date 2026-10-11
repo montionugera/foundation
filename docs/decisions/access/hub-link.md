@@ -178,9 +178,10 @@
   Lost: the decoded selector through the wait, which holds about 26 times the bytes of
   the open with no reservation; and a compact `types::name::Selector`, an interface
   change of `types` that still holds a few times the bytes of the open. It holds its
-  places from its last resolve until the program took its last place. A place is the
-  name, the key, and the sample type of one channel that its selector matches. It holds
-  none while it waits for the home of its index. For its life it holds the key and the
+  places from the last match of its selector, after the wait for the home of its index,
+  until the program took its last place. A place is the name, the key, and the sample
+  type of one channel that its selector matches. It holds none while it waits for the
+  home of its index. For its life it holds the key and the
   slot of each of those channels. So one read holds at most the defined channels of one
   index, and a link holds at most `streams_max` reads. No cap bounds the reads of one
   subject or of one node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the
