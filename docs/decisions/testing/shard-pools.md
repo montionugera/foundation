@@ -26,5 +26,7 @@
   https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6099130173.
   Shard 0 binds the port (NODE START), so `Error::Pool` wins over `Error::Port`. By
   `laptop.architect-2` (#2438, 2026-10-11T20:43:59Z:
-  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113549763), which
-  supersedes "after the port binds" of the first link.
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113549763) and
+  `laptop.architect` (2026-10-11T20:45:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113562774), which
+  supersede "after the port binds" of the first link.
