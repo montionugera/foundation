@@ -12,10 +12,20 @@
   a higher class has bytes to send, so a steady higher class starves the lower ones. It
   orders only the bytes that QUIC holds. All classes share one QUIC send window, so a
   message can wait for bytes of a lower class to be acknowledged (#797). The QUIC send
-  window, not the send budget, bounds what QUIC holds. A message that QUIC does not take
-  in full waits its turn, by class, then oldest first. Only the first sender in turn
-  writes, and only it wakes when QUIC has room. A write of a class ahead of every
-  waiter goes first; any other write waits, and a `try_send` gives the message back.
+  window, not the send budget, bounds what QUIC holds: each byte that it took, until
+  the peer acknowledges that byte and each byte before it on its stream. QUIC holds no
+  byte of a stream after its reset. While a gap in the acknowledgments keeps the window
+  full, QUIC takes no byte of the session, of a `Command` too, until the peer
+  acknowledges the gap (#797). Lost: to free each acknowledged run that is not at the
+  front of its stream, whose bound is the blocks with a byte that is not acknowledged,
+  about 54 MiB for a window of 1 MiB, and to count the held bytes under a second limit
+  beside the window, which is this rule with a larger window and one more limit
+  (`laptop.architect-2`, 2026-10-11T17:39:39Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  message that QUIC does not take in full waits its turn, by class, then oldest first.
+  Only the first sender in turn writes, and only it wakes when QUIC has room. A write
+  of a class ahead of every waiter goes first; any other write waits, and a `try_send`
+  gives the message back.
   Stream credit is twice the connection window, so a stream never waits on its own
   credit while the connection has room. This relies on reader-granted credits (B3): a
   node takes every byte it granted credit for. A peer that gives less stalls only its

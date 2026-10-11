@@ -10,10 +10,12 @@
   memory, and `Reply::Stored` goes only once the chunk is durable. A get holds the chunk
   that it sends. `transport` also holds each chunk whole until the peer acknowledged
   each byte of it and each byte before it on the stream, so a get can hold more than one
-  chunk. The bound is `transport`'s, and it is open (#2361; `laptop.architect-2`,
-  2026-10-11T06:02:25Z,
-  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839). A refusal
-  stops the stream with its code: `wire::blob::Error::code` for a decode error,
+  chunk. The bound is `transport`'s (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): at most
+  `window_bytes / 65536` chunks for each session, plus two for each get
+  (`laptop.architect-2`, 2026-10-11T17:39:39Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  refusal stops the stream with its code: `wire::blob::Error::code` for a decode error,
   `MALFORMED` for a one-way stream (`peer::Error::OneWay`), `MISMATCH` for bytes that do
   not hash to the digest, and `FULL` for `Error::Floor` and a full disk. Each other
   store error is the failure of the server, not of the peer: both halves end with code

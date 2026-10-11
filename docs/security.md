@@ -102,6 +102,12 @@ state on `main`.
   share 50 resets a second on each shard. One ID is enough, and a peer whose dial
   completes gets new IDs with no limit: noq-proto issues a new ID each time the peer
   retires one.
+- A peer that keeps back or reorders an acknowledgment, or that stops a stream and
+  never acknowledges its reset, makes a session hold at most `window_bytes` of sent
+  bytes (#2361). Each held run of over 1452 bytes holds its whole block, so the
+  session holds at most `window_bytes / 1453` blocks, plus two for each stream. Open:
+  #2434 (a session that sends small parts of large blocks, as `hub` does, holds up to
+  that many large blocks).
 - Open: #620 (a stop after the peer's reset gives the peer the stream's window twice,
   so a peer grows the connection's receive memory with no bound).
 - Fixed: #299 (a peer made the node hold certificates that are not valid for a
@@ -262,9 +268,9 @@ state on `main`.
   puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
   memory for each stream. `transport` also holds each chunk whole until the peer
   acknowledged each byte of it and each byte before it on the stream, so a get can hold
-  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
-  get hold each chunk that its stream sends after it). Who may open a blob stream is not
-  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  more than one chunk: at most `window_bytes / 65536` chunks for each session, plus two
+  for each get (#2361). Who may open a blob stream is not built: `node` rejects each
+  one until it routes them from member nodes only (#1229).
   The requester is not built (#1229). To attack when it lands: a binary that a peer
   serves under a hash it does not match (C9d).
 
