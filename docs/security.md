@@ -13,8 +13,10 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
   truth of its timestamps.
 - **The spec.** It decides who may do what, and where each connector and index runs.
 - **The audit record.** It names the subject and the forwarding node of each action.
-- **Secrets.** Device and store credentials, join tickets, and each node's Ed25519
-  private key and X25519 seal key (S8).
+- **Secrets.** Device and store credentials, join tickets, each node's Ed25519
+  private key and X25519 seal key (S8), and the first admin's private key in
+  `admin.key` (NODE MESH), which may take each action on `**` in the root region
+  (FIRST ADMIN).
 - **Availability.** A node that stops also stops the data and control paths through
   it.
 
@@ -31,8 +33,8 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
-| Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node | |
-| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL of the data directory opens. With write, it can write the node's keys and so become that node | Read, write, or list another file or directory that `os` makes; read memory of the process |
+| Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
+| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL of the data directory opens. With write, it can write the node's keys and so become that node. With write to the data directory before the first start, it can write `admin.key`, which that start founds with, and so choose the first admin of the root region. With read of `admin.key`, it is the first admin | Read, write, or list another file or directory that `os` makes; read memory of the process |
 | Agent host | Use the key of the agent's subject, which the MCP process holds | Go past that subject's allows |
 | Dependency | Ship hostile or defective code in a crate we build | |
 
@@ -340,8 +342,9 @@ state on `main`.
   admin's `PrivateKey`, which it drops once the founding has its public half.
 - Node key material is on the node's local disk. A local user who can read it (Who
   attacks) is that node. The node that founds the root region keeps the first admin's
-  private key in `admin.key` (NODE MESH), so a local user who can read that file is
-  the first admin.
+  private key in `admin.key` in its data directory (NODE MESH), at mode 0600 when `os`
+  makes it, so only the user that runs the node can read it. A local user who can read
+  that file is the first admin.
 - `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
   use it (BQ16, S8). The other adapters (an environment variable or a file, and the
