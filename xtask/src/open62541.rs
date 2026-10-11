@@ -1135,7 +1135,7 @@ fn instructions(disassembly: &str) -> BTreeSet<Instruction> {
             let mut fields = line.split('\t');
             let address = fields.next()?.trim();
             fields.next()?;
-            if address.is_empty() || !address.ends_with(':') {
+            if !address.ends_with(':') {
                 return None;
             }
             Some(Instruction {
