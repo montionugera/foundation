@@ -17,50 +17,57 @@
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
   3, and 5). The reader open waits while the mesh names no home for the index that it
   selects. A reader with a hold opens again at its held position, so it stays `Behind`
-  at each open within its hold (HOME NAMED READERS). Proposed in
-  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6106461072, with no
-  ruling yet. Each run gets a child of the caller's token, which the supervisor cancels
-  once the run returns or its future drops, so each task that the run spawned to wait on
-  it ends with the run (`laptop.architect-2`, 2026-10-08T17:58:15Z:
+  at each open within its hold, and each close starts the hold again (HOME NAMED
+  READERS). So a hold longer than the longest wait of the backoff never ends while the
+  node runs with that spec. The reader then gets no frame again until #274 reads from
+  disk (the test:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). These
+  sentences are approved by `laptop.architect` (2026-10-11T07:34:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Proposed
+  in https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6106461072, with
+  no ruling of `laptop.architect-2` yet. Each run gets a child of the caller's token,
+  which the supervisor cancels once the run returns or its future drops, so each task
+  that the run spawned to wait on it ends with the run (`laptop.architect-2`,
+  2026-10-08T17:58:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6065930789). A drop of
   the future of `Opened::run` cancels the run and does not wait for its tasks
   (`laptop.architect-2`, 2026-10-09T01:30:51Z:
-  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231). At a
-  spec change, `node` cancels the run of each connector that the change removes or
-  changes, and starts the new run of a changed connector only after its old `run`
-  returned. Each other connector keeps its run, and the shard keeps its supervisor
+  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231). At a spec
+  change, `node` cancels the run of each connector that the change removes or changes,
+  and starts the new run of a changed connector only after its old `run` returned. Each
+  other connector keeps its run, and the shard keeps its supervisor
   (`laptop.architect-2`, 2026-10-09T05:10:43Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
   Supersedes "At a spec change, `node` cancels each run and awaits it before it starts
   the new supervisor" of
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231. A
-  connector that a change adds starts at once, unless the last run of its name has
-  not returned: then it starts after that run returned, so no two runs write one set
-  of status channels. A change of a connector whose run waits changes the connector
-  that the run starts with, so a name has at most one run that waits. This supersedes
-  "A connector that the change adds: start its run at once" of item 3 of 6074718616
+  connector that a change adds starts at once, unless the last run of its name has not
+  returned: then it starts after that run returned, so no two runs write one set of
+  status channels. A change of a connector whose run waits changes the connector that
+  the run starts with, so a name has at most one run that waits. This supersedes "A
+  connector that the change adds: start its run at once" of item 3 of 6074718616
   (`laptop.architect-2`, 2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). After a
   run returns, the supervisor waits, with no timeout, until each task that the run
-  spawned through `Context::tasks` ended, and only then starts its backoff. A task
-  that does not end at the cancel is a defect of its kind (`laptop.architect-2`,
+  spawned through `Context::tasks` ended, and only then starts its backoff. A task that
+  does not end at the cancel is a defect of its kind (`laptop.architect-2`,
   2026-10-08T19:04:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337). It also
   waits so before it returns (`laptop.architect-2`, 2026-10-09T01:06:45Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6072159701, item
-  1). The wait does not count toward the run's length (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6072159701, item 1).
+  The wait does not count toward the run's length (`laptop.architect-2`,
   2026-10-09T01:56:56Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072678811). One
   supervisor runs on each shard, made from `supervisor::Config` (the kinds, clock,
   entropy, network, tasks, and the shard's hub) (`laptop.architect-2`,
   2026-10-08T03:05:58Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6051331538). Only
-  a shard that has a hub runs one, so today only shard 0 (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6051331538). Only a
+  shard that has a hub runs one, so today only shard 0 (`laptop.architect`,
   2026-10-10T14:41:53Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098661378;
   `laptop.architect-2`, 2026-10-10T15:29:59Z:
-  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The
-  tests of `connector` and of each kind build that config with
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The tests
+  of `connector` and of each kind build that config with
   `connector::testing::create_config`, behind `sim`, which opens the hub through
   `hub::testing::open`. It gives no mesh time, since a task gets it from its writer
   (#2143) (`laptop.architect-2`, 2026-10-09T13:37:08Z:
@@ -68,29 +75,27 @@
   `laptop.architect`, 2026-10-08T17:50:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6065807610). After
   `Device` or `Retry` it restarts with full jitter backoff (1 s first, 60 s cap,
-  constants). The waits start again from 1 s after a run that lasted at least 60 s.
-  `Ok` from `run` ends the connector.
-  `Config` returns to the caller, which calls `run` again at the next spec change
-  (R12-4) (`laptop.architect-2`, 2026-10-11T03:35:05Z:
+  constants). The waits start again from 1 s after a run that lasted at least 60 s. `Ok`
+  from `run` ends the connector. `Config` returns to the caller, which calls `run` again
+  at the next spec change (R12-4) (`laptop.architect-2`, 2026-10-11T03:35:05Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6105068890).
   Supersedes "when the spec changes the connector" (`laptop.architect-2`,
   2026-10-09T05:10:43Z:
-  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
-  A spec change that the caller applied after that run started counts, so one that
-  comes while the run ends is not lost (`laptop.architect-2`, 2026-10-11T05:17:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616). A spec
+  change that the caller applied after that run started counts, so one that comes while
+  the run ends is not lost (`laptop.architect-2`, 2026-10-11T05:17:07Z:
   https://github.com/synnaxlabs/foundation/pull/2348#issuecomment-6105759604).
   Supersedes "The caller (`node`) already watches the spec and starts a new supervisor
   on a change (R12-4)" of the plan on #338
   (https://github.com/synnaxlabs/foundation/issues/338#issuecomment-5994872059). The
   class and the text of each restart error reach the connector's status (CONNECTOR
-  STATUS).
-  Decided by the `connector` builder in the plan on #338, after `/eb-review`; approved
-  by the coordinator (#338), with the reset after a long run approved on #338 later.
-- **CONNECTOR STATUS** The supervisor writes the status channels of its connector,
-  `<connector>.status.<name>`, on their own index `<connector>.status.time`, as the
-  connector, at `Authority::ABSOLUTE` (the advisor on #455, 2026-10-06T02:20:11Z:
-  https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6008006459), with
-  no lease (`laptop.architect-2`, 2026-10-09T18:46:26Z:
+  STATUS). Decided by the `connector` builder in the plan on #338, after `/eb-review`;
+  approved by the coordinator (#338), with the reset after a long run approved on #338
+  later. - **CONNECTOR STATUS** The supervisor writes the status channels of its
+  connector, `<connector>.status.<name>`, on their own index `<connector>.status.time`,
+  as the connector, at `Authority::ABSOLUTE` (the advisor on #455, 2026-10-06T02:20:11Z:
+  https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6008006459), with no
+  lease (`laptop.architect-2`, 2026-10-09T18:46:26Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087144669). The
   index is homed on the connector's node. `connector::status::channels` gives each name
   and sample type:

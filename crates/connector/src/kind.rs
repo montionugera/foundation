@@ -223,7 +223,9 @@ impl<C> Context<C> {
     /// gave none, or after the first call. When the reader ends with
     /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
     /// new reader before the next run. A reader with a hold opens again at its held
-    /// position, so while the home keeps no frame there, each later run gets `Behind`.
+    /// position. While the home keeps no frame there, each later run gets `Behind`.
+    /// Each close starts the hold again, so a hold longer than the wait between two
+    /// runs never ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
