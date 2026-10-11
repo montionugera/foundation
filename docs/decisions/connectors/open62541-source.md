@@ -411,9 +411,7 @@
   (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6071050895,
   2026-10-08 23:26 UTC).
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
-  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`. A new
-  loop sets the random generator of open62541 on its thread, which each loop on that
-  thread uses, so each loop on a thread gets a different value from its `Rng`.
+  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
   `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
   until #1992 gives it the wall time of the node through `hub`, in the PR of the first
   connection with a security policy other than `None`. No connection that checks a
@@ -429,8 +427,10 @@
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
+  A new loop sets the random generator of open62541 on its thread, which each loop on
+  that thread uses, so each loop on a thread gets a different value from its `Rng`.
   `bench::client` gives a test server on its own manager, and clients of it that each
-  have their own manager, as the kind uses them.
+  have their own manager, as the kind uses them. Approval owed (#2428).
   The logger of the loop writes each message of level warning and up to fd 2, and
   drops the lower levels: it formats the line into a stack buffer of 512 bytes with
   `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
