@@ -80,6 +80,10 @@ const SAMPLES: usize = 256;
 /// A ring that holds each frame of the run, as nothing frees a ring until #160: 64
 /// times the ring of `home::testing::shard`.
 const AREA: u64 = 1 << 28;
+/// A pool of 4 times the budget of `home::testing::shard`. A frame keeps its block
+/// until the group commit after it ends, and in some orders of the tasks the frames
+/// of `two sets 1472` filled 8 MiB before one did, so that a write got `Lost`.
+const BUDGET: u64 = 1 << 25;
 /// How long the bench waits between two checks of what the peer read.
 const STEP: Span = Span::MILLISECOND;
 
@@ -576,13 +580,13 @@ fn draft(writer: &Writer, samples: usize, stamp: &mut i64) -> Draft {
     draft
 }
 
-/// `home::testing::shard` on a ring of `AREA`, its interner, the mesh time once the
-/// clock has one, and the reader of that time. #160 removes it.
+/// `home::testing::shard` on a ring of `AREA` and a pool of `BUDGET`, its interner,
+/// the mesh time once the clock has one, and the reader of that time. #160 removes it.
 async fn create_shard(
     node: &sim::node::Node,
     tasks: Tasks,
 ) -> (home::Shard, Interner, i64, clock::Reader) {
-    let config = block::Config::new(1 << 23).expect("the budget fits");
+    let config = block::Config::new(BUDGET).expect("the budget fits");
     let pool = Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
     let (clock, mesh) = clock::Clock::new(node.clock());
     let wall = node.wall();
