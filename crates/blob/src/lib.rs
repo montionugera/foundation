@@ -152,7 +152,8 @@ pub struct Store {
     corruptions: Cell<u64>,
     failures: Cell<u64>,
     /// The serial of the next flight. A read that saw one flight's state must not
-    /// forget a later one's, so two flights never leave equal states.
+    /// forget a later one's, so two flights never leave equal states. It starts at 1:
+    /// serial 0 is the open's.
     flights: Cell<u64>,
     /// The key of the next call that waits for a put.
     waiters: Cell<u64>,
