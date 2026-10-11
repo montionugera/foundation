@@ -5,7 +5,7 @@
   `laptop.architect` (2026-10-07T18:07:55Z:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6043897000).
   "While it waits for a commit" supersedes "while it sleeps and while it waits for a
-  commit" of that comment: `laptop.architect` (2026-10-11T00:37:36Z:
+  commit", this record's text of that comment: `laptop.architect` (2026-10-11T00:37:36Z:
   https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820, item 2).
   The commit that the task waits for lives in the state, and the task polls it through
   the state. So the drop of the state drops the commit in the same call. Once the hub
