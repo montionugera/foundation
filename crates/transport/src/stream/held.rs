@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use block::{Heap, Pool};
 use types::time::Span;
 
+use crate::Class;
 use crate::stream::Part;
 use crate::testing::{self, spans};
-use crate::Class;
 
 /// The bytes of each block that the server sends from.
 const BLOCK: usize = 64 << 10;
@@ -63,8 +63,11 @@ fn held(seed: u64, window: usize, part: usize, count: usize, jitter: Span) -> us
             let most = Cell::new(0);
             let done = Cell::new(false);
             let send = async {
-                let mut sender =
-                    side.session.open_sender(Class::Complete).await.expect("a stream");
+                let mut sender = side
+                    .session
+                    .open_sender(Class::Complete)
+                    .await
+                    .expect("a stream");
                 for _ in 0..count {
                     let block = testing::alloc(&pool, BLOCK).expect("room").freeze();
                     let parts = [Part {

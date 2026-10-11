@@ -3283,6 +3283,6 @@ mod tests {
 }
 
 #[cfg(test)]
-mod stress;
-#[cfg(test)]
 mod held;
+#[cfg(test)]
+mod stress;
