@@ -625,6 +625,11 @@ impl StreamsState {
             // Loss of data on a closed stream is a noop
             return;
         };
+        // A reset stream holds no byte, so its retransmits stay empty and each loss
+        // would queue the stream again.
+        if stream.is_reset() {
+            return;
+        }
         if !stream.is_pending() {
             self.pending.push_pending(frame.id, stream.priority);
         }
@@ -2356,6 +2361,43 @@ mod tests {
         let send = server.send[&id].as_ref().expect("a send stream");
         assert_eq!((send.pending.held(), send.pending.offset()), (0, window));
         assert!(!send.pending.has_unsent_data());
+    }
+
+    #[test]
+    fn lost_frames_of_a_reset_stream_queue_nothing() {
+        let mut server = make(Side::Server);
+        let id = open_with_credit(&mut server);
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        let mut stream = SendStream {
+            id,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        assert_eq!(stream.write(&[0xFF; 4000]), Ok(4000));
+        let mut frames = Vec::new();
+        loop {
+            let sent = server.write_frames_for_test(140, true);
+            if sent.is_empty() {
+                break;
+            }
+            frames.extend(sent);
+        }
+        assert_eq!(server.pending.len(), 0);
+
+        let mut stream = SendStream {
+            id,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        stream.reset(0u32.into()).expect("the stream resets");
+        for frame in &frames {
+            server.retransmit(frame.clone());
+        }
+        assert!(frames.len() > 1);
+        assert_eq!(server.pending.len(), 0);
     }
 
     /// The bytes that the send buffers of `state` hold.
