@@ -11,9 +11,12 @@
   floor holds for each put, also a local one, so a start that founds a region stops
   with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
   than 1 GiB free (`laptop.architect-2`, 2026-10-11T05:31:52Z,
-  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). Each
-  session runs in its own future, and each stream of it reads its header in
-  its own future, so a late header delays no other stream. One exhaustive `match` on
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). A start
+  whose store holds each founding chunk does not stop: those puts take no new room (BLOB
+  PEER; `laptop.architect`, 2026-10-11T06:01:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106056805). Each
+  session runs in its own future, and each stream of it reads its header in its own
+  future, so a late header delays no other stream. One exhaustive `match` on
   `wire::Protocol` in `node` routes each stream; until a protocol has a server, its arm
   stops the stream with `Code(wire::header::REJECTED)` and resets the reply half with
   the same code, as for a header that does not decode, or for a first message with bytes
