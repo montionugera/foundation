@@ -9,8 +9,8 @@ use std::task::Poll;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 
-/// A started test server of open62541 on the loop of a connection manager. A drop
-/// leaks it.
+/// A started test server of open62541 on the loop of a connection manager.
+/// [`Server::close`] deletes it, and a drop leaks it.
 pub(crate) struct Server {
     raw: NonNull<ffi::test::Server>,
     /// The loop that the server lives on.

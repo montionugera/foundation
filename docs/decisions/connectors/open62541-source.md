@@ -497,15 +497,19 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093544897,
   2026-10-10 04:00 UTC). Supersedes the drive until `STOPPED` of
   https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998.
-  `server::Server::close` calls `UA_Server_run_shutdown`, does that drive, and deletes
-  the server, with no call between: decided by `laptop.architect-2`
+  The one function that calls `UA_Server_run_shutdown`, does that drive, and
+  deletes the server, with no call between: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
-  2026-10-10 15:28 UTC). Supersedes the `delete_server` sentence approved at `3b508e494`
-  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338). It is
-  behind `cfg(any(test, feature = "sim"))` until a server that serves users calls it:
-  decided by `laptop.architect-2`
+  2026-10-10 15:28 UTC), as `connection::Manager::close_server`. Supersedes the
+  `delete_server` sentence approved at `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338). That
+  function is `server::Server::close`, on a `server::Server` that owns the server:
+  approved by `laptop.architect-2` as a later step of 6c on #435
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
+  2026-10-10 03:15 UTC). It is behind `cfg(any(test, feature = "sim"))` until a
+  server that serves users calls it: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
-  2026-10-10 15:28 UTC), which moves to `Server::close` the cfg on `delete_server`
+  2026-10-10 15:28 UTC), which moves to that function the cfg on `delete_server`
   approved at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC). The one function: asked by `laptop.architect-2`
