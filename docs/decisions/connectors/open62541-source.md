@@ -208,8 +208,14 @@
   and no other flag that changes the code. So the two builds differ in the macros that a
   flag of one build alone changes, such as `__OPTIMIZE__`, `__PIE__`, and
   `_FORTIFY_SOURCE`. Until #2381, the check does not read code that a file of the copy
-  puts under such a macro. The two builds also differ with no macro. The check compiles
-  at `-O0`, where `__builtin_constant_p` of a local is 0. A release build of the
+  puts under such a macro. The two builds also differ in macros that no flag makes, such
+  as `__FILE__` and `__clang__`. The check names each source `./` and its path in the
+  copy, and `build.rs` names it by an absolute path. The check compiles only with GCC.
+  `clang` compiles the connector when the `cc` crate picks it, and always with the
+  address sanitizer or under `cfg(fuzzing)` (below). Until #2381, the check does not
+  read code that only the connector build compiles for the value of such a macro. The
+  two builds also differ with no macro. The check compiles at `-O0`, where
+  `__builtin_constant_p` of a local that holds a constant is 0. A release build of the
   connector compiles at `-O3`, where it is 1. Until #2381, the check does not read code
   that only the connector build compiles from the same preprocessed text. These
   sentences: stated by `laptop.architect`
@@ -218,9 +224,11 @@
   https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108238957, 2026-10-11
   10:49 UTC, for the flags of the `cc` crate and of the check, and
   https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108737600, 2026-10-11
-  11:53 UTC, for the difference with no macro). A `-W` flag with no `,` is a warning,
-  which changes no code, so `collect` leaves it out by that pattern, not by name.
-  Decided by `laptop.architect-2`
+  11:53 UTC, for the difference with no macro, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6109104654, 2026-10-11
+  12:38 UTC, for the macros that no flag makes and the words "that holds a constant"). A
+  `-W` flag with no `,` is a warning, which changes no code, so `collect` leaves it out
+  by that pattern, not by name. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
   2026-10-08 13:57 UTC) and `laptop.director`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061540779,
