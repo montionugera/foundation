@@ -1,7 +1,6 @@
 //! The review check: the review of a PR is done at its head. The round comment format
 //! it parses is in `.claude/skills/review/SKILL.md`, "Round comment".
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
@@ -521,8 +520,9 @@ fn lack(start: &Start) -> Option<&'static str> {
     None
 }
 
-/// The character that stands for an image in a line of [`texts`].
-const IMAGE: char = '\u{FFFC}';
+/// The character that stands for an image in a line of [`texts`]. No text of a line
+/// holds it, since it is [`ignorable`].
+const IMAGE: char = '\u{FFF8}';
 
 /// Whether `line`, a line of [`texts`], shows no text: it is empty, or holds only
 /// images and the spaces between them.
@@ -829,7 +829,7 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 /// The lines of text of `paragraph` as GitHub shows them: its text and code spans,
-/// each footnote reference as its number, each image as U+FFFC in place of its text
+/// each footnote reference as its number, each image as [`IMAGE`] in place of its text
 /// and line breaks, no invisible character (Unicode default ignorable), and each run of
 /// white space as one space, trimmed. A character that looks like another stays
 /// itself.
@@ -838,6 +838,8 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut fresh = true;
     let image =
         |node: &'n AstNode<'n>| matches!(node.data.borrow().value, NodeValue::Image(_));
+    let shown =
+        |text: &str| text.chars().filter(|&c| !ignorable(c)).collect::<String>();
     for span in paragraph.descendants().skip(1) {
         if span.ancestors().skip(1).any(image) {
             continue;
@@ -848,20 +850,18 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
                 fresh = true;
                 continue;
             }
-            NodeValue::Text(text) => Cow::Borrowed(text.as_ref()),
-            NodeValue::Code(code) => Cow::Borrowed(code.literal.as_str()),
-            NodeValue::Image(_) => Cow::Owned(IMAGE.to_string()),
-            NodeValue::FootnoteReference(reference) => {
-                Cow::Owned(reference.ix.to_string())
-            }
-            _ => Cow::Borrowed(""),
+            NodeValue::Text(text) => shown(text),
+            NodeValue::Code(code) => shown(&code.literal),
+            NodeValue::Image(_) => IMAGE.to_string(),
+            NodeValue::FootnoteReference(reference) => reference.ix.to_string(),
+            _ => String::new(),
         };
         if fresh {
             lines.push(String::new());
             fresh = false;
         }
         if let Some(line) = lines.last_mut() {
-            line.extend(text.chars().filter(|&c| !ignorable(c)));
+            line.push_str(&text);
         }
     }
     lines

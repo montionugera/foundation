@@ -2627,3 +2627,16 @@ fn fails_a_round_that_github_ends_with_a_code_block_after_a_footnote() {
     let tail = ROUND.to_string() + "\n\n[^1]: x\n \n    Hot path: `send`";
     assert_eq!(check(&record(vec![bot(&tail)])), vec![unended("Deferred")]);
 }
+
+#[test]
+fn reads_the_character_u_fffc_as_text_not_as_an_image() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10\n\u{FFFC}"),
+        format!("{NAME}\nQuality: 8/10\n&#xFFFC;"),
+        format!("**\u{FFFC}** · integrator\nQuality: 8/10\n{SUMMARY}"),
+        format!("**laptop.integrator-2** · \u{FFFC}\nQuality: 8/10\n{SUMMARY}"),
+    ] {
+        let found = check(&record(vec![headed(&head)]));
+        assert_eq!(found, Vec::<String>::new(), "{head:?}");
+    }
+}
