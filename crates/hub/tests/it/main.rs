@@ -857,10 +857,11 @@ fn records_the_handoff_at_the_end_of_a_lease_that_the_end_of_a_lease_starts() {
     }
 }
 
-/// A writer that opens at the instant a lease ends races the gate task: in each order,
-/// it takes control, and the handoff to it is recorded.
+/// A leased writer that opens at the instant a lease ends races the gate task. In each
+/// order, the gate task records the end of its lease, which only the wake at the open
+/// lets it see when the task runs first.
 #[test]
-fn records_the_handoff_to_a_writer_that_opens_as_a_lease_ends() {
+fn records_the_end_of_the_lease_of_a_writer_that_opens_as_a_lease_ends() {
     for seed in 0..32 {
         let after = written_after_cut(
             seed,
@@ -868,25 +869,26 @@ fn records_the_handoff_to_a_writer_that_opens_as_a_lease_ends() {
                 let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
                 assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
                 test.clock.sleep(LEASE).await;
-                let _b = test.writer("subject-b", &["value"]).await;
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
                 std::future::pending::<()>().await;
             },
             "subject-a",
         );
-        assert_eq!(after, [reserved()], "seed {seed}");
+        assert_eq!(after, [applied(1)], "seed {seed}");
     }
 }
 
-/// A holder that closes at the instant its lease ends races the gate task: in each
-/// order, the waiting writer takes control, and the handoff to it is recorded.
+/// A holder that closes at the instant its lease ends races the gate task. In each
+/// order, the leased waiter takes control, and the gate task records the end of its
+/// lease, which only the wake at the close lets it see when the task runs first.
 #[test]
-fn records_the_handoff_when_a_holder_closes_as_its_lease_ends() {
+fn records_the_end_of_the_lease_of_a_waiter_when_a_holder_closes_as_its_lease_ends() {
     for seed in 0..32 {
         let after = written_after_cut(
             seed,
             |test| async move {
                 let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
-                let _b = test.writer("subject-b", &["value"]).await;
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
                 assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
                 test.clock.sleep(LEASE).await;
                 drop(a);
@@ -894,7 +896,7 @@ fn records_the_handoff_when_a_holder_closes_as_its_lease_ends() {
             },
             "subject-a",
         );
-        assert_eq!(after, [reserved()], "seed {seed}");
+        assert_eq!(after, [applied(1)], "seed {seed}");
     }
 }
 
