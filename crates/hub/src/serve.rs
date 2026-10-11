@@ -105,12 +105,11 @@ pub enum Error {
     },
     /// The reader of a read did not open. Code: `UNKNOWN` for
     /// [`reader::Error::Empty`], `MALFORMED` for `ManyIndexes`, `BUSY` for `Pool`,
-    /// the code of the home's refusal (`FAILED` for its `MALFORMED`), and `FAILED`
-    /// for each other.
+    /// the code of the home's refusal, and `FAILED` for each other.
     Reader(reader::Error),
     /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
-    /// `BUSY` for `Pool`, the code of the home's refusal (`FAILED` for its
-    /// `MALFORMED`), and `FAILED` for each other.
+    /// `BUSY` for `Pool`, the code of the home's refusal, and `FAILED` for each
+    /// other.
     Ended(reader::Ended),
 }
 
@@ -826,7 +825,7 @@ mod tests {
             ),
         ];
         for (refusal, code) in [
-            (wire::hub::Refusal::Malformed, FAILED),
+            (wire::hub::Refusal::Malformed, MALFORMED),
             (wire::hub::Refusal::Unknown, UNKNOWN),
             (wire::hub::Refusal::NotHome, NOT_HOME),
             (wire::hub::Refusal::Failed, FAILED),

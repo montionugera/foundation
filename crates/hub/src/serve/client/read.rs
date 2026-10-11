@@ -76,8 +76,10 @@ async fn start(
 ) -> Result<Layout, Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
-        count: u32::try_from(matched.places.len()).expect("a count of places is a u32"),
-        index: u32::try_from(matched.index).expect("a place is a u32"),
+        count: u32::try_from(matched.places.len())
+            .expect("invariant: each place has its own slot, a u32"),
+        index: u32::try_from(matched.index)
+            .expect("invariant: the index is one of the places"),
     }
     .encode(&mut block);
     sender.send(block.freeze()).await?;
@@ -181,11 +183,11 @@ pub(crate) fn end(ended: &reader::Ended) -> Refusal {
     }
 }
 
-/// The refusal of a read whose remote home refused it with `refusal`. A `MALFORMED`
-/// tells of a fault between the nodes, not of the program's read.
+/// The refusal of a read whose remote home refused it with `refusal`: the same code.
 fn from_home(refusal: wire::hub::Refusal) -> Refusal {
     match refusal {
-        wire::hub::Refusal::Malformed | wire::hub::Refusal::Failed => Refusal::Failed,
+        wire::hub::Refusal::Malformed => Refusal::Malformed,
+        wire::hub::Refusal::Failed => Refusal::Failed,
         wire::hub::Refusal::Unknown => Refusal::Unknown,
         wire::hub::Refusal::NotHome => Refusal::NotHome,
         wire::hub::Refusal::Busy => Refusal::Busy,
