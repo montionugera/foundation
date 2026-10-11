@@ -101,7 +101,11 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     fs::write(&path, b"old").unwrap();
     fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
     let entries = || {
-        let listed = Command::new("ls").arg("-le").arg(&path).output().unwrap();
+        let listed = Command::new("/bin/ls")
+            .arg("-le")
+            .arg(&path)
+            .output()
+            .unwrap();
         assert!(listed.status.success(), "{listed:?}");
         let listed = String::from_utf8(listed.stdout).unwrap();
         listed
@@ -111,7 +115,7 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
             .collect::<Vec<_>>()
     };
     assert_eq!(entries(), [""; 0]);
-    let mut chmod = Command::new("chmod");
+    let mut chmod = Command::new("/bin/chmod");
     chmod.args(["+a", "everyone allow read,file_inherit"]);
     assert!(chmod.arg(&scratch.0).status().unwrap().success());
     os::paths().write(&path, b"new").unwrap();
