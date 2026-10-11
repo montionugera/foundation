@@ -628,8 +628,8 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
         };
         // A call of `set_definitions` while the open waits can change a channel.
-        let (keys, matched) = matched(&state.borrow(), select().borrow(), &mut item)?;
-        if keys[matched.index] != index {
+        let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
+        if keys[found.index] != index {
             continue;
         }
         let home = if let Some(home) = away {
@@ -638,12 +638,12 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             // With no wait since `matched`, so each of `keys` is defined.
             let slots = state.borrow_mut().slots(index, &keys);
             Home::Here(Channels {
-                index: slots[matched.index],
+                index: slots[found.index],
                 keys,
                 slots,
             })
         };
-        return Ok((matched, home));
+        return Ok((found, home));
     }
 }
 
