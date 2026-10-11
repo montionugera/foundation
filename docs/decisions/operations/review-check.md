@@ -164,4 +164,17 @@
   red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the head. The
   status is `success` on `merge_group`. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
-  messages on #1193.
+  messages on #1193. A round comment fails when it does not start with its name line
+  `**<session>** · <role>`, then `Quality: <n>/10` with `n` from 1 to 10, then a summary
+  line. Stated by the director at 2026-10-08T01:47:11Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6050487121). The
+  check reads the lines of the top-level paragraphs before the round heading, as GitHub
+  shows them. The first block of the comment is a paragraph that starts with the session
+  name in bold, then ` · `, then a role. The second line is the rating, with nothing
+  after it. The third line is not empty. A blank line between two of them changes
+  nothing. The check reads neither the session name nor the role against a list. A round
+  posted before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs`
+  (2026-10-11T16:00:00Z) is checked as before, so that the new rule does not fail the
+  rounds that came before it. A round that fails by this rule gets an edit of its round
+  comment that adds the lines, with the rating and the summary of its `reviewer` report
+  as given, and the cutoff stays.

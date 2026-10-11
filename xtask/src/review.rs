@@ -85,6 +85,11 @@ const FIXES: &str = "Text fixes";
 /// `performance` when a `Hot path:` line names a function.
 const CUTOFF: &str = "2026-10-08T03:00:00Z";
 
+/// A round comment posted before this UTC time needs no name line, rating, or summary
+/// line before its round heading, so that the rule does not fail the rounds that came
+/// before it.
+const RATING_CUTOFF: &str = "2026-10-11T16:00:00Z";
+
 /// The record of a PR that the check reads.
 #[derive(Debug)]
 struct Record {
@@ -392,9 +397,12 @@ fn listed(reviewers: &str) -> BTreeSet<String> {
 /// Parses `comment` as a round comment. `None` when it has no round heading
 /// ([`Shown::number`]). The fields are the first block after the heading, so the
 /// findings text cannot set them. The last block is the end lines ([`END`]), unless the
-/// comment is old, posted before [`CUTOFF`].
+/// comment is old, posted before [`CUTOFF`]. A comment posted at or after
+/// [`RATING_CUTOFF`] starts with its name line, its rating, and its summary line
+/// ([`Shown::lacks`]).
 fn round(comment: &Comment) -> Option<Parsed> {
     let old = comment.created.as_str() < CUTOFF;
+    let rated = comment.created.as_str() >= RATING_CUTOFF;
     let body = normalized(&comment.body);
     let shown = Shown::read(&body, old);
     // An old round is taken as written, except where the check cannot read it.
@@ -433,6 +441,11 @@ fn round(comment: &Comment) -> Option<Parsed> {
     let fields = || {
         if let Some(&(line, cause)) = hiding {
             return Err(cause.problem(number, line));
+        }
+        if let Some(lack) = shown.lacks().filter(|_| rated) {
+            return Err(format!(
+                "review round {number} {lack}. Write the round {FORMAT}"
+            ));
         }
         let range = range.ok_or_else(|| missing("Range"))?.trim_matches('`');
         let (from, end) = range.split_once("..").ok_or_else(|| {
@@ -560,6 +573,12 @@ struct Shown<'a> {
     /// it, since GitHub starts HTML blocks at other lines than comrak, and can show a
     /// heading that comrak hides.
     number: Option<String>,
+    /// The text of the bold span that starts the comment, when its first block is a
+    /// paragraph that starts with one.
+    session: Option<String>,
+    /// The lines of each top-level paragraph before the heading, as GitHub shows them
+    /// ([`texts`]).
+    start: Vec<String>,
     /// Each top-level block after the heading: the index in `text` of a paragraph, or
     /// `None` for any other block. The footnotes come last, as GitHub shows them.
     blocks: Vec<Option<usize>>,
@@ -601,6 +620,7 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
+        (shown.session, shown.start) = start(root);
         let mut hiding = Vec::new();
         for node in root.descendants() {
             let data = node.data.borrow();
@@ -648,6 +668,39 @@ impl<'a> Shown<'a> {
         shown
     }
 
+    /// What the comment lacks before its round heading, as the words of a problem, or
+    /// `None`. Its first three lines of text there are its name line (a bold session
+    /// name, ` · `, and a role), `Quality: <n>/10` with `n` from 1 to 10, and a summary
+    /// line.
+    fn lacks(&self) -> Option<&'static str> {
+        let mut lines = self.start.iter().map(String::as_str);
+        let role = self
+            .session
+            .as_deref()
+            .zip(lines.next())
+            .and_then(|(s, line)| {
+                line.strip_prefix(s)
+                    .filter(|_| !s.is_empty())?
+                    .strip_prefix(" · ")
+            });
+        if role.is_none_or(str::is_empty) {
+            return Some("does not start with a name line `**<session>** · <role>`");
+        }
+        let rating = lines
+            .next()
+            .and_then(|line| line.strip_prefix("Quality: ")?.strip_suffix("/10"));
+        if !rating.is_some_and(|n| (1..=10).any(|rating| rating.to_string() == n)) {
+            return Some(
+                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                 name line",
+            );
+        }
+        if lines.next().is_none_or(str::is_empty) {
+            return Some("has no summary line after its `Quality:` line");
+        }
+        None
+    }
+
     /// The lines of the fields: the first block after the round heading, or none when
     /// it is not a paragraph.
     fn fields(&self) -> &[String] {
@@ -679,6 +732,24 @@ impl<'a> Shown<'a> {
             .flatten()
             .map_or(&[][..], |i| self.text[i].as_slice())
     }
+}
+
+/// The start of the comment `root` ([`Shown::session`], [`Shown::start`]).
+fn start<'n>(root: &'n AstNode<'n>) -> (Option<String>, Vec<String>) {
+    let paragraph = |block: &&'n AstNode<'n>| {
+        matches!(block.data.borrow().value, NodeValue::Paragraph)
+    };
+    let session = root.first_child().filter(paragraph).and_then(|block| {
+        let span = block.first_child()?;
+        matches!(span.data.borrow().value, NodeValue::Strong)
+            .then(|| texts(span).join(" "))
+    });
+    let lines = root
+        .children()
+        .take_while(|block| number(block).is_none())
+        .filter(paragraph)
+        .flat_map(texts);
+    (session, lines.collect())
 }
 
 /// The first line of `paragraph` before its last line `last` with a span of text that

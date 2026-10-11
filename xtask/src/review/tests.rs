@@ -2394,3 +2394,150 @@ fn an_old_round_that_defers_but_names_no_hot_path_needs_no_performance() {
     let round = ROUND.replace("Deferred: none", "Deferred: #12");
     assert_eq!(check(&record(vec![old(&round)])), Vec::<String>::new());
 }
+
+/// A name line.
+const NAME: &str = "**laptop.integrator-2** · integrator, #1211";
+
+/// A summary line.
+const SUMMARY: &str = "The fixes close each round 1 finding.";
+
+/// `ROUND` with `head` before its round heading, posted at `created`.
+fn headed_at(head: &str, created: &str) -> Comment {
+    let (_, rest) = ROUND.split_once("## Review round").unwrap();
+    Comment {
+        created: created.to_string(),
+        ..bot(&format!("{head}\n\n## Review round{rest}"))
+    }
+}
+
+/// `ROUND` with `head` before its round heading, posted at the cutoff of the rating.
+fn headed(head: &str) -> Comment {
+    headed_at(head, RATING_CUTOFF)
+}
+
+/// The problem of round 3 that asks for `what`.
+fn unrated(what: &str) -> Vec<String> {
+    vec![format!(
+        "review round 3 {what}. Write the round in the format of \
+         .claude/skills/review/SKILL.md, \"Round comment\"."
+    )]
+}
+
+#[test]
+fn passes_a_round_that_starts_with_its_name_line_and_rating() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10\n{SUMMARY}"),
+        format!("{NAME}\n\nQuality: 8/10\n\n{SUMMARY}\nA second line."),
+        format!("{NAME}\nQuality: 1/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 10/10\n{SUMMARY}"),
+        format!("  {NAME}  \n  Quality:  8/10\n{SUMMARY}"),
+        "__box1.builder-3__ · builder\nQuality: 5/10\nIt works.".to_string(),
+    ] {
+        let found = check(&record(vec![headed(&head)]));
+        assert_eq!(found, Vec::<String>::new(), "{head}");
+    }
+}
+
+#[test]
+fn fails_a_round_that_does_not_start_with_a_name_line() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    for head in [
+        String::new(),
+        rating.clone(),
+        format!("laptop.integrator-2 · integrator\n{rating}"),
+        format!("**laptop.integrator-2** integrator\n{rating}"),
+        format!("**laptop.integrator-2** ·\n{rating}"),
+        format!("**laptop.integrator-2**\n{rating}"),
+        format!("**laptop.integrator-2 · integrator**\n{rating}"),
+        format!("**\u{200b}** · integrator\n{rating}"),
+        format!("A note.\n{NAME}\n{rating}"),
+        format!("A note.\n\n{NAME}\n{rating}"),
+        format!("A note. {NAME}\n{rating}"),
+        format!("```\n{NAME}\n{rating}\n```"),
+        format!("    {NAME}\n    {rating}"),
+        format!("> {NAME}\n> {rating}"),
+        format!("- {NAME}\n  {rating}"),
+        format!("- a\n\n{NAME}\n{rating}"),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("does not start with a name line `**<session>** · <role>`"),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_no_rating_from_1_to_10_after_its_name_line() {
+    for head in [
+        NAME.to_string(),
+        format!("{NAME}\n{SUMMARY}"),
+        format!("{NAME}\n{SUMMARY}\nQuality: 8/10"),
+        format!("{NAME}\nQuality: 0/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 11/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/9\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8\n{SUMMARY}"),
+        format!("{NAME}\nQuality: +8/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 08/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8 / 10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10, up from 6/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10. {SUMMARY}"),
+        format!("{NAME}\nquality: 8/10\n{SUMMARY}"),
+        format!("{NAME}\nQuality 8/10\n{SUMMARY}"),
+        format!("{NAME}\n\n- Quality: 8/10\n\n{SUMMARY}"),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated(
+                "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                 name line"
+            ),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_no_summary_line_after_its_rating() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10"),
+        format!("{NAME}\nQuality: 8/10\n\u{200b}"),
+        format!("{NAME}\nQuality: 8/10\n\n- {SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10\n\n> {SUMMARY}"),
+    ] {
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("has no summary line after its `Quality:` line"),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn a_round_posted_before_the_cutoff_of_the_rating_needs_no_name_line() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    let before = headed_at(&rating, "2026-10-11T15:59:59Z");
+    assert_eq!(check(&record(vec![before])), Vec::<String>::new());
+    assert_eq!(
+        check(&record(vec![headed(&rating)])),
+        unrated("does not start with a name line `**<session>** · <role>`")
+    );
+}
+
+#[test]
+fn fails_each_round_with_no_name_line_and_names_it_before_a_missing_field() {
+    let rating = format!("Quality: 8/10\n{SUMMARY}");
+    let free = Comment {
+        created: RATING_CUTOFF.to_string(),
+        ..bot(&format!("{rating}\n\n## Review round 2\n\nNo field."))
+    };
+    let last = headed(&format!("{NAME}\n{rating}"));
+    assert_eq!(
+        check(&record(vec![free, last])),
+        vec![
+            "review round 2 does not start with a name line `**<session>** · <role>`. \
+             Write the round in the format of .claude/skills/review/SKILL.md, \"Round \
+             comment\"."
+        ]
+    );
+}
