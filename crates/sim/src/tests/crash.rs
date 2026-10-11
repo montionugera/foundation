@@ -855,7 +855,7 @@ fn a_power_cut_draws_the_prefix_after_a_create_with_no_room() {
 // With a seed, both crashes draw the same state of `a`, and a `Process` crash shows
 // it. A whole draw that keeps no change of the log lists `a` and not `b`.
 #[test]
-fn a_crash_in_a_create_with_no_room_makes_no_earlier_change_durable() {
+fn a_crash_in_the_first_try_of_a_create_with_no_room_makes_no_earlier_change_durable() {
     let listed = |seed, crash| {
         let (mut sim, node) = disk(seed);
         crash_after(&mut sim, &node, crash, create_with_no_room_after_b);
