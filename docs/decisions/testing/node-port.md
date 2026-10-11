@@ -25,12 +25,6 @@
   handshake, within the bound on sessions of #1628 (below); the mesh checks each message
   of a mesh stream (NODE MESH). With no mesh, at the stop, each session and stream
   future drops, then the transport. A header has 10 s (#1628, below).
-  Amended (2026-10-11, #2420, by `laptop.architect-2`): shard 0 binds the port once it
-  has claimed the data directory, before any buffer opens; a failed bind opens no
-  buffer (NODE START;
-  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
-  supersedes the bind before any shard starts of
-  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
   Decided by `laptop.architect-2` (2026-10-07 21:09 UTC):
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669, on the
   plan https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046861267;
@@ -272,3 +266,9 @@
   proof in the handshake, since the client hello answers a challenge of the node that a
   1-RTT handshake cannot carry without a new replay defense, and it moves `access`
   checks into `transport`; a reserved place for a join, by the ruling on #2153.
+  Amended (2026-10-11, #2420, by `laptop.architect-2`): shard 0 binds the port once it
+  has claimed the data directory, before any buffer opens; a failed bind opens no
+  buffer (NODE START;
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
+  supersedes the bind before any shard starts of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
