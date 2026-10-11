@@ -375,14 +375,14 @@ fn performer(text: &[Vec<String>]) -> bool {
 }
 
 /// Whether a top-level paragraph of `shown` between its fields and its end lines has a
-/// line `Text fixes:` whose value is not `none` ([`none`]).
+/// line `Text fixes:` with a value ([`stated`]).
 fn fixed(shown: &Shown<'_>) -> bool {
     shown
         .middle()
         .iter()
         .flat_map(|block| shown.paragraph(Some(block)))
         .filter_map(|l| l.strip_prefix("Text fixes:"))
-        .any(|items| !none(items))
+        .any(stated)
 }
 
 /// The reviewers that the value of a `Reviewers:` line lists.
@@ -475,9 +475,9 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
 }
 
-/// Whether the end lines `paragraph` of round `number` name a hot path: the first word
-/// of its `Hot path:` value is not `none` ([`none`]).
-/// The paragraph must be the [`END`] lines in order and nothing else.
+/// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
+/// line has a value ([`stated`]). The paragraph must be the [`END`] lines in order and
+/// nothing else.
 fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
     let (values, read) = entries(paragraph);
     let [deferred, surface, hot] = END;
@@ -496,16 +496,16 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
             "review round {number} has a second `{name}:` line in its end lines."
         ));
     }
-    Ok(!none(&values[2].1))
+    Ok(stated(&values[2].1))
 }
 
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
-/// `text` ([`Shown::text`]) has a value that is not `none` ([`none`]).
+/// `text` ([`Shown::text`]) has a value ([`stated`]).
 fn named(text: &[Vec<String>]) -> bool {
     let start = format!("{}:", END[2]);
     text.iter().any(|p| {
         (0..p.len())
-            .any(|i| p[i].starts_with(&start) && !none(&entries(&p[i..]).0[0].1))
+            .any(|i| p[i].starts_with(&start) && stated(&entries(&p[i..]).0[0].1))
     })
 }
 
@@ -958,12 +958,12 @@ fn line_end(text: &str, start: usize) -> usize {
     text[start..].find('\n').map_or(text.len(), |i| start + i)
 }
 
-/// Whether the first word of `value`, with its backticks and one final `,`, `.`, or
-/// `;` removed, is `none`.
-fn none(value: &str) -> bool {
+/// Whether `value` states something: its first word, with its backticks and one final
+/// `,`, `.`, or `;` removed, is not `none`.
+fn stated(value: &str) -> bool {
     let first = value.split_whitespace().next().unwrap_or_default();
     let first = first.replace('`', "");
-    first.strip_suffix([',', '.', ';']).unwrap_or(&first) == "none"
+    first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"
 }
 
 /// Reads the record of PR `pr` with `gh`, in the repository that `gh` resolves.
