@@ -1,7 +1,10 @@
 //! The read streams of a client session that `Link::serve` serves, over a real
 //! transport from a program to a simulated node.
 
+use std::path::{Path as FilePath, PathBuf};
+
 use access::proof::{Error as Refusal, Kind};
+use env::files::Operation;
 use hub::{reader, serve};
 use transport::Class;
 use types::channel;
@@ -11,12 +14,13 @@ use wire::header::MALFORMED;
 use wire::hub::client::{
     self, BODY_BYTES_MAX, FromNode, Mode, Open, Place, Places, REFUSED,
 };
-use wire::hub::{BUSY, FromHome, UNKNOWN};
+use wire::hub::{BUSY, FAILED, FromHome, UNKNOWN};
 
 use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
 use super::serve::{decoded, got, next, places as placed};
 use super::{
-    COMMIT, DataType, I64, POOL, STAMP, Test, channels, without, write, write_wide,
+    COMMIT, DataType, I64, POOL, RING, STAMP, Test, channels, without, write,
+    write_wide,
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::sessions::{Got, rules};
@@ -256,19 +260,24 @@ fn stops_a_read_on_a_stream_of_the_other_class_as_malformed() {
 }
 
 /// A read reserves its open under the share of its subject, not the request turn of
-/// its link, and frees it once the open is verified. The open of `value` is 8 bytes,
-/// and that of `time` and `value` 14.
+/// its link, until it is verified, and then its places until they are sent. The open
+/// of `time` and `value` is 14 bytes, that of `value` 8, and the places of `value`
+/// are those of `value` and `time`.
 #[test]
-fn opens_reads_beside_a_request_and_stops_one_over_the_share_as_busy() {
+fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     let home = read_session(
         305,
         async |_| {},
         |mut agent| async move {
             agent.admit().await;
-            let _held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
+            let held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
             agent.sleep(Span::MILLISECOND).await;
-            let mut busy = agent.read(Mode::Complete, &["time", "value"]).await;
-            assert_eq!(busy.recv().await, reset_with(BUSY));
+            for select in [&["time", "value"][..], &["value"]] {
+                let mut busy = agent.read(Mode::Complete, select).await;
+                assert_eq!(busy.recv().await, reset_with(BUSY));
+            }
+            drop(held);
+            agent.sleep(Span::MILLISECOND).await;
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["value"]).await;
                 let (places, _, _) = opened(&mut stream, Mode::Complete).await;
@@ -276,14 +285,16 @@ fn opens_reads_beside_a_request_and_stops_one_over_the_share_as_busy() {
             }
         },
     );
-    let share = serve::Error::Share {
+    let share = |length| serve::Error::Share {
         subject: name(SUBJECT),
-        length: 14,
+        length,
         held: BODY_BYTES_MAX - 8,
     };
-    assert_eq!(home.served[0], Err(share.clone()));
+    let places = 2 * size_of::<Place>() + "value".len() + "time".len();
+    let places = u64::try_from(places).expect("fits");
+    assert_eq!(home.served[..2], [Err(share(14)), Err(share(places))]);
     assert_eq!(
-        share.to_string(),
+        share(14).to_string(),
         "a body of 14 bytes does not fit under the share of 16777216 bytes of subject \
          ops.agent: its open requests and reads hold 16777208 bytes"
     );
@@ -331,6 +342,35 @@ fn stops_a_read_that_gets_a_message_after_its_open_as_malformed() {
     );
     let trailing = serve::Error::Client(client::Error::Trailing);
     assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
+}
+
+/// A failed sync of the buffer ends the reader of a complete read, which stops it as
+/// `FAILED`.
+#[test]
+fn stops_a_read_whose_buffer_failed_as_failed() {
+    let ready = async |test: &Test| {
+        let mut writer = test.writer("a", &["value"]).await;
+        let (clock, node, now) = (test.clock.clone(), test.node.clone(), test.now());
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            node.fail_file(FilePath::new(RING), Operation::Sync);
+            write(&mut writer, &[now], &[1]);
+        });
+    };
+    let home = read_session(311, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        opened(&mut stream, Mode::Complete).await;
+        assert_eq!(stream.recv().await, reset_with(FAILED));
+        finish(&mut agent).await;
+    });
+    let failed = reader::Ended::Buffer(env::files::Error::Io {
+        path: PathBuf::from(RING),
+        operation: Operation::Sync,
+        code: 5,
+    });
+    let failed = serve::Error::Ended(Box::new(failed));
+    assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
 /// A message after the open stops a read while its frames still come.

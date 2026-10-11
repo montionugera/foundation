@@ -32,9 +32,10 @@ pub use client::{Reply, Request};
 
 /// The most bytes of client bodies that one hub holds at once, over each of its links:
 /// the body of a request from its decode until the caller sends or drops its
-/// [`Reply`], and the open of a read from its decode until the hub verified it. A
-/// body that does not fit stops with `BUSY` before the hub reads a byte of it. The
-/// bodies of one subject hold at most [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
+/// [`Reply`], the open of a read from its decode until the hub verified it, and the
+/// places of a read until the hub sent them. A body that does not fit stops with
+/// `BUSY` before the hub reads a byte of it. The bodies of one subject hold at most
+/// [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
 pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
@@ -764,7 +765,8 @@ mod tests {
     }
 
     /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
-    /// its code.
+    /// its code. A refusal of the home keeps its code. No `it` test reaches a refusal
+    /// of a home until #2409, so this test pins those arms.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn each_error_of_the_reader_of_a_read_has_its_code() {
