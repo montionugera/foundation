@@ -37,8 +37,9 @@
   2026-10-11T01:57:16Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104399766; round 4:
   2026-10-11T02:43:09Z,
-  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104716716); approval
-  of `laptop.architect` owed.
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104716716); approved
+  by `laptop.architect` at `1fc0193fe` (2026-10-11T02:45:55Z,
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104734826).
   The file is the only copy of the name on the node, and the source of the name that
   the node puts in its card when it founds a region (#1744) or joins one by ticket
   (#1157). In the region, `card.name` is the one copy (MEMBER RECORD). Trigger: the

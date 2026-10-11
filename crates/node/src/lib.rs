@@ -173,8 +173,7 @@ const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
 
 impl Node {
     /// Binds the node's port at [`Config::listen`], then starts one shard per core,
-    /// named `shard-<i>`. A port that does not bind starts no shard, and [`Node::join`]
-    /// gives [`Error::Port`]. Each shard is pinned to core `i` when the host can pin
+    /// named `shard-<i>`. Each shard is pinned to core `i` when the host can pin
     /// ([`env::shards::Shards::pinnable`]); else the OS places it. Each shard owns a
     /// `block::Pool` with an even part of the budget, and a ring with an even part of
     /// the disk budget; shard 0 also takes each remainder. Unless the node stops first,
