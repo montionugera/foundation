@@ -2499,3 +2499,70 @@ fn a_surface_range_that_holds_two_newest_base_commits_counts() {
     );
     repo.remove();
 }
+
+/// A text long enough that `git` pairs a moved file that has it with its source.
+const DRAFT: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
+
+impl Repo {
+    /// Commits `DRAFT` to `old` on `main`, merges it into `pr`, changes it there,
+    /// moves it to `new` on `main`, and merges `main` into `pr` again. Returns the
+    /// merge that holds `old`, the commit that changes it, and the last merge.
+    pub(in crate::review) fn move_on_main(
+        &self,
+        old: &str,
+        new: &str,
+    ) -> (String, String, String) {
+        self.advance_main(old, DRAFT);
+        self.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        let held = self.head();
+        let changed = self.commit(old, &format!("{DRAFT}the rule of the PR\n"));
+        self.git(&["switch", "--quiet", "main"]);
+        let path = self.dir.join(new);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        self.git(&["mv", old, new]);
+        self.git(&["commit", "--quiet", "-m", "mv"]);
+        self.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        self.git(&["switch", "--quiet", "pr"]);
+        self.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        assert_eq!(
+            self.git(&["show", &format!("HEAD:{new}")]),
+            format!("{DRAFT}the rule of the PR")
+        );
+        (held, changed, self.head())
+    }
+}
+
+#[test]
+fn text_of_the_pr_that_the_base_moves_into_a_decision_changes_the_surface() {
+    let (repo, _) = Repo::with_pr("surface-move");
+    let (held, changed, end) =
+        repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+    assert_eq!(repo.git(&["show", "--remerge-diff", "--format=", &end]), "");
+    assert_eq!(
+        repo.surface_change(&changed, &end),
+        Ok(Some(
+            "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
+             decision `docs/decisions/x.md`"
+                .to_string()
+        ))
+    );
+    assert_eq!(
+        repo.surface_change(&held, &end),
+        Ok(Some(DECISION.to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_base_move_changes_the_surface_only_from_outside_the_decisions_into_them() {
+    for (name, old, new) in [
+        ("within", "docs/decisions/w.md", "docs/decisions/x.md"),
+        ("outside", "docs/drafts/x.md", "docs/drafts/y.md"),
+        ("out", "docs/decisions/x.md", "docs/drafts/x.md"),
+    ] {
+        let (repo, _) = Repo::with_pr(&format!("surface-move-{name}"));
+        let (_, changed, end) = repo.move_on_main(old, new);
+        assert_eq!(repo.surface_change(&changed, &end), Ok(None), "{name}");
+        repo.remove();
+    }
+}
