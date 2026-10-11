@@ -58,26 +58,27 @@
   program sends a `Read` (kind 6: the open's length and the signature) and then the
   `client::Open` as a body of at most `OPEN_BYTES_MAX` (64 KiB): the mode (latest 1,
   complete 2), then each pattern of the selector as written, each a `u16` length and
-  its text. The selector matches channels of one index; else `MALFORMED`. As in HUB
-  WIRE, a latest read needs a stream of class `Latest`, and a complete read one of
-  class `Complete`; else `MALFORMED`. A message of the run of places holds whole
-  places, and no more than remain. The node
+  its text. The selector matches channels of one index; else `MALFORMED`. The node
   sends `Places` (kind 6: the count of places and the place of the index), a run of
   `Place` (key, sample type as the text that `types::sample::Type` writes and reads,
   name) (`laptop.architect`, 2026-10-10T23:52:16Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103487682), then
-  the replies of HUB WIRE from
-  `Opened`. The program sends no credit: the stream's flow control bounds the frames
-  in flight. The program knows the kind of each stream that it opens; the node knows
-  the kind of the hello stream only, and decodes the first message of each later
-  stream with `client::First::decode`, which gives a `Request` or a `Read` and refuses
-  each other kind with `Error::Kind`. The lost reason above, that each caller checks
-  the kind again, does not apply: both variants come, and the node handles each.
-  Supersedes the rule that each side knows the kind of each stream, of
+  the replies of HUB WIRE from `Opened`. As in HUB WIRE, a message of the run holds
+  whole places, and no more than remain; and a latest read needs a stream of class
+  `Latest`, and a complete read one of class `Complete`, else `MALFORMED` (the plan
+  that the ruling below approves,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402). The
+  program sends no credit: the stream's flow control bounds the frames in flight. The
+  program knows the kind of each stream that it opens; the node knows the kind of the
+  hello stream only, and decodes the first message of each later stream with
+  `client::First::decode`, which gives a `Request` or a `Read` and refuses each other
+  kind with `Error::Kind`. The lost reason above, that each caller checks the kind
+  again, does not apply: both variants come, and the node handles each. Supersedes,
+  for the node, the rule that each side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
   17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each
-  SDK writes; and the stream class as the kind of the stream, because the class
-  sets priority. Decided by
+  SDK writes; and the stream class as the kind of the stream, because a request stream
+  is of class `Complete` and a class sets priority. Decided by
   `laptop.architect` (2026-10-10T23:31:47Z):
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608.
