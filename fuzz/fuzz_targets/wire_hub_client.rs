@@ -101,6 +101,16 @@ fn places(places: &Places) -> Vec<u8> {
     out
 }
 
+/// `run` as one message of a run of places.
+fn encode_run(run: &[Place]) -> Vec<u8> {
+    let mut messages = place::messages(run, usize::MAX);
+    let message = messages.next().expect("a run of places is a message");
+    assert!(messages.next().is_none(), "a run of places is one message");
+    let mut out = vec![0; message.encoded_len()];
+    message.encode(&mut out);
+    out
+}
+
 /// Checks the decoders of a message with no kind byte: an open and a message of a run
 /// of places. Each that decodes must encode to its bytes.
 fn unkinded(message: &[u8]) {
@@ -110,9 +120,7 @@ fn unkinded(message: &[u8]) {
         assert_eq!(out, message, "the open changed");
     }
     if let Ok(run) = place::decode(message) {
-        let mut out = vec![0; place::encoded_len(&run)];
-        place::encode(&run, &mut out);
-        assert_eq!(out, message, "the places changed");
+        assert_eq!(encode_run(&run), message, "the places changed");
     }
 }
 
@@ -290,8 +298,7 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
             sample,
             name,
         }];
-        let mut out = vec![0; place::encoded_len(&run)];
-        place::encode(&run, &mut out);
+        let out = encode_run(&run);
         assert_eq!(place::decode(&out), Ok(run.to_vec()), "the place changed");
     }
     Ok(())

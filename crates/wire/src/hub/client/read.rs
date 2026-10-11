@@ -248,6 +248,43 @@ pub mod place {
     use crate::common::{Fields, Writer};
     use crate::hub::{Error, text};
 
+    /// One message of the run: whole places that fit in the `max` of [`messages`].
+    #[derive(Clone, Copy, Debug)]
+    pub struct Message<'p> {
+        pub(super) places: &'p [Place],
+    }
+
+    impl Message<'_> {
+        /// The bytes of the encoded message.
+        #[must_use]
+        pub fn encoded_len(&self) -> usize {
+            self.places
+                .iter()
+                .map(Place::encoded_len)
+                .fold(0, usize::saturating_add)
+        }
+
+        /// Writes the message into `out`.
+        ///
+        /// # Panics
+        ///
+        /// When `out` is not [`Message::encoded_len`] bytes.
+        pub fn encode(&self, out: &mut [u8]) {
+            let mut out = Writer::new(out, self.encoded_len());
+            for place in self.places {
+                let sample = place.sample.to_string();
+                out.put(&place.key.as_u128().to_le_bytes());
+                out.put(&[u8::try_from(sample.len()).expect(
+                    "invariant: the text of a sample type is under 256 bytes",
+                )]);
+                out.put(sample.as_bytes());
+                out.put(&[u8::try_from(place.name.as_str().len())
+                    .expect("invariant: a name is at most 255 bytes")]);
+                out.put(place.name.as_str().as_bytes());
+            }
+        }
+    }
+
     /// `places` cut into the messages of the run, in order: each holds as many whole
     /// places as fit in `max` bytes. A place is at most 300 bytes.
     ///
@@ -255,7 +292,7 @@ pub mod place {
     ///
     /// While it iterates, when a place is over `max` bytes. A `max` of at least 300
     /// never panics.
-    pub fn messages(places: &[Place], max: usize) -> impl Iterator<Item = &[Place]> {
+    pub fn messages(places: &[Place], max: usize) -> impl Iterator<Item = Message<'_>> {
         let mut rest = places;
         std::iter::from_fn(move || {
             let mut bytes = 0_usize;
@@ -273,42 +310,10 @@ pub mod place {
                     first.encoded_len()
                 );
             }
-            let (message, after) = rest.split_at(fit);
+            let (places, after) = rest.split_at(fit);
             rest = after;
-            (!message.is_empty()).then_some(message)
+            (!places.is_empty()).then_some(Message { places })
         })
-    }
-
-    /// The bytes of `places`, one message of the run.
-    #[must_use]
-    pub fn encoded_len(places: &[Place]) -> usize {
-        places
-            .iter()
-            .map(Place::encoded_len)
-            .fold(0, usize::saturating_add)
-    }
-
-    /// Writes `places` into `out`, one message of the run.
-    ///
-    /// # Panics
-    ///
-    /// When `places` is empty, or `out` is not [`encoded_len`] bytes.
-    pub fn encode(places: &[Place], out: &mut [u8]) {
-        assert!(
-            !places.is_empty(),
-            "a message of a run holds at least one item"
-        );
-        let mut out = Writer::new(out, encoded_len(places));
-        for place in places {
-            let sample = place.sample.to_string();
-            out.put(&place.key.as_u128().to_le_bytes());
-            out.put(&[u8::try_from(sample.len())
-                .expect("invariant: the text of a sample type is under 256 bytes")]);
-            out.put(sample.as_bytes());
-            out.put(&[u8::try_from(place.name.as_str().len())
-                .expect("invariant: a name is at most 255 bytes")]);
-            out.put(place.name.as_str().as_bytes());
-        }
     }
 
     /// The places in `message`, one message of the run.
