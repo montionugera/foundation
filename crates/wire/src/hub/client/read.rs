@@ -252,16 +252,14 @@ pub mod place {
     #[derive(Clone, Copy, Debug)]
     pub struct Message<'p> {
         pub(super) places: &'p [Place],
+        len: usize,
     }
 
     impl Message<'_> {
         /// The bytes of the encoded message.
         #[must_use]
         pub fn encoded_len(&self) -> usize {
-            self.places
-                .iter()
-                .map(Place::encoded_len)
-                .fold(0, usize::saturating_add)
+            self.len
         }
 
         /// Writes the message into `out`.
@@ -270,7 +268,7 @@ pub mod place {
         ///
         /// When `out` is not [`Message::encoded_len`] bytes.
         pub fn encode(&self, out: &mut [u8]) {
-            let mut out = Writer::new(out, self.encoded_len());
+            let mut out = Writer::new(out, self.len);
             for place in self.places {
                 let data_type = place.data_type.to_string();
                 out.put(&place.key.as_u128().to_le_bytes());
@@ -295,12 +293,16 @@ pub mod place {
     pub fn messages(places: &[Place], max: usize) -> impl Iterator<Item = Message<'_>> {
         let mut rest = places;
         std::iter::from_fn(move || {
-            let mut bytes = 0_usize;
+            let mut len = 0_usize;
             let fit = rest
                 .iter()
                 .take_while(|place| {
-                    bytes = bytes.saturating_add(place.encoded_len());
-                    bytes <= max
+                    let bytes = len.saturating_add(place.encoded_len());
+                    let fits = bytes <= max;
+                    if fits {
+                        len = bytes;
+                    }
+                    fits
                 })
                 .count();
             if let Some(first) = rest.first() {
@@ -312,7 +314,7 @@ pub mod place {
             }
             let (places, after) = rest.split_at(fit);
             rest = after;
-            (!places.is_empty()).then_some(Message { places })
+            (!places.is_empty()).then_some(Message { places, len })
         })
     }
 

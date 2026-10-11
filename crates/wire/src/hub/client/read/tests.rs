@@ -618,10 +618,13 @@ proptest! {
         let messages: Vec<_> = place::messages(&places, max).collect();
         for message in &messages {
             prop_assert!(message.encoded_len() <= max);
-            prop_assert_eq!(encode_message(*message).len(), message.encoded_len());
+            let len = message.places.iter().map(Place::encoded_len).sum::<usize>();
+            prop_assert_eq!(message.encoded_len(), len);
         }
         for (message, next) in messages.iter().zip(messages.iter().skip(1)) {
-            let grown = message.encoded_len().saturating_add(next.places[0].encoded_len());
+            let grown = message
+                .encoded_len()
+                .saturating_add(next.places[0].encoded_len());
             prop_assert!(grown > max);
         }
         let cut: Vec<_> = messages.iter().flat_map(|message| message.places).collect();
