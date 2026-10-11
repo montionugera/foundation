@@ -1249,6 +1249,36 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_send_dropped_after_the_close_does_nothing() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                let body = vec![7; 60_000];
+                let cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                side.session.close(Code(4));
+                drop(cut);
+                let closed = Error::Closed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+            |side| async move {
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
     fn a_send_cut_by_the_window_and_dropped_gives_back_its_block() {
         let (mut sim, ..) = testing::sessions(
             0,
