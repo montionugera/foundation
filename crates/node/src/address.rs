@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 #[cfg(any(test, feature = "sim"))]
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::path::Path;
+use std::pin::Pin;
 
 use env::files::Files;
 use types::ed25519::PublicKey;
@@ -51,31 +52,34 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
     udp.expect("invariant: a port binds a UDP socket")
 }
 
-/// Makes the file `address` of `files` with `address`, in place of one that a crash
-/// left, and makes it durable. A read while it runs sees the old file, no file, or
-/// the new one. Call it under the lock of the data directory.
+/// Holds the file `address` of `files` with `address` while `serve` runs: makes it,
+/// awaits `serve`, and removes it. A read meanwhile sees the file whole or no file.
+/// When the file cannot be made, does not poll `serve`, and removes what the try
+/// left. Call it under the lock of the data directory.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] for a file call that fails.
-pub(crate) async fn publish(files: &Files, address: &Address) -> Result<(), Error> {
-    let path = Path::new(FILE);
-    let published = async {
-        files.remove(path).await?;
-        sector::publish(files, path, &encode(address)).await
-    };
-    published.await.map_err(Error::Directory)
+/// [`Error::Directory`] for a file call that fails: one of the make, else the remove.
+pub(crate) async fn hold(
+    files: &Files,
+    address: &Address,
+    serve: Pin<&mut impl Future<Output = ()>>,
+) -> Result<(), Error> {
+    let published = publish(files, address).await;
+    if published.is_ok() {
+        serve.await;
+    }
+    // Also after a publish whose last call failed, which leaves the file.
+    let removed = files.remove(Path::new(FILE)).await;
+    published.and(removed).map_err(Error::Directory)
 }
 
-/// Removes the file `address` of `files`. A crash before the next sync of the data
-/// directory can bring the file back, as a crash of the node leaves it.
-///
-/// # Errors
-///
-/// [`Error::Directory`] when the remove fails.
-pub(crate) async fn remove(files: &Files) -> Result<(), Error> {
-    let removed = files.remove(Path::new(FILE)).await;
-    removed.map_err(Error::Directory)
+/// Makes the file with `address`, in place of one that a crash left, and makes it
+/// durable.
+async fn publish(files: &Files, address: &Address) -> Result<(), env::files::Error> {
+    let path = Path::new(FILE);
+    files.remove(path).await?;
+    sector::publish(files, path, &encode(address)).await
 }
 
 /// The bytes of the file that holds `address`.
@@ -188,7 +192,7 @@ mod tests {
         let bytes = encode(&Address {
             key: types::node::Key::from_u128(0x0102),
             public_key,
-            bound: SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), 0x1f40)),
+            bound: SocketAddr::from((Ipv4Addr::LOCALHOST, 0x1f40)),
         });
         assert_eq!(&bytes[..20], b"foundation/address/1");
         assert_eq!(bytes[20..34], [0; 14]);
@@ -223,6 +227,21 @@ mod tests {
     #[test]
     fn refuses_zero_bytes() {
         assert_eq!(decode(&[0; LEN]), None);
+    }
+
+    /// The input `address-valid-v6` of the fuzz corpus holds an IPv6 address with a
+    /// flow info and a scope.
+    #[test]
+    fn decodes_the_ipv6_address_of_the_corpus() {
+        let valid =
+            include_bytes!("../../../oracles/fuzz/node_identity/address-valid-v6");
+        let ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let address = Address {
+            key: types::node::Key::from_u128(2),
+            public_key: PrivateKey([7; 32]).public(),
+            bound: SocketAddr::V6(SocketAddrV6::new(ip, 7001, 0x0102_0304, 5)),
+        };
+        assert_eq!(decode(valid), Some(address));
     }
 
     /// The bytes of `address` with `change` made to them and the checksum of the

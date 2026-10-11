@@ -842,6 +842,16 @@ impl Opening {
 }
 
 impl Endpoint {
+    /// Where a program reaches the node of `identity`, whose transport [`Self::open`]
+    /// makes with its private key.
+    fn address(&self, identity: &identity::Identity) -> address::Address {
+        address::Address {
+            key: identity.key,
+            public_key: identity.private_key.public(),
+            bound: self.bound,
+        }
+    }
+
     /// Opens the node's transport on `pool` and `tasks` with `identity`, then, when the
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
@@ -943,23 +953,17 @@ impl Serve {
             budget::keep(&files, self.budget).await?;
             identity::load(&files, &self.time, &self.endpoint.entropy).await
         };
-        let identity = match loaded.await {
-            Ok(identity) => identity,
-            Err(error) => return fail(error),
+        let Ok(identity) = loaded.await.map_err(&fail) else {
+            return;
         };
         let (key, entropy) = (identity.key, self.endpoint.entropy.clone());
         let (clock, net) = (self.endpoint.clock.clone(), self.endpoint.net.clone());
-        let bound = self.endpoint.bound;
+        let address = self.endpoint.address(&identity);
         let opened = self
             .endpoint
             .open(identity, files.clone(), pool, tasks.clone());
         let (transport, mesh) = opened.await;
         let freed = transport.ended();
-        let address = address::Address {
-            key,
-            public_key: transport.public_key(),
-            bound,
-        };
         let (inbox, time) = (self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
         // ends, on each path, or is a task of the mesh, awaited below, a task of the
@@ -983,46 +987,33 @@ impl Serve {
                 entropy: entropy.clone(),
                 region,
             });
-            let parts = mesh.as_ref().map(|mesh| {
-                let kinds = Arc::new(kinds());
-                let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
-                let config = connector::supervisor::Config {
-                    kinds,
-                    clock: clock.clone(),
-                    entropy,
-                    net,
-                    tasks: tasks.clone(),
-                    hub: hub.clone(),
-                };
-                (ops, (mesh, runs(mesh, key, config)))
-            });
-            let (ops, runs) = parts.unzip();
+            let kinds = Arc::new(kinds());
+            let ops = mesh
+                .as_ref()
+                .map(|mesh| operations(mesh, &time, &entropy, Arc::clone(&kinds)));
+            let supervisor = connector::supervisor::Config {
+                kinds,
+                clock: clock.clone(),
+                entropy,
+                net,
+                tasks: tasks.clone(),
+                hub: hub.clone(),
+            };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let group = follow(runs, hub.clone()).await;
-            match address::publish(&files, &address).await {
-                Ok(()) => {
-                    let port = route::accept(
-                        transport,
-                        mesh,
-                        hub.clone(),
-                        clock,
-                        tasks.clone(),
-                    );
-                    let stop = until(guard, port, group, fail);
-                    inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
-                }
-                Err(error) => fail(error),
-            }
-            // Also after a publish whose last call failed, which leaves the file.
-            if let Err(error) = address::remove(&files).await
-                && failed.get().is_none()
-            {
-                fail(error);
+            let group = follow(mesh.as_ref(), key, supervisor).await;
+            let port =
+                route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
+            let stop = until(guard, port, group, fail);
+            let serve = pin!(inbox.serve(task::Handles { hub, ops }, tasks, stop));
+            // Before `serve` drops its tasks, so that `join` ranks the error above a
+            // panic in a task's drop. After a stop that failed the node, its error
+            // stands.
+            if let Err(error) = address::hold(&files, &address, serve).await {
+                failed.get_or_init(|| error);
             }
             ended
         };
-        let ended = served.await;
-        if let Some(ended) = ended {
+        if let Some(ended) = served.await {
             ended.await;
         }
         freed.await;
@@ -1068,37 +1059,34 @@ fn operations(
     Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
 }
 
-/// The runs of the connectors that the spec in use places on the node `key` of
-/// `mesh`, on a supervisor made from `config`.
-fn runs(
-    mesh: &mesh::Mesh,
-    key: types::node::Key,
-    config: connector::supervisor::Config,
-) -> connectors::Runs {
-    let member = mesh.member(key);
-    let member = member.expect("invariant: a mesh opens only on a member");
-    connectors::Runs::new(config, member.card.card().name.clone())
-}
-
 /// The connector kinds of this binary.
 fn kinds() -> connector::kind::Table {
     connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
-/// Gives `hub` what the spec that `mesh` uses defines and makes `runs` match it, then
-/// returns a future that does so for each later spec in use and resolves with the
-/// stop of the group, or never resolves when the node has no mesh.
+/// Makes the runs of the connectors that the spec in use places on the node `key` of
+/// `mesh`, on a supervisor made from `config`. Gives the supervisor's hub what the
+/// spec that `mesh` uses defines and makes the runs match it, then returns a future
+/// that does so for each later spec in use and resolves with the stop of the group,
+/// or never resolves when the node has no mesh.
 /// The hub knows each spec before the runs do, so a run finds its status channels.
 /// The future holds the runs.
 async fn follow(
-    mesh: Option<(&mesh::Mesh, connectors::Runs)>,
-    hub: hub::Hub,
+    mesh: Option<&mesh::Mesh>,
+    key: types::node::Key,
+    config: connector::supervisor::Config,
 ) -> impl Future<Output = mesh::Stopped> + use<> {
+    let hub = config.hub.clone();
     let define = move |spec: mesh::used::Spec, runs: &mut connectors::Runs| {
         hub.set_definitions(&*spec.definitions);
         runs.apply(&spec.definitions);
     };
-    let mut followed = mesh.map(|(mesh, runs)| (mesh.watch_spec(), runs));
+    let mut followed = mesh.map(|mesh| {
+        let member = mesh.member(key);
+        let member = member.expect("invariant: a mesh opens only on a member");
+        let runs = connectors::Runs::new(config, member.card.card().name.clone());
+        (mesh.watch_spec(), runs)
+    });
     let first = match &mut followed {
         Some((watch, runs)) => watch.next().await.map(|spec| define(spec, runs)),
         None => Ok(()),

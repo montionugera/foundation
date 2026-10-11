@@ -168,6 +168,23 @@ fn a_running_node_holds_its_keys_and_its_bound_address() {
     }
 }
 
+/// The input `address-valid` of the fuzz corpus is the file that a node holds while
+/// it runs, and `address-valid-body` with its CRC32C is `address-valid`.
+#[test]
+fn a_running_node_holds_the_address_of_the_corpus() {
+    let valid: &[u8; LEN] =
+        include_bytes!("../../../../oracles/fuzz/node_identity/address-valid");
+    let body =
+        include_bytes!("../../../../oracles/fuzz/node_identity/address-valid-body");
+    assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(held(&mut sim, &host), address::decode(valid));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+}
+
 /// A clean stop removes `address`, and leaves no `address.new`.
 #[test]
 fn a_clean_stop_removes_the_address() {
@@ -326,6 +343,39 @@ fn a_failed_file_call_of_the_publish_stops_the_node() {
         assert_eq!(next, Some(of(&host, PORT)), "{operation:?} {path}");
         assert_eq!(stop(&mut sim, node), Ok(()), "{operation:?} {path}");
     }
+}
+
+/// A task given whose drop panics, on a node whose publish fails: `join` ranks the
+/// error of the publish above the panic.
+#[test]
+fn a_panic_after_a_failed_publish_gives_the_error_of_the_publish() {
+    struct Panics;
+    impl Drop for Panics {
+        fn drop(&mut self) {
+            panic!("a task's drop panics");
+        }
+    }
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    host.fail_file(Path::new(NEW), env::files::Operation::Open);
+    let node = start(&host, PORT);
+    let panics = Panics;
+    node.spawn(move |_| async move { drop(panics) });
+    assert_eq!(
+        sim.run(),
+        Err(sim::Error::Panicked {
+            thread: "shard-0".into(),
+            message: "a task's drop panics".into(),
+            seed: 0,
+        })
+    );
+    assert_eq!(sim.run(), Ok(()));
+    let error = Error::Directory(env::files::Error::Io {
+        path: PathBuf::from(NEW),
+        operation: env::files::Operation::Open,
+        code: 5,
+    });
+    assert_eq!(node.join(), Err(error));
 }
 
 /// A sync of the data directory that fails at any time of a start stops the node,

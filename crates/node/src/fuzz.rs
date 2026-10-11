@@ -1,21 +1,25 @@
 //! Fuzz entry points, for the fuzz targets only. Not a stable surface.
 
-use crate::{admin, identity, sector};
+use crate::{address, admin, identity, sector};
 
-/// Decodes `data` by its length: as the bytes of `node.key`, 100 bytes as they are or
-/// 96 bytes with their CRC32C appended, or as the bytes of `admin.key`, 54 bytes as
-/// they are or 50 bytes with their CRC32C appended. Ignores any other length.
+/// Decodes `data` by its length, as the bytes of a file of the data directory: 100
+/// bytes of `node.key`, 54 bytes of `admin.key`, or 99 bytes of `address`, each as
+/// they are, or 96, 50, or 95 bytes with their CRC32C appended. Ignores any other
+/// length.
 ///
 /// # Panics
 ///
-/// When a decode gives a key for bytes with a wrong tag or CRC32C, refuses bytes that
-/// have both, or gives a key that does not encode to the bytes.
+/// When a decode gives a value for bytes that its file never holds, refuses bytes
+/// that its file can hold, or gives a value that does not encode to the bytes.
 pub fn identity(data: &[u8]) {
     if let Some(bytes) = file(data) {
         identity::check(&bytes);
     }
     if let Some(bytes) = file(data) {
         admin::check(&bytes);
+    }
+    if let Some(bytes) = file(data) {
+        address::check(&bytes);
     }
 }
 
