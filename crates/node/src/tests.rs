@@ -2980,6 +2980,7 @@ mod port {
             "[ff02::1]:0",
             "[ff0e::1]:7000",
             "[::ffff:224.0.0.1]:0",
+            "[::ffff:255.255.255.255]:0",
         ];
         for text in refused {
             let listen: SocketAddr = text.parse().expect("a socket address");
