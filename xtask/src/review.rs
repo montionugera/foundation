@@ -719,8 +719,7 @@ fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
         let start = end;
         end += word.len();
         let url = word.find("://").unwrap_or(word.len());
-        let marks = word.match_indices('#').filter(move |(at, _)| *at < url);
-        marks.filter_map(move |(at, _)| {
+        word[..url].match_indices('#').filter_map(move |(at, _)| {
             let rest = undigited(&word[at + 1..])?;
             Some(start + at..end - rest.len())
         })
