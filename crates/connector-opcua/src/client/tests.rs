@@ -385,8 +385,7 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
 /// server makes the session 3 ms after the connect starts and activates it later.
 #[test]
 fn a_connect_that_times_out_closes_its_session() {
-    let (first, _, second) = connects_after_flips(&[3_000_000]);
-    assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
+    times_out_and_closes(&[Span::from_nanos(3_000_000)]);
 }
 
 /// A connect that times out before the server answers its `CreateSession` closes the
@@ -394,16 +393,17 @@ fn a_connect_that_times_out_closes_its_session() {
 /// gets the `CreateSession` before 2.5 ms and answers it 100 us after the deadline.
 #[test]
 fn a_connect_that_times_out_before_the_server_makes_its_session_closes_it() {
-    let (first, _, second) = connects_after_flips(&[2_500_000, 5_000_100_000]);
-    assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
+    times_out_and_closes(&[
+        Span::from_nanos(2_500_000),
+        Span::from_nanos(5_000_100_000),
+    ]);
 }
 
 /// A connect that times out before a server that stops answers its `CreateSession`
 /// ends once that request times out, and leaves no session.
 #[test]
 fn a_connect_whose_create_session_gets_no_answer_ends() {
-    let (first, _, second) = connects_after_flips(&[2_500_000]);
-    assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
+    times_out_and_closes(&[Span::from_nanos(2_500_000)]);
 }
 
 /// The close after a connect that times out can take two more request timeouts: one
@@ -413,26 +413,25 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
 #[test]
 fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_after_it_fails()
  {
-    let (first, took, second) = connects_after_flips(&[
-        0,
-        4_998_000_000,
-        4_999_500_000,
-        9_000_000_000,
-        9_000_100_000,
+    let took = times_out_and_closes(&[
+        Span::from_nanos(0),
+        Span::from_nanos(4_998_000_000),
+        Span::from_nanos(4_999_500_000),
+        Span::from_nanos(9_000_000_000),
+        Span::from_nanos(9_000_100_000),
     ]);
-    assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
     let window = Span::from_nanos(14_000_000_000)..=Span::from_nanos(17_000_000_000);
     assert!(window.contains(&took), "{took:?}");
 }
 
 /// Connects to a server with room for one session that stops at the first time of
 /// `flips` after the connect starts, runs again at the next, and so on, and runs from
-/// the end of the connect. Then connects a second client. Gives the error of the first
-/// connect, the time that it took, and the error of the second.
-fn connects_after_flips(
-    flips: &'static [i64],
-) -> (Option<Status>, Span, Option<Status>) {
-    run(0, async move |node| {
+/// the end of the connect. Asserts that the connect fails with `BadTimeout` and that
+/// a second client then connects, so the first left no session. Gives the time that
+/// the first connect took.
+fn times_out_and_closes(flips: &[Span]) -> Span {
+    let flips = flips.to_vec();
+    let ((first, took, second), _) = run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
             let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
@@ -442,7 +441,7 @@ fn connects_after_flips(
                     pin!(Client::connect(clock, net, &mut peer.rng, &url));
                 let mut flips: Vec<_> = flips
                     .iter()
-                    .map(|at| Box::pin(peer.clock.sleep(Span::from_nanos(*at))))
+                    .map(|at| Box::pin(peer.clock.sleep(*at)))
                     .collect();
                 let mut flipped = 0;
                 poll_fn(|cx| {
@@ -471,6 +470,7 @@ fn connects_after_flips(
             (first, took, second)
         })
         .await
-    })
-    .0
+    });
+    assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
+    took
 }
