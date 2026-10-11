@@ -2069,7 +2069,7 @@ mod tests {
     }
 
     #[test]
-    fn gives_13_frames_for_10_000_samples_over_10_s_set_from_a_task() {
+    fn gives_13_frames_for_10_000_samples_set_from_a_task_past_10_s() {
         // Off the whole seconds, so no set is at the time of a flush. The last set is
         // just after 10 s, so the flush at 10 s writes a frame of counts.
         let statuses = tally(relay(10_000, Span::from_nanos(1_000_001)));
