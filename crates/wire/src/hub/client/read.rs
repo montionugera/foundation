@@ -6,7 +6,7 @@ use types::sample::Type;
 
 use super::{Body, READ, fields};
 use crate::common::Writer;
-use crate::hub::{COMPLETE, Error, LATEST};
+use crate::hub::{COMPLETE, Error, LATEST, Unread};
 
 /// The most bytes of the open of a read: 64 KiB.
 pub const OPEN_BYTES_MAX: u64 = 1 << 16;
@@ -153,12 +153,12 @@ impl Open {
                 .split_at_checked(usize::from(u16::from_le_bytes(len)))
                 .ok_or_else(length)?;
             let pattern = std::str::from_utf8(pattern)
-                .map_err(|error| Error::Selector(error.into()))?;
+                .map_err(|error| Error::Selector(Unread::Utf8(error)))?;
             patterns.push(pattern);
             rest = after;
         }
-        let select =
-            Selector::new(patterns).map_err(|error| Error::Selector(error.into()))?;
+        let select = Selector::new(patterns)
+            .map_err(|error| Error::Selector(Unread::Parse(Box::new(error))))?;
         Ok(Self { mode, select })
     }
 }
@@ -247,22 +247,11 @@ impl Place {
 /// The run of places after a [`Places`], in place order. A message of the run holds
 /// whole places.
 pub mod place {
-    use std::str::FromStr;
-
     use types::channel;
 
     use super::Place;
     use crate::common::Writer;
-    use crate::hub::{Error, Text};
-
-    /// A field of a place that holds text.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Field {
-        /// The sample type.
-        Sample,
-        /// The name.
-        Name,
-    }
+    use crate::hub::{Error, Unread};
 
     /// `places` cut into the messages of the run, in order: each holds as many whole
     /// places as fit in `max` bytes. A place is at most 300 bytes.
@@ -332,8 +321,9 @@ pub mod place {
     /// # Errors
     ///
     /// [`Error::Empty`] when `message` is empty, [`Error::Length`] when it ends inside
-    /// a place, and [`Error::Place`] when the sample type or the name of a place does
-    /// not read. The first defect in the order of the bytes gives the error.
+    /// a place, [`Error::Sample`] when the sample type of a place does not read, and
+    /// [`Error::Name`] when its name does not. The first defect in the order of the
+    /// bytes gives the error.
     pub fn decode(message: &[u8]) -> Result<Vec<Place>, Error> {
         if message.is_empty() {
             return Err(Error::Empty);
@@ -343,8 +333,10 @@ pub mod place {
         let mut places = Vec::new();
         while !rest.is_empty() {
             let (&key, after) = rest.split_first_chunk::<16>().ok_or_else(length)?;
-            let (sample, after) = read(after, Field::Sample, length)?;
-            let (name, after) = read(after, Field::Name, length)?;
+            let (sample, after) = text(after, length)?;
+            let sample = Unread::read(sample).map_err(Error::Sample)?;
+            let (name, after) = text(after, length)?;
+            let name = Unread::read(name).map_err(Error::Name)?;
             places.push(Place {
                 key: channel::Key::from_u128(u128::from_le_bytes(key)),
                 sample,
@@ -355,24 +347,11 @@ pub mod place {
         Ok(places)
     }
 
-    /// The `field` at the front of `bytes`, a text with its length as a `u8`, and the
-    /// bytes after it. Bytes that end inside the text give `length`.
-    fn read<T: FromStr>(
-        bytes: &[u8],
-        field: Field,
-        length: impl Fn() -> Error,
-    ) -> Result<(T, &[u8]), Error>
-    where
-        Text: From<T::Err>,
-    {
+    /// The text at the front of `bytes`, its length a `u8`, and the bytes after it.
+    /// Bytes that end inside the text give `length`.
+    fn text(bytes: &[u8], length: impl Fn() -> Error) -> Result<(&[u8], &[u8]), Error> {
         let (&len, rest) = bytes.split_first().ok_or_else(&length)?;
-        let (text, rest) =
-            rest.split_at_checked(usize::from(len)).ok_or_else(length)?;
-        let value = std::str::from_utf8(text)
-            .map_err(Text::Utf8)
-            .and_then(|text| text.parse().map_err(Text::from))
-            .map_err(|cause| Error::Place { field, cause })?;
-        Ok((value, rest))
+        rest.split_at_checked(usize::from(len)).ok_or_else(length)
     }
 }
 

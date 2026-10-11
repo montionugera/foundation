@@ -4,8 +4,12 @@ use types::name;
 use super::*;
 
 /// The cause of `bytes` that are not UTF-8.
-fn not_utf8(bytes: &[u8]) -> Text {
-    Text::Utf8(std::str::from_utf8(bytes).unwrap_err())
+fn unnamed(error: name::Error) -> Unread<Box<name::Error>> {
+    Unread::Parse(Box::new(error))
+}
+
+fn not_utf8(bytes: &[u8]) -> Unread<Box<name::Error>> {
+    Unread::Utf8(std::str::from_utf8(bytes).unwrap_err())
 }
 
 const KEY: [u8; 32] = [
@@ -212,14 +216,14 @@ mod signed {
         let cases = [
             (
                 *b"a..",
-                Text::from(name::Error::Segment {
+                unnamed(name::Error::Segment {
                     input: "a..".to_owned(),
                     segment: String::new(),
                 }),
             ),
             (
                 *b"a.*",
-                Text::from(name::Error::Wildcard {
+                unnamed(name::Error::Wildcard {
                     input: "a.*".to_owned(),
                 }),
             ),
@@ -234,7 +238,7 @@ mod signed {
         empty[1] = 0;
         assert_eq!(
             Signed::decode(&empty),
-            Err(Error::Subject(Text::from(name::Error::Empty)))
+            Err(Error::Subject(unnamed(name::Error::Empty)))
         );
     }
 
@@ -257,7 +261,7 @@ mod signed {
         };
         assert_eq!(
             Signed::decode(&hello),
-            Err(Error::Subject(Text::from(wildcard)))
+            Err(Error::Subject(unnamed(wildcard)))
         );
     }
 }

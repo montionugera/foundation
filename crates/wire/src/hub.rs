@@ -32,7 +32,7 @@ mod home;
 mod reader;
 
 use std::fmt;
-use std::str::Utf8Error;
+use std::str::{FromStr, Utf8Error};
 
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
@@ -574,7 +574,7 @@ pub enum Error {
         kind: u8,
     },
     /// The subject of a hello is not a name.
-    Subject(Text),
+    Subject(Unread<Box<name::Error>>),
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
@@ -588,7 +588,7 @@ pub enum Error {
     },
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
-    Selector(Text),
+    Selector(Unread<Box<name::Error>>),
     /// The places of a read name an index place that is not below their count.
     Index {
         /// The place of the index.
@@ -596,13 +596,10 @@ pub enum Error {
         /// The count of places.
         count: u32,
     },
-    /// A place of a read has a sample type or a name that does not read.
-    Place {
-        /// The field that does not read.
-        field: client::place::Field,
-        /// Why it does not read.
-        cause: Text,
-    },
+    /// The sample type of a place of a read does not read.
+    Sample(Unread<sample::Error>),
+    /// The name of a place of a read does not read.
+    Name(Unread<Box<name::Error>>),
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
@@ -675,8 +672,8 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject(text) => {
-                write!(f, "the subject of the hello is not a name: {text}")
+            Self::Subject(cause) => {
+                write!(f, "the subject of the hello is not a name: {cause}")
             }
             Self::SmallOrder => {
                 f.write_str("the key of the hello is a point of small order")
@@ -684,22 +681,19 @@ impl fmt::Display for Error {
             Self::Oversize { length, cap } => {
                 write!(f, "the body has {length} bytes, over the cap of {cap}")
             }
-            Self::Selector(text) => {
-                write!(f, "the selector of the read does not read: {text}")
+            Self::Selector(cause) => {
+                write!(f, "the selector of the read does not read: {cause}")
             }
             Self::Index { index, count } => write!(
                 f,
                 "the places of the read put the index at place {index} of {count}"
             ),
-            Self::Place { field, cause } => {
-                let field = match field {
-                    client::place::Field::Sample => "sample type",
-                    client::place::Field::Name => "name",
-                };
-                write!(
-                    f,
-                    "a place of the read has a {field} that does not read: {cause}"
-                )
+            Self::Sample(cause) => write!(
+                f,
+                "the sample type of a place of the read does not read: {cause}"
+            ),
+            Self::Name(cause) => {
+                write!(f, "the name of a place of the read does not read: {cause}")
             }
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
@@ -718,55 +712,46 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Subject(text)
-            | Self::Selector(text)
-            | Self::Place { cause: text, .. } => Some(text),
+            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
+                Some(cause)
+            }
+            Self::Sample(cause) => Some(cause),
             _ => None,
         }
     }
 }
 
-/// Why a text in a message does not read.
+/// Why a text field of a message does not read: `E` is the error of its parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Text {
+pub enum Unread<E> {
     /// The bytes are not UTF-8.
     Utf8(Utf8Error),
-    /// The text is not a sample type.
-    Sample(sample::Error),
-    /// The text is not a name, or not a selector. Boxed, so that its text stays out
-    /// of [`Error`].
-    Name(Box<name::Error>),
+    /// The text does not parse.
+    Parse(E),
 }
 
-impl fmt::Display for Text {
+impl<E> Unread<E> {
+    /// Reads `bytes` as UTF-8, then parses the text as a `T`.
+    pub(crate) fn read<T: FromStr>(bytes: &[u8]) -> Result<T, Self>
+    where
+        E: From<T::Err>,
+    {
+        let text = std::str::from_utf8(bytes).map_err(Self::Utf8)?;
+        text.parse()
+            .map_err(|error: T::Err| Self::Parse(error.into()))
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for Unread<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Utf8(error) => error.fmt(f),
-            Self::Sample(error) => error.fmt(f),
-            Self::Name(error) => error.fmt(f),
+            Self::Parse(error) => error.fmt(f),
         }
     }
 }
 
-impl std::error::Error for Text {}
-
-impl From<Utf8Error> for Text {
-    fn from(error: Utf8Error) -> Self {
-        Self::Utf8(error)
-    }
-}
-
-impl From<sample::Error> for Text {
-    fn from(error: sample::Error) -> Self {
-        Self::Sample(error)
-    }
-}
-
-impl From<name::Error> for Text {
-    fn from(error: name::Error) -> Self {
-        Self::Name(Box::new(error))
-    }
-}
+impl<E: std::error::Error> std::error::Error for Unread<E> {}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
@@ -1449,7 +1434,7 @@ mod tests {
         let not_utf8 = vec![0xff];
         let cases = [
             (
-                Error::Subject(Text::from(name::Error::Empty)),
+                Error::Subject(Unread::Parse(Box::new(name::Error::Empty))),
                 "the subject of the hello is not a name: a name or pattern is empty",
             ),
             (
@@ -1464,7 +1449,7 @@ mod tests {
                 "the body has 16777217 bytes, over the cap of 16777216",
             ),
             (
-                Error::Selector(Text::from(name::Error::NoInclude)),
+                Error::Selector(Unread::Parse(Box::new(name::Error::NoInclude))),
                 "the selector of the read does not read: a selector includes no names",
             ),
             (
@@ -1472,20 +1457,14 @@ mod tests {
                 "the places of the read put the index at place 3 of 3",
             ),
             (
-                Error::Place {
-                    field: client::place::Field::Sample,
-                    cause: Text::from(sample::Error::Syntax),
-                },
-                "a place of the read has a sample type that does not read: expected a \
+                Error::Sample(Unread::Parse(sample::Error::Syntax)),
+                "the sample type of a place of the read does not read: expected a \
                  sample type such as f64, f32[3], list<u8, 16>, string, or bytes",
             ),
             (
-                Error::Place {
-                    field: client::place::Field::Name,
-                    cause: Text::Utf8(std::str::from_utf8(&not_utf8).unwrap_err()),
-                },
-                "a place of the read has a name that does not read: invalid utf-8 \
-                 sequence of 1 bytes from index 0",
+                Error::Name(Unread::Utf8(std::str::from_utf8(&not_utf8).unwrap_err())),
+                "the name of a place of the read does not read: invalid utf-8 sequence \
+                 of 1 bytes from index 0",
             ),
             (
                 Error::Trailing,
@@ -1504,18 +1483,17 @@ mod tests {
     #[test]
     fn gives_the_cause_of_a_text_that_does_not_read() {
         use std::error::Error as _;
-        let cause = Text::from(name::Error::NoInclude);
+        let name = Unread::Parse(Box::new(name::Error::NoInclude));
+        let sample = Unread::Parse(sample::Error::Syntax);
         let errors = [
-            Error::Subject(cause.clone()),
-            Error::Selector(cause.clone()),
-            Error::Place {
-                field: client::place::Field::Name,
-                cause: cause.clone(),
-            },
+            (Error::Subject(name.clone()), name.to_string()),
+            (Error::Selector(name.clone()), name.to_string()),
+            (Error::Name(name.clone()), name.to_string()),
+            (Error::Sample(sample.clone()), sample.to_string()),
         ];
-        for error in errors {
+        for (error, cause) in errors {
             let source = error.source().map(ToString::to_string);
-            assert_eq!(source, Some(cause.to_string()), "{error:?}");
+            assert_eq!(source, Some(cause), "{error:?}");
         }
         assert!(Error::Empty.source().is_none());
     }

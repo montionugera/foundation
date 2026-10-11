@@ -3,10 +3,9 @@ use types::name;
 use types::sample::{self, Scalar, Sides};
 
 use super::*;
-use crate::hub::Text;
+use crate::hub::Unread;
 use crate::hub::client::First;
 use crate::hub::client::Request;
-use crate::hub::client::place::Field;
 
 fn read(length: u64) -> Read {
     Read {
@@ -48,19 +47,12 @@ fn encode_places(places: Places) -> Vec<u8> {
     out
 }
 
-fn not_utf8(bytes: &[u8]) -> Text {
-    Text::Utf8(std::str::from_utf8(bytes).unwrap_err())
+fn not_utf8<E>(bytes: &[u8]) -> Unread<E> {
+    Unread::Utf8(std::str::from_utf8(bytes).unwrap_err())
 }
 
-fn unselected(cause: impl Into<Text>) -> Error {
-    Error::Selector(cause.into())
-}
-
-fn place(field: Field, cause: impl Into<Text>) -> Error {
-    Error::Place {
-        field,
-        cause: cause.into(),
-    }
+fn unselected(error: name::Error) -> Error {
+    Error::Selector(Unread::Parse(Box::new(error)))
 }
 
 fn encode_run(places: &[Place]) -> Vec<u8> {
@@ -268,7 +260,7 @@ mod open {
         );
         assert_eq!(
             Open::decode(&[1, 1, 0, 0xff]),
-            Err(unselected(not_utf8(&[0xff])))
+            Err(Error::Selector(not_utf8(&[0xff])))
         );
     }
 
@@ -372,14 +364,20 @@ mod run {
     #[test]
     fn refuses_a_sample_type_or_a_name_that_does_not_read() {
         let cases: [(usize, u8, Error); 4] = [
-            (17, b'x', place(Field::Sample, sample::Error::Syntax)),
-            (17, 0xff, place(Field::Sample, not_utf8(&[0xff, b'8']))),
+            (
+                17,
+                b'x',
+                Error::Sample(Unread::Parse(sample::Error::Syntax)),
+            ),
+            (17, 0xff, Error::Sample(not_utf8(&[0xff, b'8']))),
             (
                 20,
                 b'*',
-                place(Field::Name, name::Error::Wildcard { input: "*".into() }),
+                Error::Name(Unread::Parse(Box::new(name::Error::Wildcard {
+                    input: "*".into(),
+                }))),
             ),
-            (20, 0xff, place(Field::Name, not_utf8(&[0xff]))),
+            (20, 0xff, Error::Name(not_utf8(&[0xff]))),
         ];
         for (at, byte, error) in cases {
             let mut bytes = encode_run(&[pt(1, "u8", "a")]);
