@@ -105,9 +105,10 @@
   `sector::publish`, whose rename has no replace, so any `node.key` that is there, also
   one with no bytes or with 100 zero bytes, gives `Error::Directory` with `Exists`, and
   nothing is written over it (amended, #2305, by `laptop.architect-2`, 2026-10-10 22:20
-  UTC: https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702). This
-  supersedes the `Length` error and the file with no bytes or with 100 zero bytes as no
-  key. There is no new `Error` variant, as the advice of `Error::Key` is wrong for
+  UTC: https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702,
+  https://github.com/synnaxlabs/foundation/issues/2305). This supersedes the `Length`
+  error and the file with no bytes or with 100 zero bytes as no key, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986. There is no new `Error` variant, as the advice of `Error::Key` is wrong for
   this case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
   runs the simulation to its end: a node that runs never ends, and a task of a test runs
   before its time. So a `Lab::start` after the first `Lab::run` or a task of a test

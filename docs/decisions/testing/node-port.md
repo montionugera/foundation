@@ -129,9 +129,11 @@
   because a new key is a new node to its region. Amended (2026-10-11, #2305, by
   `laptop.architect-2`, 2026-10-10 22:20 UTC):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. This
-  supersedes `Mode::Create`, the write back at each start, and the file with no bytes or
-  with 100 zero bytes as a key not yet written, of
-  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320. Each other
+  supersedes `Mode::Create` and the file with no bytes or with 100 zero bytes as a key
+  not yet written, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320, and the
+  write back at each start, of
+  https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. Each other
   file error on `node.key` gives `Error::Directory`. The form is not a contract: only
   `node` reads it. The seal key is in `node.key`, not in a file of its own, because S8
   rotates it with the Ed25519 key, and a restore of `node.key` alone must not give a
