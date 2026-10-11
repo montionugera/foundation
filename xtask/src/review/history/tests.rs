@@ -2650,3 +2650,30 @@ fn a_clone_with_rename_detection_off_reads_a_base_move_into_a_decision() {
         repo.remove();
     }
 }
+
+#[test]
+fn a_probe_line_in_a_decision_of_the_base_is_no_move_into_the_decisions() {
+    for (name, line) in [
+        ("plain", "eleven"),
+        ("probe", "xtask-review-probe 0"),
+        ("start", "xtask-review-probe START 0"),
+    ] {
+        let (repo, _) = Repo::with_pr(&format!("decision-probe-{name}"));
+        repo.advance_main("docs/decisions/x.md", DRAFT);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        std::fs::create_dir_all(repo.dir.join("docs/drafts")).unwrap();
+        repo.git(&["mv", "docs/decisions/x.md", "docs/drafts/x.md"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        let start = repo.head();
+        let line = line.replace("START", &start);
+        repo.advance_main("docs/decisions/x.md", &format!("{DRAFT}{line}\n"));
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        let end = repo.head();
+        assert_eq!(
+            repo.git(&["ls-tree", "-r", "--name-only", &end]),
+            "a.txt\nb.txt\ndocs/drafts/x.md"
+        );
+        assert_eq!(repo.decision_change(&start, &end), Ok(None), "{name}");
+        repo.remove();
+    }
+}

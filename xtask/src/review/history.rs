@@ -435,8 +435,7 @@ impl<'a> History<'a> {
             }
             let text = self.output(&["cat-file", "blob", &entry.new])?;
             let old = String::from_utf8_lossy(&text).lines().find_map(|line| {
-                let n: usize =
-                    line.strip_prefix(PROBE)?.strip_prefix(' ')?.parse().ok()?;
+                let n: usize = line.strip_prefix(&probe.mark)?.parse().ok()?;
                 probe
                     .paths
                     .get(n)
@@ -454,7 +453,7 @@ impl<'a> History<'a> {
     }
 
     /// A copy of `first` in which each path of `changed(first, second, counts)` holds
-    /// the probe text `<PROBE> <n>`, where `paths[n]` is that path. `None` when no such
+    /// the probe text `<mark><n>`, where `paths[n]` is that path. `None` when no such
     /// path exists.
     ///
     /// # Errors
@@ -470,17 +469,19 @@ impl<'a> History<'a> {
         if changed.is_empty() {
             return Ok(None);
         }
+        let mark = format!("{PROBE} {first} {second} ");
         let files: Vec<_> = changed
             .iter()
             .enumerate()
             .map(|(n, (mode, path))| File {
                 mode,
                 path,
-                text: format!("{PROBE} {n}\n"),
+                text: format!("{mark}{n}\n"),
             })
             .collect();
         Ok(Some(Probe {
             commit: self.copy(first, &files)?,
+            mark,
             paths: changed.into_iter().map(|(_, path)| path).collect(),
         }))
     }
@@ -804,6 +805,9 @@ struct File<'a> {
 /// a kind of move counts from.
 struct Probe {
     commit: String,
+    /// The start of each probe text: [`PROBE`] and the two merged commits. No file of
+    /// either commit holds it, since it names the commit of that file.
+    mark: String,
     /// The probed paths, by the number in their probe text.
     paths: Vec<Vec<u8>>,
 }
