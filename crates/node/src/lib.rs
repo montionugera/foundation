@@ -481,8 +481,9 @@ pub async fn create_key(
 
 /// The name of the node of the data directory `files`: `given`, else the one that the
 /// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
-/// reads also while another node runs on `files`. A `given` that is not the stored
-/// name stops the start with [`Error::Renamed`].
+/// reads also while another node runs on `files`. A `given` with a reserved segment
+/// stops the start with [`Error::Reserved`], and another `given` that is not the
+/// stored name stops it with [`Error::Renamed`].
 ///
 /// # Errors
 ///
