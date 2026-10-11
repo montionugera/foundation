@@ -803,7 +803,7 @@ mod tests {
             })
             .is_some_and(|last| {
                 out.get(start..last)
-                    .is_some_and(|value| !value.is_empty() && !value.contains('\n'))
+                    .is_some_and(|value| !value.contains('\n'))
                     && out.get(last..) == Some(tail)
             })
     }
@@ -1151,6 +1151,11 @@ mod tests {
         }
         let lines = "a = [\n\"x\\n\"\n]";
         assert!(!quoted_at_end("a = 1", lines, ended), "one line");
+        let out = "a = \"x\"\n";
+        assert!(
+            !quoted_at_end("a = 1", out, ended),
+            "line end after the closer"
+        );
         let want = "b {\na = 1\n}\nc = <<EOT\nx\nEOT\n";
         let out = "b {\na = 1\n}\nc = \"x\\n\"";
         assert!(
