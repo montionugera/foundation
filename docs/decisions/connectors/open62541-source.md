@@ -562,25 +562,26 @@
   (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
   and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.
   Lost: a patch of the copy that defers the CloseSession until the CreateSession answer.
-  It changes the session state machine of open62541, and LOCAL PATCHES asks for a hand
-  mutant of each line that it changes. When a new release replaces the copy, check
-  whether it still sends that CloseSession, and remove the wait when it does not. Its
-  drop calls `shim_client_free`, which stops the loop, then deletes the client. On a
-  stopped loop, open62541 refuses the synchronous CloseSession of the delete and does
-  not wait for the channel to close, so the delete sends no CloseSession, and the
-  session stays on the server until it times out. Since the drop stops the whole loop,
-  the loop of a client holds no other client or server. Before a run returns, the kind
-  closes its client with `close`. A drop is only for a run whose future drops or that
-  panics, because each session that a drop leaves holds one of the sessions of its
-  server until then. A read keeps its answer in the client, which outlives the delete
-  that calls the callback of each read in flight, and the callback drops the answer of a
-  request that is not the read in flight. Lost: a drop that sends the CloseSession. A
-  delete on a started loop sends it in a synchronous call, and that call waits for an
-  answer that only a drive of the manager reads. Proposed in
-  https://github.com/synnaxlabs/foundation/pull/2397. Approved by `laptop.architect-2`,
-  with the rule for the kind and the lost design as its texts
-  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
-  2026-10-11 12:52 UTC). The wait for the CreateSession, its lost design, and the close
-  of a client that lost its channel: proposed in
-  https://github.com/synnaxlabs/foundation/pull/2397, for `laptop.architect-2` to
-  approve.
+  It waits for the same answer, so the close ends no sooner, and it changes the session
+  state machine of open62541, where LOCAL PATCHES asks for a hand mutant of each line
+  that it changes. When a new release replaces the copy, check whether it still sends
+  that CloseSession, and remove the wait when it does not. Its drop calls
+  `shim_client_free`, which stops the loop, then deletes the client. On a stopped loop,
+  open62541 refuses the synchronous CloseSession of the delete and does not wait for the
+  channel to close, so the delete sends no CloseSession, and the session stays on the
+  server until it times out. Since the drop stops the whole loop, the loop of a client
+  holds no other client or server. Before a run returns, the kind closes its client with
+  `close`. A drop is only for a run whose future drops or that panics, because each
+  session that a drop leaves holds one of the sessions of its server until then. A read
+  keeps its answer in the client, which outlives the delete that calls the callback of
+  each read in flight, and the callback drops the answer of a request that is not the
+  read in flight. Lost: a drop that sends the CloseSession. A delete on a started loop
+  sends it in a synchronous call, and that call waits for an answer that only a drive of
+  the manager reads. Proposed in https://github.com/synnaxlabs/foundation/pull/2397.
+  Approved by `laptop.architect-2`, with the rule for the kind and the lost design as
+  its texts (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
+  2026-10-11 12:52 UTC). The wait for the CreateSession, its cause and bound, its lost
+  design, and the close of a client that lost its channel: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
+  2026-10-11 15:26 UTC).
