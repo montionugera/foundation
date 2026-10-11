@@ -168,14 +168,16 @@ impl Manager {
             .expect("open62541 counts sessions in 16 bits");
         let local = SocketAddr::new(address, PORT);
         let rng = &mut Rng::from_seed(0);
-        let manager =
+        let manager = ManuallyDrop::new(
             connection::Manager::listening(clock, net, local, u32::from(sessions), rng)
-                .expect("the port is free");
+                .expect("the port is free"),
+        );
         let events = manager.events();
         // SAFETY: the member takes its own loop.
         let status = Status(unsafe { (events.members().start)(events.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the loop");
-        // SAFETY: only `close` drops the manager, after it closes the server.
+        // SAFETY: only `close` drops the manager, after it closes the server. A panic
+        // before then leaks it.
         let server = unsafe { Server::start(&manager, "", sessions) };
         let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
         let clients = (0..=idle)
@@ -195,7 +197,7 @@ impl Manager {
             clients,
             server,
             answers: Box::default(),
-            connections: ManuallyDrop::new(manager),
+            connections: manager,
         }
     }
 
