@@ -22,14 +22,11 @@ fn in_use(pointer: Pointer, definitions: &BTreeMap<Name, Definition>) -> Spec {
 /// What a read of a node of a cluster gives once the spec of `pointer`, with
 /// `definitions`, took effect.
 fn seen(pointer: Pointer, definitions: &BTreeMap<Name, Definition>) -> Seen {
-    let mut chunks = Chunks::default();
-    spec::region::tree(&mut chunks, definitions);
     Seen {
         pointer: Some(pointer),
         definitions: definitions.clone(),
         behind: None,
         newest: None,
-        chunks: format!("{chunks:?}"),
     }
 }
 
@@ -62,6 +59,28 @@ async fn commit(
         .unwrap();
     let listed = update.chunks.into_iter().collect();
     let holders = [key(1)].into();
+    mesh.settle_spec(base, update.root, listed, holders, BTreeMap::new())
+        .await
+        .unwrap()
+}
+
+/// Settles the change from `base` to the tree of `definitions`, after a put of each
+/// chunk of that tree. The change lists the chunk `listed`, whose get fails.
+async fn settle_listing(
+    node: &sim::node::Node,
+    mesh: &Mesh,
+    base: Pointer,
+    listed: Digest,
+    definitions: &BTreeMap<Name, Definition>,
+) -> Pointer {
+    let mut chunks = Chunks::default();
+    let update = spec::region::tree(&mut chunks, definitions);
+    put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
+        .await
+        .unwrap();
+    node.fail_file(&Path::new(BLOB).join(listed.to_string()), Operation::Open);
+    let holders = [key(1)].into();
+    let listed = [listed].into();
     mesh.settle_spec(base, update.root, listed, holders, BTreeMap::new())
         .await
         .unwrap()
@@ -307,6 +326,44 @@ fn a_retry_gets_only_the_missed_chunk_and_keeps_the_chunks_it_read() {
     });
 }
 
+// The change lists each chunk of its tree, and the store lacks one. The store then
+// gives that chunk and loses the root, which the first read got.
+#[test]
+fn a_retry_after_a_read_of_listed_chunks_keeps_the_chunks_it_read() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let definitions = create_large(200);
+        let mut chunks = Chunks::default();
+        let update = spec::region::tree(&mut chunks, &definitions);
+        let lacked = *update.chunks.iter().find(|at| **at != update.root).unwrap();
+        let held = update.chunks.iter().copied().filter(|at| *at != lacked);
+        let held: Vec<Digest> = held.collect();
+        assert!(held.len() > 3);
+        put(&mesh.store, &mesh.pool, &chunks, &held).await.unwrap();
+        let settled = mesh.settle_spec(
+            base(),
+            update.root,
+            update.chunks.iter().copied().collect(),
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        let moved = settled.await.unwrap();
+        let missing = spec::region::Error::Tree(tree::Error::Missing(lacked));
+        let behind = Some(Behind {
+            pointer: moved,
+            cause: Cause::Read(missing),
+        });
+        assert_eq!(mesh.spec().await.unwrap().behind, behind);
+        put(&mesh.store, &mesh.pool, &chunks, &[lacked])
+            .await
+            .unwrap();
+        let root = Path::new(BLOB).join(update.root.to_string());
+        node.files().remove(&root).await.unwrap();
+        node.clock().sleep(seconds(2)).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &definitions)));
+    });
+}
+
 #[test]
 fn a_failed_get_of_the_store_leaves_the_node_behind_until_a_retry() {
     solo(|node, tasks| async move {
@@ -346,6 +403,54 @@ fn a_failed_get_of_the_store_leaves_the_node_behind_until_a_retry() {
     });
 }
 
+// The change lists its whole tree and the root of another tree, whose get fails on
+// each call. The store gives each chunk of the new tree.
+#[test]
+fn a_failed_get_of_a_listed_chunk_of_another_tree_stops_no_retry() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let mut chunks = Chunks::default();
+        let other = spec::region::tree(&mut chunks, &create_subjects(&["plant.c"], 1));
+        put(&mesh.store, &mesh.pool, &chunks, &other.chunks)
+            .await
+            .unwrap();
+        let a = create_subjects(&["plant.a"], 1);
+        let update = spec::region::tree(&mut chunks, &a);
+        put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
+            .await
+            .unwrap();
+        let path = Path::new(BLOB).join(other.root.to_string());
+        for _ in 0..10 {
+            node.fail_file(&path, Operation::Open);
+        }
+        let mut listed: BTreeSet<Digest> = update.chunks.iter().copied().collect();
+        listed.insert(other.root);
+        let settled = mesh.settle_spec(
+            base(),
+            update.root,
+            listed,
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        let moved = settled.await.unwrap();
+        let cause = files::Error::Io {
+            path,
+            operation: Operation::Open,
+            code: 5,
+        };
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: moved,
+                cause: Cause::Blob(blob::Error::Files(cause)),
+            }),
+            ..in_use(base(), &BTreeMap::new())
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
+        node.clock().sleep(seconds(2)).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &a)));
+    });
+}
+
 // The change lists the root of the tree in use, whose get fails.
 #[test]
 fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
@@ -356,21 +461,112 @@ fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
             create_subjects(&["plant.b"], 1),
         );
         let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
-        let mut chunks = Chunks::default();
-        let update = spec::region::tree(&mut chunks, &b);
-        put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
+        let moved = settle_listing(&node, &mesh, first, first.root, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    });
+}
+
+// The open after a power cut keeps the chunks of the tree in use.
+#[test]
+fn a_read_after_an_open_gets_no_listed_chunk_of_the_tree_in_use() {
+    let a = create_subjects(&["plant.a"], 1);
+    let first = pointer(1, &a);
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, move |node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        assert_eq!(
+            mesh.apply(base(), a.clone(), BTreeMap::new()).await,
+            Ok(first)
+        );
+        assert_eq!(mesh.spec().await, Ok(in_use(first, &a)));
+    })
+    .unwrap();
+    sim.crash(&node, Crash::Power);
+    sim.run_on(&node, move |node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        reach(&mesh, &node.clock(), first).await;
+        let b = create_subjects(&["plant.b"], 1);
+        let moved = settle_listing(&node, &mesh, first, first.root, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_read_gets_no_listed_chunk_of_the_founding_tree() {
+    solo(|node, tasks| async move {
+        let founding = create_subjects(&["plant.app"], 1);
+        let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
+        config.founding.definitions = founding.clone();
+        let mesh = Mesh::start(config).await.unwrap();
+        let b = create_subjects(&["plant.b"], 1);
+        let founded = pointer(0, &founding);
+        let moved = settle_listing(&node, &mesh, founded, founded.root, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    });
+}
+
+// A read with a problem keeps the chunks of the tree in use.
+#[test]
+fn a_read_after_a_problem_gets_no_listed_chunk_that_the_tree_in_use_holds() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let (a, b) = (
+            create_subjects(&["plant.a"], 1),
+            create_subjects(&["plant.b"], 1),
+        );
+        let first = mesh
+            .apply(base(), a.clone(), BTreeMap::new())
             .await
             .unwrap();
-        node.fail_file(
-            &Path::new(BLOB).join(first.root.to_string()),
-            Operation::Open,
+        let second = commit(&mesh, first, &create_admin()).await;
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: second,
+                cause: admin(),
+            }),
+            ..in_use(first, &a)
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
+        let moved = settle_listing(&node, &mesh, second, first.root, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    });
+}
+
+// The node keeps only the chunks of the tree in use, so a change back to an older tree
+// gets its root, whose get fails.
+#[test]
+fn a_read_gets_the_root_of_a_tree_that_the_node_used_before() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let (a, b) = (
+            create_subjects(&["plant.a"], 1),
+            create_subjects(&["plant.b"], 1),
         );
+        let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
+        let second = mesh.apply(first, b.clone(), BTreeMap::new()).await.unwrap();
+        assert_eq!(mesh.spec().await, Ok(in_use(second, &b)));
+        let path = Path::new(BLOB).join(first.root.to_string());
+        node.fail_file(&path, Operation::Open);
         let holders = [key(1)].into();
         let listed = [first.root].into();
         let settled =
-            mesh.settle_spec(first, update.root, listed, holders, BTreeMap::new());
+            mesh.settle_spec(second, first.root, listed, holders, BTreeMap::new());
         let moved = settled.await.unwrap();
-        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+        let cause = files::Error::Io {
+            path,
+            operation: Operation::Open,
+            code: 5,
+        };
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: moved,
+                cause: Cause::Blob(blob::Error::Files(cause)),
+            }),
+            ..in_use(second, &b)
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
     });
 }
 

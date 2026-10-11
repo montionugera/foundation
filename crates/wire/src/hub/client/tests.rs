@@ -625,3 +625,109 @@ fn gives_no_refusal_for_0_or_a_code_outside_the_set() {
         assert_eq!(Refusal::from_code(code), None, "{code}");
     }
 }
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one case for each error")]
+fn names_each_error() {
+    let cases = [
+        (Error::Empty, "the hub message is empty"),
+        (
+            Error::Kind { kind: 9 },
+            "the hub message has kind 9, which this stream does not carry",
+        ),
+        (
+            Error::Length { len: 4 },
+            "the hub message has 4 bytes, which no message of its kind has",
+        ),
+        (
+            Error::Subject(unnamed(name::Error::Empty)),
+            "the subject of the hello is not a name: a name or pattern is empty",
+        ),
+        (
+            Error::SmallOrder,
+            "the key of the hello is a point of small order",
+        ),
+        (
+            Error::Trailing,
+            "a hub message came after the body of the stream",
+        ),
+        (
+            Error::Oversize {
+                length: 16_777_217,
+                cap: 16_777_216,
+            },
+            "the body has 16777217 bytes, over the cap of 16777216",
+        ),
+        (
+            Error::Body {
+                len: 11,
+                remain: 10,
+            },
+            "the body message has 11 bytes, and 10 remain in the body",
+        ),
+        (
+            Error::Unfinished { remain: 3 },
+            "the stream ended with 3 bytes of its body to come",
+        ),
+        (
+            Error::Mode { byte: 3 },
+            "the open of the read names mode 3, which no read has",
+        ),
+        (
+            Error::Selector(unnamed(name::Error::NoInclude)),
+            "the selector of the read does not read: a selector includes no names",
+        ),
+        (
+            Error::Index { index: 3, count: 3 },
+            "the places of the read put the index at place 3 of 3",
+        ),
+        (
+            Error::Sample(text::Error::Parse(sample::Error::Syntax)),
+            "the sample type of a place of the read does not read: expected a sample \
+             type such as f64, f32[3], list<u8, 16>, string, or bytes",
+        ),
+        (
+            Error::Name(not_utf8(&[0xff])),
+            "the name of a place of the read does not read: invalid utf-8 sequence of \
+             1 bytes from index 0",
+        ),
+        (
+            Error::Run {
+                items: 3,
+                remain: 2,
+            },
+            "the run message holds 3 items, and 2 remain in the run",
+        ),
+        (
+            Error::Unstamped {
+                sample: sample::Type::Scalar(sample::Scalar::U8),
+            },
+            "the index place of the read has sample type u8, not timestamp",
+        ),
+        (
+            Error::Finished,
+            "the node finished the read stream before its last place",
+        ),
+    ];
+    for (error, text) in cases {
+        assert_eq!(error.to_string(), text);
+    }
+}
+
+#[test]
+fn gives_the_cause_of_a_text_that_does_not_read() {
+    use std::error::Error as _;
+    let name = unnamed(name::Error::NoInclude);
+    let sample = text::Error::Parse(sample::Error::Syntax);
+    let errors = [
+        (Error::Subject(name.clone()), name.to_string()),
+        (Error::Selector(name.clone()), name.to_string()),
+        (Error::Name(name.clone()), name.to_string()),
+        (Error::Sample(sample.clone()), sample.to_string()),
+    ];
+    for (error, cause) in errors {
+        let source = error.source().map(ToString::to_string);
+        assert_eq!(source, Some(cause), "{error:?}");
+    }
+    assert!(Error::Empty.source().is_none());
+}

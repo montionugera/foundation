@@ -1059,6 +1059,7 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
         Some("fn unreviewed() {}")
     );
     assert_eq!(repo.passes(&end, &merge), Ok(false));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Off));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
@@ -2308,6 +2309,36 @@ fn a_range_that_adds_changes_or_removes_a_decision_is_a_decision_change() {
 }
 
 #[test]
+fn a_decision_path_in_another_case_is_a_decision_change() {
+    let paths = [
+        "docs/Decisions/x.md",
+        "Docs/decisions/x.md",
+        "DOCS/DECISIONS/x.md",
+    ];
+    for (n, path) in paths.into_iter().enumerate() {
+        let (repo, start) = Repo::with_pr(&format!("decision-case-{n}"));
+        let end = repo.commit(path, "a rule\n");
+        assert_eq!(
+            repo.decision_change(&start, &end),
+            Ok(Some(DECISION.replace("docs/decisions/x.md", path)))
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_path_with_a_letter_that_only_a_file_system_folds_is_no_decision_change() {
+    // U+017F, the long s, which APFS reads as `s`.
+    let paths = ["docs/deci\u{17f}ions/x.md", "doc\u{17f}/decisions/x.md"];
+    for (n, path) in paths.into_iter().enumerate() {
+        let (repo, start) = Repo::with_pr(&format!("decision-fold-{n}"));
+        let end = repo.commit(path, "a rule\n");
+        assert_eq!(repo.decision_change(&start, &end), Ok(None), "{path}");
+        repo.remove();
+    }
+}
+
+#[test]
 fn a_range_that_changes_no_decision_is_no_decision_change() {
     let (repo, start) = Repo::with_pr("decision-none");
     repo.commit("docs/decisions.md", "a list\n");
@@ -2597,4 +2628,144 @@ fn a_base_move_is_a_decision_change_only_from_outside_the_decisions_into_them() 
         assert_eq!(repo.decision_change(&changed, &end), Ok(None), "{name}");
         repo.remove();
     }
+}
+
+#[test]
+fn the_directory_rename_setting_of_the_clone_changes_no_decision_change() {
+    for value in ["conflict", "false", "true"] {
+        let repo = Repo::new(&format!("decision-directory-{value}"));
+        repo.commit("docs/drafts/a.md", "a draft\n");
+        let base = repo.commit("docs/drafts/b.md", "another draft\n");
+        repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+        repo.git(&["switch", "--quiet", "-c", "pr"]);
+        let start = repo.commit("docs/drafts/x.md", "a rule of the PR\n");
+        repo.git(&["switch", "--quiet", "main"]);
+        repo.git(&["mv", "docs/drafts", "docs/decisions"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["switch", "--quiet", "pr"]);
+        // With `true`, the merge moves the file of the PR with no conflict.
+        let merge = ["merge", "--quiet", "--no-edit", "origin/main"];
+        repo.git(&[&["-c", "merge.directoryRenames=true"][..], &merge].concat());
+        let end = repo.head();
+        assert_eq!(
+            repo.git(&["show", &format!("{end}:docs/decisions/x.md")]),
+            "a rule of the PR"
+        );
+        repo.git(&["config", "merge.directoryRenames", value]);
+        assert_eq!(
+            repo.decision_change(&start, &end),
+            Ok(Some(format!("resolves a {CONFLICT} in `{end}`"))),
+            "{value}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_clone_with_rename_detection_off_reads_a_base_move_into_a_decision() {
+    for key in ["merge.renames", "diff.renames"] {
+        let (repo, _) = Repo::with_pr(&format!("decision-{key}"));
+        let (_, changed, end) =
+            repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+        repo.git(&["config", key, "false"]);
+        assert_eq!(
+            repo.decision_change(&changed, &end),
+            Ok(Some(
+                "has `docs/drafts/x.md`, which the PR changes and the base moves into \
+                 the decision `docs/decisions/x.md`"
+                    .to_string()
+            )),
+            "{key}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn the_rename_limit_of_the_clone_changes_no_decision_change() {
+    let phrase = "has `docs/drafts/x.md`, which the PR changes and the base moves into \
+                  the decision `docs/decisions/y.md`";
+    for key in ["merge.renameLimit", "diff.renameLimit"] {
+        let (repo, _) = Repo::with_pr(&format!("decision-{key}"));
+        let draft = DRAFT.repeat(4);
+        let moved = draft.replacen("one\n", "ONE\n", 1);
+        repo.advance_main("docs/drafts/x.md", &draft);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        let changed =
+            repo.commit("docs/drafts/x.md", &format!("{draft}the rule of the PR\n"));
+        repo.git(&["switch", "--quiet", "main"]);
+        std::fs::create_dir_all(repo.dir.join("docs/decisions")).unwrap();
+        // Another file name: `git` pairs files of one name before it reads the limit.
+        repo.git(&["mv", "docs/drafts/x.md", "docs/decisions/y.md"]);
+        std::fs::write(repo.dir.join("docs/decisions/y.md"), &moved).unwrap();
+        std::fs::write(repo.dir.join("c.txt"), "c\n").unwrap();
+        repo.git(&["add", "docs/decisions/y.md", "c.txt"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["switch", "--quiet", "pr"]);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        assert_eq!(
+            repo.git(&["show", "HEAD:docs/decisions/y.md"]),
+            format!("{moved}the rule of the PR")
+        );
+        let end = repo.commit("docs/decisions/y.md", &moved);
+        repo.git(&["config", key, "1"]);
+        assert_eq!(
+            repo.decision_change(&changed, &end),
+            Ok(Some(phrase.to_string())),
+            "{key}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_probe_line_in_a_decision_of_the_base_is_no_move_into_the_decisions() {
+    for (name, line) in [
+        ("plain", "eleven"),
+        ("probe", "xtask-review-probe 0"),
+        ("start", "xtask-review-probe START 0"),
+    ] {
+        let (repo, _) = Repo::with_pr(&format!("decision-probe-{name}"));
+        repo.advance_main("docs/decisions/x.md", DRAFT);
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        std::fs::create_dir_all(repo.dir.join("docs/drafts")).unwrap();
+        repo.git(&["mv", "docs/decisions/x.md", "docs/drafts/x.md"]);
+        repo.git(&["commit", "--quiet", "-m", "mv"]);
+        let start = repo.head();
+        let line = line.replace("START", &start);
+        repo.advance_main("docs/decisions/x.md", &format!("{DRAFT}{line}\n"));
+        repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+        let end = repo.head();
+        assert_eq!(
+            repo.git(&["ls-tree", "-r", "--name-only", &end]),
+            "a.txt\nb.txt\ndocs/drafts/x.md"
+        );
+        assert_eq!(repo.decision_change(&start, &end), Ok(None), "{name}");
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_probe_line_in_a_decision_of_the_pr_is_no_move_into_the_decisions() {
+    let (repo, _) = Repo::with_pr("decision-probe-first");
+    let draft = DRAFT.repeat(4);
+    repo.advance_main("docs/drafts/x.md", &draft);
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let second =
+        repo.advance_main("docs/drafts/x.md", &draft.replacen("one\n", "ONE\n", 1));
+    repo.git(&["mv", "docs/drafts/x.md", "docs/drafts/y.md"]);
+    let start = repo.commit(
+        "docs/decisions/z.md",
+        &format!("{draft}xtask-review-probe {second} 0\n"),
+    );
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let end = repo.head();
+    assert_eq!(
+        repo.git(&["diff", "--name-only", &start, &end]),
+        "docs/drafts/y.md"
+    );
+    assert_eq!(repo.decision_change(&start, &end), Ok(None));
+    repo.remove();
 }

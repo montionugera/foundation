@@ -217,6 +217,7 @@ impl Writer {
             set: Arc::clone(&set),
         };
         let key = borrowed.home.open_writer(writer).map_err(Error::Home)?;
+        borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
         let ending = borrowed.writers.add(key, keys.into());
         Ok(Self {

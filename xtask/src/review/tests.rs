@@ -1210,6 +1210,100 @@ fn takes_a_count_of_zero_as_no_findings() {
 }
 
 #[test]
+fn reads_no_invisible_character_in_a_code_span() {
+    for c in ['\u{200B}', '\u{FFF8}'] {
+        let head = format!("{NAME}\nQuality: 8/10\n`{c}`");
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("has no summary line after its `Quality:` line"),
+            "summary {:X}",
+            u32::from(c)
+        );
+        let comment = ROUND.replace(
+            "Hot path: none",
+            &format!("`{c}Hot path:` `send`\nHot path: none"),
+        );
+        assert_eq!(
+            check(&record(vec![bot(&comment)])),
+            vec!["review round 3 has a second `Hot path:` line in its end lines."],
+            "end line {:X}",
+            u32::from(c)
+        );
+    }
+}
+
+#[test]
+fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
+    let round = ROUND.replace("Findings: none", "Findings: 2![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![
+            "review round 3 has `Findings: 2![]`, not a count or `none`: invalid digit \
+             found in string"
+        ]
+    );
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["review round 3 has the range `c77c67d7![]`, not `<from>..<head>`"]
+    );
+    let round = ROUND.replace("round 3", "round 3![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["`## Review round 3![]` has no round number"]
+    );
+}
+
+#[test]
+fn a_problem_shows_an_image_in_the_end_of_a_range_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f..c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![format!(
+            "review round 3 ends at c77c67d7![], not at the head {HEAD}. A commit \
+             after the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+}
+
+#[test]
+fn a_problem_of_an_old_round_shows_an_image_in_the_number_that_it_quotes() {
+    let round = ROUND
+        .replace("round 3", "round 3![](x)")
+        .replace("Hot path: none", "Hot path: `send`");
+    assert_eq!(
+        check(&record(vec![old(&round)])),
+        vec![
+            "`## Review round 3![]` has no round number",
+            "review round 3![] names no performance, which this round requires.",
+        ]
+    );
+}
+
+#[test]
+fn a_breaker_skip_problem_shows_an_image_in_a_commit_that_it_quotes() {
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f![](x)..c77c67d7");
+    // The phrase of `History::code_change` for a range start that names no commit.
+    let unnamed = |from: &str| format!("has `{from}`, which names no commit");
+    assert_eq!(
+        problems(
+            &record(vec![bot(&round)]),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|from, end| Ok((end != HEAD).then(|| unnamed(from))),
+            &|_, _| Ok(None),
+        ),
+        Ok(vec![
+            "review round 3 skips `breaker`, but its range has `38cba24f![]`, which \
+             names no commit."
+                .to_string()
+        ])
+    );
+}
+
+#[test]
 fn names_a_round_with_no_number() {
     assert_eq!(
         check(&record(vec![bot("## Review round one\nFindings: none")])),
@@ -2475,6 +2569,11 @@ fn fails_a_round_that_does_not_start_with_a_name_line() {
         format!("**![](x)** · integrator\n{rating}"),
         format!("**![](x) ![](y)** · integrator\n{rating}"),
         format!("**laptop.integrator-2** · ![](x)\n{rating}"),
+        format!("**laptop.integrator-2** · ![](x) ![](y)\n{rating}"),
+        format!(
+            "laptop.integrator-2 · integrator\n{rating}\n\n**laptop.integrator-2** \
+             wrote this round."
+        ),
     ] {
         assert_eq!(
             check(&record(vec![headed(&head)])),
@@ -2530,6 +2629,12 @@ fn fails_a_round_with_no_summary_line_after_its_rating() {
             "{head}"
         );
     }
+}
+
+#[test]
+fn reads_an_emoji_name_in_a_summary_line_as_text() {
+    let head = format!("{NAME}\nQuality: 8/10\n:octocat:");
+    assert_eq!(check(&record(vec![headed(&head)])), Vec::<String>::new());
 }
 
 #[test]
@@ -2632,6 +2737,19 @@ fn fails_a_round_that_github_ends_with_a_code_block_after_a_footnote() {
     assert_eq!(check(&record(vec![bot(&tail)])), vec![unended("Deferred")]);
 }
 
+#[test]
+fn reads_the_character_u_fffc_as_text_not_as_an_image() {
+    for head in [
+        format!("{NAME}\nQuality: 8/10\n\u{FFFC}"),
+        format!("{NAME}\nQuality: 8/10\n&#xFFFC;"),
+        format!("**\u{FFFC}** · integrator\nQuality: 8/10\n{SUMMARY}"),
+        format!("**laptop.integrator-2** · \u{FFFC}\nQuality: 8/10\n{SUMMARY}"),
+    ] {
+        let found = check(&record(vec![headed(&head)]));
+        assert_eq!(found, Vec::<String>::new(), "{head:?}");
+    }
+}
+
 /// `body` after a name line, a rating, and a summary.
 fn rated(body: &str) -> String {
     format!("{NAME}\nQuality: 8/10\n{SUMMARY}\n\n{body}")
@@ -2691,6 +2809,22 @@ fn a_later_round_whose_range_changes_a_decision_requires_architecture() {
     assert_eq!(
         check_at(&repo, &rounds("reviewer, architecture, breaker")),
         Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_that_adds_a_decision_in_another_case_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision-case");
+    let end = repo.commit("docs/Decisions/x.md", "a rule\n");
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &end]),
+        "a.txt\nb.txt\ndocs/Decisions/x.md"
+    );
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace("docs/decisions/x.md", "docs/Decisions/x.md")]
     );
     repo.remove();
 }

@@ -114,7 +114,8 @@ impl<'a> History<'a> {
 
     /// The first change of a decision in the range `<from>..<end>`, as a phrase, or
     /// `None`, also when the range is empty. A file under `docs/decisions/` that the
-    /// range adds, changes, or removes gives "changes the decision `<path>`".
+    /// range adds, changes, or removes gives "changes the decision `<path>`". Here and
+    /// below, `docs/decisions/` is in any ASCII case of those letters.
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a change
@@ -404,10 +405,9 @@ impl<'a> History<'a> {
     /// <noun>`<new>`" for the first path `<old>` that `kind` does not count, that
     /// `first` changes (`changed`), and that the merge of `first` and `second`, with
     /// the tree `tree`, moves into a path `<new>` that `kind` counts, where `<noun>` is
-    /// `kind.noun`. The moves are the merge's own: `second` is merged again with
-    /// a copy of `first` that gives each such path a probe text of its own, and the
-    /// probe text is read in the files at such a `<new>` that the two merges make
-    /// differently.
+    /// `kind.noun`. The moves are the merge's own: `second` is merged again with a copy
+    /// of `first` that gives each such path a probe text of its own, and the probe text
+    /// is read in the files at such a `<new>` that the two merges make differently.
     ///
     /// # Errors
     ///
@@ -435,8 +435,7 @@ impl<'a> History<'a> {
             }
             let text = self.output(&["cat-file", "blob", &entry.new])?;
             let old = String::from_utf8_lossy(&text).lines().find_map(|line| {
-                let n: usize =
-                    line.strip_prefix(PROBE)?.strip_prefix(' ')?.parse().ok()?;
+                let n: usize = line.strip_prefix(&probe.mark)?.parse().ok()?;
                 probe
                     .paths
                     .get(n)
@@ -454,7 +453,7 @@ impl<'a> History<'a> {
     }
 
     /// A copy of `first` in which each path of `changed(first, second, counts)` holds
-    /// the probe text `<PROBE> <n>`, where `paths[n]` is that path. `None` when no such
+    /// the probe text `<mark><n>`, where `paths[n]` is that path. `None` when no such
     /// path exists.
     ///
     /// # Errors
@@ -470,17 +469,19 @@ impl<'a> History<'a> {
         if changed.is_empty() {
             return Ok(None);
         }
+        let mark = format!("{PROBE} {first} {second} ");
         let files: Vec<_> = changed
             .iter()
             .enumerate()
             .map(|(n, (mode, path))| File {
                 mode,
                 path,
-                text: format!("{PROBE} {n}\n"),
+                text: format!("{mark}{n}\n"),
             })
             .collect();
         Ok(Some(Probe {
             commit: self.copy(first, &files)?,
+            mark,
             paths: changed.into_iter().map(|(_, path)| path).collect(),
         }))
     }
@@ -787,9 +788,14 @@ const CODE: Kind = Kind {
     noun: "the code file ",
 };
 
-/// The files under `docs/decisions/`.
+/// The files under `docs/decisions/`, in any ASCII case of those letters: a file system
+/// that folds case shows such a path as a decision.
 const DECISION: Kind = Kind {
-    counts: |path| path.starts_with("docs/decisions/"),
+    counts: |path| {
+        let decisions = "docs/decisions/";
+        let start = path.get(..decisions.len());
+        start.is_some_and(|start| start.eq_ignore_ascii_case(decisions))
+    },
     noun: "the decision ",
 };
 
@@ -801,9 +807,12 @@ struct File<'a> {
 }
 
 /// A copy of a commit, with a probe text in each file that the commit changes and that
-/// a kind of move counts from.
+/// the [`Kind`] of the caller does not count.
 struct Probe {
     commit: String,
+    /// The start of each probe text: [`PROBE`] and the two merged commits. No file of
+    /// either commit holds it, since it names the commit of that file.
+    mark: String,
     /// The probed paths, by the number in their probe text.
     paths: Vec<Vec<u8>>,
 }
@@ -834,9 +843,9 @@ impl Merged {
 enum Range {
     /// `from` and `end` name the same commit.
     Empty,
-    /// A range that counts for the rule whatever its diff holds, as a phrase: one
-    /// that the check cannot read, one with a conflict in a path that the rule counts,
-    /// or one in which the base moves a path of the PR into such a path.
+    /// A range that counts for the rule whatever its diff holds, as a phrase: one that
+    /// the check cannot read, one with a conflict in a path that the rule counts, or
+    /// one in which the base moves a path of the PR into such a path.
     Counted(String),
     /// A range whose diff decides: from the tree of `from` and the newest base commit
     /// that `end` holds, to the commit `end`.
@@ -863,10 +872,12 @@ fn rust_path(path: &str) -> bool {
     path.ends_with(".rs")
 }
 
-/// A `git` command in `root` that reads no inherited `GIT_*` variable and no global
-/// or system config or attributes file, so the machine's settings cannot change a
-/// verdict and no variable such as `GIT_DIR` can point it elsewhere. It still reads
-/// the repository's own `.git/config` and `.git/info/attributes`.
+/// A `git` command in `root` that reads no inherited `GIT_*` variable and no global or
+/// system config or attributes file, so the machine's settings cannot change a verdict
+/// and no variable such as `GIT_DIR` can point it elsewhere. It still reads the
+/// repository's own `.git/config` and `.git/info/attributes`, but not its
+/// `merge.renames`, `merge.directoryRenames`, or `merge.renameLimit`, which have the
+/// values of `git` with no setting.
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
@@ -880,6 +891,9 @@ fn command(root: &Path) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_ATTR_NOSYSTEM", "1")
         .args(["-c", "core.attributesFile=/dev/null"])
+        .args(["-c", "merge.renames=true"])
+        .args(["-c", "merge.directoryRenames=conflict"])
+        .args(["-c", "merge.renameLimit=7000"])
         // So a walk for merge bases reads only parents and commit times
         // (`History::commit`).
         .args(["-c", "core.commitGraph=false"]);

@@ -130,10 +130,13 @@ state on `main`.
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
   a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. Until #2325, a flood of peers outside the
-  region, programs or new node keys, can hold each place and lock out a node that joins
-  and the admin's program. It rejects a stream whose header has not arrived within
-  10 s.
+  of a program, and one for the key of a node. At the bound, the oldest place frees for
+  the new peer, and its sessions close unless its peer is now a member. So a peer
+  outside the region keeps its session until 256 later peers took a place. A flood that
+  takes 256 places in the time that a peer needs to prove its right (a member, the
+  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
+  limit on handshakes before admission bounds that rate (#563). It rejects a stream
+  whose header has not arrived within 10 s.
 
 ### Subject to owner
 
@@ -247,9 +250,23 @@ state on `main`.
   (`env::files`, RAFT DURABILITY, #352 item 3). The node gets `Error::IndexPastLog`
   only once the leader's commit passes its last entry. Not built (#648): the node
   shows the error in its status.
-- The `clock`, `replica`, and `blob` protocols are not built. To attack when they
-  land: who may be a time source, and a binary that a peer serves under a hash it
-  does not match (C9d).
+- The `clock` and `replica` protocols are not built. To attack when they land: who may
+  be a time source.
+- `blob::peer::serve` gives any chunk whose digest the peer names, and stores any chunk
+  that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
+  block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
+  head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
+  peer can fill the disk only to the free floor of the store, plus at most one chunk for
+  each put in flight; then each put of a chunk that the disk does not hold stops with
+  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
+  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
+  memory for each stream. `transport` also holds each chunk whole until the peer
+  acknowledged each byte of it and each byte before it on the stream, so a get can hold
+  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
+  get hold each chunk that its stream sends after it). Who may open a blob stream is not
+  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  The requester is not built (#1229). To attack when it lands: a binary that a peer
+  serves under a hash it does not match (C9d).
 
 ### Time source to `estimate`
 
@@ -399,7 +416,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `wire_hub_home` | `wire::hub::Home::decode`, `Open::encode`, `Credit::encode`, `keys::encode` | Each message encodes to the same bytes; each event comes in the order of a session, and each refusal is one that the order or the mode of the session gives; each valid message made from the input decodes to itself |
 | `wire_blob` | `wire::blob::Server::decode`, `Requester::decode`, `Put::body`, `Reply::body`, `Body::take`, `Body::end`, `get::encode`, `Put::encode`, `Reply::encode` | Each message encodes to the same bytes; each body counts exactly the bytes of its head, and each refusal of a body is the one that its rest gives; a body ends unfinished while bytes remain; each valid message made from the input decodes to itself |
 | `wire_hub_reader` | `wire::hub::Reader::decode`, `Reader::end`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it; each refusal is one that the order, the mode, or the heads of the session give; the body is where `Reader::body` says; `Reader::end` refuses each point before `Behind`, with `Unfinished` inside a body; each valid message made from the input decodes to itself |
-| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Places::decode`, `place::decode`, `Body::take`, `Body::end`, and the encoders of each message | Each message encodes to the same bytes; each decoder but `Open::decode` and `place::decode` refuses another kind with `Error::Kind`; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; each valid message made from the input decodes to itself |
+| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode` (with `Places` and the run of places in it), `Body::take`, `Body::end`, and the encoders of each message | Each message encodes to the same bytes; each decoder but `Open::decode` and `Reader::decode` refuses another kind with `Error::Kind`, and `Reader::decode` refuses a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives the places, then a run with no more places than remain and a stamp at the index place, and with the last place, and at no message before it, the `hub::Reader` of their count and the mode; each valid message made from the input decodes to itself |
 | `transport_hello` | `transport::fuzzing::Hello::decode`, `Hello::encode` (feature `fuzzing`) | Gives the hello, or the refusal, that a second reader of the STREAM WIRE rules gives; its encoding decodes to itself |
 | `transport_certificate` | `transport::fuzzing::peer`: the client verifier and the peer of a node's server, for a dialer's chain of 0 to 3 certificates (feature `fuzzing`) | Gives the peer that a second reader of the rules gives: a client for no certificate, none for a chain of more than one or a certificate over 1024 bytes, and else none or the node whose key follows the Ed25519 key header in the certificate; a certificate that a node issues reads back to its key, and two of it are refused. Not reached: the handshake signature, which fuzzed bytes cannot make |
 | `mesh_change` | `mesh::change::Change::decode`, and `Card::decode` and `Status::decode` through a `Join`, by `mesh::testing::round_trip_change` | Encodes to the same bytes |
@@ -415,7 +432,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `codec_shape_encoder` | `codec::Encoder` on an array, matrix, list, `String`, or `Bytes` series | Gives the refusal that a second reader of the raw form gives, or a valid series that decodes unchanged with zeros for the padding; an array or a matrix encodes as the series of its elements |
 | `document_encoding` | `document::encoding::decode` | Encodes to the same bytes |
 | `spec_definition` | `spec::definition::Definition::decode` | Encodes to the same bytes |
-| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries only when `spec::region::tree` of them has the same root |
+| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries, with the chunks of the tree and no other, only when `spec::region::tree` of them has the same root |
 | `spec_data_type` | `spec::data_type::DataType` | Prints as the text it was read from |
 | `config_hcl_read` | `config_hcl::read` | The encoding decodes to an equal document |
 | `config_hcl_update` | `config_hcl::update` | Its text reads as the document; an update to its own document keeps each byte; an unread text gives the problems of `read` |
@@ -437,13 +454,13 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
 | `buffer_open` | `Buffer::open` and `Buffer::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Buffer::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
-| `node_identity` | `node::identity::decode` and `encode`, by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; and the decode and encode of `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and that value encodes to the same bytes |
+| `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#55), the QUIC hello
-(`transport::quic::hello::Hello::decode`), `spec` tree chunks (#64), the file `founding`
-of the mesh directory (`mesh::region::Founding::decode`, with `mesh::Member::decode` in
-it, #2311), the join answer (`mesh::Member::decode` from a peer, #336 adds its target),
+(`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the file `name` of the data directory
 (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of

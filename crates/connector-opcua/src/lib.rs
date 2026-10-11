@@ -30,6 +30,9 @@ pub mod fuzz;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod link;
+#[cfg(feature = "open62541")]
+#[cfg(any(test, feature = "sim"))]
+mod server;
 
 #[cfg(test)]
 mod child;

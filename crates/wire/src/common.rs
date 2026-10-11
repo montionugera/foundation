@@ -1,6 +1,6 @@
 //! What the message codecs of this crate have in common: a writer that fills one
-//! message field by field, a reader of the fields of one message, and the count of a
-//! body.
+//! message field by field, a reader of the fields of one message, the count of a
+//! body, and the count of a run.
 
 use std::mem;
 
@@ -43,6 +43,27 @@ impl<'o> Writer<'o> {
 pub(crate) struct Length {
     /// The bytes of the message.
     pub(crate) len: usize,
+}
+
+/// A message of a run that holds more items than remain in the run. Each codec's
+/// error takes it through `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Run {
+    /// The items of the message.
+    pub(crate) items: usize,
+    /// The items that remain in the run.
+    pub(crate) remain: u32,
+}
+
+/// The items that remain in a run of `remain` after a message of `items` items.
+pub(crate) fn rest_of_run(remain: u32, items: usize) -> Result<u32, Run> {
+    match u32::try_from(items)
+        .ok()
+        .and_then(|count| remain.checked_sub(count))
+    {
+        Some(rest) => Ok(rest),
+        None => Err(Run { items, remain }),
+    }
 }
 
 /// Reads the fields of one message from the front.

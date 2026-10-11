@@ -1,7 +1,6 @@
 //! The review check: the review of a PR is done at its head. The round comment format
 //! it parses is in `.claude/skills/review/SKILL.md`, "Round comment".
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
@@ -148,6 +147,10 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one fact of the comment, and none excludes another"
+)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -162,6 +165,12 @@ struct Round {
     fixed: bool,
     /// `None` for an old round, which has no end lines: [`Parsed`] checks its hot path.
     lines: Option<End>,
+    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
+    /// name `architecture` when its range changes a decision.
+    decision_bound: bool,
+    /// The comment was posted at or after [`LINK_CUTOFF`], so the last round must
+    /// link each OK and each approval on its end lines.
+    link_bound: bool,
 }
 
 /// The end lines of a round comment.
@@ -269,7 +278,7 @@ fn problems(
         .comments
         .iter()
         .filter(|c| c.author == BOT)
-        .filter_map(|c| Some((c.created.as_str(), round(c)?)))
+        .filter_map(round)
         .collect();
     if rounds.is_empty() {
         problems.push(format!(
@@ -277,7 +286,7 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (created, parsed)) in rounds.iter().enumerate() {
+    for (i, parsed) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
@@ -287,7 +296,7 @@ fn problems(
                     &record.files,
                     last,
                     code_change,
-                    (later && *created >= DECISION_CUTOFF).then_some(decision_change),
+                    (later && round.decision_bound).then_some(decision_change),
                 )?);
             }
             Err(e) => {
@@ -298,12 +307,9 @@ fn problems(
         }
         problems.extend(parsed.performance.clone());
     }
-    if let Some((
-        created,
-        Parsed {
-            round: Ok(round), ..
-        },
-    )) = rounds.last()
+    if let Some(Parsed {
+        round: Ok(round), ..
+    }) = rounds.last()
     {
         if round.findings > 0 {
             problems.push(format!(
@@ -313,7 +319,7 @@ fn problems(
             ));
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
-        if let Some(lines) = round.lines.as_ref().filter(|_| *created >= LINK_CUTOFF) {
+        if let Some(lines) = round.lines.as_ref().filter(|_| round.link_bound) {
             problems.extend(unlinked(round.number, lines, &record.files));
         }
     }
@@ -383,7 +389,8 @@ fn unlinked(number: u32, lines: &End, files: &[String]) -> Vec<String> {
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
 /// round with a `decision_change` requires `architecture` too when that gives a phrase
-/// for its range, and its problem gives the remedy, then the phrase.
+/// for its range. When `required` does not already ask for `architecture`, its problem
+/// gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
@@ -520,8 +527,9 @@ fn round(comment: &Comment) -> Option<Parsed> {
         .hiding
         .iter()
         .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
-    let number = shown.number.as_deref()?;
-    let lines = shown.fields().iter().map(String::as_str);
+    let number = &quoted(shown.number.as_deref()?);
+    let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
+    let lines = fields.iter().map(String::as_str);
     let field = |name| lines.clone().find_map(|l: &str| l.strip_prefix(name));
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
@@ -574,6 +582,8 @@ fn round(comment: &Comment) -> Option<Parsed> {
             findings,
             fixed: fixed(&shown),
             lines,
+            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
+            link_bound: comment.created.as_str() >= LINK_CUTOFF,
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
@@ -633,13 +643,20 @@ fn lack(start: &Start) -> Option<&'static str> {
     None
 }
 
-/// The character that stands for an image in a line of [`texts`].
-const IMAGE: char = '\u{FFFC}';
+/// The character that stands for an image in a line of [`texts`]. No text of a line
+/// holds it, since it is [`ignorable`].
+const IMAGE: char = '\u{FFF8}';
 
 /// Whether `line`, a line of [`texts`], shows no text: it is empty, or holds only
 /// images and the spaces between them.
 fn blank(line: &str) -> bool {
     line.chars().all(|c| c == IMAGE || c == ' ')
+}
+
+/// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
+/// `![]`, since [`IMAGE`] shows as nothing.
+fn quoted(line: &str) -> String {
+    line.replace(IMAGE, "![]")
 }
 
 /// What the end lines `paragraph` of round `number` state. The paragraph must be the
@@ -892,7 +909,8 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
-        // Whether each top-level block so far is a paragraph.
+        // Whether each top-level block so far is a paragraph. So it is false at a
+        // paragraph inside another block.
         let mut unbroken = true;
         let mut hiding = Vec::new();
         for node in root.descendants() {
@@ -918,7 +936,7 @@ impl<'a> Shown<'a> {
                     let open = bracket(node, data.sourcepos.end.line);
                     hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
                     let lines = texts(node);
-                    if top && unbroken {
+                    if unbroken {
                         shown.start.push(node, &lines);
                     }
                     shown.text.push(lines);
@@ -1041,16 +1059,18 @@ fn same(a: &str, b: &str) -> bool {
         .any(|n| matches!(n.data.borrow().value, NodeValue::FootnoteReference(_)))
 }
 
-/// The lines of text of `paragraph` as GitHub shows them: its text and code spans,
-/// each footnote reference as its number, each image as U+FFFC in place of its text
-/// and line breaks, no invisible character (Unicode default ignorable), and each run of
-/// white space as one space, trimmed. A character that looks like another stays
+/// The lines of text of `paragraph` as GitHub shows them: its text and code spans with
+/// no invisible character (Unicode default ignorable), each footnote reference as its
+/// number, each image as [`IMAGE`] in place of its text and line breaks, and each run
+/// of white space as one space, trimmed. A character that looks like another stays
 /// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut fresh = true;
     let image =
         |node: &'n AstNode<'n>| matches!(node.data.borrow().value, NodeValue::Image(_));
+    let shown =
+        |text: &str| text.chars().filter(|&c| !ignorable(c)).collect::<String>();
     for span in paragraph.descendants().skip(1) {
         if span.ancestors().skip(1).any(image) {
             continue;
@@ -1061,20 +1081,18 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
                 fresh = true;
                 continue;
             }
-            NodeValue::Text(text) => Cow::Borrowed(text.as_ref()),
-            NodeValue::Code(code) => Cow::Borrowed(code.literal.as_str()),
-            NodeValue::Image(_) => Cow::Owned(IMAGE.to_string()),
-            NodeValue::FootnoteReference(reference) => {
-                Cow::Owned(reference.ix.to_string())
-            }
-            _ => Cow::Borrowed(""),
+            NodeValue::Text(text) => shown(text),
+            NodeValue::Code(code) => shown(&code.literal),
+            NodeValue::Image(_) => IMAGE.to_string(),
+            NodeValue::FootnoteReference(reference) => reference.ix.to_string(),
+            _ => String::new(),
         };
         if fresh {
             lines.push(String::new());
             fresh = false;
         }
         if let Some(line) = lines.last_mut() {
-            line.extend(text.chars().filter(|&c| !ignorable(c)));
+            line.push_str(&text);
         }
     }
     lines
@@ -1112,7 +1130,7 @@ fn ignorable(c: char) -> bool {
 /// multiple of 4 columns. Neither changes what GitHub shows. A line number then gives
 /// the offset of its line, and comrak gives the right column after a tab that a quote
 /// or a list item takes in part. The spaces and tabs at the end of a line stay: a line
-/// of only spaces ends a footnote, and a backslash before a space is no line break.
+/// of 1 to 3 spaces ends a footnote, and a backslash before a space is no line break.
 fn normalized(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     let (mark, text) = text.split_at(mark(text));
