@@ -404,10 +404,9 @@ impl<'a> History<'a> {
     /// <noun>`<new>`" for the first path `<old>` that `kind` does not count, that
     /// `first` changes (`changed`), and that the merge of `first` and `second`, with
     /// the tree `tree`, moves into a path `<new>` that `kind` counts, where `<noun>` is
-    /// `kind.noun`. The moves are the merge's own: `second` is merged again with
-    /// a copy of `first` that gives each such path a probe text of its own, and the
-    /// probe text is read in the files at such a `<new>` that the two merges make
-    /// differently.
+    /// `kind.noun`. The moves are the merge's own: `second` is merged again with a copy
+    /// of `first` that gives each such path a probe text of its own, and the probe text
+    /// is read in the files at such a `<new>` that the two merges make differently.
     ///
     /// # Errors
     ///
@@ -807,7 +806,7 @@ struct File<'a> {
 }
 
 /// A copy of a commit, with a probe text in each file that the commit changes and that
-/// a kind of move counts from.
+/// the [`Kind`] of the caller does not count.
 struct Probe {
     commit: String,
     /// The start of each probe text: [`PROBE`] and the two merged commits. No file of
@@ -872,11 +871,12 @@ fn rust_path(path: &str) -> bool {
     path.ends_with(".rs")
 }
 
-/// A `git` command in `root` that reads no inherited `GIT_*` variable and no global
-/// or system config or attributes file, so the machine's settings cannot change a
-/// verdict and no variable such as `GIT_DIR` can point it elsewhere. It still reads
-/// the repository's own `.git/config` and `.git/info/attributes`, but a merge finds
-/// each move as `git` does with no setting.
+/// A `git` command in `root` that reads no inherited `GIT_*` variable and no global or
+/// system config or attributes file, so the machine's settings cannot change a verdict
+/// and no variable such as `GIT_DIR` can point it elsewhere. It still reads the
+/// repository's own `.git/config` and `.git/info/attributes`, but not its
+/// `merge.renames` or `merge.directoryRenames`, which have the values of `git` with no
+/// setting.
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
