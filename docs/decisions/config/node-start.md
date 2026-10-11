@@ -32,13 +32,15 @@
   and a file in its place (`ENOTDIR`). Decided by `laptop.architect-2`
   (2026-10-10T22:20:07Z,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069). Each
-  other `Directory` error but `Busy`, and each buffer error that neither `node.data` nor
-  NODE SETTINGS (`Pool`) names, is `node.failed`. Lost: `node.data` for the claim of
-  `lock` alone, which leaves a ring that the user cannot write on `node.failed`; `files`
-  on each lower error, four public items for one caller; a walk of `source()` with a
-  downcast, type erasure in which a lower error that gives no `source` hides its file
-  call with no failed test. Each match of `files` names each variant, so a new variant
-  that holds a file call fails to compile in `node`. Decided by `laptop.architect`
+  other error is `node.failed`: each other `Directory` error but `Busy`, each buffer
+  error that neither `node.data` nor NODE SETTINGS (`Pool`) names, and each `Blob`,
+  `Mesh`, or `Group` error that `node.data` does not name. Lost: `node.data` for the
+  claim of `lock` alone, which leaves a ring that the user cannot write on
+  `node.failed`; `files` on each lower error, four public items for one caller; a walk
+  of `source()` with a downcast, type erasure in which a lower error that gives no
+  `source` hides its file call with no failed test. Each match of `files` names each
+  variant, so a new variant that holds a file call fails to compile in `node`, and each
+  new variant needs an edit of `node`. Decided by `laptop.architect`
   (2026-10-10T15:14:44Z,
   https://github.com/synnaxlabs/foundation/issues/2282#issuecomment-6098971338).
   `Node::stopper` gives a `Stopper` that stops the node from another thread. A stop
