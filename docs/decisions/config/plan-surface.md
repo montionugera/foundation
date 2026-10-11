@@ -31,6 +31,13 @@
   `config` fails loud on its own keys, and the `Display` of `Tie` and `Homeless` falls
   back to the key. Both rules: `laptop.architect-2`, 2026-10-08T21:10:14Z,
   https://github.com/synnaxlabs/foundation/issues/1903#issuecomment-6069112623.
+  `plan` places the status index of a connector with the connector's placement, not
+  with `place` at its first writer (STATUS PLACEMENT). Each other index that a
+  connector implies is placed so too (`laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855). Each
+  rule that counts the writers of an index also counts a connector that implies the
+  index (`laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855).
   `config.unknown-node` is at each node that a connector or a placement names and that
   `members` does not hold, and the fix names a member that is equal to it without case.
   `config.writer-nodes` is at the `node` of the first connector, in name order, on a
@@ -221,7 +228,19 @@
   `config::Definition::kind()` gives the `spec::definition::Kind` of a definition,
   with an exhaustive match in `config`, so a new variant fails to compile where it is
   added. `ops` takes the kind of an add or a change from it, and keeps its lookup in
-  `applied` for a removal, whose fingerprints need the stored definition. Lost: `kind`
-  on `config::plan::Change`, which still needs that lookup and changes the plan file
-  (`laptop.architect-2`, 2026-10-10T02:45:50Z,
+  `applied` for a removal, whose fingerprints need the stored definition, and for a
+  change, whose stored kind it compares (`laptop.architect-2`, 2026-10-10T15:27:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2237#issuecomment-6099088165). Lost:
+  `kind` on `config::plan::Change`, which still needs that lookup and changes the plan
+  file (`laptop.architect-2`, 2026-10-10T02:45:50Z,
   https://github.com/synnaxlabs/foundation/issues/1914#issuecomment-6092943513).
+  `ops` shows a change at a tree key whose stored definition is of another kind as a
+  removal of the stored definition and an add of the new one, in the text and in the
+  JSON. The plan and the apply count it as one add and one removal
+  (`laptop.architect-2`, 2026-10-10T15:27:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2237#issuecomment-6099088165).
+  `config::plan::Change` and the plan file do not change: the change already holds
+  the digest of the stored definition and the new entry. Lost: a diagnostic in
+  `config` that refuses the kind change, which refuses a target that the files can
+  state (`laptop.architect-2`, 2026-10-10T03:03:43Z,
+  https://github.com/synnaxlabs/foundation/issues/2220#issuecomment-6093114188).
