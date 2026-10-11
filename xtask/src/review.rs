@@ -101,7 +101,8 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// that came before it.
 const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
-/// The crates in which a deferral needs the OK of the architect.
+/// The crates in which a deferral needs the OK of the architect. It must match the
+/// risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`.
 const RISK: [&str; 10] = [
     "raft",
     "buffer",
@@ -119,12 +120,17 @@ const RISK: [&str; 10] = [
 /// crate.
 const UNRISKY: &str = "not in a risk crate";
 
-/// The words on a `Public surface:` line of an item with no approval.
-const OWED: &str = "approval owed";
+/// The word on a `Public surface:` line of an item with no approval.
+const OWED: &str = "owed";
 
-/// The end of each problem that asks for a comment link.
-const LINK: &str = "A link is the URL of a GitHub comment in the text of the line: a \
-                    `[text](url)` link shows no URL.";
+/// The words on a `Public surface:` line before the link to the comment that an item
+/// departs from, which is no approval.
+const DEPARTS: &str = "departs from";
+
+/// The end of each problem of a missing comment link.
+const LINK: &str = "A link is the URL of a GitHub comment in the text of the line, at \
+                    its start or after a space or `(`: a `[text](url)` link shows no \
+                    URL.";
 
 /// The record of a PR that the check reads.
 #[derive(Debug)]
@@ -366,6 +372,7 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
     };
     let number = round.number;
     let risky = files.iter().any(|file| {
+        let file = file.to_ascii_lowercase();
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
@@ -693,7 +700,7 @@ fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
 }
 
 /// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line, with
-/// no OK: no comment link ([`linked`]) is after it in the value, and the words
+/// no OK: no comment link ([`links`]) is after it in the value, and the words
 /// [`UNRISKY`] are not between it and the next issue.
 fn unokayed(deferred: &str) -> Option<String> {
     let lower = deferred.to_ascii_lowercase();
@@ -701,26 +708,38 @@ fn unokayed(deferred: &str) -> Option<String> {
     while let Some(issue) = issues.next() {
         let next = issues.peek().map_or(deferred.len(), |next| next.start);
         let marked = lower[issue.end..next].contains(UNRISKY);
-        if !marked && !linked(&deferred[issue.end..]) {
+        if !marked && links(deferred).all(|at| at < issue.end) {
             return Some(deferred[issue].to_string());
         }
     }
     None
 }
 
-/// The place of each issue in `value`: `#` and the digits after it, before the `://`
-/// of its word, since GitHub shows the word from there as one URL.
+/// The place of each issue ([`issue`]) in `value`, in order. No issue starts in
+/// another.
 fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
-    value.split_inclusive(' ').flat_map(move |word| {
-        let start = end;
-        end += word.len();
-        let url = word.find("://").unwrap_or(word.len());
-        word[..url].match_indices('#').filter_map(move |(at, _)| {
-            let rest = undigited(&word[at + 1..])?;
-            Some(start + at..end - rest.len())
-        })
+    value.char_indices().filter_map(move |(at, _)| {
+        let start = at..(at >= end).then(|| issue(value, at)).flatten()?;
+        end = start.end;
+        Some(start)
     })
+}
+
+/// The end of the issue that starts at `at` in `value`: `#` or `GH-`, in each ASCII
+/// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]) that
+/// starts no comment link ([`link`]).
+fn issue(value: &str, at: usize) -> Option<usize> {
+    let text = &value[at..];
+    let gh = text
+        .split_at_checked(3)
+        .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"));
+    let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
+    let url = text.strip_prefix(HOST).filter(|_| !link(value, at));
+    let rest = number
+        .and_then(undigited)
+        .or_else(|| url.and_then(numbered))?;
+    Some(value.len() - rest.len())
 }
 
 /// `text` after the digits at its start, or `None` when it starts with no digit.
@@ -730,42 +749,67 @@ fn undigited(text: &str) -> Option<&str> {
 }
 
 /// The problem when `surface`, the value of the `Public surface:` line of round
-/// `number`, names items ([`stated`]) and holds the words [`OWED`] or no comment link
-/// ([`linked`]).
+/// `number`, holds the word [`OWED`], in each ASCII case and with the punctuation at
+/// its ends removed, or names items ([`stated`]) with no approval ([`approved`]).
 fn unapproved(number: u32, surface: &str) -> Option<String> {
-    if !stated(surface) {
-        return None;
-    }
-    if surface.to_ascii_lowercase().contains(OWED) {
+    let owed = |word: &str| {
+        let word = word.trim_matches(|c: char| c.is_ascii_punctuation());
+        word.eq_ignore_ascii_case(OWED)
+    };
+    if surface.split(' ').any(owed) {
         return Some(format!(
-            "review round {number} has `{OWED}` on its `Public surface:` line. Get \
-             each approval, then put its link in the line."
+            "review round {number} has the word `{OWED}` on its `Public surface:` \
+             line. Get each approval, then put its link in the line."
         ));
     }
-    (!linked(surface)).then(|| {
+    (stated(surface) && !approved(surface)).then(|| {
         format!(
             "review round {number} names items on its `Public surface:` line with no \
-             link to an approval. {LINK}"
+             link to an approval, apart from a link after `{DEPARTS}`. {LINK}"
         )
     })
 }
 
-/// Whether `value` holds a comment link: [`HOST`] and the path of a comment
-/// ([`comment`]).
-fn linked(value: &str) -> bool {
-    let mut paths = value
-        .match_indices(HOST)
-        .map(|(at, _)| &value[at + HOST.len()..]);
-    paths.any(comment)
+/// Whether `surface` links an approval: a comment link ([`links`]) with the words
+/// [`DEPARTS`], in each ASCII case, at no place between it and the link before it.
+fn approved(surface: &str) -> bool {
+    let lower = surface.to_ascii_lowercase();
+    let before = std::iter::once(0).chain(links(surface));
+    before
+        .zip(links(surface))
+        .any(|(before, at)| !lower[before..at].contains(DEPARTS))
 }
 
-/// The start of each comment link.
+/// The start of each comment link ([`link`]) in `value`, in order.
+fn links(value: &str) -> impl Iterator<Item = usize> {
+    let hosts = value.match_indices(HOST).map(|(at, _)| at);
+    hosts.filter(|&at| link(value, at))
+}
+
+/// Whether a comment link starts at `at` in `value`: [`HOST`] and the path of a
+/// comment ([`comment`]), at the start of `value` or after a space or `(`.
+fn link(value: &str, at: usize) -> bool {
+    let before = value[..at].chars().next_back();
+    let free = before.is_none_or(|c| c == ' ' || c == '(');
+    free && value[at..].strip_prefix(HOST).is_some_and(comment)
+}
+
+/// The start of each comment link, and of each URL of an issue or a PR.
 const HOST: &str = "https://github.com/";
 
-/// Whether `path` starts with the path of a comment on GitHub: an owner, a repository,
-/// `pull` or `issues`, a number, and `#issuecomment-`, `#pullrequestreview-`, or
+/// Whether `path` starts with the path of a comment on GitHub: the path of an issue
+/// or a PR ([`numbered`]), and `#issuecomment-`, `#pullrequestreview-`, or
 /// `#discussion_r` with a digit after it.
 fn comment(path: &str) -> bool {
+    let marks = ["issuecomment-", "pullrequestreview-", "discussion_r"];
+    let mark = numbered(path).and_then(|rest| rest.strip_prefix('#'));
+    let id = mark.and_then(|mark| marks.iter().find_map(|m| mark.strip_prefix(m)));
+    id.and_then(undigited).is_some()
+}
+
+/// `path` after the path of an issue or a PR on GitHub at its start: an owner, a
+/// repository, `pull` or `issues`, and a number.
+fn numbered(path: &str) -> Option<&str> {
     let mut parts = path.splitn(4, '/');
     let name = |name: &str| {
         let letter = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
@@ -773,12 +817,7 @@ fn comment(path: &str) -> bool {
     };
     let named = parts.by_ref().take(2).all(name);
     let kind = parts.next().is_some_and(|k| k == "pull" || k == "issues");
-    let mark = parts.next().and_then(undigited).and_then(|rest| {
-        let mark = rest.strip_prefix('#')?;
-        let marks = ["issuecomment-", "pullrequestreview-", "discussion_r"];
-        marks.iter().find_map(|m| mark.strip_prefix(m))
-    });
-    named && kind && mark.and_then(undigited).is_some()
+    parts.next().filter(|_| named && kind).and_then(undigited)
 }
 
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
@@ -1326,8 +1365,9 @@ fn record_of(
             .collect::<Result<_, _>>()?,
         files: files
             .iter()
-            .map(|f| field::text(f, "filename").map(str::to_string))
-            .collect::<Result<_, _>>()?,
+            .map(paths)
+            .collect::<Result<Vec<_>, _>>()?
+            .concat(),
         comments: comments
             .iter()
             .map(|c| {
@@ -1339,6 +1379,17 @@ fn record_of(
             })
             .collect::<Result<_, String>>()?,
     })
+}
+
+/// The paths of `file`, a file of a PR: its path before the PR when the PR moves it,
+/// then its path.
+fn paths(file: &Value) -> Result<Vec<String>, String> {
+    let moved = file.get("previous_filename").is_some();
+    let names = moved.then_some("previous_filename").into_iter();
+    names
+        .chain(["filename"])
+        .map(|name| field::text(file, name).map(str::to_string))
+        .collect()
 }
 
 /// `text` when it is a UTC time `YYYY-MM-DDTHH:MM:SSZ`, the form GitHub gives, in

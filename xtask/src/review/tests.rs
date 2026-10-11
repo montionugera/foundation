@@ -3056,9 +3056,10 @@ fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
 const OK: &str =
     "https://github.com/synnaxlabs/foundation/issues/12#issuecomment-6105098668";
 
-/// The end of each problem that asks for a comment link.
+/// The end of each problem of a missing comment link.
 const LINK_HELP: &str = "A link is the URL of a GitHub comment in the text of the \
-                         line: a `[text](url)` link shows no URL.";
+                         line, at its start or after a space or `(`: a `[text](url)` \
+                         link shows no URL.";
 
 /// The problem of a round 3 that defers to `issue` with no OK.
 fn no_ok(issue: &str) -> Vec<String> {
@@ -3069,8 +3070,8 @@ fn no_ok(issue: &str) -> Vec<String> {
     )]
 }
 
-/// The problem of a round 3 whose `Public surface:` line holds `approval owed`.
-const OWED_PROBLEM: &str = "review round 3 has `approval owed` on its `Public \
+/// The problem of a round 3 whose `Public surface:` line holds the word `owed`.
+const OWED_PROBLEM: &str = "review round 3 has the word `owed` on its `Public \
                             surface:` line. Get each approval, then put its link in \
                             the line.";
 
@@ -3078,7 +3079,7 @@ const OWED_PROBLEM: &str = "review round 3 has `approval owed` on its `Public \
 fn no_link() -> Vec<String> {
     vec![format!(
         "review round 3 names items on its `Public surface:` line with no link to an \
-         approval. {LINK_HELP}"
+         approval, apart from a link after `departs from`. {LINK_HELP}"
     )]
 }
 
@@ -3128,7 +3129,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         format!("#12, #13 (both: {OK})"),
         format!("#12 (the frame cut,\n{OK})"),
         format!("#12 <{OK}>"),
-        format!("#12({OK}),#13"),
+        format!("#12({OK})"),
     ] {
         assert_eq!(
             risk(vec![deferred(&linked)]),
@@ -3147,9 +3148,67 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         ),
         ("the cut (#0012).".to_string(), "#0012"),
         ("#12,https://github.com/a/b/pull/1".to_string(), "#12"),
-        (format!("{OK},#12 #13"), "#13"),
+        (format!("{OK},#12 #13"), "#12"),
+        ("none, #12 is fixed in this PR".to_string(), "#12"),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), no_ok(issue), "{line}");
+    }
+}
+
+#[test]
+fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
+    let at = |rest: &str| format!("https://github.com/{rest}");
+    for (line, issue) in [
+        (format!("#12 <{OK}>,#13"), "#13".to_string()),
+        (format!("#12({OK}),#13"), "#13".to_string()),
+        (format!("#12 (<{OK}>);#13"), "#13".to_string()),
+        (format!("#12 (`{OK}`),#13"), "#13".to_string()),
+        (
+            format!("#12 [{OK}](https://example.com),#13"),
+            "#13".to_string(),
+        ),
+        (format!("#12 {OK}<#13"), "#13".to_string()),
+        (format!("#12 ({OK}), see://#13"), "#13".to_string()),
+        (
+            format!("#12 ({OK}), www.github.com/a/b/issues/1#13"),
+            "#13".to_string(),
+        ),
+        (format!("#12 ({OK}), GH-13"), "GH-13".to_string()),
+        (format!("#12 ({OK}), (gh-013)."), "gh-013".to_string()),
+        (at("a/b/issues/13"), at("a/b/issues/13")),
+        (at("a/b/pull/13/files"), at("a/b/pull/13")),
+        (
+            format!(
+                "the step of the merge order with #12 ({OK}): {}",
+                at("a/b/issues/13")
+            ),
+            at("a/b/issues/13"),
+        ),
+        (
+            format!("#12 ({OK}), {}", at("gh-1/b/issues/13")),
+            at("gh-1/b/issues/13"),
+        ),
+        (
+            format!("{} ({OK}), #14", at("a/b/issues/13#13")),
+            "#14".to_string(),
+        ),
+        (
+            format!("(https://x.io/?{})", at("a/b/pull/13#issuecomment-2")),
+            at("a/b/pull/13"),
+        ),
+        (format!("#12{OK} not in a risk crate"), "#12".to_string()),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), no_ok(&issue), "{line}");
+    }
+    for line in [
+        format!("{} ({OK})", at("gh-1/b/issues/13")),
+        format!("{}#14 ({OK})", at("a/b/issues/13")),
+        format!("{}, GH-14, #15: {OK}", at("a/b/pull/13")),
+        format!("{}, {OK}", at("a/b/issues/13#14")),
+        "the GH- and # marks, at https://github.com/a/b/issues/ and gh-x".to_string(),
+        "https://gitlab.com/a/b/issues/13".to_string(),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
     }
 }
 
@@ -3197,12 +3256,14 @@ fn only_a_file_of_a_risk_crate_asks_a_deferred_issue_for_an_ok() {
         let file = format!("crates/{name}/Cargo.toml");
         assert_eq!(check(&file), no_ok("#12"), "{file}");
     }
+    for file in ["crates/Raft/src/lib.rs", "Crates/RAFT/src/lib.rs"] {
+        assert_eq!(check(file), no_ok("#12"), "{file}");
+    }
     for file in [
         "crates/hub/src/lib.rs",
         "crates/rafts/src/lib.rs",
         "crates/raft-log/src/lib.rs",
         "crates/raft",
-        "crates/Raft/src/lib.rs",
         "docs/crates/raft/x.md",
         "raft/src/lib.rs",
         "crates/hub/raft/x.rs",
@@ -3212,15 +3273,44 @@ fn only_a_file_of_a_risk_crate_asks_a_deferred_issue_for_an_ok() {
 }
 
 #[test]
+fn a_pr_that_moves_a_file_changes_it_at_its_old_path_and_at_its_new_one() {
+    use serde_json::json;
+    let pull =
+        [json!({ "head": { "ref": "a" }, "base": { "ref": "main" }, "labels": [] })];
+    let comment = json!({
+        "user": { "login": BOT },
+        "body": deferred("#12").body,
+        "created_at": LINK_CUTOFF,
+    });
+    let [old, new] = ["crates/raft/tests/it/log.rs", "crates/hub/tests/it/log.rs"];
+    for (from, to) in [(old, new), (new, old)] {
+        let moved = [json!({ "filename": to, "previous_filename": from })];
+        let read = record_of(&pull, &moved, std::slice::from_ref(&comment)).unwrap();
+        assert_eq!(read.files, [from, to]);
+        assert_eq!(check(&read), no_ok("#12"), "{from} to {to}");
+    }
+    let named = [json!({ "filename": new, "previous_filename": 1 })];
+    assert_eq!(
+        record_of(&pull, &named, &[comment]).unwrap_err(),
+        "JSON has no string field `previous_filename`"
+    );
+}
+
+#[test]
 fn only_the_last_round_posted_at_the_link_cutoff_needs_its_links() {
     let before = "2026-10-12T11:59:59Z";
-    for end in [
-        "Deferred: #12\nPublic surface: none",
-        "Deferred: none\nPublic surface: `hub::Route`, approval owed",
-        "Deferred: none\nPublic surface: `hub::Route`",
+    let after = "2026-10-12T12:00:01Z";
+    for (end, problems) in [
+        ("Deferred: #12\nPublic surface: none", no_ok("#12")),
+        (
+            "Deferred: none\nPublic surface: `hub::Route`, approval owed",
+            vec![OWED_PROBLEM.to_string()],
+        ),
+        ("Deferred: none\nPublic surface: `hub::Route`", no_link()),
     ] {
         assert_eq!(risk(vec![ended_at(end, before)]), Vec::<String>::new());
-        assert_ne!(risk(vec![ended_at(end, LINK_CUTOFF)]), Vec::<String>::new());
+        assert_eq!(risk(vec![ended_at(end, LINK_CUTOFF)]), problems, "{end}");
+        assert_eq!(risk(vec![ended_at(end, after)]), problems, "{end}");
         let earlier = ended_at(end, LINK_CUTOFF);
         let last = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
         assert_eq!(risk(vec![earlier, last]), Vec::<String>::new(), "{end}");
@@ -3238,7 +3328,9 @@ fn a_comment_link_is_the_url_of_a_comment_in_the_text_of_the_line() {
         at("a-b/c.d_e/pull/10#issuecomment-2"),
         format!("`{}`", at("a/b/pull/1#issuecomment-2")),
         format!("({}).", at("a/b/pull/1#issuecomment-2")),
+        format!("<{}>", at("a/b/pull/1#issuecomment-2")),
         format!("{} {}", at("a/b/pull/1"), at("a/b/pull/1#issuecomment-2")),
+        format!("[{}](https://x.io)", at("a/b/pull/1#issuecomment-2")),
     ] {
         let line = format!("#12 {link}");
         assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{link}");
@@ -3255,6 +3347,11 @@ fn a_comment_link_is_the_url_of_a_comment_in_the_text_of_the_line() {
         at("a/pull/1#issuecomment-2"),
         at("/b/pull/1#issuecomment-2"),
         at("a//pull/1#issuecomment-2"),
+        at("a$/b/pull/1#issuecomment-2"),
+        at("a/b%20c/pull/1#issuecomment-2"),
+        format!("(https://x.io/?{})", at("a/b/pull/1#issuecomment-2")),
+        format!("(x{})", at("a/b/pull/1#issuecomment-2")),
+        format!("see:{}", at("a/b/pull/1#issuecomment-2")),
         "http://github.com/a/b/pull/1#issuecomment-2".to_string(),
         "https://github.com.x.io/a/b/pull/1#issuecomment-2".to_string(),
         "github.com/a/b/pull/1#issuecomment-2".to_string(),
@@ -3327,10 +3424,15 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
     for surface in [
         "none".to_string(),
         "none.".to_string(),
-        "none, since the `hub::Route` change has approval owed in #12".to_string(),
+        "none, since no public item changes".to_string(),
         format!("`hub::Route`, approved by `laptop.architect` at `c77c67d7` ({OK})"),
         format!("`hub::Route` and `hub::Send`, both approved\n({OK})"),
         format!("`hub::Route` <{OK}>"),
+        format!("{OK} approves `hub::Route`"),
+        format!("`Share::owed` and `hub::owed()` ({OK})"),
+        format!("`hub::Route`, departs from {OK}, approved in {OK}"),
+        format!("`hub::Route` ({OK}), and `hub::Send` (departs from {OK})"),
+        "none, since the doc of `hub::Route` departs from no ruling".to_string(),
     ] {
         assert_eq!(check(&surface), Vec::<String>::new(), "{surface}");
     }
@@ -3339,17 +3441,28 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Route` ({OK}); `hub::Send`, approval owed"),
         format!("`hub::Send`, approval\nowed; `hub::Route` ({OK})"),
         "`hub::Route`. Approval owed.".to_string(),
+        "`hub::Route`, approval is owed".to_string(),
+        "none, since the `hub::Route` change has approval owed in #12".to_string(),
+        "none; `hub::Route`, approval owed".to_string(),
+        format!("`hub::Route`, approval of `laptop.architect` owed ({OK})"),
+        format!("`hub::Route`: approved in {OK}; approval at the head (OWED)."),
+        format!("`hub::Route`, {OK}; the P1 judgment: `owed`"),
+        format!("`hub::Route`, departs from {OK}, owed"),
     ] {
         assert_eq!(check(&surface), vec![OWED_PROBLEM], "{surface}");
     }
     for surface in [
-        "`hub::Route`",
-        "`hub::Route`, approved by `laptop.architect`",
-        "`hub::Route` ([approved](https://github.com/a/b/pull/1#issuecomment-2))",
-        "`hub::Route`, approval is owed",
-        "",
+        "`hub::Route`".to_string(),
+        "`hub::Route`, approved by `laptop.architect`".to_string(),
+        "`hub::Route` ([approved](https://github.com/a/b/pull/1#issuecomment-2))"
+            .to_string(),
+        format!("`hub::Route`, departs from {OK}"),
+        format!("`hub::Route`, Departs\nFrom the ruling ({OK})"),
+        format!("`hub::Route` (departs from {OK}), `hub::Send` (departs from {OK})"),
+        format!("`hub::Route` (x{OK})"),
+        String::new(),
     ] {
-        assert_eq!(check(surface), no_link(), "{surface}");
+        assert_eq!(check(&surface), no_link(), "{surface}");
     }
 }
 
