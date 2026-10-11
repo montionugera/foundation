@@ -1165,3 +1165,44 @@ fn a_rig_keeps_8_mib_of_disk_for_each_core() {
         );
     }
 }
+/// A test that leaves a directory, while other test threads sweep.
+#[test]
+#[cfg(unix)]
+fn a_left_directory_is_whole_when_other_rigs_sweep() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let sweepers: Vec<_> = (0..8)
+        .map(|i| {
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name(format!("sweeper-{i}"))
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        drop(Rig::new());
+                    }
+                })
+                .expect("start a sweeper")
+        })
+        .collect();
+    let mut failure = None;
+    for _ in 0..50 {
+        let run = std::panic::catch_unwind(
+            a_rig_removes_a_directory_that_a_test_left_read_only,
+        );
+        if let Err(panic) = run {
+            failure = Some(
+                panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "a panic".to_owned()),
+            );
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for sweeper in sweepers {
+        sweeper.join().expect("join a sweeper");
+    }
+    assert_eq!(failure, None);
+}
