@@ -363,7 +363,10 @@ impl Shard {
     /// of `slot` continues each path from its tail in the buffer: the last entry
     /// appended, on disk or not. The shard also keeps the control gate for that carry
     /// when the gate holds a restored holder or a handoff that waits, so a shed
-    /// changes no control. It does nothing when the shard does not carry `slot`.
+    /// changes no control. A gate that the shard keeps does not change. When its grace
+    /// ends before the next carry of `slot`, the first [`advance`](Self::advance) or
+    /// [`open_writer`](Self::open_writer) after that carry drops the holder. It does
+    /// nothing when the shard does not carry `slot`.
     ///
     /// # Panics
     ///
@@ -2840,6 +2843,27 @@ mod tests {
             shard.carry(Slot::new(2), key(Slot::new(2)));
             test.clock.sleep(GRACE).await;
             shard.advance();
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the run after the first cut ends");
+        check_no_holder_after_a_cut(sim, &node);
+    }
+
+    #[test]
+    fn records_the_drop_at_a_carry_after_a_grace_that_ends_while_shed() {
+        let (mut sim, node) = cut_after(191, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            test.clock.sleep(GRACE).await;
+            assert_eq!(shard.deadline(), None, "a kept gate has no deadline");
+            shard.carry(Slot::new(0), key(Slot::new(0)));
+            shard.carry(Slot::new(2), key(Slot::new(2)));
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
             shard.committed().await.expect("the commit ends");
         })
         .expect("the run after the first cut ends");

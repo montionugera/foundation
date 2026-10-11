@@ -19,9 +19,10 @@
   2026-10-10T04:04:50Z, item 4). A lease or a grace that ends with no call records its
   handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
   on the monotonic clock of the hub's `clock::Reader`. `Shard::advance` records the
-  handoff of each index that came due, with or without an open writer: `Shard::carry`
-  takes the channel key of the index with its slot, and the hub wakes its gate task at
-  each carry, as a carry can make `Shard::deadline` earlier (`laptop.architect`, #2314,
+  handoff of each carried index that came due, with or without an open writer:
+  `Shard::carry` takes the channel key of the index with its slot, and the hub wakes
+  its gate task at each carry, as a carry can make `Shard::deadline` earlier
+  (`laptop.architect`, #2314,
   2026-10-10T22:57:44Z, 2026-10-10T23:13:18Z, 2026-10-10T23:22:58Z, and
   2026-10-11T01:00:41Z:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268,
@@ -42,13 +43,24 @@
   ring or a pool stays full across a handoff in a workload on the milestone path. Until
   #2385, such a handoff waits for the next write that is not a resend, writer open or
   close, or end of a lease on its index (INDEX FRAMES), also after the room comes back
-  (`laptop.architect`, #2385,
-  2026-10-11T08:16:48Z, the OK of the deferral, item 4, and the trigger of its "Lost"
-  list: https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587;
-  the words for a restart in that time and the list of calls: `laptop.architect`, #2318,
+  or mesh time first comes (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, the OK of
+  the deferral, item 4, and the trigger of its "Lost" list:
+  https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587; the
+  words for a restart in that time and the list of calls: `laptop.architect`, #2318,
   2026-10-11T10:46:58Z,
-  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840). A shed
-  keeps it for the next carry of the index (HOME SURFACE).
+  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840; "or mesh
+  time first comes": `laptop.architect`, #2314, 2026-10-11T13:00:55Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109289345). A shed
+  keeps it for the next carry of the index (HOME SURFACE). The shard advances and
+  records only the gate of an index that it carries. So when a grace ends before the
+  first carry of its index, or after a shed, the holder stays. The first
+  `Shard::advance` or writer open after the next carry drops it and records the
+  handoff. A restart before that carry gives it a grace again. Lost: a deadline and a
+  record for a gate that the shard keeps. It needs the key of an index before its
+  first carry, and an append to an index that the hub shed. Trigger to look again: a
+  case on the milestone path where a holder that had a grace in an earlier run refuses
+  a writer (`laptop.architect`, #2314, 2026-10-11T13:00:55Z, item 2:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109289345).
   Trimming must keep the last record of each index (#406). Until it does, a trim
   (STORE TRIM) can free that record, and a holder whose record a trim freed gets no
   grace after a restart. Retention deletes nothing (decided by `laptop.architect`,
