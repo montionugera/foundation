@@ -521,10 +521,13 @@ fn lack(shown: &Shown<'_>) -> Option<&'static str> {
     None
 }
 
+/// The character that stands for an image in a line of [`texts`].
+const IMAGE: char = '\u{FFFC}';
+
 /// Whether `line`, a line of [`texts`], shows no text: it is empty, or holds only
 /// images and the spaces between them.
 fn blank(line: &str) -> bool {
-    line.chars().all(|c| c == '\u{FFFC}' || c == ' ')
+    line.chars().all(|c| c == IMAGE || c == ' ')
 }
 
 /// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
@@ -839,7 +842,7 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
             }
             NodeValue::Text(text) => Cow::Borrowed(text.as_ref()),
             NodeValue::Code(code) => Cow::Borrowed(code.literal.as_str()),
-            NodeValue::Image(_) => Cow::Borrowed("\u{FFFC}"),
+            NodeValue::Image(_) => Cow::Owned(IMAGE.to_string()),
             NodeValue::FootnoteReference(reference) => {
                 Cow::Owned(reference.ix.to_string())
             }
