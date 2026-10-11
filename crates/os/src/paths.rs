@@ -28,11 +28,16 @@ impl env::paths::Driver for Driver {
             };
             return Err(fs::metadata(path).map_or_else(|e| error(&e), |_| directory));
         }
+        let kept = match fs::symlink_metadata(path) {
+            Ok(old) if old.is_file() => Some(old.permissions()),
+            Ok(_) => return in_place(path, bytes).map_err(|e| error(&e)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(error(&e)),
+        };
         let mut key = [0; 8];
         entropy::Driver.fill(&mut key);
         let name = format!(".{:016x}.new", u64::from_le_bytes(key));
         let new = path.with_file_name(name);
-        let kept = fs::metadata(path).ok().map(|old| old.permissions());
         let file = open(&new).map_err(|e| error(&e))?;
         fill(file, bytes, kept)
             .and_then(|()| fs::rename(&new, path))
@@ -82,6 +87,14 @@ fn open(path: &Path) -> io::Result<File> {
         .create_new(true)
         .mode(0o600)
         .open(path)
+}
+
+/// Writes `bytes` through an open of `path`, for a link, a device, a pipe, or a
+/// directory, which gives `EISDIR`. A device may refuse a sync, so there is none.
+fn in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[expect(clippy::disallowed_methods, reason = "os writes the user's files")]
+    let mut file = OpenOptions::new().write(true).truncate(true).open(path)?;
+    file.write_all(bytes)
 }
 
 /// Writes `bytes` to `file`, synced, so a power cut after the rename leaves the

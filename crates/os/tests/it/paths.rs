@@ -1,7 +1,7 @@
 //! `os::paths` on the real files of the host.
 
 use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found};
@@ -107,6 +107,27 @@ fn a_write_on_a_path_with_no_name_writes_nothing() {
     }
     let entries = Ok(Found::Directory(vec![config.join("c")]));
     assert_eq!(paths.read(&config, 1 << 12), entries);
+}
+
+#[test]
+fn a_write_on_a_device_writes_in_place() {
+    assert_eq!(os::paths().write(Path::new("/dev/null"), b"plan"), Ok(()));
+    let null = fs::symlink_metadata("/dev/null").unwrap();
+    assert!(null.file_type().is_char_device(), "{null:?}");
+}
+
+#[test]
+fn a_write_on_a_link_writes_the_file_it_names() {
+    let scratch = Scratch::new();
+    let (file, link) = (scratch.0.join("plant.hcl"), scratch.0.join("link"));
+    fs::write(&file, b"old").unwrap();
+    symlink(&file, &link).unwrap();
+    let paths = os::paths();
+    paths.write(&link, b"new").unwrap();
+    assert_eq!(paths.read(&file, 3), Ok(Found::File(b"new".to_vec())));
+    assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+    let entries = Ok(Found::Directory(vec![link, file]));
+    assert_eq!(paths.read(&scratch.0, 1 << 12), entries);
 }
 
 #[test]

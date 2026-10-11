@@ -161,8 +161,10 @@ pub fn net() -> env::net::Net {
 /// name beside `path`, syncs it, and renames it over `path`, so a reader or a crash
 /// sees the old file or the new one, and of two writes one wins whole. A write that
 /// fails removes its file, and gives the error of the remove when that fails. A crash
-/// during a write leaves the file. A new file gives the group and other users no
-/// access, and a file that a write replaces keeps its mode.
+/// during a write leaves the file. A symbolic link, a device, or a pipe at `path`
+/// takes the bytes in place, with no hidden file and no rename, so a crash can leave
+/// a part of them. A new file gives the group and other users no access, and a file
+/// that a write replaces keeps its mode.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {
