@@ -1084,8 +1084,10 @@ struct Architecture {
     list: &'static str,
     /// The options of `objdump -d` for it.
     options: &'static [&'static str],
-    /// Each key of [`instructions`] that the copy may run. Each reads no clock, file,
-    /// network, randomness, or process state: only registers, flags, and memory.
+    /// Each key of [`instructions`] that the copy may run. Each reads registers, flags,
+    /// and memory, and no other state. One exception is the thread pointer:
+    /// `mrs tpidr_el0`, and on x86-64 a memory operand through `fs`, which the key
+    /// does not keep.
     instructions: &'static [&'static str],
 }
 
