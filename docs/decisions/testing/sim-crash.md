@@ -26,15 +26,15 @@
   https://github.com/synnaxlabs/foundation/issues/1449#issuecomment-6040629508; the
   text, 2026-10-07 17:35 UTC:
   https://github.com/synnaxlabs/foundation/pull/1503#issuecomment-6043326214.
-  Amended (2026-10-07, #1264, text of #1687): a `Mode::Create` open in flight at a crash
-  that makes a file draws its state. After a `Process` crash the file is whole or has no
-  bytes. After a `Power` crash the open has no effect, or leaves the file with no bytes
-  or whole, with the entries of its directory durable, as when the file system commits
-  its journal by itself or the `fsync` of the open commits it. The commit acts as a
-  `sync_dir` of the directory, so it also keeps each earlier change there, a rename too,
-  and the digest holds the drawn state. Lost: a create in two calls, one that makes the
-  entry and one that allocates; it doubles the calls of each create, changes the stream
-  of each run, and adds a step that `env` does not have.
+  Amended (2026-10-07, #1264): a `Mode::Create` open in flight at a crash that makes a
+  file draws its state. After a `Process` crash the file is whole or has no bytes. After
+  a `Power` crash there is no file, or the file with no bytes or whole, with the
+  entries of its directory durable, as when the file system commits its journal by
+  itself or the `fsync` of the open commits it. The commit acts as a `sync_dir` of the
+  directory, so it also keeps each earlier change there, a rename too, and the digest
+  holds the drawn state. Lost: a create in two calls, one that makes the entry and one
+  that allocates; it doubles the calls of each create, changes the stream of each run,
+  and adds a step that `env` does not have.
   Decided by `laptop.architect-2` (2026-10-07T18:31:29Z, the entries of the
   directory at 2026-10-07T19:22:31Z):
   https://github.com/synnaxlabs/foundation/issues/1264#issuecomment-6044288692 and
@@ -56,10 +56,12 @@
   commit of a create in flight. Supersedes
   https://github.com/synnaxlabs/foundation/pull/1553#issuecomment-6045160531: a commit
   makes the entries of the directory durable. A create that a `Power` crash cuts is
-  whole or has no bytes, and the prefix decides whether its entry stays. A cut gives a
-  state that a journaled file system can reach, or a state that only a missing
-  `sync_dir` reaches. Lost: a log for each directory, which gives states that need no
-  missing `sync_dir`.
+  whole or has no bytes, and the prefix decides whether its entry stays. A create over a
+  file with no bytes whose entry is durable draws its bytes apart from the prefix: the
+  file keeps no bytes or is whole, and the prefix decides each other change of the
+  directory. A cut gives a state that a journaled file system can reach, or a state that
+  only a missing `sync_dir` reaches. Lost: a log for each directory, which gives states
+  that need no missing `sync_dir`.
   Decided by `laptop.architect-2` (2026-10-07T19:20:28Z):
   https://github.com/synnaxlabs/foundation/issues/1551#issuecomment-6045125302; the
   calls in flight, 2026-10-08T02:39:46Z:
@@ -67,4 +69,6 @@
   2026-10-08T02:27:20Z:
   https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6050920514; the order
   that the calls ended, 2026-10-08T02:43:34Z:
-  https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6051095403.
+  https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6051095403; the create
+  over a file with no bytes, 2026-10-08T00:59Z:
+  https://github.com/synnaxlabs/foundation/issues/1687.
