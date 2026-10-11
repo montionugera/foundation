@@ -143,7 +143,7 @@ impl Put {
     /// The put whose fields are `rest`, the bytes after the kind of a message of
     /// `len` bytes.
     fn fields(rest: &[u8], len: usize) -> Result<Self, Error> {
-        let mut fields = Fields::new(rest, Error::Length { len });
+        let mut fields = Fields::new(rest, || Error::Length { len });
         let digest = Digest(fields.take()?);
         let len = u32::from_le_bytes(fields.take()?);
         fields.end()?;
@@ -225,7 +225,7 @@ impl Reply {
 
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
         let reply = match kind {
             CHUNK => Self::Chunk {
                 digest: Digest(fields.take()?),

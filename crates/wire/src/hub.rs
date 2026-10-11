@@ -165,8 +165,10 @@ impl Open {
     /// names no open, [`Error::Length`] when the length fits no open of that kind, and
     /// [`Error::Channels`] when the open names no channel.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let Some((&kind, rest)) = bytes.split_first() else {
+            return Err(Error::Empty);
+        };
+        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
@@ -226,11 +228,13 @@ impl Credit {
     /// names no credit, and [`Error::Length`] when `bytes` is not [`Credit::LEN`]
     /// bytes.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
+        let Some((&kind, rest)) = bytes.split_first() else {
+            return Err(Error::Empty);
+        };
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
         let limit_bytes = u64::from_le_bytes(fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
@@ -310,8 +314,10 @@ impl Reply {
     /// [`Error::Path`] when a head names no path, [`Error::Series`] when it names no
     /// series, and [`Error::Range`] when its range ends past `u64::MAX`.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let Some((&kind, rest)) = bytes.split_first() else {
+            return Err(Error::Empty);
+        };
+        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
         match kind {
             OPENED => {
                 fields.end()?;
@@ -765,10 +771,13 @@ impl From<body::Error> for Error {
 
 /// The items that remain in a run of `remain` after a message of `items` items.
 fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
-    u32::try_from(items)
+    match u32::try_from(items)
         .ok()
         .and_then(|count| remain.checked_sub(count))
-        .ok_or(Error::Run { items, remain })
+    {
+        Some(rest) => Ok(rest),
+        None => Err(Error::Run { items, remain }),
+    }
 }
 
 /// The slots of one message of a run: `out` as items of `N` bytes, to fill.

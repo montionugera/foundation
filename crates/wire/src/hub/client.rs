@@ -469,11 +469,12 @@ impl Body {
 }
 
 /// The fields of `message` after its kind byte, which must be `kind`.
-fn fields(message: &[u8], kind: u8) -> Result<Fields<'_, Error>, Error> {
+fn fields(message: &[u8], kind: u8) -> Result<Fields<'_, impl Fn() -> Error>, Error> {
     match message.split_first() {
         None => Err(Error::Empty),
         Some((&first, rest)) if first == kind => {
-            Ok(Fields::new(rest, Error::Length { len: message.len() }))
+            let len = message.len();
+            Ok(Fields::new(rest, move || Error::Length { len }))
         }
         Some((&kind, _rest)) => Err(Error::Kind { kind }),
     }

@@ -38,35 +38,29 @@ impl<'o> Writer<'o> {
 }
 
 /// Reads the fields of one message from the front. A message that ends inside a
-/// field, or that has bytes after its last field, gives `length`: the error of the
-/// caller that names the message's length.
-pub(crate) struct Fields<'b, E> {
+/// field, or that has bytes after its last field, gives the error that `length`
+/// makes: the error of the caller that names the message's length.
+pub(crate) struct Fields<'b, F> {
     rest: &'b [u8],
-    length: E,
+    length: F,
 }
 
-impl<'b, E: Clone> Fields<'b, E> {
-    /// A reader of the fields in `rest`, which gives `length` for a wrong length.
-    pub(crate) fn new(rest: &'b [u8], length: E) -> Self {
+impl<'b, E, F: Fn() -> E> Fields<'b, F> {
+    /// A reader of the fields in `rest`, which gives `length()` for a wrong length.
+    pub(crate) fn new(rest: &'b [u8], length: F) -> Self {
         Self { rest, length }
     }
 
     /// Takes the next field of `N` bytes.
     pub(crate) fn take<const N: usize>(&mut self) -> Result<[u8; N], E> {
-        let (&field, rest) = self
-            .rest
-            .split_first_chunk()
-            .ok_or_else(|| self.length.clone())?;
+        let (&field, rest) = self.rest.split_first_chunk().ok_or_else(&self.length)?;
         self.rest = rest;
         Ok(field)
     }
 
     /// Takes the next field of `len` bytes.
     pub(crate) fn take_slice(&mut self, len: usize) -> Result<&'b [u8], E> {
-        let (field, rest) = self
-            .rest
-            .split_at_checked(len)
-            .ok_or_else(|| self.length.clone())?;
+        let (field, rest) = self.rest.split_at_checked(len).ok_or_else(&self.length)?;
         self.rest = rest;
         Ok(field)
     }
@@ -76,7 +70,7 @@ impl<'b, E: Clone> Fields<'b, E> {
         if self.rest.is_empty() {
             Ok(())
         } else {
-            Err(self.length.clone())
+            Err((self.length)())
         }
     }
 }
