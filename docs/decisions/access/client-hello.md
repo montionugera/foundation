@@ -76,15 +76,24 @@
   `Complete`, else `MALFORMED` (box1.builder-2, 2026-10-10T23:26:58Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402, approved
   by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
-  `client::Reader` decodes a read stream: `Places`, then the run, then the replies of an
-  inner `hub::Reader` of their count and the read's mode. Only `wire` builds that inner
-  reader, so the program side builds no `Open` with a grant that it never sends. It
-  refuses an index place whose sample type is not `Stamp` with `Error::Unstamped`, and
-  before the last place its `body` is `None` and its `end` gives `Error::Finished`
+  `client::Reader` decodes the start of a read stream: `Places`, then the run. With the
+  last place it gives the `hub::Reader` of their count and the read's mode, and the
+  program decodes each reply with it. Only `wire` builds that reader, so the program
+  side builds no `Open` with a grant that it never sends. `client::Reader` refuses an
+  index place whose sample type is not `Stamp` with `Error::Unstamped`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
-  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). It is
-  the one public path that decodes `Places` and the run (`laptop.architect`,
-  2026-10-11T01:56:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). The
+  caller gives `Error::Finished` for a stream that the node finishes before the last
+  place, and a call of `client::Reader` after that place panics. Lost: one decoder for
+  the whole stream. Its copy of each reply cost the program 6.9 ns for each message
+  (644.7 against 188.6 ns for a frame of 66 messages). `#[inline]` on
+  `hub::Reader::decode` removed that cost, and cost the node 0.31 ns for each message
+  (188.6 to 209.0 ns) and 5.1 ns for a head (8.7 to 13.8 ns), on box1 under load
+  (https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106494175;
+  `laptop.architect`, 2026-10-11T07:53:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729).
+  `client::Reader` is the one public path that decodes `Places` and the run
+  (`laptop.architect`, 2026-10-11T01:56:00Z,
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669). The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
