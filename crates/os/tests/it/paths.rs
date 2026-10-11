@@ -74,14 +74,13 @@ fn a_write_of_a_name_of_the_longest_length_succeeds() {
     assert_eq!(paths.read(&path, 4), Ok(Found::File(b"plan".to_vec())));
 }
 
-#[test]
-fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
-    let scratch = Scratch::new();
+/// Writes over a file of each old mode in `dir`, a directory of this user.
+fn write_over_each_mode(dir: &Path) {
     // On macOS a file takes the group of its directory, and the OS drops the setgid
-    // bit of a file whose group this user is not in, as under `/tmp`.
+    // bit of a file whose group this user is not in.
     let group = rustix::process::getegid().as_raw();
-    chown(&scratch.0, None, Some(group)).unwrap();
-    let path = scratch.0.join("plant.hcl");
+    chown(dir, None, Some(group)).unwrap();
+    let path = dir.join("plant.hcl");
     for old in [0o600, 0o664, 0o4755, 0o2755, 0o1755] {
         fs::write(&path, b"old").unwrap();
         fs::set_permissions(&path, Permissions::from_mode(old)).unwrap();
@@ -89,6 +88,19 @@ fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
         os::paths().write(&path, b"new").unwrap();
         assert_eq!(mode(&path), 0o600, "{old:o}");
     }
+}
+
+#[test]
+fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
+    write_over_each_mode(&Scratch::new().0);
+}
+
+/// A directory in `/private/tmp` takes its group, `wheel`, which a user is not in.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_write_gives_no_access_in_a_directory_that_took_the_group_of_another() {
+    let scratch = Scratch::under(Path::new("/private/tmp"));
+    write_over_each_mode(&scratch.0);
 }
 
 /// `os` sets no access control list.
