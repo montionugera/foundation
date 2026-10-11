@@ -25,7 +25,11 @@ pub const SECTOR: usize = 512;
 /// so each shard has its own. Clones use the same directory and driver, and each rule
 /// on the calls of this `Files` holds for its clones too.
 ///
-/// A call whose future drops can still run, and then it ends as it would have.
+/// A call whose future drops can still run, and then it ends as it would have. Where a
+/// call first waits for the calls that a dropped future or handle left to run, the wait
+/// is for a future or handle that dropped before the call started. A drop after that
+/// adds no wait. Await a call, or drop its future, before you start a call that must
+/// see its result.
 ///
 /// ```
 /// use std::path::Path;
@@ -777,7 +781,8 @@ impl fmt::Display for Operation {
 /// each remove of the path through a descriptor of the driver that has not ended. A
 /// list of a directory first waits for each call on a path directly in it that a
 /// dropped future or descriptor of the driver left to run. A `free` first waits for
-/// each call that a dropped future or descriptor of the driver left to run.
+/// each call that a dropped future or descriptor of the driver left to run. Each of
+/// these waits is for a future or descriptor that dropped before the call started.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
