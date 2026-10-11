@@ -47,14 +47,16 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
 }
 
 /// The stored name of the node of `files`: the one in the file `name`, else the one in
-/// the node's card in the founding that the data directory stores, else `None`. Opens
-/// each file to read only, so it makes nothing and waits for no lock.
+/// the node's card in the founding that the data directory stores, else `None` with
+/// no founding. Opens each file to read only, so it makes nothing and waits for no
+/// lock.
 ///
 /// # Errors
 ///
-/// With no file `name`: [`Error::Key`] for a file `node.key` that a node did not write,
-/// and [`Error::Mesh`] for a founding that does not read when `node.key` holds a key.
-/// [`Error::Name`] for a file `name` that a node did not write, and
+/// With no file `name`: [`Error::Mesh`] for a founding that does not read,
+/// [`Error::Key`] for a file `node.key` that a node did not write, and
+/// [`Error::NoCard`] for a founding with no card of the key in `node.key` or with no
+/// `node.key`. [`Error::Name`] for a file `name` that a node did not write, and
 /// [`Error::Directory`] for a file call that fails.
 pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
     match source(files).await? {
@@ -67,6 +69,7 @@ pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
 enum Source {
     File(Name),
     Card(Name),
+    /// No file `name` and no founding.
     Nothing,
 }
 
@@ -75,13 +78,25 @@ async fn source(files: &Files) -> Result<Source, Error> {
     if let Some(stored) = read(files).await? {
         return Ok(Source::File(stored));
     }
-    Ok(card(files).await?.map_or(Source::Nothing, Source::Card))
+    let founding =
+        mesh::founding(files, &directory::mesh(), Rc::new(block::Pool::heap(POOL)))
+            .await
+            .map_err(Error::Mesh)?;
+    let key = identity::key(files).await?;
+    let Some(founding) = founding else {
+        return Ok(Source::Nothing);
+    };
+    let key = key.ok_or(Error::NoCard)?;
+    let mut members = founding.members.into_iter();
+    let member = members.find(|member| member.card.key() == key);
+    let member = member.ok_or(Error::NoCard)?;
+    Ok(Source::Card(member.card.card().name.clone()))
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is
-/// not there. Call it under the lock of the data directory, after the sync of the
-/// directory that the claim makes: a failed sync of an earlier start can leave a name
-/// that a read sees but a crash loses.
+/// not there and the stored name ([`stored`]) is `name` or `None`. Call it under the
+/// lock of the data directory, after the sync of the directory that the claim makes: a
+/// failed sync of an earlier start can leave a name that a read sees but a crash loses.
 ///
 /// # Errors
 ///
@@ -105,24 +120,6 @@ fn same(stored: Name, given: &Name) -> Result<(), Error> {
     }
     let given = given.clone();
     Err(Error::Renamed { stored, given })
-}
-
-/// The name in the node's card in the founding that the data directory of `files`
-/// stores, or `None` with no founding, no file `node.key`, or no card of the node in
-/// the founding.
-async fn card(files: &Files) -> Result<Option<Name>, Error> {
-    let Some(key) = identity::key(files).await? else {
-        return Ok(None);
-    };
-    let founding =
-        mesh::founding(files, &directory::mesh(), Rc::new(block::Pool::heap(POOL)))
-            .await;
-    let Some(founding) = founding.map_err(Error::Mesh)? else {
-        return Ok(None);
-    };
-    let mut members = founding.members.into_iter();
-    let member = members.find(|member| member.card.key() == key);
-    Ok(member.map(|member| member.card.card().name.clone()))
 }
 
 /// The bytes of the file that holds `name`.
