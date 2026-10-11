@@ -146,7 +146,7 @@ fn client_reads() -> Vec<u64> {
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
-        let body = async |server: &client::Server| {
+        let body = async |server: &client::Server<'_>| {
             let mut client = server.connect().await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
@@ -164,7 +164,7 @@ fn client_reads() -> Vec<u64> {
             client.close().await;
             counts.split_off(1)
         };
-        let rng = node.entropy().rng();
+        let rng = &mut node.entropy().rng();
         client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     sim.run_on(&node, run).expect("the run ends")

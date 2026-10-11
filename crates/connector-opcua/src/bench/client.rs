@@ -30,16 +30,16 @@ const SESSIONS: u16 = 4;
 
 /// A test server of open62541 on its own connection manager over `env::net`, with a
 /// Double variable, for the clients of [`Server::connect`].
-pub struct Server {
+pub struct Server<'r> {
     clock: Clock,
     net: Net,
     url: String,
     /// Gives the next value of each client. The loop of a client sets the random
     /// numbers of open62541 on its thread, which the server also draws from.
-    rng: RefCell<Rng>,
+    rng: RefCell<&'r mut Rng>,
 }
 
-impl Server {
+impl<'r> Server<'r> {
     /// Starts the server on `clock`, `net`, and `rng`, with its listener on `address`
     /// and port 4840 and room for 4 sessions, runs `body` while the server runs, then
     /// closes the server. Each client of [`Server::connect`] also draws from `rng`.
@@ -52,7 +52,7 @@ impl Server {
         clock: Clock,
         net: Net,
         address: IpAddr,
-        mut rng: Rng,
+        rng: &'r mut Rng,
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
         let local = SocketAddr::new(address, PORT);
@@ -62,7 +62,7 @@ impl Server {
                 Net::clone(&net),
                 local,
                 u32::from(SESSIONS),
-                &mut rng,
+                rng,
             )
             .expect("the port is free"),
         );
@@ -108,7 +108,7 @@ impl Server {
     }
 }
 
-impl std::fmt::Debug for Server {
+impl std::fmt::Debug for Server<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server")
             .field("url", &self.url)
@@ -152,57 +152,20 @@ mod tests {
 
     use super::Server;
 
-    /// The only peers of the server are the clients of `Server::connect`, which give no
-    /// nonce or session token, and `Sim::digest` hashes no bytes, so only the generator
-    /// of open62541 on this thread shows the rng of a scope and of its clients.
-    #[test]
-    fn each_scope_draws_from_its_rng() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        let drawn = sim
-            .run_on(&node, move |node, _| async move {
-                let address = node.addresses()[0];
-                let mut drawn = Vec::new();
-                for start in [1, 2] {
-                    let body = async |server: &Server| {
-                        // SAFETY: it draws from the generator of this thread.
-                        let before = unsafe { crate::ffi::test::UA_UInt32_random() };
-                        let client = server.connect().await;
-                        // SAFETY: as above.
-                        let after = unsafe { crate::ffi::test::UA_UInt32_random() };
-                        client.close().await;
-                        (before, after)
-                    };
-                    let rng = Rng::from_seed(start);
-                    drawn.push(
-                        Server::scope(node.clock(), node.net(), address, rng, body)
-                            .await,
-                    );
-                }
-                drawn
-            })
-            .expect("the run ends");
-        assert_ne!(drawn[0].0, drawn[1].0, "two scopes drew the same value");
-        assert_ne!(
-            drawn[0].1, drawn[1].1,
-            "the clients of two scopes drew the same"
-        );
-    }
-
     #[test]
     fn a_client_reads_the_double_of_its_server() {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
-            let body = async |server: &Server| {
+            let body = async |server: &Server<'_>| {
                 let mut client = server.connect().await;
                 client.read().await;
                 let debug = format!("{server:?} {client:?}");
                 client.close().await;
                 debug
             };
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             let debug =
                 Server::scope(node.clock(), node.net(), address, rng, body).await;
             let url = format!("opc.tcp://{address}:4840");
@@ -214,27 +177,32 @@ mod tests {
         .expect("the run ends");
     }
 
+    /// The listener of a scope and each client of [`Server::connect`] seed their loops
+    /// from the next value of `rng`, so two clients move `rng` on by three.
     #[test]
-    fn each_client_draws_other_values() {
+    fn a_scope_and_each_client_draw_one_value_of_its_rng() {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
-        let drawn = sim
+        let next = sim
             .run_on(&node, move |node, _| async move {
-                let address = node.addresses()[0];
-                let body = async |server: &Server| {
-                    let mut drawn = Vec::new();
+                let (address, rng) = (node.addresses()[0], &mut Rng::from_seed(1));
+                let body = async |server: &Server<'_>| {
                     for _ in 0..2 {
-                        let client = server.connect().await;
-                        // SAFETY: it draws from the generator of this thread.
-                        drawn.push(unsafe { crate::ffi::test::UA_UInt32_random() });
-                        client.close().await;
+                        server.connect().await.close().await;
                     }
-                    drawn
                 };
-                let rng = node.entropy().rng();
-                Server::scope(node.clock(), node.net(), address, rng, body).await
+                Server::scope(node.clock(), node.net(), address, rng, body).await;
+                rng.next_u64()
             })
             .expect("the run ends");
-        assert_ne!(drawn[0], drawn[1], "two connects drew the same value");
+        let fresh = &mut Rng::from_seed(1);
+        for _ in 0..3 {
+            fresh.next_u64();
+        }
+        assert_eq!(
+            next,
+            fresh.next_u64(),
+            "the scope or a client drew no value"
+        );
     }
 }

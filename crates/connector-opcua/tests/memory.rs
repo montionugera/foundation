@@ -141,7 +141,7 @@ fn a_client_frees_what_it_holds() {
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
-        let body = async |server: &client::Server| {
+        let body = async |server: &client::Server<'_>| {
             let mut held = Vec::new();
             for _ in 0..4 {
                 let mut client = server.connect().await;
@@ -151,7 +151,7 @@ fn a_client_frees_what_it_holds() {
             }
             held
         };
-        let rng = node.entropy().rng();
+        let rng = &mut node.entropy().rng();
         client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     let held = sim.run_on(&node, run).expect("the run ends");
