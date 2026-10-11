@@ -3002,6 +3002,33 @@ mod port {
         );
     }
 
+    /// The refused listen comes after a reserved name and before a disk budget that
+    /// holds no ring.
+    #[test]
+    fn a_refused_listen_comes_between_a_reserved_name_and_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let listen = "224.0.0.1:0".parse().expect("a socket address");
+        let small = || Config {
+            listen,
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk: Size::from_bytes(1),
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        };
+        let reserved: types::name::Name = "@x".parse().expect("a name");
+        let named = Node::start(Config {
+            name: reserved.clone(),
+            ..small()
+        });
+        let unnamed = Node::start(small());
+        assert_eq!(sim.run(), Ok(()));
+        let name = reserved;
+        assert_eq!(named.join(), Err(Error::Reserved { name }));
+        assert_eq!(unnamed.join(), Err(Error::Listen { listen }));
+    }
+
     /// The node takes no session when a buffer does not open.
     #[test]
     fn a_node_whose_buffer_does_not_open_takes_no_session() {
