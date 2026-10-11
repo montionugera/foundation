@@ -4567,7 +4567,9 @@ mod port {
         }
 
         /// A session whose hold drops leaves its place: at the bound, the place closes
-        /// only the sessions that still hold it.
+        /// only the sessions that still hold it. It calls `Places::take`, since through
+        /// `accept` a hold drops only as its session ends, and a close of an ended
+        /// session does nothing.
         #[test]
         fn a_session_whose_hold_drops_leaves_its_place() {
             let mut sim = sim::Sim::new(sim::Config::default());
