@@ -6,8 +6,12 @@
   #1662 makes them settings, as LIMITS of SHARD HOMES is: window 1 MiB, 64 streams of
   each kind, idle 30 s, messages of the smaller of 64 KiB and the pool's largest
   block, and the free floor of the blob store, 1 GiB (`blob::Config::floor_bytes`;
-  `laptop.architect-2`, 2026-10-09,
-  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). Each
+  `laptop.architect-2`, 2026-10-09T03:49:41Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). The
+  floor holds for each put, also a local one, so a start that founds a region stops
+  with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
+  than 1 GiB free (`laptop.architect-2`, 2026-10-11T05:31:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). Each
   session runs in its own future, and each stream of it reads its header in
   its own future, so a late header delays no other stream. One exhaustive `match` on
   `wire::Protocol` in `node` routes each stream; until a protocol has a server, its arm
