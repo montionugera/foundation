@@ -215,6 +215,8 @@ mod tests {
         let ids = sessions([1, 2]);
         assert_ne!(ids[0][0], ids[1][0], "two scopes took the same value");
         assert_ne!(ids[0][1], ids[0][2], "two connects took the same value");
+        let message = "the clients of two scopes took the same value";
+        assert_ne!(ids[0][1], ids[1][1], "{message}");
     }
 
     #[test]

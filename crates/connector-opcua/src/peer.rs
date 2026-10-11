@@ -93,7 +93,9 @@ pub(crate) async fn session(net: &Net, remote: SocketAddr) -> [[u8; 16]; 2] {
     write(stream, &frame(*b"MSGF", &create)).await;
     let created = message(stream).await;
     let created = response(&created, *b"MSGF", 24, [0x01, 0, 0xD0, 0x01]);
-    drop(poll_fn(|cx| stream.poll_close(cx)).await);
+    poll_fn(|cx| stream.poll_close(cx))
+        .await
+        .expect("the close works");
     let (session, token) = created.split_at(19);
     [guid(session), guid(token)]
 }
