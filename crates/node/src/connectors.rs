@@ -8,6 +8,7 @@ use connector::cancel;
 use connector::supervisor::{self, Supervisor};
 use spec::connector::Connector;
 use spec::definition::Definition;
+use types::channel;
 use types::name::Name;
 
 use crate::scope::Scope;
@@ -68,11 +69,20 @@ impl Drop for Pending {
     }
 }
 
+/// One connector as the spec in use places it.
+#[derive(Clone, PartialEq)]
+struct Placed {
+    connector: Connector,
+    /// The key of its status index. A new key is a new placement of the name, also
+    /// with an equal `connector`.
+    status: channel::Key,
+}
+
 /// The state that `apply` and the loop of one name share.
 struct Loop {
     /// `None` once the spec removed the connector.
-    connector: Option<Connector>,
-    /// Cancelled when `connector` changes. It cancels the run in progress.
+    placed: Option<Placed>,
+    /// Cancelled when `placed` changes. It cancels the run in progress.
     changed: cancel::Token,
     /// Cancelled at each apply. A run that gave `Config` runs again once the token of
     /// its start is cancelled, also by an apply before `run` returned.
@@ -94,13 +104,13 @@ enum First {
 }
 
 impl Loop {
-    /// Sets the connector to `wanted`, and cancels the run of the old one. Before the
+    /// Sets the placement to `wanted`, and cancels the run of the old one. Before the
     /// first run, a change counts the next open in `opens`, and a removal frees it.
-    fn change(&mut self, wanted: Option<Connector>, opens: &Rc<Opens>) {
-        self.connector = wanted;
+    fn change(&mut self, wanted: Option<Placed>, opens: &Rc<Opens>) {
+        self.placed = wanted;
         self.changed.cancel();
         self.changed = cancel::Token::new();
-        match (&self.connector, &self.first) {
+        match (&self.placed, &self.first) {
             (None, First::Opening(_)) => self.first = First::Waiting,
             (Some(_), First::Waiting) => self.first = First::Opening(opens.begin()),
             _ => {}
@@ -144,14 +154,19 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. The first run of a loop
-    /// waits until no open of a loop whose first run has not started is pending.
+    /// its name returned. Each other connector keeps its run. A connector whose status
+    /// index has a new key is changed. The first run of a loop waits until no open of
+    /// a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
-        let wanted: BTreeMap<&Name, &Connector> = definitions
+        let wanted: BTreeMap<&Name, Placed> = definitions
             .iter()
             .filter_map(|(name, definition)| match definition {
                 Definition::Connector(connector) if *connector.node() == self.node => {
-                    Some((name, connector))
+                    let placed = Placed {
+                        connector: connector.clone(),
+                        status: status(definitions, name),
+                    };
+                    Some((name, placed))
                 }
                 _ => None,
             })
@@ -163,18 +178,18 @@ impl Runs {
             }
             state.applied.cancel();
             state.applied = cancel::Token::new();
-            let wanted = wanted.get(name).copied();
-            if state.connector.as_ref() != wanted {
+            let wanted = wanted.get(name);
+            if state.placed.as_ref() != wanted {
                 state.change(wanted.cloned(), &self.opens);
             }
             true
         });
-        for (name, connector) in wanted {
+        for (name, placed) in wanted {
             if self.loops.contains_key(name) {
                 continue;
             }
             let state = Rc::new(RefCell::new(Loop {
-                connector: Some(connector.clone()),
+                placed: Some(placed),
                 changed: cancel::Token::new(),
                 applied: cancel::Token::new(),
                 ended: false,
@@ -185,6 +200,23 @@ impl Runs {
             let name = name.clone();
             self.scope
                 .spawn(Box::pin(run(supervisor, opens, name, state)));
+        }
+    }
+}
+
+/// The key of the status index of the connector `name` in `definitions`.
+///
+/// # Panics
+///
+/// When `definitions` has no channel at the name of that index: `config` places it
+/// with each connector.
+fn status(definitions: &BTreeMap<Name, Definition>, name: &Name) -> channel::Key {
+    let names = connector::status::channels(name, &[]);
+    let (index, _) = names.expect("invariant: a placed connector has status names");
+    match definitions.get(&index) {
+        Some(Definition::Channel(channel)) => channel.key,
+        other => {
+            panic!("invariant: the status index of `{name}` is a channel: {other:?}")
         }
     }
 }
@@ -200,7 +232,7 @@ async fn run(
     loop {
         let (connector, changed, applied) = {
             let mut state = state.borrow_mut();
-            let Some(connector) = state.connector.clone() else {
+            let Some(Placed { connector, .. }) = state.placed.clone() else {
                 state.ended = true;
                 return;
             };
