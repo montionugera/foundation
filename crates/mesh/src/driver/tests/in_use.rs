@@ -1683,6 +1683,62 @@ fn open_after_a_stop(
     made && at == Some(base())
 }
 
+/// Runs `node` of `seed` to a stop in the read of v1: it commits v1, the spec of
+/// `plant.a`, and a failed sync of the log stops the group at the next change. With
+/// `failed`, the sync of the spec directory fails once before the commit. Checks that
+/// `used` gives at the stop v0, or v1 (with `failed`, v0 behind v1), and the same spec
+/// 3 s later. Gives the pointer of that spec, and whether it was behind.
+fn stop_in_a_read(
+    sim: &mut Sim,
+    node: &sim::node::Node,
+    seed: u64,
+    failed: bool,
+) -> (Option<Pointer>, bool) {
+    sim.run_on(node, move |node, tasks| async move {
+        let a = create_subjects(&["plant.a"], 1);
+        let first = pointer(1, &a);
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        if failed {
+            node.fail_file(Path::new(used::SPEC), Operation::SyncDir);
+        }
+        assert_eq!(commit(&mesh, base(), &a).await, first);
+        let stopped = super::fail_sync(&node);
+        let c = create_subjects(&["plant.c"], 1);
+        let settled = mesh.settle_spec(
+            first,
+            pointer(2, &c).root,
+            BTreeSet::new(),
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(settled.await, Err(Error::Stopped(stopped.clone())));
+        let at = mesh.used();
+        let read = if failed {
+            let cause = files::Error::Io {
+                path: used::SPEC.into(),
+                operation: Operation::SyncDir,
+                code: 5,
+            };
+            Spec {
+                behind: Some(Behind {
+                    pointer: first,
+                    cause: Cause::Files(cause),
+                }),
+                ..in_use(base(), &BTreeMap::new())
+            }
+        } else {
+            in_use(first, &a)
+        };
+        let given = [in_use(base(), &BTreeMap::new()), read];
+        assert!(given.contains(&at), "seed {seed}: {at:?}");
+        assert_eq!(mesh.spec().await, Err(stopped));
+        node.clock().sleep(seconds(3)).await;
+        assert_eq!(mesh.used(), at, "seed {seed}");
+        (at.pointer, at.behind.is_some())
+    })
+    .unwrap()
+}
+
 #[test]
 fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     let a = create_subjects(&["plant.a"], 1);
@@ -1694,30 +1750,7 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
             ..sim::Config::default()
         });
         let node = sim.node(sim::node::Config::default());
-        let applied = a.clone();
-        let at = sim
-            .run_on(&node, move |node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                assert_eq!(commit(&mesh, base(), &applied).await, first);
-                let stopped = super::fail_sync(&node);
-                let c = create_subjects(&["plant.c"], 1);
-                let settled = mesh.settle_spec(
-                    first,
-                    pointer(2, &c).root,
-                    BTreeSet::new(),
-                    [key(1)].into(),
-                    BTreeMap::new(),
-                );
-                assert_eq!(settled.await, Err(Error::Stopped(stopped.clone())));
-                let at = mesh.used();
-                let given = [in_use(base(), &BTreeMap::new()), in_use(first, &applied)];
-                assert!(given.contains(&at), "seed {seed}: {at:?}");
-                assert_eq!(mesh.spec().await, Err(stopped));
-                node.clock().sleep(seconds(3)).await;
-                assert_eq!(mesh.used(), at, "seed {seed}");
-                at.pointer
-            })
-            .unwrap();
+        let (at, _) = stop_in_a_read(&mut sim, &node, seed, false);
         between += usize::from(open_after_a_stop(&mut sim, &node, at, first, &a));
     }
     assert!(
@@ -1726,12 +1759,10 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     );
 }
 
-// `settle` writes the spec in use for a taken spec and `behind` for a failed one. The
-// test above holds the first.
+// `settle` writes `behind` for a read that fails.
 #[test]
 fn used_keeps_the_spec_at_the_stop_when_a_failed_read_ends_after_it() {
-    let a = create_subjects(&["plant.a"], 1);
-    let first = pointer(1, &a);
+    let first = pointer(1, &create_subjects(&["plant.a"], 1));
     let mut between = 0;
     for seed in 0..32 {
         let mut sim = Sim::new(sim::Config {
@@ -1739,43 +1770,7 @@ fn used_keeps_the_spec_at_the_stop_when_a_failed_read_ends_after_it() {
             ..sim::Config::default()
         });
         let node = sim.node(sim::node::Config::default());
-        let applied = a.clone();
-        let behind = sim
-            .run_on(&node, move |node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                node.fail_file(Path::new(used::SPEC), Operation::SyncDir);
-                assert_eq!(commit(&mesh, base(), &applied).await, first);
-                let stopped = super::fail_sync(&node);
-                let c = create_subjects(&["plant.c"], 1);
-                let settled = mesh.settle_spec(
-                    first,
-                    pointer(2, &c).root,
-                    BTreeSet::new(),
-                    [key(1)].into(),
-                    BTreeMap::new(),
-                );
-                assert_eq!(settled.await, Err(Error::Stopped(stopped.clone())));
-                let at = mesh.used();
-                let cause = files::Error::Io {
-                    path: used::SPEC.into(),
-                    operation: Operation::SyncDir,
-                    code: 5,
-                };
-                let behind = Spec {
-                    behind: Some(Behind {
-                        pointer: first,
-                        cause: Cause::Files(cause),
-                    }),
-                    ..in_use(base(), &BTreeMap::new())
-                };
-                let given = [in_use(base(), &BTreeMap::new()), behind];
-                assert!(given.contains(&at), "seed {seed}: {at:?}");
-                assert_eq!(mesh.spec().await, Err(stopped));
-                node.clock().sleep(seconds(3)).await;
-                assert_eq!(mesh.used(), at, "seed {seed}");
-                at.behind.is_some()
-            })
-            .unwrap();
+        let (_, behind) = stop_in_a_read(&mut sim, &node, seed, true);
         let made = listed(&mut sim, &node).contains(&name(first));
         between += usize::from(made && !behind);
     }
