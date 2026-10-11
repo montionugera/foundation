@@ -130,7 +130,7 @@
   `laptop.architect`, 2026-10-08T22:29:26Z,
   https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077), a
   name that a member holds, a status key that a member holds or
-  that the join repeats (A4), an unknown ticket, and each refusal of `Record::admit`.
+  that the join repeats (A4), an unknown ticket, and each refusal of `Record::check`.
   So no refusal counts a use. A member's names are its card name and each
   `<name>.<status>`, and two names are equal when they differ only in ASCII case (A3,
   X27), so each full name maps to at most one member. Region state cannot see the keys

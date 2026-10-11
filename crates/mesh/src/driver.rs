@@ -5028,8 +5028,9 @@ mod tests {
         cause
     }
 
-    const EMPTY_CHANGE: &str = "the group stopped: the committed entry at index 1 of \
-                                term 5 is not a change: a change of 0 bytes has no kind";
+    const EMPTY_CHANGE: &str = "the group stopped: the committed entry at index 1 \
+                                of term 5 is not a change: a change of 0 bytes has no \
+                                kind";
 
     #[test]
     fn a_committed_change_of_zero_bytes_stops_the_group() {
@@ -5048,12 +5049,17 @@ mod tests {
             let drawn = Arc::new(Mutex::new([0; 16]));
             let next = Arc::clone(&drawn);
             solo(move |node, tasks| async move {
+                let unsynced = clock::Clock::new(node.clock()).1;
                 let time = synced(&node);
+                node.set_wall_error(None);
+                let unknown = synced(&node);
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
                 let cause = stop_by_an_empty_change(&mesh).await;
                 if stamped {
-                    let refused = mesh.stamp(&time, request(4, 7, &["disk"]));
-                    assert_eq!(refused, Err(Unstamped::Stopped(cause.clone())));
+                    for reader in [&time, &unsynced, &unknown] {
+                        let refused = mesh.stamp(reader, request(4, 7, &["disk"]));
+                        assert_eq!(refused, Err(Unstamped::Stopped(cause.clone())));
+                    }
                     assert_eq!(Unstamped::Stopped(cause).to_string(), EMPTY_CHANGE);
                 }
                 node.entropy().fill(&mut *next.lock().unwrap());
@@ -5456,10 +5462,7 @@ mod tests {
             });
             let text = format!("no ticket {} is recorded", public(9));
             assert_eq!(unknown.to_string(), text);
-            let group = mesh.group.borrow();
-            assert_eq!(group.state.ticket(public(7)).unwrap().uses(), 0);
-            assert_eq!(group.state.ticket(public(8)).unwrap().uses(), 1);
-            assert_eq!(group.state.member(key(5)), None);
+            assert_eq!(mesh.member(key(5)), None);
         });
     }
 

@@ -308,7 +308,7 @@ impl State {
         let record = self
             .tickets
             .get_mut(&join.ticket.to_bytes())
-            .expect("admitted checks that the ticket is recorded");
+            .expect("invariant: admitted checks that the ticket is recorded");
         record.count();
         let member = Member {
             card,
