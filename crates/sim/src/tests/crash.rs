@@ -1733,7 +1733,8 @@ fn a_power_cut_with_each_change_durable_draws_nothing() {
 
 /// The delay of a file call after a crash by `crash` with an open of `a` by `mode`
 /// in flight, over a log of one change. The delay draws from the files stream, so it
-/// shows how many draws the crash made.
+/// shows how many draws the crash made. The digest holds the kind of crash, so runs
+/// with different crashes compare by delay.
 fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
     let (mut sim, node) = disk(seed);
     crash_after(&mut sim, &node, crash, move |node| async move {
@@ -1752,6 +1753,8 @@ fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
     .unwrap()
 }
 
+// A `Process` crash in a create that makes a file draws once, so it is the reference
+// for one draw through public calls.
 #[test]
 fn a_power_cut_over_a_log_that_is_not_empty_draws_once() {
     for seed in 0..8 {
