@@ -1059,6 +1059,23 @@ fn a_change_after_the_first_run_takes_no_share() {
     );
 }
 
+/// A name added again while the task of its first run lingers takes no share: the first
+/// run of an addition of that apply does not wait for it.
+#[test]
+fn an_addition_again_after_the_first_run_takes_no_share() {
+    let first = vec![("plant.a", "hold", NODE, 0)];
+    let third = vec![("plant.a", "hold", NODE, 0), ("plant.b", "quick", NODE, 0)];
+    let steps = vec![on(0, first), on(1_000, vec![]), on(1_500, third)];
+    assert_eq!(
+        starts(Some(ms(2_000)), steps),
+        [
+            start("plant.a", 0, 0),
+            start("plant.b", 1_500, 0),
+            start("plant.a", 3_000, 0),
+        ]
+    );
+}
+
 /// On `seed`, the sinks `plant.a` and `plant.c` and the source `plant.b` at 0, and at
 /// 5 s, the instant of the mesh time, after `yields` polls of other tasks, an apply that
 /// changes `plant.a`. Gives `None` when a run of `plant.a` or `plant.b` started before
