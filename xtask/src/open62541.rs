@@ -1647,41 +1647,24 @@ Disassembly of section .text.stamp:
         );
         assert_eq!(
             x86.refuses("a.c", &found(Some("stamp"), "rdtsc")),
-            Some(
-                "a.c: `stamp` runs `rdtsc`, which X86_64 does not admit. Add it only \
-                 when it reads registers, flags, and memory, and no other state. A \
-                 system register that the processor or the OS fills is other state"
-                    .to_owned()
-            )
+            Some(unadmitted("a.c", "`stamp`", "rdtsc", "X86_64"))
         );
         assert_eq!(
             arm.refuses("a.c", &found(None, "mrs cntvct_el0")),
-            Some(
-                "a.c: the section `.text.stamp` runs `mrs cntvct_el0`, which AARCH64 \
-                 does not admit. Add it only when it reads registers, flags, and \
-                 memory, and no other state. A system register that the processor or \
-                 the OS fills is other state"
-                    .to_owned()
-            )
+            Some(unadmitted(
+                "a.c",
+                "the section `.text.stamp`",
+                "mrs cntvct_el0",
+                "AARCH64"
+            ))
         );
         assert_eq!(
             x86.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
-            Some(
-                "a.c: `stamp` runs `mrs tpidr_el0`, which X86_64 does not admit. Add \
-                 it only when it reads registers, flags, and memory, and no other \
-                 state. A system register that the processor or the OS fills is other \
-                 state"
-                    .to_owned()
-            )
+            Some(unadmitted("a.c", "`stamp`", "mrs tpidr_el0", "X86_64"))
         );
         assert_eq!(
             arm.refuses("a.c", &found(Some("stamp"), "rep stos")),
-            Some(
-                "a.c: `stamp` runs `rep stos`, which AARCH64 does not admit. Add it \
-                 only when it reads registers, flags, and memory, and no other state. \
-                 A system register that the processor or the OS fills is other state"
-                    .to_owned()
-            )
+            Some(unadmitted("a.c", "`stamp`", "rep stos", "AARCH64"))
         );
     }
 
@@ -2216,6 +2199,16 @@ End of search list.
             "{file}: `{function}` calls `UA_DateTime_now`, a global clock function. \
              Find whether a node runs it; if not, add it to FUNCTION_SYMBOLS with the \
              reason and a check of the reason in connector-opcua"
+        )
+    }
+
+    /// The error of [`Architecture::refuses`] for the key `key` that `place` runs and
+    /// the list `list` does not admit.
+    fn unadmitted(file: &str, place: &str, key: &str, list: &str) -> String {
+        format!(
+            "{file}: {place} runs `{key}`, which {list} does not admit. Add it only \
+             when it reads registers, flags, and memory, and no other state. A system \
+             register that the processor or the OS fills is other state"
         )
     }
 
@@ -2894,61 +2887,68 @@ End of search list.
     /// C that reads a clock and randomness through a builtin and an `asm` statement,
     /// with the errors that it gives in `src/util/ua_util.c`.
     #[cfg(target_arch = "x86_64")]
-    const READS: (&str, &[&str]) = (
-        "#include <x86intrin.h>\n\
-         unsigned long long stamp(void) { return __rdtsc(); }\n\
-         __attribute__((target(\"rdrnd\"))) int draw(unsigned *n) {\n\
-             return __builtin_ia32_rdrand32_step(n);\n\
-         }\n\
-         unsigned stamped(void) {\n\
-             unsigned low, high;\n\
-             __asm__ volatile(\"rdtsc\" : \"=a\"(low), \"=d\"(high));\n\
-             return low ^ high;\n\
-         }\n",
-        &[
-            "src/util/ua_util.c: `draw` runs `rdrand`, which X86_64 does not admit. \
-             Add it only when it reads registers, flags, and memory, and no other \
-             state. A system register that the processor or the OS fills is other \
-             state",
-            "src/util/ua_util.c: `stamp` runs `rdtsc`, which X86_64 does not admit. \
-             Add it only when it reads registers, flags, and memory, and no other \
-             state. A system register that the processor or the OS fills is other \
-             state",
-            "src/util/ua_util.c: `stamped` runs `rdtsc`, which X86_64 does not admit. \
-             Add it only when it reads registers, flags, and memory, and no other \
-             state. A system register that the processor or the OS fills is other \
-             state",
-            "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in its \
-             caller",
-        ],
-    );
+    fn reads() -> (&'static str, Vec<String>) {
+        let refused = |function: &str, key: &str| {
+            unadmitted(
+                "src/util/ua_util.c",
+                &format!("`{function}`"),
+                key,
+                "X86_64",
+            )
+        };
+        (
+            "#include <x86intrin.h>\n\
+             unsigned long long stamp(void) { return __rdtsc(); }\n\
+             __attribute__((target(\"rdrnd\"))) int draw(unsigned *n) {\n\
+                 return __builtin_ia32_rdrand32_step(n);\n\
+             }\n\
+             unsigned stamped(void) {\n\
+                 unsigned low, high;\n\
+                 __asm__ volatile(\"rdtsc\" : \"=a\"(low), \"=d\"(high));\n\
+                 return low ^ high;\n\
+             }\n",
+            vec![
+                refused("draw", "rdrand"),
+                refused("stamp", "rdtsc"),
+                refused("stamped", "rdtsc"),
+                "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in \
+                 its caller"
+                    .to_owned(),
+            ],
+        )
+    }
 
     /// C that reads a clock and randomness through a builtin and an `asm` statement,
     /// with the errors that it gives in `src/util/ua_util.c`.
     #[cfg(target_arch = "aarch64")]
-    const READS: (&str, &[&str]) = (
-        "#include <arm_acle.h>\n\
-         __attribute__((target(\"+rng\"))) int draw(unsigned long *n) {\n\
-             return __rndr(n);\n\
-         }\n\
-         unsigned long stamped(void) {\n\
-             unsigned long n;\n\
-             __asm__ volatile(\"mrs %0, cntvct_el0\" : \"=r\"(n));\n\
-             return n;\n\
-         }\n",
-        &[
-            "src/util/ua_util.c: `draw` runs `mrs rndr`, which AARCH64 does not admit. \
-             Add it only when it reads registers, flags, and memory, and no other \
-             state. A system register that the processor or the OS fills is other \
-             state",
-            "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does \
-             not admit. Add it only when it reads registers, flags, and memory, and no \
-             other state. A system register that the processor or the OS fills is \
-             other state",
-            "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in its \
-             caller",
-        ],
-    );
+    fn reads() -> (&'static str, Vec<String>) {
+        let refused = |function: &str, key: &str| {
+            unadmitted(
+                "src/util/ua_util.c",
+                &format!("`{function}`"),
+                key,
+                "AARCH64",
+            )
+        };
+        (
+            "#include <arm_acle.h>\n\
+             __attribute__((target(\"+rng\"))) int draw(unsigned long *n) {\n\
+                 return __rndr(n);\n\
+             }\n\
+             unsigned long stamped(void) {\n\
+                 unsigned long n;\n\
+                 __asm__ volatile(\"mrs %0, cntvct_el0\" : \"=r\"(n));\n\
+                 return n;\n\
+             }\n",
+            vec![
+                refused("draw", "mrs rndr"),
+                refused("stamped", "mrs cntvct_el0"),
+                "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in \
+                 its caller"
+                    .to_owned(),
+            ],
+        )
+    }
 
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -2961,11 +2961,9 @@ End of search list.
         assert_eq!(result, Ok(()));
         let path = root.join("patches/open62541/src/util/ua_util.c");
         let old = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, old + READS.0).unwrap();
-        assert_eq!(
-            check(&root),
-            Err(READS.1.iter().map(|&error| error.to_owned()).collect())
-        );
+        let (text, errors) = reads();
+        std::fs::write(&path, old + text).unwrap();
+        assert_eq!(check(&root), Err(errors));
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
