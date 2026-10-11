@@ -723,6 +723,184 @@ fn opens_no_writer_on_a_channel_removed_while_it_waits_for_mesh_time() {
     });
 }
 
+/// A control lease short enough to run out in a test.
+const LEASE: Span = Span::from_nanos(1_000_000);
+
+/// The outcome of a write of `subject` on `value` after a power cut 2 s into a run of
+/// `before`, which must not end, so that its writers stay open until the cut.
+fn written_after_cut<F>(
+    seed: u64,
+    before: impl FnOnce(Test) -> F + Send + 'static,
+    subject: &'static str,
+) -> Vec<Outcome>
+where
+    F: Future<Output = ()> + 'static,
+{
+    let mut sim = sim::Sim::new(sim::Config {
+        seed,
+        ..sim::Config::default()
+    });
+    let node = sim.node(sim::node::Config::default());
+    let start = |node, tasks| async move {
+        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+        let mut test = Test::new(node, tasks, layout, POOL, None).await;
+        test.sync().await;
+        test
+    };
+    let config = env::shards::Config {
+        name: "shard-0".into(),
+        core: None,
+    };
+    let started = node.shards().start(config, {
+        let node = node.clone();
+        move |tasks| async move { before(start(node, tasks).await).await }
+    });
+    let _shard = started.expect("the shard starts");
+    sim.run_for(Span::from_nanos(2_000_000_000))
+        .expect("the run goes on");
+    sim.crash(&node, sim::Crash::Power);
+    sim.run_on(&node, move |node, tasks| async move {
+        let test = start(node, tasks).await;
+        let mut writer = test.writer(subject, &["value"]).await;
+        write(&mut writer, &[test.now()], &[2])
+    })
+    .expect("the run after the cut ends")
+}
+
+/// A writer of `subject` on `value` with a control lease of [`LEASE`].
+fn leased(subject: &str) -> writer::Config {
+    writer::Config {
+        lease: Some(LEASE),
+        ..config(subject, &["value"])
+    }
+}
+
+/// The outcome of a write refused because a restored holder holds control.
+fn reserved() -> Outcome {
+    Outcome::Refused {
+        slot: Slot::new(0),
+        refusal: Refusal::Reserved,
+    }
+}
+
+/// A holder that stops writing loses control at the end of its lease with no other
+/// call, so no grace is reserved for it after a power cut.
+#[test]
+fn records_no_holder_when_a_lease_runs_out_with_no_call() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                std::future::pending::<()>().await;
+            },
+            "subject-b",
+        );
+        assert_eq!(after, [applied(1)], "seed {seed}");
+    }
+}
+
+#[test]
+fn records_the_handoff_to_a_waiting_writer_when_a_lease_runs_out_with_no_call() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                let _b = test.writer("subject-b", &["value"]).await;
+                std::future::pending::<()>().await;
+            },
+            "subject-a",
+        );
+        assert_eq!(after, [reserved()], "seed {seed}");
+    }
+}
+
+/// The close of a holder can start a lease, so it wakes the task that waits for the
+/// end of each lease.
+#[test]
+fn records_the_handoff_at_the_end_of_a_lease_that_a_close_starts() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let a = test.writer("subject-a", &["value"]).await;
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                let _c = test.writer("subject-c", &["value"]).await;
+                test.clock.sleep(SETTLE).await;
+                drop(a);
+                std::future::pending::<()>().await;
+            },
+            "subject-b",
+        );
+        assert_eq!(after, [reserved()], "seed {seed}");
+    }
+}
+
+/// The end of one lease starts the next, with no call between.
+#[test]
+fn records_the_handoff_at_the_end_of_a_lease_that_the_end_of_a_lease_starts() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let _a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                let _c = test.writer("subject-c", &["value"]).await;
+                std::future::pending::<()>().await;
+            },
+            "subject-c",
+        );
+        assert_eq!(after, [applied(0)], "seed {seed}");
+    }
+}
+
+/// A leased writer that opens at the instant a lease ends races the gate task. In each
+/// order, the gate task records the end of its lease, which only the wake at the open
+/// lets it see when the task runs first.
+#[test]
+fn records_the_end_of_the_lease_of_a_writer_that_opens_as_a_lease_ends() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                test.clock.sleep(LEASE).await;
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                std::future::pending::<()>().await;
+            },
+            "subject-a",
+        );
+        assert_eq!(after, [applied(1)], "seed {seed}");
+    }
+}
+
+/// A holder that closes at the instant its lease ends races the gate task. In each
+/// order, the leased waiter takes control at the end of the lease, and the timer of the
+/// gate task records the end of the waiter's lease. No order needs the wake at the
+/// close.
+#[test]
+fn records_the_end_of_the_lease_of_a_waiter_when_a_holder_closes_as_its_lease_ends() {
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                test.clock.sleep(LEASE).await;
+                drop(a);
+                std::future::pending::<()>().await;
+            },
+            "subject-a",
+        );
+        assert_eq!(after, [applied(1)], "seed {seed}");
+    }
+}
+
 #[test]
 fn gives_control_to_a_waiting_writer_when_a_writer_drops() {
     run(6, |test| async move {
@@ -761,7 +939,7 @@ fn drops_the_home_once_the_hub_and_each_session_drop() {
         drop((hub, reader, commit));
         clock.sleep(SETTLE).await;
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
     });
 }
 
@@ -794,7 +972,7 @@ fn ends_the_commit_task_once_each_session_that_outlives_the_hub_drops() {
         assert_eq!(ended.get(), 0, "the reader holds the home");
         drop(reader);
         clock.sleep(SETTLE).await;
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
     });
 }
@@ -878,7 +1056,7 @@ fn ends_the_commit_task_in_its_commit_wait_once_the_hub_drops() {
         clock.sleep(Span::from_nanos(1)).await;
         drop((hub, reader, writer, commit));
         clock.sleep(Span::from_nanos(1)).await;
-        assert_eq!(ended.get(), 1, "the commit task ended before the commit");
+        assert_eq!(ended.get(), 2, "the tasks ended before the commit");
         clock.sleep(SETTLE).await;
         assert_eq!(Rc::strong_count(&pool), 1, "only the test holds the pool");
     });
@@ -1695,6 +1873,30 @@ fn gives_a_reader_the_error_of_a_failed_sync_of_a_handoff() {
             drop(writer);
         });
     }
+}
+
+/// The handoff at the end of a lease, with no call, reaches the commit task.
+#[test]
+fn gives_a_reader_the_error_of_a_failed_sync_of_the_handoff_at_the_end_of_a_lease() {
+    run(16, |test| async move {
+        let mut complete = test.reader(&["value"], Mode::Complete).await;
+        let leased = writer::Config {
+            lease: Some(Span::from_nanos(50_000_000)),
+            ..config("subject-a", &["value"])
+        };
+        let writer = test.hub.writer(leased).await.expect("opens");
+        test.clock.sleep(SETTLE).await;
+        test.node.fail_file(FilePath::new(RING), Operation::Sync);
+        test.clock.sleep(Span::from_nanos(60_000_000)).await;
+        let failed = Ended::Buffer(env::files::Error::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        });
+        let next = poll_once(complete.next()).map(Result::err);
+        assert_eq!(next, Poll::Ready(Some(failed)));
+        drop(writer);
+    });
 }
 
 /// The handoff of a writer that a removal closes reaches the commit.
