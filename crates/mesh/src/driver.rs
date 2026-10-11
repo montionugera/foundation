@@ -2324,8 +2324,8 @@ mod tests {
     }
 
     /// The term of `mesh`, for a test in which no message shows it: a node with
-    /// no voters sends nothing, a node in term 0 follows no leader to probe, and
-    /// a test peer takes the messages of `Mesh::outgoing`.
+    /// no voters sends nothing, and a test peer takes the messages of
+    /// `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
     }
@@ -6748,7 +6748,8 @@ mod tests {
 
         // Node 1, a founder in term 0 with an empty log and the keys of `members`,
         // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies.
-        // On an error it stays in term 0 and sends nothing.
+        // On an error it stays in term 0: it sends nothing, then asks for a
+        // pre-vote for term 1.
         fn takes(
             members: &'static [u8],
             heartbeat: raft::Message,
@@ -6763,8 +6764,8 @@ mod tests {
                     expected.term = Term(6);
                     assert_eq!(reply, expected);
                 } else {
-                    assert_eq!(term(&mesh), Term(0));
                     assert!(quiet(&mesh, 3).await);
+                    assert_eq!(pre_vote_term(&mesh, 3).await, Term(1));
                 }
             });
         }
@@ -6960,7 +6961,7 @@ mod tests {
                 let refused = Error::Claim(claim::Error::Forged { signer: key(2) });
                 assert_eq!(mesh.receive(public(3), append), Err(refused));
                 assert!(quiet(&mesh, 3).await);
-                assert_eq!(term(&mesh), Term(0));
+                assert_eq!(pre_vote_term(&mesh, 3).await, Term(1));
                 assert_eq!(mesh.member(key(4)), None);
                 let reply = take(&mesh, at(4, 3), Vec::new(), 0).await;
                 assert_eq!(reply, Body::AppendReject { hint: 0 });
