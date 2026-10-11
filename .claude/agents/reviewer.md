@@ -92,18 +92,18 @@ Check:
   covers? For each sentence of a public doc that new code in the PR must keep (a driver
   of an `env` seam, an impl of a public trait), which test fails when that code breaks
   it, on each OS that the code runs on? Does a test assert through a field or call that
-  is not public, or compare the `Debug` string of the type under test, other than in the
-  test of a hand-written `Debug` impl itself (`testing.md`), with no written reason that
-  holds? Name the public call that shows the same behavior. A reason that no public call
-  or sim run shows the behavior holds only when you tried to show it through each seam
-  that the crate's tests use, and you list each try. When the test is the only kill of
-  a mutant, its reason holds only when it says why no caller or peer can see the mutant
-  (`testing.md`). A mutant that a caller can see and that no seam of the tests reaches
-  is a finding against the seam. When the PR replaces such a
-  compare, or another compare of a whole value, or changes the input or the expected
-  value of an assertion, name each part or case that the old assertion checked, and the
-  test that now fails when a call changes it. A part or case that no `cargo test` test
-  pins is a finding. When a test asserts through a field or call that is not public, or
+  is private to the type under test, or compare the `Debug` string of that type, other
+  than in the test of a hand-written `Debug` impl itself (`testing.md`), with no written
+  reason that holds? Name the public call that shows the same behavior. A reason that no
+  public call or sim run shows the behavior holds only when you tried to show it through
+  each seam that the crate's tests use, and you list each try. When the test is the only
+  kill of a mutant, its reason holds only when it says why no caller or peer can see the
+  mutant (`testing.md`). A mutant that a caller can see and that no seam of the tests
+  reaches is a finding against the seam. When the PR replaces such a compare, or another
+  compare of a whole value, or changes the input or the expected value of an assertion,
+  name each part or case that the old assertion checked, and the test that now fails
+  when a call changes it. A part or case that no `cargo test` test pins is a finding.
+  When a test asserts through a field or call that is private to the type under test, or
   compares that `Debug` string, with a reason that holds, list the mutants that CI makes
   in each file that it checks: write `gh pr diff <n>` to `pr.patch` in the worktree,
   then run `cargo mutants --list --in-diff pr.patch --file <file>`, which builds

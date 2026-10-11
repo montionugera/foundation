@@ -55,9 +55,10 @@ compiles C or C++ links a run of `cargo build -p <crate>` on macOS with each fea
 that compiles it. Each run names its machine and a commit after which no commit changes
 that code. When the author has no such machine, a session on the laptop runs it on
 macOS. For another OS, the author asks `laptop.monitor` for a cloud machine (#15).
-When a `.cargo/mutants.toml` entry names a test on such an OS as the kill of its
-mutants, the run also tests one mutant made by hand in each function that the entry
-covers, and the PR links the run in which each one fails.
+When a PR adds or changes a `.cargo/mutants.toml` entry that names a test on such an OS
+as the kill of its mutants, or changes a function that such an entry covers, the run
+also tests one mutant made by hand in each function that the entry covers, and the PR
+links the run in which each one fails.
 
 When a new PR replaces one under review, close the old one first (`gh pr close <old>
 --comment "Replaced by #<new>"`), and link its round comments in the new round 1
@@ -79,8 +80,8 @@ command outside that worktree. Remove each worktree when its agent returns
    what goes wrong, and the fix. It links each test doc that the `reviewer` report names
    as the reason for a hand mutant (`docs/claude/testing.md`). It ends with four lines.
    First `Deferred:` and `none`, or the issue of each deferred finding, each with the
-   link to the architect's OK in a risk crate. A later round keeps each deferral of the
-   round before it. Then `Later steps:` and `none`, or each
+   link to the architect's OK in a risk crate once it exists. A later round keeps each
+   deferral of the round before it. Then `Later steps:` and `none`, or each
    later step that a round, an architect review, an architect's ruling, or an issue that
    the PR closes names, each with the link to the open issue or the decisions entry that
    holds it ("Done"). Then `Public surface:` and `none`, or each item that
