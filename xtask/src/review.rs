@@ -382,7 +382,7 @@ fn performer(text: &[Vec<String>]) -> bool {
 /// lines after it.
 fn fixed(shown: &Shown<'_>) -> bool {
     let start = format!("{FIXES}:");
-    shown.unended().iter().any(|block| {
+    shown.before_end().iter().any(|block| {
         let p = shown.paragraph(Some(block));
         (0..p.len()).any(|i| {
             p[i].starts_with(&start) && stated(&entries(&p[i..], &[FIXES]).0[0].1)
@@ -657,7 +657,7 @@ impl<'a> Shown<'a> {
     }
 
     /// The blocks after the round heading other than that of the end lines.
-    fn unended(&self) -> &[Option<usize>] {
+    fn before_end(&self) -> &[Option<usize>] {
         match self.blocks.split_last() {
             Some((_, before)) if !self.old && !before.is_empty() => before,
             _ => &self.blocks,
