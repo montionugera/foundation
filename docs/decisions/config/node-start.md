@@ -31,7 +31,9 @@
   another directory with `--data`". The fix also covers a missing parent (`ENOENT`)
   and a file in its place (`ENOTDIR`). Decided by `laptop.architect-2`
   (2026-10-10T22:20:07Z,
-  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069). Each
+  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069).
+  Supersedes the cause list and the fix of
+  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6090417728. Each
   other error is `node.failed`: each other `Directory` error but `Busy`, each buffer
   error that neither `node.data` nor NODE SETTINGS (`Pool`) names, and each `Blob`,
   `Mesh`, or `Group` error that `node.data` does not name. Lost: `node.data` for the
@@ -83,7 +85,13 @@
   2026-10-09T23:57:51Z, that reason confirmed, and the first bullet of the ruling
   narrowed to `Applied` and each error but `Config`,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6091313576).
-  `main` gives `Region::Stored`, so the first start founds the root region and writes
-  `admin.key`, and each later start opens that region (NODE MESH). `--listen` and the
+  `main` gives `Region::Stored`, so a start whose mesh directory holds no founding
+  founds the root region with the key of `admin.key`, and makes that file when it is
+  not there, and each later start opens that region (NODE MESH). Decided by
+  `laptop.architect-2` (2026-10-10T03:30:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483), and
+  moved to #1744 PR 1b-4 by `laptop.architect` (2026-10-10T22:53:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103048603).
+  `--listen` and the
   file `address` come with #1744
   (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).
