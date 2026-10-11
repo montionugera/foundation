@@ -56,6 +56,9 @@
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6105068890;
   before it, "when the spec changes the connector",
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
+  A spec change that the caller applied after that run started counts, so one that
+  comes while the run ends is not lost (`laptop.architect-2`, 2026-10-11T05:17:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2348#issuecomment-6105759604).
   Supersedes "The caller (`node`) already watches the spec and starts a new supervisor
   on a change (R12-4)" of the plan on #338
   (https://github.com/synnaxlabs/foundation/issues/338#issuecomment-5994872059). The
