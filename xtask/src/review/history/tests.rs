@@ -2279,7 +2279,7 @@ fn a_range_that_holds_two_newest_base_commits_has_that_phrase_before_a_conflict(
 const DECISION: &str = "changes the decision `docs/decisions/x.md`";
 
 /// The part of each conflict phrase that names the decision `x.md`.
-const CONFLICT: &str = "conflict in the decision `docs/decisions/x.md`";
+const CONFLICT: &str = "conflict in `docs/decisions/x.md`";
 
 #[test]
 fn a_range_that_adds_changes_or_removes_a_decision_is_a_decision_change() {
