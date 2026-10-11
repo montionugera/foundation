@@ -793,3 +793,23 @@ fn a_start_with_no_region_and_no_node_key_on_a_stored_founding_stops() {
     assert_eq!(kept(&mut sim, &host), None);
     assert_eq!(bytes(&mut sim, &host, identity::FILE), None);
 }
+
+/// A start with a file `name` and the key of another node in `node.key`, on a data
+/// directory that stores a founding: the open of the region refuses the key, and a
+/// start with [`Region::Absent`] opens no region.
+#[test]
+fn a_key_with_no_card_and_a_name_file_fails_only_the_open_of_the_region() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+    remove(&mut sim, &host, identity::FILE);
+    write(&mut sim, &host, identity::FILE, another_key(&own));
+    let key = sim.run_on(&host, |host, _| async move {
+        identity::key(&host.files()).await.unwrap().expect("a key")
+    });
+    let error = mesh::Error::NotMember(key.expect("the run ends"));
+    let found = start_as(&mut sim, &host, Region::Stored, "edge");
+    assert_eq!(found, Err(Error::Mesh(error)));
+    assert_eq!(start_as(&mut sim, &host, Region::Absent, "edge"), Ok(()));
+}
