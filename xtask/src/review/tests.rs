@@ -2465,6 +2465,11 @@ fn fails_a_round_that_does_not_start_with_a_name_line() {
         format!("**![](x)** · integrator\n{rating}"),
         format!("**![](x) ![](y)** · integrator\n{rating}"),
         format!("**laptop.integrator-2** · ![](x)\n{rating}"),
+        format!("**laptop.integrator-2** · ![](x) ![](y)\n{rating}"),
+        format!(
+            "laptop.integrator-2 · integrator\n{rating}\n\n**laptop.integrator-2** \
+             wrote this round."
+        ),
     ] {
         assert_eq!(
             check(&record(vec![headed(&head)])),
