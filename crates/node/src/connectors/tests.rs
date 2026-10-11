@@ -262,6 +262,16 @@ struct Recorded {
     live: Vec<usize>,
 }
 
+/// When the hub of [`create`] gets its first mesh time.
+#[derive(Clone, Copy, Default)]
+enum Mesh {
+    /// At once.
+    #[default]
+    Synced,
+    /// This long after it opened.
+    Late(Span),
+}
+
 /// The options of [`record`].
 #[derive(Clone, Copy, Default)]
 struct Scene {
@@ -269,9 +279,8 @@ struct Scene {
     seed: u64,
     /// The time that the task of `hold` ends after the cancel.
     linger: Option<Span>,
-    /// The time of the first mesh time of the hub after it opened, else at once.
-    synced: Option<Span>,
-    /// The time to drop the runs at.
+    mesh: Mesh,
+    /// The time to drop the runs at, in ms from the time the hub opened, if given.
     dropped: Option<i64>,
 }
 
@@ -279,14 +288,14 @@ struct Scene {
 /// whose task ends at the cancel, the kind `brief`, whose run returns at once, and the
 /// kinds `source`, a [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a
 /// [`Sink`] of a selector that matches no channel. Each spec also defines [`data`].
-/// Gives each start of a run, each cancel, and each frame got
-/// until 10 s, from the time the hub opened, in order of time, then of name: the sim
-/// polls the tasks that are ready at one instant in a random order.
+/// Gives each start of a run, each cancel, and each frame got until 10 s, from the time
+/// the hub opened, in order of time, then of name: the sim polls the tasks that are
+/// ready at one instant in a random order.
 fn record(steps: Vec<Step>, scene: Scene) -> Recorded {
     let Scene {
         seed,
         linger,
-        synced,
+        mesh,
         dropped,
     } = scene;
     let config = ::sim::Config {
@@ -299,7 +308,7 @@ fn record(steps: Vec<Step>, scene: Scene) -> Recorded {
         let (starts, cancels, got) =
             (Starts::default(), Starts::default(), Starts::default());
         let kinds = kinds(linger, &starts, &cancels, &got);
-        let (config, counted) = create(&node, &tasks, kinds, synced).await;
+        let (config, counted) = create(&node, &tasks, kinds, mesh).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
@@ -700,7 +709,7 @@ fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
             flush,
         };
         let kinds = Table::new().with("write", write);
-        let (config, _) = create(&node, &tasks, kinds, None).await;
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Synced).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
@@ -773,7 +782,7 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
         );
         let clock = node.clock();
         let start = clock.now();
-        let (config, _) = create(&node, &tasks, kinds, Some(ms(1_000))).await;
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Late(ms(1_000))).await;
         let hub = config.hub.clone();
         let runs =
             std::rc::Rc::new(std::cell::RefCell::new(Runs::new(config, name(NODE))));
@@ -810,13 +819,12 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
 }
 
 /// The config of a supervisor on `node` with `kinds`, whose hub gets its first mesh
-/// time `synced` after it opened, else at once, and the count of its tasks that have
-/// not ended.
+/// time at `mesh`, and the count of its tasks that have not ended.
 async fn create(
     node: &::sim::node::Node,
     tasks: &env::tasks::Tasks,
     kinds: Table,
-    synced: Option<Span>,
+    mesh: Mesh,
 ) -> (connector::supervisor::Config, Rc<Cell<usize>>) {
     let env = hub::testing::Env {
         files: node.files(),
@@ -825,9 +833,9 @@ async fn create(
         entropy: node.entropy(),
         tasks: tasks.clone(),
     };
-    let hub = match synced {
-        Some(synced) => hub::testing::open_unsynced(env, synced).await,
-        None => hub::testing::open(env).await.0,
+    let hub = match mesh {
+        Mesh::Synced => hub::testing::open(env).await.0,
+        Mesh::Late(synced) => hub::testing::open_unsynced(env, synced).await,
     };
     count(connector::supervisor::Config {
         kinds: Arc::new(kinds),
@@ -938,7 +946,7 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
         );
         let clock = node.clock();
         let start = clock.now();
-        let (config, live) = create(&node, &tasks, kinds, Some(ms(5_000))).await;
+        let (config, live) = create(&node, &tasks, kinds, Mesh::Late(ms(5_000))).await;
         let hub = config.hub.clone();
         let mut runs = Runs::new(config, name(NODE));
         let placed =
@@ -960,12 +968,12 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
 
 /// [`record`] on `seed`, on a hub whose first mesh time comes at 5 s.
 fn record_unsynced(seed: u64, steps: Vec<Step>) -> Recorded {
-    let synced = Some(ms(5_000));
+    let mesh = Mesh::Late(ms(5_000));
     record(
         steps,
         Scene {
             seed,
-            synced,
+            mesh,
             ..Scene::default()
         },
     )
@@ -1090,7 +1098,7 @@ fn change_at_the_mesh_time(seed: u64, yields: usize) -> Option<bool> {
     let run = sim.run_on(&node, move |node, tasks| async move {
         let (starts, got) = (Starts::default(), Starts::default());
         let kinds = kinds(None, &starts, &Starts::default(), &got);
-        let (config, _) = create(&node, &tasks, kinds, Some(ms(5_000))).await;
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Late(ms(5_000))).await;
         let clock = node.clock();
         let start = clock.now();
         let hub = config.hub.clone();
