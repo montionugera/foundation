@@ -664,23 +664,39 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 }
 
-/// Each identifier of `path` for which `named` holds, as `path:line: identifier`. A
-/// byte that is not UTF-8 splits identifiers.
+/// Each line of `text` with its number, joined to the next while it ends in `\`, as
+/// a C line splice and a Rust string continuation are. A Rust string skips the
+/// whitespace at the start of the next line, so `rust` trims it.
+fn joined(text: &str, rust: bool) -> Vec<(usize, String)> {
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for (number, line) in (1..).zip(text.lines()) {
+        match lines.last_mut() {
+            Some((_, last)) if last.ends_with('\\') => {
+                last.pop();
+                last.push_str(if rust { line.trim_start() } else { line });
+            }
+            _ => lines.push((number, line.to_owned())),
+        }
+    }
+    lines
+}
+
+/// Each identifier of `path` for which `named` holds, as `path:line: identifier`, at
+/// the first line of a [`joined`] line. A byte that is not UTF-8 splits identifiers.
 #[expect(
     clippy::disallowed_methods,
     reason = "a test reads the files of the crate"
 )]
 fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String> {
     let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
-    let lines = (1..).zip(text.lines());
-    let found = lines.flat_map(|(line, text)| {
-        words(text)
-            .filter(|word| named(word))
-            .map(move |word| (line, word))
-    });
+    let rust = path.extension().is_some_and(|found| found == "rs");
+    let mut found = Vec::new();
+    for (line, text) in joined(&text, rust) {
+        for word in words(&text).filter(|word| named(word)) {
+            found.push(format!("{}:{line}: {word}", path.display()));
+        }
+    }
     found
-        .map(|(line, word)| format!("{}:{line}: {word}", path.display()))
-        .collect()
 }
 
 /// The scan names `shim_client_new` in each file outside tests that names it, and in
@@ -1040,6 +1056,34 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
                 root.join("src/shim.c").display()
             ),
             format!("{}:1: UA_Server", root.join("src/alloc.h").display()),
+        ]
+    );
+}
+
+/// The scan reads a name that a C line splice or a Rust string continuation splits.
+#[test]
+fn the_production_scan_joins_a_line_that_ends_in_a_backslash() {
+    let root = create_tree(
+        "splice",
+        &[
+            (
+                "src/lib.rs",
+                "unsafe extern \"C\" {\n    #[link_name = \"UA_random_\\\n        \
+                 seed\"]\n    fn draw(value: u64);\n}\n",
+            ),
+            (
+                "src/shim.c",
+                "void f(void) {\n    UA_Ser\\\nver *s = 0;\n}\n",
+            ),
+        ],
+    );
+    let refused =
+        |name: &str| name.starts_with("UA_Server") || name == "UA_random_seed";
+    assert_eq!(
+        named_in_production(&root, refused),
+        [
+            format!("{}:2: UA_random_seed", root.join("src/lib.rs").display()),
+            format!("{}:2: UA_Server", root.join("src/shim.c").display()),
         ]
     );
 }
