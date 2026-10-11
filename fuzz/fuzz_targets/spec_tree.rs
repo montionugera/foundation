@@ -88,6 +88,7 @@ fuzz_target!(|input: &[u8]| {
             &mut chunks,
             root,
             roots[at.saturating_sub(1)],
+            &roots,
             &names,
             &changes,
         );
@@ -95,10 +96,12 @@ fuzz_target!(|input: &[u8]| {
 });
 
 /// Runs each operation on the tree at `root`, and `diff` against `previous` too.
+/// `built` holds the digest of each chunk that the input built.
 fn check(
     chunks: &mut Chunks,
     root: Digest,
     previous: Digest,
+    built: &[Digest],
     names: &BTreeSet<Name>,
     changes: &[Change],
 ) {
@@ -116,7 +119,7 @@ fn check(
     {
         named(chunks, error);
     }
-    read(chunks, root, &whole);
+    read(chunks, root, built, &whole);
     let applied = tree::apply(chunks, root, changes.iter().cloned());
     if let Err(error) = &applied {
         named(chunks, error);
@@ -156,8 +159,9 @@ fn check(
 }
 
 /// `region::definitions` of the tree at `root`, where `whole` is its `diff` from the
-/// empty tree: its entries and its chunks.
-fn read(chunks: &Chunks, root: Digest, whole: &Result<Whole, Error>) {
+/// empty tree: its entries and its chunks. `built` holds the digest of each chunk that
+/// the input built.
+fn read(chunks: &Chunks, root: Digest, built: &[Digest], whole: &Result<Whole, Error>) {
     match region::definitions(chunks, root) {
         Ok((definitions, kept)) => {
             let (entries, digests) = whole.as_ref().expect("a diff reads the tree");
@@ -170,6 +174,10 @@ fn read(chunks: &Chunks, root: Digest, whole: &Result<Whole, Error>) {
             assert_eq!(rebuilt, root, "definitions read a tree of another root");
             for &digest in digests {
                 assert!(kept.get(digest).is_some(), "chunk {digest} is not kept");
+            }
+            for &digest in built.iter().filter(|digest| !digests.contains(digest)) {
+                let kept = kept.get(digest).is_some();
+                assert!(!kept, "chunk {digest} of another tree is kept");
             }
         }
         Err(region::Error::Tree(Error::Corrupt(at))) if at == root && whole.is_ok() => {
