@@ -6600,6 +6600,118 @@ mod name {
         );
     }
 
+    /// A region refuses a reserved name, so a start keeps none, and a later start
+    /// with another name runs.
+    #[test]
+    fn a_reserved_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        for given in ["@x", "a.@b"] {
+            let reserved = Error::Reserved { name: name(given) };
+            assert_eq!(start_and_stop(&mut sim, &host, given), Err(reserved));
+            assert_eq!(read(&mut sim, &host), None, "keeps no name: {given}");
+        }
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        assert_eq!(
+            Error::Reserved { name: name("a.@b") }.to_string(),
+            "the name a.@b has a segment that starts with `@`, which is reserved for \
+             Foundation; give another name"
+        );
+    }
+
+    /// A reserved name that is not the stored name stops the start as reserved, not
+    /// as renamed, and the node keeps the stored name. `node::name` does not check it.
+    #[test]
+    fn a_reserved_name_comes_before_the_stored_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        assert_eq!(resolve(&mut sim, &host, Some("@x")), Ok(name("@x")));
+        let started = start_and_stop(&mut sim, &host, "@x");
+        assert_eq!(started, Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// The claim checks the shard count before the name.
+    #[test]
+    fn another_shard_count_comes_before_another_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        write(&mut sim, &host, "shards-3", Vec::new());
+        let started = start_and_stop(&mut sim, &host, "cloud");
+        assert_eq!(
+            started,
+            Err(Error::Shards {
+                stored: 3,
+                cores: 2
+            })
+        );
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// A name that fails the claim stops the start before any ring opens.
+    #[test]
+    fn a_name_that_fails_the_claim_opens_no_ring() {
+        enum Stored {
+            Zeros,
+            Kept(Name),
+        }
+        let renamed = Error::Renamed {
+            stored: name("edge"),
+            given: name("cloud"),
+        };
+        let cases = [
+            (Stored::Zeros, Error::Name),
+            (Stored::Kept(name("edge")), renamed),
+        ];
+        for (stored, error) in cases {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            match stored {
+                Stored::Kept(stored) => sim
+                    .run_on(&host, move |host, _| async move {
+                        crate::name::keep(&host.files(), &stored).await
+                    })
+                    .expect("the run ends")
+                    .expect("keeps the name"),
+                Stored::Zeros => write(&mut sim, &host, FILE, vec![0; LEN]),
+            }
+            let started = start_and_stop(&mut sim, &host, "cloud");
+            assert_eq!(started, Err(error.clone()));
+            let made = ["lock", "name", "shards-2"].map(PathBuf::from);
+            assert_eq!(listed(&mut sim, &host, ""), made, "{error}");
+        }
+    }
+
+    /// A reserved name is the first failure, also before a disk budget that holds no
+    /// ring.
+    #[test]
+    fn a_reserved_name_starts_no_shard_and_comes_before_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let node = Node::start(Config {
+            name: name("@x"),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(host.shard_starts().len(), 0);
+        let disk = Size::from_bytes(1);
+        let node = Node::start(Config {
+            name: name("@x"),
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk,
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+    }
+
     /// A file of another length that is not 0, or that `encode` does not give, is
     /// not a name: also one whose padding is not zero, under a checksum that holds.
     #[test]
