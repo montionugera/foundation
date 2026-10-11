@@ -2323,15 +2323,15 @@ mod tests {
         Stopped::Write(log::Error::Files(cause))
     }
 
-    /// The term of `mesh`, for a test in which no message shows it: a node with
-    /// no voters sends nothing, and a test peer takes the messages of `Mesh::outgoing`.
+    /// The term of `mesh`, for a test in which no message shows it: a node with no
+    /// voters sends nothing, and a test peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
     }
 
-    /// The term of `mesh`, from its reply to a heartbeat in `term` of `leader`,
-    /// the leader that `mesh` follows. Skips each earlier message to `leader`
-    /// that is not a heartbeat reply.
+    /// The term of `mesh`, from its reply to a heartbeat in `term` of `leader`, the
+    /// leader that `mesh` follows. Skips each earlier message to `leader` that is not a
+    /// heartbeat reply.
     async fn probe_term(mesh: &Mesh, leader: u8, term: Term) -> Term {
         let heartbeat = raft::Message {
             term,
@@ -2346,8 +2346,7 @@ mod tests {
         }
     }
 
-    /// The term of the next message of `mesh` to node `to`, which is a heartbeat
-    /// reply.
+    /// The term of the next message of `mesh` to node `to`, which is a heartbeat reply.
     async fn reply_term(mesh: &Mesh, to: u8) -> Term {
         let reply = mesh.outgoing(key(to)).await.unwrap();
         assert_eq!(reply.body, Body::HeartbeatReply);
@@ -6746,9 +6745,9 @@ mod tests {
         }
 
         // Node 1, a founder in term 0 with an empty log and the keys of `members`,
-        // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies.
-        // On an error it stays in term 0: it sends nothing, then asks for a pre-vote
-        // for term 1.
+        // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies. On an
+        // error it stays in term 0: it sends nothing, then asks for a pre-vote for term
+        // 1.
         fn takes(
             members: &'static [u8],
             heartbeat: raft::Message,
