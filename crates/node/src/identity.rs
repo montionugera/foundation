@@ -111,7 +111,7 @@ pub(crate) fn encode(identity: &Identity) -> [u8; LEN] {
 }
 
 /// The identity in `bytes`, or `None` for another tag or checksum.
-#[cfg(any(test, feature = "sim"))]
+#[cfg(test)]
 fn decode(bytes: &[u8; LEN]) -> Option<Identity> {
     sector::written(bytes, TAG).map(|bytes| fields(&bytes))
 }
@@ -129,22 +129,14 @@ fn fields(bytes: &[u8; LEN]) -> Identity {
     }
 }
 
-/// Checks that `decode` gives an identity exactly for the bytes that `encode` writes,
-/// and that the identity encodes to `bytes`.
+/// Checks that a decode gives an identity exactly for the bytes that `encode` writes.
 ///
 /// # Panics
 ///
-/// When a check fails.
+/// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    let valid = encode(&fields(bytes)) == *bytes;
-    match decode(bytes) {
-        Some(identity) => {
-            assert!(valid, "decodes {bytes:02x?}");
-            assert_eq!(encode(&identity), *bytes, "encodes {bytes:02x?}");
-        }
-        None => assert!(!valid, "refuses {bytes:02x?}"),
-    }
+    sector::check(bytes, TAG, |bytes| encode(&fields(bytes)));
 }
 
 #[cfg(test)]

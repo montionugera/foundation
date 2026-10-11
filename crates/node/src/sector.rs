@@ -86,6 +86,26 @@ pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
     sum.copy_from_slice(&crc32c::crc32c(body).to_le_bytes());
 }
 
+/// Checks that `bytes` start with `tag` and match their checksum exactly when
+/// `encode` gives them back: `encode` makes the file again from the fields of
+/// `bytes`, whatever their tag and checksum.
+///
+/// # Panics
+///
+/// When the check fails.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn check<const N: usize>(
+    bytes: &[u8; N],
+    tag: &[u8],
+    encode: impl Fn(&[u8; N]) -> [u8; N],
+) {
+    let valid = encode(bytes) == *bytes;
+    match written(bytes, tag) {
+        Some(_) => assert!(valid, "decodes {bytes:02x?}"),
+        None => assert!(!valid, "refuses {bytes:02x?}"),
+    }
+}
+
 /// `body` with its CRC32C appended, or `None` when `body` is not `N - 4` bytes.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn summed<const N: usize>(body: &[u8]) -> Option<[u8; N]> {
@@ -124,6 +144,40 @@ mod tests {
         let bytes: [u8; 8] = summed(&[1, 2, 3, 4]).expect("a body");
         assert_eq!(bytes[..4], [1, 2, 3, 4]);
         assert_eq!(bytes[4..], crc32c::crc32c(&[1, 2, 3, 4]).to_le_bytes());
+    }
+
+    /// The bytes of a file of 12 bytes with the tag `t` and the field in `bytes[1..4]`.
+    fn encode(bytes: &[u8; 12]) -> [u8; 12] {
+        let mut file = [0; 12];
+        file[0] = b't';
+        file[1..4].copy_from_slice(&bytes[1..4]);
+        checksum(&mut file);
+        file
+    }
+
+    /// A file that [`encode`] gives, with the field `[1, 2, 3]`.
+    fn file() -> [u8; 12] {
+        encode(&[0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0])
+    }
+
+    #[test]
+    fn checks_a_file_that_encode_gives_back() {
+        check(&file(), b"t", encode);
+        let mut other = file();
+        other[1] ^= 1;
+        check(&other, b"t", encode);
+    }
+
+    #[test]
+    #[should_panic(expected = "decodes [74, 01, 02, 03,")]
+    fn panics_when_a_decode_gives_bytes_that_encode_does_not() {
+        check(&file(), b"t", |_| [0; 12]);
+    }
+
+    #[test]
+    #[should_panic(expected = "refuses [74, 01, 02, 03,")]
+    fn panics_when_a_decode_refuses_bytes_that_encode_gives() {
+        check(&file(), b"u", encode);
     }
 
     #[test]

@@ -60,7 +60,7 @@ fn encode(private_key: &PrivateKey) -> [u8; LEN] {
 }
 
 /// The private key in `bytes`, or `None` for another tag or checksum.
-#[cfg(any(test, feature = "sim"))]
+#[cfg(test)]
 fn decode(bytes: &[u8; LEN]) -> Option<PrivateKey> {
     sector::written(bytes, TAG).map(|bytes| field(&bytes))
 }
@@ -74,22 +74,14 @@ fn field(bytes: &[u8; LEN]) -> PrivateKey {
     )
 }
 
-/// Checks that `decode` gives a private key exactly for the bytes that `encode`
-/// writes, and that the key encodes to `bytes`.
+/// Checks that a decode gives a private key exactly for the bytes that `encode` writes.
 ///
 /// # Panics
 ///
-/// When a check fails.
+/// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    let valid = encode(&field(bytes)) == *bytes;
-    match decode(bytes) {
-        Some(private_key) => {
-            assert!(valid, "decodes {bytes:02x?}");
-            assert_eq!(encode(&private_key), *bytes, "encodes {bytes:02x?}");
-        }
-        None => assert!(!valid, "refuses {bytes:02x?}"),
-    }
+    sector::check(bytes, TAG, |bytes| encode(&field(bytes)));
 }
 
 #[cfg(test)]
