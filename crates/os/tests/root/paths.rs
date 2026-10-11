@@ -10,7 +10,7 @@ use rustix::io::Errno;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
 use crate::disk::{Scratch, mode};
-use crate::{Small, check, sudo};
+use crate::{Small, check, fsize, sudo};
 
 /// The user and the group `nobody`: not root, and not the group of a file of root.
 const NOBODY: u32 = 65534;
@@ -46,19 +46,10 @@ fn a_write_as_root_takes_no_owner_group_or_bits_of_the_file_it_replaces() {
 #[test]
 fn a_write_past_the_size_limit_gives_the_error_of_a_remove_that_fails() {
     const MARK: u64 = 1 << 30;
-    let limit = getrlimit(Resource::Fsize);
-    if limit.current != Some(MARK) {
-        let thread = std::thread::current();
-        let test = thread.name().expect("invariant: libtest names the thread");
-        // An ignored `SIGXFSZ` stays ignored across `exec`, so it does not end the
-        // child.
-        let script =
-            r#"trap '' XFSZ && ulimit -f "$0" && exec "$1" --exact "$2" --nocapture"#;
-        let mut child = Command::new("sh");
-        child.args(["-c", script]).arg((MARK / 512).to_string());
-        check(child.arg(std::env::current_exe().unwrap()).arg(test));
+    if !fsize::limited(MARK) {
         return;
     }
+    let limit = getrlimit(Resource::Fsize);
     let disk = Small::new();
     let kept = disk.mount().join("kept");
     fs::create_dir(&kept).unwrap();

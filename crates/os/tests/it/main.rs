@@ -18,6 +18,9 @@ mod files;
 #[cfg(target_os = "macos")]
 mod free;
 #[cfg(target_os = "linux")]
+#[path = "../common/fsize.rs"]
+mod fsize;
+#[cfg(target_os = "linux")]
 mod kept;
 #[cfg(target_os = "linux")]
 mod memory;

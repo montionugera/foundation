@@ -16,6 +16,8 @@ use env::files::{Error, Files, Mode};
 mod disk;
 #[path = "../it/free.rs"]
 mod free;
+#[path = "../common/fsize.rs"]
+mod fsize;
 #[path = "../it/kept.rs"]
 mod kept;
 mod paths;
