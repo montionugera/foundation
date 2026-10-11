@@ -84,9 +84,9 @@ pub struct Config<M> {
     /// The region whose mesh the node opens.
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
-    /// `name`; a later start with another name stops with [`Error::Renamed`]. A name
-    /// with a reserved segment starts no shard ([`Error::Reserved`]). Get it with
-    /// [`name`] before the start.
+    /// `name`. A name with a reserved segment starts no shard ([`Error::Reserved`]).
+    /// Else a later start with another name stops at the claim with
+    /// [`Error::Renamed`]. Get it with [`name`] before the start.
     pub name: types::name::Name,
 }
 
@@ -480,9 +480,8 @@ pub async fn create_key(
 
 /// The name of the node of the data directory `files`: `given`, else the one that the
 /// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
-/// reads also while another node runs on `files`. A `given` with a reserved segment
-/// stops the start with [`Error::Reserved`], and another `given` that is not the
-/// stored name stops it with [`Error::Renamed`].
+/// reads also while another node runs on `files`. It does not check `given`: the
+/// start does ([`Config::name`]).
 ///
 /// # Errors
 ///
