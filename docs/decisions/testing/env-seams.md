@@ -455,8 +455,8 @@
   a directory on another device than its holder, the sync of the holder at each call of
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440.
   Amended (2026-10-11, #1744): `env::paths` gives the files of the host by the paths
-  that a user gave, as on a command line: a read of a file, up to a bound, or of a
-  directory's entries, and a write of a whole file. Each call blocks its thread. A
+  that a user gave, as on a command line: a read of a file or of a directory's entries,
+  up to a bound, and a write of a whole file. Each call blocks its thread. A
   `Paths` goes only to `ops::cli`, never to a shard or to `ops::serve`, so a path that a
   remote program names never reaches the disk of the node. `os` writes a file beside the
   path and renames it over the path. `sim` keeps one tree in memory for each node, apart
