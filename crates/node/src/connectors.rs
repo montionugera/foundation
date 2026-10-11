@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use connector::cancel;
 use connector::supervisor::{self, Supervisor};
+use spec::channel::Kind;
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::channel;
@@ -73,9 +74,9 @@ impl Drop for Pending {
 #[derive(Clone, PartialEq)]
 struct Placed {
     connector: Connector,
-    /// The key of its status index. A new key is a new placement of the name, also
-    /// with an equal `connector`.
-    status: channel::Key,
+    /// The keys of its status channels. A new key means that a spec the node did not
+    /// see removed the channel, also with an equal `connector`.
+    status: Vec<channel::Key>,
 }
 
 /// The state that `apply` and the loop of one name share.
@@ -154,17 +155,18 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. A connector whose status
-    /// index has a new key is changed. The first run of a loop waits until no open of
+    /// its name returned. Each other connector keeps its run. A connector with a new key
+    /// of a status channel is changed. The first run of a loop waits until no open of
     /// a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
+        let on = data(definitions);
         let wanted: BTreeMap<&Name, Placed> = definitions
             .iter()
             .filter_map(|(name, definition)| match definition {
                 Definition::Connector(connector) if *connector.node() == self.node => {
                     let placed = Placed {
                         connector: connector.clone(),
-                        status: status(definitions, name),
+                        status: status(definitions, &on, name),
                     };
                     Some((name, placed))
                 }
@@ -204,21 +206,40 @@ impl Runs {
     }
 }
 
-/// The key of the status index of the connector `name` in `definitions`.
-///
-/// # Panics
-///
-/// When `definitions` has no channel at the name of that index: `config` places it
-/// with each connector.
-fn status(definitions: &BTreeMap<Name, Definition>, name: &Name) -> channel::Key {
-    let names = connector::status::channels(name, &[]);
-    let (index, _) = names.expect("invariant: a placed connector has status names");
-    match definitions.get(&index) {
-        Some(Definition::Channel(channel)) => channel.key,
-        other => {
-            panic!("invariant: the status index of `{name}` is a channel: {other:?}")
+/// The keys of the data channels on each index channel of `definitions`, in their
+/// order.
+fn data(
+    definitions: &BTreeMap<Name, Definition>,
+) -> BTreeMap<channel::Key, Vec<channel::Key>> {
+    let mut on: BTreeMap<channel::Key, Vec<channel::Key>> = BTreeMap::new();
+    for definition in definitions.values() {
+        if let Definition::Channel(channel) = definition
+            && let Kind::Data(data) = &channel.kind
+        {
+            on.entry(*data.index()).or_default().push(channel.key);
         }
     }
+    on
+}
+
+/// The keys of the status channels of the connector `name`: its status index, then
+/// each channel on it in `on`. Empty when the status names are refused or
+/// `definitions` has no channel at the name of the index; the open of the status
+/// session then fails.
+fn status(
+    definitions: &BTreeMap<Name, Definition>,
+    on: &BTreeMap<channel::Key, Vec<channel::Key>>,
+    name: &Name,
+) -> Vec<channel::Key> {
+    let Ok((index, _)) = connector::status::channels(name, &[]) else {
+        return Vec::new();
+    };
+    let Some(Definition::Channel(index)) = definitions.get(&index) else {
+        return Vec::new();
+    };
+    let mut keys = vec![index.key];
+    keys.extend(on.get(&index.key).into_iter().flatten().copied());
+    keys
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its
