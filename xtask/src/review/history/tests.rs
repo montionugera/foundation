@@ -116,8 +116,8 @@ impl Repo {
         History::new(&self.dir, "main").code_change(from, end)
     }
 
-    fn surface_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
-        History::new(&self.dir, "main").surface_change(from, end)
+    fn decision_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
+        History::new(&self.dir, "main").decision_change(from, end)
     }
 
     /// Removes the directory.
@@ -2282,63 +2282,63 @@ const DECISION: &str = "changes the decision `docs/decisions/x.md`";
 const CONFLICT: &str = "conflict in the decision `docs/decisions/x.md`";
 
 #[test]
-fn a_range_that_adds_changes_or_removes_a_decision_changes_the_surface() {
-    let (repo, start) = Repo::with_pr("surface-decision");
+fn a_range_that_adds_changes_or_removes_a_decision_is_a_decision_change() {
+    let (repo, start) = Repo::with_pr("decision-decision");
     let added = repo.commit("docs/decisions/x.md", "a rule\n");
     assert_eq!(
-        repo.surface_change(&start, &added),
+        repo.decision_change(&start, &added),
         Ok(Some(DECISION.to_string()))
     );
     let changed = repo.commit("docs/decisions/x.md", "another rule\n");
     assert_eq!(
-        repo.surface_change(&added, &changed),
+        repo.decision_change(&added, &changed),
         Ok(Some(DECISION.to_string()))
     );
     repo.git(&["rm", "--quiet", "docs/decisions/x.md"]);
     repo.git(&["commit", "--quiet", "-m", "remove"]);
     assert_eq!(
-        repo.surface_change(&changed, &repo.head()),
+        repo.decision_change(&changed, &repo.head()),
         Ok(Some(DECISION.to_string()))
     );
     assert_eq!(
-        repo.surface_change(&format!("{added}^"), &added),
+        repo.decision_change(&format!("{added}^"), &added),
         Ok(Some(DECISION.to_string()))
     );
     repo.remove();
 }
 
 #[test]
-fn a_range_that_changes_no_decision_changes_no_surface() {
-    let (repo, start) = Repo::with_pr("surface-none");
+fn a_range_that_changes_no_decision_is_no_decision_change() {
+    let (repo, start) = Repo::with_pr("decision-none");
     repo.commit("docs/decisions.md", "a list\n");
     repo.commit("docs/x.md", "a doc\n");
     repo.commit("notes/docs/decisions/x.md", "a note\n");
     let end = repo.commit("a.rs", "fn a() {}\n");
-    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    assert_eq!(repo.decision_change(&start, &end), Ok(None));
     repo.remove();
 }
 
 #[test]
-fn an_empty_range_changes_no_surface() {
-    let (repo, _) = Repo::with_pr("surface-empty");
+fn an_empty_range_is_no_decision_change() {
+    let (repo, _) = Repo::with_pr("decision-empty");
     let end = repo.commit("docs/decisions/x.md", "a rule\n");
-    assert_eq!(repo.surface_change(&end, &end[..7]), Ok(None));
+    assert_eq!(repo.decision_change(&end, &end[..7]), Ok(None));
     repo.remove();
 }
 
 #[test]
-fn a_decision_that_only_the_base_changes_changes_no_surface() {
-    let (repo, start) = Repo::with_pr("surface-base");
+fn a_decision_that_only_the_base_changes_is_no_decision_change() {
+    let (repo, start) = Repo::with_pr("decision-base");
     repo.advance_main("docs/decisions/x.md", "a rule\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let end = repo.commit("b.txt", "changed\n");
-    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    assert_eq!(repo.decision_change(&start, &end), Ok(None));
     repo.remove();
 }
 
 #[test]
-fn a_merge_that_resolves_a_conflict_in_a_decision_changes_the_surface() {
-    let repo = Repo::new("surface-conflict");
+fn a_merge_that_resolves_a_conflict_in_a_decision_is_a_decision_change() {
+    let repo = Repo::new("decision-conflict");
     let base = repo.commit("docs/decisions/x.md", "a rule\n");
     repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
     repo.git(&["switch", "--quiet", "-c", "pr"]);
@@ -2352,15 +2352,15 @@ fn a_merge_that_resolves_a_conflict_in_a_decision_changes_the_surface() {
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
-        repo.surface_change(&start, &end),
+        repo.decision_change(&start, &end),
         Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
 
 #[test]
-fn a_decision_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
-    let repo = Repo::new("surface-moddel");
+fn a_decision_that_the_base_removes_and_the_range_keeps_is_a_decision_change() {
+    let repo = Repo::new("decision-moddel");
     let base = repo.commit("docs/decisions/x.md", "a rule\n");
     repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
     repo.git(&["switch", "--quiet", "-c", "pr"]);
@@ -2378,15 +2378,15 @@ fn a_decision_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
     assert_eq!(
-        repo.surface_change(&start, &end),
+        repo.decision_change(&start, &end),
         Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
 
 #[test]
-fn a_decision_that_the_range_removes_and_the_base_changes_changes_the_surface() {
-    let repo = Repo::new("surface-delmod");
+fn a_decision_that_the_range_removes_and_the_base_changes_is_a_decision_change() {
+    let repo = Repo::new("decision-delmod");
     let base = repo.commit("docs/decisions/x.md", "a rule\n");
     repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
     repo.git(&["switch", "--quiet", "-c", "pr"]);
@@ -2402,15 +2402,15 @@ fn a_decision_that_the_range_removes_and_the_base_changes_changes_the_surface() 
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
-        repo.surface_change(&start, &end),
+        repo.decision_change(&start, &end),
         Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
 
 #[test]
-fn a_file_of_the_range_that_the_base_moves_into_the_decisions_changes_the_surface() {
-    let repo = Repo::new("surface-location");
+fn a_file_of_the_range_that_the_base_moves_into_the_decisions_is_a_decision_change() {
+    let repo = Repo::new("decision-location");
     repo.commit("docs/drafts/a.md", "a draft\n");
     let base = repo.commit("docs/drafts/b.md", "another draft\n");
     repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
@@ -2429,15 +2429,15 @@ fn a_file_of_the_range_that_the_base_moves_into_the_decisions_changes_the_surfac
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit("docs/decisions/x.md", "a rule of the PR\n");
     assert_eq!(
-        repo.surface_change(&start, &end),
+        repo.decision_change(&start, &end),
         Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
 
 #[test]
-fn a_merge_that_drops_the_decision_change_of_the_range_changes_the_surface() {
-    let repo = Repo::new("surface-dropped");
+fn a_merge_that_drops_the_decision_change_of_the_range_is_a_decision_change() {
+    let repo = Repo::new("decision-dropped");
     let base = repo.commit("docs/decisions/x.md", "a rule\n");
     repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
     repo.git(&["switch", "--quiet", "-c", "pr"]);
@@ -2452,15 +2452,15 @@ fn a_merge_that_drops_the_decision_change_of_the_range_changes_the_surface() {
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
-        repo.surface_change(&start, &end),
+        repo.decision_change(&start, &end),
         Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
 
 #[test]
-fn a_decision_conflict_of_the_start_and_the_base_changes_the_surface() {
-    let (repo, _) = Repo::with_pr("surface-closed");
+fn a_decision_conflict_of_the_start_and_the_base_is_a_decision_change() {
+    let (repo, _) = Repo::with_pr("decision-closed");
     repo.advance_main("docs/decisions/x.md", "a rule\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     let start = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
@@ -2468,7 +2468,7 @@ fn a_decision_conflict_of_the_start_and_the_base_changes_the_surface() {
     repo.advance_main("docs/decisions/x.md", "the rule of the base\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     assert_eq!(
-        repo.surface_change(&start, &repo.head()),
+        repo.decision_change(&start, &repo.head()),
         Ok(Some(format!(
             "has a {CONFLICT} between its start and the base"
         )))
@@ -2477,8 +2477,8 @@ fn a_decision_conflict_of_the_start_and_the_base_changes_the_surface() {
 }
 
 #[test]
-fn an_empty_range_at_two_newest_base_commits_changes_no_surface() {
-    let (repo, _) = Repo::with_pr("surface-empty-two-newest");
+fn an_empty_range_at_two_newest_base_commits_is_no_decision_change() {
+    let (repo, _) = Repo::with_pr("decision-empty-two-newest");
     repo.git(&["switch", "--quiet", "-c", "q", "main"]);
     let q = repo.commit("q.txt", "q\n");
     repo.git(&["switch", "--quiet", "main"]);
@@ -2489,28 +2489,28 @@ fn an_empty_range_at_two_newest_base_commits_changes_no_surface() {
     repo.git(&["merge", "--quiet", "--no-edit", &older]);
     repo.git(&["merge", "--quiet", "--no-edit", &q]);
     let end = repo.head();
-    assert_eq!(repo.surface_change(&end, &end), Ok(None));
+    assert_eq!(repo.decision_change(&end, &end), Ok(None));
     assert_eq!(repo.code_change(&end, &end), Ok(None));
     repo.remove();
 }
 
 #[test]
-fn a_surface_range_end_that_names_no_commit_counts() {
-    let (repo, end) = Repo::with_pr("surface-unnamed");
+fn a_decision_range_end_that_names_no_commit_counts() {
+    let (repo, end) = Repo::with_pr("decision-unnamed");
     assert_eq!(
-        repo.surface_change("abc1234", &end),
+        repo.decision_change("abc1234", &end),
         Ok(Some("has `abc1234`, which names no commit".to_string()))
     );
     assert_eq!(
-        repo.surface_change(&end, "abc1234"),
+        repo.decision_change(&end, "abc1234"),
         Ok(Some("has `abc1234`, which names no commit".to_string()))
     );
     repo.remove();
 }
 
 #[test]
-fn a_surface_range_that_holds_two_newest_base_commits_counts() {
-    let (repo, from) = Repo::with_pr("surface-two-newest");
+fn a_decision_range_that_holds_two_newest_base_commits_counts() {
+    let (repo, from) = Repo::with_pr("decision-two-newest");
     repo.git(&["switch", "--quiet", "-c", "q", "main"]);
     let q = repo.commit("q.txt", "q\n");
     repo.git(&["switch", "--quiet", "main"]);
@@ -2523,7 +2523,7 @@ fn a_surface_range_that_holds_two_newest_base_commits_counts() {
     let mut newest = [older, q];
     newest.sort_unstable();
     assert_eq!(
-        repo.surface_change(&from, &repo.head()),
+        repo.decision_change(&from, &repo.head()),
         Ok(Some(format!(
             "holds the base at more than one newest commit: `{}`",
             newest.join("`, `")
@@ -2565,13 +2565,13 @@ impl Repo {
 }
 
 #[test]
-fn text_of_the_pr_that_the_base_moves_into_a_decision_changes_the_surface() {
-    let (repo, _) = Repo::with_pr("surface-move");
+fn text_of_the_pr_that_the_base_moves_into_a_decision_is_a_decision_change() {
+    let (repo, _) = Repo::with_pr("decision-move");
     let (held, changed, end) =
         repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
     assert_eq!(repo.git(&["show", "--remerge-diff", "--format=", &end]), "");
     assert_eq!(
-        repo.surface_change(&changed, &end),
+        repo.decision_change(&changed, &end),
         Ok(Some(
             "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
              decision `docs/decisions/x.md`"
@@ -2579,22 +2579,22 @@ fn text_of_the_pr_that_the_base_moves_into_a_decision_changes_the_surface() {
         ))
     );
     assert_eq!(
-        repo.surface_change(&held, &end),
+        repo.decision_change(&held, &end),
         Ok(Some(DECISION.to_string()))
     );
     repo.remove();
 }
 
 #[test]
-fn a_base_move_changes_the_surface_only_from_outside_the_decisions_into_them() {
+fn a_base_move_is_a_decision_change_only_from_outside_the_decisions_into_them() {
     for (name, old, new) in [
         ("within", "docs/decisions/w.md", "docs/decisions/x.md"),
         ("outside", "docs/drafts/x.md", "docs/drafts/y.md"),
         ("out", "docs/decisions/x.md", "docs/drafts/x.md"),
     ] {
-        let (repo, _) = Repo::with_pr(&format!("surface-move-{name}"));
+        let (repo, _) = Repo::with_pr(&format!("decision-move-{name}"));
         let (_, changed, end) = repo.move_on_main(old, new);
-        assert_eq!(repo.surface_change(&changed, &end), Ok(None), "{name}");
+        assert_eq!(repo.decision_change(&changed, &end), Ok(None), "{name}");
         repo.remove();
     }
 }

@@ -142,7 +142,7 @@ impl<'a> History<'a> {
     /// # Errors
     ///
     /// A failed `git` command, also when the base ref does not exist.
-    pub(crate) fn surface_change(
+    pub(crate) fn decision_change(
         &self,
         from: &str,
         end: &str,
@@ -170,7 +170,7 @@ impl<'a> History<'a> {
         }))
     }
 
-    /// The range `<from>..<end>`, as `code_change` and `surface_change` read it.
+    /// The range `<from>..<end>`, as `code_change` and `decision_change` read it.
     ///
     /// # Errors
     ///

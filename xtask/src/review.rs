@@ -87,7 +87,7 @@ const CUTOFF: &str = "2026-10-08T03:00:00Z";
 
 /// A later round posted before this UTC time needs no `architecture` for a range that
 /// changes a decision, so that the rule does not fail the rounds that came before it.
-const SURFACE_CUTOFF: &str = "2026-10-11T16:00:00Z";
+const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 
 /// The record of a PR that the check reads.
 #[derive(Debug)]
@@ -173,7 +173,7 @@ fn problems_in(
         head,
         &|end| history.place(end, head),
         &|from, end| history.code_change(from, end),
-        &|from, end| history.surface_change(from, end),
+        &|from, end| history.decision_change(from, end),
     )
 }
 
@@ -203,16 +203,16 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// the range of the last round changes no code; an earlier round's skip is taken as
 /// written. `code_change` gives the first code change in a range, with a merge of the
 /// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
-/// later round posted at or after `SURFACE_CUTOFF` must name `architecture` when
-/// `surface_change` gives a phrase for its range (`History::surface_change`). For that
-/// rule, a round comment after the first is a later round, whatever its number, and
-/// so is a first round comment whose number is above 1.
+/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
+/// `decision_change` gives a phrase for its range (`History::decision_change`). For
+/// that rule, a round comment after the first is a later round, whatever its number,
+/// and so is a first round comment whose number is above 1.
 fn problems(
     record: &Record,
     head: &str,
     place: &dyn Fn(&str) -> Result<Place, String>,
     code_change: Change<'_>,
-    surface_change: Change<'_>,
+    decision_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let rounds: Vec<_> = record
@@ -221,8 +221,8 @@ fn problems(
         .filter(|c| c.author == BOT)
         .filter_map(|c| {
             let old = c.created.as_str() < CUTOFF;
-            let surfaced = c.created.as_str() >= SURFACE_CUTOFF;
-            round(&c.body, old).map(|round| (old, surfaced, round))
+            let bound = c.created.as_str() >= DECISION_CUTOFF;
+            round(&c.body, old).map(|round| (old, bound, round))
         })
         .collect();
     if rounds.is_empty() {
@@ -231,7 +231,7 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (old, surfaced, parsed)) in rounds.iter().enumerate() {
+    for (i, (old, bound, parsed)) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
@@ -241,7 +241,7 @@ fn problems(
                     &record.files,
                     last,
                     code_change,
-                    (later && *surfaced).then_some(surface_change),
+                    (later && *bound).then_some(decision_change),
                 )?);
             }
             Err(e) => {
@@ -312,14 +312,14 @@ fn unended(
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
-/// round with a `surface_change` requires `architecture` too when that gives a phrase
+/// round with a `decision_change` requires `architecture` too when that gives a phrase
 /// for its range, and its problem gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     last: bool,
     code_change: Change<'_>,
-    surface_change: Option<Change<'_>>,
+    decision_change: Option<Change<'_>>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let mut missing: Vec<&str> = required(round, files)
@@ -344,8 +344,8 @@ fn unnamed(
     }
     if !round.reviewers.contains("architecture")
         && !missing.contains(&"architecture")
-        && let Some(surface_change) = surface_change
-        && let Some(change) = surface_change(&round.from, &round.end)?
+        && let Some(decision_change) = decision_change
+        && let Some(change) = decision_change(&round.from, &round.end)?
     {
         problems.push(format!(
             "review round {} names no architecture, which this round requires. Run \

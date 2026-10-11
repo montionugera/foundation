@@ -189,7 +189,7 @@
   clone fails too, and so does an end that holds more than one newest base commit: the
   `review` skill asks for a merge of the base after round 1, never a rebase. The problem
   states the remedy and ends with the cause, such as "Its range changes the decision
-  `docs/decisions/x.md`." A round posted before the cutoff `SURFACE_CUTOFF` in
+  `docs/decisions/x.md`." A round posted before the cutoff `DECISION_CUTOFF` in
   `xtask/src/review.rs` (2026-10-11T16:00:00Z) is checked as before, so that the new
   rule does not fail the rounds that came before it. The cutoff is a fixed time: it
   stays when the rule merges after it, and the rule for `.rs` files gets a cutoff of its
