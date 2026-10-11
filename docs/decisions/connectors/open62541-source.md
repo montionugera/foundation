@@ -541,3 +541,13 @@
   the server. That exception: approved by `laptop.architect-2` at `c9a61bcaf`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
   2026-10-11 10:14 UTC).
+  A `client::Client` owns its connection manager, and so its loop, and its
+  `UA_Client`. Its `close` sends a CloseSession with `UA_Client_disconnectAsync` and
+  drives its manager until the channel is closed. Its drop calls `shim_client_free`,
+  which stops the loop, then deletes the client. On a stopped loop the delete makes no
+  synchronous call, so it sends no CloseSession, and the session stays on the server
+  until it times out. So the loop of a client holds no other client or server. A read
+  keeps its answer in the client, which outlives the delete that calls the callback of
+  each read in flight, and the callback drops the answer of a request that is not the
+  read in flight. Proposed in https://github.com/synnaxlabs/foundation/pull/2397, for
+  `laptop.architect-2` to approve.
