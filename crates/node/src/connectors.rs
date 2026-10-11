@@ -108,13 +108,20 @@ impl Loop {
     }
 
     /// Frees the count of a first open that resolved with `changed` not cancelled.
-    /// Returns whether the first run must wait for the other first opens.
-    fn opened(&mut self, changed: &cancel::Token) -> bool {
+    /// Returns whether the first run waits for the other first opens.
+    fn resolved(&mut self, changed: &cancel::Token) -> bool {
         if changed.cancelled() || matches!(self.first, First::Started) {
             return false;
         }
         self.first = First::Waiting;
         true
+    }
+
+    /// Marks the first run started, unless `changed` is cancelled.
+    fn start(&mut self, changed: &cancel::Token) {
+        if !changed.cancelled() {
+            self.first = First::Started;
+        }
     }
 }
 
@@ -203,12 +210,10 @@ async fn run(
         let config = connector.config().document();
         let opened = supervisor.open(kind, name.clone(), config, &changed);
         let opened = opened.await;
-        let first = state.borrow_mut().opened(&changed);
-        if first {
+        let waits = state.borrow_mut().resolved(&changed);
+        if waits {
             changed.race(opens.settled()).await;
-            if !changed.cancelled() {
-                state.borrow_mut().first = First::Started;
-            }
+            state.borrow_mut().start(&changed);
         }
         match opened.run().await {
             // The next change of the connector runs it again.
