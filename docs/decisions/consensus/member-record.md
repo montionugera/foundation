@@ -5,7 +5,8 @@
   ephemeral node, the time offline after which the region removes it), and the key of
   each status channel (X27) by its name relative to the node's name (`clock.offset`,
   never the full name); `card.name` is the one copy of the node's name in region state.
-  The node's own copy is its file `name` (NODE NAME). Supersedes "the one copy of the
+  The node's own copy is its file `name`, and once it stores a founding, also its card
+  in the founding (NODE NAME). Supersedes "the one copy of the
   node's name" of
   https://github.com/synnaxlabs/foundation/issues/242#issuecomment-6031533205
   (`laptop.architect`, 2026-10-09T19:53:33Z,
