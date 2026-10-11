@@ -135,7 +135,7 @@ impl Open {
     ///
     /// # Errors
     ///
-    /// [`Error::Empty`] when `bytes` is empty, [`Error::Kind`] when the first byte
+    /// [`Error::Empty`] when `bytes` is empty, [`Error::Mode`] when the first byte
     /// names no mode, [`Error::Length`] when a pattern ends past the open, and
     /// [`Error::Selector`] when a pattern does not read or none includes names.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
@@ -143,7 +143,7 @@ impl Open {
         let mode = match fields.kind().ok_or(Error::Empty)? {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete,
-            kind => return Err(Error::Kind { kind }),
+            byte => return Err(Error::Mode { byte }),
         };
         let mut patterns = Vec::new();
         while !fields.is_empty() {

@@ -595,6 +595,11 @@ pub enum Error {
         /// The cap of the body.
         cap: u64,
     },
+    /// The open of a read names no mode.
+    Mode {
+        /// The mode byte.
+        byte: u8,
+    },
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
     Selector(text::Error<Box<name::Error>>),
@@ -689,6 +694,12 @@ impl fmt::Display for Error {
             }
             Self::Oversize { length, cap } => {
                 write!(f, "the body has {length} bytes, over the cap of {cap}")
+            }
+            Self::Mode { byte } => {
+                write!(
+                    f,
+                    "the open of the read names mode {byte}, which no read has"
+                )
             }
             Self::Selector(cause) => {
                 write!(f, "the selector of the read does not read: {cause}")
@@ -1433,6 +1444,10 @@ mod tests {
                     cap: 16_777_216,
                 },
                 "the body has 16777217 bytes, over the cap of 16777216",
+            ),
+            (
+                Error::Mode { byte: 3 },
+                "the open of the read names mode 3, which no read has",
             ),
             (
                 Error::Selector(text::Error::Parse(Box::new(name::Error::NoInclude))),

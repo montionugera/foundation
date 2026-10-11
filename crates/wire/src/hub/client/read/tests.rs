@@ -223,8 +223,8 @@ mod open {
 
     #[test]
     fn refuses_a_mode_that_is_neither_latest_nor_complete() {
-        for kind in (0..=u8::MAX).filter(|kind| ![1, 2].contains(kind)) {
-            assert_eq!(Open::decode(&[kind, 1, 0, b'a']), Err(Error::Kind { kind }));
+        for byte in (0..=u8::MAX).filter(|byte| ![1, 2].contains(byte)) {
+            assert_eq!(Open::decode(&[byte, 1, 0, b'a']), Err(Error::Mode { byte }));
         }
     }
 
