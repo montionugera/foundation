@@ -2424,11 +2424,14 @@ fn clean(number: u32, reviewers: &str, range: &str) -> String {
 /// The problem of round 2 with no `architecture`, whose range changes the decision
 /// `x.md`.
 const DECISION: &str = "review round 2 names no architecture, which this round \
-                        requires. Its range changes the decision \
-                        `docs/decisions/x.md`. Run `architecture` on the range, or on \
-                        the whole PR when the clone cannot read the range. Then edit \
-                        the round comment: add `architecture` to its `Reviewers:` \
-                        line, and add the findings.";
+                        requires. Run `architecture` on its range, or on the whole PR \
+                        when the clone cannot read the range, then edit the round \
+                        comment: add `architecture` to `Reviewers:` and add its \
+                        findings. Its range changes the decision \
+                        `docs/decisions/x.md`.";
+
+/// The phrase of `DECISION` for what its range does.
+const CHANGE: &str = "changes the decision `docs/decisions/x.md`";
 
 /// What the check gives for `record` at the head of `repo`.
 fn check_at(repo: &Repo, record: &Record) -> Vec<String> {
@@ -2524,13 +2527,58 @@ fn a_later_round_that_is_not_the_last_requires_architecture_too() {
 fn a_later_round_posted_before_the_surface_cutoff_keeps_its_reviewers() {
     let (repo, start) = Repo::with_pr("review-decision-cutoff");
     let end = repo.commit("docs/decisions/x.md", "a rule\n");
-    let round = Comment {
-        created: "2026-10-11T15:59:59Z".to_string(),
+    let round = |created: &str| Comment {
+        created: created.to_string(),
         ..bot(&clean(2, "reviewer, breaker", &format!("{start}..{end}")))
     };
     assert_eq!(
-        check_at(&repo, &record(vec![first(END), round])),
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T15:59:59Z")])
+        ),
         Vec::<String>::new()
+    );
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T16:00:01Z")])
+        ),
+        vec![DECISION]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_of_a_code_pr_gets_one_problem() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered-code");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let record = record(vec![
+        surfaced(&clean(
+            1,
+            "reviewer, architecture, breaker",
+            &format!("a..{start}"),
+        )),
+        surfaced(&clean(1, "reviewer, breaker", &format!("{start}..{end}"))),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec!["review round 1 names no architecture, which this round requires."]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_merge_moves_pr_text_into_a_decision_requires_architecture() {
+    let (repo, _) = Repo::with_pr("review-decision-move");
+    let (_, start, end) = repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+    let round = surfaced(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace(
+            CHANGE,
+            "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
+             decision `docs/decisions/x.md`"
+        )]
     );
     repo.remove();
 }
@@ -2541,13 +2589,7 @@ fn a_later_round_whose_range_names_no_commit_requires_architecture() {
     let round = surfaced(&clean(2, "reviewer, breaker", &format!("abc1234..{end}")));
     assert_eq!(
         check_at(&repo, &record(vec![first(END), round])),
-        vec![
-            "review round 2 names no architecture, which this round requires. Its \
-             range has `abc1234`, which names no commit. Run `architecture` on the \
-             range, or on the whole PR when the clone cannot read the range. Then \
-             edit the round comment: add `architecture` to its `Reviewers:` line, \
-             and add the findings."
-        ]
+        vec![DECISION.replace(CHANGE, "has `abc1234`, which names no commit")]
     );
     repo.remove();
 }

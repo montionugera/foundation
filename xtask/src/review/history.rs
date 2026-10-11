@@ -86,7 +86,7 @@ impl<'a> History<'a> {
     /// this tree moves into a code file by its own rename detection gives "has `<old>`,
     /// which the PR changes and the base moves into the code file `<new>`". An `end`
     /// that holds more than one newest base commit gives "holds the base at more than
-    /// one newest commit: `<commit>`, `<commit>`".
+    /// one newest commit: `<commit>`, `<commit>`", also when the range has a conflict.
     ///
     /// The line number is in `end` for an added line, and in `from` or that tree for
     /// a removed one.

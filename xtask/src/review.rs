@@ -312,7 +312,7 @@ fn unended(
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
 /// round with a `surface_change` requires `architecture` too when that gives a phrase
-/// for its range, and its problem gives the phrase, then the remedy.
+/// for its range, and its problem gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
@@ -347,10 +347,10 @@ fn unnamed(
         && let Some(change) = surface_change(&round.from, &round.end)?
     {
         problems.push(format!(
-            "review round {} names no architecture, which this round requires. Its \
-             range {change}. Run `architecture` on the range, or on the whole PR \
-             when the clone cannot read the range. Then edit the round comment: add \
-             `architecture` to its `Reviewers:` line, and add the findings.",
+            "review round {} names no architecture, which this round requires. Run \
+             `architecture` on its range, or on the whole PR when the clone cannot \
+             read the range, then edit the round comment: add `architecture` to \
+             `Reviewers:` and add its findings. Its range {change}.",
             round.number
         ));
     }

@@ -2243,6 +2243,38 @@ fn a_start_with_an_early_commit_time_reads() {
     repo.remove();
 }
 
+#[test]
+fn a_range_that_holds_two_newest_base_commits_has_that_phrase_before_a_conflict() {
+    let (repo, _) = Repo::with_pr("two-newest-conflict");
+    let from = repo.commit("a.rs", "// PR.\n");
+    repo.git(&["switch", "--quiet", "-c", "q", "main"]);
+    let q = repo.commit("q.txt", "q\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let older = repo.commit("a.rs", "// Main.\n");
+    repo.git(&["merge", "--quiet", "--no-ff", "--no-edit", &q]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", &older])
+        .output()
+        .unwrap();
+    assert_eq!(merge.status.code(), Some(1), "{merge:?}");
+    std::fs::write(repo.dir.join("a.rs"), "// PR.\n// Main.\n").unwrap();
+    repo.git(&["commit", "--quiet", "--all", "--no-edit"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &q]);
+    let mut newest = [older, q];
+    newest.sort_unstable();
+    assert_eq!(
+        repo.code_change(&from, &repo.head()),
+        Ok(Some(format!(
+            "holds the base at more than one newest commit: `{}`",
+            newest.join("`, `")
+        )))
+    );
+    repo.remove();
+}
+
 /// The phrase of a change to the decision `x.md`.
 const DECISION: &str = "changes the decision `docs/decisions/x.md`";
 
