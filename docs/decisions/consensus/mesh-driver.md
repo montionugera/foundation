@@ -188,7 +188,8 @@
   it, a format keeps version 1, so the homes of a spec change go in kind 4. It
   supersedes the start of the rule of
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036422521. Each later
-  call gives `Error::Stopped` with the first cause. A watch gives the `Stopped` itself,
+  call gives `Error::Stopped` with the first cause, and `stamp` gives
+  `Unstamped::Stopped` (MEMBER RECORD). A watch gives the `Stopped` itself,
   also after each `Mesh` drops (MESH SURFACE). `member` has no error (#562): it gives
   the record that the node holds, also after a stop (approved by the architect,
   2026-10-07T08:07:48Z:
