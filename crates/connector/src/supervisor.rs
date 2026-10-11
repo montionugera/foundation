@@ -61,8 +61,9 @@ impl Supervisor {
     /// time, then, when the kind's `check` gives reader settings, its reader under
     /// `name`. Resolves once the status channels and the reader opened, or once the
     /// first run cannot start: the kind is unknown, the config does not parse or
-    /// check, the mesh stopped, the reader open failed, or `cancel` is cancelled. It
-    /// runs no code of the kind's `run`, so the connector writes no frame before
+    /// check, the mesh stopped, the reader open failed, or `cancel` is cancelled. The
+    /// reader open waits while the mesh names no home for the index that it selects.
+    /// It runs no code of the kind's `run`, so the connector writes no frame before
     /// [`Opened::run`]. Dropped, the [`Opened`] closes the reader and writes no status.
     /// The future is not `Send`: call it on a shard.
     ///
@@ -80,100 +81,20 @@ impl Supervisor {
         config: &'a Document,
         cancel: &'a cancel::Token,
     ) -> Opened<'a> {
-        let start = self.start(kind, &name, config, cancel).await;
-        Opened {
-            call: Call {
-                supervisor: self,
-                kind,
-                name,
-                config,
-                cancel,
-            },
-            start,
-        }
-    }
-
-    /// The status writer and the first reader of [`Self::open`], or the end of a call
-    /// that starts no run.
-    async fn start(
-        &self,
-        kind: &str,
-        name: &Name,
-        config: &Document,
-        cancel: &cancel::Token,
-    ) -> Start {
-        let Config {
-            kinds, clock, hub, ..
-        } = &*self.0;
-        let channels = match kinds.check(kind, None, config) {
-            Ok(channels) => channels,
-            Err(diagnostics) => return Start::Ended(Err(Error::Config(diagnostics))),
-        };
-        let mut open = pin!(status::Writer::open(
-            hub,
+        let call = Call {
+            supervisor: self,
+            kind,
             name,
-            channels.counts,
-            clock.clone(),
-            cancel.clone()
-        ));
-        let mut cancelled = pin!(cancel.wait());
-        // An open that is ready at once wins, so a cancel before the call still
-        // writes `state` 2.
-        let opened = poll_fn(|cx| match open.as_mut().poll(cx) {
-            Poll::Ready(opened) => Poll::Ready(Some(opened)),
-            Poll::Pending => cancelled.as_mut().poll(cx).map(|()| None),
-        });
-        let (writer, status) = match opened.await {
-            None | Some(Err(hub::writer::Error::Mesh(_))) => {
-                return Start::Ended(Ok(()));
-            }
-            // A cancelled call may find its status channels removed.
-            Some(Err(hub::writer::Error::Unknown(_))) if cancel.cancelled() => {
-                return Start::Ended(Ok(()));
-            }
-            Some(Ok(opened)) => opened,
-            Some(Err(error)) => {
-                panic!(
-                    "the status channels of the connector {name} do not open: {error}"
-                )
-            }
+            config,
+            cancel,
         };
-        let settings = channels.reader;
-        let reader = self.reader(name, settings.as_ref(), cancel).await;
-        Start::Open(Box::new(Open {
-            writer,
-            status,
-            settings,
-            reader,
-        }))
-    }
-
-    /// Opens the reader of `settings` under `name`. `None` with no settings, and at
-    /// a cancel, after which no run starts.
-    async fn reader(
-        &self,
-        name: &Name,
-        settings: Option<&reader::Settings>,
-        cancel: &cancel::Token,
-    ) -> Result<Option<hub::reader::Reader>, Error> {
-        let Some(settings) = settings else {
-            return Ok(None);
-        };
-        let config = hub::reader::Config {
-            select: settings.select.clone(),
-            mode: settings.mode,
-            subject: name.clone(),
-            name: Some(name.clone()),
-            hold: settings.hold,
-        };
-        match cancel.race(self.0.hub.reader(config)).await {
-            Some(opened) => opened.map(Some).map_err(kind::reader_error),
-            None => Ok(None),
-        }
+        let start = call.start().await;
+        Opened { call, start }
     }
 }
 
 /// A connector that [`Supervisor::open`] opened, whose first run has not started.
+#[must_use = "an Opened runs nothing until Opened::run"]
 pub struct Opened<'a> {
     call: Call<'a>,
     start: Start,
@@ -223,7 +144,7 @@ impl Opened<'_> {
         let Self { call, start } = self;
         match start {
             Start::Ended(end) => end,
-            Start::Open(open) => call.runs(*open).await,
+            Start::Ready(ready) => call.runs(*ready).await,
         }
     }
 }
@@ -242,27 +163,105 @@ struct Call<'a> {
 enum Start {
     /// No run starts, and the call ends with this.
     Ended(Result<(), Error>),
-    Open(Box<Open>),
+    Ready(Box<Ready>),
 }
 
-/// A connector whose status channels opened.
-struct Open {
+/// The status of a connector whose status channels opened, and its first reader.
+struct Ready {
     writer: status::Writer,
     status: status::Status,
     settings: Option<reader::Settings>,
-    /// The reader of the first run.
-    reader: Result<Option<hub::reader::Reader>, Error>,
+    reader: Opening,
 }
 
+/// The reader of one run: `None` when `cancel` is cancelled, so no run starts, and
+/// else the open's result, `Ok(None)` for a kind that reads no channel.
+type Opening = Option<Result<Option<hub::reader::Reader>, Error>>;
+
 impl Call<'_> {
-    /// Runs the connector and restarts it, as [`Opened::run`] says.
-    async fn runs(&self, open: Open) -> Result<(), Error> {
-        let Open {
+    /// The status writer and the first reader of [`Supervisor::open`], or the end of a
+    /// call that starts no run.
+    async fn start(&self) -> Start {
+        let Self {
+            supervisor,
+            kind,
+            name,
+            config,
+            cancel,
+        } = self;
+        let Config {
+            kinds, clock, hub, ..
+        } = &*supervisor.0;
+        let channels = match kinds.check(kind, None, config) {
+            Ok(channels) => channels,
+            Err(diagnostics) => return Start::Ended(Err(Error::Config(diagnostics))),
+        };
+        let mut open = pin!(status::Writer::open(
+            hub,
+            name,
+            channels.counts,
+            clock.clone(),
+            (*cancel).clone()
+        ));
+        let mut cancelled = pin!(cancel.wait());
+        // An open that is ready at once wins, so a cancel before the call still
+        // writes `state` 2.
+        let opened = poll_fn(|cx| match open.as_mut().poll(cx) {
+            Poll::Ready(opened) => Poll::Ready(Some(opened)),
+            Poll::Pending => cancelled.as_mut().poll(cx).map(|()| None),
+        });
+        let (writer, status) = match opened.await {
+            None | Some(Err(hub::writer::Error::Mesh(_))) => {
+                return Start::Ended(Ok(()));
+            }
+            // A cancelled call may find its status channels removed.
+            Some(Err(hub::writer::Error::Unknown(_))) if cancel.cancelled() => {
+                return Start::Ended(Ok(()));
+            }
+            Some(Ok(opened)) => opened,
+            Some(Err(error)) => {
+                panic!(
+                    "the status channels of the connector {name} do not open: {error}"
+                )
+            }
+        };
+        let settings = channels.reader;
+        let reader = self.reader(settings.as_ref()).await;
+        Start::Ready(Box::new(Ready {
             writer,
             status,
             settings,
             reader,
-        } = open;
+        }))
+    }
+
+    /// Opens the reader of `settings` under the connector's name.
+    async fn reader(&self, settings: Option<&reader::Settings>) -> Opening {
+        let Some(settings) = settings else {
+            return Some(Ok(None));
+        };
+        let config = hub::reader::Config {
+            select: settings.select.clone(),
+            mode: settings.mode,
+            subject: self.name.clone(),
+            name: Some(self.name.clone()),
+            hold: settings.hold,
+        };
+        let opened = self
+            .cancel
+            .race(self.supervisor.0.hub.reader(config))
+            .await?;
+        Some(opened.map(Some).map_err(kind::reader_error))
+    }
+
+    /// Runs the connector and restarts it, as [`Opened::run`] says.
+    async fn runs(&self, ready: Ready) -> Result<(), Error> {
+        let Ready {
+            writer,
+            status,
+            settings,
+            reader,
+        } = ready;
         writer
             .during(self.restarts(&writer, &status, settings.as_ref(), reader))
             .await
@@ -275,28 +274,30 @@ impl Call<'_> {
         writer: &status::Writer,
         status: &status::Status,
         settings: Option<&reader::Settings>,
-        first: Result<Option<hub::reader::Reader>, Error>,
+        first: Opening,
     ) -> Result<(), Error> {
         let Self {
             supervisor,
             kind,
-            name,
             config,
             cancel,
+            ..
         } = self;
         let Config {
             kinds,
             clock,
             entropy,
-            tasks,
             ..
         } = &*supervisor.0;
         let mut backoff = retry::Backoff::new(clock, entropy.rng(), RESTART);
         let mut first = Some(first);
         loop {
-            let reader = match first.take() {
-                Some(reader) => reader,
-                None => supervisor.reader(name, settings, cancel).await,
+            let opening = match first.take() {
+                Some(opening) => opening,
+                None => self.reader(settings).await,
+            };
+            let Some(reader) = opening else {
+                break;
             };
             if !writer.start().await {
                 break;
@@ -306,19 +307,7 @@ impl Call<'_> {
             let start = clock.now();
             let end = match reader {
                 Ok(reader) => {
-                    let count = Count {
-                        tasks: tasks.clone(),
-                        live: Rc::clone(&live),
-                    };
-                    let ctx = Context::new(
-                        name.clone(),
-                        (),
-                        token.0.clone(),
-                        Tasks::new(count),
-                        status.share(),
-                        reader,
-                        Rc::clone(&supervisor.0),
-                    );
+                    let ctx = self.context(reader, &token.0, &live, status);
                     kinds.run(kind, config, ctx).map_err(Error::Config)?.await
                 }
                 Err(error) => Err(error),
@@ -345,6 +334,30 @@ impl Call<'_> {
         }
         writer.stop().await;
         Ok(())
+    }
+
+    /// The context of one run, cancelled by `token`, whose tasks `live` counts.
+    fn context(
+        &self,
+        reader: Option<hub::reader::Reader>,
+        token: &cancel::Token,
+        live: &Rc<Live>,
+        status: &status::Status,
+    ) -> Context<()> {
+        let inputs = &self.supervisor.0;
+        let count = Count {
+            tasks: inputs.tasks.clone(),
+            live: Rc::clone(live),
+        };
+        Context::new(
+            self.name.clone(),
+            (),
+            token.clone(),
+            Tasks::new(count),
+            status.share(),
+            reader,
+            Rc::clone(inputs),
+        )
     }
 }
 
@@ -3335,7 +3348,8 @@ mod tests {
 
     #[test]
     fn gives_the_reader_once_and_none_to_a_kind_that_reads_no_channel() {
-        let take = |mut ctx: Context<()>, got: Arc<Mutex<Vec<(bool, bool)>>>| async move {
+        type Got = Arc<Mutex<Vec<(bool, bool)>>>;
+        let take = |mut ctx: Context<()>, got: Got| async move {
             let first = ctx.reader().is_some();
             let second = ctx.reader().is_some();
             got.lock().expect("no panic").push((first, second));
@@ -3493,6 +3507,46 @@ mod tests {
             message.into(),
             fix.into(),
         )]
+    }
+
+    /// The first run's reader ends when a spec change removes the channels it reads,
+    /// and the run returns `Retry`. The reader open of the restart gives `Config`.
+    #[test]
+    fn ends_with_a_config_error_when_the_reader_of_a_restart_matches_nothing() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let ended = reader.next().await.expect_err("the session ends");
+                got.lock().expect("no panic").push(ended);
+                Err(Error::Retry("again".into()))
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                let definitions = create_status("plant.write");
+                hub.set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+            },
+        );
+        assert_eq!(read.got.len(), 1, "{:?}", read.got);
+        let want = unplaced(
+            "connector.no-channel",
+            "the selector matches no channel",
+            "Select a channel that the spec defines",
+        );
+        assert_eq!(read.end.map_err(diagnostics), Err(Ok(want)));
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 1, 1),
+                (2, 1, 1)
+            ],
+            "{:?}",
+            read.statuses
+        );
     }
 
     #[test]
