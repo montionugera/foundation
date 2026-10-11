@@ -3081,6 +3081,33 @@ mod port {
         );
     }
 
+    /// An IP next to the refused ones goes to the bind.
+    #[test]
+    fn a_listen_next_to_a_refused_ip_goes_to_the_bind() {
+        let bound = [
+            "10.255.255.255:0",
+            "192.168.1.255:0",
+            "223.255.255.255:0",
+            "240.0.0.0:0",
+            "255.255.255.254:0",
+            "[feff::1]:0",
+            "[::ffff:223.255.255.255]:0",
+            "[::ffff:240.0.0.0]:0",
+        ];
+        for text in bound {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let error = env::net::Error::Io { code: 99 };
+            assert_eq!(node.join(), Err(Error::Port { listen, error }), "{text}");
+        }
+    }
+
     /// The refused listen comes after a reserved name and before a disk budget that
     /// holds no ring.
     #[test]
