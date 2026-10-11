@@ -103,7 +103,8 @@ impl Runs {
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
     /// its name returned. Each other connector keeps its run. The first run of an
-    /// added connector waits until no first open of an added connector is pending.
+    /// added connector whose name has no loop waits until no first open of such a
+    /// connector is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
