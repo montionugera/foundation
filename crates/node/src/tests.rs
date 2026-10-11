@@ -2227,6 +2227,12 @@ mod hub {
         out
     }
 
+    /// The seq of the first sample of the group of `key` in `received`.
+    pub(super) fn seq(received: &Received<'_>, key: u128) -> u64 {
+        let group = received.set().entries()[entry(received.set(), key)].group;
+        received.view().range(group).expect("a range").seq
+    }
+
     /// A node of `cores` shards on a new host, with the host.
     fn node(sim: &mut sim::Sim, cores: usize) -> (sim::node::Node, Node) {
         let host = host(sim, cores);
@@ -6397,14 +6403,15 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             // `state` running, ending, then stopped; `class` none, then config.
-            assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
+            assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
         }
 
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
         /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader opens before the node has mesh time, so it
-        /// sees the run of the start.
+        /// one that keeps it. The reader opens after the run of the start, which no
+        /// reader sees: its open and the open of that run wait for the same home. The
+        /// seq of the first frame that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -6417,6 +6424,7 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             let node = start(&host, founding);
+            assert_eq!(sim.run_for(TEN), Ok(()));
             let read = read_status(&node, &definitions);
             assert_eq!(sim.run_for(TEN), Ok(()));
             let other = text("other", &[]);
@@ -6431,8 +6439,16 @@ mod port {
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
-            let run = [(0, 0), (3, 1), (2, 1)];
-            assert_eq!(*read.lock().unwrap(), [run, run, run].concat());
+            let read = read.lock().unwrap();
+            let runs = [
+                (6, 0, 0),
+                (7, 3, 1),
+                (8, 2, 1),
+                (9, 0, 0),
+                (10, 3, 1),
+                (11, 2, 1),
+            ];
+            assert_eq!(*read, runs);
         }
 
         /// A connector that an apply moves from another member to this node keeps its
@@ -6478,13 +6494,13 @@ mod port {
             assert_eq!(error.to_string(), "thread shard-0 panicked");
         }
 
-        /// Reads each `state` and `class` of `plant.influx` that `node` writes, from a
-        /// task on `node`, by the keys of `definitions`.
+        /// Reads each seq, `state`, and `class` of `plant.influx` that `node` writes,
+        /// from a task on `node`, by the keys of `definitions`.
         fn read_status(
             node: &Node,
             definitions: &BTreeMap<Name, Definition>,
-        ) -> Arc<Mutex<Vec<(u8, u8)>>> {
-            use super::super::hub::bytes;
+        ) -> Arc<Mutex<Vec<(u64, u8, u8)>>> {
+            use super::super::hub::{bytes, seq};
             let [state, class] = ["state", "class"]
                 .map(|name| key_of(definitions, &format!("influx.status.{name}")));
             let read = Arc::new(Mutex::new(Vec::new()));
@@ -6500,9 +6516,13 @@ mod port {
                 };
                 let mut reader = hub.reader(config).await.expect("the reader opens");
                 while let Ok(received) = reader.next().await {
+                    let first = seq(&received, state.as_u128());
                     let [state, class] =
                         [state, class].map(|key| bytes(&received, key.as_u128()));
-                    out.lock().unwrap().extend(state.into_iter().zip(class));
+                    let seqs = (first..).zip(state).zip(class);
+                    out.lock()
+                        .unwrap()
+                        .extend(seqs.map(|((seq, s), c)| (seq, s, c)));
                 }
             });
             read
