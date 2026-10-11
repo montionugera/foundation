@@ -128,9 +128,10 @@ state on `main`.
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
   a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. Until #2325, a flood of programs can hold
-  each place and lock out a node that joins and the admin's program. It rejects a stream
-  whose header has not arrived within 10 s.
+  of a program, and one for the key of a node. Until #2325, a flood of peers outside the
+  region, programs or new node keys, can hold each place and lock out a node that joins
+  and the admin's program. It rejects a stream whose header has not arrived within
+  10 s.
 
 ### Subject to owner
 
