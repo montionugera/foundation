@@ -183,12 +183,11 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// reviewers it requires, and the last round must find nothing and end at `head`, or
 /// at a commit on its first-parent chain after which each merge is a clean merge of
 /// the base and the range to `head` changes no code, with a `Text fixes:` line when a
-/// commit that is not a merge follows it.
-/// `place` gives where a commit (a SHA or its prefix) is from `head`
-/// (`History::place`). A later round may skip `breaker` when the range of the last
-/// round changes no code; an earlier round's skip is taken as written. `code_change`
-/// gives the first code change in a range, with a merge of the base read by its
-/// resolution, as a phrase, or `None` (`History::code_change`).
+/// commit that is not a merge follows it. `place` gives where a commit (a SHA or its
+/// prefix) is from `head` (`History::place`). A later round may skip `breaker` when
+/// the range of the last round changes no code; an earlier round's skip is taken as
+/// written. `code_change` gives the first code change in a range, with a merge of the
+/// base read by its resolution, as a phrase, or `None` (`History::code_change`).
 fn problems(
     record: &Record,
     head: &str,
@@ -261,8 +260,9 @@ fn unended(
     if place == Place::Off {
         return Ok(Some(format!(
             "review round {number} ends at {end}, not at the head {head}. A commit \
-             after the round needs a new round; only a clean merge of the base does \
-             not."
+             after the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
         )));
     }
     if let Some(change) = code_change(end, head)? {

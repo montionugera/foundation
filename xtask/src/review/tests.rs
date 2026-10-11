@@ -710,7 +710,8 @@ fn reads_each_field_as_github_shows_it() {
             "review round 3 skips `breaker`, but its range changes code at `a.rs:2`.",
             "review round 3 ends at bbbbbbbb, not at the head \
              c77c67d72fd8d37964334c80e14dd8b5a1d5b6fb. A commit after the round needs \
-             a new round; only a clean merge of the base does not.",
+             a new round; only a clean merge of the base, or a commit that changes no \
+             code after a round with a `Text fixes:` line, does not.",
         ]
     );
 }
@@ -977,7 +978,8 @@ fn fails_a_range_that_ends_off_the_first_parent_chain() {
         check(&record(vec![bot(&round)])),
         vec![format!(
             "review round 3 ends at 0badc0de, not at the head {HEAD}. A commit after \
-             the round needs a new round; only a clean merge of the base does not."
+             the round needs a new round; only a clean merge of the base, or a commit \
+             that changes no code after a round with a `Text fixes:` line, does not."
         )]
     );
 }
