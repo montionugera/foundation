@@ -209,8 +209,8 @@ impl Manager {
         .await
     }
 
-    /// Connects, reads, and writes each connection until each waits or accepts a
-    /// stream, and has the task of `cx` woken when one can go on.
+    /// Connects, reads, and writes each connection until each waits, and has the task
+    /// of `cx` woken when one can go on.
     fn pass(&self, cx: &mut Context<'_>) {
         let state = self.state();
         state.park(cx.waker());
@@ -480,7 +480,7 @@ impl State {
 
     /// Adds `tcp`, which listen connection `listen` accepted, as a new connection
     /// with the context that `listen` has now, gives it `ESTABLISHED`, and has the
-    /// next run of the loop resume `listen`.
+    /// drive resume `listen` after the next run of the loop.
     fn accept(&self, listen: usize, tcp: Tcp) {
         let callback = self
             .table

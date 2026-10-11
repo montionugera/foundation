@@ -701,9 +701,9 @@ async fn write(stream: &mut Tcp, bytes: &[u8]) {
     }
 }
 
-/// The test counts the connections through the private table, since a gone connection
-/// that stays in it changes no status, call, or byte. It holds only its entry: the read
-/// buffer is the manager's, and it has no callback, stream, or send.
+/// The test counts the connections through the private table, since no public call
+/// closes a stream while a manager lives. A gone connection that stays in it changes no
+/// status, call, or wire byte, but keeps its entry and a move in each pass.
 #[test]
 fn a_connect_gives_opening_then_established_and_the_peer_reads_each_send() {
     let mut network = Network::new();
