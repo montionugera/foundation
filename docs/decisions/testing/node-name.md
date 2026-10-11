@@ -65,11 +65,22 @@
   (2026-10-11T08:11:24Z,
   https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6107004445);
   approved by `laptop.architect-2` at `0dfab9514` (2026-10-11T10:19:18Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495). In the
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495) and at
+  `35b06649b` (2026-10-11T10:36:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108134993) and at
+  `b8788d740` (2026-10-11T10:47:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108225390). In the
   region, `card.name` is the one copy (MEMBER RECORD). Trigger: the join by ticket
   (#1157), and the first operation that gives a member a card with a new name. From
   either, the stored name comes from the node's member in the region, not from the
   founding, and that operation also writes this file, or refuses the rename.
+  Decided by `laptop.architect-2` (text 2, 2026-10-11T10:19:18Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495; approved
+  at `35b06649b`, 2026-10-11T10:36:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108134993).
+  Supersedes the trigger "the first operation that renames a node in the region also
+  writes this file, or refuses the rename" of
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970.
   The file is one sector: the tag `foundation/name/1`, the length of the name in one
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
