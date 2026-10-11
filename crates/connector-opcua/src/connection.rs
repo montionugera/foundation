@@ -1070,4 +1070,4 @@ unsafe extern "C" fn closed(application: *mut c_void, _: *mut c_void) {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

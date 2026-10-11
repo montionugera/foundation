@@ -42,6 +42,9 @@ mod server;
 
 #[cfg(test)]
 mod child;
+#[cfg(test)]
+#[cfg(feature = "open62541")]
+mod peer;
 
 // `build.rs` calls it, and a build script has no test harness.
 #[cfg(test)]

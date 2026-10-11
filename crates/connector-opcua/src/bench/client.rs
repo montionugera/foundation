@@ -153,7 +153,7 @@ mod tests {
     use sim::{Sim, node};
 
     use super::{PORT, Server};
-    use crate::connection::tests::session;
+    use crate::peer::session;
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {
@@ -211,20 +211,15 @@ mod tests {
     }
 
     #[test]
-    fn each_scope_starts_from_its_rng() {
+    fn each_scope_and_each_connect_take_another_value() {
         let ids = sessions([1, 2]);
         assert_ne!(ids[0][0], ids[1][0], "two scopes took the same value");
-    }
-
-    #[test]
-    fn each_connect_takes_another_value_of_the_rng_of_its_scope() {
-        let ids = sessions([1, 2]);
         assert_ne!(ids[0][1], ids[0][2], "two connects took the same value");
     }
 
     #[test]
     fn scopes_of_one_start_value_give_a_peer_the_same_sessions() {
         let ids = sessions([1, 1]);
-        assert_eq!(ids[0], ids[1]);
+        assert_eq!(ids[0], ids[1], "a start value gave other sessions");
     }
 }
