@@ -584,8 +584,8 @@ impl Endpoint {
     /// stream holds it and the caller writes its rest. When no byte of it went, its
     /// header included, the message drops and the stream stays open. Else the stream
     /// resets with `Code(0)`, as [`Endpoint::reset`] does, and each later write and
-    /// finish gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn of
-    /// the message come back now. Does nothing when the stream holds no such
+    /// finish gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the
+    /// turn of the message come back now. Does nothing when the stream holds no such
     /// message, as a message of [`Endpoint::try_write`], after a finish or reset of
     /// `sender`, or when the connection ended. Calls `now` for the time only when it
     /// takes a message.
