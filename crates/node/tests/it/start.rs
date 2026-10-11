@@ -89,6 +89,17 @@ fn a_first_start_founds_the_region_and_a_restart_needs_no_admin_key() {
 }
 
 #[test]
+fn a_node_holds_its_address_until_sigterm() {
+    let mut rig = Rig::new();
+    rig.start();
+    let address = rig.dir.join("foundation-data/data/address");
+    let len = std::fs::metadata(&address).expect("stat the address").len();
+    assert_eq!(len, 99);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert!(!address.exists(), "a clean stop left the address");
+}
+
+#[test]
 fn a_restart_with_another_name_fails() {
     let mut rig = Rig::new();
     rig.start();

@@ -202,6 +202,12 @@ impl Node {
     /// reserved segment ([`Error::Reserved`]). Any failure stops the node, and
     /// [`Node::join`] gives the first one (its `# Errors`).
     ///
+    /// While shard 0 serves the port, the data directory holds the file `address`: the
+    /// node's key, the public key of its transport, and the address that the port is
+    /// bound at. Shard 0 makes it whole before it takes a session or calls a task, and
+    /// removes it once it serves no more, before it frees `lock`. A crash leaves it,
+    /// and the next start makes its own.
+    ///
     /// # Panics
     ///
     /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
@@ -361,16 +367,18 @@ impl Node {
     }
 
     /// Calls `task` with the node's hub on shard 0, once each shard has opened its
-    /// buffer, the node takes sessions, and, with a region, the mesh has opened, and
-    /// after each task given before it, then runs its future. So the code in its
-    /// closure body runs in the order of the calls; the futures that tasks give run in
-    /// no set order. Does not wait. A node that stops or fails before shard 0 calls a
-    /// task drops it uncalled. A task runs on shard 0's thread, so it may hold values
-    /// that are not `Send`, such as sessions; it sends its result back through a value
-    /// it owns. Its future runs until it completes or shard 0 ends, which drops it. A
-    /// panic in a task ends shard 0 and fails the node: [`Node::join`] gives
-    /// [`Error::Panicked`], unless the node saw the transport or the mesh's group stop
-    /// first, which gives [`Error::Transport`] or [`Error::Group`].
+    /// buffer, the data directory holds the file `address`, the node takes sessions,
+    /// and, with a region, the mesh has opened, and after each task given before it,
+    /// then runs its future. So the code in its closure body runs in the order of the
+    /// calls; the futures that tasks give run in no set order. Does not wait. A node
+    /// that stops or fails before shard 0 calls a task drops it uncalled. A task runs
+    /// on shard 0's thread, so it may hold values that are not `Send`, such as
+    /// sessions; it sends its result back through a value it owns. Its future runs
+    /// until it completes or shard 0 ends, which drops it. A panic in a task ends shard
+    /// 0 and fails the node: [`Node::join`] gives [`Error::Panicked`], unless the node
+    /// saw the transport or the mesh's group stop first, which gives
+    /// [`Error::Transport`] or [`Error::Group`], or did not make the file `address`,
+    /// which gives [`Error::Directory`].
     pub fn spawn<F>(&self, task: impl FnOnce(hub::Hub) -> F + Send + 'static)
     where
         F: Future<Output = ()> + 'static,
@@ -423,18 +431,19 @@ impl Node {
     /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
     /// pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
-    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
-    /// a data directory that shard 0 could not claim, else [`Error::Name`],
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
+    /// data directory that shard 0 could not claim, else [`Error::Name`],
     /// [`Error::Renamed`], or [`Error::Directory`] for a file `name` that it could not
-    /// read or keep, else [`Error::Buffer`] for the first shard by core whose
-    /// buffer, or the home over it, did not open, [`Error::Budget`] or
-    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
-    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
-    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
-    /// [`Error::Mesh`] for a stored region or a mesh that did not open, or
-    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
-    /// else [`Error::Panicked`] for the first shard by core that panicked. Any failed
-    /// shard stops the node.
+    /// read or keep, else [`Error::Buffer`] for the first shard by core whose buffer,
+    /// or the home over it, did not open, [`Error::Budget`] or [`Error::Directory`] for
+    /// a file `budget` that shard 0 could not read or write, [`Error::Key`],
+    /// [`Error::Admin`], or [`Error::Directory`] for a key file that shard 0 could not
+    /// read or write, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
+    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
+    /// that shard 0 could not make, or [`Error::Transport`] or [`Error::Group`],
+    /// whichever the node sees stop first, else [`Error::Directory`] for a file
+    /// `address` that shard 0 could not remove, else [`Error::Panicked`] for the first
+    /// shard by core that panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -924,15 +933,17 @@ impl Serve {
     /// places on this node ([`connectors::Runs`]), and serves the node's port, until
     /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
     /// of [`end`]. A transport or a group that ends it goes into `failed` before it
-    /// drops the tasks given that still run. Before it returns, it drops the tasks, the
-    /// hub, `home`, `guard`, the runs of the connectors, each session and stream
+    /// drops the tasks given that still run. Meanwhile it holds the file `address`
+    /// ([`address::hold`]), whose error goes into `failed` before the tasks given drop,
+    /// unless a transport or a group is there. Before it returns, it drops the tasks,
+    /// the hub, `home`, `guard`, the runs of the connectors, each session and stream
     /// future, the operations on the mesh, the mesh, and the transport, and waits for
     /// each task of the mesh to end, with a mesh, and for the transport to free the
     /// port. Unless the socket broke, the port is freed only after the hub lets go of
     /// the region, as [`hub::Hub::new`] states, and after each task that a connector's
     /// run spawned has ended. Runs no task and takes no session when a shard did not
-    /// open, or when the budgets were not kept, the identity did not load, or the mesh
-    /// did not open, which goes into `failed`.
+    /// open, or when the budgets were not kept, the identity did not load, the mesh did
+    /// not open, or the file `address` was not made, which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
@@ -1182,8 +1193,8 @@ pub enum Error {
         cores: usize,
     },
     /// A file call that locks the data directory, reads or records its shard count or
-    /// the node's name or its budgets, or reads or writes the node's key or the first
-    /// admin's key, failed.
+    /// the node's name or its budgets, reads or writes the node's key or the first
+    /// admin's key, or makes or removes the file `address`, failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),

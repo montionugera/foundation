@@ -445,3 +445,21 @@ fn a_failed_remove_at_the_stop_fails_the_node() {
     assert_eq!(stop(&mut sim, node), Ok(()));
     assert_eq!(held(&mut sim, &host), None);
 }
+
+/// A remove of `address` that fails after the transport stopped the node: `join`
+/// gives the error of the transport.
+#[test]
+fn a_failed_remove_after_the_transport_stops_gives_the_transport_error() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    host.fail_file(Path::new(FILE), env::files::Operation::Remove);
+    host.fail_udp(listen(&host));
+    assert_eq!(sim.run(), Ok(()));
+    let error = transport::Error::Network {
+        error: env::net::Error::Io { code: 5 },
+    };
+    assert_eq!(node.join(), Err(Error::Transport(error)));
+    assert!(held(&mut sim, &host).is_some(), "the remove failed");
+}
