@@ -5620,9 +5620,9 @@ mod tests {
             log.write(None, &entries).await.unwrap();
         }
 
-        /// Opens node 1 again and again for 1 ms while its first mesh lives, in each
-        /// of 64 runs. Gives each run in which an open did not give `locked`, with
-        /// what each such open gave. With `full`, the first write of the group starts
+        /// Opens node 1 again and again for 1 ms while its first mesh lives, in each of
+        /// 64 runs. Gives each run in which an open did not give `locked`, with what
+        /// each such open gave. With `full`, the first write of the group starts
         /// `log-1`.
         fn opens_of_a_held_log(full: bool) -> Vec<(u64, Vec<String>)> {
             let mut runs = Vec::new();
