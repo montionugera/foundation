@@ -746,9 +746,9 @@ mod tests {
         span
     }
 
-    /// Whether `want` ends in a heredoc and its line end, and `out` equals `want` up
-    /// to that heredoc and holds no line end after it.
-    fn quoted_at_end(out: &str, want: &str, line_end: &str) -> bool {
+    /// Whether `want` ends in a heredoc and a new line, and `out` equals `want` up to
+    /// that heredoc and holds no new line after it. A heredoc's lines end in `\n`.
+    fn quoted_at_end(out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
             .zip(want.chars())
@@ -757,13 +757,13 @@ mod tests {
         let Some(heredoc) = want
             .get(start..)
             .and_then(|rest| rest.strip_prefix("<<"))
-            .and_then(|h| h.strip_suffix(line_end))
+            .and_then(|h| h.strip_suffix('\n'))
         else {
             return false;
         };
-        let closed = heredoc.split_once(line_end).is_some_and(|(marker, body)| {
+        let closed = heredoc.split_once('\n').is_some_and(|(marker, body)| {
             body.strip_suffix(marker)
-                .is_some_and(|lines| lines.is_empty() || lines.ends_with(line_end))
+                .is_some_and(|lines| lines.is_empty() || lines.ends_with('\n'))
         });
         closed && out.get(start..).is_some_and(|rest| !rest.contains('\n'))
     }
@@ -861,7 +861,7 @@ mod tests {
                     || want == format!("{out}{line_end}")
                     // A heredoc needs a line end after its closer, so a value at the
                     // end of an unended text is quoted.
-                    || quoted_at_end(&out, &want, line_end)
+                    || quoted_at_end(&out, &want)
                         && read(Source(0), &out) == Ok(document),
                 "{:?}\n{:?}\n{:?}",
                 text,
