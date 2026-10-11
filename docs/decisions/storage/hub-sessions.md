@@ -41,7 +41,8 @@
   frame until a later commit past its window ends, gets each frame before the miss, then
   `Ended::Behind`. Decided by `laptop.architect` (2026-10-08T07:23:30Z:
   https://github.com/synnaxlabs/foundation/issues/1170#issuecomment-6054827276), which
-  supersedes https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
+  supersedes the hub test of
+  https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
   https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183): the
   ruling said that no hub test reaches that wake, and it gave the two hub `sim` tests as
