@@ -776,22 +776,35 @@ mod tests {
             .strip_suffix('\n')
             .filter(|t| !t.contains('\n'))
             .unwrap_or(tail);
-        let at = |text: &str, place: fn(Span) -> u32, offset: usize| {
-            read(Source(0), text).ok().and_then(|document| {
-                document.attributes.iter().find_map(|attribute| {
-                    let value = attribute.value.span?;
-                    (usize::try_from(place(value)).ok()? == offset)
-                        .then(|| attribute.key.clone())
-                })
-            })
+        let values = |text: &str| {
+            let document = read(Source(0), text).ok()?;
+            let spans = document.attributes.iter().filter_map(|attribute| {
+                let span = attribute.value.span?;
+                let start = usize::try_from(span.start().offset).ok()?;
+                let end = usize::try_from(span.end().offset).ok()?;
+                Some((attribute.key.clone(), start, end))
+            });
+            Some(spans.collect::<Vec<_>>())
         };
-        let key = at(text, |span| span.end().offset, text.trim_end().len());
-        key.is_some()
-            && at(out, |span| span.start().offset, start) == key
-            && out
-                .get(start..)
-                .and_then(|rest| rest.strip_suffix(tail))
-                .is_some_and(|value| !value.is_empty() && !value.contains('\n'))
+        let end = text.trim_end().len();
+        let Some(key) = values(text)
+            .into_iter()
+            .flatten()
+            .find_map(|(key, _, last)| (last == end).then_some(key))
+        else {
+            return false;
+        };
+        values(out)
+            .into_iter()
+            .flatten()
+            .find_map(|(other, first, last)| {
+                (other == key && first == start).then_some(last)
+            })
+            .is_some_and(|last| {
+                out.get(start..last)
+                    .is_some_and(|value| !value.is_empty() && !value.contains('\n'))
+                    && out.get(last..) == Some(tail)
+            })
     }
 
     proptest! {
@@ -1124,6 +1137,17 @@ mod tests {
         let out = "b {\na = \"x\\n\"\n}\na = 2\nc = 3\n";
         let want = "b {\na = <<EOT\nx\nEOT\n}\na = 2\nc = 3\n";
         assert!(!quoted_at_end("b {\na = 1\n}\na = 2", out, want), "block");
+        let ended = "a = <<EOT\nx\nEOT\n";
+        let more = "a = <<EOT\nx\nEOT\nb = 2\n";
+        for (out, want) in [
+            ("a = \"x\\n\" # c\nb = 2\n", more),
+            ("a = \"x\\n\"   \nb = 2\n", more),
+            ("a = \"x\\n\" # c", ended),
+            ("a = \"x\\n\"   ", ended),
+        ] {
+            let after = quoted_at_end("a = 1", out, want);
+            assert!(!after, "after the value: {out:?}");
+        }
         assert!(
             !quoted_at_end("a = 1", "a = \"x\"\n", "a = <<EOT\nx\nEOT\n"),
             "one line"
