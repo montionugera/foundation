@@ -452,7 +452,7 @@ mod tests {
         .expect("the run ends");
     }
 
-    /// A scope seeds its loop from the next value of `rng`, so `rng` moves on by one.
+    /// A scope starts its loop from the next value of `rng`, so `rng` moves on by one.
     #[test]
     fn a_scope_draws_one_value_of_its_rng() {
         let mut sim = Sim::new(sim::Config::default());
@@ -812,7 +812,7 @@ mod tests {
         });
     }
 
-    /// Each client seeds its loop from the next value of `rng`, so two clients of one
+    /// Each client starts its loop from the next value of `rng`, so two clients of one
     /// `rng` take two values.
     #[test]
     fn each_client_draws_one_value_of_its_rng() {
@@ -830,7 +830,7 @@ mod tests {
     }
 
     /// A `Client` has no peer, and the count on the rng of the caller passes when a
-    /// loop seeds from a constant, so only the generator of open62541 on this thread
+    /// loop starts from a constant, so only the generator of open62541 on this thread
     /// shows that each loop takes the value it draws.
     #[test]
     fn each_client_of_one_rng_draws_other_values() {
