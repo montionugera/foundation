@@ -432,7 +432,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `codec_shape_encoder` | `codec::Encoder` on an array, matrix, list, `String`, or `Bytes` series | Gives the refusal that a second reader of the raw form gives, or a valid series that decodes unchanged with zeros for the padding; an array or a matrix encodes as the series of its elements |
 | `document_encoding` | `document::encoding::decode` | Encodes to the same bytes |
 | `spec_definition` | `spec::definition::Definition::decode` | Encodes to the same bytes |
-| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries only when `spec::region::tree` of them has the same root |
+| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries, with the chunks of the tree and no other, only when `spec::region::tree` of them has the same root |
 | `spec_data_type` | `spec::data_type::DataType` | Prints as the text it was read from |
 | `config_hcl_read` | `config_hcl::read` | The encoding decodes to an equal document |
 | `config_hcl_update` | `config_hcl::update` | Its text reads as the document; an update to its own document keeps each byte; an unread text gives the problems of `read` |
@@ -454,13 +454,13 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
 | `buffer_open` | `Buffer::open` and `Buffer::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Buffer::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
-| `node_identity` | `node::identity::decode` and `encode`, by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; and the decode and encode of `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and that value encodes to the same bytes |
+| `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; and the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#55), the QUIC hello
-(`transport::quic::hello::Hello::decode`), `spec` tree chunks (#64), the file `founding`
-of the mesh directory (`mesh::region::Founding::decode`, with `mesh::Member::decode` in
-it, #2311), the join answer (`mesh::Member::decode` from a peer, #336 adds its target),
+(`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the file `name` of the data directory
 (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of
