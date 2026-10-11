@@ -939,7 +939,7 @@ async fn stalled<T>(
 
 /// Makes a FIFO at `path`. A child process, such as `mkfifo`, would hold the files of
 /// the tests on other threads open until it starts, and so keep their locks.
-fn mkfifo(path: &Path) {
+pub(crate) fn mkfifo(path: &Path) {
     #[cfg(target_os = "linux")]
     {
         let mode = rustix::fs::Mode::from_raw_mode(0o600);

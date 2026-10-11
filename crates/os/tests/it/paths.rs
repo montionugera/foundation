@@ -2,7 +2,7 @@
 
 use std::fs::{self, Permissions};
 use std::io::Read;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found};
@@ -10,6 +10,7 @@ use rustix::io::Errno;
 
 use crate::cases::{self, Host};
 use crate::disk::Scratch;
+use crate::files::mkfifo;
 
 fn run(case: fn(&Host<'_>)) {
     let scratch = Scratch::new();
@@ -122,8 +123,11 @@ fn a_write_on_a_path_with_no_name_writes_nothing() {
 #[test]
 fn a_write_on_a_path_that_names_a_directory_makes_no_file_beside_it() {
     let scratch = Scratch::new();
-    let none = sealed(&scratch).join("none/");
-    assert_eq!(os::paths().write(&none, b"x"), Err(Error::NotFound));
+    let dir = sealed(&scratch);
+    for none in [dir.join("none/"), dir.join("none/.")] {
+        let written = os::paths().write(&none, b"x");
+        assert_eq!(written, Err(Error::NotFound), "{}", none.display());
+    }
 }
 
 #[test]
@@ -155,10 +159,35 @@ fn a_write_on_a_device_writes_in_place() {
 }
 
 #[test]
+fn a_write_on_a_pipe_gives_the_bytes_to_its_reader() {
+    let scratch = Scratch::new();
+    let pipe = scratch.0.join("pipe");
+    mkfifo(&pipe);
+    let nonblocking = rustix::fs::OFlags::NONBLOCK.bits().cast_signed();
+    let mut reader = fs::OpenOptions::new();
+    #[expect(clippy::disallowed_methods, reason = "the test reads the pipe")]
+    let mut reader = reader
+        .read(true)
+        .custom_flags(nonblocking)
+        .open(&pipe)
+        .unwrap();
+    let paths = os::paths();
+    assert_eq!(paths.write(&pipe, b"plan"), Ok(()));
+    let mut bytes = [0; 8];
+    let read = reader.read(&mut bytes).unwrap();
+    assert_eq!(&bytes[..read], b"plan");
+    assert!(fs::symlink_metadata(&pipe).unwrap().file_type().is_fifo());
+    assert_eq!(
+        paths.read(&scratch.0, 1 << 12),
+        Ok(Found::Directory(vec![pipe]))
+    );
+}
+
+#[test]
 fn a_write_on_a_link_writes_the_file_it_names() {
     let scratch = Scratch::new();
     let (file, link) = (scratch.0.join("plant.hcl"), scratch.0.join("link"));
-    fs::write(&file, b"old").unwrap();
+    fs::write(&file, b"old file").unwrap();
     symlink(&file, &link).unwrap();
     let paths = os::paths();
     paths.write(&link, b"new").unwrap();
