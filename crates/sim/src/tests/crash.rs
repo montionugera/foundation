@@ -755,8 +755,20 @@ fn a_power_crash_in_a_create_that_fills_the_disk_leaves_no_file_with_bytes() {
     assert_eq!(outcomes, BTreeSet::from([(Vec::new(), MIB), (made, MIB)]));
 }
 
+/// The digest of `sim` after a file call on `node`. The delay of the call draws from
+/// the files stream, and the digest holds its end, so the digest shows each earlier
+/// draw.
+fn digest_after_a_call(sim: &mut Sim, node: &node::Node) -> u64 {
+    sim.run_on(node, |node, _| async move {
+        node.files().free().await.unwrap();
+    })
+    .unwrap();
+    sim.digest()
+}
+
 /// Whether a crash by `crash` in a create open of `path`, after `before`, draws a
-/// state: its digest differs from that of a crash in a write open of `path`.
+/// state: the digest after a later call differs from that after a crash in a write
+/// open of `path`.
 fn draws<F, B>(seed: u64, crash: Crash, path: &'static str, before: B) -> bool
 where
     B: FnOnce(node::Node) -> F + Copy + Send + 'static,
@@ -769,7 +781,7 @@ where
             until_crash(&node).await;
             hang(node.files().open(Path::new(path), mode)).await;
         });
-        sim.digest()
+        digest_after_a_call(&mut sim, &node)
     };
     digest(Mode::Create { len: 1_024 }) != digest(Mode::Write)
 }
@@ -1586,21 +1598,17 @@ fn a_power_cut_can_keep_or_drop_a_create_dir_in_flight() {
 }
 
 #[test]
-fn a_power_cut_with_each_change_durable_keeps_the_digest_of_later_draws() {
-    // `DefaultHasher` makes the digest, so a new toolchain can change this value.
-    let (mut sim, node) = disk(3);
-    crash_after(&mut sim, &node, Crash::Power, |node| async move {
-        drop(create_synced(&node).await);
-    });
-    crash_after(&mut sim, &node, Crash::Power, |node| async move {
-        until_crash(&node).await;
-        hang(
-            node.files()
-                .open(Path::new("b"), Mode::Create { len: 1_024 }),
-        )
-        .await;
-    });
-    assert_eq!(sim.digest(), 2_162_013_485_531_046_164);
+fn a_power_cut_with_each_change_durable_draws_nothing() {
+    for seed in 0..8 {
+        let digests = [Crash::Power, Crash::Process].map(|crash| {
+            let (mut sim, node) = disk(seed);
+            crash_after(&mut sim, &node, crash, |node| async move {
+                drop(create_synced(&node).await);
+            });
+            digest_after_a_call(&mut sim, &node)
+        });
+        assert_eq!(digests[0], digests[1], "{seed}");
+    }
 }
 
 #[test]
