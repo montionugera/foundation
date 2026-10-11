@@ -4,6 +4,8 @@
   each caller must call, and which a clone or a live session defeats. Decided by
   `laptop.architect` (2026-10-07T18:07:55Z:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6043897000).
+  Amended by `laptop.architect` (2026-10-10, the task no longer sleeps:
+  https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820, item 2).
   The commit that the task waits for lives in the state, and the task polls it through
   the state. So the drop of the state drops the commit in the same call. Once the hub
   and each of its sessions drop, the hub holds no part of the home: no `Home`, no
