@@ -899,7 +899,7 @@ fn ignorable(c: char) -> bool {
 /// multiple of 4 columns. Neither changes what GitHub shows. A line number then gives
 /// the offset of its line, and comrak gives the right column after a tab that a quote
 /// or a list item takes in part. The spaces and tabs at the end of a line stay: a line
-/// of only spaces ends a footnote, and a backslash before a space is no line break.
+/// of 1 to 3 spaces ends a footnote, and a backslash before a space is no line break.
 fn normalized(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     let (mark, text) = text.split_at(mark(text));
