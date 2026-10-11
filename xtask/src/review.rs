@@ -147,10 +147,6 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is one fact of the comment, and none excludes another"
-)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -165,12 +161,9 @@ struct Round {
     fixed: bool,
     /// `None` for an old round, which has no end lines: [`Parsed`] checks its hot path.
     lines: Option<End>,
-    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
-    /// name `architecture` when its range changes a decision.
-    decision_bound: bool,
-    /// The comment was posted at or after [`LINK_CUTOFF`], so the last round must
-    /// link each OK and each approval on its end lines.
-    link_bound: bool,
+    /// When the comment was posted ([`Comment::created`]). A rule that starts at a
+    /// cutoff compares it with its own.
+    posted: String,
 }
 
 /// The end lines of a round comment.
@@ -296,7 +289,8 @@ fn problems(
                     &record.files,
                     last,
                     code_change,
-                    (later && round.decision_bound).then_some(decision_change),
+                    (later && round.posted.as_str() >= DECISION_CUTOFF)
+                        .then_some(decision_change),
                 )?);
             }
             Err(e) => {
@@ -319,9 +313,7 @@ fn problems(
             ));
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
-        if let Some(lines) = round.lines.as_ref().filter(|_| round.link_bound) {
-            problems.extend(unlinked(round.number, lines, &record.files));
-        }
+        problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -362,11 +354,17 @@ fn unended(
     }))
 }
 
-/// The problems with the links on the end lines `lines` of the last round, round
-/// `number`, of a PR that changes `files`: the first issue of its `Deferred:` line
-/// with no OK ([`deferral`]) when a file is in a risk crate ([`RISK`]), and what its
-/// `Public surface:` line lacks ([`unapproved`]).
-fn unlinked(number: u32, lines: &End, files: &[String]) -> Vec<String> {
+/// The problems with the links on the end lines of `round`, the last round of a PR
+/// that changes `files`: the first issue of its `Deferred:` line with no OK
+/// ([`deferral`]) when a file is in a risk crate ([`RISK`]), and what its
+/// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
+/// [`LINK_CUTOFF`].
+fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
+    let bound = round.posted.as_str() >= LINK_CUTOFF;
+    let Some(lines) = round.lines.as_ref().filter(|_| bound) else {
+        return Vec::new();
+    };
+    let number = round.number;
     let risky = files.iter().any(|file| {
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
@@ -582,8 +580,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             findings,
             fixed: fixed(&shown),
             lines,
-            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
-            link_bound: comment.created.as_str() >= LINK_CUTOFF,
+            posted: comment.created.clone(),
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
