@@ -99,7 +99,7 @@ impl<'a> Received<'a> {
     /// frame is safe at its target.
     #[must_use]
     pub fn position(&self) -> Position {
-        let position = self.lens.after(&self.view());
+        let position = self.lens.after(self.frame);
         self.given.set(Some(position.live));
         position
     }
@@ -146,9 +146,10 @@ impl Lens {
         }
     }
 
-    /// The position of the reader after the frame of `view`, a view through this lens.
-    fn after(&self, view: &View<'_>) -> Position {
-        let range = view
+    /// The position of the reader after `frame`, a frame of this lens's key set. The
+    /// mask holds the index, so the frame's range of its group is the view's.
+    fn after(&self, frame: &Frame) -> Position {
+        let range = frame
             .range(self.group)
             .expect("invariant: a frame holds the range of each group");
         Position {
