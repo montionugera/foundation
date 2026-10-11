@@ -188,12 +188,12 @@
   the new one arrives (ONE SESSION PER PEER), so at the bound another peer can take the
   place first (`laptop.architect-2`, 15:18 UTC:
   https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
-  refuses a member, so a flood of programs cannot lock a member out. Trigger: the PR
-  that adds the change kind that removes a member (MESH DRIVER). That change also closes
-  each session of that node, with the code of a refused session, and so ends its `Hub`
-  and `Mesh` streams. The node then admits it again as any other peer. The bound can
-  lock out each peer outside the region, also a node that joins and the admin's
-  program, until #2325 (`laptop.architect-2`, 2026-10-10 23:40 UTC:
+  refuses a member, so a flood of peers outside the region cannot lock a member out.
+  Trigger: the PR that adds the change kind that removes a member (MESH DRIVER). That
+  change also closes each session of that node, with the code of a refused session, and
+  so ends its `Hub` and `Mesh` streams. The node then admits it again as any other peer.
+  The bound can lock out each peer outside the region, also a node that joins and the
+  admin's program, until #2325 (`laptop.architect-2`, 2026-10-10 23:40 UTC:
   https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280).
   Supersedes the deferrals of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669 (item 5,
