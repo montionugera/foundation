@@ -197,7 +197,14 @@
   `interruptServer`, or `UA_random_seed`. Lost: a smaller claim for that clock key,
   which no test then checks. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2309#issuecomment-6103245041,
-  2026-10-10 23:18 UTC). A test asserts the pragmas of `shim.c` and `server.c` after
+  2026-10-10 23:18 UTC). The test stands against honest code. A name split by a line
+  splice or a string continuation has no honest use, so review covers it. Lost: a scan
+  on the tokens of rustc and of the C preprocessor. It adds a Rust parser and a
+  preprocessor run to a test, for edits that review sees. Also lost: a fix of the
+  scan for each case, because each of three fixes let in a new case. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6104162271,
+  2026-10-11 01:23 UTC). A test asserts the pragmas of `shim.c` and `server.c` after
   the preprocessor. It stands against honest code. A `#line` directive or a line marker
   in `shim.c` or `server.c` has no honest use, since both files are written by hand,
   so review covers it, and the `#line` rule of the copy check does not apply to them.
