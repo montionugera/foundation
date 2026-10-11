@@ -124,11 +124,14 @@
   honest C. So the check reads each instruction of `objdump -d` and fails on each
   mnemonic outside a closed list for the architecture of the build, with the file, the
   function, and the mnemonic. A move of a system register (`mrs`, `msr`) is keyed by its
-  register too. The key of an x86 instruction keeps each prefix (`rep stos`,
-  `notrack jmp`), so a prefix that changes what an instruction does has its own entry.
-  The prefix rule: decided by `laptop.architect-2`
+  register too. The key of an x86 instruction keeps each prefix that `objdump -d` shows
+  as a word before the mnemonic (`rep stos`, `notrack jmp`), so such a prefix has its
+  own entry. A prefix that `objdump` shows in an operand, such as the segment of
+  `fs:0x0`, is not in the key. The prefix rule: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
-  2026-10-11 05:48 UTC). An entry goes in the list only when it reads no clock,
+  2026-10-11 05:48 UTC). Which prefix the key keeps: stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106559609,
+  2026-10-11 07:12 UTC). An entry goes in the list only when it reads no clock,
   randomness, file, network, or process state. Lost: a deny list of such instructions,
   which passes one that it does not name, such as one of a later extension. Until #2330,
   the check passes such a builtin, and review of each copy PR covers it. Decided by
