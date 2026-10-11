@@ -62,6 +62,8 @@ async fn answer(
             FromRequester::Put(put) => {
                 let chunk = body(store, receiver, put).await?;
                 store.put(put.digest, &chunk).await?;
+                // The chunk can fill the pool, and the reply head needs a block.
+                drop(chunk);
                 let stored = Reply::Stored { digest: put.digest };
                 reply(store, sender, stored).await?;
             }

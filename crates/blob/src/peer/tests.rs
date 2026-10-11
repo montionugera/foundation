@@ -48,12 +48,24 @@ fn path(digest: Digest) -> PathBuf {
     Path::new(DIR).join(digest.to_string())
 }
 
+/// A pool whose budget is one block of its largest size.
+fn create_tight_pool() -> Rc<Pool> {
+    let config = block::Config::new(64 + 4096).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    Rc::new(Pool::new(config, memory))
+}
+
 /// The store of the server's node, which leaves `floor_bytes` free.
 async fn open(node: &sim::node::Node, floor_bytes: u64) -> Store {
+    open_on(node, create_pool(), floor_bytes).await
+}
+
+/// As [`open`], with the blocks of `pool`.
+async fn open_on(node: &sim::node::Node, pool: Rc<Pool>, floor_bytes: u64) -> Store {
     Store::open(Config {
         files: node.files(),
         dir: DIR.into(),
-        pool: create_pool(),
+        pool,
         floor_bytes,
     })
     .await
@@ -348,6 +360,28 @@ fn a_put_gives_stored_once_the_chunk_is_durable() {
         assert_eq!(&got[..], &bytes[..]);
     })
     .unwrap();
+}
+
+#[test]
+fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
+    let max = create_tight_pool().largest();
+    assert_eq!(max, 4096);
+    let (digest, bytes) = chunk(7, max);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, u32::try_from(max).unwrap()).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest });
+            stream.finish().await;
+        },
+    );
 }
 
 #[test]
