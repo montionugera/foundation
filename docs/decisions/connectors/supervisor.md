@@ -62,11 +62,12 @@
   runs again after `Config`, has no share and does not wait (`laptop.architect-2`,
   2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 4).
-  So an out connector reads each frame of each in connector that its apply, or a later
-  apply, adds. After a run returns, the supervisor waits, with no timeout, until each
-  task that the run spawned through `Context::tasks` ended, and only then starts its
-  backoff. A task that does not end at the cancel is a defect of its kind
-  (`laptop.architect-2`, 2026-10-08T19:04:15Z:
+  An addition while the last run of the name has not returned is a change. So an out
+  connector that an apply adds, whose name has no run, reads each frame of each in
+  connector that its apply, or a later apply, adds. After a run returns, the supervisor
+  waits, with no timeout, until each task that the run spawned through `Context::tasks`
+  ended, and only then starts its backoff. A task that does not end at the cancel is a
+  defect of its kind (`laptop.architect-2`, 2026-10-08T19:04:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337). It also
   waits so before it returns (`laptop.architect-2`, 2026-10-09T01:06:45Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6072159701, item
