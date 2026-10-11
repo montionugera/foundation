@@ -16,8 +16,8 @@ mod history;
 
 use history::Place;
 
-/// The first change of code in a range `<from>..<end>`, as a phrase, or `None`.
-type CodeChange<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
+/// The first change of one kind in a range `<from>..<end>`, as a phrase, or `None`.
+type Change<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
 
 /// The account that posts each round comment and each director verdict. Comments by
 /// other accounts never count.
@@ -89,6 +89,10 @@ const CUTOFF: &str = "2026-10-08T03:00:00Z";
 /// before it.
 const RATING_CUTOFF: &str = "2026-10-11T16:00:00Z";
 
+/// A later round posted before this UTC time needs no `architecture` for a range that
+/// changes a decision, so that the rule does not fail the rounds that came before it.
+const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
+
 /// The record of a PR that the check reads.
 #[derive(Debug)]
 struct Record {
@@ -110,6 +114,10 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one fact of the comment, and none excludes another"
+)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -125,6 +133,9 @@ struct Round {
     /// The `Hot path:` end line names a function, so the round requires
     /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
     hot: bool,
+    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
+    /// name `architecture` when its range changes a decision.
+    decision_bound: bool,
 }
 
 /// A round comment that does not parse.
@@ -157,16 +168,24 @@ struct Parsed {
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
 pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
-    let found = fetch(pr).and_then(|record| {
-        let history = history::History::new(root, &record.base);
-        problems(
-            &record,
-            head,
-            &|end| history.place(end, head),
-            &|from, end| history.code_change(from, end),
-        )
-    });
-    exit(found)
+    exit(fetch(pr).and_then(|record| problems_in(root, &record, head)))
+}
+
+/// The problems with the review in `record` at `head` ([`problems`]), read with the
+/// history of the repository at `root`.
+fn problems_in(
+    root: &Path,
+    record: &Record,
+    head: &str,
+) -> Result<Vec<String>, String> {
+    let history = history::History::new(root, &record.base);
+    problems(
+        record,
+        head,
+        &|end| history.place(end, head),
+        &|from, end| history.code_change(from, end),
+        &|from, end| history.decision_change(from, end),
+    )
 }
 
 /// Prints each problem or the failure in `found`, and gives the exit code of `run`.
@@ -194,12 +213,17 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// prefix) is from `head` (`History::place`). A later round may skip `breaker` when
 /// the range of the last round changes no code; an earlier round's skip is taken as
 /// written. `code_change` gives the first code change in a range, with a merge of the
-/// base read by its resolution, as a phrase, or `None` (`History::code_change`).
+/// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
+/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
+/// `decision_change` gives a phrase for its range (`History::decision_change`). For
+/// that rule, a round comment after the first is a later round, whatever its number,
+/// and so is a first round comment whose number is above 1.
 fn problems(
     record: &Record,
     head: &str,
     place: &dyn Fn(&str) -> Result<Place, String>,
-    code_change: CodeChange<'_>,
+    code_change: Change<'_>,
+    decision_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let rounds: Vec<_> = record
@@ -218,7 +242,14 @@ fn problems(
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
-                problems.extend(unnamed(round, &record.files, last, code_change)?);
+                let later = i > 0 || round.number > 1;
+                problems.extend(unnamed(
+                    round,
+                    &record.files,
+                    last,
+                    code_change,
+                    (later && round.decision_bound).then_some(decision_change),
+                )?);
             }
             Err(e) => {
                 if last || e.binding {
@@ -255,7 +286,7 @@ fn unended(
     round: &Round,
     head: &str,
     place: Place,
-    code_change: CodeChange<'_>,
+    code_change: Change<'_>,
 ) -> Result<Option<String>, String> {
     let (number, end) = (round.number, &round.end);
     if place == Place::Off {
@@ -283,12 +314,16 @@ fn unended(
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must be on the head's chain.
+/// round from the clone, but the last round's end must be on the head's chain. A
+/// round with a `decision_change` requires `architecture` too when that gives a phrase
+/// for its range. When `required` does not already ask for `architecture`, its problem
+/// gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     last: bool,
-    code_change: CodeChange<'_>,
+    code_change: Change<'_>,
+    decision_change: Option<Change<'_>>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let mut missing: Vec<&str> = required(round, files)
@@ -311,6 +346,19 @@ fn unnamed(
             missing.join(", ")
         ));
     }
+    if !round.reviewers.contains("architecture")
+        && !missing.contains(&"architecture")
+        && let Some(decision_change) = decision_change
+        && let Some(change) = decision_change(&round.from, &round.end)?
+    {
+        problems.push(format!(
+            "review round {} names no architecture, which this round requires. Run \
+             `architecture` on its range, or on the whole PR when the clone cannot \
+             read the range, then edit the round comment: add `architecture` to \
+             `Reviewers:` and add its findings. Its range {change}.",
+            round.number
+        ));
+    }
     Ok(problems)
 }
 
@@ -320,13 +368,13 @@ fn unnamed(
 /// `breaker` for a code PR; and `performance` when the round names a hot path.
 fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     let code = files.iter().any(|f| tiered(f));
-    let mut required = if code && round.number <= 1 {
-        vec!["reviewer", "architecture", "breaker"]
-    } else if code {
-        vec!["reviewer", "breaker"]
-    } else {
-        vec!["reviewer"]
-    };
+    let mut required = vec!["reviewer"];
+    if code && round.number <= 1 {
+        required.push("architecture");
+    }
+    if code {
+        required.push("breaker");
+    }
     if round.hot {
         required.push("performance");
     }
@@ -462,6 +510,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             findings,
             fixed: fixed(&shown),
             hot,
+            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
