@@ -524,7 +524,7 @@ impl Source {
 
 /// The longest chunk that noq-proto copies into its own buffer: `MAX_COMBINE` of its
 /// `send_buffer` in 1.3.0. It keeps a longer chunk until the ACK.
-const COPIED_MAX: usize = 1452;
+pub(crate) const COPIED_MAX: usize = 1452;
 
 /// The parts of a message that the stream has not taken all of, the first one cut at
 /// the first byte not taken. The list keeps its capacity.

@@ -10,13 +10,14 @@ use block::{Heap, Pool};
 use types::time::Span;
 
 use crate::Class;
+use crate::quic::stream::COPIED_MAX;
 use crate::stream::Part;
 use crate::testing::{self, spans};
 
 /// The bytes of each block that the server sends from.
 const BLOCK: usize = 64 << 10;
 /// The shortest run that the carrier holds as a view of its block.
-const VIEW_MIN: usize = 1453;
+const VIEW_MIN: usize = COPIED_MAX + 1;
 
 /// A pool of 32 MiB for the blocks that the server sends.
 fn send_pool() -> Rc<Pool> {
