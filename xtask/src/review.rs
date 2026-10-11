@@ -426,7 +426,8 @@ fn round(comment: &Comment) -> Option<Parsed> {
         })
     };
     let Ok(number) = number.parse::<u32>() else {
-        let problem = format!("`## Review round {number}` has no round number");
+        let problem =
+            format!("`## Review round {}` has no round number", quoted(number));
         return Some(Parsed {
             round: Err(Malformed { binding, problem }),
             performance: performance(None),
@@ -447,7 +448,8 @@ fn round(comment: &Comment) -> Option<Parsed> {
         let range = range.ok_or_else(|| missing("Range"))?.trim_matches('`');
         let (from, end) = range.split_once("..").ok_or_else(|| {
             format!(
-                "review round {number} has the range `{range}`, not `<from>..<head>`"
+                "review round {number} has the range `{}`, not `<from>..<head>`",
+                quoted(range)
             )
         })?;
         let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
@@ -475,8 +477,8 @@ fn count(number: u32, findings: &str) -> Result<u32, String> {
     }
     findings.parse().map_err(|e| {
         format!(
-            "review round {number} has `Findings: {findings}`, not a count or `none`: \
-             {e}"
+            "review round {number} has `Findings: {}`, not a count or `none`: {e}",
+            quoted(findings)
         )
     })
 }
@@ -528,6 +530,12 @@ const IMAGE: char = '\u{FFF8}';
 /// images and the spaces between them.
 fn blank(line: &str) -> bool {
     line.chars().all(|c| c == IMAGE || c == ' ')
+}
+
+/// `line`, a line of [`texts`], as a problem quotes it: each image is `![]`, since
+/// [`IMAGE`] shows as nothing.
+fn quoted(line: &str) -> String {
+    line.replace(IMAGE, "![]")
 }
 
 /// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`

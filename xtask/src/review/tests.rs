@@ -1208,6 +1208,28 @@ fn takes_a_count_of_zero_as_no_findings() {
 }
 
 #[test]
+fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
+    let round = ROUND.replace("Findings: none", "Findings: 2![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![
+            "review round 3 has `Findings: 2![]`, not a count or `none`: invalid digit \
+             found in string"
+        ]
+    );
+    let round = ROUND.replace("`38cba24f..c77c67d7`", "c77c67d7![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["review round 3 has the range `c77c67d7![]`, not `<from>..<head>`"]
+    );
+    let round = ROUND.replace("round 3", "round 3![](x)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["`## Review round 3![]` has no round number"]
+    );
+}
+
+#[test]
 fn names_a_round_with_no_number() {
     assert_eq!(
         check(&record(vec![bot("## Review round one\nFindings: none")])),
