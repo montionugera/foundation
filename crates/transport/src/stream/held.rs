@@ -62,7 +62,7 @@ fn held(seed: u64, window: usize, part: usize, count: usize, jitter: Span) -> us
             let clock = side.node.clock();
             let most = Cell::new(0);
             let done = Cell::new(false);
-            let send = async {
+            let messages = async {
                 let mut sender = side
                     .session
                     .open_sender(Class::Complete)
@@ -88,7 +88,7 @@ fn held(seed: u64, window: usize, part: usize, count: usize, jitter: Span) -> us
                     clock.sleep(spans(Span::MICROSECOND, 100)).await;
                 }
             };
-            testing::join(send, watch).await;
+            testing::join(messages, watch).await;
             out.store(most.get(), Ordering::Relaxed);
         },
     );
