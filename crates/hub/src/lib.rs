@@ -499,7 +499,7 @@ impl State {
     }
 
     /// Carries `index` at the home, and wakes the gate task: a carry can make the
-    /// home's deadline earlier. A later carry does nothing.
+    /// home's deadline earlier. A later call carries nothing and wakes the task too.
     fn carry(&mut self, index: types::channel::Key) {
         let slot = self.interner.slots().index(index);
         self.home.carry(slot, index);

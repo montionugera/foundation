@@ -28,6 +28,9 @@
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103202889,
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103276258, and
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103996718).
+  Supersedes "An index with no open writer records its handoff at the next open of a
+  writer on it" of
+  https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411.
   Before the node first has mesh time, such a handoff waits as one with no room does
   (`laptop.architect`, #2314, 2026-10-11T12:52:20Z, item 1:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109217872).
@@ -37,9 +40,9 @@
   record on disk, as above. Only room held back for one handoff of each index, in the
   pool and in the ring, closes this. Trigger to look again: a measured case where a
   ring or a pool stays full across a handoff in a workload on the milestone path. Until
-  #2385, such a handoff waits for
-  the next write that is not a resend, writer open or close, or end of a lease on its
-  index (INDEX FRAMES), also after the room comes back (`laptop.architect`, #2385,
+  #2385, such a handoff waits for the next write that is not a resend, writer open or
+  close, or end of a lease on its index (INDEX FRAMES), also after the room comes back
+  (`laptop.architect`, #2385,
   2026-10-11T08:16:48Z, the OK of the deferral, item 4, and the trigger of its "Lost"
   list: https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587;
   the words for a restart in that time and the list of calls: `laptop.architect`, #2318,

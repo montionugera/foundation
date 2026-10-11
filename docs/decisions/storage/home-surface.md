@@ -51,7 +51,8 @@
   and drops each other gate, which equals a new one (`laptop.architect`,
   #2314, 2026-10-10T22:57:44Z, item 2:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268;
-  supersedes "Its control gate goes, and with it a handoff that waits for room"). Each
+  supersedes "its control gate goes, and with it a handoff that waits for room" of
+  https://github.com/synnaxlabs/foundation/issues/2020#issuecomment-6070259814). Each
   named reader of the index stops holding its position. Its frames stay in the buffer,
   so a later `carry` of the slot continues each path from its tail in the buffer, the
   last entry appended, on disk or not: a lost seq is given again only when no later live
