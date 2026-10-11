@@ -162,7 +162,8 @@ impl Gate {
     /// Checks a write from `key` at `now`. It applies what came due by `now`, as
     /// [`Gate::advance`] does, and does not renew the control lease. For n open
     /// writers, takes O(1) time for a write from the holder when nothing came due,
-    /// O(log n) to refuse a write, and O(n) when control changes. Does not allocate.
+    /// O(log n) to refuse a write, and O(n) for each holder that loses control. Does
+    /// not allocate.
     ///
     /// # Errors
     ///

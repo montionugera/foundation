@@ -407,10 +407,11 @@ impl Shard {
     /// in its grace is dropped. Appends a handoff for each index whose holder changed
     /// and that has an open writer, as [`close_writer`](Self::close_writer) does. Call
     /// it at [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n)
-    /// time for n carried indexes, plus O(c) for each index that came due, for c claims
-    /// of open writers. Until #2314, an index with no open writer records its handoff
-    /// at the next open of a writer on it. After it, [`deadline`](Self::deadline) is
-    /// `None` or later than the shard's monotonic time at the call.
+    /// time for n carried indexes, plus O(c) for each holder that loses control, for c
+    /// claims of open writers. Until #2314, an index with no open writer records its
+    /// handoff at the next open of a writer on it. After it,
+    /// [`deadline`](Self::deadline) is `None` or later than the shard's monotonic time
+    /// at the call.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
