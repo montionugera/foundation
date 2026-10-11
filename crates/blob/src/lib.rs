@@ -339,7 +339,8 @@ impl Store {
         }
         // A read that ran into a put has unknown bytes, so only a get that makes the
         // digest absent counts.
-        if self.forget(digest, seen) && !seen.left() {
+        let absent = self.forget(digest, seen);
+        if absent && !seen.left() {
             self.corruptions
                 .set(self.corruptions.get().saturating_add(1));
         }
@@ -1802,6 +1803,49 @@ mod tests {
             let (mut sim, node) = create_default_node(5);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                {
+                    let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                }
+                assert_absent(&store, digest).await;
+                assert_eq!(store.status(), status(0, 0));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn a_get_after_a_dropped_put_makes_the_digest_absent() {
+            let (mut sim, node) = create_default_node(5);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                {
+                    let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                }
+                assert_absent(&store, digest).await;
+                node.fail_file(&path(digest), Operation::Open);
+                assert_absent(&store, digest).await;
+                assert_no_open(&node, &path(digest)).await;
+                assert_eq!(store.status(), status(0, 0));
+            })
+            .unwrap();
+        }
+
+        // A node puts its founding chunks first, so a dropped put is not the first
+        // flight of the open.
+        #[test]
+        fn counts_no_corruption_for_a_get_after_a_dropped_put_that_was_not_the_first() {
+            let (mut sim, node) = create_default_node(5);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (first, other) = chunk(8, 3000);
+                store.put(first, &other).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
                 {
                     let mut put = pin!(store.put(digest, &block));
