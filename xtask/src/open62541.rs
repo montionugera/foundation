@@ -458,9 +458,9 @@ impl Trees<'_> {
 fn unkept(flags: &str) -> Vec<String> {
     let absent = (!flags.lines().any(|flag| flag == NO_DOLLARS)).then(|| {
         format!(
-            "flags.txt: has no line `{NO_DOLLARS}` (NO_DOLLARS), with which no \
-             function has a name that holds `$`. Make the copy again with `cargo \
-             xtask open62541 <tag>`"
+            "flags.txt: has no line `{NO_DOLLARS}` (NO_DOLLARS), with which no C \
+             identifier gives a function a name that holds `$`. Make the copy again \
+             with `cargo xtask open62541 <tag>`"
         )
     });
     flags
@@ -1173,7 +1173,7 @@ impl Architecture {
         }
         Some(format!(
             "{file}: {} runs `{}`, which {} does not admit. Add it only when it reads \
-             no clock, file, network, randomness, or process state",
+             registers, flags, and memory, and no other state",
             found.place, found.key, self.list
         ))
     }
@@ -1646,7 +1646,7 @@ Disassembly of section .text.stamp:
             x86.refuses("a.c", &found(Some("stamp"), "rdtsc")),
             Some(
                 "a.c: `stamp` runs `rdtsc`, which X86_64 does not admit. Add it only \
-                 when it reads no clock, file, network, randomness, or process state"
+                 when it reads registers, flags, and memory, and no other state"
                     .to_owned()
             )
         );
@@ -1654,8 +1654,8 @@ Disassembly of section .text.stamp:
             arm.refuses("a.c", &found(None, "mrs cntvct_el0")),
             Some(
                 "a.c: the section `.text.stamp` runs `mrs cntvct_el0`, which AARCH64 \
-                 does not admit. Add it only when it reads no clock, file, network, \
-                 randomness, or process state"
+                 does not admit. Add it only when it reads registers, flags, and \
+                 memory, and no other state"
                     .to_owned()
             )
         );
@@ -1663,8 +1663,7 @@ Disassembly of section .text.stamp:
             x86.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
             Some(
                 "a.c: `stamp` runs `mrs tpidr_el0`, which X86_64 does not admit. Add \
-                 it only when it reads no clock, file, network, randomness, or process \
-                 state"
+                 it only when it reads registers, flags, and memory, and no other state"
                     .to_owned()
             )
         );
@@ -1672,8 +1671,7 @@ Disassembly of section .text.stamp:
             arm.refuses("a.c", &found(Some("stamp"), "rep stos")),
             Some(
                 "a.c: `stamp` runs `rep stos`, which AARCH64 does not admit. Add it \
-                 only when it reads no clock, file, network, randomness, or process \
-                 state"
+                 only when it reads registers, flags, and memory, and no other state"
                     .to_owned()
             )
         );
@@ -1904,8 +1902,9 @@ Disassembly of section .text.stamp:
     fn check_fails_on_a_copy_whose_flags_have_no_line_of_no_dollars() {
         let dir = temp("no-dollars");
         let absent = "flags.txt: has no line `-fno-dollars-in-identifiers` \
-                      (NO_DOLLARS), with which no function has a name that holds `$`. \
-                      Make the copy again with `cargo xtask open62541 <tag>`";
+                      (NO_DOLLARS), with which no C identifier gives a function a name \
+                      that holds `$`. Make the copy again with `cargo xtask open62541 \
+                      <tag>`";
         for (flags, problems) in [
             ("", vec![absent.to_owned()]),
             ("-DA\n-std=c99\n", vec![absent.to_owned()]),
@@ -2900,14 +2899,14 @@ End of search list.
          }\n",
         &[
             "src/util/ua_util.c: `draw` runs `rdrand`, which X86_64 does not admit. \
-             Add it only when it reads no clock, file, network, randomness, or \
-             process state",
+             Add it only when it reads registers, flags, and memory, and no other \
+             state",
             "src/util/ua_util.c: `stamp` runs `rdtsc`, which X86_64 does not admit. \
-             Add it only when it reads no clock, file, network, randomness, or \
-             process state",
+             Add it only when it reads registers, flags, and memory, and no other \
+             state",
             "src/util/ua_util.c: `stamped` runs `rdtsc`, which X86_64 does not admit. \
-             Add it only when it reads no clock, file, network, randomness, or \
-             process state",
+             Add it only when it reads registers, flags, and memory, and no other \
+             state",
             "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in its \
              caller",
         ],
@@ -2928,11 +2927,11 @@ End of search list.
          }\n",
         &[
             "src/util/ua_util.c: `draw` runs `mrs rndr`, which AARCH64 does not admit. \
-             Add it only when it reads no clock, file, network, randomness, or \
-             process state",
+             Add it only when it reads registers, flags, and memory, and no other \
+             state",
             "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does \
-             not admit. Add it only when it reads no clock, file, network, \
-             randomness, or process state",
+             not admit. Add it only when it reads registers, flags, and memory, and \
+             no other state",
             "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in its \
              caller",
         ],
