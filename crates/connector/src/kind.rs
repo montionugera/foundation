@@ -874,7 +874,7 @@ mod tests {
             reader(hub::reader::Error::Remote { home }),
             format!(
                 "an attempt failed: the home of the index of the reader is node \
-                 {home}, and a named reader opens only at this node"
+                 {home}, and this reader opens only at the home"
             )
         );
         assert_eq!(

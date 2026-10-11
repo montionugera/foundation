@@ -435,8 +435,8 @@ fn a_named_reader_does_not_open_at_the_home_of_another_node() {
         assert_eq!(
             error.to_string(),
             "the home of the index of the reader is node \
-             00000000-0000-0000-0000-000000000002, and a named reader opens only at \
-             this node"
+             00000000-0000-0000-0000-000000000002, and this reader opens only at the \
+             home"
         );
     });
 }
