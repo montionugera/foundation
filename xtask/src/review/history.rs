@@ -5,6 +5,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use super::surface;
+
 /// The empty tree, the source of attributes for a merge, so no `.gitattributes` can
 /// pick a merge driver that hides a conflict.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -136,6 +138,9 @@ impl<'a> History<'a> {
     /// The first change of a public surface in the range `<from>..<end>`, as a
     /// phrase, or `None`, also when the range is empty. A file under `docs/decisions/`
     /// that the range adds, changes, or removes gives "changes the decision `<path>`".
+    /// A `.rs` file under `crates/<crate>/src/` whose `pub` items, their docs, or its
+    /// `//!` lines differ (`surface::changed`) gives "changes a `pub` item or its doc
+    /// in `<path>`".
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a
@@ -179,14 +184,44 @@ impl<'a> History<'a> {
                 "has a conflict in the decision `{path}` between its start and the base"
             )));
         }
-        let decision = self
-            .diff(&merged.tree, &end)?
-            .into_iter()
-            .find(|entry| entry.path.starts_with(DECISIONS.as_bytes()));
-        Ok(decision.map(|entry| {
+        for entry in self.diff(&merged.tree, &end)? {
             let path = String::from_utf8_lossy(&entry.path);
-            format!("changes the decision `{path}`")
-        }))
+            if path.starts_with(DECISIONS) {
+                return Ok(Some(format!("changes the decision `{path}`")));
+            }
+            if crate_source(&path) && self.surface_changed(&entry)? {
+                return Ok(Some(format!(
+                    "changes a `pub` item or its doc in `{path}`"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether `entry`, of a `.rs` file, changes the public surface of the file. A
+    /// file that does not exist has none. A submodule or a symlink has no Rust text,
+    /// so it counts.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git cat-file`.
+    fn surface_changed(&self, entry: &Entry) -> Result<bool, String> {
+        let text = |mode: &str, blob: &str| {
+            if absent(blob) {
+                return Ok(Some(String::new()));
+            }
+            if [GITLINK, SYMLINK].contains(&mode) {
+                return Ok(None);
+            }
+            let text = self.output(&["cat-file", "blob", blob])?;
+            Ok::<_, String>(Some(String::from_utf8_lossy(&text).into_owned()))
+        };
+        let old = text(&entry.old_mode, &entry.old)?;
+        let new = text(&entry.new_mode, &entry.new)?;
+        Ok(match (old, new) {
+            (Some(old), Some(new)) => surface::changed(&old, &new),
+            _ => true,
+        })
     }
 
     /// The range `<from>..<end>`, as `code_change` and `surface_change` read it.
@@ -860,6 +895,14 @@ enum Range {
 )]
 fn text_path(path: &str) -> bool {
     path.ends_with(".md")
+}
+
+/// Whether `path` is a `.rs` file in the `src/` folder of a crate in `crates/`, at
+/// any depth of that folder.
+fn crate_source(path: &str) -> bool {
+    path.strip_prefix("crates/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(_, rest)| rest.starts_with("src/") && rust_path(rest))
 }
 
 /// Whether `path` is a `.rs` file: also the file `.rs`, which has no extension to

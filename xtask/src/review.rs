@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::field;
 
 mod history;
+mod surface;
 
 use history::Place;
 

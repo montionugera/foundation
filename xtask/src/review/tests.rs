@@ -2625,3 +2625,38 @@ fn reads_the_surface_only_of_a_later_round_with_no_architecture() {
     let later = surfaced(&clean(2, "reviewer, breaker", &range));
     assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
 }
+
+#[test]
+fn a_later_round_whose_range_changes_the_doc_of_a_pub_fn_requires_architecture() {
+    let (repo, _) = Repo::with_pr("review-pub-doc");
+    let start = repo.commit("crates/a/src/lib.rs", "/// A.\npub fn a() {}\n");
+    let end = repo.commit("crates/a/src/lib.rs", "/// A, changed.\npub fn a() {}\n");
+    let range = format!("{start}..{end}");
+    let rounds =
+        |reviewers| record(vec![first(END), surfaced(&clean(2, reviewers, &range))]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, breaker")),
+        vec![
+            "review round 2 names no architecture, which this round requires. Its \
+             range changes a `pub` item or its doc in `crates/a/src/lib.rs`."
+        ]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture, breaker")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_range_changes_the_doc_of_a_private_fn_keeps_its_reviewers() {
+    let (repo, _) = Repo::with_pr("review-private-doc");
+    let start = repo.commit("crates/a/src/lib.rs", "/// A.\nfn a() {}\n");
+    let end = repo.commit("crates/a/src/lib.rs", "/// A, changed.\nfn a() {}\n");
+    let round = surfaced(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
