@@ -14,7 +14,8 @@ use crate::Store;
 
 /// Serves `incoming`, a blob stream whose header the caller read, from `store`: it
 /// answers each get and stores each put, in order, until the peer's half ends. A put
-/// gets its reply only once the chunk is durable.
+/// gets its reply only once the chunk is durable. A drop of the future ends both
+/// halves with code 0, and a put in flight ends as a dropped [`Store::put`].
 ///
 /// # Errors
 ///
