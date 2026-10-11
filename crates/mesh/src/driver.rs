@@ -1280,7 +1280,6 @@ mod tests {
     use crate::status::Many;
     use crate::ticket::{self, Options};
     use crate::used::{Behind, Spec};
-    use send::at;
 
     const IDS: [u8; 3] = [1, 2, 3];
     const PORT: u16 = 7000;
@@ -1291,6 +1290,11 @@ mod tests {
     const INDEX: channel::Key = channel::Key::from_u128(7);
     /// An index that a spec change can add after `INDEX`.
     const SECOND: channel::Key = channel::Key::from_u128(8);
+
+    /// The position `index` of `TERM`.
+    fn at(index: u64) -> Position {
+        common::at(common::TERM.0, index)
+    }
 
     /// What each node's watch gave, in order.
     type Homes = BTreeMap<u8, Vec<Option<node::Key>>>;
@@ -6953,7 +6957,7 @@ mod tests {
         use transport::stream::Incoming;
 
         use super::*;
-        use crate::common::{at, proven_at};
+        use crate::common::proven_at;
 
         fn voters(incoming: &[u8], outgoing: &[u8]) -> Voters {
             Voters {
@@ -6981,35 +6985,35 @@ mod tests {
         /// elected, removes it as a voter. Leader 3 of term 6 starts its term.
         fn history() -> Vec<Entry> {
             vec![
-                empty(at(4, 1)),
-                bytes(at(4, 2), &plant_ticket()),
-                bytes(at(4, 3), &join_change(4)),
+                empty(common::at(4, 1)),
+                bytes(common::at(4, 2), &plant_ticket()),
+                bytes(common::at(4, 3), &join_change(4)),
                 common::voters_entry_voted(
                     2,
-                    at(4, 4),
+                    common::at(4, 4),
                     voters(&[1, 2, 3, 4], &[1, 2, 3]),
                     &[2, 3],
                 ),
                 common::voters_entry_voted(
                     2,
-                    at(4, 5),
+                    common::at(4, 5),
                     voters(&[1, 2, 3, 4], &[]),
                     &[2, 3],
                 ),
-                empty(at(5, 6)),
+                empty(common::at(5, 6)),
                 common::voters_entry_voted(
                     2,
-                    at(5, 7),
+                    common::at(5, 7),
                     voters(&[1, 2, 3], &[1, 2, 3, 4]),
                     &[2, 3, 4],
                 ),
                 common::voters_entry_voted(
                     2,
-                    at(5, 8),
+                    common::at(5, 8),
                     voters(&[1, 2, 3], &[]),
                     &[2, 3, 4],
                 ),
-                empty(at(6, 9)),
+                empty(common::at(6, 9)),
             ]
         }
 
@@ -7059,7 +7063,7 @@ mod tests {
                 assert_eq!(reply, Body::AppendReply { last: 6 });
                 assert!(mesh.member(key(4)).is_some());
                 let rest = history().split_off(6);
-                let reply = take(&mesh, at(5, 6), rest, 9).await;
+                let reply = take(&mesh, common::at(5, 6), rest, 9).await;
                 assert_eq!(reply, Body::AppendReply { last: 9 });
             });
             assert_eq!(entries, history());
@@ -7077,7 +7081,7 @@ mod tests {
                 assert_eq!(reply, Body::AppendReply { last: 3 });
                 node.clock().sleep(TICK).await;
                 assert!(mesh.member(key(4)).is_some());
-                let reply = take(&mesh, at(4, 3), second, 9).await;
+                let reply = take(&mesh, common::at(4, 3), second, 9).await;
                 assert_eq!(reply, Body::AppendReply { last: 9 });
             });
             assert_eq!(entries, history());
@@ -7098,7 +7102,7 @@ mod tests {
                 assert!(quiet(&mesh, 3).await);
                 assert_eq!(pre_vote_term(&mesh, 3).await, Term(1));
                 assert_eq!(mesh.member(key(4)), None);
-                let reply = take(&mesh, at(4, 3), Vec::new(), 0).await;
+                let reply = take(&mesh, common::at(4, 3), Vec::new(), 0).await;
                 assert_eq!(reply, Body::AppendReject { hint: 0 });
             });
             assert_eq!(entries, []);
@@ -7109,13 +7113,13 @@ mod tests {
             let entries = solo_stored(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
                 let rest = history().split_off(3);
-                let reply = take(&mesh, at(4, 3), rest, 9).await;
+                let reply = take(&mesh, common::at(4, 3), rest, 9).await;
                 assert_eq!(reply, Body::AppendReject { hint: 0 });
                 assert_eq!(mesh.member(key(4)), None);
                 let reply = take(&mesh, Position::default(), history(), 9).await;
                 assert_eq!(reply, Body::AppendReply { last: 6 });
                 let rest = history().split_off(6);
-                let reply = take(&mesh, at(5, 6), rest, 9).await;
+                let reply = take(&mesh, common::at(5, 6), rest, 9).await;
                 assert_eq!(reply, Body::AppendReply { last: 9 });
             });
             assert_eq!(entries, history());
@@ -7124,7 +7128,7 @@ mod tests {
         #[test]
         fn the_commit_after_a_cut_is_not_above_the_last_entry_kept() {
             let mut whole = history();
-            whole.push(bytes(at(6, 10), &home_to(1)));
+            whole.push(bytes(common::at(6, 10), &home_to(1)));
             let expected = whole.clone();
             let entries = solo_stored(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
@@ -7136,7 +7140,7 @@ mod tests {
                 assert!(mesh.member(key(4)).is_some());
                 assert!(now(pin!(watch.next())).await.is_pending());
                 let rest = whole.split_off(6);
-                let reply = take(&mesh, at(5, 6), rest, 10).await;
+                let reply = take(&mesh, common::at(5, 6), rest, 10).await;
                 assert_eq!(reply, Body::AppendReply { last: 10 });
                 assert_eq!(watch.next().await, Ok(Some(key(1))));
             });
@@ -7198,7 +7202,7 @@ mod tests {
             let second = first.split_off(3);
             let head = append(2, Position::default(), first, 3);
             assert_eq!(mesh.receive(public(3), head), Ok(()));
-            let tail = append(2, at(4, 3), second, 9);
+            let tail = append(2, common::at(4, 3), second, 9);
             assert_eq!(mesh.receive(public(3), tail), Ok(()));
             accept_recorded(mesh, transport, tasks, bodies).await
         }

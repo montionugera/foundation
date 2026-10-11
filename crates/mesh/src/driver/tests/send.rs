@@ -375,11 +375,6 @@ fn a_task_that_waits_in_a_dial_holds_no_block() {
     });
 }
 
-/// The position `index` of `TERM`.
-pub(super) fn at(index: u64) -> Position {
-    common::at(common::TERM.0, index)
-}
-
 /// The config of a node 1 with no record of node 4, and the append of node 2 whose
 /// voter set names node 4.
 async fn create_stranger(
