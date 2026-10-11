@@ -184,12 +184,15 @@
   check, also one that GitHub shows as an image. Lost: a list of those names in the
   check, since GitHub can change it. Ruled by the director at 2026-10-11T11:24:24Z
   (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108509497) and
-  11:25:49Z
-  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108520648). The
-  check reads neither the session name nor the role against a list. A round posted
-  before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs` (2026-10-11T16:00:00Z) is
-  checked as before, so that the new rule does not fail the rounds that came before it.
-  The cutoff is a fixed time: it stays when the rule merges after it. A round that fails
-  by this rule gets an edit of its round comment that adds the lines, with the rating
-  and the summary of its `reviewer` report as given. When that report is lost, a new run
-  of `reviewer` on the range of the round gives them, and the edit says so.
+  2026-10-11T11:25:49Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108520648).
+  Supersedes the sentence on an image of
+  https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6107851789
+  (2026-10-11T10:03:22Z). The check reads neither the session name nor the role against
+  a list. A round posted before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs`
+  (2026-10-11T16:00:00Z) is checked as before, so that the new rule does not fail the
+  rounds that came before it. The cutoff is a fixed time: it stays when the rule merges
+  after it. A round that fails by this rule gets an edit of its round comment that adds
+  the lines, with the rating and the summary of its `reviewer` report as given. When
+  that report is lost, a new run of `reviewer` on the range of the round gives them, and
+  the edit says so.
