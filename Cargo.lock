@@ -417,6 +417,7 @@ dependencies = [
  "sim",
  "spec",
  "types",
+ "wire",
 ]
 
 [[package]]

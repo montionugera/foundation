@@ -11,13 +11,18 @@
   connector's name (READER SETTINGS). `writer` is as ruled in `laptop.architect-2`,
   2026-10-08T02:21:15Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6050855677.
-  `reader` takes the settings that `reader::read` gives and gives the hub's errors as
-  they are (`laptop.architect-2`, 2026-10-08T06:06:40Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053530272, and
-  2026-10-08T06:30:18Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053886044), always
+  `reader` takes the settings that `reader::read` gives (`laptop.architect-2`,
+  2026-10-08T06:06:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053530272), always
   under the connector's name (2026-10-08T09:49:37Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6057225033).
+  `reader` and `writer` give `kind::Error`, and `connector` chooses the class of each
+  hub error in one place (KIND TABLE), since the class depends on the hub error and
+  not on the kind. Lost: the hub's errors as they are, which each kind maps
+  (`laptop.architect-2`, 2026-10-10T22:38:41Z:
+  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6102937379).
+  Supersedes the hub's errors as they are of
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053886044.
   Supersedes the `reader(channels, mode)` and the `status()` of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6050855677.
   Supersedes, as 6057225033 rules, the default name for a `None` `settings.name` of
