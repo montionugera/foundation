@@ -24,11 +24,12 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *url) {
         UA_ServerConfig_clear(&config);
         return NULL;
     }
-    UA_Array_delete(config.serverUrls, config.serverUrlsSize, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Array_delete(config.serverUrls, config.serverUrlsSize,
+                    &UA_TYPES[UA_TYPES_STRING]);
     config.serverUrlsSize = 0;
     UA_String text = UA_STRING((char *)(uintptr_t)url);
-    if(UA_Array_copy(&text, 1, (void **)&config.serverUrls, &UA_TYPES[UA_TYPES_STRING]) !=
-       UA_STATUSCODE_GOOD) {
+    if(UA_Array_copy(&text, 1, (void **)&config.serverUrls,
+                     &UA_TYPES[UA_TYPES_STRING]) != UA_STATUSCODE_GOOD) {
         config.serverUrls = NULL;
         UA_ServerConfig_clear(&config);
         return NULL;

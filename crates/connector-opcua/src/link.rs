@@ -1,4 +1,4 @@
-//! Checks that the open62541 copy and `shim.c` compile and link.
+//! Checks that the open62541 copy, `shim.c`, and `server.c` compile and link.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
