@@ -1222,3 +1222,41 @@ fn a_left_directory_is_whole_when_other_rigs_sweep() {
     }
     assert_eq!(failure, None);
 }
+
+/// A sweep that makes a directory writable while another sweep removes it gives
+/// `NotFound` only once the directory is gone, so it never leaves the directory.
+#[test]
+#[cfg(unix)]
+fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
+    use std::sync::Barrier;
+
+    let temp = std::env::temp_dir();
+    for run in 0..20 {
+        let dir = temp.join(format!("walked-{}-{run}", std::process::id()));
+        for sub in 0..300 {
+            let sub = dir.join(format!("d{sub}"));
+            std::fs::create_dir_all(&sub).expect("make a directory");
+            for file in 0..10 {
+                std::fs::write(sub.join(format!("f{file}")), "").expect("make a file");
+            }
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let (other, path) = (Arc::clone(&barrier), dir.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "another sweep removes the directory during the walk"
+        )]
+        let removal = std::thread::spawn(move || {
+            other.wait();
+            std::fs::remove_dir_all(path)
+        });
+        barrier.wait();
+        let ended = loop {
+            if let Err(error) = writable(&dir) {
+                break (error.kind(), dir.exists());
+            }
+        };
+        removal.join().expect("join the removal").expect("remove");
+        assert_eq!(ended, (ErrorKind::NotFound, false), "run {run}");
+    }
+}
