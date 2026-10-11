@@ -135,11 +135,15 @@
   `backoff` text is approved by `laptop.architect` (2026-10-10T05:38:31Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904). The cut
   and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). A try is
-  the reader open of a restart, which comes before its start status
-  (`laptop.architect-2`, 2026-10-11T07:34:44Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). So while
-  that open waits for a home, `state` stays 1 with a `backoff` whose wait has ended.
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
+  opens its reader before its start status (`laptop.architect-2`, 2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). A try is
+  the reader open of a restart, or, when `check` gives no reader settings, its start
+  status. So while that open waits for a home, `state` stays 1 with a `backoff` whose
+  wait has ended. That `backoff` ends at a try is proposed by the `connector` builder
+  in https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106914434, with
+  no ruling yet. It supersedes "the wait from this sample to the next run" of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186.
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or

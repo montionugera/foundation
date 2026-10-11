@@ -3565,6 +3565,48 @@ mod tests {
         assert_eq!(read.got, [start.clone(), start.clone(), start]);
     }
 
+    /// The reader of a restart opens after the backoff, so the first frame of each
+    /// restart was written at or after its start. Each frame holds the time of its
+    /// write by the node's clock.
+    #[test]
+    fn the_reader_of_a_restart_opens_after_the_backoff() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let start = ctx.clock().now();
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await.map(|received| values(&received));
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push((start, next));
+                    got.len()
+                };
+                if runs < 4 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                for _ in 0..1_000 {
+                    clock.sleep(ms(10)).await;
+                    let stamp = writer.now().nanos();
+                    let at = i64::try_from(clock.now().0).expect("fits");
+                    write_value(&mut writer, stamp, at);
+                }
+            },
+        );
+        read.end.expect("ok");
+        assert_eq!(read.got.len(), 4);
+        for (start, next) in &read.got[1..] {
+            let written = next.as_ref().expect("a frame")[0];
+            let start = i64::try_from(start.0).expect("fits");
+            assert!(written >= start, "{:?}", read.got);
+        }
+    }
+
     /// The diagnostics of `error` when it is [`Error::Config`], else its text.
     fn diagnostics(error: Error) -> Result<Vec<Diagnostic>, String> {
         match error {
