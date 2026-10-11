@@ -2,7 +2,7 @@
 //! each variant, so a new variant that wraps a file call cannot go unread.
 
 use env::files;
-use mesh::{Stopped, log};
+use mesh::Stopped;
 
 /// The failed file call that caused `error`, or `None`.
 pub(crate) fn buffer(error: &buffer::Error) -> Option<&files::Error> {
@@ -34,9 +34,9 @@ pub(crate) fn blob(error: &blob::Error) -> Option<&files::Error> {
 pub(crate) fn mesh(error: &mesh::Error) -> Option<&files::Error> {
     match error {
         mesh::Error::Files(error) => Some(error),
-        mesh::Error::Log(error) => self::log(error),
+        mesh::Error::Log(error) => log(error),
         mesh::Error::Blob(error) => blob(error),
-        mesh::Error::Stopped(stopped) => self::stopped(stopped),
+        mesh::Error::Stopped(error) => stopped(error),
         mesh::Error::Raft(_)
         | mesh::Error::Spoofed { .. }
         | mesh::Error::NotVoter { .. }
@@ -72,14 +72,14 @@ pub(crate) fn stopped(stopped: &Stopped) -> Option<&files::Error> {
 }
 
 /// The failed file call that caused `error`, or `None`.
-fn log(error: &log::Error) -> Option<&files::Error> {
+fn log(error: &mesh::log::Error) -> Option<&files::Error> {
     match error {
-        log::Error::Files(error) => Some(error),
-        log::Error::Pool(_)
-        | log::Error::Corrupt { .. }
-        | log::Error::Version { .. }
-        | log::Error::Stray { .. }
-        | log::Error::Poisoned { .. } => None,
+        mesh::log::Error::Files(error) => Some(error),
+        mesh::log::Error::Pool(_)
+        | mesh::log::Error::Corrupt { .. }
+        | mesh::log::Error::Version { .. }
+        | mesh::log::Error::Stray { .. }
+        | mesh::log::Error::Poisoned { .. } => None,
     }
 }
 
