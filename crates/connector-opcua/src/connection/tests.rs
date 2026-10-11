@@ -1,18 +1,20 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::convert::Infallible;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::future::poll_fn;
 use std::io::IoSlice;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::panic::{self, AssertUnwindSafe};
 use std::pin::{Pin, pin};
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Instant;
 
-use env::clock::Clock;
-use env::net::{Listener, Tcp, tcp};
+use env::clock::{Clock, Driver, Sleep, Timer};
+use env::net::{self, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::{Monotonic, Span};
@@ -21,9 +23,9 @@ use super::{CLOSES, LINGER, Manager, OPTIONS, READ_BYTES, SENDS};
 use crate::child;
 use crate::event::Loop;
 use crate::ffi::test::{
-    Members, NodeId, QualifiedName, UA_Client_disconnect, UA_KeyValueMap_clear,
-    UA_KeyValueMap_getScalar, UA_KeyValueMap_setScalar, UA_findDataType,
-    shim_map_set_strings,
+    Members, NUMERIC, NodeId, QualifiedName, UA_Client_disconnect,
+    UA_KeyValueMap_clear, UA_KeyValueMap_getScalar, UA_KeyValueMap_setScalar,
+    UA_findDataType, shim_map_set_strings,
 };
 use crate::ffi::{self, Bytes, ConnectionState, KeyValueMap, Status};
 
@@ -116,7 +118,7 @@ fn get(map: *const KeyValueMap, key: &str, kind: u32) -> *const c_void {
 fn builtin(kind: u32) -> *const c_void {
     let id = NodeId {
         namespace: 0,
-        kind: 0,
+        kind: NUMERIC,
         numeric: kind,
         rest: [0; 3],
     };
@@ -154,12 +156,13 @@ impl Side {
         Self::of(clock, manager)
     }
 
-    /// A side whose manager accepts on `listener`.
-    fn listening(node: &node::Node, listener: Listener) -> Self {
+    /// A side whose manager accepts on a listener at `local`.
+    fn listening(node: &node::Node, local: SocketAddr) -> Self {
         let clock = node.clock();
         let rng = &mut Rng::from_seed(0);
         let manager =
-            Manager::listening(Clock::clone(&clock), node.net(), listener, rng);
+            Manager::listening(Clock::clone(&clock), node.net(), local, 512, rng)
+                .expect("the port is free");
         Self::of(clock, manager)
     }
 
@@ -279,11 +282,17 @@ impl Side {
         assert_eq!(status, Status::GOOD);
     }
 
-    /// Makes the test server on the loop with the discovery URL `url`, and starts it.
-    fn start(&self, url: &CStr) -> *mut ffi::test::Server {
+    /// Makes the test server on the loop with the discovery URL `url` and room for
+    /// `sessions` sessions and secure channels, and starts it.
+    fn start(&self, url: &CStr, sessions: u16) -> *mut ffi::test::Server {
         // SAFETY: the loop outlives the server, which the test deletes.
         let server = unsafe {
-            ffi::test::shim_server_new(self.events().raw(), PORT, url.as_ptr())
+            ffi::test::shim_server_new(
+                self.events().raw(),
+                PORT,
+                url.as_ptr(),
+                sessions,
+            )
         };
         assert!(!server.is_null());
         // SAFETY: the server lives.
@@ -292,33 +301,11 @@ impl Side {
         server
     }
 
-    /// Shuts `server` down, then deletes it as [`Side::delete`] does.
+    /// Closes `server`, which [`Side::start`] made.
     async fn stop(&self, server: *mut ffi::test::Server) {
-        // SAFETY: the server lives.
-        let status = Status(unsafe { ffi::test::UA_Server_run_shutdown(server) });
-        assert_eq!(status, Status::GOOD);
-        self.delete(server).await;
-    }
-
-    /// Drives until `server` is `STOPPED` and nothing is due on the loop, then deletes
-    /// it, with no call between.
-    async fn delete(&self, server: *mut ffi::test::Server) {
-        self.manager
-            .drive(|_| {
-                self.run();
-                // SAFETY: the server lives.
-                let state = unsafe { ffi::test::UA_Server_getLifecycleState(server) };
-                let due = self.events().due();
-                if state == ffi::test::Lifecycle::STOPPED && !due {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            })
-            .await;
-        // SAFETY: the server is stopped, and nothing holds it.
-        let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
-        assert_eq!(status, Status::GOOD);
+        // SAFETY: the server lives on the loop of the manager, and the caller does not
+        // use it after.
+        unsafe { self.manager.close_server(server) }.await;
     }
 
     /// Drives the manager and runs the loop until `span` passes, and gives the count
@@ -328,7 +315,7 @@ impl Side {
         let mut end = self.clock.sleep(span);
         let mut drive = pin!(self.manager.drive(|_| {
             runs.set(runs.get() + 1);
-            self.run();
+            self.events().run();
             Poll::<Infallible>::Pending
         }));
         poll_fn(|cx| {
@@ -505,6 +492,29 @@ impl Network {
         reads
     }
 
+    /// Connects from the peer to [`Self::listening`], and runs [`hold`] on the
+    /// stream.
+    fn dial_and_hold(&self, delay: Span, bytes: usize) -> Arc<AtomicUsize> {
+        let taken = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&taken);
+        let net = self.peer.net();
+        let clock = self.peer.clock();
+        let config = tcp::Config {
+            remote: self.listening(),
+            options: OPTIONS,
+        };
+        let shard = env::shards::Config {
+            name: "hold".into(),
+            core: None,
+        };
+        let handle = self.peer.shards().start(shard, move |_| async move {
+            let stream = net.connect(&config).await.expect("the connect works");
+            hold(stream, clock, delay, bytes, count).await;
+        });
+        drop(handle.expect("the shard starts"));
+        taken
+    }
+
     /// Dials the listener after `delay`, and holds the stream for 60 s with no read,
     /// write, or close.
     fn hold(&self, delay: Span) {
@@ -571,6 +581,14 @@ impl Network {
         });
         drop(handle.expect("the shard starts"));
         held
+    }
+
+    /// Accepts one stream on the peer, and runs [`hold`] on it.
+    fn accept_and_hold(&self, delay: Span, bytes: usize) -> Arc<AtomicUsize> {
+        let taken = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&taken);
+        self.accept(move |stream, clock| hold(stream, clock, delay, bytes, count));
+        taken
     }
 
     /// Accepts one stream on the peer, and runs `peer` on it with the clock of the
@@ -645,6 +663,32 @@ async fn read_all(stream: &mut Tcp, clock: &Clock, reads: &Mutex<Reads>, pause: 
             clock.sleep(pause).await;
         }
     }
+}
+
+/// Holds `stream` with no read. After `delay`, it writes up to `bytes` for 1 s, and
+/// puts in `taken` what the stream takes.
+async fn hold(
+    mut stream: Tcp,
+    clock: Clock,
+    delay: Span,
+    bytes: usize,
+    taken: Arc<AtomicUsize>,
+) {
+    clock.sleep(delay).await;
+    let say = vec![7; bytes];
+    let mut sent = 0;
+    let mut end = pin!(clock.sleep(Span::SECOND));
+    while sent < bytes {
+        let parts = [IoSlice::new(&say[sent..])];
+        let write = poll_fn(|cx| match end.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(None),
+            Poll::Pending => stream.poll_write(cx, &parts).map(Some),
+        });
+        let Some(n) = write.await else { break };
+        sent += n.expect("the write works");
+        taken.store(sent, Ordering::Relaxed);
+    }
+    clock.sleep(Span::from_nanos(1_000_000_000_000)).await;
 }
 
 async fn write(stream: &mut Tcp, bytes: &[u8]) {
@@ -1034,7 +1078,7 @@ fn a_drive_ends_with_the_first_value_of_run() {
             let at = side
                 .manager
                 .drive(|_| {
-                    side.run();
+                    side.events().run();
                     if side.calls().len() == 2 {
                         Poll::Ready(side.clock.now())
                     } else {
@@ -1125,7 +1169,7 @@ fn a_send_from_the_run_that_ends_a_drive_goes_out() {
             side.add_timer(act, 10.0, ptr::from_ref(&later).cast_mut().cast());
             side.manager
                 .drive(|_| {
-                    side.run();
+                    side.events().run();
                     if side.clock.now() >= due {
                         Poll::Ready(())
                     } else {
@@ -1244,7 +1288,7 @@ fn a_source_that_run_polls_wakes_the_drive() {
             let at = side
                 .manager
                 .drive(|cx| {
-                    side.run();
+                    side.events().run();
                     Pin::new(&mut source).poll(cx).map(|()| side.clock.now())
                 })
                 .await;
@@ -1377,7 +1421,7 @@ fn a_closing_with_no_stream_drops_the_connection_at_once() {
             assert_eq!(side.close(1), Status::GOOD);
             let mut end = side.clock.sleep(Span::SECOND);
             let mut drive = pin!(side.manager.drive(|_| {
-                side.run();
+                side.events().run();
                 if side.connections() == 0 {
                     Poll::Ready(side.clock.now())
                 } else {
@@ -1500,7 +1544,7 @@ fn a_close_drops_the_connection_when_the_peer_closes_its_side() {
             let dropped = side
                 .manager
                 .drive(|cx| {
-                    side.run();
+                    side.events().run();
                     if side.connections() == 0 {
                         Poll::Ready(Some(side.clock.now()))
                     } else {
@@ -1741,6 +1785,47 @@ fn a_second_drive_of_a_manager_panics() {
             .await;
         })
         .expect("the run ends");
+}
+
+/// Counts the wakes of a task.
+#[derive(Default)]
+struct Wakes(AtomicUsize);
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A drive whose `run` panics ends as a dropped drive does, so a send after it wakes
+/// the task of the drive.
+#[test]
+fn a_send_after_a_drive_that_panics_wakes_its_task() {
+    let mut network = Network::new();
+    network.serve(None);
+    let remote = network.remote();
+    let woken = network
+        .sim
+        .run_on(&network.local.clone(), move |node, _| async move {
+            let side = Side::new(&node);
+            assert_eq!(side.connect(remote), Status::GOOD);
+            side.drive(Span::SECOND).await;
+            let count = Arc::new(Wakes::default());
+            let waker = Waker::from(Arc::clone(&count));
+            let mut drive = pin!(
+                side.manager
+                    .drive(|_| -> Poll<()> { panic!("the run panics") })
+            );
+            let poll = panic::catch_unwind(AssertUnwindSafe(|| {
+                drive.as_mut().poll(&mut Context::from_waker(&waker))
+            }));
+            let panic = poll.expect_err("the drive panics");
+            assert_eq!(panic.downcast_ref::<&str>(), Some(&"the run panics"));
+            assert_eq!(side.send(1, b"one"), Status::GOOD);
+            count.0.load(Ordering::Relaxed)
+        })
+        .expect("the run ends");
+    assert_eq!(woken, 1);
 }
 
 /// Runs the test `name` of this module in a child process, asserts that it passes,
@@ -2013,20 +2098,15 @@ fn a_closing_from_a_run_in_a_callback_gets_the_context_it_wrote() {
     assert_eq!(nested.last(), Some(&closing), "a close and a run");
 }
 
-/// Gives a listener of `node` at [`Network::listening`].
-fn listener(node: &node::Node) -> Listener {
-    let listen = tcp::Listen {
-        local: SocketAddr::new(node.addresses()[0], PORT),
-        backlog: 512,
-        options: OPTIONS,
-    };
-    node.net().listen(&listen).expect("the port is free")
+/// Gives the address of a listener of `node` at [`Network::listening`].
+fn local(node: &node::Node) -> SocketAddr {
+    SocketAddr::new(node.addresses()[0], PORT)
 }
 
-/// Gives a side on `node` whose manager accepts on [`listener`], with the callback
+/// Gives a side on `node` whose manager accepts at [`local`], with the callback
 /// [`adopt`].
 fn listening(node: &node::Node) -> Side {
-    let mut side = Side::listening(node, listener(node));
+    let mut side = Side::listening(node, local(node));
     side.callback = adopt;
     side
 }
@@ -2083,13 +2163,7 @@ fn notes(
     network
         .sim
         .run_on(&network.local.clone(), move |node, _| async move {
-            let listen = tcp::Listen {
-                local: SocketAddr::new(local, PORT),
-                backlog: 4,
-                options: OPTIONS,
-            };
-            let listener = node.net().listen(&listen).expect("the port is free");
-            let mut side = Side::listening(&node, listener);
+            let mut side = Side::listening(&node, SocketAddr::new(local, PORT));
             side.callback = note;
             let mut all = vec![
                 ("listen", Value::Boolean(true)),
@@ -2172,7 +2246,7 @@ fn a_listen_with_two_addresses_or_one_that_is_not_a_string_is_refused() {
     let calls = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             let listen = |address| {
                 side.open(&[
                     ("listen", Value::Boolean(true)),
@@ -2198,9 +2272,9 @@ fn a_server_with_a_host_in_its_url_has_that_url_alone_as_its_discovery_url() {
     network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             let url = c"opc.tcp://plc.example:4840";
-            let server = side.start(url);
+            let server = side.start(url, 0);
             // SAFETY: the server lives.
             let first = unsafe { ffi::test::shim_server_discovery_url(server, 0) };
             assert_eq!(string(first), url.to_bytes());
@@ -2296,7 +2370,7 @@ fn a_listen_from_a_run_accepts_and_reads_in_that_drive() {
     let calls = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             // The stream and its byte wait before the listen.
             side.clock.sleep(Span::MILLISECOND).await;
             let listened = Cell::new(false);
@@ -2340,7 +2414,7 @@ fn a_drive_accepts_each_stream_that_waits() {
     let calls = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             side.drive(Span::from_nanos(10_000_000)).await;
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.drive(Span::from_nanos(10_000_000)).await;
@@ -2362,7 +2436,7 @@ fn a_send_on_the_listen_connection_is_refused() {
     let status = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.send(1, b"no")
         })
@@ -2502,8 +2576,8 @@ fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
     let calls = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 1);
             // SAFETY: the server lives.
             let url = unsafe { ffi::test::shim_server_discovery_url(server, 0) };
             assert_eq!(string(url), b"opc.tcp://10.0.0.1:4840");
@@ -2522,7 +2596,9 @@ fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
             // SAFETY: the server lives.
             let state = unsafe { ffi::test::UA_Server_getLifecycleState(server) };
             assert_eq!(state, ffi::test::Lifecycle::STOPPED);
-            side.delete(server).await;
+            // SAFETY: the server is stopped, and nothing holds it.
+            let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
+            assert_eq!(status, Status::GOOD);
             side.calls()
         })
         .expect("the run ends");
@@ -2543,8 +2619,8 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
     network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 1);
             // SAFETY: the loop outlives the client, which the test deletes.
             let client = unsafe { ffi::shim_client_new(side.events().raw()) };
             assert!(!client.is_null());
@@ -2566,6 +2642,299 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
         .expect("the run ends");
 }
 
+/// The sim clock plus `extra`, the time that the callbacks of the loop take.
+struct Slow {
+    inner: Clock,
+    extra: Arc<AtomicU64>,
+}
+
+impl Driver for Slow {
+    fn now(&self) -> Monotonic {
+        Monotonic(self.inner.now().0 + self.extra.load(Ordering::SeqCst))
+    }
+
+    fn epoch(&self) -> Instant {
+        self.inner.epoch()
+    }
+
+    fn timer(&self) -> Pin<Box<dyn Timer>> {
+        Box::pin(Late {
+            sleep: self.inner.sleep_until(self.inner.now()),
+            extra: Arc::clone(&self.extra),
+        })
+    }
+}
+
+/// A sleep of the sim clock that ends `extra` early, so it ends at the time of
+/// [`Slow`].
+struct Late {
+    sleep: Sleep,
+    extra: Arc<AtomicU64>,
+}
+
+impl Timer for Late {
+    fn poll_until(
+        self: Pin<&mut Self>,
+        deadline: Monotonic,
+        cx: &mut Context<'_>,
+    ) -> Poll<()> {
+        let this = self.get_mut();
+        let extra = this.extra.load(Ordering::SeqCst);
+        this.sleep
+            .reset(Monotonic(deadline.0.saturating_sub(extra)));
+        Pin::new(&mut this.sleep).poll(cx)
+    }
+}
+
+/// The runs of [`busy`] and the time they take.
+struct Load {
+    extra: Arc<AtomicU64>,
+    runs: Cell<usize>,
+}
+
+/// The runs of [`busy`] that take time.
+const BUSY_RUNS: usize = 10_000;
+
+/// A timer callback that takes 1 ms of the clock, for `BUSY_RUNS` runs.
+///
+/// # Safety
+///
+/// `data` points at a live [`Load`].
+unsafe extern "C" fn busy(_: *mut c_void, data: *mut c_void) {
+    // SAFETY: the caller gives a live `Load`.
+    let load = unsafe { &*data.cast::<Load>() };
+    load.runs.set(load.runs.get() + 1);
+    if load.runs.get() < BUSY_RUNS {
+        load.extra.fetch_add(1_000_000, Ordering::SeqCst);
+    }
+}
+
+/// A side on a clock that [`Slow`] makes slower by `extra`, and a server on its loop
+/// that started 1 s ago. The caller deletes the server.
+async fn slow_server(
+    node: &node::Node,
+) -> (Side, Arc<AtomicU64>, *mut ffi::test::Server) {
+    let extra = Arc::new(AtomicU64::new(0));
+    let clock = Clock::new(Slow {
+        inner: node.clock(),
+        extra: Arc::clone(&extra),
+    });
+    let rng = &mut Rng::from_seed(0);
+    let manager =
+        Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
+            .expect("the port is free");
+    let side = Side::of(clock, manager);
+    let server = side.start(c"opc.tcp://:4840", 1);
+    side.drive(Span::SECOND).await;
+    (side, extra, server)
+}
+
+/// A 1 ms timer that takes 1 ms to run is always due, and the close waits only for
+/// the delayed callbacks.
+#[test]
+fn a_close_ends_while_a_timer_of_the_loop_takes_its_interval() {
+    let mut network = Network::new();
+    let runs = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let (side, extra, server) = slow_server(&node).await;
+            let load = Box::new(Load {
+                extra,
+                runs: Cell::new(0),
+            });
+            let events = side.events();
+            // SAFETY: the member takes its own loop, and `load` outlives the loop.
+            let status = Status(unsafe {
+                (events.members().add_timer)(
+                    events.raw(),
+                    busy,
+                    ptr::null_mut(),
+                    ptr::from_ref(&*load).cast_mut().cast(),
+                    1.0,
+                    ptr::null_mut(),
+                    ffi::CURRENT_TIME,
+                    ptr::null_mut(),
+                )
+            });
+            assert_eq!(status, Status::GOOD);
+            side.clock.sleep(Span::from_nanos(1_000_000)).await;
+            // SAFETY: the server lives on the loop, and nothing uses it after.
+            unsafe { side.manager.close_server(server) }.await;
+            let runs = load.runs.get();
+            drop(side);
+            runs
+        })
+        .expect("the run ends");
+    assert!(runs < 10, "the close ran the timer {runs} times");
+}
+
+/// The runs of [`hop`], and the two delayed callbacks that each of its first `queues`
+/// runs queues in turn.
+struct Hops {
+    extra: Arc<AtomicU64>,
+    runs: Cell<usize>,
+    /// The count of the first runs of [`hop`] that queue `first`.
+    queues: usize,
+    events: *mut ffi::EventLoop,
+    first: UnsafeCell<ffi::DelayedCallback>,
+    second: UnsafeCell<ffi::DelayedCallback>,
+}
+
+impl Hops {
+    /// Queues `callback`, which is not queued, on the loop.
+    ///
+    /// # Safety
+    ///
+    /// The loop lives.
+    unsafe fn queue(&self, callback: &UnsafeCell<ffi::DelayedCallback>) {
+        // SAFETY: the loop lives.
+        let add = unsafe { (*self.events).add_delayed };
+        // SAFETY: the loop lives, and `callback` outlives its run.
+        unsafe { add(self.events, callback.get()) };
+    }
+}
+
+/// A timer callback that takes 1 ms of the clock and, in its first `queues` runs,
+/// queues `first`, which queues `second`.
+///
+/// # Safety
+///
+/// `data` points at a live [`Hops`], and `events` is its loop.
+unsafe extern "C" fn hop(_: *mut c_void, data: *mut c_void) {
+    // SAFETY: the caller gives a live `Hops`.
+    let hops = unsafe { &*data.cast::<Hops>() };
+    hops.runs.set(hops.runs.get() + 1);
+    hops.extra.fetch_add(1_000_000, Ordering::SeqCst);
+    if hops.runs.get() <= hops.queues {
+        // SAFETY: the loop lives, and `first` is not queued: it ran before the timer.
+        unsafe { hops.queue(&hops.first) };
+    }
+}
+
+/// Queues `second` of the [`Hops`] at `data`.
+///
+/// # Safety
+///
+/// `data` points at a live [`Hops`].
+unsafe extern "C" fn hop_first(_: *mut c_void, data: *mut c_void) {
+    // SAFETY: the caller gives a live `Hops`.
+    let hops = unsafe { &*data.cast::<Hops>() };
+    // SAFETY: the loop lives, and `second` is not queued.
+    unsafe { hops.queue(&hops.second) };
+}
+
+/// A [`slow_server`] whose loop runs [`hop`] each 1 ms, with the [`Hops`] that it
+/// uses.
+struct Hopping {
+    /// Drops before `hops`, as the free of the loop can run `second`.
+    side: Side,
+    hops: Box<Hops>,
+    server: *mut ffi::test::Server,
+}
+
+impl Hopping {
+    /// Starts the server and the timer. The caller deletes the server.
+    async fn start(node: &node::Node, queues: usize) -> Self {
+        let (side, extra, server) = slow_server(node).await;
+        let delayed = |callback| {
+            UnsafeCell::new(ffi::DelayedCallback {
+                next: ptr::null_mut(),
+                callback,
+                application: ptr::null_mut(),
+                context: ptr::null_mut(),
+            })
+        };
+        let hops = Box::new(Hops {
+            extra,
+            runs: Cell::new(0),
+            queues,
+            events: side.events().raw(),
+            first: delayed(hop_first),
+            second: delayed(nothing),
+        });
+        let data: *mut c_void = ptr::from_ref(&*hops).cast_mut().cast();
+        // SAFETY: nothing reads `first` yet.
+        unsafe { (*hops.first.get()).context = data };
+        let hopping = Self { side, hops, server };
+        let events = hopping.side.events();
+        // SAFETY: the member takes its own loop, and `hops` outlives the loop.
+        let status = Status(unsafe {
+            (events.members().add_timer)(
+                events.raw(),
+                hop,
+                ptr::null_mut(),
+                data,
+                1.0,
+                ptr::null_mut(),
+                ffi::CURRENT_TIME,
+                ptr::null_mut(),
+            )
+        });
+        assert_eq!(status, Status::GOOD);
+        hopping.side.clock.sleep(Span::from_nanos(1_000_000)).await;
+        hopping
+    }
+}
+
+/// A timer that is always due and queues a delayed callback on each run keeps one
+/// waiting after each run, so the close panics after its 64th run, before the delete.
+#[test]
+fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
+    let mut network = Network::new();
+    let (message, runs) = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let hopping = Hopping::start(&node, usize::MAX).await;
+            let panic = {
+                // SAFETY: the server lives on the loop, and the panic comes before the
+                // delete.
+                let close =
+                    unsafe { hopping.side.manager.close_server(hopping.server) };
+                let mut close = pin!(close);
+                poll_fn(|cx| {
+                    match panic::catch_unwind(AssertUnwindSafe(|| {
+                        close.as_mut().poll(cx)
+                    })) {
+                        Ok(poll) => poll.map(|()| None),
+                        Err(panic) => Poll::Ready(Some(panic)),
+                    }
+                })
+                .await
+                .expect("the close panics")
+            };
+            // SAFETY: the server lives, as the panic came before the delete, and the
+            // delayed callbacks that wait are of `hops` and do not read it.
+            let status = Status(unsafe { ffi::test::UA_Server_delete(hopping.server) });
+            assert_eq!(status, Status::GOOD);
+            (
+                panic.downcast_ref::<String>().cloned(),
+                hopping.hops.runs.get(),
+            )
+        })
+        .expect("the run ends");
+    assert_eq!(
+        message.as_deref(),
+        Some("open62541 queued delayed callbacks for 64 runs of a server close")
+    );
+    assert_eq!(runs, 64);
+}
+
+/// When the 64th run of the loop runs the last delayed callback, the close ends.
+#[test]
+fn a_close_ends_when_its_64th_run_drains_the_delayed_callbacks() {
+    let mut network = Network::new();
+    let runs = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let hopping = Hopping::start(&node, 63).await;
+            // SAFETY: the server lives on the loop, and nothing uses it after.
+            unsafe { hopping.side.manager.close_server(hopping.server) }.await;
+            hopping.hops.runs.get()
+        })
+        .expect("the run ends");
+    assert_eq!(runs, 64);
+}
+
 /// The `CloseSession` service of a running server removes the session after the
 /// service ends, which still writes to it.
 #[test]
@@ -2574,8 +2943,8 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
     network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 1);
             // SAFETY: the loop outlives the client, which the test deletes.
             let client = unsafe { ffi::shim_client_new(side.events().raw()) };
             assert!(!client.is_null());
@@ -2620,15 +2989,15 @@ unsafe extern "C" fn created(
 /// The close of a channel purges its session that is not activated, and the removal
 /// waits in the loop when the server becomes `STOPPED`.
 #[test]
-fn a_stopped_server_is_deleted_when_its_loop_has_nothing_due() {
-    // On and off the 100 ns grid of the loop.
+fn a_stopped_server_is_deleted_when_no_delayed_callback_waits() {
+    // A close that starts on and off the 100 ns grid of the loop.
     for offset in [0, 50] {
         let mut network = Network::new();
         network
             .sim
             .run_on(&network.local.clone(), move |node, _| async move {
-                let side = Side::listening(&node, listener(&node));
-                let server = side.start(c"opc.tcp://:4840");
+                let side = Side::listening(&node, local(&node));
+                let server = side.start(c"opc.tcp://:4840", 1);
                 // SAFETY: the loop outlives the client, which the test deletes.
                 let client = unsafe { ffi::shim_client_new(side.events().raw()) };
                 assert!(!client.is_null());
@@ -2671,9 +3040,184 @@ fn a_stopped_server_is_deleted_when_its_loop_has_nothing_due() {
     }
 }
 
+#[test]
+fn a_manager_that_listens_at_a_taken_address_fails() {
+    let mut network = Network::new();
+    let failed = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let local = local(&node);
+            let _side = Side::listening(&node, local);
+            let rng = &mut Rng::from_seed(0);
+            let second = Manager::listening(node.clock(), node.net(), local, 4, rng);
+            (second.err(), local)
+        })
+        .expect("the run ends");
+    let (error, local) = failed;
+    assert_eq!(error, Some(net::Error::AddressInUse { local }));
+}
+
+/// How the manager opens the one stream of a test.
+#[derive(Clone, Copy)]
+enum Open {
+    Accepted,
+    Dialed,
+}
+
+impl Open {
+    /// Opens the stream with the peer in [`hold`] with `delay` and `bytes`, drives
+    /// the manager for 3.5 s, and gives `body` the side, the key of the stream, and
+    /// the count of [`hold`].
+    fn run<T, F>(
+        self,
+        network: &mut Network,
+        delay: Span,
+        bytes: usize,
+        body: impl FnOnce(Side, usize, Arc<AtomicUsize>) -> F + Send + 'static,
+    ) -> T
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + 'static,
+    {
+        let taken = match self {
+            Self::Accepted => network.dial_and_hold(delay, bytes),
+            Self::Dialed => network.accept_and_hold(delay, bytes),
+        };
+        let remote = network.remote();
+        network
+            .sim
+            .run_on(&network.local.clone(), move |node, _| async move {
+                let side = match self {
+                    Self::Accepted => {
+                        let side = Side::listening(&node, local(&node));
+                        assert_eq!(side.listen(PORT), Status::GOOD);
+                        side
+                    }
+                    Self::Dialed => {
+                        let side = Side::new(&node);
+                        assert_eq!(side.connect(remote), Status::GOOD);
+                        side
+                    }
+                };
+                side.drive(Span::from_nanos(3_500_000_000)).await;
+                let id = match self {
+                    Self::Accepted => side.calls()[1].0,
+                    Self::Dialed => 1,
+                };
+                body(side, id, taken).await
+            })
+            .expect("the run ends")
+    }
+}
+
+/// Sends 1 KiB at a time on the stream that `open` opens, whose peer reads nothing,
+/// until the manager refuses one, and gives the count of sends that it took.
+fn sent(network: &mut Network, open: Open) -> usize {
+    open.run(network, Span::ZERO, 0, |side, id, _| async move {
+        let mut sent = 0;
+        while side.send(id, &[7; 1 << 10]) == Status::GOOD {
+            sent += 1;
+            side.drive(Span::from_nanos(1_000_000)).await;
+        }
+        sent
+    })
+}
+
+/// Gives the bytes that the peer writes in 1 s on the stream that `open` opens,
+/// while the manager reads nothing.
+fn received(network: &mut Network, open: Open) -> usize {
+    let delay = Span::from_nanos(3_600_000_000);
+    open.run(network, delay, 1 << 20, |side, _, taken| async move {
+        side.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let taken = taken.load(Ordering::Relaxed);
+        // The block holds all of `side`, not only its clock, so its streams live.
+        drop(side);
+        taken
+    })
+}
+
+/// A link of 1 s, so that no ack comes back while [`sent`] sends.
+fn slow(network: &mut Network) {
+    let link = sim::link::Config {
+        delay: Span::SECOND,
+        ..sim::link::Config::default()
+    };
+    network.sim.link(&network.local, &network.peer, link);
+    network.sim.link(&network.peer, &network.local, link);
+}
+
+/// After acks, an accepted stream holds the 16 KiB of `unsent_bytes_max` of
+/// [`OPTIONS`] past the 64 KiB window of the peer, and [`SENDS`] wait.
+#[test]
+fn an_accepted_stream_holds_the_unsent_bytes_of_the_manager() {
+    let mut network = Network::new();
+    assert_eq!(sent(&mut network, Open::Accepted), SENDS + 64 + 16);
+}
+
+/// With no ack, an accepted stream takes the 64 KiB of `send_buffer_bytes` of
+/// [`OPTIONS`], and [`SENDS`] wait.
+#[test]
+fn an_accepted_stream_takes_the_send_buffer_of_the_manager() {
+    let mut network = Network::new();
+    slow(&mut network);
+    assert_eq!(sent(&mut network, Open::Accepted), SENDS + 64);
+}
+
+/// The peer writes the 64 KiB of `recv_buffer_bytes` of [`OPTIONS`], and the 64 KiB
+/// of its own send buffer.
+#[test]
+fn an_accepted_stream_takes_the_receive_buffer_of_the_manager() {
+    let mut network = Network::new();
+    assert_eq!(received(&mut network, Open::Accepted), (64 + 64) << 10);
+}
+
+/// As [`an_accepted_stream_holds_the_unsent_bytes_of_the_manager`], for a dialed
+/// stream.
+#[test]
+fn a_dialed_stream_holds_the_unsent_bytes_of_the_manager() {
+    let mut network = Network::new();
+    assert_eq!(sent(&mut network, Open::Dialed), SENDS + 64 + 16);
+}
+
+/// As [`an_accepted_stream_takes_the_send_buffer_of_the_manager`], for a dialed
+/// stream.
+#[test]
+fn a_dialed_stream_takes_the_send_buffer_of_the_manager() {
+    let mut network = Network::new();
+    slow(&mut network);
+    assert_eq!(sent(&mut network, Open::Dialed), SENDS + 64);
+}
+
+/// As [`an_accepted_stream_takes_the_receive_buffer_of_the_manager`], for a dialed
+/// stream.
+#[test]
+fn a_dialed_stream_takes_the_receive_buffer_of_the_manager() {
+    let mut network = Network::new();
+    assert_eq!(received(&mut network, Open::Dialed), (64 + 64) << 10);
+}
+
+/// The peer sends 64 KiB, the receive buffer of [`OPTIONS`], before the stream
+/// reads, so the first read takes it all.
+#[test]
+fn a_read_takes_the_receive_buffer_at_once() {
+    let mut network = Network::new();
+    network.dial(Span::ZERO, &vec![7; OPTIONS.recv_buffer_bytes]);
+    let calls = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let side = Side::listening(&node, local(&node));
+            assert_eq!(side.listen(PORT), Status::GOOD);
+            side.drive(Span::from_nanos(100_000_000)).await;
+            side.calls()
+        })
+        .expect("the run ends");
+    let lengths: Vec<usize> = calls.iter().map(|(_, _, bytes)| bytes.len()).collect();
+    assert_eq!(lengths, [0, 0, OPTIONS.recv_buffer_bytes]);
+}
+
 /// Each purged stream of a peer that reads until its stream ends and never closes stays
 /// in the table for `LINGER`. The table must hold no more than the 100 secure channels
-/// of the minimal config and [`CLOSES`] closing streams.
+/// of the server of [`bound`] and [`CLOSES`] closing streams.
 #[test]
 fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
     let network = Network::new();
@@ -2704,8 +3248,8 @@ fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, u
     let (connections, held) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 100);
             side.drive(Span::from_nanos(2_000_000_000)).await;
             // Less the listen connection.
             let held = (side.connections() - 1, snapshot(&peers));
@@ -2736,8 +3280,8 @@ fn closes_past_the_bound() {
     let held = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 100);
             side.drive(Span::SECOND).await;
             let held = (side.connections(), snapshot(&peers));
             side.stop(server).await;
@@ -2783,7 +3327,7 @@ fn a_stream_that_a_close_past_the_bound_drops_leaves_in_the_same_drive() {
     let counts = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.drive(Span::SECOND).await;
             let accepted = side.connections();
@@ -2823,7 +3367,7 @@ fn closes_at_one_instant() {
     network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.drive(Span::SECOND).await;
             for id in (2..=102).rev() {
@@ -2885,7 +3429,7 @@ fn each_read_is_in_the_one_buffer_of_the_manager() {
     let (buffer, calls) = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let mut side = Side::listening(&node, listener(&node));
+            let mut side = Side::listening(&node, local(&node));
             side.callback = address;
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.drive(Span::SECOND).await;
@@ -2951,7 +3495,7 @@ fn a_read_fills_the_read_buffer_of_64_kib() {
     let calls = network
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
+            let side = Side::listening(&node, local(&node));
             assert_eq!(side.listen(PORT), Status::GOOD);
             side.drive(Span::SECOND).await;
             side.calls()
@@ -3018,8 +3562,8 @@ fn a_close_before_the_first_read_waits_for_the_end_of_the_peer() {
     assert_eq!(connections, (1, 0));
 }
 
-/// The minimal config holds at most 100 secure channels. A burst of accepts must not
-/// hold more, and each accept moves on only the listen connection again.
+/// The server of [`burst`] holds at most 100 secure channels. A burst of accepts must
+/// not hold more, and each accept moves on only the listen connection again.
 #[test]
 fn a_burst_of_accepts_holds_no_more_than_the_most_secure_channels() {
     // A pass of the whole table after each accept makes more than 10,000.
@@ -3086,8 +3630,8 @@ fn poll_once(
     network
         .sim
         .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 100);
             side.clock.sleep(Span::from_nanos(2_000_000)).await;
             let count = Arc::new(Wakes::default());
             let waker = Waker::from(Arc::clone(&count));
@@ -3110,16 +3654,6 @@ fn poll_once(
         .expect("the run ends")
 }
 
-/// Counts the wakes of a task.
-#[derive(Default)]
-struct Wakes(AtomicUsize);
-
-impl Wake for Wakes {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
 /// Dials 150 streams at once to the minimal server, then has `drives` drives each
 /// end after one run, then drives for a second. Gives the count of accepted
 /// connections in the table, the count of dials that the server has not closed, and
@@ -3132,8 +3666,8 @@ fn burst(drives: usize) -> (usize, usize, usize) {
     network
         .sim
         .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::listening(&node, listener(&node));
-            let server = side.start(c"opc.tcp://:4840");
+            let side = Side::listening(&node, local(&node));
+            let server = side.start(c"opc.tcp://:4840", 100);
             side.clock.sleep(Span::from_nanos(2_000_000)).await;
             for _ in 0..drives {
                 side.manager

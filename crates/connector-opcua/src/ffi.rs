@@ -1,5 +1,6 @@
 //! The C functions of open62541, `shim.c`, and `server.c` that Rust calls, each
-//! declared once.
+//! declared once. `shim.c` asserts the size of each C enum that this module mirrors,
+//! and each value of such an enum that it names.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -333,6 +334,8 @@ unsafe extern "C" {
 
     pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
+    pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
+    pub(crate) static shim_free_passes: c_int;
     pub(crate) fn shim_log_warning(
         el: *mut EventLoop,
         message: *const u8,
@@ -362,6 +365,7 @@ unsafe extern "C" {
     );
 }
 
-/// Only tests use these.
-#[cfg(test)]
+/// Only tests and `bench` use these.
+#[cfg(any(test, feature = "sim"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "`bench` uses only some"))]
 pub(crate) mod test;

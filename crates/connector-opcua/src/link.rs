@@ -461,48 +461,69 @@ fn src() -> std::path::PathBuf {
     root().join("src")
 }
 
+/// The cfg of the code that only tests, benchmarks, and fuzz targets build, which the
+/// scan counts as test code.
+const SIM: &str = "feature=\"sim\"";
+
 /// Each identifier for which `named` holds, as `path: identifier`, in the Rust
 /// outside tests of the crate at `root`: each `.rs` file outside `tests/` and each
-/// file that a build of the library reads ([`built`]), less each file that a test
-/// build reads and no build of the library reads. Comments and inline modules count.
+/// file that a build of the library reads ([`built`]), less each file that a build
+/// with [`SIM`] on reads ([`tested`]) and no build of the library reads. Comments
+/// and inline modules count.
 fn named_outside_tests(
     root: &std::path::Path,
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    let (built, cfgs) = built(root);
-    let mut flags = on(&cfgs);
-    flags.push("--test".to_owned());
-    let (tested, _) = read_by_rustc(root, &cfgs, &flags);
+    let (library, _) = built(root, &[]);
+    let tested = tested(root);
     let tests = root.join("tests");
     let mut files = files_under(root, "rs");
     files.retain(|path| !path.starts_with(&tests));
-    files.extend(built.iter().cloned());
+    files.extend(library.iter().cloned());
     files.sort();
     files.dedup();
     files
         .into_iter()
-        .filter(|path| built.contains(path) || !tested.contains(path))
+        .filter(|path| library.contains(path) || !tested.contains(path))
         .flat_map(|path| named_in(&path, &named))
         .collect()
 }
 
-/// Each file that a build of the library of the crate at `root` reads, and the cfgs
-/// that the builds set, sorted. The builds are those on this host, with the target
-/// features of this build, and with each set of the cfgs that the crate tests and
-/// rustc does not know (features among them), each with debug assertions on and off
-/// and with each panic strategy. rustc names each such cfg in a build that reads the
-/// file that tests it. A file under a known value of a target cfg that this build does
-/// not set, such as `target_os = "windows"`, is read by no build.
+/// Each file that a build of the crate at `root` with [`SIM`] on reads, sorted: with
+/// `test` off, and with the test harness.
+fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let sim = on(&[SIM.to_owned()]);
+    let (mut files, _) = built(root, &sim);
+    // rustc refuses `--test` with `-Cpanic=abort`, but still gives the files it read.
+    files.extend(built(root, &[vec!["--test".to_owned()], sim].concat()).0);
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Each file that a build of the library of the crate at `root` with the flags `base`
+/// reads, and the cfgs that the builds set, sorted. The builds are those on this host,
+/// with the target features of this build, and with each set of the cfgs that the
+/// crate tests and rustc does not know (features among them, less [`SIM`], which only
+/// `base` sets), each with debug assertions on and off and with each panic strategy.
+/// rustc names each such cfg in a build that reads the file that tests it. A file
+/// under a known value of a target cfg that this build does not set, such as
+/// `target_os = "windows"`, is read by no build.
 ///
 /// # Panics
 ///
 /// On a value that rustc does not know of a cfg other than `feature`, since the scan
 /// cannot know which values a build gives it.
-fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
+fn built(
+    root: &std::path::Path,
+    base: &[String],
+) -> (Vec<std::path::PathBuf>, Vec<String>) {
     let mut cfgs: Vec<String> = Vec::new();
     let mut runs = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     loop {
+        let mut known = cfgs.clone();
+        known.push(SIM.to_owned());
         let mut found = Vec::new();
         for set in 0..1usize << cfgs.len() {
             let set: Vec<_> = (0..cfgs.len())
@@ -511,11 +532,12 @@ fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
                 .collect();
             for assertions in ["on", "off"] {
                 for panic in ["unwind", "abort"] {
-                    let mut flags = on(&set);
+                    let mut flags = base.to_vec();
+                    flags.extend(on(&set));
                     flags.push(format!("-Cdebug-assertions={assertions}"));
                     flags.push(format!("-Cpanic={panic}"));
                     if runs.insert(flags.clone()) {
-                        let (read, unknown) = read_by_rustc(root, &cfgs, &flags);
+                        let (read, unknown) = read_by_rustc(root, &known, &flags);
                         files.extend(read);
                         found.extend(unknown);
                     }
@@ -689,16 +711,13 @@ fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String>
 fn the_scan_names_only_the_files_outside_tests() {
     let client = |name: &str| name == "shim_client_new";
     let named = named_outside_tests(&root(), client);
-    let files = ["bench.rs", "ffi.rs"].map(|file| src().join(file));
-    let found: Vec<_> = files
-        .iter()
-        .flat_map(|path| named_in(path, client))
-        .collect();
-    assert_eq!(found.len(), 2, "{found:?}");
+    let found = named_in(&src().join("ffi.rs"), client);
+    assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(named, found);
 }
 
-/// A file that only a test build reads is cut off, with the files that it declares.
+/// A file that only a test build reads, also with [`SIM`] on, is cut off, with the
+/// files that it declares.
 #[test]
 fn the_scan_cuts_off_only_the_files_of_a_test_build() {
     let root = create_tree(
@@ -706,9 +725,11 @@ fn the_scan_cuts_off_only_the_files_of_a_test_build() {
         &[
             (
                 "src/lib.rs",
-                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n",
+                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n\
+                 #[cfg(feature = \"sim\")]\nmod s;\n",
             ),
             ("src/t.rs", "mod u;"),
+            ("src/s.rs", "fn named() {}"),
             ("src/t/u.rs", "fn named() {}"),
             ("src/p.rs", "fn named() {}"),
         ],
@@ -878,7 +899,7 @@ fn the_scan_reads_no_cfg_from_a_quoted_comment() {
     );
     let named = named_outside_tests(&root, |name| name == "named");
     assert_eq!(named, [at(&root, "src/o.rs")]);
-    assert_eq!(built(&root).1, ["feature=\"foo\""]);
+    assert_eq!(built(&root, &[]).1, ["feature=\"foo\""]);
     let lib = "#[cfg(target_os = \"nope\")] // = note: as for `feature` x\nmod f;\n";
     let root = create_tree("hidden", &[("src/lib.rs", lib), ("src/f.rs", "")]);
     let refused = std::panic::catch_unwind(|| named_outside_tests(&root, |_| false));
@@ -906,11 +927,15 @@ fn the_scan_builds_with_the_target_features_of_the_build() {
 }
 
 /// The builds of the library set each cfg that the crate tests and rustc does not
-/// know.
+/// know, less [`SIM`], and only the builds with [`SIM`] on read the code behind it.
 #[test]
 fn the_scan_builds_each_cfg_of_the_crate() {
-    let (_, cfgs) = built(&root());
-    assert_eq!(cfgs, ["asan", "feature=\"open62541\"", "feature=\"sim\""]);
+    let (library, cfgs) = built(&root(), &[]);
+    assert_eq!(cfgs, ["asan", "feature=\"open62541\""]);
+    let bench = src().join("bench.rs");
+    assert!(!library.contains(&bench), "{library:?}");
+    let tested = tested(&root());
+    assert!(tested.contains(&bench), "{tested:?}");
 }
 
 /// A test mock that a `path` attribute gives in place of a module is cut off, and
@@ -931,6 +956,79 @@ fn the_scan_reads_the_module_that_a_test_mock_shadows() {
     );
     let named = named_outside_tests(&root, |name| name == "named");
     assert_eq!(named, [at(&root, "src/clock.rs")]);
+}
+
+/// A file that only a test build reads is cut off also under a cfg that only test
+/// code tests, or under debug assertions off or panics that abort.
+#[test]
+fn the_scan_cuts_off_the_files_of_each_test_build() {
+    for (parent, at) in [("test", "t"), ("feature = \"sim\"", "s")] {
+        for (case, cfg) in [
+            ("feature", "feature = \"bar\""),
+            ("name", "outer"),
+            ("assertions", "not(debug_assertions)"),
+            ("abort", "panic = \"abort\""),
+        ] {
+            let lib = format!("#[cfg({parent})]\nmod m;\n");
+            let m = format!("#[cfg({cfg})]\nmod b;\n");
+            let root = create_tree(
+                &format!("tested-{at}-{case}"),
+                &[
+                    ("src/lib.rs", &lib),
+                    ("src/m.rs", &m),
+                    ("src/m/b.rs", "fn named() {}"),
+                ],
+            );
+            let named = named_outside_tests(&root, |name| name == "named");
+            assert_eq!(named, Vec::<String>::new(), "{parent}, {case}");
+        }
+    }
+}
+
+/// A file behind [`SIM`] that only a build without `test` reads, as of a benchmark or
+/// a fuzz target, is cut off.
+#[test]
+fn the_scan_cuts_off_the_sim_files_of_a_build_without_test() {
+    for (case, lib, b) in [
+        (
+            "nested",
+            "#[cfg(feature = \"sim\")]\nmod m;\n",
+            "src/m/b.rs",
+        ),
+        (
+            "all",
+            "#[cfg(all(feature = \"sim\", not(test)))]\nmod b;\n",
+            "src/b.rs",
+        ),
+    ] {
+        let root = create_tree(
+            &format!("untested-{case}"),
+            &[
+                ("src/lib.rs", lib),
+                ("src/m.rs", "#[cfg(not(test))]\nmod b;\n"),
+                (b, "fn named() {}"),
+            ],
+        );
+        let named = named_outside_tests(&root, |name| name == "named");
+        assert_eq!(named, Vec::<String>::new(), "{case}");
+    }
+}
+
+/// A file that only a test function reads is cut off.
+#[test]
+fn the_scan_cuts_off_the_files_of_a_test_function() {
+    let root = create_tree(
+        "test-function",
+        &[
+            (
+                "src/lib.rs",
+                "#[test]\nfn t() {\n    let _: () = include!(\"../c.rs\");\n}\n",
+            ),
+            ("c.rs", "{ fn named() {} }"),
+        ],
+    );
+    let named = named_outside_tests(&root, |name| name == "named");
+    assert_eq!(named, Vec::<String>::new());
 }
 
 /// A scan leaves no output of rustc behind.
