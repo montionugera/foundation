@@ -85,9 +85,12 @@ exclude_re = [
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
   'crates/node/src/admin\.rs:.*replace check with \(\)',
-  # The check that `identity::check` and `admin::check` call, for the same reason. The
-  # unit tests `panics_when_a_decode_*` in `sector.rs` show that it panics.
+  # The check that `identity::check`, `admin::check`, and `address::check` call, for
+  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
+  # it panics.
   'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # The oracle of `address` in the same target and tests, for the same reason.
+  'crates/node/src/address\.rs:.*replace check with \(\)',
   # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
