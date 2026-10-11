@@ -747,9 +747,9 @@ mod tests {
     }
 
     /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
-    /// `out` has a value on one line, each as the value of the attribute that ends
-    /// `text`. After the closer, `want` holds the rest of `out`, with a line end that
-    /// `out` lacks when the closer's line is the last.
+    /// `out` has a value on one line, each after the line of `text` up to the value of
+    /// the attribute that ends `text`. After the closer, `want` holds the rest of
+    /// `out`, with a line end that `out` lacks when the closer's line is the last.
     fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
@@ -778,18 +778,14 @@ mod tests {
         let end = text.trim_end().len();
         let lead = read(Source(0), text).ok().and_then(|document| {
             document.attributes.iter().find_map(|attribute| {
-                let key = usize::try_from(attribute.key_span?.start().offset).ok()?;
                 let value = attribute.value.span?;
                 let start = usize::try_from(value.start().offset).ok()?;
                 (usize::try_from(value.end().offset).ok()? == end)
-                    .then(|| text.get(key..start))?
+                    .then(|| text.get(..start)?.rsplit('\n').next())?
             })
         });
-        let line = out
-            .get(..start)
-            .zip(lead)
-            .and_then(|(head, lead)| head.strip_suffix(lead));
-        line.is_some_and(|before| before.is_empty() || before.ends_with('\n'))
+        lead.is_some()
+            && out.get(..start).and_then(|head| head.rsplit('\n').next()) == lead
             && out
                 .get(start..)
                 .and_then(|rest| rest.strip_suffix(tail))
@@ -1127,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn quotes_a_value_with_spaces_after_it_at_the_end_of_an_unended_text() {
+    fn quotes_the_last_value_of_an_unended_text_with_more_bytes_on_its_line() {
         let new = "a = \"x\\n\"";
         let out = updated("a = 1  ", new);
         let want = updated("a = 1  \n", new);
@@ -1137,6 +1133,9 @@ mod tests {
         for (text, new) in [
             ("a = 1  ", "a = \"x\\n\"\nb = 2"),
             ("a = 1\t", "a = \"x\\n\""),
+            ("\u{feff}a = 1", "a = \"x\\n\""),
+            ("b = 2\n  a = 1", "b = 2\na = \"x\\n\""),
+            ("/* c */ a = 1", "a = \"x\\n\""),
         ] {
             let ended = format!("{text}\n");
             let (out, want) = (updated(text, new), updated(&ended, new));
