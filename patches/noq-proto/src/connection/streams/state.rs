@@ -121,7 +121,7 @@ pub struct StreamsState {
     pub(super) data_sent: u64,
     /// Sum of end offsets of all receive streams. Includes gaps, so it's an upper bound.
     data_recvd: u64,
-    /// Total quantity of unacknowledged outgoing data
+    /// The bytes that the send buffers hold, also those acknowledged after a gap
     pub(super) unacked_data: u64,
     /// Configured upper bound for `unacked_data`.
     ///
@@ -607,8 +607,10 @@ impl StreamsState {
             return;
         }
         let id = frame.id;
-        self.unacked_data -= frame.offsets.end - frame.offsets.start;
-        if !stream.ack(frame) {
+        let held = stream.pending.held();
+        let finished = stream.ack(frame);
+        self.unacked_data -= held - stream.pending.held();
+        if !finished {
             // The stream is unfinished or may still need retransmits
             return;
         }
@@ -2258,5 +2260,92 @@ mod tests {
         // Assert that only `smaller_send_window` bytes are accepted
         assert_eq!(stream.write(&data), Ok(smaller_send_window as usize));
         assert_eq!(stream.write(&data), Err(WriteError::Blocked));
+    }
+
+    /// A stream of `server`, with a peer that gives credit with no limit.
+    fn open_with_credit(server: &mut StreamsState) -> StreamId {
+        server.set_params(&TransportParameters {
+            initial_max_data: VarInt::MAX,
+            initial_max_stream_data_uni: VarInt::MAX,
+            initial_max_streams_uni: VarInt::from_u32(100),
+            ..TransportParameters::default()
+        });
+        Streams {
+            state: server,
+            conn_state: &ConnState::established(),
+        }
+        .open(Dir::Uni)
+        .expect("should be able to open a stream")
+    }
+
+    /// Writes frames of `frame` bytes to `stream` until it blocks or took `most`
+    /// bytes, and acknowledges each frame but the first. Returns the bytes taken.
+    fn write_past_gap(stream: &mut SendStream<'_>, frame: usize, most: u64) -> u64 {
+        let data = vec![0xFFu8; frame];
+        let mut written = 0;
+        while written < most {
+            let n = match stream.write(&data) {
+                Ok(n) => n as u64,
+                Err(WriteError::Blocked) => break,
+                Err(error) => panic!("unexpected write error: {error:?}"),
+            };
+            if written > 0 {
+                stream.state.received_ack_of(frame::StreamMeta {
+                    id: stream.id,
+                    offsets: written..written + n,
+                    fin: false,
+                });
+            }
+            written += n;
+        }
+        written
+    }
+
+    #[test]
+    fn ack_after_gap_keeps_send_window() {
+        let mut server = make(Side::Server);
+        let window = server.send_window;
+        let id = open_with_credit(&mut server);
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        let mut stream = SendStream {
+            id,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+
+        assert_eq!(write_past_gap(&mut stream, 1200, 16 * window), window);
+        assert_eq!(stream.state.unacked_data, window);
+        assert_eq!(stream.write(&[0xFF]), Err(WriteError::Blocked));
+
+        stream.state.received_ack_of(frame::StreamMeta {
+            id,
+            offsets: 0..1200,
+            fin: false,
+        });
+        assert_eq!(stream.state.unacked_data, 0);
+        assert_eq!(stream.state.poll(), Some(StreamEvent::Writable { id }));
+        assert_eq!(stream.state.write_limit(), window);
+    }
+
+    #[test]
+    fn reset_after_gap_frees_send_window() {
+        let mut server = make(Side::Server);
+        let window = server.send_window;
+        let id = open_with_credit(&mut server);
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        let mut stream = SendStream {
+            id,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+
+        assert_eq!(write_past_gap(&mut stream, 1200, window), window);
+        stream.reset(0u32.into()).expect("the stream resets");
+        assert_eq!(stream.state.unacked_data, 0);
+        assert_eq!(stream.state.write_limit(), window);
     }
 }

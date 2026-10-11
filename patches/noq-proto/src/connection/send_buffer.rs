@@ -346,9 +346,9 @@ impl SendBuffer {
         self.unsent != self.offset() || !self.retransmits.is_empty()
     }
 
-    /// Compute the amount of data that hasn't been acknowledged
-    pub(super) fn unacked(&self) -> u64 {
-        self.data.len() as u64 - self.acks.iter().map(|x| x.end - x.start).sum::<u64>()
+    /// The bytes that the buffer holds, also those acknowledged after a gap
+    pub(super) fn held(&self) -> u64 {
+        self.data.len() as u64
     }
 }
 
