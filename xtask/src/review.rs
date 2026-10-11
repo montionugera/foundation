@@ -836,10 +836,10 @@ fn same(a: &str, b: &str) -> bool {
         .any(|n| matches!(n.data.borrow().value, NodeValue::FootnoteReference(_)))
 }
 
-/// The lines of text of `paragraph` as GitHub shows them: its text and code spans,
-/// each footnote reference as its number, each image as [`IMAGE`] in place of its text
-/// and line breaks, no invisible character (Unicode default ignorable), and each run of
-/// white space as one space, trimmed. A character that looks like another stays
+/// The lines of text of `paragraph` as GitHub shows them: its text and code spans with
+/// no invisible character (Unicode default ignorable), each footnote reference as its
+/// number, each image as [`IMAGE`] in place of its text and line breaks, and each run
+/// of white space as one space, trimmed. A character that looks like another stays
 /// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
