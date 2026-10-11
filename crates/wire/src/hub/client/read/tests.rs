@@ -696,7 +696,8 @@ mod reader {
         }
     }
 
-    /// The messages of a fuzz input: each a length byte and then that many bytes.
+    /// The messages of a fuzz input, as `fuzz::messages` cuts them: each a length byte
+    /// and then that many bytes.
     fn input(mut bytes: &[u8]) -> Vec<&[u8]> {
         let mut messages = Vec::new();
         while let Some((&len, rest)) = bytes.split_first() {
@@ -717,50 +718,153 @@ mod reader {
         };
     }
 
-    /// Each run input of the fuzz target starts with `Places { count: 2, index: 0 }`,
-    /// and its second message gives the result.
+    /// What a message of a read stream gives: an event of the reader, or a reply after
+    /// the last place.
+    #[derive(Debug, PartialEq)]
+    enum Step {
+        Event(Result<Event, Error>),
+        Reply(Result<Home, hub::Error>),
+    }
+
+    /// The step of each message of the fuzz input `bytes`, at a reader of a complete
+    /// read.
+    fn steps(bytes: &[u8]) -> Vec<Step> {
+        let mut reader = Reader::new(Mode::Complete);
+        let mut home = None;
+        let mut steps = Vec::new();
+        for message in input(bytes) {
+            if let Some(home) = &mut home {
+                steps.push(Step::Reply(reply(home, message)));
+                continue;
+            }
+            let event = reader.decode(message).map(|event| match event {
+                FromNode::Places(places) => Event::Places(places),
+                FromNode::Run { places, home: None } => Event::Run(places),
+                FromNode::Run {
+                    places,
+                    home: Some(given),
+                } => {
+                    home = Some(given);
+                    Event::Last(places)
+                }
+            });
+            steps.push(Step::Event(event));
+        }
+        steps
+    }
+
+    /// The step of a `Places` of `count` places and the index place `index`.
+    fn places(count: u32, index: u32) -> Step {
+        Step::Event(Ok(Event::Places(Places { count, index })))
+    }
+
+    fn refused(error: Error) -> Step {
+        Step::Event(Err(error))
+    }
+
+    /// Each input `reader_*` of the fuzz target that reaches the last place gives the
+    /// step of each of its messages.
     #[test]
-    fn gives_the_result_of_each_run_input_of_the_fuzz_target() {
-        let places = Places { count: 2, index: 0 };
-        let cases: [(&[u8], Result<Event, Error>); 7] = [
+    fn reads_each_run_input_of_the_fuzz_target_to_its_last_place() {
+        let cases: [(&[u8], Vec<Step>); 3] = [
+            (
+                corpus!("reader_behind"),
+                vec![
+                    places(2, 0),
+                    Step::Event(Ok(Event::Last(vec![stamp(1), pt(2, "f64", "b")]))),
+                    Step::Reply(Ok(Home::Opened)),
+                    Step::Reply(Ok(Home::Behind)),
+                ],
+            ),
             (
                 corpus!("reader_place"),
-                Ok(Event::Last(vec![
-                    pt(1, "timestamp", "a.time"),
-                    pt(2, "f32[3]", "a.b"),
-                ])),
+                vec![
+                    places(2, 0),
+                    Step::Event(Ok(Event::Last(vec![
+                        pt(1, "timestamp", "a.time"),
+                        pt(2, "f32[3]", "a.b"),
+                    ]))),
+                ],
             ),
-            (corpus!("reader_place_cut"), Err(Error::Length { len: 21 })),
+            (
+                corpus!("reader_run"),
+                vec![
+                    places(2, 1),
+                    Step::Event(Ok(Event::Run(vec![byte(1)]))),
+                    Step::Event(Ok(Event::Last(vec![pt(2, "timestamp", "a.time")]))),
+                    Step::Reply(Ok(Home::Opened)),
+                    Step::Reply(Ok(Home::Head(2))),
+                ],
+            ),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(steps(bytes), expected, "{bytes:?}");
+        }
+    }
+
+    /// Each other input `reader_*` of the fuzz target gives the step of each of its
+    /// messages, the last a refusal.
+    #[test]
+    fn refuses_each_other_run_input_of_the_fuzz_target() {
+        let cases: [(&[u8], Vec<Step>); 8] = [
+            (
+                corpus!("reader_place_cut"),
+                vec![places(2, 0), refused(Error::Length { len: 21 })],
+            ),
             (
                 corpus!("reader_place_name"),
-                Err(Error::Name(text::Error::Parse(Box::new(
-                    name::Error::Segment {
-                        input: "!".into(),
-                        segment: "!".into(),
-                    },
-                )))),
+                vec![
+                    places(2, 0),
+                    refused(Error::Name(text::Error::Parse(Box::new(
+                        name::Error::Segment {
+                            input: "!".into(),
+                            segment: "!".into(),
+                        },
+                    )))),
+                ],
             ),
             (
                 corpus!("reader_place_name_text"),
-                Err(Error::Name(not_utf8(&[0xff]))),
+                vec![places(2, 0), refused(Error::Name(not_utf8(&[0xff])))],
             ),
             (
                 corpus!("reader_place_text"),
-                Err(Error::Sample(not_utf8(&[0xff]))),
+                vec![places(2, 0), refused(Error::Sample(not_utf8(&[0xff])))],
             ),
             (
                 corpus!("reader_place_type"),
-                Err(Error::Sample(text::Error::Parse(sample::Error::Syntax))),
+                vec![
+                    places(2, 0),
+                    refused(Error::Sample(text::Error::Parse(sample::Error::Syntax))),
+                ],
             ),
-            (corpus!("reader_run_empty"), Err(Error::Empty)),
+            (
+                corpus!("reader_run_empty"),
+                vec![places(2, 0), refused(Error::Empty)],
+            ),
+            (
+                corpus!("reader_run_over"),
+                vec![
+                    places(1, 0),
+                    refused(Error::Run {
+                        items: 2,
+                        remain: 1,
+                    }),
+                ],
+            ),
+            (
+                corpus!("reader_unstamped"),
+                vec![
+                    places(2, 1),
+                    Step::Event(Ok(Event::Run(vec![stamp(1)]))),
+                    refused(Error::Unstamped {
+                        sample: "u8".parse().unwrap(),
+                    }),
+                ],
+            ),
         ];
-        for (bytes, result) in cases {
-            let [first, second] = input(bytes)[..] else {
-                panic!("an input of two messages: {bytes:?}");
-            };
-            let mut reader = Reader::new(Mode::Complete);
-            assert_eq!(event(&mut reader, first), Ok(Event::Places(places)));
-            assert_eq!(event(&mut reader, second), result, "{bytes:?}");
+        for (bytes, expected) in cases {
+            assert_eq!(steps(bytes), expected, "{bytes:?}");
         }
     }
 
