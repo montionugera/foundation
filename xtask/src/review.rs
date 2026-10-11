@@ -708,7 +708,7 @@ fn unokayed(deferred: &str) -> Option<String> {
     while let Some(issue) = issues.next() {
         let next = issues.peek().map_or(deferred.len(), |next| next.start);
         let marked = lower[issue.end..next].contains(UNRISKY);
-        if !marked && links(deferred).all(|at| at < issue.end) {
+        if !marked && links(deferred).all(|at| (..issue.end).contains(&at)) {
             return Some(deferred[issue].to_string());
         }
     }
