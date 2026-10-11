@@ -2842,6 +2842,8 @@ fn a_list_waits_for_a_dropped_rename_to_a_path_in_its_directory() {
     assert_lists(&["b"], &async |node| {
         let mut file = create(node, "a", KIB).await;
         let mut rename = Box::pin(file.rename(Path::new("b")));
+        // The first poll starts the sync of the rename. The sleep outlasts the sync, so
+        // the second poll starts the rename itself.
         pend(rename.as_mut()).await;
         node.clock().sleep(Span::from_nanos(200_000)).await;
         pend(rename.as_mut()).await;
