@@ -1071,6 +1071,14 @@ mod tests {
                 Err(corrupt("log-0", len)),
             ),
             (
+                "torn_end_before_garbage_file",
+                framed(&[
+                    ("log-0", &log_file(&[&torn(0, 1)], LEN)),
+                    ("log-1", &[1; 10]),
+                ]),
+                Err(corrupt("log-1", 0)),
+            ),
+            (
                 "torn_first_before_empty_files",
                 framed(&[
                     ("log-0", &log_file(&[&torn(0, 1)], LEN)),
@@ -1213,6 +1221,7 @@ mod tests {
             "after_torn",
             "torn_before_next_file",
             "torn_end_before_next_record",
+            "torn_end_before_garbage_file",
             "torn_first_before_empty_files",
             "stale_next_file",
             "next_file_past_next",
