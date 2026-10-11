@@ -155,9 +155,9 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. A connector with a new key
-    /// of a status channel is changed. The first run of a loop waits until no open of
-    /// a loop whose first run has not started is pending.
+    /// its name returned. Each other connector keeps its run. A connector with a new
+    /// key of a status channel is changed. The first run of a loop waits until no open
+    /// of a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let on = data(definitions);
         let wanted: BTreeMap<&Name, Placed> = definitions
