@@ -1,9 +1,12 @@
 use proptest::prelude::*;
-use types::sample::{Scalar, Sides};
+use types::name;
+use types::sample::{self, Scalar, Sides};
 
 use super::*;
+use crate::hub::Text;
 use crate::hub::client::First;
 use crate::hub::client::Request;
+use crate::hub::client::place::Field;
 
 fn read(length: u64) -> Read {
     Read {
@@ -43,6 +46,21 @@ fn encode_places(places: Places) -> Vec<u8> {
     let mut out = vec![0xaa; Places::LEN];
     places.encode(&mut out);
     out
+}
+
+fn not_utf8(bytes: &[u8]) -> Text {
+    Text::Utf8(std::str::from_utf8(bytes).unwrap_err())
+}
+
+fn unselected(cause: impl Into<Text>) -> Error {
+    Error::Selector(cause.into())
+}
+
+fn place(field: Field, cause: impl Into<Text>) -> Error {
+    Error::Place {
+        field,
+        cause: cause.into(),
+    }
 }
 
 fn encode_run(places: &[Place]) -> Vec<u8> {
@@ -229,18 +247,29 @@ mod open {
 
     #[test]
     fn refuses_an_open_with_no_include() {
-        assert_eq!(Open::decode(&[1]), Err(Error::Selector));
-        assert_eq!(Open::decode(&[1, 2, 0, b'!', b'a']), Err(Error::Selector));
+        assert_eq!(Open::decode(&[1]), Err(unselected(name::Error::NoInclude)));
+        assert_eq!(
+            Open::decode(&[1, 2, 0, b'!', b'a']),
+            Err(unselected(name::Error::NoInclude))
+        );
     }
 
     #[test]
     fn refuses_a_pattern_that_does_not_read() {
-        assert_eq!(Open::decode(&[1, 0, 0]), Err(Error::Selector));
+        assert_eq!(
+            Open::decode(&[1, 0, 0]),
+            Err(unselected(name::Error::Empty))
+        );
         assert_eq!(
             Open::decode(&[1, 3, 0, b'a', b'*', b'b']),
-            Err(Error::Selector)
+            Err(unselected(name::Error::Wildcard {
+                input: "a*b".into()
+            }))
         );
-        assert_eq!(Open::decode(&[1, 1, 0, 0xff]), Err(Error::Selector));
+        assert_eq!(
+            Open::decode(&[1, 1, 0, 0xff]),
+            Err(unselected(not_utf8(&[0xff])))
+        );
     }
 
     #[test]
@@ -342,15 +371,21 @@ mod run {
 
     #[test]
     fn refuses_a_sample_type_or_a_name_that_does_not_read() {
-        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
-        bytes[17] = b'x';
-        assert_eq!(place::decode(&bytes), Err(Error::Place));
-        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
-        bytes[20] = b'*';
-        assert_eq!(place::decode(&bytes), Err(Error::Place));
-        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
-        bytes[20] = 0xff;
-        assert_eq!(place::decode(&bytes), Err(Error::Place));
+        let cases: [(usize, u8, Error); 4] = [
+            (17, b'x', place(Field::Sample, sample::Error::Syntax)),
+            (17, 0xff, place(Field::Sample, not_utf8(&[0xff, b'8']))),
+            (
+                20,
+                b'*',
+                place(Field::Name, name::Error::Wildcard { input: "*".into() }),
+            ),
+            (20, 0xff, place(Field::Name, not_utf8(&[0xff]))),
+        ];
+        for (at, byte, error) in cases {
+            let mut bytes = encode_run(&[pt(1, "u8", "a")]);
+            bytes[at] = byte;
+            assert_eq!(place::decode(&bytes), Err(error), "{at} {byte}");
+        }
     }
 }
 

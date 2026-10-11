@@ -588,7 +588,7 @@ pub enum Error {
     },
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
-    Selector,
+    Selector(Text),
     /// The places of a read name an index place that is not below their count.
     Index {
         /// The place of the index.
@@ -597,8 +597,13 @@ pub enum Error {
         count: u32,
     },
     /// A place of a read has a sample type or a name that does not read.
-    Place,
-    /// A message comes after the body of a request or a response.
+    Place {
+        /// The field that does not read.
+        field: client::place::Field,
+        /// Why it does not read.
+        cause: Text,
+    },
+    /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
     Unfinished {
@@ -679,17 +684,23 @@ impl fmt::Display for Error {
             Self::Oversize { length, cap } => {
                 write!(f, "the body has {length} bytes, over the cap of {cap}")
             }
-            Self::Selector => f.write_str(
-                "the open of the read has a pattern that does not read, or none that \
-                 includes names",
-            ),
+            Self::Selector(text) => {
+                write!(f, "the selector of the read does not read: {text}")
+            }
             Self::Index { index, count } => write!(
                 f,
                 "the places of the read put the index at place {index} of {count}"
             ),
-            Self::Place => f.write_str(
-                "a place of the read has a sample type or a name that does not read",
-            ),
+            Self::Place { field, cause } => {
+                let field = match field {
+                    client::place::Field::Sample => "sample type",
+                    client::place::Field::Name => "name",
+                };
+                write!(
+                    f,
+                    "a place of the read has a {field} that does not read: {cause}"
+                )
+            }
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
             }
@@ -707,7 +718,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Subject(text) => Some(text),
+            Self::Subject(text)
+            | Self::Selector(text)
+            | Self::Place { cause: text, .. } => Some(text),
             _ => None,
         }
     }
@@ -735,15 +748,7 @@ impl fmt::Display for Text {
     }
 }
 
-impl std::error::Error for Text {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match self {
-            Self::Utf8(error) => error,
-            Self::Sample(error) => error,
-            Self::Name(error) => &**error,
-        })
-    }
-}
+impl std::error::Error for Text {}
 
 impl From<Utf8Error> for Text {
     fn from(error: Utf8Error) -> Self {
@@ -1441,6 +1446,7 @@ mod tests {
 
     #[test]
     fn names_each_error_of_a_client_stream() {
+        let not_utf8 = vec![0xff];
         let cases = [
             (
                 Error::Subject(Text::from(name::Error::Empty)),
@@ -1458,17 +1464,28 @@ mod tests {
                 "the body has 16777217 bytes, over the cap of 16777216",
             ),
             (
-                Error::Selector,
-                "the open of the read has a pattern that does not read, or none that \
-                 includes names",
+                Error::Selector(Text::from(name::Error::NoInclude)),
+                "the selector of the read does not read: a selector includes no names",
             ),
             (
                 Error::Index { index: 3, count: 3 },
                 "the places of the read put the index at place 3 of 3",
             ),
             (
-                Error::Place,
-                "a place of the read has a sample type or a name that does not read",
+                Error::Place {
+                    field: client::place::Field::Sample,
+                    cause: Text::from(sample::Error::Syntax),
+                },
+                "a place of the read has a sample type that does not read: expected a \
+                 sample type such as f64, f32[3], list<u8, 16>, string, or bytes",
+            ),
+            (
+                Error::Place {
+                    field: client::place::Field::Name,
+                    cause: Text::Utf8(std::str::from_utf8(&not_utf8).unwrap_err()),
+                },
+                "a place of the read has a name that does not read: invalid utf-8 \
+                 sequence of 1 bytes from index 0",
             ),
             (
                 Error::Trailing,
@@ -1482,6 +1499,25 @@ mod tests {
         for (error, text) in cases {
             assert_eq!(error.to_string(), text);
         }
+    }
+
+    #[test]
+    fn gives_the_cause_of_a_text_that_does_not_read() {
+        use std::error::Error as _;
+        let cause = Text::from(name::Error::NoInclude);
+        let errors = [
+            Error::Subject(cause.clone()),
+            Error::Selector(cause.clone()),
+            Error::Place {
+                field: client::place::Field::Name,
+                cause: cause.clone(),
+            },
+        ];
+        for error in errors {
+            let source = error.source().map(ToString::to_string);
+            assert_eq!(source, Some(cause.to_string()), "{error:?}");
+        }
+        assert!(Error::Empty.source().is_none());
     }
 
     fn open() -> impl Strategy<Value = Open> {
