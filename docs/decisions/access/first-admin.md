@@ -67,3 +67,8 @@
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6070697149) and
   `laptop.architect-2` (2026-10-08T19:20:33Z,
   https://github.com/synnaxlabs/foundation/pull/1970#issuecomment-6067332179).
+  Amended: `os` makes `admin.key` at mode 0600, which an ACL of the data directory can
+  open to another user (Who attacks in `docs/security.md`). A start that fails before
+  its founding is durable leaves `admin.key`, and the next start founds with it (NODE
+  MESH). Decided by `laptop.architect` for `docs/security.md` (2026-10-11T01:03:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194).
