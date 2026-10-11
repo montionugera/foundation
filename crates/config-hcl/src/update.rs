@@ -1148,9 +1148,13 @@ mod tests {
             let after = quoted_at_end("a = 1", out, want);
             assert!(!after, "after the value: {out:?}");
         }
+        let lines = "a = [\n\"x\\n\"\n]";
+        assert!(!quoted_at_end("a = 1", lines, ended), "one line");
+        let want = "b {\na = 1\n}\nc = <<EOT\nx\nEOT\n";
+        let out = "b {\na = 1\n}\nc = \"x\\n\"";
         assert!(
-            !quoted_at_end("a = 1", "a = \"x\"\n", "a = <<EOT\nx\nEOT\n"),
-            "one line"
+            !quoted_at_end("b {\na = 1\n}", out, want),
+            "text in a block"
         );
         assert_eq!(
             updated("a = 1\nb = 2", "a = \"x\\n\"\nb = 2"),
