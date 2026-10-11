@@ -647,7 +647,10 @@ impl Ram {
         let attach = ["attach", "-nomount", "ram://131072"];
         let device = stdout(std::process::Command::new("hdiutil").args(attach));
         let device = device.trim().to_owned();
-        let name = format!("foundation-os-{}", std::process::id());
+        // The device is unique while it is attached, so tests that run at the same
+        // time get their own volumes.
+        let disk = device.trim_start_matches("/dev/");
+        let name = format!("foundation-os-{}-{disk}", std::process::id());
         let erase = ["erasevolume", "HFS+", &name, &device];
         stdout(std::process::Command::new("diskutil").args(erase));
         let mount = Path::new("/Volumes").join(name);
