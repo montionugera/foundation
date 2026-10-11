@@ -41,3 +41,14 @@
   Decided by `laptop.architect` (2026-10-07T20:47:57Z):
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177.
   `Store::put` also keeps a free floor on the disk (BLOB PEER).
+  Amended (`laptop.architect`, 2026-10-11T06:20:32Z,
+  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288):
+  `Store::status` gives `blob::Status`, the counts of the store after its open.
+  `corruptions` counts the gets that read a file whose bytes did not hash to its digest.
+  `failures` counts the gets and puts that gave `Error::Files` other than `Full`. `node`
+  pulls it on the shard of the store (STATUS CHANNELS). It supersedes the crate-private
+  count. Lost: the names `Faults` and `Store::faults` (`transport` and `clock` name the
+  value that `node` pulls `Status`); one method for each count (two reads for one pulled
+  value); a reader for other threads, as `clock::Reader` (one collector reads the
+  counts, and `node` owns where it runs); a cause with each failure (no caller reads
+  one).
