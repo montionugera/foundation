@@ -35,12 +35,12 @@ fn main() {
             mask::set(&[libc::SIGTERM]);
             child();
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(target_os = "linux")] // needs /proc
         Some(arg) if arg == "early" => {
             mask::set(&[]);
             early(false);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(target_os = "linux")] // needs /proc
         Some(arg) if arg == "early-waiting" => {
             mask::set(&[]);
             early(true);
@@ -49,7 +49,7 @@ fn main() {
             a_blocked_sigterm_stays_blocked_after_the_first_signal();
             a_second_signal_ends_the_process();
             the_future_completes_at_the_first_signal();
-            #[cfg(target_os = "linux")]
+            #[cfg(target_os = "linux")] // needs /proc
             a_signal_before_the_first_poll_completes_the_future();
         }
     }
@@ -130,7 +130,7 @@ fn the_future_completes_at_the_first_signal() {
 /// Holds the signals and signals itself, then, once the signal thread has taken the
 /// signal, polls the future once and writes whether it completed. When `waiting`, the
 /// signal comes after the signal thread is in `sigwait`.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn early(waiting: bool) {
     use std::task::{Context, Waker};
 
@@ -165,7 +165,7 @@ fn early(waiting: bool) {
 /// pending set tells that it is not yet taken. It reads the pending set first: in the
 /// other order, it can read the mask during `sigwait` and the pending set after the
 /// wake, and see neither.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn untaken() -> bool {
     let process = std::fs::read_to_string("/proc/self/status").expect("a status");
     has_sigint(&process, "ShdPnd:") || signal_thread_blocks_sigint() != Some(false)
@@ -173,7 +173,7 @@ fn untaken() -> bool {
 
 /// Whether the thread `signal` blocks SIGINT, or `None` when no thread has that name
 /// yet.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn signal_thread_blocks_sigint() -> Option<bool> {
     for task in std::fs::read_dir("/proc/self/task").expect("the tasks list") {
         let task = task.expect("a task").path();
@@ -188,7 +188,7 @@ fn signal_thread_blocks_sigint() -> Option<bool> {
 }
 
 /// Whether the signal set of `field` in `status`, a status file of `/proc`, has SIGINT.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn has_sigint(status: &str, field: &str) -> bool {
     let mask = status
         .lines()
@@ -198,7 +198,7 @@ fn has_sigint(status: &str, field: &str) -> bool {
     mask & (1 << (libc::SIGINT - 1)) != 0
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn a_signal_before_the_first_poll_completes_the_future() {
     for mode in ["early", "early-waiting"] {
         let output = Command::new(std::env::current_exe().expect("the test binary"))
