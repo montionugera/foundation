@@ -83,7 +83,9 @@
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108225390); the
   sentences that state what `mesh` does, also approved by `laptop.architect` at
   `b8788d740` (2026-10-11T10:58:48Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108309120). In the
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108309120) and at
+  `467496d8c` (2026-10-11T11:16:45Z,
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108449207). In the
   region, `card.name` is the one copy (MEMBER RECORD). Trigger: the join by ticket
   (#1157), and the first operation that gives a member a card with a new name. From
   either, the stored name comes from the node's member in the region, not from the
