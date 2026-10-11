@@ -106,7 +106,7 @@ pub mod get {
     impl ExactSizeIterator for Digests<'_> {}
 
     /// The digests in `fields`, the fields of a get after its kind.
-    pub(super) fn decode(mut fields: Fields<'_>) -> Result<Digests<'_>, Error> {
+    pub(super) fn decode(fields: Fields<'_>) -> Result<Digests<'_>, Error> {
         Ok(Digests(fields.take_all()?.iter()))
     }
 }

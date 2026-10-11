@@ -87,12 +87,11 @@ impl<'b> Fields<'b> {
     }
 
     /// Takes the rest: one or more fields of `N` bytes, and no byte after the last.
-    pub(crate) fn take_all<const N: usize>(&mut self) -> Result<&'b [[u8; N]], Length> {
+    pub(crate) fn take_all<const N: usize>(self) -> Result<&'b [[u8; N]], Length> {
         let (all, tail) = self.rest.as_chunks();
         if all.is_empty() || !tail.is_empty() {
             return Err(self.length());
         }
-        self.rest = tail;
         Ok(all)
     }
 
