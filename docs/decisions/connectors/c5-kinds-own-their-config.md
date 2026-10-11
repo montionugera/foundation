@@ -14,7 +14,8 @@
   https://github.com/synnaxlabs/foundation/issues/1082#issuecomment-6040866688; item on
   #1731, 2026-10-08T06:24:16Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053789750).
-  Supersedes `reads`, a list of names that no code read: a reader takes a selector,
-  which the hub matches at the open (`laptop.architect-2`, 2026-10-11T05:23:35Z:
+  `Channels::reader` gives the reader settings: a reader takes a selector, which the
+  hub matches at the open (`laptop.architect-2`, 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, edit
-  1).
+  1). Supersedes `reads`, a list of names that no code read, of
+  https://github.com/synnaxlabs/foundation/issues/1082#issuecomment-6040866688.

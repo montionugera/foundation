@@ -247,8 +247,9 @@ impl<C> Context<C> {
     }
 
     /// Runs the kind's own tasks on its shard. Each task must end when
-    /// [`Context::cancel`] is cancelled. The next run of the same `Supervisor::run`
-    /// call starts only after each of them ends.
+    /// [`Context::cancel`] is cancelled. The next run of the same
+    /// [`Opened::run`](crate::supervisor::Opened::run) call starts only after each of
+    /// them ends.
     #[must_use]
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
@@ -847,11 +848,8 @@ mod tests {
         assert_eq!(source.as_deref(), Some("timed out"));
     }
 
-    // The Retry and panic tests call the mapping directly: the hub of
-    // `hub::testing` has no region, so it never gives `Remote` or `Mesh`; a run
-    // starts after the status writer opens, so `Unsynced` cannot come through
-    // `Supervisor::run`; and `connector` cannot build a `transport` error.
-
+    /// Calls the mapping directly: the hub of `hub::testing` has no region, so it never
+    /// gives `Remote` or `Mesh`. #2376 holds the test through a run.
     #[test]
     fn retries_a_hub_error_that_the_home_or_the_mesh_can_clear() {
         let home = types::node::Key::from_u128(7);
@@ -878,6 +876,8 @@ mod tests {
         assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
     }
 
+    /// Calls the mapping directly: the supervisor opens a reader only after the status
+    /// channels, which wait for mesh time, so no run can give `Unsynced`.
     #[test]
     #[should_panic(
         expected = "invariant: a reader opened before mesh time: the node has no mesh \
@@ -887,6 +887,8 @@ mod tests {
         drop(reader_error(hub::reader::Error::Unsynced));
     }
 
+    /// Calls the mapping directly, since a named reader opens only at its home. The
+    /// arm of `Transport` has no test: `connector` cannot build a `transport` error.
     #[test]
     #[should_panic(
         expected = "invariant: a named reader away from its home gave: the pool had no \

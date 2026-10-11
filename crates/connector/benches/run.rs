@@ -1,4 +1,4 @@
-//! The cost of one poll of a kind's run under `Supervisor::run`, on a sim node. Run
+//! The cost of one poll of a kind's run under `Opened::run`, on a sim node. Run
 //! with `cargo bench -p connector --bench run`.
 //!
 //! The kind's run wakes itself and is pending once between its steps, so each step is

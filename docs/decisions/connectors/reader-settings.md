@@ -31,16 +31,8 @@
   A reader always has its connector's name, and the `reader` block has no `name`: a
   `name` in it is `document.unknown-attribute`. Connector names are unique (CONNECTOR
   BLOCK), so two connectors never share a reader, and plan needs no check for it.
-  The supervisor opens the reader under the connector's name before each run, from the
-  `Channels::reader` that `check` gives, and `kind::Context::reader` gives it to the
-  run. This supersedes "`kind::Context::reader` (#1731) opens the reader under the
-  connector's name" (`laptop.architect-2`, 2026-10-11T05:11:21Z:
-  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, item 1;
-  2026-10-11T05:23:35Z:
-  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
-  3, and 5). Lost:
-  keep `name` and refuse a repeated reader name at plan, a new surface for a choice that
-  nobody uses (`laptop.architect-2`,
+  Lost: keep `name` and refuse a repeated reader name at plan, a new surface for a
+  choice that nobody uses (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/issues/1807#issuecomment-6057222444,
   2026-10-08T09:49:27Z). Supersedes `name: Option<Name>` of `reader::Settings` in
   https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152, and the
@@ -51,5 +43,14 @@
   05:43 UTC). Supersedes the ad hoc reader and `connector.unnamed-hold` of
   https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152
   (`laptop.architect-2`,
-  https://github.com/synnaxlabs/foundation/issues/1736#issuecomment-6052555898, item
-  7, 2026-10-08 04:53 UTC).
+  https://github.com/synnaxlabs/foundation/issues/1736#issuecomment-6052555898, item 7,
+  2026-10-08 04:53 UTC). The supervisor opens the reader under the connector's name
+  before each run, from the `Channels::reader` that `check` gives, and
+  `kind::Context::reader` gives it to the run (`laptop.architect-2`,
+  2026-10-11T05:11:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, item 1;
+  2026-10-11T05:23:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
+  3, and 5). Supersedes "`kind::Context::reader` (#1731) opens the reader under the
+  connector's name" of
+  https://github.com/synnaxlabs/foundation/issues/1807#issuecomment-6057222444.
