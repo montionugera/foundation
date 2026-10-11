@@ -20,25 +20,7 @@ impl env::paths::Driver for Driver {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        if names_directory(path) {
-            // Such a path resolves only to a directory, so the open fails.
-            return in_place(path, bytes).map_err(|e| error(&e));
-        }
-        match fs::symlink_metadata(path) {
-            Ok(old) if old.is_file() => {}
-            Ok(_) => return in_place(path, bytes).map_err(|e| error(&e)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(error(&e)),
-        }
-        let mut key = [0; 8];
-        entropy::Driver.fill(&mut key);
-        let name = format!(".{:016x}.new", u64::from_le_bytes(key));
-        let new = path.with_file_name(name);
-        let file = open(&new).map_err(|e| error(&e))?;
-        fill(file, bytes)
-            .and_then(|()| fs::rename(&new, path))
-            .or_else(|e| fs::remove_file(&new).and(Err(e)))
-            .map_err(|e| error(&e))
+        write(path, bytes).map_err(|e| error(&e))
     }
 }
 
@@ -75,6 +57,26 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
         return Ok(Found::Large);
     }
     Ok(Found::File(bytes))
+}
+
+fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if names_directory(path) {
+        // Such a path resolves only to a directory, so the open fails.
+        return in_place(path, bytes);
+    }
+    match fs::symlink_metadata(path) {
+        Ok(old) if old.is_file() => {}
+        Ok(_) => return in_place(path, bytes),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut key = [0; 8];
+    entropy::Driver.fill(&mut key);
+    let name = format!(".{:016x}.new", u64::from_le_bytes(key));
+    let new = path.with_file_name(name);
+    fill(open(&new)?, bytes)
+        .and_then(|()| fs::rename(&new, path))
+        .or_else(|e| fs::remove_file(&new).and(Err(e)))
 }
 
 /// Makes a file at `path` that only this user can read or write.
