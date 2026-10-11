@@ -178,15 +178,14 @@ fn create_of_another_length_gives_length() {
 #[test]
 fn a_create_past_the_file_size_limit_leaves_no_file() {
     const LIMIT: u64 = 1 << 20;
-    if !crate::fsize::limited(LIMIT) {
-        return;
-    }
-    run(|files, _| async move {
-        let mode = Mode::Create { len: 8 * LIMIT };
-        let found = files.open(Path::new("a"), mode).await.unwrap_err();
-        assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
-        let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
-        assert_eq!(found, Error::NotFound { path: "a".into() });
+    crate::fsize::under(LIMIT, || {
+        run(|files, _| async move {
+            let mode = Mode::Create { len: 8 * LIMIT };
+            let found = files.open(Path::new("a"), mode).await.unwrap_err();
+            assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
+            let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
+            assert_eq!(found, Error::NotFound { path: "a".into() });
+        });
     });
 }
 
