@@ -49,14 +49,10 @@
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
   `node::name(files, given)` gives the name before the start: the given one, else the
-  stored name, else `Error::Unnamed`. A given name that is not the stored one stops the
-  start at the claim with `Error::Renamed`, as another shard count does; a reserved one
-  stops it before the claim with `Error::Reserved` (round 5 of #2331, approved by
-  `laptop.architect` at `7458497ce`: 2026-10-11T02:53:43Z,
-  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104787935). It reads
-  the file only when no name is given, and opens it to read only, so it makes nothing
-  and waits for no lock. So the first start needs a name, and a later one does not
-  (`laptop.architect-2`, 2026-10-08T05:00:46Z,
+  stored name, else `Error::Unnamed`. It does not check `given`: the start does (above).
+  It reads the file only when no name is given, and opens it to read only, so it makes
+  nothing and waits for no lock. So the first start needs a name, and a later one does
+  not (`laptop.architect-2`, 2026-10-08T05:00:46Z,
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6052649826).
   Lost: `main` owns the name, and reads and writes the file before `Node::start`. The
   write is outside the lock, so two first starts with two names can leave the name of
