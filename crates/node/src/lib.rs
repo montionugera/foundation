@@ -958,9 +958,9 @@ impl Serve {
     /// end, with a mesh, and for the transport to free the port. Unless the socket
     /// broke, the port is freed only after the hub lets go of the region, as
     /// [`hub::Hub::new`] states, and after each task that a connector's run spawned has
-    /// ended. Runs no task and takes no session when a shard did not open, or when the
-    /// budgets were not kept, the identity did not load, the mesh did not open, or
-    /// `address` was not written, which goes into `failed`.
+    /// ended. Runs no task or connector and takes no session when a shard did not
+    /// open, or when the budgets were not kept, the identity did not load, the mesh
+    /// did not open, or `address` was not written, which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
