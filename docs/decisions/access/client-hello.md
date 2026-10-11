@@ -139,15 +139,24 @@
   two commits overlap on both). Each is of three passes of each commit on
   c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
   (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
-  Against its parent d7a67a52e, three passes of each commit on the same machine and
-  CPU, with the flags of BENCH BASELINES: in `wire` `hub`, the split gave 4.257 to
-  4.292 ns on `decode_ends/3` against 4.41 to 4.87 ns (passes apart), and the passes
-  of each other line overlap
-  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108713214). In
-  `hub` `serve`, `narrow 64k` gave 2288 to 2296 ns per frame against 2307 to 2331 ns
-  (passes apart), the passes of each other line overlap, and each line keeps its
-  allocations
-  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108750674).
+  Against its parent d7a67a52e, at 7000b19ba, three passes of each commit on one
+  c7i.metal-24xl for each bench (Xeon Platinum 8488C, CPU 2), with the flags of BENCH
+  BASELINES. Each result is the median of the head passes against that of the base
+  passes. In `wire` `hub`
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108713214),
+  `decode_ends/3` gave -0.55 ns (4.257 to 4.292 against 4.41 to 4.87 ns, passes apart).
+  The passes of each other line overlap: `decode_a_body/1` -0.53 ns, `/8` -0.02 ns,
+  `/64` -2.1 ns; `decode_a_credit` 0.00 ns; `decode_a_frame/1` -0.07 ns, `/3` +0.23 ns,
+  `/1000` +0.2 ns, `/100000` 0.00 µs; `decode_ends/1` +0.02 ns, `/1000` +1.4 ns,
+  `/100000` +0.01 µs; `encode_and_decode_a_head` +0.23 ns; `encode_ends/1` 0.00 ns, `/3`
+  0.00 ns, `/1000` -0.1 ns, `/100000` +0.02 µs; `encode_ends_by_place/1` +0.02 ns, `/3`
+  +0.01 ns, `/1000` 0.00 µs, `/100000` -1.6 µs. In `hub` `serve`
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108750674), by p50
+  in ns per frame, `narrow 64k` gave -36 (2288 to 2296 against 2307 to 2331, passes
+  apart), and `timer` gave +1 (15 against 14 in each pass, passes apart). The passes of
+  each other line overlap: `narrow 1472` -42, `wide 1472` +2, `complete 1472` -8,
+  `complete half 1472` -6, `one set 1472` -20, `two sets 1472` -18, `wide 64k` -11. Each
+  line keeps its allocations.
   Decided by `laptop.architect` (2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;
   surface approved 2026-10-11T10:16:56Z,
