@@ -83,12 +83,13 @@ fuzz_target!(|input: &[u8]| {
     }
     let names: BTreeSet<Name> =
         changes.iter().map(|change| name(change).clone()).collect();
+    let mut built = roots[1..].to_vec();
     for (at, &root) in roots.iter().enumerate() {
         check(
             &mut chunks,
             root,
             roots[at.saturating_sub(1)],
-            &roots,
+            &mut built,
             &names,
             &changes,
         );
@@ -96,12 +97,13 @@ fuzz_target!(|input: &[u8]| {
 });
 
 /// Runs each operation on the tree at `root`, and `diff` against `previous` too.
-/// `built` holds the digest of each chunk that the input built.
+/// `built` holds the digest of each chunk in `chunks`, and gets each chunk that the
+/// `apply` makes.
 fn check(
     chunks: &mut Chunks,
     root: Digest,
     previous: Digest,
-    built: &[Digest],
+    built: &mut Vec<Digest>,
     names: &BTreeSet<Name>,
     changes: &[Change],
 ) {
@@ -121,8 +123,9 @@ fn check(
     }
     read(chunks, root, built, &whole);
     let applied = tree::apply(chunks, root, changes.iter().cloned());
-    if let Err(error) = &applied {
-        named(chunks, error);
+    match &applied {
+        Ok(update) => built.extend(&update.chunks),
+        Err(error) => named(chunks, error),
     }
     let Ok((whole, _)) = whole else {
         return;
@@ -159,8 +162,8 @@ fn check(
 }
 
 /// `region::definitions` of the tree at `root`, where `whole` is its `diff` from the
-/// empty tree: its entries and its chunks. `built` holds the digest of each chunk that
-/// the input built.
+/// empty tree: its entries and its chunks. `built` holds the digest of each chunk in
+/// `chunks`.
 fn read(chunks: &Chunks, root: Digest, built: &[Digest], whole: &Result<Whole, Error>) {
     match region::definitions(chunks, root) {
         Ok((definitions, kept)) => {
