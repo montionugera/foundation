@@ -2876,7 +2876,7 @@ mod tests {
             let mut shard = test.unsynced().await;
             shard.carry(Slot::new(0));
             test.clock.sleep(GRACE).await;
-            assert!(shard.deadline() <= Some(test.clock.now()));
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
             shard.advance();
             assert_eq!(shard.deadline(), None);
         })
@@ -2894,7 +2894,7 @@ mod tests {
             shard.open_writer(leased).expect("synced");
             test.clock.sleep(WAIT).await;
             let now = test.reader.now().monotonic;
-            assert!(shard.deadline() <= Some(now));
+            assert!(shard.deadline().is_some_and(|due| due <= now));
             let marked = test.now();
             shard.advance();
             assert!(shard.deadline() > Some(now), "b's lease ends later");
