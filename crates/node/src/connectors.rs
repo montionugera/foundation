@@ -141,43 +141,51 @@ impl Runs {
                 ended: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
-            let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
             // Counted before any loop of this apply polls. A changed connector, and one
             // that runs again after `Config`, has no share.
-            let mut first = Some(opens.begin());
+            let first = self.opens.begin();
+            let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
             let name = name.clone();
-            self.scope.spawn(Box::pin(async move {
-                loop {
-                    let (connector, changed, applied) = {
-                        let mut state = state.borrow_mut();
-                        let Some(connector) = state.connector.clone() else {
-                            state.ended = true;
-                            return;
-                        };
-                        (connector, state.changed.clone(), state.applied.clone())
-                    };
-                    let kind = connector.kind().as_str();
-                    let config = connector.config().document();
-                    let opened = supervisor.open(kind, name.clone(), config, &changed);
-                    let opened = opened.await;
-                    if let Some(first) = first.take() {
-                        drop(first);
-                        changed.race(opens.settled()).await;
-                    }
-                    match opened.run().await {
-                        // The next change of the connector runs it again.
-                        Ok(()) => changed.wait().await,
-                        // The status holds its class. The fix can be in another
-                        // definition, so the next spec change runs it again.
-                        Err(connector::kind::Error::Config(_)) => applied.wait().await,
-                        Err(error) => {
-                            unreachable!(
-                                "invariant: `run` gives only `Config`: {error}"
-                            )
-                        }
-                    }
-                }
-            }));
+            self.scope
+                .spawn(Box::pin(run(supervisor, opens, name, state, first)));
+        }
+    }
+}
+
+/// The loop of the name `name`: runs its connector until a change removes it. Its
+/// first run starts once `opens` settled, with `first` dropped.
+async fn run(
+    supervisor: Supervisor,
+    opens: Rc<Opens>,
+    name: Name,
+    state: Rc<RefCell<Loop>>,
+    first: Pending,
+) {
+    let mut first = Some(first);
+    loop {
+        let (connector, changed, applied) = {
+            let mut state = state.borrow_mut();
+            let Some(connector) = state.connector.clone() else {
+                state.ended = true;
+                return;
+            };
+            (connector, state.changed.clone(), state.applied.clone())
+        };
+        let kind = connector.kind().as_str();
+        let config = connector.config().document();
+        let opened = supervisor.open(kind, name.clone(), config, &changed);
+        let opened = opened.await;
+        if let Some(first) = first.take() {
+            drop(first);
+            changed.race(opens.settled()).await;
+        }
+        match opened.run().await {
+            // The next change of the connector runs it again.
+            Ok(()) => changed.wait().await,
+            // The status holds its class. The fix can be in another definition, so the
+            // next spec change runs it again.
+            Err(connector::kind::Error::Config(_)) => applied.wait().await,
+            Err(error) => unreachable!("invariant: `run` gives only `Config`: {error}"),
         }
     }
 }
