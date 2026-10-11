@@ -1200,10 +1200,14 @@ fn the_task_of_a_remote_reader_yields_after_a_streak_of_frames_that_wait() {
             test.paused.pause();
             steps.open();
             test.clock.sleep(Span::from_nanos(500_000_000)).await;
-            let polls = test.polls.get();
+            let polls = test.paused.polls.get();
             test.paused.resume();
             test.clock.sleep(Span::from_nanos(100_000_000)).await;
-            assert_eq!(test.polls.get() - polls, 3, "128, 128, and 44 frames");
+            assert_eq!(
+                test.paused.polls.get() - polls,
+                3,
+                "128, 128, and 44 frames"
+            );
             for _ in 0..FRAMES {
                 reader.next().await.expect("a frame");
             }
@@ -2994,8 +2998,8 @@ fn a_reader_that_drops_after_no_room_for_its_credit_stops_the_stream_with_busy()
                 blocks
             };
             // The next poll of the task finds no block for the credit.
-            let polls = test.polls.get();
-            while test.polls.get() == polls {
+            let polls = test.paused.polls.get();
+            while test.paused.polls.get() == polls {
                 let mut yielded = false;
                 poll_fn(|cx| {
                     if yielded {
@@ -3009,7 +3013,7 @@ fn a_reader_that_drops_after_no_room_for_its_credit_stops_the_stream_with_busy()
                 .await;
             }
             // The caller runs after one poll of the task, before the next.
-            assert_eq!(test.polls.get(), polls + 1);
+            assert_eq!(test.paused.polls.get(), polls + 1);
             drop(reader);
             drop(blocks);
             until(&test.clock, &steps.stopped).await;
@@ -3047,10 +3051,14 @@ fn the_task_yields_after_a_streak_when_the_home_stops_reading_credits() {
             test.clock.sleep(Span::from_nanos(500_000_000)).await;
             // Gives the 32nd frame back, so a credit falls due.
             assert!(super::poll_once(reader.next()).is_pending());
-            let polls = test.polls.get();
+            let polls = test.paused.polls.get();
             test.paused.resume();
             test.clock.sleep(Span::from_nanos(100_000_000)).await;
-            assert_eq!(test.polls.get() - polls, 3, "128, 128, and 44 frames");
+            assert_eq!(
+                test.paused.polls.get() - polls,
+                3,
+                "128, 128, and 44 frames"
+            );
             for _ in 0..FRAMES {
                 reader.next().await.expect("a frame");
             }
