@@ -82,7 +82,7 @@ struct Loop {
     first: First,
 }
 
-/// Where a loop is before its first run.
+/// The state of the first run of a loop.
 enum First {
     /// Its first open is pending, and holds this count from the apply that added or
     /// changed the connector, so before any loop polls.
