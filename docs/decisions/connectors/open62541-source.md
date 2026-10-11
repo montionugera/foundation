@@ -427,10 +427,14 @@
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
-  A new loop sets the random generator of open62541 on its thread, which each loop on
-  that thread uses, so each loop on a thread gets a different value from its `Rng`.
   `bench::client` gives a test server on its own manager, and clients of it that each
-  have their own manager, as the kind uses them. Approval owed (#2428).
+  have their own manager, as the kind uses them. Each new loop sets the start value of
+  the generator of its thread again, from the next value of its `Rng`, and each loop on
+  that thread then draws from that one generator. So the caller gives each loop on a
+  thread an `Rng` whose next value differs: after the same start value, the generator
+  gives the same numbers again. Approved by `laptop.architect-2` at `c1285785f`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520,
+  2026-10-11 17:47 UTC).
   The logger of the loop writes each message of level warning and up to fd 2, and
   drops the lower levels: it formats the line into a stack buffer of 512 bytes with
   `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no

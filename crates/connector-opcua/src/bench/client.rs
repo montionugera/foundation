@@ -132,7 +132,8 @@ impl Client {
         }
     }
 
-    /// Closes the session and the connection of the client.
+    /// Closes the session and the connection of the client. A client that drops with no
+    /// close holds one of the 4 sessions of its server until the session times out.
     pub async fn close(self) {
         self.0.close().await;
     }
