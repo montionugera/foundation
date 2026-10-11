@@ -1,8 +1,8 @@
 - **HUB END (#585)** The hub's commit task holds the hub's state weakly, and keeps its
-  waker in the state while it sleeps and while it waits for a commit. The state wakes
-  it on drop, and the task ends at its first poll after that. Lost:
-  `Hub::close(self) -> Commit`, which each caller must call, and which a clone or a
-  live session defeats. Decided by `laptop.architect` (2026-10-07T18:07:55Z:
+  waker in the state while it waits for a commit. The state wakes it on drop, and the
+  task ends at its first poll after that. Lost: `Hub::close(self) -> Commit`, which
+  each caller must call, and which a clone or a live session defeats. Decided by
+  `laptop.architect` (2026-10-07T18:07:55Z:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6043897000).
   The commit that the task waits for lives in the state, and the task polls it through
   the state. So the drop of the state drops the commit in the same call. Once the hub
@@ -57,4 +57,6 @@
   no session signals an append. `Hub::new` takes the first one, so no commit after the
   start goes unseen. Lost: a signal from each home call that may append, which woke
   the task for each write that appended nothing. Decided by `laptop.architect`
-  (2026-10-10T23:38:36Z, https://github.com/synnaxlabs/foundation/issues/2323).
+  (2026-10-10T23:38:36Z, https://github.com/synnaxlabs/foundation/issues/2323; the
+  first commit at `Hub::new`:
+  https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820).
