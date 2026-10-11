@@ -106,8 +106,17 @@
   check stands against a clock reference that the compiler makes from C in the copy,
   from a new tag or from our patch. It does not stand against an edit made to hide
   from it, such as assembly that stores a function's address: review of each copy PR
-  covers that. A `#line` directive or a line marker in a copy file fails the check,
-  because it moves the file that the include check reads. Decided by
+  covers that. The check reads each symbol name from the text of `nm` and `objdump`, and
+  `objdump` does not show each name exactly: `g+0x1` is a name, or `g` with an addend.
+  So the check fails on each symbol whose name holds a character other than an ASCII
+  letter, a digit, `_`, `.`, or `$`. A name that holds a newline reads as two names in
+  `nm`, so this rule does not see it. No C identifier gives such a name: it is an edit
+  made to hide, and review of each copy PR covers it. Lost: a second tool and a second
+  parser (`readelf -sW`) for that one name. The symbol name rule: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). A `#line` directive or a line marker in a copy file fails the
+  check, because it moves the file that the include check reads. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,
   2026-10-08 10:42 UTC). A builtin or an intrinsic that reads a clock or randomness,
@@ -115,10 +124,14 @@
   honest C. So the check reads each instruction of `objdump -d` and fails on each
   mnemonic outside a closed list for the architecture of the build, with the file, the
   function, and the mnemonic. A move of a system register (`mrs`, `msr`) is keyed by its
-  register too. An entry goes in the list only when it reads no clock, randomness,
-  file, network, or process state. Lost: a deny list of such instructions, which passes
-  one that it does not name, such as one of a later extension. Until #2330, the check
-  passes such a builtin, and review of each copy PR covers it. Decided by
+  register too. The key of an x86 instruction keeps each prefix (`rep stos`,
+  `notrack jmp`), so a prefix that changes what an instruction does has its own entry.
+  The prefix rule: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). An entry goes in the list only when it reads no clock,
+  randomness, file, network, or process state. Lost: a deny list of such instructions,
+  which passes one that it does not name, such as one of a later extension. Until #2330,
+  the check passes such a builtin, and review of each copy PR covers it. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
   2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided
