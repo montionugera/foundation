@@ -2919,7 +2919,7 @@ mod tests {
     }
 
     /// A handoff that found no room is not recorded at a resend write: the shard does
-    /// not read a resend frame. It still waits for the next live write.
+    /// not read a resend frame. The next write that is not a resend still records it.
     #[test]
     fn keeps_a_waiting_handoff_at_a_resend_write() {
         run(246, |test| async move {
