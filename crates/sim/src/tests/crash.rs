@@ -791,7 +791,8 @@ fn a_power_crash_in_a_create_that_fills_the_disk_leaves_no_file_with_bytes() {
     assert_eq!(outcomes, BTreeSet::from([(Vec::new(), MIB), (made, MIB)]));
 }
 
-// As with no crash, a create that gives `Full` removes `a`.
+// As with no crash, a create that gives `Full` removes `a`, a remove that a `Power` cut
+// can drop.
 #[test]
 fn a_crash_in_a_create_with_no_room_over_a_durable_file_with_no_bytes_can_remove_it() {
     for crash in [Crash::Process, Crash::Power] {
