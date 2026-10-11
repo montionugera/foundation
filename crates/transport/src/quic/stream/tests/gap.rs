@@ -53,19 +53,32 @@ fn a_reset_frees_its_blocks_before_the_peer_acknowledges_it() {
         pair.run(RUN);
         // No packet of the peer arrives after this.
         pair.foreign = None;
-        let before = shard.committed();
+        let config = block::Config::new(1 << 25).expect("the budget fits");
+        let memory = Heap::new(config.reservation());
+        let pool = Pool::new(config, memory);
         let mut first = open_sender(&mut pair, Class::Complete);
-        let full = fill(&mut pair, shard, &mut first);
+        fill_from(&mut pair, &pool, &mut first);
         pair.run(RUN);
         let now = pair.now();
         pair.client.endpoint.reset(now, &mut first, Code(9));
         pair.run(RUN);
-        let (now, mut second) = (pair.now(), open_sender(&mut pair, Class::Complete));
-        for count in 1..full {
-            let message = shard.block(&vec![count; MESSAGE_MAX]);
-            write(&mut pair.client, now, &mut second, &[message]);
-            let held = (shard.committed() - before) / MESSAGE_MAX;
-            assert!(held <= (1 << 20) / MESSAGE_MAX + 2, "{held} blocks");
-        }
+        let mut second = open_sender(&mut pair, Class::Complete);
+        fill_from(&mut pair, &pool, &mut second);
+        let held = pool.committed() / MESSAGE_MAX;
+        assert!(held <= (1 << 20) / MESSAGE_MAX + 2, "{held} blocks");
     });
+}
+
+/// Writes messages of [`MESSAGE_MAX`] bytes from `pool` to the client's `sender`
+/// until one waits for the window.
+fn fill_from(pair: &mut Pair, pool: &Pool, sender: &mut Sender) {
+    let now = pair.now();
+    loop {
+        let message = testing::alloc(pool, MESSAGE_MAX).expect("room").freeze();
+        let written =
+            pair::write(&mut pair.client.endpoint, now, sender, &mut Some(message));
+        if written.expect("written").is_pending() {
+            return;
+        }
+    }
 }
