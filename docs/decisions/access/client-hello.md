@@ -143,4 +143,6 @@
   surface approved 2026-10-11T10:16:56Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027).
   Supersedes item 2 (one `wire::hub::Error`, and no `wire::hub::client::Error`) of
-  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686.
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686, and for
+  `wire::hub::Error` item 4 ("remove `Copy`") of
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103904407.
