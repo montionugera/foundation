@@ -1746,11 +1746,7 @@ fn create_before_dropped_call(value: u64, renamed: bool) -> bool {
         }
         drop(create(&node, "b", KIB).await);
         if renamed {
-            return files
-                .list(Path::new(""))
-                .await
-                .unwrap()
-                .contains(&"a".into());
+            return files.open(Path::new("a"), Mode::Read).await.is_ok();
         }
         let reader = files.open(Path::new("a"), Mode::Read).await.unwrap();
         read(&reader, &pool, 0, 512).await != [1; 512]
@@ -1767,9 +1763,10 @@ fn a_create_does_not_wait_for_a_dropped_call_on_another_path() {
     }
 }
 
-/// Whether a create of `a` on node 1, one nanosecond after node 0 drops a remove of
-/// its own `a`, ends before a read open on node 0 that still finds that file.
-fn create_beside_remove_of_another_node(value: u64) -> bool {
+/// Whether a create of `a` on node 1, or else a `free` when `free`, one nanosecond
+/// after node 0 drops a remove of its own `a`, ends before a read open on node 0 that
+/// still finds that file.
+fn create_beside_remove_of_another_node(value: u64, free: bool) -> bool {
     let mut sim = sim(value);
     let config = || node::Config {
         disk_bytes: MIB,
@@ -1781,7 +1778,11 @@ fn create_beside_remove_of_another_node(value: u64) -> bool {
     let end = Arc::clone(&made);
     let create_b = b.shards().start(shard("b"), move |_| async move {
         b.clock().sleep_until(at + Span::from_nanos(1)).await;
-        drop(create(&b, "a", KIB).await);
+        if free {
+            b.files().free().await.unwrap();
+        } else {
+            drop(create(&b, "a", KIB).await);
+        }
         end.store(b.clock().now().0, Ordering::Relaxed);
     });
     let (found, read) = sim
@@ -1802,7 +1803,11 @@ fn create_beside_remove_of_another_node(value: u64) -> bool {
 
 #[test]
 fn a_call_does_not_wait_for_a_dropped_call_of_another_node() {
-    assert!((0..32).any(create_beside_remove_of_another_node));
+    for free in [false, true] {
+        let ran =
+            (0..32).any(|value| create_beside_remove_of_another_node(value, free));
+        assert!(ran, "free {free}");
+    }
 }
 
 /// What a create of `b` gives while a rename of `a` to `b` through a live handle is
@@ -1960,11 +1965,7 @@ fn create_beside_dropped_remove(value: u64) -> bool {
         pend(remove.as_mut()).await;
         drop(remove);
         drop(create(&node, "b", KIB).await);
-        files
-            .list(Path::new(""))
-            .await
-            .unwrap()
-            .contains(&"a".into())
+        files.open(Path::new("a"), Mode::Read).await.is_ok()
     })
 }
 
@@ -2791,4 +2792,207 @@ fn a_write_open_does_not_wait_for_a_dropped_write_of_another_file_after_a_rename
         .filter(|&value| block_held_after_open_of_other_rename_target(value))
         .collect();
     assert!(!held.is_empty());
+}
+
+/// The names in the data directory once `drop_call` starts a call on `node` whose
+/// future drops after one poll.
+fn list_after_dropped<F>(value: u64, drop_call: F) -> Vec<PathBuf>
+where
+    F: AsyncFnOnce(&node::Node) + Send + 'static,
+{
+    run(value, MIB, move |node, _| async move {
+        drop_call(&node).await;
+        node.files().list(Path::new("")).await.unwrap()
+    })
+}
+
+/// Checks that each run of `drop_call` lists `names`.
+fn assert_lists<F>(names: &[&str], drop_call: &F)
+where
+    F: AsyncFnOnce(&node::Node) + Clone + Send + 'static,
+{
+    let names: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
+    for value in 0..32 {
+        let found = list_after_dropped(value, drop_call.clone());
+        assert_eq!(found, names, "value {value}");
+    }
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_remove_in_its_directory() {
+    assert_lists(&[], &async |node| {
+        let files = node.files();
+        drop(create(node, "a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_create_in_its_directory() {
+    assert_lists(&["a"], &async |node| {
+        let files = node.files();
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len: KIB }));
+        pend(made.as_mut()).await;
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_rename_to_a_path_in_its_directory() {
+    assert_lists(&["b"], &async |node| {
+        let mut file = create(node, "a", KIB).await;
+        let mut rename = Box::pin(file.rename(Path::new("b")));
+        pend(rename.as_mut()).await;
+        node.clock().sleep(Span::from_nanos(200_000)).await;
+        pend(rename.as_mut()).await;
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_remove_through_a_handle_in_its_directory() {
+    assert_lists(&[], &async |node| {
+        let file = create(node, "a", KIB).await;
+        let mut remove = Box::pin(file.remove());
+        pend(remove.as_mut()).await;
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_create_dir_in_its_directory() {
+    assert_lists(&["d"], &async |node| {
+        let files = node.files();
+        let mut made = Box::pin(files.create_dir(Path::new("d")));
+        pend(made.as_mut()).await;
+    });
+}
+
+/// Whether `d/a` is still there when a list of `dir` ends, which starts once a remove
+/// of `d/a` is polled once and its future drops.
+fn list_beside_dropped_remove(value: u64, dir: &'static str) -> bool {
+    run(value, MIB, move |node, _| async move {
+        let files = node.files();
+        files.create_dir(Path::new("d")).await.unwrap();
+        files.create_dir(Path::new("e")).await.unwrap();
+        drop(create(&node, "d/a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("d/a")));
+        pend(remove.as_mut()).await;
+        drop(remove);
+        files.list(Path::new(dir)).await.unwrap();
+        files.open(Path::new("d/a"), Mode::Read).await.is_ok()
+    })
+}
+
+#[test]
+fn a_list_does_not_wait_for_a_dropped_call_in_another_directory() {
+    for dir in ["e", ""] {
+        let runs: Vec<_> = (0..32)
+            .map(|value| list_beside_dropped_remove(value, dir))
+            .collect();
+        assert!(runs.contains(&true), "dir {dir:?}: {runs:?}");
+    }
+}
+
+/// The names in the data directory while a remove of `a`, whose future lives, is in
+/// flight: by the path, or else through a write handle.
+fn list_beside_remove(value: u64, by_path: bool) -> Vec<PathBuf> {
+    run(value, MIB, move |node, tasks| async move {
+        let files = node.files();
+        let file = create(&node, "a", KIB).await;
+        if by_path {
+            drop(file);
+            let theirs = files.clone();
+            tasks.spawn(async move { theirs.remove(Path::new("a")).await.unwrap() });
+        } else {
+            tasks.spawn(async move { file.remove().await.unwrap() });
+        }
+        node.clock().sleep(Span::from_nanos(1)).await;
+        let names = files.list(Path::new("")).await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        names
+    })
+}
+
+#[test]
+fn a_list_does_not_wait_for_a_remove_whose_future_lives() {
+    for by_path in [true, false] {
+        let runs: Vec<_> = (0..32)
+            .map(|value| list_beside_remove(value, by_path))
+            .collect();
+        assert!(
+            runs.contains(&vec!["a".into()]),
+            "by path {by_path}: {runs:?}"
+        );
+    }
+}
+
+/// The bytes free before and after a create of `a` of `len` bytes whose future
+/// drops after one poll.
+fn free_after_dropped_create(value: u64, len: u64) -> (u64, u64) {
+    run(value, MIB, move |node, _| async move {
+        let files = node.files();
+        let before = files.free().await.unwrap();
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        drop(made);
+        (before, files.free().await.unwrap())
+    })
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    for value in 0..32 {
+        let (before, after) = free_after_dropped_create(value, 64 * KIB);
+        assert_eq!(after, before - 64 * KIB, "value {value}");
+    }
+}
+
+/// The bytes free with a durable file `a` of 64 KiB, and after its remove and a sync
+/// of the data directory whose future drops after one poll.
+fn free_after_dropped_sync_dir(value: u64) -> (u64, u64) {
+    run(value, MIB, move |node, _| async move {
+        let files = node.files();
+        drop(create(&node, "a", 64 * KIB).await);
+        files.sync_dir(Path::new("")).await.unwrap();
+        let before = files.free().await.unwrap();
+        files.remove(Path::new("a")).await.unwrap();
+        let mut synced = Box::pin(files.sync_dir(Path::new("")));
+        pend(synced.as_mut()).await;
+        drop(synced);
+        (before, files.free().await.unwrap())
+    })
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_sync_dir_after_a_remove() {
+    for value in 0..32 {
+        let (before, after) = free_after_dropped_sync_dir(value);
+        assert_eq!(after, before + 64 * KIB, "value {value}");
+    }
+}
+
+/// The bytes free before a create of `a` of 64 KiB, whose future lives, and while it
+/// is in flight.
+fn free_beside_create(value: u64) -> (u64, u64) {
+    run(value, MIB, move |node, tasks| async move {
+        let files = node.files();
+        let before = files.free().await.unwrap();
+        let theirs = files.clone();
+        tasks.spawn(async move {
+            let made = theirs.open(Path::new("a"), Mode::Create { len: 64 * KIB });
+            drop(made.await.unwrap());
+        });
+        node.clock().sleep(Span::from_nanos(1)).await;
+        let during = files.free().await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        (before, during)
+    })
+}
+
+#[test]
+fn a_free_does_not_wait_for_a_create_whose_future_lives() {
+    let runs: Vec<_> = (0..32).map(free_beside_create).collect();
+    assert!(
+        runs.iter().any(|(before, during)| before == during),
+        "{runs:?}"
+    );
 }

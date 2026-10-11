@@ -166,10 +166,10 @@ impl Disk {
         }
     }
 
-    /// Whether `path` has named file `inode`, which a hold keeps.
-    pub(crate) fn named_by(&self, inode: u64, path: &Path) -> bool {
+    /// Each normal path that has named file `inode`, which a hold keeps.
+    pub(crate) fn names(&self, inode: u64) -> impl Iterator<Item = &Path> {
         match self.inodes.get(&inode) {
-            Some(Inode::File(file)) => file.names.contains(&normal(path)),
+            Some(Inode::File(file)) => file.names.iter().map(PathBuf::as_path),
             _ => unreachable!("invariant: held file {inode} is there"),
         }
     }

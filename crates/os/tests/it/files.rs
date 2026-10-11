@@ -688,6 +688,19 @@ fn free_drops_by_the_bytes_of_a_created_file() {
     thread.join().unwrap();
 }
 
+/// The root tests check this on Linux, on a filesystem of their own.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    let ram = Ram::new();
+    let (files, thread) = files(&ram.mount, "files");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(async move { crate::free::check_dropped(&files).await });
+    thread.join().unwrap();
+}
+
 /// The error of `os::files` on `dir`.
 #[test]
 fn a_disk_shows_as_disk() {
@@ -1321,5 +1334,93 @@ fn a_write_open_waits_for_a_remove_through_a_handle_whose_path_names_another_fil
             found,
             Poll::Ready(Err(Error::NotFound { path: "a".into() }))
         );
+    });
+}
+
+/// The names in `d` from a list that starts, while the I/O thread is stalled, after
+/// `drop_call` polls a call once and drops it. `d` is not the data directory, which
+/// holds the FIFO of the stall.
+async fn list_after_dropped(
+    files: &Files,
+    data: &Path,
+    drop_call: impl FnOnce(&mut std::task::Context<'_>),
+) -> Vec<PathBuf> {
+    let mut list = stalled(files, data, |context| {
+        drop_call(context);
+        let mut list = Box::pin(files.list(Path::new("d")));
+        pend(&mut list, context);
+        list
+    })
+    .await;
+    list.as_mut().await.unwrap()
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_remove_in_its_directory() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        create(&files, "d/a", KIB).await.close().await;
+        let names = list_after_dropped(&files, &data, |context| {
+            pend(&mut Box::pin(files.remove(Path::new("d/a"))), context);
+        })
+        .await;
+        assert_eq!(names, Vec::<PathBuf>::new());
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_create_in_its_directory() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        let names = list_after_dropped(&files, &data, |context| {
+            let mode = Mode::Create { len: KIB };
+            pend(&mut Box::pin(files.open(Path::new("d/a"), mode)), context);
+        })
+        .await;
+        assert_eq!(names, [PathBuf::from("a")]);
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_rename_to_a_path_in_its_directory() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        let mut file = create(&files, "d/a", KIB).await;
+        // The first poll starts the sync of the rename; the second, after the sync
+        // ends, starts the rename itself. The drop drops the rename and then the file.
+        let mut rename = Box::pin(async move { file.rename(Path::new("d/b")).await });
+        stalled(&files, &data, |context| pend(&mut rename, context)).await;
+        files.free().await.unwrap();
+        let names = list_after_dropped(&files, &data, |context| {
+            pend(&mut rename, context);
+            drop(rename);
+        })
+        .await;
+        assert_eq!(names, [PathBuf::from("b")]);
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_remove_through_a_handle_in_its_directory() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        let file = create(&files, "d/a", KIB).await;
+        let names = list_after_dropped(&files, &data, |context| {
+            pend(&mut Box::pin(file.remove()), context);
+        })
+        .await;
+        assert_eq!(names, Vec::<PathBuf>::new());
+    });
+}
+
+#[test]
+fn a_list_waits_for_a_dropped_create_dir_in_its_directory() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        let names = list_after_dropped(&files, &data, |context| {
+            pend(&mut Box::pin(files.create_dir(Path::new("d/e"))), context);
+        })
+        .await;
+        assert_eq!(names, [PathBuf::from("e")]);
     });
 }

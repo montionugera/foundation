@@ -143,6 +143,11 @@ fn free_drops_by_the_bytes_of_a_created_file() {
 }
 
 #[test]
+fn a_free_waits_for_a_dropped_create() {
+    run(|files, _| async move { free::check_dropped(&files).await });
+}
+
+#[test]
 fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
     run(|files, _| async move {
         let free = files.free().await.unwrap();
