@@ -5038,10 +5038,9 @@ mod tests {
     /// number of times when `reusable`.
     fn ticket_of(id: u8, prefix: &str, reusable: bool, expiry: Stamp) -> Change {
         let options = Options {
-            prefix: prefix.parse().unwrap(),
-            reusable,
             expiry,
             ephemeral: None,
+            ..common::options(prefix, reusable)
         };
         common::ticket_change(id, options)
     }

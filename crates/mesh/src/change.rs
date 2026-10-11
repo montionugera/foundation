@@ -783,12 +783,14 @@ mod tests {
             let mut bytes = encoded(&change);
             for length in 1..bytes.len() {
                 let error = Change::decode(&bytes[..length]).unwrap_err();
-                prop_assert_eq!(error, Malformed::Body(Undecoded { kind: bytes[0], length }));
+                let body = Malformed::Body(Undecoded { kind: bytes[0], length });
+                prop_assert_eq!(error, body);
             }
             bytes.push(extra);
             let length = bytes.len();
             let error = Change::decode(&bytes).unwrap_err();
-            prop_assert_eq!(error, Malformed::Body(Undecoded { kind: bytes[0], length }));
+            let body = Malformed::Body(Undecoded { kind: bytes[0], length });
+            prop_assert_eq!(error, body);
         }
 
         // Every byte form that decodes is the one that its change encodes to.
