@@ -5991,9 +5991,9 @@ mod port {
             assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
         }
 
-        /// A node that starts on a spec that places a connector on it runs the
-        /// connector: a later apply that keeps the connector starts no run, and one
-        /// that changes it starts one. The reader opens after the run of the start,
+        /// A node that starts on a spec that places a connector on it applies that
+        /// spec to its runs: a later apply that keeps the connector starts no run, and
+        /// one that changes it starts one. The reader opens after the run of the start,
         /// because a status written before the open is lost to it.
         #[test]
         fn a_node_runs_a_connector_of_the_spec_it_starts_on() {
@@ -6023,6 +6023,49 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
+        }
+
+        /// A connector that an apply moves from another member to this node keeps its
+        /// status index and that index's home on the other member, so its run panics
+        /// shard 0 (#2337).
+        #[test]
+        fn a_connector_that_an_apply_moves_to_the_node_panics_its_shard() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let mut founding = region(&pair(&hosts));
+            founding.voters = [OWN].into_iter().collect();
+            let own = connector("influx");
+            let away = own.replace(
+                &format!("node = \"plant.node{OWN}\""),
+                &format!("node = \"plant.node{}\"", OTHER.0),
+            );
+            let (node, _) = applied(&mut sim, &hosts[0], founding, away);
+            node.operate(|ops| async move {
+                apply(&ops, own).await;
+            });
+            let message = concat!(
+                "the status channels of the connector plant.influx do not open: the ",
+                "home of an index of the writer is node ",
+                "00000000-0000-0000-0000-000000000002, and a writer writes only at ",
+                "this node",
+            );
+            assert_eq!(
+                sim.run_for(HALF_MINUTE),
+                Err(sim::Error::Panicked {
+                    thread: "shard-0".into(),
+                    message: message.into(),
+                    seed: 0,
+                })
+            );
+            assert_eq!(sim.run(), Ok(()));
+            let error = node.join().unwrap_err();
+            assert_eq!(
+                error,
+                crate::Error::Panicked(env::thread::Panicked {
+                    name: "shard-0".into()
+                })
+            );
+            assert_eq!(error.to_string(), "thread shard-0 panicked");
         }
 
         /// Reads each `state` and `class` of `plant.influx` that `node` writes, from a
