@@ -724,24 +724,10 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
                 cancels: Starts::default(),
             },
         );
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
         let clock = node.clock();
         let start = clock.now();
-        let hub = hub::testing::open_unsynced(env, ms(1_000)).await;
-        let config = connector::supervisor::Config {
-            kinds: Arc::new(kinds),
-            clock: clock.clone(),
-            entropy: node.entropy(),
-            net: node.net(),
-            tasks: tasks.clone(),
-            hub: hub.clone(),
-        };
+        let (config, _) = create_unsynced(&node, &tasks, kinds, ms(1_000)).await;
+        let hub = config.hub.clone();
         let runs =
             std::rc::Rc::new(std::cell::RefCell::new(Runs::new(config, name(NODE))));
         let mut placed = definitions(&[("plant.a", "quick", NODE, 0)]);
@@ -772,6 +758,37 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
         started
     });
     assert_eq!(run, Ok(0));
+}
+
+/// The config of a supervisor on `node` with `kinds`, whose hub gets its first mesh
+/// time `synced` after it opened, and the count of its tasks that have not ended.
+async fn create_unsynced(
+    node: &::sim::node::Node,
+    tasks: &env::tasks::Tasks,
+    kinds: Table,
+    synced: Span,
+) -> (connector::supervisor::Config, Rc<Cell<usize>>) {
+    let env = hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks: tasks.clone(),
+    };
+    let hub = hub::testing::open_unsynced(env, synced).await;
+    let live = Rc::new(Cell::new(0));
+    let config = connector::supervisor::Config {
+        kinds: Arc::new(kinds),
+        clock: node.clock(),
+        entropy: node.entropy(),
+        net: node.net(),
+        tasks: env::tasks::Tasks::new(Counted {
+            tasks: tasks.clone(),
+            live: Rc::clone(&live),
+        }),
+        hub,
+    };
+    (config, live)
 }
 
 /// The sorted names of the runs that got a frame, on each of 32 seeds.
@@ -864,28 +881,10 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
                 cancels: Starts::default(),
             },
         );
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
         let clock = node.clock();
         let start = clock.now();
-        let hub = hub::testing::open_unsynced(env, ms(5_000)).await;
-        let live = Rc::new(Cell::new(0));
-        let config = connector::supervisor::Config {
-            kinds: Arc::new(kinds),
-            clock: clock.clone(),
-            entropy: node.entropy(),
-            net: node.net(),
-            tasks: env::tasks::Tasks::new(Counted {
-                tasks: tasks.clone(),
-                live: Rc::clone(&live),
-            }),
-            hub: hub.clone(),
-        };
+        let (config, live) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+        let hub = config.hub.clone();
         let mut runs = Runs::new(config, name(NODE));
         let placed =
             definitions(&[("plant.a", "none", NODE, 0), ("plant.b", "quick", NODE, 0)]);
