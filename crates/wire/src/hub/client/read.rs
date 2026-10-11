@@ -139,13 +139,12 @@ impl Open {
     /// names no mode, [`Error::Length`] when a pattern ends past the open, and
     /// [`Error::Selector`] when a pattern does not read or none includes names.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&mode, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mode = match mode {
+        let mut fields = Fields::new(bytes);
+        let mode = match fields.kind().ok_or(Error::Empty)? {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete,
             kind => return Err(Error::Kind { kind }),
         };
-        let mut fields = Fields::new(rest, bytes.len());
         let mut patterns = Vec::new();
         while !fields.is_empty() {
             let len = u16::from_le_bytes(fields.take()?);
@@ -324,7 +323,7 @@ pub mod place {
         if message.is_empty() {
             return Err(Error::Empty);
         }
-        let mut fields = Fields::new(message, message.len());
+        let mut fields = Fields::new(message);
         let mut places = Vec::new();
         while !fields.is_empty() {
             let key = u128::from_le_bytes(fields.take()?);

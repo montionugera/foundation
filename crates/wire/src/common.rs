@@ -52,9 +52,19 @@ pub(crate) struct Fields<'b> {
 }
 
 impl<'b> Fields<'b> {
-    /// A reader of the fields in `rest`, the end of a message of `len` bytes.
-    pub(crate) fn new(rest: &'b [u8], len: usize) -> Self {
-        Self { rest, len }
+    /// A reader of the fields of `message`.
+    pub(crate) fn new(message: &'b [u8]) -> Self {
+        Self {
+            rest: message,
+            len: message.len(),
+        }
+    }
+
+    /// Takes the kind byte, or `None` when no byte remains.
+    pub(crate) fn kind(&mut self) -> Option<u8> {
+        let (&kind, rest) = self.rest.split_first()?;
+        self.rest = rest;
+        Some(kind)
     }
 
     /// Whether no byte remains.
@@ -74,6 +84,16 @@ impl<'b> Fields<'b> {
         let (field, rest) = self.rest.split_at_checked(len).ok_or(self.length())?;
         self.rest = rest;
         Ok(field)
+    }
+
+    /// Takes the rest: one or more fields of `N` bytes, and no byte after the last.
+    pub(crate) fn take_all<const N: usize>(&mut self) -> Result<&'b [[u8; N]], Length> {
+        let (all, tail) = self.rest.as_chunks();
+        if all.is_empty() || !tail.is_empty() {
+            return Err(self.length());
+        }
+        self.rest = tail;
+        Ok(all)
     }
 
     /// Checks that no byte follows the last field.

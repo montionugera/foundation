@@ -165,10 +165,10 @@ impl Open {
     /// names no open, [`Error::Length`] when the length fits no open of that kind, and
     /// [`Error::Channels`] when the open names no channel.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let Some((&kind, rest)) = bytes.split_first() else {
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
             return Err(Error::Empty);
         };
-        let mut fields = Fields::new(rest, bytes.len());
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
@@ -228,13 +228,13 @@ impl Credit {
     /// names no credit, and [`Error::Length`] when `bytes` is not [`Credit::LEN`]
     /// bytes.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let Some((&kind, rest)) = bytes.split_first() else {
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
             return Err(Error::Empty);
         };
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, bytes.len());
         let limit_bytes = u64::from_le_bytes(fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
@@ -314,10 +314,10 @@ impl Reply {
     /// [`Error::Path`] when a head names no path, [`Error::Series`] when it names no
     /// series, and [`Error::Range`] when its range ends past `u64::MAX`.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let Some((&kind, rest)) = bytes.split_first() else {
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
             return Err(Error::Empty);
         };
-        let mut fields = Fields::new(rest, bytes.len());
         match kind {
             OPENED => {
                 fields.end()?;
