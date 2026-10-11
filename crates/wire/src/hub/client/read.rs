@@ -328,10 +328,10 @@ pub mod place {
         while !fields.is_empty() {
             let key = u128::from_le_bytes(fields.take()?);
             let [len] = fields.take()?;
-            let sample = text::Error::read(fields.take_slice(usize::from(len))?)
+            let sample = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Sample)?;
             let [len] = fields.take()?;
-            let name = text::Error::read(fields.take_slice(usize::from(len))?)
+            let name = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Name)?;
             places.push(Place {
                 key: channel::Key::from_u128(key),
