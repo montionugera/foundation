@@ -75,8 +75,9 @@
   peer with no ticket gets no join into the log of an honest voter. A peer with a
   valid ticket can still name the key of a node whose join is not applied, because
   the node key is not bound to the card's public key: a known result. #2345 ends the
-  strand: the leader refuses a second public key for one node key (`Error::Contested`).
-  After it, only a key learned out of band can be taken (`laptop.architect`,
+  strand under a leader that does not lie: the leader refuses a second public key for
+  one node key (`Error::Contested`). A leader that lies can still write both joins.
+  After #2345, only a key learned out of band can be taken (`laptop.architect`,
   2026-10-11T03:31:12Z,
   https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526).
   A hard proof that lost such a claim can be no quorum at a node with a newer
