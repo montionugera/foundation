@@ -2909,3 +2909,317 @@ fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
     let later = bound(&clean(2, "reviewer, breaker", &range));
     assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
 }
+
+/// A link to a comment.
+const OK: &str =
+    "https://github.com/synnaxlabs/foundation/issues/12#issuecomment-6105098668";
+
+/// The end of each problem that asks for a comment link.
+const LINK: &str = "A link is the URL of a GitHub comment in the text of the line: a \
+                    `[text](url)` link shows no URL.";
+
+/// The problem of a round 3 that defers to `issue` with no OK.
+fn unlinked(issue: &str) -> Vec<String> {
+    vec![format!(
+        "review round 3 defers to {issue} with no link to the OK of the architect \
+         after it on its `Deferred:` line. Add the link, or the words `not in a risk \
+         crate` after the issue when its work is in no risk crate. {LINK}"
+    )]
+}
+
+/// The problem of a round 3 whose `Public surface:` line holds `approval owed`.
+const OWED: &str = "review round 3 has `approval owed` on its `Public surface:` line. \
+                    Get each approval, then put its link in the line.";
+
+/// The problem of a round 3 whose `Public surface:` line names items with no link.
+fn unapproved() -> Vec<String> {
+    vec![format!(
+        "review round 3 names items on its `Public surface:` line with no link to an \
+         approval. {LINK}"
+    )]
+}
+
+/// `ROUND`, rated, with the end lines `end` in place of its `Deferred:` and
+/// `Public surface:` lines, posted at `created`.
+fn ended_at(end: &str, created: &str) -> Comment {
+    let lines = "Deferred: none\nPublic surface: none";
+    Comment {
+        created: created.to_string(),
+        ..bot(&rated(&ROUND.replace(lines, end)))
+    }
+}
+
+/// `ROUND`, rated, with the `Deferred:` value `deferred`, posted at the cutoff of the
+/// links.
+fn deferred(deferred: &str) -> Comment {
+    let end = format!("Deferred: {deferred}\nPublic surface: none");
+    ended_at(&end, LINK_CUTOFF)
+}
+
+/// `ROUND`, rated, with the `Public surface:` value `surface`, posted at the cutoff of
+/// the links.
+fn surfaced(surface: &str) -> Comment {
+    let end = format!("Deferred: none\nPublic surface: {surface}");
+    ended_at(&end, LINK_CUTOFF)
+}
+
+/// What the check gives for `comments` on a PR that also changes `file`.
+fn check_with(file: &str, comments: Vec<Comment>) -> Vec<String> {
+    let mut record = record(comments);
+    record.files.push(file.to_string());
+    check(&record)
+}
+
+/// What the check gives for `comments` on a PR that changes the risk crate `raft`.
+fn risk(comments: Vec<Comment>) -> Vec<String> {
+    check_with("crates/raft/src/log.rs", comments)
+}
+
+#[test]
+fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
+    assert_eq!(risk(vec![deferred("#12")]), unlinked("#12"));
+    assert_eq!(risk(vec![deferred("none")]), Vec::<String>::new());
+    for linked in [
+        format!("#12 ({OK})"),
+        format!("#12 {OK}"),
+        format!("#12, #13 (both: {OK})"),
+        format!("#12 (the frame cut,\n{OK})"),
+        format!("#12 <{OK}>"),
+    ] {
+        assert_eq!(
+            risk(vec![deferred(&linked)]),
+            Vec::<String>::new(),
+            "{linked}"
+        );
+    }
+    for (line, issue) in [
+        (format!("#12 ({OK}), #13"), "#13"),
+        (format!("{OK} #12"), "#12"),
+        (format!("#12 ({OK}), #13 (the cut), #14"), "#13"),
+        (format!("(#12), {OK}, PR#13,#14"), "#13"),
+        (
+            "#12 ([the OK](https://github.com/a/b/pull/1#issuecomment-2))".into(),
+            "#12",
+        ),
+        ("the cut (#0012).".to_string(), "#0012"),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), unlinked(issue), "{line}");
+    }
+}
+
+#[test]
+fn a_deferred_issue_passes_with_the_mark_that_its_work_is_in_no_risk_crate() {
+    for marked in [
+        "#12 not in a risk crate".to_string(),
+        "#12 (removes in other directories, `env`, not in a risk crate)".to_string(),
+        "#12 (Not in a risk crate.)".to_string(),
+        "#12 (the cut, not in a\nrisk crate), #13 (not in a risk crate)".to_string(),
+        format!("#12 (not in a risk crate), #13 ({OK})"),
+        format!("#12, #13 ({OK}), #14 (not in a risk crate)"),
+    ] {
+        assert_eq!(
+            risk(vec![deferred(&marked)]),
+            Vec::<String>::new(),
+            "{marked}"
+        );
+    }
+    for (line, issue) in [
+        ("#12, #13 (not in a risk crate)", "#12"),
+        ("#12 (not in a risk crate), #13", "#13"),
+        ("not in a risk crate: #12", "#12"),
+        ("#12 (not in a risk-crate)", "#12"),
+    ] {
+        assert_eq!(risk(vec![deferred(line)]), unlinked(issue), "{line}");
+    }
+}
+
+#[test]
+fn only_a_file_of_a_risk_crate_asks_a_deferred_issue_for_an_ok() {
+    let check = |file: &str| check_with(file, vec![deferred("#12")]);
+    for name in [
+        "raft",
+        "buffer",
+        "delivery",
+        "block",
+        "ring",
+        "codec",
+        "wire",
+        "home",
+        "replica",
+        "transport",
+    ] {
+        let file = format!("crates/{name}/Cargo.toml");
+        assert_eq!(check(&file), unlinked("#12"), "{file}");
+    }
+    for file in [
+        "crates/hub/src/lib.rs",
+        "crates/rafts/src/lib.rs",
+        "crates/raft-log/src/lib.rs",
+        "crates/raft",
+        "crates/Raft/src/lib.rs",
+        "docs/crates/raft/x.md",
+        "raft/src/lib.rs",
+        "crates/hub/raft/x.rs",
+    ] {
+        assert_eq!(check(file), Vec::<String>::new(), "{file}");
+    }
+}
+
+#[test]
+fn only_the_last_round_posted_at_the_link_cutoff_needs_its_links() {
+    let before = "2026-10-12T11:59:59Z";
+    for end in [
+        "Deferred: #12\nPublic surface: none",
+        "Deferred: none\nPublic surface: `hub::Route`, approval owed",
+        "Deferred: none\nPublic surface: `hub::Route`",
+    ] {
+        assert_eq!(risk(vec![ended_at(end, before)]), Vec::<String>::new());
+        assert_ne!(risk(vec![ended_at(end, LINK_CUTOFF)]), Vec::<String>::new());
+        let earlier = ended_at(end, LINK_CUTOFF);
+        let last = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
+        assert_eq!(risk(vec![earlier, last]), Vec::<String>::new(), "{end}");
+    }
+}
+
+#[test]
+fn a_comment_link_is_the_url_of_a_comment_in_the_text_of_the_line() {
+    let at = |rest: &str| format!("https://github.com/{rest}");
+    for link in [
+        at("a/b/pull/1#issuecomment-2"),
+        at("a/b/issues/1#issuecomment-2"),
+        at("a/b/pull/1#pullrequestreview-2"),
+        at("a/b/pull/1#discussion_r2"),
+        at("a-b/c.d_e/pull/10#issuecomment-2"),
+        format!("`{}`", at("a/b/pull/1#issuecomment-2")),
+        format!("({}).", at("a/b/pull/1#issuecomment-2")),
+        format!("{} {}", at("a/b/pull/1"), at("a/b/pull/1#issuecomment-2")),
+    ] {
+        let line = format!("#12 {link}");
+        assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{link}");
+    }
+    for link in [
+        at("a/b/pull/1"),
+        at("a/b/pull/1#issuecomment-"),
+        at("a/b/pull/1#issuecomment-x"),
+        at("a/b/pull/1#issue-2"),
+        at("a/b/pull/#issuecomment-2"),
+        at("a/b/pull/x#issuecomment-2"),
+        at("a/b/commit/1#issuecomment-2"),
+        at("a/b/pull/1/files#issuecomment-2"),
+        at("a/pull/1#issuecomment-2"),
+        at("/b/pull/1#issuecomment-2"),
+        at("a//pull/1#issuecomment-2"),
+        "http://github.com/a/b/pull/1#issuecomment-2".to_string(),
+        "https://github.com.x.io/a/b/pull/1#issuecomment-2".to_string(),
+        "github.com/a/b/pull/1#issuecomment-2".to_string(),
+        format!("[the OK]({})", at("a/b/pull/1#issuecomment-2")),
+        "#issuecomment-2".to_string(),
+    ] {
+        let line = format!("#12 {link}");
+        assert_eq!(risk(vec![deferred(&line)]), unlinked("#12"), "{link}");
+    }
+}
+
+#[test]
+fn a_later_steps_line_is_no_part_of_the_deferred_or_the_public_surface_value() {
+    let later = |deferred: &str, later: &str, surface: &str| {
+        let end = format!(
+            "Deferred: {deferred}\nLater steps: {later}\nPublic surface: {surface}"
+        );
+        risk(vec![ended_at(&end, LINK_CUTOFF)])
+    };
+    assert_eq!(later("none", "none", "none"), Vec::<String>::new());
+    assert_eq!(
+        later("none", "the rename, #99", "none"),
+        Vec::<String>::new()
+    );
+    let linked = format!("the rename,\n#99 ({OK})");
+    assert_eq!(later("#12", &linked, "none"), unlinked("#12"));
+    assert_eq!(later("none", &linked, "`hub::Route`"), unapproved());
+    assert_eq!(
+        later(
+            "#12 (not in a risk crate)",
+            "none",
+            &format!("`hub::Route` ({OK})")
+        ),
+        Vec::<String>::new()
+    );
+    let after = format!(
+        "Deferred: none\nPublic surface: `hub::Route`\nLater steps: #99 ({OK})"
+    );
+    assert_eq!(risk(vec![ended_at(&after, LINK_CUTOFF)]), unapproved());
+}
+
+#[test]
+fn a_later_steps_line_keeps_the_order_of_the_end_lines() {
+    let ended = |end: &str| check(&record(vec![bot(&ROUND.replace(END, end))]));
+    let later = "Later steps: none";
+    let [deferred, surface, hot] =
+        ["Deferred: none", "Public surface: none", "Hot path: none"];
+    for end in [
+        format!("\n\n{deferred}\n{later}\n{surface}\n{hot}"),
+        format!("\n\n{deferred}\n{surface}\n{later}\n{hot}"),
+        format!("\n\n{deferred}\n{surface}\n{hot}\n{later}"),
+        format!("\n\n{deferred}\n{later}\n{later}\n{surface}\n{hot}"),
+    ] {
+        assert_eq!(ended(&end), Vec::<String>::new(), "{end}");
+    }
+    let first = format!("\n\n{later}\n{deferred}\n{surface}\n{hot}");
+    assert_eq!(ended(&first), vec![unended("Deferred")]);
+    let only = format!("\n\n{deferred}\n{later}\n{hot}");
+    assert_eq!(ended(&only), vec![unended("Public surface")]);
+    let named = format!("\n\n{deferred}\n{surface}\nHot path:\nLater steps: none");
+    assert_eq!(
+        ended(&named),
+        vec!["review round 3 names no performance, which this round requires."]
+    );
+}
+
+#[test]
+fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
+    let check = |surface: &str| check(&record(vec![surfaced(surface)]));
+    for surface in [
+        "none".to_string(),
+        "none.".to_string(),
+        "none, since the `hub::Route` change has approval owed in #12".to_string(),
+        format!("`hub::Route`, approved by `laptop.architect` at `c77c67d7` ({OK})"),
+        format!("`hub::Route` and `hub::Send`, both approved\n({OK})"),
+        format!("`hub::Route` <{OK}>"),
+    ] {
+        assert_eq!(check(&surface), Vec::<String>::new(), "{surface}");
+    }
+    for surface in [
+        "`hub::Route`, approval owed".to_string(),
+        format!("`hub::Route` ({OK}); `hub::Send`, approval owed"),
+        format!("`hub::Send`, approval\nowed; `hub::Route` ({OK})"),
+        "`hub::Route`. Approval owed.".to_string(),
+    ] {
+        assert_eq!(check(&surface), vec![OWED], "{surface}");
+    }
+    for surface in [
+        "`hub::Route`",
+        "`hub::Route`, approved by `laptop.architect`",
+        "`hub::Route` ([approved](https://github.com/a/b/pull/1#issuecomment-2))",
+        "`hub::Route`, approval is owed",
+        "",
+    ] {
+        assert_eq!(check(surface), unapproved(), "{surface}");
+    }
+}
+
+#[test]
+fn a_last_round_gives_the_problem_of_each_end_line_after_its_other_problems() {
+    let end = "Deferred: #12\nPublic surface: `hub::Route`";
+    let round = ended_at(end, LINK_CUTOFF);
+    let round = Comment {
+        body: round.body.replace("Findings: none", "Findings: 1"),
+        ..round
+    };
+    let mut expected = vec![
+        "review round 3 has findings (1). Fix or answer them, then run another round."
+            .to_string(),
+    ];
+    expected.extend(unlinked("#12"));
+    expected.extend(unapproved());
+    assert_eq!(risk(vec![round]), expected);
+}
