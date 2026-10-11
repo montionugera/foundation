@@ -380,9 +380,9 @@ fn performer(text: &[Vec<String>]) -> bool {
 /// Whether a top-level paragraph of `shown` after its round heading, other than its end
 /// lines, has a line `Text fixes:` with a value ([`stated`]).
 fn fixed(shown: &Shown<'_>) -> bool {
-    let paragraphs = shown.before_end().iter();
+    let blocks = shown.before_end().iter();
     states(
-        paragraphs.map(|block| shown.paragraph(Some(block))),
+        blocks.map(|block| shown.paragraph(Some(block))),
         FIXES,
         &[FIXES],
     )
@@ -510,16 +510,18 @@ fn named(text: &[Vec<String>]) -> bool {
 
 /// Whether a line of `paragraphs` starts with `name:` and has a value ([`stated`]),
 /// which may wrap onto the lines after it up to one that starts an entry of `names`
-/// ([`entries`]). `names` holds `name`.
+/// ([`entries`]).
 fn states<'p>(
     paragraphs: impl IntoIterator<Item = &'p [String]>,
     name: &str,
     names: &[&str],
 ) -> bool {
-    let start = format!("{name}:");
     paragraphs.into_iter().any(|p| {
         (0..p.len()).any(|i| {
-            p[i].starts_with(&start) && stated(&entries(&p[i..], names).0[0].1)
+            let (values, _) = entries(&p[i..], names);
+            values
+                .first()
+                .is_some_and(|(n, value)| *n == name && stated(value))
         })
     })
 }
