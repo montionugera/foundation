@@ -988,7 +988,15 @@ mod tests {
             status: status([(name("disk"), index(9))]),
         };
         assert_eq!(state.member(node(3)), Some(&expected));
-        assert_eq!(state.ticket(public(7)).map(Record::uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(crate::common::join(7, 4, "plant.edge.b"), &[("disk", 10)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1088,7 +1096,6 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(8)).map(Record::uses), Some(0));
     }
 
     // `plant.@changes` is the region's changes channel.
@@ -1184,7 +1191,6 @@ mod tests {
             );
             assert_eq!(state, before);
         }
-        assert_eq!(state.ticket(public(8)).map(Record::uses), Some(0));
     }
 
     #[test]
@@ -1204,10 +1210,17 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(7)).map(Record::uses), Some(0));
         let other = with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]);
         assert_eq!(apply_join(&mut state, other), Ok(false));
-        assert_eq!(state.ticket(public(7)).map(Record::uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 5, "plant.edge.c"), &[("disk", 11)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]

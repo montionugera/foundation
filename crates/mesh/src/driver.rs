@@ -5272,6 +5272,7 @@ mod tests {
             assert_eq!(records.get(&4), Some(&admitted), "node {id}");
         }
         for (id, mut state) in board.states {
+            // No call gives the use count of a reusable ticket.
             let uses = state.ticket(public(8)).map(ticket::Record::uses);
             assert_eq!(uses, Some(1), "node {id}");
             let again = state.apply(repeat.clone()).unwrap_err();
