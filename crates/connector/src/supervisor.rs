@@ -3493,7 +3493,7 @@ mod tests {
 
     /// The reader of each restart keeps the hold of its settings: a run within the hold
     /// opens at the held position and gets `Behind`, while the home keeps no frame
-    /// there. #274 makes the third run read from the held position.
+    /// there. #274 makes each run after the first read from the held position.
     #[test]
     fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
