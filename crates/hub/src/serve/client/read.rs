@@ -64,7 +64,9 @@ async fn open(
         name: None,
         hold: Span::ZERO,
     };
-    Reader::open(state, config).await.map_err(Error::Reader)
+    Reader::open(state, config)
+        .await
+        .map_err(|error| Error::Reader(Box::new(error)))
 }
 
 /// Sends the places of `matched`, their run, and `Opened`, and gives the layout of
@@ -136,7 +138,7 @@ async fn relay(
                 sender.finish()?;
                 return Ok(());
             }
-            Ok(Err(ended)) => return Err(Error::Ended(ended)),
+            Ok(Err(ended)) => return Err(Error::Ended(Box::new(ended))),
         }
     }
 }

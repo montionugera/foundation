@@ -189,7 +189,7 @@ fn stops_a_read_whose_selector_matches_no_channel_or_two_indexes() {
             finish(&mut agent).await;
         },
     );
-    let empty = serve::Error::Reader(reader::Error::Empty);
+    let empty = serve::Error::Reader(Box::new(reader::Error::Empty));
     let many = reader::Error::ManyIndexes {
         first: name("value"),
         other: name("value-b"),
@@ -198,7 +198,7 @@ fn stops_a_read_whose_selector_matches_no_channel_or_two_indexes() {
         home.served,
         [
             Err(empty.clone()),
-            Err(serve::Error::Reader(many)),
+            Err(serve::Error::Reader(Box::new(many))),
             Ok(Got::Ended)
         ]
     );
@@ -290,7 +290,7 @@ fn stops_a_read_whose_channel_is_removed_as_unknown() {
         finish(&mut agent).await;
     });
     let removed = reader::Ended::Removed(channel::Key::from_u128(2));
-    let removed = serve::Error::Ended(removed);
+    let removed = serve::Error::Ended(Box::new(removed));
     assert_eq!(home.served, [Err(removed.clone()), Ok(Got::Ended)]);
     assert_eq!(
         removed.to_string(),
@@ -351,7 +351,7 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
     let removed = reader::Ended::Removed(channel::Key::from_u128(100));
     assert_eq!(
         home.served,
-        [Err(serve::Error::Ended(removed)), Ok(Got::Ended)]
+        [Err(serve::Error::Ended(Box::new(removed))), Ok(Got::Ended)]
     );
 }
 

@@ -106,11 +106,11 @@ pub enum Error {
     /// The reader of a read did not open. Code: `UNKNOWN` for
     /// [`reader::Error::Empty`], `MALFORMED` for `ManyIndexes`, `BUSY` for `Pool`,
     /// the code of the home's refusal, and `FAILED` for each other.
-    Reader(reader::Error),
+    Reader(Box<reader::Error>),
     /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
     /// `BUSY` for `Pool`, the code of the home's refusal, and `FAILED` for each
     /// other.
-    Ended(reader::Ended),
+    Ended(Box<reader::Ended>),
 }
 
 impl Error {
@@ -775,52 +775,68 @@ mod tests {
             )
         };
         let mut cases = vec![
-            (Error::Reader(reader::Error::Empty), UNKNOWN),
+            (Error::Reader(Box::new(reader::Error::Empty)), UNKNOWN),
             (
-                Error::Reader(reader::Error::ManyIndexes {
+                Error::Reader(Box::new(reader::Error::ManyIndexes {
                     first: "a".parse().expect("a name"),
                     other: "b".parse().expect("a name"),
-                }),
+                })),
                 MALFORMED,
             ),
-            (Error::Reader(reader::Error::Pool(pool.clone())), BUSY),
             (
-                Error::Reader(reader::Error::Mesh(mesh::Stopped::Dropped)),
+                Error::Reader(Box::new(reader::Error::Pool(pool.clone()))),
+                BUSY,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::Mesh(mesh::Stopped::Dropped))),
                 FAILED,
             ),
             (
-                Error::Reader(reader::Error::Transport(transport::Error::Unroutable)),
+                Error::Reader(Box::new(reader::Error::Transport(
+                    transport::Error::Unroutable,
+                ))),
                 FAILED,
             ),
             (
-                Error::Reader(reader::Error::Message(wire::hub::Error::Empty)),
-                FAILED,
-            ),
-            (Error::Ended(reader::Ended::Removed(key(2))), UNKNOWN),
-            (Error::Ended(reader::Ended::Pool(pool)), BUSY),
-            (
-                Error::Ended(reader::Ended::Buffer(env::files::Error::Full {
-                    path: "ring".into(),
-                })),
+                Error::Reader(Box::new(reader::Error::Message(
+                    wire::hub::Error::Empty,
+                ))),
                 FAILED,
             ),
             (
-                Error::Ended(reader::Ended::Stream(transport::Error::Unroutable)),
+                Error::Ended(Box::new(reader::Ended::Removed(key(2)))),
+                UNKNOWN,
+            ),
+            (Error::Ended(Box::new(reader::Ended::Pool(pool))), BUSY),
+            (
+                Error::Ended(Box::new(reader::Ended::Buffer(
+                    env::files::Error::Full {
+                        path: "ring".into(),
+                    },
+                ))),
                 FAILED,
             ),
             (
-                Error::Ended(reader::Ended::Message(wire::hub::Error::Empty)),
+                Error::Ended(Box::new(reader::Ended::Stream(
+                    transport::Error::Unroutable,
+                ))),
                 FAILED,
             ),
             (
-                Error::Ended(reader::Ended::Frame(frame::Error::OutOfRange {
-                    entry: 1,
-                    entries: 1,
-                })),
+                Error::Ended(Box::new(reader::Ended::Message(wire::hub::Error::Empty))),
                 FAILED,
             ),
             (
-                Error::Ended(reader::Ended::Credit { limit_bytes: 1 }),
+                Error::Ended(Box::new(reader::Ended::Frame(
+                    frame::Error::OutOfRange {
+                        entry: 1,
+                        entries: 1,
+                    },
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Credit { limit_bytes: 1 })),
                 FAILED,
             ),
         ];
@@ -832,23 +848,33 @@ mod tests {
             (wire::hub::Refusal::Busy, BUSY),
         ] {
             let (error, ended) = refused(refusal);
-            cases.extend([(Error::Reader(error), code), (Error::Ended(ended), code)]);
+            cases.extend([
+                (Error::Reader(Box::new(error)), code),
+                (Error::Ended(Box::new(ended)), code),
+            ]);
         }
         for (error, code) in cases {
             assert_eq!(error.code(), Some(Code(code)), "{error:?}");
         }
     }
 
+    /// The per-frame results of the serve loops hold an `Error`, so a large rare cause
+    /// is boxed.
+    #[test]
+    fn keeps_an_error_at_64_bytes() {
+        assert_eq!(size_of::<Error>(), 64);
+    }
+
     #[test]
     #[should_panic(expected = "invariant: an unnamed reader does not give Unsynced")]
     fn panics_for_the_code_of_an_error_that_only_a_named_reader_gives() {
-        Error::Reader(reader::Error::Unsynced).code();
+        Error::Reader(Box::new(reader::Error::Unsynced)).code();
     }
 
     #[test]
     #[should_panic(expected = "invariant: a read does not end as Replaced")]
     fn panics_for_the_code_of_an_end_that_a_read_sends_or_never_has() {
-        Error::Ended(reader::Ended::Replaced).code();
+        Error::Ended(Box::new(reader::Ended::Replaced)).code();
     }
 
     /// A frame of `data` on index 1, with `lens` bytes in each series by entry.
