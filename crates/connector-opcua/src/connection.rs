@@ -1059,7 +1059,5 @@ unsafe extern "C" fn closed(application: *mut c_void, _: *mut c_void) {
     }
 }
 
-#[cfg(any(test, feature = "sim"))]
-mod server;
 #[cfg(test)]
 mod tests;

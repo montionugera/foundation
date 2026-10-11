@@ -14,6 +14,7 @@ pub(crate) struct Lifecycle(pub(crate) c_int);
 
 impl Lifecycle {
     pub(crate) const STOPPED: Self = Self(0);
+    pub(crate) const STARTED: Self = Self(1);
     pub(crate) const STOPPING: Self = Self(2);
 }
 

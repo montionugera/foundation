@@ -22,6 +22,7 @@ use types::time::{Monotonic, Span};
 use crate::connection;
 use crate::event::Loop;
 use crate::ffi::{self, Status};
+use crate::server::Server;
 
 /// A client of open62541 on its own event loop, which also runs a count of repeated
 /// timers that do nothing.
@@ -116,7 +117,7 @@ const CONNECT_TIMEOUT: Span = Span::from_nanos(60_000_000_000);
 /// loop. The first client reads; the others send nothing.
 pub struct Manager {
     clients: Vec<NonNull<ffi::Client>>,
-    server: NonNull<ffi::test::Server>,
+    server: Server,
     /// C holds its address while a read waits.
     answers: Box<Answers>,
     /// Only `close` drops it, after it deletes the server and the clients on its loop.
@@ -174,20 +175,7 @@ impl Manager {
         // SAFETY: the member takes its own loop.
         let status = Status(unsafe { (events.members().start)(events.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the loop");
-        // SAFETY: the loop outlives the server, which `close` deletes.
-        let server = unsafe {
-            ffi::test::shim_server_new(
-                events.raw(),
-                PORT,
-                c"opc.tcp://:4840".as_ptr(),
-                sessions,
-            )
-        };
-        let server = NonNull::new(server).expect("open62541 refused the server");
-        // SAFETY: the server lives.
-        let status =
-            Status(unsafe { ffi::test::UA_Server_run_startup(server.as_ptr()) });
-        assert_eq!(status, Status::GOOD, "open62541 refused the server start");
+        let server = Server::start(&manager, PORT, c"opc.tcp://:4840", sessions);
         let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
         let clients = (0..=idle)
             .map(|_| {
@@ -278,12 +266,11 @@ impl Manager {
         self.answers.count.get()
     }
 
-    /// Closes the channel of each client, closes the server with `close_server`, then
-    /// deletes the clients.
+    /// Closes the channel of each client, closes the server, then deletes the clients.
     ///
     /// # Panics
     ///
-    /// If a channel is not closed after the drive of `close_server`, as the delete of
+    /// If a channel is not closed after the drive of [`Server::close`], as the delete of
     /// its client would then wait for a close that nothing drives.
     async fn close(mut self) {
         for client in &self.clients {
@@ -293,14 +280,13 @@ impl Manager {
             });
             assert_eq!(status, Status::GOOD, "open62541 refused a disconnect");
         }
-        // SAFETY: the server lives on the loop, and nothing uses it after.
-        unsafe { self.connections.close_server(self.server.as_ptr()) }.await;
+        self.server.close(&self.connections).await;
         for client in self.clients.drain(..) {
             assert_eq!(
                 // SAFETY: the client lives.
                 unsafe { state(client) }.channel,
                 ffi::test::Channel::CLOSED,
-                "invariant: the drive of `close_server` closes each channel"
+                "invariant: the drive of the server close closes each channel"
             );
             // SAFETY: nothing uses the client after it.
             unsafe { ffi::UA_Client_delete(client.as_ptr()) };
@@ -484,9 +470,8 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let body = async |manager: &Manager| {
                 // SAFETY: the server lives.
-                let status = unsafe {
-                    ffi::test::UA_Server_run_shutdown(manager.server.as_ptr())
-                };
+                let status =
+                    unsafe { ffi::test::UA_Server_run_shutdown(manager.server.raw()) };
                 assert_eq!(ffi::Status(status), ffi::Status::GOOD);
                 panic!("the body panics");
             };

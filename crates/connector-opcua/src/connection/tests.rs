@@ -28,6 +28,7 @@ use crate::ffi::test::{
     UA_findDataType, shim_map_set_strings,
 };
 use crate::ffi::{self, Bytes, ConnectionState, KeyValueMap, Status};
+use crate::server::Server;
 
 const PORT: u16 = 4840;
 
@@ -284,28 +285,8 @@ impl Side {
 
     /// Makes the test server on the loop with the discovery URL `url` and room for
     /// `sessions` sessions and secure channels, and starts it.
-    fn start(&self, url: &CStr, sessions: u16) -> *mut ffi::test::Server {
-        // SAFETY: the loop outlives the server, which the test deletes.
-        let server = unsafe {
-            ffi::test::shim_server_new(
-                self.events().raw(),
-                PORT,
-                url.as_ptr(),
-                sessions,
-            )
-        };
-        assert!(!server.is_null());
-        // SAFETY: the server lives.
-        let status = Status(unsafe { ffi::test::UA_Server_run_startup(server) });
-        assert_eq!(status, Status::GOOD);
-        server
-    }
-
-    /// Closes `server`, which [`Side::start`] made.
-    async fn stop(&self, server: *mut ffi::test::Server) {
-        // SAFETY: the server lives on the loop of the manager, and the caller does not
-        // use it after.
-        unsafe { self.manager.close_server(server) }.await;
+    fn start(&self, url: &CStr, sessions: u16) -> Server {
+        Server::start(&self.manager, PORT, url, sessions)
     }
 
     /// Drives the manager and runs the loop until `span` passes, and gives the count
@@ -2279,12 +2260,14 @@ fn a_server_with_a_host_in_its_url_has_that_url_alone_as_its_discovery_url() {
             let url = c"opc.tcp://plc.example:4840";
             let server = side.start(url, 0);
             // SAFETY: the server lives.
-            let first = unsafe { ffi::test::shim_server_discovery_url(server, 0) };
+            let first =
+                unsafe { ffi::test::shim_server_discovery_url(server.raw(), 0) };
             assert_eq!(string(first), url.to_bytes());
             // SAFETY: the server lives.
-            let second = unsafe { ffi::test::shim_server_discovery_url(server, 1) };
+            let second =
+                unsafe { ffi::test::shim_server_discovery_url(server.raw(), 1) };
             assert!(second.is_null());
-            side.stop(server).await;
+            server.close(&side.manager).await;
         })
         .expect("the run ends");
 }
@@ -2582,25 +2565,26 @@ fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
             let side = Side::listening(&node, local(&node));
             let server = side.start(c"opc.tcp://:4840", 1);
             // SAFETY: the server lives.
-            let url = unsafe { ffi::test::shim_server_discovery_url(server, 0) };
+            let url = unsafe { ffi::test::shim_server_discovery_url(server.raw(), 0) };
             assert_eq!(string(url), b"opc.tcp://10.0.0.1:4840");
             // SAFETY: the server lives.
-            let url = unsafe { ffi::test::shim_server_discovery_url(server, 1) };
+            let url = unsafe { ffi::test::shim_server_discovery_url(server.raw(), 1) };
             assert!(url.is_null());
             side.drive(Span::SECOND).await;
             // SAFETY: the server lives.
-            let status = Status(unsafe { ffi::test::UA_Server_run_shutdown(server) });
+            let status =
+                Status(unsafe { ffi::test::UA_Server_run_shutdown(server.raw()) });
             assert_eq!(status, Status::GOOD);
             // SAFETY: the server lives.
-            let state = unsafe { ffi::test::UA_Server_getLifecycleState(server) };
+            let state = unsafe { ffi::test::UA_Server_getLifecycleState(server.raw()) };
             assert_eq!(state, ffi::test::Lifecycle::STOPPING);
             side.drive(Span::SECOND).await;
             assert_eq!(side.connections(), 0);
             // SAFETY: the server lives.
-            let state = unsafe { ffi::test::UA_Server_getLifecycleState(server) };
+            let state = unsafe { ffi::test::UA_Server_getLifecycleState(server.raw()) };
             assert_eq!(state, ffi::test::Lifecycle::STOPPED);
             // SAFETY: the server is stopped, and nothing holds it.
-            let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
+            let status = Status(unsafe { ffi::test::UA_Server_delete(server.raw()) });
             assert_eq!(status, Status::GOOD);
             side.calls()
         })
@@ -2634,7 +2618,7 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
             });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
-            side.stop(server).await;
+            server.close(&side.manager).await;
             // A client that has not seen the close waits in its delete for the answer
             // of `CloseSession`, while the sim clock stands still.
             side.drive(Span::SECOND).await;
@@ -2713,10 +2697,8 @@ unsafe extern "C" fn busy(_: *mut c_void, data: *mut c_void) {
 }
 
 /// A side on a clock that [`Slow`] makes slower by `extra`, and a server on its loop
-/// that started 1 s ago. The caller deletes the server.
-async fn slow_server(
-    node: &node::Node,
-) -> (Side, Arc<AtomicU64>, *mut ffi::test::Server) {
+/// that started 1 s ago. The caller closes the server.
+async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
     let extra = Arc::new(AtomicU64::new(0));
     let clock = Clock::new(Slow {
         inner: node.clock(),
@@ -2761,8 +2743,7 @@ fn a_close_ends_while_a_timer_of_the_loop_takes_its_interval() {
             });
             assert_eq!(status, Status::GOOD);
             side.clock.sleep(Span::from_nanos(1_000_000)).await;
-            // SAFETY: the server lives on the loop, and nothing uses it after.
-            unsafe { side.manager.close_server(server) }.await;
+            server.close(&side.manager).await;
             let runs = load.runs.get();
             drop(side);
             runs
@@ -2832,7 +2813,7 @@ struct Hopping {
     /// Drops before `hops`, as the free of the loop can run `second`.
     side: Side,
     hops: Box<Hops>,
-    server: *mut ffi::test::Server,
+    server: Server,
 }
 
 impl Hopping {
@@ -2888,12 +2869,9 @@ fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let hopping = Hopping::start(&node, usize::MAX).await;
+            let server = hopping.server.raw();
             let panic = {
-                // SAFETY: the server lives on the loop, and the panic comes before the
-                // delete.
-                let close =
-                    unsafe { hopping.side.manager.close_server(hopping.server) };
-                let mut close = pin!(close);
+                let mut close = pin!(hopping.server.close(&hopping.side.manager));
                 poll_fn(|cx| {
                     match panic::catch_unwind(AssertUnwindSafe(|| {
                         close.as_mut().poll(cx)
@@ -2907,7 +2885,7 @@ fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
             };
             // SAFETY: the server lives, as the panic came before the delete, and the
             // delayed callbacks that wait are of `hops` and do not read it.
-            let status = Status(unsafe { ffi::test::UA_Server_delete(hopping.server) });
+            let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
             assert_eq!(status, Status::GOOD);
             (
                 panic.downcast_ref::<String>().cloned(),
@@ -2930,12 +2908,52 @@ fn a_close_ends_when_its_64th_run_drains_the_delayed_callbacks() {
         .sim
         .run_on(&network.local.clone(), |node, _| async move {
             let hopping = Hopping::start(&node, 63).await;
-            // SAFETY: the server lives on the loop, and nothing uses it after.
-            unsafe { hopping.side.manager.close_server(hopping.server) }.await;
+            hopping.server.close(&hopping.side.manager).await;
             hopping.hops.runs.get()
         })
         .expect("the run ends");
     assert_eq!(runs, 64);
+}
+
+/// A close through a manager that the server is not on panics before it stops the
+/// server, which then still serves and closes as before.
+#[test]
+fn a_close_through_another_manager_panics_before_the_stop() {
+    let mut network = Network::new();
+    let message = network
+        .sim
+        .run_on(&network.local.clone(), |node, _| async move {
+            let side = Side::listening(&node, local(&node));
+            let other = Side::new(&node);
+            let server = side.start(c"opc.tcp://:4840", 1);
+            let raw = server.raw();
+            let mut close = pin!(server.close(&other.manager));
+            let panic = poll_fn(|cx| {
+                match panic::catch_unwind(AssertUnwindSafe(|| close.as_mut().poll(cx)))
+                {
+                    Ok(poll) => poll.map(|()| None),
+                    Err(panic) => Poll::Ready(Some(panic)),
+                }
+            })
+            .await
+            .expect("the close panics");
+            // SAFETY: the server lives, as the panic came before the stop.
+            let state = unsafe { ffi::test::UA_Server_getLifecycleState(raw) };
+            assert_eq!(state, ffi::test::Lifecycle::STARTED);
+            // SAFETY: the server lives.
+            let status = Status(unsafe { ffi::test::UA_Server_run_shutdown(raw) });
+            assert_eq!(status, Status::GOOD);
+            side.drive(Span::SECOND).await;
+            // SAFETY: the server is stopped, and nothing holds it.
+            let status = Status(unsafe { ffi::test::UA_Server_delete(raw) });
+            assert_eq!(status, Status::GOOD);
+            panic.downcast_ref::<&str>().copied()
+        })
+        .expect("the run ends");
+    assert_eq!(
+        message,
+        Some("a server closes through the manager it started on")
+    );
 }
 
 /// The `CloseSession` service of a running server removes the session after the
@@ -2963,7 +2981,7 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
                 Status(unsafe { ffi::test::UA_Client_disconnectAsync(client) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
-            side.stop(server).await;
+            server.close(&side.manager).await;
             // SAFETY: nothing uses the client after it.
             unsafe { ffi::UA_Client_delete(client) };
             side.drive(Span::SECOND).await;
@@ -3034,7 +3052,7 @@ fn a_stopped_server_is_deleted_when_no_delayed_callback_waits() {
                 side.drive(Span::SECOND).await;
                 assert_eq!(Status(result.get()), Status::GOOD, "the session is made");
                 side.clock.sleep(Span::from_nanos(offset)).await;
-                side.stop(server).await;
+                server.close(&side.manager).await;
                 // SAFETY: nothing uses the client after it.
                 unsafe { ffi::UA_Client_delete(client) };
                 side.drive(Span::SECOND).await;
@@ -3256,7 +3274,7 @@ fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, u
             side.drive(Span::from_nanos(2_000_000_000)).await;
             // Less the listen connection.
             let held = (side.connections() - 1, snapshot(&peers));
-            side.stop(server).await;
+            server.close(&side.manager).await;
             held
         })
         .expect("the run ends");
@@ -3287,7 +3305,7 @@ fn closes_past_the_bound() {
             let server = side.start(c"opc.tcp://:4840", 100);
             side.drive(Span::SECOND).await;
             let held = (side.connections(), snapshot(&peers));
-            side.stop(server).await;
+            server.close(&side.manager).await;
             held
         })
         .expect("the run ends");
@@ -3653,7 +3671,7 @@ fn poll_once(
                 .iter()
                 .filter(|r| r.lock().expect("no panic").bytes().starts_with(b"ACKF"))
                 .count();
-            side.stop(server).await;
+            server.close(&side.manager).await;
             (poll, woken, acks, runs)
         })
         .expect("the run ends")
@@ -3690,7 +3708,7 @@ fn burst(drives: usize) -> (usize, usize, usize) {
                 .filter(|r| r.lock().expect("no panic").ended.is_none())
                 .count();
             let moves = side.manager.state().moves.get();
-            side.stop(server).await;
+            server.close(&side.manager).await;
             (connections, open, moves)
         })
         .expect("the run ends")
