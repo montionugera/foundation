@@ -90,6 +90,7 @@ impl<'b> Fields<'b> {
     pub(crate) fn take_all<const N: usize>(self) -> Result<&'b [[u8; N]], Length> {
         let (all, tail) = self.rest.as_chunks();
         if all.is_empty() || !tail.is_empty() {
+            std::hint::cold_path();
             return Err(self.length());
         }
         Ok(all)
