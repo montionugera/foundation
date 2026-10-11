@@ -16,6 +16,7 @@ use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use spec::connector::Connector;
 use spec::definition::Definition;
+use types::authority::Authority;
 use types::name::Name;
 use types::time::{Monotonic, Span};
 
@@ -427,13 +428,14 @@ fn a_connector_whose_run_returned_starts_no_run_until_it_changes() {
 }
 
 /// A kind whose run records its start, spawns a task that ends `flush` after the
-/// cancel, opens a reader on `plant.data.**`, and holds the reader until the cancel.
-struct Select {
+/// cancel, opens a writer of `plant.data.time` and `plant.data.value`, and holds the
+/// writer until the cancel.
+struct Write {
     starts: Starts,
     flush: Span,
 }
 
-impl Kind for Select {
+impl Kind for Write {
     type Config = ();
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -460,40 +462,28 @@ impl Kind for Select {
             cancel.wait().await;
             clock.sleep(flush).await;
         });
-        let select = Attribute {
-            key: "select".into(),
-            key_span: None,
-            value: Value {
-                kind: value::Kind::String("plant.data.**".into()),
-                span: None,
-            },
-        };
-        let document = Document {
-            attributes: Map::new(vec![select]).expect("distinct keys"),
-            blocks: Vec::new(),
-        };
-        let settings = connector::reader::read(&document, &[], &[]).expect("settings");
-        let reader = ctx.reader(&settings).await?;
+        let channels = vec![name("plant.data.time"), name("plant.data.value")];
+        let writer = ctx.writer(channels, Authority(1), None).await?;
         ctx.cancel().wait().await;
-        drop(reader);
+        drop(writer);
         Ok(())
     }
 }
 
-/// The counts of the runs of a connector of [`Select`] at 4 s and 10 s. Its first run
-/// gets `Config`, since no channel matches. At 1 s, a spec change adds the channels
-/// that it selects, with the connector unchanged. At 5 s, an apply keeps the connector
+/// The counts of the runs of a connector of [`Write`] at 4 s and 10 s. Its first run
+/// gets `Config`, since no channel has its names. At 1 s, a spec change adds the
+/// channels, with the connector unchanged. At 5 s, an apply keeps the connector
 /// and its run.
-fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
+fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
     sim.run_on(&node, move |node, tasks| async move {
         let starts = Starts::default();
-        let select = Select {
+        let write = Write {
             starts: Arc::clone(&starts),
             flush,
         };
-        let kinds = Table::new().with("select", select);
+        let kinds = Table::new().with("write", write);
         let env = hub::testing::Env {
             files: node.files(),
             clock: node.clock(),
@@ -506,7 +496,7 @@ fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
         let clock = node.clock();
         let start = clock.now();
         let mut runs = Runs::new(config, name(NODE));
-        let first = definitions(&[("plant.a", "select", NODE, 0)]);
+        let first = definitions(&[("plant.a", "write", NODE, 0)]);
         hub.set_definitions(&first);
         runs.apply(&first);
         clock.sleep_until(start + ms(1_000)).await;
@@ -551,18 +541,18 @@ fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
     })
 }
 
-/// The spec change that adds the selected channels is the fix that `Config` names, so
+/// The spec change that adds the written channels is the fix that `Config` names, so
 /// the connector runs again.
 #[test]
-fn a_spec_change_that_adds_the_selected_channels_runs_the_connector_again() {
-    assert_eq!(starts_of_select(Span::ZERO), Ok((2, 2)));
+fn a_spec_change_that_adds_the_written_channels_runs_the_connector_again() {
+    assert_eq!(starts_of_write(Span::ZERO), Ok((2, 2)));
 }
 
 /// The task of the refused run ends at 2 s, so the spec change at 1 s comes before
 /// `run` returned `Config`. It still runs the connector again.
 #[test]
 fn a_spec_change_while_a_refused_run_ends_runs_the_connector_again() {
-    assert_eq!(starts_of_select(ms(2_000)), Ok((2, 2)));
+    assert_eq!(starts_of_write(ms(2_000)), Ok((2, 2)));
 }
 
 /// A node gets its first mesh time 1 s after its hub opened, and the spec that the

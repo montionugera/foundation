@@ -241,7 +241,12 @@ mod status {
                 .set_definitions(status.iter().map(|(name, def)| (name, def)));
             let supervisor = Supervisor::new(config);
             let (token, config) = (Token::new(), Document::default());
-            let mut run = pin!(supervisor.run("sets", connector, &config, &token));
+            let mut run = pin!(
+                supervisor
+                    .open("sets", connector, &config, &token)
+                    .await
+                    .run()
+            );
             future::poll_fn(|cx| {
                 if !counted.load(Relaxed) {
                     return run.as_mut().poll(cx);

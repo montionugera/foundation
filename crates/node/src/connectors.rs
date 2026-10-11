@@ -107,7 +107,12 @@ impl Runs {
                     };
                     let kind = connector.kind().as_str();
                     let config = connector.config().document();
-                    match supervisor.run(kind, name.clone(), config, &changed).await {
+                    match supervisor
+                        .open(kind, name.clone(), config, &changed)
+                        .await
+                        .run()
+                        .await
+                    {
                         // The next change of the connector runs it again.
                         Ok(()) => changed.wait().await,
                         // The status holds its class. The fix can be in another

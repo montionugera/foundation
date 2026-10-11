@@ -1,10 +1,38 @@
-- **SUPERVISOR** `supervisor::Supervisor::run` runs one connector and never starts a
-  run before the last one returned, and none after a cancel. Each run gets a child of
-  the caller's token, which the supervisor cancels once the run returns or its future
-  drops, so each task that the run spawned to wait on it ends with the run
+- **SUPERVISOR** `supervisor::Supervisor` runs one connector in two steps:
+  `Supervisor::open`, then `Opened::run`. It never starts a run before the last one
+  returned, and none after a cancel. `open` resolves once the status channels and the
+  reader opened, or once the first run cannot start: the kind is unknown, the config
+  does not parse or check, the mesh stopped, the reader open failed, or `cancel` is
+  cancelled. `open` runs no code of the kind's `run`, so the connector writes no frame
+  before `Opened::run`. Dropped, the `Opened` closes the reader and writes no status. So
+  `node` can open the reader of an out connector before an in connector starts. Before
+  each run, also a run after a backoff, the supervisor opens the reader from the
+  `Channels::reader` that `check` gave, and the run takes it through `Context::reader`.
+  A failed open ends that run with the class of its error (KIND TABLE), and the kind's
+  `run` is not called. A run whose reader ends with
+  `hub::reader::Ended::Behind` returns `Retry`, and the frames between the two opens
+  do not come again before #274 (`laptop.architect-2`, 2026-10-11T05:11:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, items 1
+  and 3; 2026-10-11T05:23:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
+  3, and 5). The reader open waits while the mesh names no home for the index that it
+  selects. A reader with a hold opens again at its held position, so it stays `Behind`
+  at each open within its hold, and each close starts the hold again (HOME NAMED
+  READERS). So a hold longer than the longest wait of the backoff never ends while the
+  node runs with that spec. The reader then gets no frame again until #274 reads from
+  disk (the test:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). The wait
+  for a home, and that the supervisor does no more for a held reader before #274, are
+  decided by `laptop.architect-2` (2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, questions
+  1 and 2). The text from "A reader with a hold" to the #274 test is from
+  `laptop.architect` (2026-10-11T07:34:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Each run
+  gets a child of the caller's token, which the supervisor cancels once the run returns
+  or its future drops, so each task that the run spawned to wait on it ends with the run
   (`laptop.architect-2`, 2026-10-08T17:58:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6065930789). A drop of
-  the future of `run` cancels the run and does not wait for its tasks
+  the future of `Opened::run` cancels the run and does not wait for its tasks
   (`laptop.architect-2`, 2026-10-09T01:30:51Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231). At a
   spec change, `node` cancels the run of each connector that the change removes or
@@ -67,7 +95,7 @@
   STATUS).
   Decided by the `connector` builder in the plan on #338, after `/eb-review`; approved
   by the coordinator (#338), with the reset after a long run approved on #338 later.
-- **CONNECTOR STATUS** `Supervisor::run` writes the status channels of its connector,
+- **CONNECTOR STATUS** The supervisor writes the status channels of its connector,
   `<connector>.status.<name>`, on their own index `<connector>.status.time`, as the
   connector, at `Authority::ABSOLUTE` (the advisor on #455, 2026-10-06T02:20:11Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6008006459), with
@@ -81,21 +109,21 @@
   | `state` | `u8` | 0 running, 1 waiting to restart, 2 stopped, 3 ending |
   | `class` | `u8` | the end of the last run: 0 none or `Ok`, 1 `Config`, 2 `Device`, 3 `Retry` |
   | `restarts` | `u64` | the restarts in this call |
-  | `backoff` | `Span` | the wait from this sample to the next run, 0 unless `state` is 1 |
+  | `backoff` | `Span` | the wait from this sample to the next try, 0 unless `state` is 1 |
   | `error` | `String` | the text of the error that ended the last run, empty when `class` is 0 |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
-  `backoff` and `error` follow the #1735 ruling (`laptop.architect-2`,
-  2026-10-08T06:29:21Z:
+  `error`, and `backoff` but for the end of its wait (below), follow the #1735 ruling
+  (`laptop.architect-2`, 2026-10-08T06:29:21Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
   `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
   device error does not make a frame too large. `backoff` is the wait that is left to
-  the next run by the node's clock at the write, less the time by which the frame is
+  the next try by the node's clock at the write, less the time by which the frame is
   stamped after the hub's time (below). So a frame written again later gives the wait
-  that is left, a frame stamped ahead gives a wait that ends at the next run, and a step
+  that is left, a frame stamped ahead gives a wait that ends at the next try, and a step
   of the hub's time during the wait does not change it. The wait is by the node's
-  clock, so while the hub's time slews, the next run is up to 500 ppm (MESH SLEW) of
+  clock, so while the hub's time slews, the next try is up to 500 ppm (MESH SLEW) of
   the wait from the frame's time plus `backoff`. Decided by the `connector` builder in
   the plan on #420 (2026-10-10T03:22:36Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074),
@@ -104,10 +132,24 @@
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093511014), and by
   the node's clock after round 2 (finding 1, 2026-10-10T05:36:36Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094269805). The
-  `backoff` text is approved by `laptop.architect` (2026-10-10T05:38:31Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904). The cut
+  `backoff` text is approved by `laptop.architect` with "next run"
+  (2026-10-10T05:38:31Z:
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904) and with
+  "next try" (2026-10-11T10:03:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The cut
   and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130).
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
+  opens its reader before its start status (`laptop.architect-2`, 2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). A try is
+  the reader open of a restart, or, when `check` gives no reader settings, its start
+  status. So while that open waits for a home, `state` stays 1 with a `backoff` whose
+  wait has ended. That `backoff` ends at a try is decided by `laptop.architect-2`
+  (2026-10-11T10:17:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107989901). It
+  supersedes "the wait from this sample to the next run" of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186, and "the
+  time of the next run" of the plan on #420
+  (https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074).
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or

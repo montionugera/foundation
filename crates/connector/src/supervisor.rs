@@ -1,6 +1,7 @@
 //! Runs connectors and restarts them after errors.
 
 use std::cell::Cell;
+use std::fmt;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
@@ -16,8 +17,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::status;
-use crate::{cancel, retry};
+use crate::{cancel, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -45,8 +45,8 @@ pub struct Config {
     pub hub: hub::Hub,
 }
 
-/// Runs connectors of the kinds in a table, one `run` call at a time per connector.
-/// It is not `Send`: each shard makes its own. Its clones share one config.
+/// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
+/// connector. It is not `Send`: each shard makes its own. Its clones share one config.
 #[derive(Clone, Debug)]
 pub struct Supervisor(Rc<Config>);
 
@@ -57,59 +57,170 @@ impl Supervisor {
         Self(Rc::new(config))
     }
 
-    /// Runs one connector: parses its config, starts `run`, and restarts it with
-    /// backoff after any error but `Config`. The waits start again from the first
-    /// after a run that lasted at least a minute. Within one call, never starts a run
-    /// before the last one returned and each task it spawned through [`Context::tasks`]
-    /// ended, or after `cancel` is cancelled. Writes the connector's status channels
-    /// as the connector: the whole status at each start and change of state, and a
-    /// change of counts alone at most once each second. Each change of state, a start
-    /// too, waits until the home applied the state before it or `cancel` is cancelled.
-    ///
-    /// The status channels open once the node has mesh time, and no run starts before.
-    /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
-    /// channels opened, or when `cancel` is cancelled: at once while the channels are
-    /// not open, and otherwise once the run returned. It returns, with `Ok` or an
-    /// error, only once each task of its last run ended, and the home applied its last
-    /// status frame or `cancel` is cancelled. Neither wait holds once the home refused
-    /// a status frame because the status channels were removed or its disk failed:
-    /// after it, the call writes no more status. A drop of the future cancels the run
-    /// and does not wait for its tasks: to wait, cancel `cancel` and await the future.
+    /// Opens the status channels of the connector `name` once the node has mesh
+    /// time, then, when the kind's `check` gives reader settings, its reader under
+    /// `name`. Resolves once the status channels and the reader opened, or once the
+    /// first run cannot start: the kind is unknown, the config does not parse or
+    /// check, the mesh stopped, the reader open failed, or `cancel` is cancelled. The
+    /// reader open waits while the mesh names no home for the index that it selects.
+    /// It runs no code of the kind's `run`, so the connector writes no frame before
+    /// [`Opened::run`]. Dropped, the [`Opened`] closes the reader and writes no status.
     /// The future is not `Send`: call it on a shard.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Config`], without a restart, when the kind is unknown, the config
-    /// does not parse, or `run` returns it.
     ///
     /// # Panics
     ///
     /// When the status channels of `name` do not open for a reason other than a
     /// stopped mesh: their index has its home on another node, or `node` did not
     /// define them and did not cancel the call. When a status name of `name` is
-    /// longer than [`Name::MAX_BYTES`], which the plan refuses. When the home refuses
-    /// a status frame for a cause that only a defect of `connector` gives. Or when a
-    /// status frame is larger than the largest block of the shard's pool.
-    pub async fn run(
-        &self,
-        kind: &str,
+    /// longer than [`Name::MAX_BYTES`], which the plan refuses. When the hub gives a
+    /// reader error that this open cannot get.
+    pub async fn open<'a>(
+        &'a self,
+        kind: &'a str,
         name: Name,
-        config: &Document,
-        cancel: &cancel::Token,
-    ) -> Result<(), Error> {
+        config: &'a Document,
+        cancel: &'a cancel::Token,
+    ) -> Opened<'a> {
+        let call = Call {
+            supervisor: self,
+            kind,
+            name,
+            config,
+            cancel,
+        };
+        let start = call.start().await;
+        Opened { call, start }
+    }
+}
+
+/// A connector that [`Supervisor::open`] opened, whose first run has not started.
+#[must_use = "an Opened runs nothing until Opened::run"]
+pub struct Opened<'a> {
+    call: Call<'a>,
+    start: Start,
+}
+
+impl fmt::Debug for Opened<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Opened")
+            .field("call", &self.call)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Opened<'_> {
+    /// Runs the connector, and restarts it with backoff after any error but `Config`.
+    /// Before each run but the first, after the backoff and before the start status,
+    /// opens the reader again under the connector's name, when `check` gave reader
+    /// settings. That open waits while the mesh names no home for the index that it
+    /// selects. A reader open that fails ends that run with its error. The waits start
+    /// again from the first after a run that lasted at least a minute. Never starts a
+    /// run before the last one returned and each task it spawned through
+    /// [`Context::tasks`] ended, or after `cancel` is cancelled. Writes the connector's
+    /// status channels as the connector: the whole status at each start and change of
+    /// state, and a change of counts alone at most once each second. Each change of
+    /// state, a start too, waits until the home applied the state before it or `cancel`
+    /// is cancelled.
+    ///
+    /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
+    /// channels opened, or when `cancel` is cancelled: at once while the channels are
+    /// not open, with no new run while a reader open waits (the open of
+    /// [`Supervisor::open`] too), and otherwise once the run returned. It returns, with
+    /// `Ok` or an error, only once each task of its last run ended, and the home
+    /// applied its last status frame or `cancel` is cancelled. Neither wait holds once
+    /// the home refused a status frame because the status channels were removed or its
+    /// disk failed: after it, the call writes no more status. A drop of the future
+    /// cancels the run and does not wait for its tasks: to wait, cancel `cancel` and
+    /// await the future. The future is not `Send`: call it on a shard.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`], without a restart, when the kind is unknown, the config
+    /// does not parse or check, a reader open gives it, or `run` returns it.
+    ///
+    /// # Panics
+    ///
+    /// When the home refuses a status frame for a cause that only a defect of
+    /// `connector` gives, or a status frame is larger than the largest block of the
+    /// shard's pool. When the hub gives a reader error that this open cannot get.
+    pub async fn run(self) -> Result<(), Error> {
+        let Self { call, start } = self;
+        match start {
+            Start::Done(end) => end,
+            Start::Ready(ready) => {
+                let Ready {
+                    writer,
+                    status,
+                    settings,
+                    reader,
+                } = *ready;
+                let restarts =
+                    call.restarts(&writer, &status, settings.as_ref(), reader);
+                writer.during(restarts).await
+            }
+        }
+    }
+}
+
+/// The arguments of one call of [`Supervisor::open`].
+#[derive(Debug)]
+struct Call<'a> {
+    supervisor: &'a Supervisor,
+    kind: &'a str,
+    name: Name,
+    config: &'a Document,
+    cancel: &'a cancel::Token,
+}
+
+/// What [`Supervisor::open`] gives [`Opened::run`].
+enum Start {
+    /// No run starts, and the call ends with this.
+    Done(Result<(), Error>),
+    Ready(Box<Ready>),
+}
+
+/// The status of a connector whose status channels opened, and its first reader.
+struct Ready {
+    writer: status::Writer,
+    status: status::Status,
+    settings: Option<reader::Settings>,
+    reader: Opening,
+}
+
+/// The reader open of one run.
+enum Opening {
+    /// `cancel` is cancelled, so no run starts.
+    Cancelled,
+    /// The run ends with this error.
+    Failed(Error),
+    /// The reader, or `None` for a kind that reads no channel.
+    Opened(Option<hub::reader::Reader>),
+}
+
+impl Call<'_> {
+    /// The status writer and the first reader of [`Supervisor::open`], or the end of a
+    /// call that starts no run.
+    async fn start(&self) -> Start {
+        let Self {
+            supervisor,
+            kind,
+            name,
+            config,
+            cancel,
+        } = self;
         let Config {
             kinds, clock, hub, ..
-        } = &*self.0;
-        let counts = kinds
-            .check(kind, None, config)
-            .map_err(Error::Config)?
-            .counts;
+        } = &*supervisor.0;
+        let channels = match kinds.check(kind, None, config) {
+            Ok(channels) => channels,
+            Err(diagnostics) => return Start::Done(Err(Error::Config(diagnostics))),
+        };
         let mut open = pin!(status::Writer::open(
             hub,
-            &name,
-            counts,
+            name,
+            channels.counts,
             clock.clone(),
-            cancel.clone()
+            (*cancel).clone()
         ));
         let mut cancelled = pin!(cancel.wait());
         // An open that is ready at once wins, so a cancel before the call still
@@ -119,10 +230,12 @@ impl Supervisor {
             Poll::Pending => cancelled.as_mut().poll(cx).map(|()| None),
         });
         let (writer, status) = match opened.await {
-            None | Some(Err(hub::writer::Error::Mesh(_))) => return Ok(()),
+            None | Some(Err(hub::writer::Error::Mesh(_))) => {
+                return Start::Done(Ok(()));
+            }
             // A cancelled call may find its status channels removed.
             Some(Err(hub::writer::Error::Unknown(_))) if cancel.cancelled() => {
-                return Ok(());
+                return Start::Done(Ok(()));
             }
             Some(Ok(opened)) => opened,
             Some(Err(error)) => {
@@ -131,46 +244,85 @@ impl Supervisor {
                 )
             }
         };
-        let runs = self.runs(kind, &name, config, cancel, &writer, &status);
-        writer.during(runs).await
+        let settings = channels.reader;
+        // After the status channels, which wait for mesh time, so the open never gives
+        // `Unsynced`.
+        let reader = self.reader(settings.as_ref()).await;
+        Start::Ready(Box::new(Ready {
+            writer,
+            status,
+            settings,
+            reader,
+        }))
     }
 
-    /// Runs the connector and restarts it, as [`Self::run`] says, and writes its
-    /// status through `writer` at each change of state.
-    async fn runs(
+    /// Opens the reader of `settings` under the connector's name.
+    async fn reader(&self, settings: Option<&reader::Settings>) -> Opening {
+        let Some(settings) = settings else {
+            return Opening::Opened(None);
+        };
+        let config = hub::reader::Config {
+            select: settings.select.clone(),
+            mode: settings.mode,
+            subject: self.name.clone(),
+            name: Some(self.name.clone()),
+            hold: settings.hold,
+        };
+        match self.cancel.race(self.supervisor.0.hub.reader(config)).await {
+            None => Opening::Cancelled,
+            Some(Ok(reader)) => Opening::Opened(Some(reader)),
+            Some(Err(error)) => Opening::Failed(kind::reader_error(error)),
+        }
+    }
+
+    /// Runs the connector and restarts it, and writes its status through `writer`
+    /// at each change of state. `first` is the reader of the first run.
+    async fn restarts(
         &self,
-        kind: &str,
-        name: &Name,
-        config: &Document,
-        cancel: &cancel::Token,
         writer: &status::Writer,
         status: &status::Status,
+        settings: Option<&reader::Settings>,
+        first: Opening,
     ) -> Result<(), Error> {
+        let Self {
+            supervisor,
+            kind,
+            config,
+            cancel,
+            ..
+        } = self;
         let Config {
             kinds,
             clock,
             entropy,
-            tasks,
             ..
-        } = &*self.0;
+        } = &*supervisor.0;
         let mut backoff = retry::Backoff::new(clock, entropy.rng(), RESTART);
-        while writer.start().await {
+        let mut first = Some(first);
+        loop {
+            // Before the start status, so the reader of each run sees that status.
+            let opening = match first.take() {
+                Some(opening) => opening,
+                None => self.reader(settings).await,
+            };
+            let reader = match opening {
+                Opening::Cancelled => break,
+                Opening::Failed(error) => Err(error),
+                Opening::Opened(reader) => Ok(reader),
+            };
+            if !writer.start().await {
+                break;
+            }
             let token = Ended(cancel.child());
             let live = Rc::new(Live::default());
-            let count = Count {
-                tasks: tasks.clone(),
-                live: Rc::clone(&live),
-            };
-            let ctx = Context::new(
-                name.clone(),
-                (),
-                token.0.clone(),
-                Tasks::new(count),
-                status.share(),
-                Rc::clone(&self.0),
-            );
             let start = clock.now();
-            let end = kinds.run(kind, config, ctx).map_err(Error::Config)?.await;
+            let end = match reader {
+                Ok(reader) => {
+                    let ctx = self.context(reader, &token.0, &live, status);
+                    kinds.run(kind, config, ctx).map_err(Error::Config)?.await
+                }
+                Err(error) => Err(error),
+            };
             let lasted = clock.now() - start;
             drop(token);
             let ended = writer.end(&end);
@@ -193,6 +345,30 @@ impl Supervisor {
         }
         writer.stop().await;
         Ok(())
+    }
+
+    /// The context of one run, cancelled by `token`, whose tasks `live` counts.
+    fn context(
+        &self,
+        reader: Option<hub::reader::Reader>,
+        token: &cancel::Token,
+        live: &Rc<Live>,
+        status: &status::Status,
+    ) -> Context<()> {
+        let inputs = &self.supervisor.0;
+        let count = Count {
+            tasks: inputs.tasks.clone(),
+            live: Rc::clone(live),
+        };
+        Context::new(
+            self.name.clone(),
+            (),
+            token.clone(),
+            Tasks::new(count),
+            status.share(),
+            reader,
+            Rc::clone(inputs),
+        )
     }
 }
 
@@ -278,7 +454,7 @@ mod tests {
     use crate::cancel::Token;
     use crate::common::{STATUS, create_config, create_status, env, run_on, run_with};
     use crate::kind::{Channels, Kind, Table};
-    use crate::{reader, testing};
+    use crate::testing;
     use hub::home::Refusal;
     use hub::reader::{Mode, Received};
     use spec::channel::{Channel, Data};
@@ -333,17 +509,21 @@ mod tests {
     }
 
     impl Kind for Script {
-        type Config = ();
+        /// The config has the attribute `worse`, which `check` refuses.
+        type Config = bool;
 
-        fn parse(&self, config: &Document) -> Result<(), Vec<Diagnostic>> {
+        fn parse(&self, config: &Document) -> Result<bool, Vec<Diagnostic>> {
             match config.attributes.get("bad") {
                 Some(_) => Err(vec![bad()]),
-                None => Ok(()),
+                None => Ok(config.attributes.get("worse").is_some()),
             }
         }
 
-        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-            Ok(Channels::default())
+        fn check(&self, refused: &bool) -> Result<Channels, Vec<Diagnostic>> {
+            match refused {
+                true => Err(vec![worse()]),
+                false => Ok(Channels::default()),
+            }
         }
 
         fn discover(
@@ -353,7 +533,7 @@ mod tests {
             std::future::ready(Ok(Vec::new()))
         }
 
-        async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
             assert_eq!(ctx.name().as_str(), "plant.script");
             let clock = ctx.clock();
             let index = {
@@ -408,7 +588,7 @@ mod tests {
     }
 
     /// Spawns a task of the run that ends `span` after the run's cancel.
-    fn hold(ctx: &Context<()>, span: Span) {
+    fn hold<C>(ctx: &Context<C>, span: Span) {
         let (token, clock) = (ctx.cancel().clone(), ctx.clock().clone());
         ctx.tasks().spawn(async move {
             token.wait().await;
@@ -597,7 +777,11 @@ mod tests {
             }
             let start = clock.now();
             let name = "plant.script".parse().expect("a valid name");
-            let result = supervisor.run(kind, name, &config, &token).await;
+            let result = supervisor
+                .open(kind, name, &config, &token)
+                .await
+                .run()
+                .await;
             let returned = clock.now() - start;
             let runs = runs
                 .lock()
@@ -705,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_no_backoff_when_the_next_run_passed_before_the_write() {
+    fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =
             refuse_the_last_wait(vec![Step::Hold(ms(2_000))], Span::ZERO);
         let [_, again] = runs[..] else {
@@ -715,7 +899,7 @@ mod tests {
         assert_eq!(samples[..2], [1, 2], "the wait: {statuses:?}");
         assert_eq!(*at, ms(3_000), "written again 1 s after the refusal at 2 s");
         assert_eq!(again, ms(3_000), "the run waits for the write");
-        assert_eq!(samples[3], 0, "the next run passed: {statuses:?}");
+        assert_eq!(samples[3], 0, "the next try passed: {statuses:?}");
     }
 
     #[test]
@@ -825,7 +1009,11 @@ mod tests {
             });
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let name = name("plant.script");
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("ok after a cancel");
             clock.sleep(Span::SECOND).await;
             let runs: Vec<_> = (runs.lock().expect("no panic under the lock").iter())
@@ -865,7 +1053,7 @@ mod tests {
         let (at, samples, _) = &statuses[5];
         assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
         let (run, again, _) = &statuses[6];
-        assert_eq!(again[0], 0, "the next run: {statuses:?}");
+        assert_eq!(again[0], 0, "the next try: {statuses:?}");
         // `backoff` is the wait by the node's clock. After the step, the hub's time
         // slews toward the wall at the 500 ppm of MESH SLEW.
         let (backoff, wait) = (samples[3], between(*at, *run).nanos());
@@ -972,7 +1160,11 @@ mod tests {
             });
             let supervisor = Supervisor::new(inputs);
             let name = name("plant.script");
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("ok after a cancel");
             clock.sleep(Span::SECOND).await;
             statuses.borrow().clone()
@@ -1026,7 +1218,11 @@ mod tests {
             }
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let name = name("plant.script");
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("ok");
             let returned = clock.now() - start;
             clock.sleep(ms(5_000)).await;
@@ -1076,7 +1272,9 @@ mod tests {
             let (clock, token) = (node.clock(), Token::new());
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let result = supervisor
-                .run("script", name("plant.script"), &config(), &token)
+                .open("script", name("plant.script"), &config(), &token)
+                .await
+                .run()
                 .await;
             result.expect("ok");
             let returned = clock.now() - start;
@@ -1128,7 +1326,9 @@ mod tests {
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let name = name("plant.script");
             let result = supervisor
-                .run("script", name, &config(), &Token::new())
+                .open("script", name, &config(), &Token::new())
+                .await
+                .run()
                 .await;
             assert_eq!(config_errors(result), [bad()]);
             let returned = clock.now() - start;
@@ -1315,7 +1515,9 @@ mod tests {
                 .hub
                 .set_definitions(status.iter().map(|(name, def)| (name, def)));
             let result = Supervisor::new(inputs)
-                .run("wide", connector, &config(), &Token::new())
+                .open("wide", connector, &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
         });
@@ -1525,6 +1727,26 @@ mod tests {
     }
 
     #[test]
+    fn returns_a_check_error_without_a_run_or_a_status() {
+        let config = Document {
+            attributes: Map::new(vec![Attribute {
+                key: "worse".into(),
+                key_span: None,
+                value: Value {
+                    kind: value::Kind::Bool(true),
+                    span: None,
+                },
+            }])
+            .expect("one key"),
+            blocks: Vec::new(),
+        };
+        let out = supervise("script", vec![Step::Done], config, Cancel::Never);
+        assert_eq!(config_errors(out.result), [worse()]);
+        assert!(out.runs.is_empty());
+        assert!(out.statuses.is_empty(), "{:?}", out.statuses);
+    }
+
+    #[test]
     fn returns_an_unknown_kind_as_a_config_error() {
         let out = supervise("modbus", vec![Step::Done], config(), Cancel::Never);
         let codes: Vec<_> = config_errors(out.result).iter().map(|d| d.code).collect();
@@ -1709,7 +1931,11 @@ mod tests {
                     canceller.cancel();
                 });
                 let name = "plant.dial".parse().expect("a valid name");
-                supervisor.run("dial", name, &config(), &token).await
+                supervisor
+                    .open("dial", name, &config(), &token)
+                    .await
+                    .run()
+                    .await
             })
             .expect("the run ends");
         result.expect("ok after the cancel");
@@ -1800,7 +2026,9 @@ mod tests {
             let start = clock.now();
             let name = "plant.spawner".parse().expect("a valid name");
             supervisor
-                .run("spawner", name, &config(), &token)
+                .open("spawner", name, &config(), &token)
+                .await
+                .run()
                 .await
                 .expect("ok after the cancel");
             let seen = seen.lock().expect("no panic").clone();
@@ -1873,7 +2101,8 @@ mod tests {
             let name = "plant.spawner".parse().expect("a valid name");
             let config = config();
             let clock = node.clock();
-            let run = supervisor.run("spawner", name, &config, &token);
+            let opened = supervisor.open("spawner", name, &config, &token).await;
+            let run = Box::pin(opened.run());
             let before =
                 drop_at_5_s(run, &clock, || *live.lock().expect("no panic")).await;
             clock.sleep(ms(1)).await;
@@ -1897,7 +2126,10 @@ mod tests {
             let (token, config) = (Token::new(), config());
             let name: Name = "plant.spawner".parse().expect("a valid name");
             let clock = node.clock();
-            let run = supervisor.run("spawner", name.clone(), &config, &token);
+            let opened = supervisor
+                .open("spawner", name.clone(), &config, &token)
+                .await;
+            let run = Box::pin(opened.run());
             drop_at_5_s(run, &clock, || ()).await;
             let again = Token::new();
             let (canceller, sleeper) = (again.clone(), clock.clone());
@@ -1906,7 +2138,9 @@ mod tests {
                 canceller.cancel();
             });
             supervisor
-                .run("spawner", name, &config, &again)
+                .open("spawner", name, &config, &again)
+                .await
+                .run()
                 .await
                 .expect("ok after the cancel");
             seen.lock().expect("no panic").clone()
@@ -1968,9 +2202,11 @@ mod tests {
         }
     }
 
-    /// A kind with the counts `counts`, whose run is the function it holds.
+    /// A kind with the counts `counts` that reads with `reader`, whose run is the
+    /// function it holds.
     struct Closure<F> {
         counts: Vec<Name>,
+        reader: Option<reader::Settings>,
         run: F,
     }
 
@@ -1978,14 +2214,7 @@ mod tests {
     fn counted<F>(run: F) -> Closure<F> {
         Closure {
             counts: vec![name("samples")],
-            run,
-        }
-    }
-
-    /// A kind with no count, whose run is `run`.
-    fn plain<F>(run: F) -> Closure<F> {
-        Closure {
-            counts: Vec::new(),
+            reader: None,
             run,
         }
     }
@@ -2004,6 +2233,7 @@ mod tests {
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels {
                 counts: self.counts.clone(),
+                reader: self.reader.clone(),
                 ..Channels::default()
             })
         }
@@ -2252,7 +2482,9 @@ mod tests {
             }));
             let (clock, start) = (node.clock(), node.clock().now());
             let result = Supervisor::new(inputs)
-                .run("tally", connector, &config(), &Token::new())
+                .open("tally", connector, &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             clock.now() - start
@@ -2355,7 +2587,11 @@ mod tests {
             });
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let name = name("plant.script");
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("ok after a cancel");
             let runs: Vec<_> = runs
                 .lock()
@@ -2405,7 +2641,9 @@ mod tests {
             }
             let start = clock.now();
             let result = Supervisor::new(inputs)
-                .run("tally", connector, &config(), &token)
+                .open("tally", connector, &config(), &token)
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             let returned = clock.now() - start;
@@ -2450,7 +2688,9 @@ mod tests {
             let (name, clock) = (name("plant.script"), node.clock());
             let token = Token::new();
             let first = supervisor
-                .run("script", name.clone(), &config(), &token)
+                .open("script", name.clone(), &config(), &token)
+                .await
+                .run()
                 .await;
             first.expect("the first call returns ok");
             let (canceller, sleeper) = (token.clone(), clock.clone());
@@ -2458,7 +2698,11 @@ mod tests {
                 sleeper.sleep(ms(5_000)).await;
                 canceller.cancel();
             });
-            let second = supervisor.run("script", name, &config(), &token).await;
+            let second = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             second.expect("the second call returns ok");
             clock.sleep(Span::SECOND).await;
             statuses.borrow().clone()
@@ -2514,7 +2758,9 @@ mod tests {
                 hub.set_definitions(kept.map(|(name, def)| (name, def)));
             });
             let result = Supervisor::new(inputs)
-                .run("tally", connector, &config(), &Token::new())
+                .open("tally", connector, &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             node.clock().sleep(Span::SECOND).await;
@@ -2549,7 +2795,9 @@ mod tests {
             });
             let (clock, start) = (node.clock(), node.clock().now());
             let result = Supervisor::new(inputs)
-                .run("tally", connector, &config(), &Token::new())
+                .open("tally", connector, &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             let returned = clock.now() - start;
@@ -2600,7 +2848,11 @@ mod tests {
             let token = Token::new();
             token.cancel();
             let name = name("plant.script");
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("the call returns ok");
             runs.lock().expect("no panic under the lock").len()
         });
@@ -2656,7 +2908,11 @@ mod tests {
             let start = clock.now();
             let name = name("plant.script");
             let supervisor = Supervisor::new(inputs);
-            let result = supervisor.run("script", name, &config(), &token).await;
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
             result.expect("the call returns ok");
             let returned = clock.now() - start;
             let runs: Vec<_> = {
@@ -2682,7 +2938,9 @@ mod tests {
             let supervisor = Supervisor::new(inputs);
             drop(
                 supervisor
-                    .run("script", name, &config(), &Token::new())
+                    .open("script", name, &config(), &Token::new())
+                    .await
+                    .run()
                     .await,
             );
         });
@@ -2699,7 +2957,9 @@ mod tests {
             let supervisor = Supervisor::new(inputs);
             drop(
                 supervisor
-                    .run("script", name, &config(), &Token::new())
+                    .open("script", name, &config(), &Token::new())
+                    .await
+                    .run()
                     .await,
             );
         });
@@ -2879,7 +3139,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_backoff_that_ends_at_the_next_run_after_a_frame_ahead() {
+    fn writes_a_backoff_that_ends_at_the_next_try_after_a_frame_ahead() {
         let lead = ms(500);
         let (statuses, again) = run_on(move |node, tasks| async move {
             let script = Script {
@@ -2900,7 +3160,9 @@ mod tests {
             });
             let (supervisor, start) = (Supervisor::new(inputs), clock.now());
             let result = supervisor
-                .run("script", name("plant.script"), &config(), &token)
+                .open("script", name("plant.script"), &config(), &token)
+                .await
+                .run()
                 .await;
             result.expect("ok");
             clock.sleep(Span::SECOND).await;
@@ -2919,7 +3181,7 @@ mod tests {
         let run = Span::from_nanos(again.nanos() - lead.nanos());
         assert_eq!(
             next, run,
-            "the frame's time plus `backoff` is the next run: {statuses:?}"
+            "the frame's time plus `backoff` is the next try: {statuses:?}"
         );
     }
 
@@ -2942,7 +3204,9 @@ mod tests {
             let mut reader = inputs.hub.reader(open).await.expect("the reader opens");
             let supervisor = Supervisor::new(inputs);
             let result = supervisor
-                .run("write", name("plant.write"), &config(), &Token::new())
+                .open("write", name("plant.write"), &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             assert_eq!(*refusals.lock().expect("no panic"), [None, None, None]);
@@ -2964,9 +3228,30 @@ mod tests {
         }
     }
 
-    /// Runs `kind` once as `plant.write`, while a task runs `beside` with the hub and
-    /// the clock. Gives what the kind put in `got`.
-    fn read_through<F, R, T, B, S>(kind: F, beside: B) -> Vec<T>
+    /// A kind with no count that reads with `settings`, whose run is `run`.
+    fn reading<F>(settings: reader::Settings, run: F) -> Closure<F> {
+        Closure {
+            counts: Vec::new(),
+            reader: Some(settings),
+            run,
+        }
+    }
+
+    /// What [`read_through`] gives.
+    struct Read<T> {
+        /// What the kind put in `got`.
+        got: Vec<T>,
+        end: Result<(), Error>,
+        statuses: Vec<Written>,
+    }
+
+    /// Runs `kind` once as `plant.write`, reading with `settings` when it is some,
+    /// while a task runs `beside` with the hub and the clock.
+    fn read_through<F, R, T, B, S>(
+        settings: Option<reader::Settings>,
+        kind: F,
+        beside: B,
+    ) -> Read<T>
     where
         F: Fn(Context<()>, Arc<Mutex<Vec<T>>>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Error>> + 'static,
@@ -2977,18 +3262,27 @@ mod tests {
         run_on(move |node, tasks| async move {
             let got = Arc::new(Mutex::new(Vec::new()));
             let into = Arc::clone(&got);
-            let kind = plain(move |ctx| kind(ctx, Arc::clone(&into)));
+            let kind = Closure {
+                counts: Vec::new(),
+                reader: settings,
+                run: move |ctx| kind(ctx, Arc::clone(&into)),
+            };
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
             define(&inputs.hub);
+            let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             tasks.spawn(beside(inputs.hub.clone(), node.clock()));
             let supervisor = Supervisor::new(inputs);
-            let result = supervisor
-                .run("read", name("plant.write"), &config(), &Token::new())
+            let end = supervisor
+                .open("read", name("plant.write"), &config(), &Token::new())
+                .await
+                .run()
                 .await;
-            result.expect("the run returns ok");
-            got.lock().expect("no panic").clone()
+            node.clock().sleep(Span::SECOND).await;
+            let got = got.lock().expect("no panic").clone();
+            let statuses = statuses.borrow().clone();
+            Read { got, end, statuses }
         })
     }
 
@@ -3010,12 +3304,50 @@ mod tests {
     }
 
     #[test]
+    fn opens_the_reader_before_the_first_run() {
+        let (before, got) = run_on(|node, tasks| async move {
+            let (runs, got) =
+                (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(None)));
+            let (counter, into) = (Arc::clone(&runs), Arc::clone(&got));
+            let kind = reading(settings(Span::ZERO), move |mut ctx: Context<()>| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                let into = Arc::clone(&into);
+                async move {
+                    let mut reader = ctx.reader().expect("a reader");
+                    let received = reader.next().await.expect("a frame");
+                    *into.lock().expect("no panic") = Some(values(&received));
+                    Ok(())
+                }
+            });
+            let kinds = Table::new().with("read", kind);
+            let inputs = create_config(&node, tasks, kinds, "plant.write").await;
+            define(&inputs.hub);
+            let hub = inputs.hub.clone();
+            let supervisor = Supervisor::new(inputs);
+            let token = Token::new();
+            let config = config();
+            let opened = supervisor
+                .open("read", name("plant.write"), &config, &token)
+                .await;
+            let before = runs.load(Ordering::Relaxed);
+            let channels = vec![name("plant.value")];
+            let mut writer =
+                open_writer(&hub, "plant.other", Authority(1), channels).await;
+            let stamp = writer.now().nanos();
+            write_value(&mut writer, stamp, 5);
+            opened.run().await.expect("ok");
+            (before, got.lock().expect("no panic").take())
+        });
+        assert_eq!((before, got), (0, Some(vec![5])));
+    }
+
+    #[test]
     fn gives_a_kind_a_reader_that_gets_the_frames_of_a_hub_writer_in_order() {
         let writes = vec![(ms(100), 30), (ms(200), 10), (ms(300), 20)];
-        let got = read_through(
-            |ctx, got| async move {
-                let reader = ctx.reader(&settings(Span::ZERO)).await;
-                let mut reader = reader.expect("the reader opens");
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
                 for _ in 0..3 {
                     let received = reader.next().await.expect("a frame");
                     got.lock().expect("no panic").extend(values(&received));
@@ -3024,15 +3356,53 @@ mod tests {
             },
             |hub, clock| write_at(hub, clock, writes),
         );
-        assert_eq!(got, [30, 10, 20]);
+        assert_eq!(read.got, [30, 10, 20]);
+    }
+
+    #[test]
+    fn gives_the_reader_once_and_none_to_a_kind_that_reads_no_channel() {
+        type Got = Arc<Mutex<Vec<(bool, bool)>>>;
+        let take = |mut ctx: Context<()>, got: Got| async move {
+            let first = ctx.reader().is_some();
+            let second = ctx.reader().is_some();
+            got.lock().expect("no panic").push((first, second));
+            Ok(())
+        };
+        let reads = read_through(Some(settings(Span::ZERO)), take, |_, _| async {});
+        let none = read_through(None, take, |_, _| async {});
+        assert_eq!(
+            (reads.got, none.got),
+            (vec![(true, false)], vec![(false, false)])
+        );
+    }
+
+    #[test]
+    fn opens_a_new_reader_before_each_restart() {
+        let writes = vec![(ms(100), 1), (ms(5_000), 2)];
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let received = reader.next().await.expect("a frame");
+                let mut got = got.lock().expect("no panic");
+                got.extend(values(&received));
+                if got.len() == 1 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| write_at(hub, clock, writes),
+        );
+        read.end.expect("ok");
+        assert_eq!(read.got, [1, 2]);
     }
 
     #[test]
     fn gives_a_kind_a_reader_that_an_open_of_the_connector_name_takes_over() {
-        let got = read_through(
-            |ctx, got| async move {
-                let reader = ctx.reader(&settings(Span::ZERO)).await;
-                let mut reader = reader.expect("the reader opens");
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
                 let ended = reader.next().await.expect_err("the session ends");
                 got.lock().expect("no panic").push(ended);
                 Ok(())
@@ -3051,19 +3421,20 @@ mod tests {
                 drop(reader);
             },
         );
-        assert_eq!(got, [hub::reader::Ended::Replaced]);
+        assert_eq!(read.got, [hub::reader::Ended::Replaced]);
     }
 
     #[test]
     fn gives_a_kind_a_reader_in_the_mode_of_its_settings() {
         let writes = vec![(ms(100), 1), (ms(101), 2), (ms(102), 3)];
-        let got = read_through(
-            |ctx, got| async move {
-                let latest = reader::Settings {
-                    mode: Mode::Latest,
-                    ..settings(Span::ZERO)
-                };
-                let mut reader = ctx.reader(&latest).await.expect("the reader opens");
+        let latest = reader::Settings {
+            mode: Mode::Latest,
+            ..settings(Span::ZERO)
+        };
+        let read = read_through(
+            Some(latest),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
                 ctx.clock().sleep(ms(200)).await;
                 let received = reader.next().await.expect("a frame");
                 got.lock().expect("no panic").extend(values(&received));
@@ -3071,7 +3442,50 @@ mod tests {
             },
             |hub, clock| write_at(hub, clock, writes),
         );
-        assert_eq!(got, [3]);
+        assert_eq!(read.got, [3]);
+    }
+
+    /// The first frame of the reader of each of two calls of `plant.write` reading
+    /// with `hold`, while a writer writes 7 at 100 ms and 8 at 300 ms. The second
+    /// call opens 100 ms after the first one closed its reader.
+    fn hold_twice(hold: Span) -> Option<Result<Vec<i64>, hub::reader::Ended>> {
+        run_on(move |node, tasks| async move {
+            let got = Arc::new(Mutex::new(Vec::new()));
+            let into = Arc::clone(&got);
+            let kind = reading(settings(hold), move |mut ctx: Context<()>| {
+                let into = Arc::clone(&into);
+                async move {
+                    let mut reader = ctx.reader().expect("a reader");
+                    let next = reader.next().await.map(|received| values(&received));
+                    drop(reader);
+                    into.lock()
+                        .expect("no panic")
+                        .push((ctx.clock().now(), next));
+                    Ok(())
+                }
+            });
+            let kinds = Table::new().with("read", kind);
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.write").await;
+            define(&inputs.hub);
+            let writes = vec![(ms(100), 7), (ms(300), 8)];
+            tasks.spawn(write_at(inputs.hub.clone(), node.clock(), writes));
+            let supervisor = Supervisor::new(inputs);
+            let token = Token::new();
+            for _ in 0..2 {
+                let closed = got.lock().expect("no panic").first().map(|(at, _)| *at);
+                if let Some(closed) = closed {
+                    node.clock().sleep_until(closed + ms(100)).await;
+                }
+                let config = config();
+                let opened = supervisor
+                    .open("read", name("plant.write"), &config, &token)
+                    .await;
+                opened.run().await.expect("ok");
+            }
+            let got = got.lock().expect("no panic");
+            got.get(1).map(|(_, next)| next.clone())
+        })
     }
 
     #[test]
@@ -3086,23 +3500,122 @@ mod tests {
             (ms(99), Ok(vec![8])),
             (Span::ZERO, Ok(vec![8])),
         ] {
-            let writes = vec![(ms(100), 7), (ms(300), 8)];
-            let got = read_through(
-                move |ctx, got| async move {
-                    let reader = ctx.reader(&settings(hold)).await;
-                    let mut first = reader.expect("the reader opens");
-                    first.next().await.expect("a frame");
-                    drop(first);
-                    ctx.clock().sleep(ms(100)).await;
-                    let reader = ctx.reader(&settings(hold)).await;
-                    let mut reader = reader.expect("the reader opens");
-                    let next = reader.next().await.map(|received| values(&received));
-                    got.lock().expect("no panic").push(next);
-                    Ok(())
-                },
-                |hub, clock| write_at(hub, clock, writes),
-            );
-            assert_eq!(got, [want], "hold {hold:?}");
+            assert_eq!(hold_twice(hold), Some(want), "hold {hold:?}");
+        }
+    }
+
+    /// The reader of each restart keeps the hold of its settings: a run within the hold
+    /// opens at the held position and gets `Behind`, while the home keeps no frame
+    /// there. #274 makes each run after the first read from the held position.
+    #[test]
+    fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await.map(|received| values(&received));
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push(next);
+                    got.len()
+                };
+                if runs < 3 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| {
+                let samples = (1..=600).map(|i| (ms(100 * i), i));
+                write_at(hub, clock, samples.collect())
+            },
+        );
+        read.end.expect("ok");
+        let behind = Err(hub::reader::Ended::Behind);
+        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+    }
+
+    /// The reader of a restart opens before the start status, as the first reader
+    /// does, so each run reads `state` 0 of its own start. A run that gets no frame in
+    /// 10 s records `None`.
+    #[test]
+    fn the_reader_of_each_run_sees_the_start_of_that_run() {
+        let settings = reader::Settings {
+            select: Selector::new(["plant.write.status.state"]).expect("a selector"),
+            ..settings(Span::ZERO)
+        };
+        let read = read_through(
+            Some(settings),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let clock = ctx.clock().clone();
+                let mut next = pin!(reader.next());
+                let mut late =
+                    pin!(clock.sleep(Span::from_nanos(Span::SECOND.nanos() * 10)));
+                let next = poll_fn(|cx| {
+                    if let Poll::Ready(next) = next.as_mut().poll(cx) {
+                        let next = next.map(|got| series(&got, STATUS.as_u128() + 1));
+                        return Poll::Ready(Some(next));
+                    }
+                    late.as_mut().poll(cx).map(|()| None)
+                })
+                .await;
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push(next);
+                    got.len()
+                };
+                if runs < 3 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |_, _| async {},
+        );
+        read.end.expect("ok");
+        let start = Some(Ok(vec![0]));
+        assert_eq!(read.got, [start.clone(), start.clone(), start]);
+    }
+
+    /// The reader of a restart opens after the backoff, so the first frame of each
+    /// restart was written at or after its start. Each frame holds the time of its
+    /// write by the node's clock.
+    #[test]
+    fn the_reader_of_a_restart_opens_after_the_backoff() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let start = ctx.clock().now();
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await.map(|received| values(&received));
+                let runs = {
+                    let mut got = got.lock().expect("no panic");
+                    got.push((start, next));
+                    got.len()
+                };
+                if runs < 4 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                for _ in 0..1_000 {
+                    clock.sleep(ms(10)).await;
+                    let stamp = writer.now().nanos();
+                    let at = i64::try_from(clock.now().0).expect("fits");
+                    write_value(&mut writer, stamp, at);
+                }
+            },
+        );
+        read.end.expect("ok");
+        assert_eq!(read.got.len(), 4);
+        for (start, next) in &read.got[1..] {
+            let written = next.as_ref().expect("a frame")[0];
+            let start = i64::try_from(start.0).expect("fits");
+            assert!(written >= start, "{:?}", read.got);
         }
     }
 
@@ -3124,8 +3637,48 @@ mod tests {
         )]
     }
 
+    /// The first run's reader ends when a spec change removes the channels it reads,
+    /// and the run returns `Retry`. The reader open of the restart gives `Config`.
     #[test]
-    fn gives_a_config_error_for_a_reader_that_only_a_spec_change_fixes() {
+    fn ends_with_a_config_error_when_the_reader_of_a_restart_matches_nothing() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let ended = reader.next().await.expect_err("the session ends");
+                got.lock().expect("no panic").push(ended);
+                Err(Error::Retry("again".into()))
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                let definitions = create_status("plant.write");
+                hub.set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+            },
+        );
+        assert_eq!(read.got.len(), 1, "{:?}", read.got);
+        let want = unplaced(
+            "connector.no-channel",
+            "the selector matches no channel",
+            "Select a channel that the spec defines",
+        );
+        assert_eq!(read.end.map_err(diagnostics), Err(Ok(want)));
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 1, 1),
+                (2, 1, 1)
+            ],
+            "{:?}",
+            read.statuses
+        );
+    }
+
+    #[test]
+    fn ends_with_a_config_error_for_a_reader_that_only_a_spec_change_fixes() {
         for (select, want) in [
             (
                 "plant.missing",
@@ -3145,20 +3698,88 @@ mod tests {
                 ),
             ),
         ] {
-            let got = read_through(
-                move |ctx, got| async move {
-                    let settings = reader::Settings {
-                        select: Selector::new([select]).expect("a selector"),
-                        ..settings(Span::ZERO)
-                    };
-                    let error = ctx.reader(&settings).await.expect_err("an error");
-                    got.lock().expect("no panic").push(diagnostics(error));
+            let settings = reader::Settings {
+                select: Selector::new([select]).expect("a selector"),
+                ..settings(Span::ZERO)
+            };
+            let read = read_through(
+                Some(settings),
+                |_, got: Arc<Mutex<Vec<()>>>| async move {
+                    got.lock().expect("no panic").push(());
                     Ok(())
                 },
                 |_, _| async {},
             );
-            assert_eq!(got, [Ok(want)], "select {select}");
+            let text = want[0].to_string();
+            let end = read.end.map_err(diagnostics);
+            assert_eq!(end, Err(Ok(want)), "select {select}");
+            assert_eq!(read.got, [], "no run: select {select}");
+            let classes = states(&read.statuses);
+            assert_eq!(classes, [(0, 0, 0), (3, 1, 0), (2, 1, 0)], "{select}");
+            let texts: Vec<_> = read.statuses.iter().map(|(.., text)| text).collect();
+            assert_eq!(texts, ["", &text, &text], "select {select}");
         }
+    }
+
+    #[test]
+    fn writes_only_stopped_for_a_reading_kind_cancelled_before_the_call() {
+        let (end, statuses) = run_on(|node, tasks| async move {
+            let kind = reading(settings(Span::ZERO), |_| async {
+                panic!("no run starts after the cancel")
+            });
+            let kinds = Table::new().with("read", kind);
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.write").await;
+            define(&inputs.hub);
+            let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
+            let supervisor = Supervisor::new(inputs);
+            let token = Token::new();
+            token.cancel();
+            let config = config();
+            let opened = supervisor
+                .open("read", name("plant.write"), &config, &token)
+                .await;
+            let end = opened.run().await;
+            node.clock().sleep(Span::SECOND).await;
+            (end, statuses.borrow().clone())
+        });
+        end.expect("ok");
+        assert_eq!(states(&statuses), [(2, 0, 0)]);
+    }
+
+    #[test]
+    fn writes_no_status_when_an_opened_connector_drops() {
+        let (runs, statuses, debug) = run_on(|node, tasks| async move {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&runs);
+            let kind = reading(settings(Span::ZERO), move |_| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                async { Ok(()) }
+            });
+            let kinds = Table::new().with("read", kind);
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.write").await;
+            define(&inputs.hub);
+            let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
+            let supervisor = Supervisor::new(inputs);
+            let token = Token::new();
+            let config = config();
+            let opened = supervisor
+                .open("read", name("plant.write"), &config, &token)
+                .await;
+            let debug = format!("{opened:?}");
+            drop(opened);
+            node.clock().sleep(Span::SECOND).await;
+            (
+                runs.load(Ordering::Relaxed),
+                statuses.borrow().clone(),
+                debug,
+            )
+        });
+        assert_eq!((runs, statuses), (0, Vec::new()));
+        assert!(debug.starts_with("Opened { call: Call { "), "{debug}");
+        assert!(debug.contains("kind: \"read\""), "{debug}");
+        assert!(debug.ends_with(", .. }"), "{debug}");
     }
 
     #[test]
@@ -3194,7 +3815,8 @@ mod tests {
         ] {
             let channels: Vec<Name> = channels.into_iter().map(name).collect();
             let open = channels.clone();
-            let got = read_through(
+            let read = read_through(
+                None,
                 move |ctx, got| {
                     let open = open.clone();
                     async move {
@@ -3206,7 +3828,7 @@ mod tests {
                 },
                 |_, _| async {},
             );
-            assert_eq!(got, [Ok(want)], "channels {channels:?}");
+            assert_eq!(read.got, [Ok(want)], "channels {channels:?}");
         }
     }
 
@@ -3229,7 +3851,9 @@ mod tests {
             }
             let supervisor = Supervisor::new(inputs);
             let result = supervisor
-                .run("write", name("plant.write"), &config(), &Token::new())
+                .open("write", name("plant.write"), &config(), &Token::new())
+                .await
+                .run()
                 .await;
             result.expect("the run returns ok");
             drop(other);
@@ -3269,7 +3893,11 @@ mod tests {
                 inputs.kinds = Arc::new(Table::new().with("write", write));
                 let supervisor = Supervisor::new(inputs);
                 let (name, token) = (name("plant.write"), Token::new());
-                let result = supervisor.run("write", name, &config(), &token).await;
+                let result = supervisor
+                    .open("write", name, &config(), &token)
+                    .await
+                    .run()
+                    .await;
                 result.expect("the run returns ok");
             }
         });
