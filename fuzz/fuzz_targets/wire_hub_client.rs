@@ -1,14 +1,14 @@
 //! The decoders of `wire::hub::client` never panic, each but `Open::decode` refuses a
 //! message of another kind with `Error::Kind`, each message that decodes encodes to
 //! its bytes, each body ends at its length and nowhere else, each refusal of a body is
-//! the one that its rest gives, a read stream gives its places and then refuses each
-//! message that a session of their count refuses, with its error, and each valid
+//! the one that its rest gives, a read stream gives its places, then its run, and with
+//! the last place the decoder of a session of their count and the mode, and each valid
 //! message made from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
 //! response, or a read, takes each later message; and a `client::Reader` of each mode
-//! takes each message until it refuses one.
+//! takes each message until it refuses one or gives the last place.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -132,31 +132,18 @@ fn unkinded(message: &[u8]) {
     }
 }
 
-/// Drives a reader of `mode` on `bytes` until it refuses a message. Each places and
-/// each run that it gives encodes to its message, a run holds no more places than
-/// remain and a stamp at the index place, and the stream gives no body and may not end
-/// before the last place. After it, the reader answers as a session of the count does.
+/// Drives a reader of `mode` on `bytes` until it refuses a message or gives the last
+/// place. Each places and each run that it gives encodes to its message, a run holds
+/// no more places than remain and a stamp at the index place, and only the message
+/// with the last place gives a `home`: the decoder of a session of the count and the
+/// mode.
 fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
     let mut run: Option<(Places, u32)> = None;
-    let mut session: Option<hub::Reader> = None;
     for message in fuzz::messages(bytes) {
-        let decoded = reader.decode(message);
-        if let Some(session) = &mut session {
-            assert_eq!(
-                decoded.as_ref().err(),
-                session.decode(message).as_ref().err(),
-                "{message:?}"
-            );
-        } else {
-            assert_eq!(reader.body(), None, "a body came before the last place");
-            assert_eq!(
-                reader.end(),
-                Err(Error::Finished),
-                "a read ended in its run"
-            );
-        }
-        let Ok(decoded) = decoded else { return };
+        let Ok(decoded) = reader.decode(message) else {
+            return;
+        };
         match (decoded, &mut run) {
             (FromNode::Places(places), None) => {
                 let mut out = [0; Places::LEN];
@@ -164,7 +151,7 @@ fn drive(bytes: &[u8], mode: Mode) {
                 assert_eq!(out, message, "the places changed");
                 run = Some((places, places.count));
             }
-            (FromNode::Run(places), Some((reply, remain))) => {
+            (FromNode::Run { places, home }, Some((reply, remain))) => {
                 assert_eq!(encode_run(&places), message, "the run changed");
                 let first = reply.count - *remain;
                 *remain -= u32::try_from(places.len()).expect("the run fits a u32");
@@ -172,23 +159,26 @@ fn drive(bytes: &[u8], mode: Mode) {
                 if let Some(index) = at.and_then(|at| places.get(at)) {
                     assert_eq!(index.data_type, Type::Scalar(Scalar::Stamp));
                 }
-                if *remain == 0 {
-                    session = Some(hub::Reader::new(&hub::Open {
+                let session = (*remain == 0).then(|| {
+                    hub::Reader::new(&hub::Open {
                         mode: match mode {
                             Mode::Latest => hub::Mode::Latest,
                             Mode::Complete => hub::Mode::Complete { limit_bytes: 0 },
                         },
                         channels: reply.count,
-                    }));
+                    })
+                });
+                assert_eq!(
+                    format!("{home:?}"),
+                    format!("{session:?}"),
+                    "the home differs"
+                );
+                if home.is_some() {
+                    return;
                 }
             }
-            (FromNode::Home(_), Some((_, 0))) => {}
             (other, _) => panic!("{other:?} came out of order"),
         }
-    }
-    if let Some(session) = &session {
-        assert_eq!(reader.body(), session.body(), "the body differs");
-        assert_eq!(reader.end(), session.end(), "the end differs");
     }
 }
 
@@ -373,7 +363,9 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
         Places { count: 2, index: 1 }.encode(&mut first);
         reader.decode(&first).expect("the places decode");
         match reader.decode(&encode_run(&run)) {
-            Ok(FromNode::Run(decoded)) => assert_eq!(decoded, run, "the place changed"),
+            Ok(FromNode::Run { places, .. }) => {
+                assert_eq!(places, run, "the place changed")
+            }
             other => panic!("{other:?} is not the run"),
         }
     }

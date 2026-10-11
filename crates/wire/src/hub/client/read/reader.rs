@@ -1,10 +1,13 @@
 use types::sample::{Scalar, Type};
 
 use super::{Mode, Place, Places, place};
-use crate::hub::{self, Error, FromHome, rest_of_run};
+use crate::hub::{self, Error, rest_of_run};
 
-/// A decoder of a read stream at the program: the places, their run, and then the
-/// replies of the reader session at the home.
+/// A decoder of the start of a read stream at the program: the places and their
+/// run. With the last place it gives the decoder of the replies that follow.
+///
+/// The stream may not end before the last place. When the node finishes it there,
+/// the caller gives [`Error::Finished`].
 #[derive(Debug)]
 pub struct Reader {
     latest: bool,
@@ -14,26 +17,24 @@ pub struct Reader {
 /// The message the stream expects next.
 #[derive(Debug)]
 enum Next {
-    Before(Before),
-    Home(hub::Reader),
-}
-
-/// The message the stream expects before the last place.
-#[derive(Debug)]
-enum Before {
     Places,
     Run { places: Places, remain: u32 },
+    Home,
 }
 
-/// One message of a read stream from the node.
-#[derive(Clone, Debug)]
-pub enum FromNode<'m> {
-    /// The first reply. The run of its places follows.
+/// One message of the start of a read stream from the node.
+#[derive(Debug)]
+pub enum FromNode {
+    /// The first message. The run of its places follows.
     Places(Places),
     /// One message of the run of places, in place order.
-    Run(Vec<Place>),
-    /// One reply of the reader session, after the last place.
-    Home(FromHome<'m>),
+    Run {
+        /// The places in the message.
+        places: Vec<Place>,
+        /// With the last place, the decoder of the replies of the reader session,
+        /// for the count of places and the mode of the read. Else `None`.
+        home: Option<hub::Reader>,
+    },
 }
 
 impl Reader {
@@ -42,82 +43,39 @@ impl Reader {
     pub fn new(mode: Mode) -> Self {
         Self {
             latest: mode == Mode::Latest,
-            next: Next::Before(Before::Places),
+            next: Next::Places,
         }
     }
 
-    /// Decodes the next message from the node.
+    /// Decodes the next message from the node, up to the last place.
     ///
     /// # Errors
     ///
-    /// The first message decodes as [`Places`], so another kind gives its error:
-    /// [`Error::Empty`], [`Error::Kind`], [`Error::Length`], or [`Error::Index`]. A
-    /// message of the run gives, in order, the error of its bytes ([`Error::Empty`],
-    /// [`Error::Length`], [`Error::Sample`], or [`Error::Name`]), [`Error::Run`] when
-    /// it holds more places than remain, and [`Error::Unstamped`] when it holds the
-    /// index place and that place's sample type is not `Stamp`. After the last place,
-    /// the errors of [`hub::Reader::decode`].
+    /// The first message decodes as [`Places`] and gives its errors:
+    /// [`Error::Empty`], [`Error::Kind`] for another kind, [`Error::Length`], or
+    /// [`Error::Index`]. A message of the run gives, in order, the error of its bytes
+    /// ([`Error::Empty`], [`Error::Length`], [`Error::Sample`], or [`Error::Name`]),
+    /// [`Error::Run`] when it holds more places than remain, and
+    /// [`Error::Unstamped`] when it holds the index place and that place's sample
+    /// type is not `Stamp`.
     ///
     /// The stream is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
-    pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromNode<'m>, Error> {
+    ///
+    /// # Panics
+    ///
+    /// When a call follows the message that gave `home`.
+    pub fn decode(&mut self, message: &[u8]) -> Result<FromNode, Error> {
         match &mut self.next {
-            Next::Home(reader) => reader.decode(message).map(FromNode::Home),
-            Next::Before(before) => {
-                let (event, home) = before.decode(message, self.latest)?;
-                if let Some(home) = home {
-                    self.next = Next::Home(home);
-                }
-                Ok(event)
-            }
-        }
-    }
-
-    /// As [`hub::Reader::body`](crate::hub::Reader::body), and `None` before the
-    /// last place.
-    #[must_use]
-    pub fn body(&self) -> Option<usize> {
-        match &self.next {
-            Next::Home(reader) => reader.body(),
-            Next::Before(_) => None,
-        }
-    }
-
-    /// As [`hub::Reader::end`](crate::hub::Reader::end), and [`Error::Finished`]
-    /// before the last place.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Finished`] before the last place, and the errors of
-    /// [`hub::Reader::end`] after it.
-    pub fn end(&self) -> Result<(), Error> {
-        match &self.next {
-            Next::Home(reader) => reader.end(),
-            Next::Before(_) => Err(Error::Finished),
-        }
-    }
-}
-
-impl Before {
-    /// Decodes `message`. After the last place, it also gives the session, latest
-    /// when `latest`.
-    #[cold]
-    #[inline(never)]
-    fn decode<'m>(
-        &mut self,
-        message: &'m [u8],
-        latest: bool,
-    ) -> Result<(FromNode<'m>, Option<hub::Reader>), Error> {
-        match self {
-            Self::Places => {
+            Next::Places => {
                 let places = Places::decode(message)?;
-                *self = Self::Run {
+                self.next = Next::Run {
                     places,
                     remain: places.count,
                 };
-                Ok((FromNode::Places(places), None))
+                Ok(FromNode::Places(places))
             }
-            Self::Run { places, remain } => {
+            Next::Run { places, remain } => {
                 let run = place::decode(message)?;
                 let rest = rest_of_run(*remain, run.len())?;
                 let first = places.count.checked_sub(*remain).unwrap_or_else(|| {
@@ -136,8 +94,15 @@ impl Before {
                     });
                 }
                 *remain = rest;
-                let home = (rest == 0).then(|| hub::Reader::of(places.count, latest));
-                Ok((FromNode::Run(run), home))
+                let home =
+                    (rest == 0).then(|| hub::Reader::of(places.count, self.latest));
+                if home.is_some() {
+                    self.next = Next::Home;
+                }
+                Ok(FromNode::Run { places: run, home })
+            }
+            Next::Home => {
+                panic!("a read stream is decoded after the decoder gave its home")
             }
         }
     }

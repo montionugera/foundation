@@ -8,8 +8,9 @@
 //!   its body, and the node sends a [`Response`] and then its body.
 //! - A read stream carries one reader session. The program sends a [`Read`] and then
 //!   its [`Open`] as a body. The node sends [`Places`] and the run of its [`place`]s,
-//!   and then the replies of a reader session as [`super::Reader`] decodes them, from
-//!   `Opened`. The program sends no credit, and decodes the stream with [`Reader`].
+//!   and then the replies of a reader session, from `Opened`. The program sends no
+//!   credit. It decodes the places and the run with [`Reader`], which then gives the
+//!   [`super::Reader`] of the replies.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
@@ -17,9 +18,10 @@
 //! message follows a body.
 //!
 //! The program knows the kind of each stream, so it calls the `decode` of the message
-//! that it expects. The node knows the kind of the hello stream only: it decodes the
-//! first message of each later stream with [`First::decode`]. Each side counts a body
-//! with the [`Body`] of its request, response, or read.
+//! that it expects, or of its [`Reader`] on a read stream. The node knows the kind of
+//! the hello stream only: it decodes the first message of each later stream with
+//! [`First::decode`]. Each side counts a body with the [`Body`] of its request,
+//! response, or read.
 //!
 //! Fields are little-endian.
 //!

@@ -99,7 +99,6 @@ impl Reader {
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
-    #[inline]
     pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
         let (event, next) = match self.next {
             Next::Opened | Next::Head | Next::Ended => self.reply(message)?,

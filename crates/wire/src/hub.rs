@@ -626,7 +626,8 @@ pub enum Error {
         /// The bytes of the body that did not come.
         remain: usize,
     },
-    /// The home finished the stream outside a body, before it ended the session.
+    /// The home finished the stream outside a body, before it ended the session, or
+    /// the node finished a read stream before its last place.
     Finished,
 }
 
