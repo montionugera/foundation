@@ -313,6 +313,12 @@ impl fmt::Debug for Parked {
 }
 
 impl State {
+    /// How the task ended, once it ended: with the error of a failed file call, else
+    /// with `Ok`.
+    fn outcome(&self) -> Option<Result<(), files::Error>> {
+        self.ended.then(|| self.failed.clone().map_or(Ok(()), Err))
+    }
+
     /// Whether nothing is queued.
     fn idle(&self) -> bool {
         self.open.is_empty() && self.queue.is_empty()
@@ -1016,14 +1022,12 @@ impl Future for Commit {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let until = self.until;
         self.waiter.poll(cx, |state| {
-            // Before `failed`: a commit that synced stays well after a later sync
+            // Before `outcome`: a commit that synced stays well after a later sync
             // fails.
             if state.commits >= until && (!state.closed || state.ended) {
                 return Some(Ok(()));
             }
-            state
-                .ended
-                .then(|| state.failed.clone().map_or(Ok(()), Err))
+            state.outcome()
         })
     }
 }
@@ -1039,11 +1043,7 @@ impl Future for End {
     type Output = Result<(), files::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.waiter.poll(cx, |state| {
-            state
-                .ended
-                .then(|| state.failed.clone().map_or(Ok(()), Err))
-        })
+        self.waiter.poll(cx, State::outcome)
     }
 }
 
