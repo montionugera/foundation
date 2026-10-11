@@ -83,10 +83,10 @@ impl<'a> History<'a> {
     /// conflict in `<file>` between its start and the base", so a conflict that leaves
     /// no markers fails closed too. A `.md` file that `from` changes since its merge
     /// base with that base commit, as the merge reads it, and that the merge that makes
-    /// this tree moves into a code file by its own rename detection gives "the base
-    /// moves `<old>`, which the PR changes, into the code file `<new>`". An `end` that
-    /// holds more than one newest base commit gives "holds the base at more than one
-    /// newest commit: `<commit>`, `<commit>`".
+    /// this tree moves into a code file by its own rename detection gives "has `<old>`,
+    /// which the PR changes and the base moves into the code file `<new>`". An `end`
+    /// that holds more than one newest base commit gives "holds the base at more than
+    /// one newest commit: `<commit>`, `<commit>`".
     ///
     /// The line number is in `end` for an added line, and in `from` or that tree for
     /// a removed one.
@@ -427,8 +427,8 @@ impl<'a> History<'a> {
             && self.moved_into_code(first, second, &merged.tree)?.is_none())
     }
 
-    /// The phrase "the base moves `<old>`, which the PR changes, into the code file
-    /// `<new>`" for the first path `<old>` of `changed(first, second)` that their
+    /// The phrase "has `<old>`, which the PR changes and the base moves into the code
+    /// file `<new>`" for the first path `<old>` of `changed(first, second)` that their
     /// merge, with the tree `tree`, moves into the code file `<new>`. The moves are the
     /// merge's own: `second` is merged again with a copy of `first` that gives each
     /// such path a probe text of its own, and the probe text is read in the code files
@@ -467,8 +467,8 @@ impl<'a> History<'a> {
             });
             if let Some(old) = old {
                 return Ok(Some(format!(
-                    "the base moves `{old}`, which the PR changes, into the code file \
-                     `{new}`"
+                    "has `{old}`, which the PR changes and the base moves into the \
+                     code file `{new}`"
                 )));
             }
         }

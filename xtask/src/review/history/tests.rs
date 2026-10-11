@@ -1062,7 +1062,8 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
-            "the base moves `a.md`, which the PR changes, into the code file `a.rs`"
+            "has `a.md`, which the PR changes and the base moves into the code file \
+             `a.rs`"
                 .to_string()
         ))
     );
@@ -1100,7 +1101,8 @@ fn a_base_move_counts_by_the_source_that_the_merge_pairs() {
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(
-            "the base moves `a.md`, which the PR changes, into the code file `c.rs`"
+            "has `a.md`, which the PR changes and the base moves into the code file \
+             `c.rs`"
                 .to_string()
         ))
     );
@@ -1165,7 +1167,8 @@ fn a_base_move_names_the_path_that_it_moves() {
     assert_eq!(
         repo.code_change(&end, &repo.head()),
         Ok(Some(
-            "the base moves `b.md`, which the PR changes, into the code file `b.rs`"
+            "has `b.md`, which the PR changes and the base moves into the code file \
+             `b.rs`"
                 .to_string()
         ))
     );
@@ -1208,7 +1211,8 @@ fn a_base_move_that_comes_in_by_another_merge_counts() {
         assert_eq!(
             repo.code_change(&end, &repo.head()),
             Ok(Some(
-                "the base moves `a.md`, which the PR changes, into the code file `a.rs`"
+                "has `a.md`, which the PR changes and the base moves into the code file \
+                 `a.rs`"
                     .to_string()
             )),
             "{reversed}"
@@ -1262,7 +1266,8 @@ fn a_base_move_after_two_merge_bases_with_the_base_counts() {
     assert_eq!(
         repo.code_change(&end, &repo.head()),
         Ok(Some(
-            "the base moves `a.md`, which the PR changes, into the code file `a.rs`"
+            "has `a.md`, which the PR changes and the base moves into the code file \
+             `a.rs`"
                 .to_string()
         ))
     );
@@ -1317,7 +1322,8 @@ fn a_base_move_that_only_one_of_two_merge_bases_shows_counts() {
         assert_eq!(
             repo.code_change(&end, &repo.head()),
             Ok(Some(
-                "the base moves `a.md`, which the PR changes, into the code file `a.rs`"
+                "has `a.md`, which the PR changes and the base moves into the code file \
+                 `a.rs`"
                     .to_string()
             )),
             "{main_first}"
@@ -1407,7 +1413,8 @@ fn a_base_move_after_a_modify_delete_of_two_merge_bases_counts() {
     assert_eq!(
         repo.code_change(&first, &end),
         Ok(Some(
-            "the base moves `a.md`, which the PR changes, into the code file `a.rs`"
+            "has `a.md`, which the PR changes and the base moves into the code file \
+             `a.rs`"
                 .to_string()
         ))
     );
