@@ -2429,7 +2429,7 @@ const DECISION: &str = "review round 2 names no architecture, which this round \
 
 /// What the check gives for `record` at the head of `repo`.
 fn check_at(repo: &Repo, record: &Record) -> Vec<String> {
-    at(&repo.dir, record, &repo.head()).unwrap()
+    problems_in(&repo.dir, record, &repo.head()).unwrap()
 }
 
 #[test]

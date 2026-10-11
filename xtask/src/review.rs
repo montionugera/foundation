@@ -157,12 +157,16 @@ struct Parsed {
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
 pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
-    exit(fetch(pr).and_then(|record| at(root, &record, head)))
+    exit(fetch(pr).and_then(|record| problems_in(root, &record, head)))
 }
 
 /// The problems with the review in `record` at `head` ([`problems`]), read with the
 /// history of the repository at `root`.
-fn at(root: &Path, record: &Record, head: &str) -> Result<Vec<String>, String> {
+fn problems_in(
+    root: &Path,
+    record: &Record,
+    head: &str,
+) -> Result<Vec<String>, String> {
     let history = history::History::new(root, &record.base);
     problems(
         record,
