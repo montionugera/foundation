@@ -1,6 +1,6 @@
 //! Runs the connectors that the spec in use places on this node.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -17,15 +17,53 @@ use crate::scope::Scope;
 /// its connector, and after each change the connector of that change, until a change
 /// removes it. After a run that gave `Config`, the next apply runs the connector again,
 /// also one that came before `run` returned. So no two runs of one name overlap, also
-/// across a removal and an addition.
+/// across a removal and an addition. A first run starts only once no open on the node
+/// is pending, so an out connector reads each frame of an in connector of its apply.
 pub(crate) struct Runs {
     supervisor: Supervisor,
+    opens: Rc<Opens>,
     /// The name of the node in the region.
     node: Name,
     scope: Scope,
     /// The loop of each name, also one whose connector is gone, until the first apply
     /// after it ended.
     loops: BTreeMap<Name, Rc<RefCell<Loop>>>,
+}
+
+/// The count of the opens on the node that have not resolved.
+struct Opens {
+    pending: Cell<usize>,
+    /// Cancelled, and replaced, each time `pending` goes to 0.
+    settled: RefCell<cancel::Token>,
+}
+
+impl Opens {
+    /// Counts one open until the guard drops.
+    fn begin(self: &Rc<Self>) -> Pending {
+        self.pending.set(self.pending.get() + 1);
+        Pending(Rc::clone(self))
+    }
+
+    /// Resolves once no open is pending.
+    async fn settled(&self) {
+        if self.pending.get() > 0 {
+            let settled = self.settled.borrow().clone();
+            settled.wait().await;
+        }
+    }
+}
+
+/// One pending open of [`Opens`].
+struct Pending(Rc<Opens>);
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let pending = self.0.pending.get() - 1;
+        self.0.pending.set(pending);
+        if pending == 0 {
+            self.0.settled.replace(cancel::Token::new()).cancel();
+        }
+    }
 }
 
 /// The state that `apply` and the loop of one name share.
@@ -48,6 +86,10 @@ impl Runs {
         Self {
             scope: Scope::new(supervisor.tasks.clone()),
             supervisor: Supervisor::new(supervisor),
+            opens: Rc::new(Opens {
+                pending: Cell::new(0),
+                settled: RefCell::new(cancel::Token::new()),
+            }),
             node,
             loops: BTreeMap::new(),
         }
@@ -56,7 +98,8 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run.
+    /// its name returned. Each other connector keeps its run. A run starts only once
+    /// the open of each connector that this apply adds resolved.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
@@ -93,10 +136,13 @@ impl Runs {
                 ended: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
-            let supervisor = self.supervisor.clone();
+            let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
+            // Counted before any loop of this apply polls.
+            let mut pending = Some(opens.begin());
             let name = name.clone();
             self.scope.spawn(Box::pin(async move {
                 loop {
+                    let pending = pending.take().unwrap_or_else(|| opens.begin());
                     let (connector, changed, applied) = {
                         let mut state = state.borrow_mut();
                         let Some(connector) = state.connector.clone() else {
@@ -107,12 +153,11 @@ impl Runs {
                     };
                     let kind = connector.kind().as_str();
                     let config = connector.config().document();
-                    match supervisor
-                        .open(kind, name.clone(), config, &changed)
-                        .await
-                        .run()
-                        .await
-                    {
+                    let opened = supervisor.open(kind, name.clone(), config, &changed);
+                    let opened = opened.await;
+                    drop(pending);
+                    changed.race(opens.settled()).await;
+                    match opened.run().await {
                         // The next change of the connector runs it again.
                         Ok(()) => changed.wait().await,
                         // The status holds its class. The fix can be in another

@@ -17,6 +17,7 @@ use document::{Attribute, Document, Map};
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::authority::Authority;
+use types::frame::{Form, Label, Path};
 use types::name::Name;
 use types::time::{Monotonic, Span};
 
@@ -85,6 +86,101 @@ impl Kind for Hold {
     }
 }
 
+/// A kind whose run records its start, opens a writer of `plant.data.time` and
+/// `plant.data.value`, writes one frame at once, and holds the writer until the cancel.
+struct Source {
+    starts: Starts,
+}
+
+impl Kind for Source {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), 0);
+        self.starts.lock().expect("no panic").push(start);
+        let channels = vec![name("plant.data.time"), name("plant.data.value")];
+        let mut writer = ctx.writer(channels, Authority(1), None).await?;
+        let entries = writer.set().entries();
+        let entry = |key| {
+            let key = types::channel::Key::from_u128(key);
+            entries.iter().position(|entry| entry.key == key)
+        };
+        let (time, value) = (entry(900).expect("time"), entry(901).expect("value"));
+        let group = entries[time].group;
+        let mut series = [(time, 8), (value, 8)];
+        series.sort_unstable();
+        let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
+        let stamp = writer.now().nanos();
+        let time = draft.series_mut(time).expect("the index series");
+        time.copy_from_slice(&stamp.to_le_bytes());
+        let value = draft.series_mut(value).expect("the value series");
+        value.copy_from_slice(&1.0_f64.to_le_bytes());
+        draft.set_count(group, 1);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        let outcomes = outcomes.expect("the home takes it");
+        assert!(
+            matches!(outcomes, [hub::home::Outcome::Applied { .. }]),
+            "{outcomes:?}"
+        );
+        ctx.cancel().wait().await;
+        Ok(())
+    }
+}
+
+/// A kind that reads with `settings` and records each frame that its run gets, with
+/// the time.
+struct Sink {
+    settings: connector::reader::Settings,
+    got: Starts,
+}
+
+impl Kind for Sink {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels {
+            reader: Some(self.settings.clone()),
+            ..Channels::default()
+        })
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, mut ctx: Context<()>) -> Result<(), Error> {
+        let mut reader = ctx.reader().expect("the reader of `check`");
+        let cancel = ctx.cancel().clone();
+        while let Some(Ok(_)) = cancel.race(reader.next()).await {
+            let got = (ctx.name().to_string(), ctx.clock().now(), 0);
+            self.got.lock().expect("no panic").push(got);
+        }
+        Ok(())
+    }
+}
+
 /// Spawns on `tasks` and counts the tasks that have not ended.
 struct Counted {
     tasks: env::tasks::Tasks,
@@ -123,43 +219,50 @@ fn on(at: i64, spec: Vec<Placed>) -> Step {
     (ms(at), spec)
 }
 
-/// Each start of a run, or each cancel, with its time from the time the hub opened.
+/// Each start of a run, or each cancel, with its time from the time the hub opened, in
+/// order of time, then name.
 type Events = Vec<(String, Span, usize)>;
 
 /// Each start of a run until 10 s, as [`record`] gives it.
 fn starts(linger: Option<Span>, steps: Vec<Step>) -> Events {
-    record(linger, steps, None).starts
+    record(0, linger, steps, None).starts
 }
 
 /// What [`record`] gives.
 struct Recorded {
     starts: Events,
     cancels: Events,
+    /// Each frame that a run of `sink` got.
+    got: Events,
     /// The names that the runs hold after each step.
     held: Vec<Vec<String>>,
     /// The tasks of the supervisor that have not ended at each step, before its apply.
     live: Vec<usize>,
 }
 
-/// Applies each step at its time, with the kind `hold`, whose task ends `linger` after
-/// the cancel, the kind `quick`, whose task ends at the cancel, and the kind `brief`,
-/// whose run returns at once, and drops the runs at `dropped`, if given. Gives each
-/// start of a run and each cancel until 10 s, from the time the hub opened.
-fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recorded {
-    let mut sim = ::sim::Sim::new(::sim::Config::default());
+/// Applies each step at its time, on a simulation of `seed`, with the kind `hold`,
+/// whose task ends `linger` after the cancel, the kind `quick`, whose task ends at the
+/// cancel, the kind `brief`, whose run returns at once, and the kinds `source`, a
+/// [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a [`Sink`] of a
+/// selector that matches no channel. Each spec also defines [`data`]. Drops the runs at `dropped`,
+/// if given. Gives each start of a run, each cancel, and each frame got until 10 s,
+/// from the time the hub opened.
+fn record(
+    seed: u64,
+    linger: Option<Span>,
+    steps: Vec<Step>,
+    dropped: Option<i64>,
+) -> Recorded {
+    let config = ::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    };
+    let mut sim = ::sim::Sim::new(config);
     let node = sim.node(::sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let (starts, cancels) = (Starts::default(), Starts::default());
-        let hold = |linger, brief| Hold {
-            linger,
-            brief,
-            starts: Arc::clone(&starts),
-            cancels: Arc::clone(&cancels),
-        };
-        let kinds = Table::new()
-            .with("hold", hold(linger, false))
-            .with("quick", hold(Some(Span::ZERO), false))
-            .with("brief", hold(None, true));
+        let (starts, cancels, got) =
+            (Starts::default(), Starts::default(), Starts::default());
+        let kinds = kinds(linger, &starts, &cancels, &got);
         let env = hub::testing::Env {
             files: node.files(),
             clock: node.clock(),
@@ -181,7 +284,8 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         for (at, spec) in steps {
             clock.sleep_until(start + at).await;
             live.push(counted.get());
-            let definitions = definitions(&spec);
+            let mut definitions = definitions(&spec);
+            definitions.extend(data());
             hub.set_definitions(&definitions);
             runs.apply(&definitions);
             names.push(runs.loops.keys().map(ToString::to_string).collect());
@@ -194,18 +298,68 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         let since = |(connector, at, version): &(String, Monotonic, usize)| {
             (connector.clone(), *at - start, *version)
         };
+        // The order of two runs at one instant is the order in which they were polled.
         let since = |events: &Starts| {
             let events = events.lock().expect("no panic");
-            events.iter().map(since).collect()
+            let mut events: Events = events.iter().map(since).collect();
+            events.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+            events
         };
         Recorded {
             starts: since(&starts),
             cancels: since(&cancels),
+            got: since(&got),
             held: names,
             live,
         }
     });
     run.expect("the run ends")
+}
+
+/// The kinds of [`record`].
+fn kinds(
+    linger: Option<Span>,
+    starts: &Starts,
+    cancels: &Starts,
+    got: &Starts,
+) -> Table {
+    let hold = |linger, brief| Hold {
+        linger,
+        brief,
+        starts: Arc::clone(starts),
+        cancels: Arc::clone(cancels),
+    };
+    let sink = |select| Sink {
+        settings: settings(select),
+        got: Arc::clone(got),
+    };
+    let source = Source {
+        starts: Arc::clone(starts),
+    };
+    Table::new()
+        .with("hold", hold(linger, false))
+        .with("quick", hold(Some(Span::ZERO), false))
+        .with("brief", hold(None, true))
+        .with("source", source)
+        .with("sink", sink("plant.data.*"))
+        .with("void", sink("plant.none.*"))
+}
+
+/// The settings of a complete reader of the channels that `select` matches.
+fn settings(select: &str) -> connector::reader::Settings {
+    let select = Attribute {
+        key: "select".into(),
+        key_span: None,
+        value: Value {
+            kind: value::Kind::String(select.into()),
+            span: None,
+        },
+    };
+    let config = Document {
+        attributes: Map::new(vec![select]).expect("one key"),
+        blocks: Vec::new(),
+    };
+    connector::reader::read(&config, &[], &[]).expect("the reader settings")
 }
 
 /// The definitions of `spec`: each connector and its status channels.
@@ -222,6 +376,34 @@ fn definitions(spec: &[Placed]) -> BTreeMap<Name, Definition> {
         definitions.insert(connector, Definition::Connector(placed));
     }
     definitions
+}
+
+/// The definitions of `plant.data.time` (key 900), the index, and `plant.data.value`
+/// (key 901, `f64`).
+fn data() -> [(Name, Definition); 2] {
+    let index = types::channel::Key::from_u128(900);
+    let time = spec::channel::Channel {
+        key: index,
+        kind: spec::channel::Kind::Index {
+            error: None,
+            control: None,
+        },
+    };
+    let f64 = types::sample::Type::Scalar(types::sample::Scalar::F64);
+    let data = spec::channel::Data::new(
+        index,
+        None,
+        spec::data_type::DataType::Sample(f64),
+        None,
+    );
+    let value = spec::channel::Channel {
+        key: types::channel::Key::from_u128(901),
+        kind: spec::channel::Kind::Data(data.expect("no unit")),
+    };
+    [
+        (name("plant.data.time"), Definition::Channel(time)),
+        (name("plant.data.value"), Definition::Channel(value)),
+    ]
 }
 
 /// A config of the version `version`: a document with that many attributes.
@@ -346,7 +528,7 @@ fn an_addition_after_a_removal_that_ended_the_loop_starts_at_once() {
 #[test]
 fn a_drop_cancels_each_run() {
     let spec = vec![("plant.a", "hold", NODE, 0), ("plant.b", "quick", NODE, 0)];
-    let cancels = record(None, vec![on(0, spec)], Some(1_000)).cancels;
+    let cancels = record(0, None, vec![on(0, spec)], Some(1_000)).cancels;
     assert_eq!(
         cancels,
         [start("plant.a", 1_000, 0), start("plant.b", 1_000, 0)]
@@ -365,7 +547,7 @@ fn an_apply_drops_each_removed_run_that_ended() {
         on(2_000, vec![]),
         on(5_000, vec![]),
     ];
-    let held = record(Some(ms(2_000)), steps, None).held;
+    let held = record(0, Some(ms(2_000)), steps, None).held;
     let held_a = vec!["plant.a"];
     assert_eq!(held, [held_a.clone(), held_a.clone(), held_a, vec![]]);
 }
@@ -390,7 +572,7 @@ fn many_changes_while_the_old_run_holds_keep_one_future() {
         .zip((0..).step_by(50))
         .map(|(version, at)| on(at, vec![("plant.a", "hold", NODE, version)]))
         .collect();
-    let recorded = record(None, steps, None);
+    let recorded = record(0, None, steps, None);
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(100, 2);
@@ -407,7 +589,7 @@ fn changes_at_one_instant_keep_one_future() {
             on(at, vec![("plant.a", "hold", NODE, version)])
         })
         .collect();
-    let recorded = record(None, steps, None);
+    let recorded = record(0, None, steps, None);
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(10, 2);
@@ -497,33 +679,7 @@ fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
         runs.apply(&first);
         clock.sleep_until(start + ms(1_000)).await;
         let mut second = first.clone();
-        let index = types::channel::Key::from_u128(900);
-        second.insert(
-            name("plant.data.time"),
-            Definition::Channel(spec::channel::Channel {
-                key: index,
-                kind: spec::channel::Kind::Index {
-                    error: None,
-                    control: None,
-                },
-            }),
-        );
-        let data = spec::channel::Data::new(
-            index,
-            None,
-            spec::data_type::DataType::Sample(types::sample::Type::Scalar(
-                types::sample::Scalar::F64,
-            )),
-            None,
-        )
-        .expect("data");
-        second.insert(
-            name("plant.data.value"),
-            Definition::Channel(spec::channel::Channel {
-                key: types::channel::Key::from_u128(901),
-                kind: spec::channel::Kind::Data(data),
-            }),
-        );
+        second.extend(data());
         hub.set_definitions(&second);
         runs.apply(&second);
         clock.sleep_until(start + ms(4_000)).await;
@@ -616,4 +772,53 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
         started
     });
     assert_eq!(run, Ok(0));
+}
+
+/// The sorted names of the runs that got a frame, on each of 32 seeds.
+fn got_on_each_seed(steps: impl Fn() -> Vec<Step>) -> Vec<Vec<String>> {
+    (0..32)
+        .map(|seed| {
+            let got = record(seed, None, steps(), None).got;
+            let mut got: Vec<_> = got.into_iter().map(|(name, _, _)| name).collect();
+            got.sort_unstable();
+            got
+        })
+        .collect()
+}
+
+/// The out connector sorts before the in connector, so its loop is spawned first.
+#[test]
+fn an_out_connector_gets_the_first_frame_of_an_in_connector_of_its_apply() {
+    let spec = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    assert_eq!(got, vec![vec!["plant.a".to_owned()]; 32]);
+}
+
+/// The out connector sorts after the in connector, so its loop is spawned last.
+#[test]
+fn a_later_out_connector_gets_the_first_frame_of_an_in_connector_of_its_apply() {
+    let spec = vec![("plant.a", "source", NODE, 0), ("plant.c", "sink", NODE, 0)];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    assert_eq!(got, vec![vec!["plant.c".to_owned()]; 32]);
+}
+
+/// A later apply adds an in and an out connector while an out connector runs.
+#[test]
+fn each_out_connector_gets_the_first_frame_of_an_in_connector_of_a_later_apply() {
+    let first = vec![("plant.a", "sink", NODE, 0)];
+    let mut second = first.clone();
+    second.extend([("plant.b", "source", NODE, 0), ("plant.c", "sink", NODE, 0)]);
+    let got =
+        got_on_each_seed(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    let both = vec!["plant.a".to_owned(), "plant.c".to_owned()];
+    assert_eq!(got, vec![both; 32]);
+}
+
+/// The reader open of `void` fails, since its selector matches no channel.
+#[test]
+fn an_out_connector_whose_reader_open_failed_holds_no_run() {
+    let spec = vec![("plant.a", "void", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let recorded = record(0, None, vec![on(0, spec)], None);
+    assert_eq!(recorded.starts, [start("plant.b", 0, 0)]);
+    assert_eq!(recorded.got, []);
 }
