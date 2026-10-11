@@ -1706,6 +1706,23 @@ fn next_commit_after_a_failed_commit_gives_its_error_at_once() {
 }
 
 #[test]
+fn next_commit_held_past_the_drop_of_an_idle_buffer_resolves_at_its_end() {
+    run_on_memory(26, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let next = buffer.next_commit();
+        let ended = buffer.ended();
+        drop(buffer);
+        ended.await.expect("ends");
+        assert_eq!(next.await, Ok(()));
+        assert_eq!(shard.memory().syncs(), 2, "no commit after the open");
+    });
+}
+
+#[test]
 fn an_entry_below_the_tail_is_a_broken_invariant() {
     let (mut sim, _handle) = start(9, |shard| async move {
         let mut slots = Slots::new();

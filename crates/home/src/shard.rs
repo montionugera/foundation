@@ -270,11 +270,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Resolves when every group applied and every handoff appended before
-/// [`Shard::committed`] is on disk, or with the error that ended the buffer first. It
-/// does not borrow the shard, and it holds the shard's ring open until it drops. Held
-/// past the drop of the shard, it resolves only once the buffer ended, with an error
-/// or with none. Its result is only for what was appended before the call.
+/// The future of [`Shard::committed`] and [`Shard::next_commit`]. It does not borrow
+/// the shard, and it holds the shard's ring open until it drops. Held past the drop of
+/// the shard, it resolves only once the buffer ended, with an error or with none.
 #[derive(Debug)]
 pub struct Commit(buffer::Commit);
 
@@ -567,7 +565,8 @@ impl Shard {
 
     /// Resolves at the end of the next group commit after the call, also one in
     /// flight, or gives the file error that ended the buffer. It does not resolve
-    /// while nothing is appended.
+    /// while nothing is appended. [`Commit`] says when one held past the drop of the
+    /// shard resolves.
     #[must_use]
     pub fn next_commit(&self) -> Commit {
         Commit(self.buffer.next_commit())

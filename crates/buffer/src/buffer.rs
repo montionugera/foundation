@@ -667,7 +667,7 @@ impl Buffer {
 
     /// Resolves at the end of the next group commit after the call, also one in
     /// flight, or gives the file error that ended the buffer. It does not resolve
-    /// while nothing is appended.
+    /// while nothing is appended. [`Commit`] says what one held past the drop gives.
     #[must_use]
     pub fn next_commit(&self) -> Commit {
         let until = self.shared.state.borrow().commits + 1;
@@ -999,10 +999,10 @@ async fn write(shared: &Shared, sealed: &[Sealed]) -> Result<(), files::Error> {
     shared.file.sync().await
 }
 
-/// The future of [`Buffer::committed`]. It does not borrow the buffer, and it holds
-/// the ring open until it drops. Held past the drop of the buffer, it resolves once
-/// the task ended: with `Ok` when the entries appended before its call are durable,
-/// else with the error that ended the task.
+/// The future of [`Buffer::committed`] and [`Buffer::next_commit`]. It does not borrow
+/// the buffer, and it holds the ring open until it drops. Held past the drop of the
+/// buffer, it resolves once the task ended: with the error that ended the task, else
+/// with `Ok`.
 #[derive(Debug)]
 pub struct Commit {
     waiter: Waiter,
@@ -1021,7 +1021,9 @@ impl Future for Commit {
             if state.commits >= until && (!state.closed || state.ended) {
                 return Some(Ok(()));
             }
-            state.failed.clone().map(Err)
+            state
+                .ended
+                .then(|| state.failed.clone().map_or(Ok(()), Err))
         })
     }
 }
