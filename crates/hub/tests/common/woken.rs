@@ -58,7 +58,7 @@ impl Woken {
         let mut readers = Vec::with_capacity(indexes);
         for &entry in set.groups() {
             let Entry { slot, key, .. } = set.entries()[entry];
-            shard.carry(slot, key);
+            assert!(shard.carry(slot, key), "each index is new");
             readers.push(shard.open_complete(slot, u64::MAX, Charge::Whole).into());
         }
         let writer = shard

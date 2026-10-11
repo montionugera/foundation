@@ -110,7 +110,7 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each carry and each writer open and close.
+    /// The gate task, woken at each new carry and each writer open and close.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -498,12 +498,13 @@ impl State {
         })
     }
 
-    /// Carries `index` at the home, and wakes the gate task: a carry can make the
-    /// home's deadline earlier. A later call carries nothing and wakes the task too.
+    /// Carries `index` at the home. Wakes the gate task when the carry is new: only
+    /// then can it make the home's deadline earlier.
     fn carry(&mut self, index: types::channel::Key) {
         let slot = self.interner.slots().index(index);
-        self.home.carry(slot, index);
-        self.gate.wake();
+        if self.home.carry(slot, index) {
+            self.gate.wake();
+        }
     }
 
     /// Carries `index` at the home, and gives the slot of each of `keys` in its role:
@@ -591,5 +592,56 @@ async fn homes(
         if !waited {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Wake, Waker};
+
+    use types::channel::Key;
+
+    struct Wakes(AtomicUsize);
+
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn wakes_the_gate_task_only_at_a_new_carry() {
+        let mut sim = sim::Sim::new(sim::Config {
+            seed: 194,
+            ..sim::Config::default()
+        });
+        let node = sim.node(sim::node::Config::default());
+        sim.run_on(&node, |node, tasks| async move {
+            let env = crate::testing::Env {
+                files: node.files(),
+                clock: node.clock(),
+                wall: node.wall(),
+                entropy: node.entropy(),
+                tasks,
+            };
+            let (hub, _) = crate::testing::open(env).await;
+            let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+            let mut state = hub.0.borrow_mut();
+            state
+                .gate
+                .polled(&Context::from_waker(&Waker::from(Arc::clone(&wakes))));
+            let index = Key::from_u128(7);
+            state.carry(index);
+            assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+            state.carry(index);
+            assert_eq!(
+                wakes.0.load(Ordering::Relaxed),
+                1,
+                "a carry again is no wake"
+            );
+        })
+        .expect("the run ends");
     }
 }

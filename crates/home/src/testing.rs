@@ -180,7 +180,7 @@ mod tests {
             data: &channels,
         }]);
         let entry = set.entries()[0];
-        shard.carry(entry.slot, entry.key);
+        assert!(shard.carry(entry.slot, entry.key));
         let writer = shard
             .open_writer(crate::writer::Writer {
                 subject: "a".parse().expect("a valid name"),
