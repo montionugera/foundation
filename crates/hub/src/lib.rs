@@ -253,7 +253,8 @@ impl Hub {
         &self,
         config: reader::Config,
     ) -> Result<Reader, reader::Error> {
-        Reader::open(&self.0, config).await
+        let (reader, _) = Reader::open(&self.0, config).await?;
+        Ok(reader)
     }
 
     /// Sets the access rules that each later hello and request is checked against.
@@ -513,6 +514,16 @@ impl State {
     /// When a key of `keys` is not defined.
     fn slots(&mut self, index: Key, keys: &[Key]) -> Box<[types::channel::Slot]> {
         self.carry(index);
+        self.assigned(index, keys)
+    }
+
+    /// The slot of each of `keys` in its role, as [`State::slots`] gives it, with no
+    /// carry.
+    ///
+    /// # Panics
+    ///
+    /// When a key of `keys` is not defined.
+    fn assigned(&mut self, index: Key, keys: &[Key]) -> Box<[types::channel::Slot]> {
         let assigned = self.interner.slots();
         let slot = assigned.index(index);
         keys.iter()

@@ -14,8 +14,8 @@ use types::channel;
 use types::frame::key_set::KeySet;
 use types::frame::{Frame, Mask, View};
 use types::name::{Name, Selector};
-use types::sample::Type;
 use types::time::Span;
+use wire::hub::client::Place;
 
 use crate::channel::Channel;
 use crate::{Away, End, Ending, State};
@@ -71,6 +71,7 @@ pub struct Config {
 /// channels and their index.
 #[derive(Debug)]
 pub struct Received<'a> {
+    frame: &'a Frame,
     view: View<'a>,
     lens: &'a Lens,
     /// The `given` of the reader.
@@ -78,6 +79,11 @@ pub struct Received<'a> {
 }
 
 impl<'a> Received<'a> {
+    /// The whole frame, which the view masks.
+    pub(crate) fn frame(&self) -> &'a Frame {
+        self.frame
+    }
+
     /// The frame through the mask. Its series are encoded.
     #[must_use]
     pub fn view(&self) -> View<'a> {
@@ -396,7 +402,8 @@ impl Local {
 }
 
 impl Reader {
-    /// Opens a reader on the channels that `config.select` matches.
+    /// Opens a reader on the channels that `config.select` matches, and gives what
+    /// it matched.
     ///
     /// # Panics
     ///
@@ -404,7 +411,7 @@ impl Reader {
     pub(crate) async fn open(
         state: &Rc<RefCell<State>>,
         config: Config,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, Matched), Error> {
         let Config {
             select,
             mode,
@@ -421,50 +428,54 @@ impl Reader {
             "a hold of {hold} for a reader that is unnamed or latest"
         );
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
-        let (keys, index) = loop {
-            let (_, index) = resolve(&state.borrow(), &select)?;
+        let (matched, away) = loop {
+            let index = resolve(&state.borrow(), &select)?.key();
             let away = match crate::homes(state, &[index]).await {
                 Ok(()) => None,
                 Err(Away::Remote(home)) => Some(home),
                 Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
             };
             // A call of `set_definitions` while the open waits can change a channel.
-            let (keys, again) = resolve(&state.borrow(), &select)?;
-            if again != index {
-                continue;
+            let matched = resolve(&state.borrow(), &select)?;
+            if matched.key() == index {
+                break (matched, away);
             }
-            if let Some(home) = away {
-                if named.is_some() {
-                    return Err(Error::Remote { home });
-                }
-                let (remote, slot) =
-                    Remote::open(state, home, keys, index, mode).await?;
-                return Ok(Self {
-                    index: slot,
-                    source: Source::Remote(Box::new(remote)),
-                    given: Cell::new(None),
-                    frame: None,
-                });
-            }
-            break (keys, index);
         };
-        let mut keys: Vec<_> = keys.into_iter().map(|(key, _)| key).collect();
-        // A frame without the reader's channels still shows that time moved.
-        keys.push(index);
+        let index = matched.key();
+        if let Some(home) = away {
+            if named.is_some() {
+                return Err(Error::Remote { home });
+            }
+            let data = matched
+                .places
+                .iter()
+                .map(|place| (place.key, place.data_type))
+                .collect();
+            let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
+            let reader = Self {
+                index: slot,
+                source: Source::Remote(Box::new(remote)),
+                given: Cell::new(None),
+                frame: None,
+            };
+            return Ok((reader, matched));
+        }
+        let keys: Vec<_> = matched.places.iter().map(|place| place.key).collect();
         let slots = state.borrow_mut().slots(index, &keys);
-        let slot = slots[slots.len() - 1];
+        let slot = slots[matched.index];
         let channels = Channels {
             keys: keys.into(),
             slots,
             index: slot,
         };
         let local = Local::open(state, channels, mode, named, hold)?;
-        Ok(Self {
+        let reader = Self {
             source: Source::Local(local),
             index: slot,
             given: Cell::new(None),
             frame: None,
-        })
+        };
+        Ok((reader, matched))
     }
 
     /// The next frame, as a view of the reader's channels. The view borrows the
@@ -501,8 +512,10 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
+            let frame = self.frame.insert(frame);
             Ok(Received {
-                view: View::new(self.frame.insert(frame), &lens.mask),
+                frame,
+                view: View::new(frame, &lens.mask),
                 lens,
                 given: &self.given,
             })
@@ -580,12 +593,26 @@ impl From<Stop> for Ended {
     }
 }
 
-/// The key and sample type of each channel that `select` matches, in name order, and
-/// their one index.
-fn resolve(
-    state: &State,
-    select: &Selector,
-) -> Result<(Vec<(channel::Key, Type)>, channel::Key), Error> {
+/// What the selector of a reader matched.
+#[derive(Debug)]
+pub(crate) struct Matched {
+    /// Each channel that the selector matched, in name order, then their index when
+    /// the selector did not match it: a frame without the reader's channels still
+    /// shows that time moved.
+    pub(crate) places: Vec<Place>,
+    /// The position of the index in `places`.
+    pub(crate) index: usize,
+}
+
+impl Matched {
+    /// The key of the index.
+    pub(crate) fn key(&self) -> channel::Key {
+        self.places[self.index].key
+    }
+}
+
+/// The channels that `select` matches, and their one index.
+fn resolve(state: &State, select: &Selector) -> Result<Matched, Error> {
     let mut matched: Vec<(&Name, &Channel)> = state
         .channels
         .iter()
@@ -601,11 +628,27 @@ fn resolve(
             other: other.clone(),
         });
     }
-    let keys = matched
+    let place = |name: &Name, channel: &Channel| Place {
+        key: channel.key(),
+        data_type: channel.sample(),
+        name: name.clone(),
+    };
+    let mut places: Vec<_> = matched
         .iter()
-        .map(|(_, channel)| (channel.key(), channel.sample()))
+        .map(|&(name, channel)| place(name, channel))
         .collect();
-    Ok((keys, index))
+    let at = if let Some(at) = places.iter().position(|place| place.key == index) {
+        at
+    } else {
+        let (name, channel) = state
+            .channels
+            .iter()
+            .find(|(_, channel)| channel.key() == index)
+            .expect("invariant: the index of a defined channel is defined");
+        places.push(place(name, channel));
+        places.len() - 1
+    };
+    Ok(Matched { places, index: at })
 }
 
 /// A session at the shard's home, through a mask of the reader's channels: the frames
