@@ -11,11 +11,15 @@
   that it sends. `transport` also holds each chunk whole until the peer acknowledged
   each byte of it and each byte before it on the stream, so a get can hold more than one
   chunk. The bound is `transport`'s (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
-  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): at most
-  `window_bytes` of chunk bytes for each session, in at most `window_bytes / 1453`
-  chunks, plus two for each get
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): a
+  session holds at most `window_bytes` of sent bytes, and `transport` copies a part of
+  at most 1452 bytes and holds no block for it. So the chunks that `transport` holds for
+  a session have at most `window_bytes` bytes together, plus two chunks for each
+  stream. They are at most `window_bytes / 1453` chunks, plus two for each stream
   (`laptop.architect-2`, 2026-10-11T17:39:39Z,
-  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297;
+  `laptop.architect`, 2026-10-11T20:52:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6113624952). A
   refusal stops the stream with its code: `wire::blob::Error::code` for a decode error,
   `MALFORMED` for a one-way stream (`peer::Error::OneWay`), `MISMATCH` for bytes that do
   not hash to the digest, and `FULL` for `Error::Floor` and a full disk. Each other

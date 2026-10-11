@@ -40,12 +40,12 @@ fn link(jitter: Span) -> sim::link::Config {
 /// `count` messages on one stream of a session with `window` bytes, each the first
 /// `part` bytes of a new block of [`BLOCK`] bytes, over links with `jitter`. Panics
 /// when the client did not get each message.
-fn held(seed: u64, window: usize, part: usize, count: usize, jitter: Span) -> usize {
+fn held(value: u64, window: usize, part: usize, count: usize, jitter: Span) -> usize {
     let got = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let (counted, read, out) = (Arc::clone(&got), Arc::clone(&got), Arc::clone(&peak));
     let (mut sim, client, server) = testing::sessions(
-        seed,
+        value,
         move |mut config| {
             config.window_bytes = window;
             config
@@ -103,9 +103,9 @@ fn held(seed: u64, window: usize, part: usize, count: usize, jitter: Span) -> us
 #[test]
 fn a_gap_in_the_acknowledgments_holds_at_most_the_window() {
     let window = 1 << 20;
-    for seed in 0..4 {
-        let held = held(seed, window, BLOCK, 16 * window / BLOCK, Span::MICROSECOND);
-        assert!(held <= window / BLOCK + 2, "seed {seed}: {held} blocks");
+    for value in 0..4 {
+        let held = held(value, window, BLOCK, 16 * window / BLOCK, Span::MICROSECOND);
+        assert!(held <= window / BLOCK + 2, "value {value}: {held} blocks");
     }
 }
 
