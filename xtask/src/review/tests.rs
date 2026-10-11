@@ -2985,6 +2985,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         format!("#12, #13 (both: {OK})"),
         format!("#12 (the frame cut,\n{OK})"),
         format!("#12 <{OK}>"),
+        format!("#12({OK}),#13"),
     ] {
         assert_eq!(
             risk(vec![deferred(&linked)]),
@@ -3002,6 +3003,8 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
             "#12",
         ),
         ("the cut (#0012).".to_string(), "#0012"),
+        ("#12,https://github.com/a/b/pull/1".to_string(), "#12"),
+        (format!("{OK},#12 #13"), "#13"),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), unlinked(issue), "{line}");
     }

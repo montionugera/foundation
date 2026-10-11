@@ -679,9 +679,9 @@ fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
     })
 }
 
-/// The first issue (`#` and its digits, in a word with no `://`) of `deferred`, the
-/// value of a `Deferred:` line, with no OK: no comment link ([`linked`]) is after it
-/// in the value, and the words [`UNRISKY`] are not between it and the next issue.
+/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line, with
+/// no OK: no comment link ([`linked`]) is after it in the value, and the words
+/// [`UNRISKY`] are not between it and the next issue.
 fn deferral(deferred: &str) -> Option<String> {
     let lower = deferred.to_ascii_lowercase();
     let mut issues = issues(deferred).peekable();
@@ -695,15 +695,15 @@ fn deferral(deferred: &str) -> Option<String> {
     None
 }
 
-/// The place of each issue in `value`: `#` and the digits after it, in a word with no
-/// `://`.
+/// The place of each issue in `value`: `#` and the digits after it, before the `://`
+/// of its word, since GitHub shows the word from there as one URL.
 fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
     value.split_inclusive(' ').flat_map(move |word| {
         let start = end;
         end += word.len();
-        let plain = !word.contains("://");
-        let marks = word.match_indices('#').filter(move |_| plain);
+        let url = word.find("://").unwrap_or(word.len());
+        let marks = word.match_indices('#').filter(move |(at, _)| *at < url);
         marks.filter_map(move |(at, _)| {
             let rest = undigited(&word[at + 1..])?;
             Some(start + at..end - rest.len())
