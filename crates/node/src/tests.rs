@@ -3346,7 +3346,8 @@ mod port {
         }
 
         /// The identity in `node.key` on `host`, or `None` when the file is not
-        /// there. Opens it to read only, so it makes nothing.
+        /// there. Opens it to read only, so it makes nothing. It checks the file
+        /// between a crash and a start, where no public call reads it.
         ///
         /// # Panics
         ///
@@ -3657,7 +3658,8 @@ mod port {
         }
 
         /// `create_key` writes nothing over a file that is there: a key, valid or
-        /// not, a file of another length, and one with no bytes or 100 zero bytes.
+        /// not, a file of another length, and one with no bytes or 100 zero bytes. It
+        /// leaves no `node.key.new`, which would hold its keys.
         #[test]
         fn create_key_writes_nothing_over_a_file() {
             let mut changed = own();
@@ -3673,6 +3675,11 @@ mod port {
                 let created = create(&mut sim, &host, PrivateKey([9; 32]));
                 assert_eq!(created, Err(Error::Directory(exists.clone())));
                 assert_eq!(read(&mut sim, &host), bytes, "keeps the file");
+                let staged = PathBuf::from(NEW);
+                assert!(
+                    !listed(&mut sim, &host, "").contains(&staged),
+                    "no staged key"
+                );
             }
             assert_eq!(
                 Error::Directory(exists).to_string(),

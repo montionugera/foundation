@@ -50,13 +50,12 @@ pub(crate) async fn read<const N: usize>(
 
 /// Makes `path` in `files` with `bytes`, which [`checksum`] completed, and makes it
 /// durable: removes the file `<path>.new` that a crash left, writes `bytes` to a new
-/// one, and renames it to `path`. Call it under the lock of the data directory, when
-/// `path` is not there.
+/// one, and renames it to `path`. Call it under the lock of the data directory.
 ///
 /// # Errors
 ///
 /// The error of the first file call that fails. [`env::files::Error::Exists`] when
-/// `path` is there.
+/// `path` is there, after it removes `<path>.new`.
 pub(crate) async fn publish<const N: usize>(
     files: &Files,
     path: &Path,
@@ -68,7 +67,13 @@ pub(crate) async fn publish<const N: usize>(
     files.remove(&staged).await?;
     let mut file = files.open(&staged, Mode::Create { len: N as u64 }).await?;
     file.write_at(0, &[block(bytes)]).await?;
-    file.rename(path).await?;
+    match file.rename(path).await {
+        Err(exists @ env::files::Error::Exists { .. }) => {
+            files.remove(&staged).await?;
+            return Err(exists);
+        }
+        renamed => renamed?,
+    }
     files.sync_dir(Path::new("")).await
 }
 
