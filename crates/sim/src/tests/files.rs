@@ -2938,13 +2938,18 @@ fn a_list_does_not_wait_for_a_remove_whose_future_lives() {
     }
 }
 
-/// The bytes free before and after a create of `a` of `len` bytes whose future
-/// drops after one poll.
-fn free_after_dropped_create(value: u64, len: u64) -> (u64, u64) {
+/// The bytes free before and after a create of `path` of 64 KiB whose future drops
+/// after one poll. The parent of `path` is made first when it is not the data
+/// directory.
+fn free_after_dropped_create(value: u64, path: &'static str) -> (u64, u64) {
     run(value, MIB, move |node, _| async move {
         let files = node.files();
+        let path = Path::new(path);
+        if let Some(dir) = path.parent().filter(|dir| *dir != Path::new("")) {
+            files.create_dir(dir).await.unwrap();
+        }
         let before = files.free().await.unwrap();
-        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        let mut made = Box::pin(files.open(path, Mode::Create { len: 64 * KIB }));
         pend(made.as_mut()).await;
         drop(made);
         (before, files.free().await.unwrap())
@@ -2954,7 +2959,15 @@ fn free_after_dropped_create(value: u64, len: u64) -> (u64, u64) {
 #[test]
 fn a_free_waits_for_a_dropped_create() {
     for value in 0..32 {
-        let (before, after) = free_after_dropped_create(value, 64 * KIB);
+        let (before, after) = free_after_dropped_create(value, "a");
+        assert_eq!(after, before - 64 * KIB, "value {value}");
+    }
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create_in_a_directory() {
+    for value in 0..32 {
+        let (before, after) = free_after_dropped_create(value, "d/a");
         assert_eq!(after, before - 64 * KIB, "value {value}");
     }
 }
@@ -3006,6 +3019,35 @@ fn a_free_does_not_wait_for_a_create_whose_future_lives() {
     let runs: Vec<_> = (0..32).map(free_beside_create).collect();
     assert!(
         runs.iter().any(|(before, during)| before == during),
+        "{runs:?}"
+    );
+}
+
+/// The end times of a `free` and of a remove of `a` through a handle whose future
+/// lives, which starts before the `free`.
+fn free_beside_remove(value: u64) -> (Monotonic, Monotonic) {
+    run(value, MIB, move |node, tasks| async move {
+        let file = create(&node, "a", 64 * KIB).await;
+        let removed = Arc::new(AtomicU64::new(0));
+        let end = Arc::clone(&removed);
+        let clock = node.clock();
+        tasks.spawn(async move {
+            file.remove().await.unwrap();
+            end.store(clock.now().0, Ordering::Relaxed);
+        });
+        node.clock().sleep(Span::from_nanos(1)).await;
+        node.files().free().await.unwrap();
+        let freed = node.clock().now();
+        node.clock().sleep(Span::MILLISECOND).await;
+        (freed, Monotonic(removed.load(Ordering::Relaxed)))
+    })
+}
+
+#[test]
+fn a_free_does_not_wait_for_a_remove_through_a_handle_whose_future_lives() {
+    let runs: Vec<_> = (0..32).map(free_beside_remove).collect();
+    assert!(
+        runs.iter().any(|(freed, removed)| freed < removed),
         "{runs:?}"
     );
 }

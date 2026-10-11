@@ -682,25 +682,25 @@ fn stdout(command: &mut std::process::Command) -> String {
 #[cfg(target_os = "macos")]
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    check_free_on_ram(false);
+    check_free_on_ram(crate::free::Create::Held);
 }
 
 /// The root tests check this on Linux, on a filesystem of their own.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    check_free_on_ram(true);
+    check_free_on_ram(crate::free::Create::Dropped);
 }
 
 /// Runs `free::check` on a `Ram` of its own.
 #[cfg(target_os = "macos")]
-fn check_free_on_ram(dropped: bool) {
+fn check_free_on_ram(create: crate::free::Create) {
     let ram = Ram::new();
     let (files, thread) = files(&ram.mount, "files");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    runtime.block_on(async move { crate::free::check(&files, dropped).await });
+    runtime.block_on(async move { crate::free::check(&files, create).await });
     thread.join().unwrap();
 }
 
