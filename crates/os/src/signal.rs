@@ -8,18 +8,18 @@ use tokio::sync::oneshot;
 
 /// Holds each of SIGINT and SIGTERM that reaches the process: one that the calling
 /// thread does not block and whose action is not `SIG_IGN`. Holds it on the calling
-/// thread and each thread it starts later, and starts thread `signal`, which fires the
-/// receiver at the first, then takes them as with no hold, so a signal that the caller
-/// blocked stays blocked. The thread has no handle: it lives until the process ends,
-/// to take the second signal. Gives `None` when it holds neither: then no thread
-/// starts. When the thread cannot start, the mask stays as it was.
+/// thread and each thread it starts later, and starts thread `signal`, which completes
+/// the future at the first, then takes them as with no hold, so a signal that the
+/// caller blocked stays blocked. The thread has no handle: it lives until the process
+/// ends, to take the second signal. When it holds neither, no thread starts and the
+/// future never completes. When the thread cannot start, the mask stays as it was.
 #[expect(
     clippy::disallowed_methods,
     reason = "an env Handle joins its thread, and this one never ends"
 )]
-pub(crate) fn hold() -> Result<Option<oneshot::Receiver<()>>, Error> {
+pub(crate) fn hold() -> Result<impl Future<Output = ()> + Send + 'static, Error> {
     let Some(set) = reaching() else {
-        return Ok(None);
+        return Ok(wait(None));
     };
     let (fire, fired) = oneshot::channel();
     // Before the start, so that the thread inherits the block.
@@ -29,7 +29,7 @@ pub(crate) fn hold() -> Result<Option<oneshot::Receiver<()>>, Error> {
         .name(name.to_owned())
         .spawn(move || serve(&set, &old, fire))
     {
-        Ok(_) => Ok(Some(fired)),
+        Ok(_) => Ok(wait(Some(fired))),
         Err(e) => {
             mask(libc::SIG_SETMASK, &old);
             Err(Error::Start {
@@ -37,6 +37,15 @@ pub(crate) fn hold() -> Result<Option<oneshot::Receiver<()>>, Error> {
                 reason: e.to_string(),
             })
         }
+    }
+}
+
+async fn wait(fired: Option<oneshot::Receiver<()>>) {
+    match fired {
+        Some(fired) => fired
+            .await
+            .expect("invariant: the signal thread fires before it ends"),
+        None => std::future::pending().await,
     }
 }
 

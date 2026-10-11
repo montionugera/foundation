@@ -196,18 +196,7 @@ pub fn files(
 /// [`Error::Thread`] when the thread that waits for them cannot start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn interrupt() -> Result<impl Future<Output = ()> + Send + 'static, Error> {
-    Ok(wait(signal::hold().map_err(Error::Thread)?))
-}
-
-/// Completes when the signal thread fires `fired`, and never when no signal is held.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn wait(fired: Option<tokio::sync::oneshot::Receiver<()>>) {
-    match fired {
-        Some(fired) => fired
-            .await
-            .expect("invariant: the signal thread fires before it ends"),
-        None => std::future::pending().await,
-    }
+    signal::hold().map_err(Error::Thread)
 }
 
 /// Why `os` could not build a seam or hold the signals.
