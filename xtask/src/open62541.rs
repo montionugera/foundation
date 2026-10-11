@@ -1909,6 +1909,15 @@ Disassembly of section .text.stamp:
         for (flags, problems) in [
             ("", vec![absent.to_owned()]),
             ("-DA\n-std=c99\n", vec![absent.to_owned()]),
+            ("-DA=-fno-dollars-in-identifiers\n", vec![absent.to_owned()]),
+            (
+                "-U-fno-dollars-in-identifiers\n-fno-dollars-in-identifiers\n",
+                vec![
+                    "flags.txt: `-U-fno-dollars-in-identifiers` is not a -D, -I, or \
+                     -std flag with its value, one of CODE_FLAGS, or NO_DOLLARS"
+                        .to_owned(),
+                ],
+            ),
             (
                 "-fno-dollars-in-identifiers=1\n",
                 vec![
@@ -2098,7 +2107,14 @@ End of search list.
             trees.flags(&["cc", "-I/w/build"].map(str::to_owned)),
             Err("/w/build is outside the clone".to_owned())
         );
-        for flag in ["-fplugin=x", "-Wl,-z", "x.c", "-include", "-D"] {
+        for flag in [
+            "-fplugin=x",
+            "-Wl,-z",
+            "x.c",
+            "-include",
+            "-D",
+            "-fno-dollars-in-identifiers",
+        ] {
             assert_eq!(
                 trees.flags(&["cc", flag].map(str::to_owned)),
                 Err(format!("`{flag}` is in neither CODE_FLAGS nor LEFT_OUT"))
