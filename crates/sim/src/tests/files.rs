@@ -284,7 +284,8 @@ fn a_create_takes_the_room_of_a_removed_file_that_no_sync_dir_covers() {
 }
 
 /// The digest after a create that finds no room for `b` in a directory with a removed
-/// file and no `sync_dir`, made as one create or as its calls one by one.
+/// file and no `sync_dir`, made as one create or as its calls one by one. A write open
+/// of the missing `b` stands for the driver's create, which `Files::open` would retry.
 fn create_with_no_room(seed: u64, one_by_one: bool) -> (bool, u64) {
     let mut sim = sim(seed);
     let node = sim.node(node::Config {
