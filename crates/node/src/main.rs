@@ -2,7 +2,6 @@
 //! node until SIGINT or SIGTERM.
 
 use std::io::{self, Write};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -85,7 +84,7 @@ fn node(start: &Start) -> Result<(), Failure> {
         }),
         entropy: os::entropy(),
         net: net(),
-        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        listen: start.listen,
         region: node::Region::Stored,
         name: known.name.clone(),
     });
