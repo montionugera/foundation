@@ -74,8 +74,10 @@
   node elected. Since the voter checks a join before it stamps it (MEMBER RECORD), a
   peer with no ticket gets no join into the log of an honest voter. A peer with a
   valid ticket can still name the key of a node whose join is not applied, because
-  the node key is not bound to the card's public key: a known result, until #2345
-  (`laptop.architect`, 2026-10-11T03:31:12Z,
+  the node key is not bound to the card's public key: a known result. #2345 ends the
+  strand: the leader refuses a second public key for one node key (`Error::Contested`).
+  After it, only a key learned out of band can be taken (`laptop.architect`,
+  2026-10-11T03:31:12Z,
   https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526).
   A hard proof that lost such a claim can be no quorum at a node with a newer
   configuration, which then learns the term from the leader. A follower answers a
@@ -197,9 +199,9 @@
   https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). `stamp`
   gives `Unstamped::Stopped` (MEMBER RECORD). A stopped group does not start again: the
   node opens the mesh again, and the open makes durable what it gives (MESH LOG). The
-  task ends soon after the last `Mesh` drops, a write in
-  progress ends first, and a write that waits for a block ends at the next tick; until
-  then a new open gives `Error::Log`. Each open applies the log from index 1, until
+  task ends soon after the last `Mesh` drops, a write in progress ends first, and a
+  write that waits for a block ends at the next tick; until then a new open gives
+  `Error::Log`. Each open applies the log from index 1, until
   snapshots (#253). A watch does not keep the group running, and a dropped watch leaves
   no waker. `open` refuses a node or a voter that is not a member (`Error::NotMember`),
   and a private key that is not the key of this node's member (`Error::WrongKey`).

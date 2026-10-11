@@ -65,8 +65,9 @@
   has no use. Decided by `laptop.architect` (2026-10-07T14:27:15Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128. The cause
   is `Unstamped::Stopped`, not `Error::Stopped`, by the `Unstamped` ruling above.
-  Supersedes the `Error::Stopped` of that ruling: `laptop.architect`
-  (2026-10-11T03:32:30Z),
+  Supersedes the `Error::Stopped` of
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128:
+  `laptop.architect` (2026-10-11T03:32:30Z),
   https://github.com/synnaxlabs/foundation/pull/2346#issuecomment-6105051086. The
   stamping voter makes each status key (UUIDv7, X27) from the stamp and its entropy, and
   the byte form refuses a name twice. Decided by `laptop.architect`
