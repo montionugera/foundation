@@ -676,6 +676,8 @@ impl Endpoint {
     /// Gives `refusal`, the error of the size check of a write of `sender`, in each
     /// state of the stream and the connection. Before, while the connection runs,
     /// the stream adopts the rest of a leaked write ([`Streams::adopt`]).
+    #[cold]
+    #[inline(never)]
     fn adopt<T>(
         &mut self,
         now: Monotonic,
