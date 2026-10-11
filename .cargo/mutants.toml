@@ -99,8 +99,10 @@ exclude_re = [
   # Only a counting allocator sees the buffer that a skipped free leaks, and no public
   # call reaches the manager until #435 PR 6c, whose memory test removes this entry.
   'crates/connector-opcua/src/connection\.rs:.*replace <impl Drop for Buffer>::drop with \(\)',
-  # Only LSan sees the client that a skipped free leaks. The sanitizers job runs
-  # `client::tests::a_client_reads_a_double_and_a_seed_replays`, which then fails.
+  # Only LSan sees the client that a skipped free leaks, since no public call reaches
+  # a client. The sanitizers job runs
+  # `client::tests::a_client_reads_a_double_and_a_seed_replays`, which then fails. The
+  # memory test of the client in #435 PR 6c3 removes this entry.
   'crates/connector-opcua/src/client\.rs:.*replace <impl Drop for Client>::drop with \(\)',
   # A fence changes the order of memory operations around a counter read, and no
   # result a test can see. Loom does not model a counter read.
