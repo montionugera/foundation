@@ -378,16 +378,14 @@ fn performer(text: &[Vec<String>]) -> bool {
 }
 
 /// Whether a top-level paragraph of `shown` after its round heading, other than its end
-/// lines, has a line `Text fixes:` with a value ([`stated`]) that may wrap onto the
-/// lines after it.
+/// lines, has a line `Text fixes:` with a value ([`stated`]).
 fn fixed(shown: &Shown<'_>) -> bool {
-    let start = format!("{FIXES}:");
-    shown.before_end().iter().any(|block| {
-        let p = shown.paragraph(Some(block));
-        (0..p.len()).any(|i| {
-            p[i].starts_with(&start) && stated(&entries(&p[i..], &[FIXES]).0[0].1)
-        })
-    })
+    let paragraphs = shown.before_end().iter();
+    states(
+        paragraphs.map(|block| shown.paragraph(Some(block))),
+        FIXES,
+        &[FIXES],
+    )
 }
 
 /// The reviewers that the value of a `Reviewers:` line lists.
@@ -507,10 +505,22 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
 /// `text` ([`Shown::text`]) has a value ([`stated`]).
 fn named(text: &[Vec<String>]) -> bool {
-    let start = format!("{}:", END[2]);
-    text.iter().any(|p| {
-        (0..p.len())
-            .any(|i| p[i].starts_with(&start) && stated(&entries(&p[i..], &END).0[0].1))
+    states(text.iter().map(Vec::as_slice), END[2], &END)
+}
+
+/// Whether a line of `paragraphs` starts with `name:` and has a value ([`stated`]),
+/// which may wrap onto the lines after it up to one that starts an entry of `names`
+/// ([`entries`]). `names` holds `name`.
+fn states<'p>(
+    paragraphs: impl IntoIterator<Item = &'p [String]>,
+    name: &str,
+    names: &[&str],
+) -> bool {
+    let start = format!("{name}:");
+    paragraphs.into_iter().any(|p| {
+        (0..p.len()).any(|i| {
+            p[i].starts_with(&start) && stated(&entries(&p[i..], names).0[0].1)
+        })
     })
 }
 
