@@ -14,13 +14,13 @@ pub(crate) struct Task {
     /// holds the ring open, so it drops with the state.
     next: home::Commit,
     /// The task's waker.
-    task: Option<Waker>,
+    waker: Option<Waker>,
 }
 
 impl Task {
     /// Holds `next`, the first group commit of the home that the task waits for.
     pub(crate) fn new(next: home::Commit) -> Self {
-        Self { next, task: None }
+        Self { next, waker: None }
     }
 }
 
@@ -37,11 +37,11 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
             let mut state = state.borrow_mut();
             if !state
                 .commit
-                .task
+                .waker
                 .as_ref()
-                .is_some_and(|task| task.will_wake(cx.waker()))
+                .is_some_and(|waker| waker.will_wake(cx.waker()))
             {
-                state.commit.task = Some(cx.waker().clone());
+                state.commit.waker = Some(cx.waker().clone());
             }
             let Poll::Ready(committed) = Pin::new(&mut state.commit.next).poll(cx)
             else {
@@ -65,8 +65,8 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
 impl Drop for Task {
     /// Wakes the task, which then finds the state gone and ends.
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.wake();
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
         }
     }
 }
