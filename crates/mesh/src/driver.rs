@@ -3957,8 +3957,9 @@ mod tests {
         }
 
         // The forged join of 4 is below the change that names it too, so the node
-        // has no key for 4, and a leader that 2 and 4 elected is unproven here. A
-        // defect until #2345: a peer with a ticket can still get such a join stamped.
+        // has no key for 4, and a leader that 2 and 4 elected is unproven here. Under
+        // a leader that does not lie, #2345 keeps the second join out of the log. A
+        // leader that lies can still write both (MESH DRIVER).
         #[test]
         fn a_leader_elected_under_a_change_above_two_written_joins_is_unproven() {
             solo(|node, tasks| async move {

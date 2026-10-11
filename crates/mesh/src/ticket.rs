@@ -370,7 +370,8 @@ mod tests {
         assert_eq!(admitted, Ok(()));
     }
 
-    // No caller reads the count; `check` reads only whether it is above 0.
+    /// `check` reads the count only for a single-use ticket, which apply counts at
+    /// most once, so no caller sees a wrap.
     #[test]
     fn the_use_count_saturates() {
         let mut record = record(7, true);
