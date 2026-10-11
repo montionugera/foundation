@@ -76,7 +76,7 @@ fn field(bytes: &[u8; LEN]) -> PrivateKey {
 /// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    sector::check(bytes, TAG, |bytes| encode(&field(bytes)));
+    sector::check(bytes, TAG, |bytes| Some(encode(&field(bytes))));
 }
 
 #[cfg(test)]

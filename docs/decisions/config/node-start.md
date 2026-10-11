@@ -1,17 +1,19 @@
-- **NODE START (2026-10-08)** `foundation start` runs a node on a data directory until
-  SIGINT or SIGTERM, then exits 0. `ops` cannot depend on `node`, so `start` is a
-  `Command` variant beside `mcp`, not an entry of the operation table: like `mcp`, it
-  runs the process and is not an operation of a node. The help names it, and `foundation
-  docs` does not. `ops::cli` writes nothing for it and gives `Run::Start(Start { data,
-  json, name })` to `main` in `node`. `--data` is `foundation-data` in the working
-  directory by default, so `cli` reads no environment. `start` has no MCP tool: MCP acts
-  on a running node. The first start on a data directory needs `--name`, and a later one
-  reads the name there (NODE NAME). Once the node has claimed the data directory, a
-  thread of `main` writes `Start::line`: `node edge runs in foundation-data. Stop it
-  with Ctrl-C.`, or `{"name":"edge","data":"foundation-data"}` with `--json`. `data` is
-  the path as given, not made absolute, so `cli` stays a function of its arguments. Each
-  form writes it lossily, as `Path::to_string_lossy` does. The text form also escapes it
-  as `Start::fail` does, each character but a quote as `char::escape_debug` does, so a
+- **NODE START (2026-10-08)** `foundation start` runs a node on a data directory until a
+  SIGINT or SIGTERM that reaches it, then exits 0. `ops` cannot depend on `node`, so
+  `start` is a `Command` variant beside `mcp`, not an entry of the operation table: like
+  `mcp`, it runs the process and is not an operation of a node. The help names it, and
+  `foundation docs` does not. `ops::cli` writes nothing for it and gives
+  `Run::Start(Start { data, json, name, listen })` to `main` in `node`. `--data` is
+  `foundation-data` in the working directory by default, so `cli` reads no environment.
+  `start` has no MCP tool: MCP acts on a running node. The first start on a data
+  directory needs `--name`, and a later one reads the name there (NODE NAME). Once the
+  node has claimed the data directory, a thread of `main` writes `Start::line`: `node
+  edge runs in foundation-data. Stop it with Ctrl-C.`, or
+  `{"name":"edge","data":"foundation-data"}` with `--json`. The line comes after the
+  file `address` holds the address. `data` is the path as given, not made absolute, so
+  `cli` stays a function of its arguments. Each form writes it lossily, as
+  `Path::to_string_lossy` does. The text form also escapes it as `Start::fail` does,
+  each character but a quote as `char::escape_debug` does, so a
   newline in it adds no line, and a backslash or a combining mark shows escaped. A
   literal `\n` in a path then reads apart from a newline, and the line matches the
   `node.data` message for the same path. Lost: the raw path in the text form, which a
@@ -22,8 +24,8 @@
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
-  (NODE SETTINGS), and `node.failed`. `node.data` is "this user cannot use the data
-  directory as it is": each `os::Error::Dir` whatever its errno, and each
+  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot use
+  the data directory as it is": each `os::Error::Dir` whatever its errno, and each
   `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
   `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
   `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
@@ -92,6 +94,66 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483), and
   moved to #1744 PR 1b-4 by `laptop.architect` (2026-10-10T22:53:09Z,
   https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103048603).
-  `--listen` and the
-  file `address` come with #1744
-  (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).
+  `start --listen` gives `Start::listen`, the address of the node's one port,
+  `127.0.0.1:0` by default, so the node takes a free port and no other host reaches it
+  until the user gives an address. `main` gives it as `node::Config::listen`. A value
+  that is no socket address is `ops.argument`. A port that does not bind is `node.port`,
+  since the user chose the address: its message is the text of `node::Error::Port`, and
+  its fix "Give `--listen` an address of this host with a port that is free and that
+  this user can bind". Lost: `node.failed`, which gives an agent no fix for a value that
+  it gave. Decided by `laptop.architect-2` (2026-10-11T10:21:07Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
+  A `--listen` whose IP is multicast or the IPv4 broadcast IP, also as an IPv4-mapped
+  IPv6 address, binds on Linux, and no peer reaches a node at it. `node` refuses it
+  before the bind with `node::Error::Listen`, which is `node.port` with the same fix.
+  `node` does not refuse a subnet broadcast IP of an interface, which only the
+  interface table shows. Trigger: the first change that gives `node` the addresses of
+  the interfaces of its host. Lost: a refusal in `ops::cli` as `ops.argument`, which
+  leaves each other caller of `node::Config::listen` open; a refusal in the UDP bind
+  of `env::net`, where a connector that receives multicast binds such an IP;
+  `node::Error::Port` with an OS code that no OS call gave; a code of its own for the
+  same fix. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
+  Shard 0 writes the file `address` in the data directory in place, after the mesh opens
+  and before the port takes a session: the node's key, the public key of its transport,
+  and the bound socket address, in one sector with a CRC32C. Its form is private to
+  `node`, and the fuzz target `node_identity` takes it by its length. The first start
+  makes the file, and the file keeps its sector, so a later start needs no new room and
+  a node starts again on a full disk. The start does not fail for what the file holds:
+  it removes a file of another length and makes the file again. When shard 0 stops
+  serving, before the lock drops, it writes the file empty in place (zero bytes of the
+  same length), with no sync. A file with no address of a node (no file, an empty one,
+  or one that a write tore) reads as no node that runs. A file with an address is no
+  proof that a node runs: a crash, a panic of shard 0, or a failed empty write leaves
+  the address, a power cut after a stop can bring it back, and a start that ends before
+  its write leaves what the file held. A start that serves writes over it. So a program
+  takes only a node that proves the public key at the address, the empty write needs no
+  sync, and the port can free before the empty write. A failed write at the start is
+  `Error::Directory` and stops the node before it serves; a failed empty write is
+  `Error::Directory` unless the node already failed. Lost: a fixed port with no file,
+  where two nodes on one host need two flags and the CLI still reads the public key from
+  the data directory; the address in `lock`, whose open by a reader races with a start;
+  a file made new at each start and removed at the stop (the new file needs new room, so
+  a node did not start again once another writer filled the disk; round 1 of #2391); a
+  start on a full disk that fails (a node whose rings are made runs on a full disk); a
+  failed write that does not stop the node (no program reaches the node, and the failure
+  hides); no write at the stop (after a clean stop, a program dials a port that no node
+  holds). Decided by `laptop.architect-2` (2026-10-08T05:42:09Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935;
+  2026-10-11T07:10:55Z, plan revision 4,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913;
+  2026-10-11T08:01:23Z, the remove before the lock drops but not before the port frees,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106927243;
+  2026-10-11T10:21:07Z, the remove contract of #1744 PR 2a,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871;
+  2026-10-11T10:43:15Z, the write in place,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
+  2026-10-11T10:50:50Z, this text,
+  https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
+  A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
+  choice of its parent, does not reach it (ENV SEAMS): a node that
+  `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
+  `laptop.architect-2` (2026-10-10T23:40:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164) and
+  reworded by it (2026-10-11T10:39:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).

@@ -118,8 +118,10 @@ impl Files {
         })
     }
 
-    /// The names of the files and directories directly in `dir`, sorted. Each is a
-    /// bare name, not joined with `dir`. It does not list inside subdirectories.
+    /// The names of the files and directories directly in `dir`, sorted. Each is a bare
+    /// name, not joined with `dir`. It does not list inside subdirectories. It first
+    /// waits for each call on a path directly in `dir` that a dropped future or handle
+    /// of this `Files` left to run, so the names are as those calls leave them.
     ///
     /// # Errors
     ///
@@ -226,7 +228,9 @@ impl Files {
         self.0.sync_dir(dir).await
     }
 
-    /// The bytes free on the disk of the data directory.
+    /// The bytes free on the disk of the data directory. It first waits for each call
+    /// that a dropped future or handle of this `Files` left to run, so the result is as
+    /// those calls leave the disk.
     ///
     /// # Errors
     ///
@@ -767,11 +771,13 @@ impl fmt::Display for Operation {
 /// What `os` and `sim` implement to run [`Files`]. Only they implement it.
 ///
 /// Paths reach it checked and relative to the data directory. It opens, creates, and
-/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks
-/// what it returns. A write open, a remove, and a rename to a path first wait for
-/// each call on the path that a dropped future or descriptor of the driver left to
-/// run, and for each remove of the path through a descriptor of the driver that has
-/// not ended.
+/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks what
+/// it returns. A write open, a remove, and a rename to a path first wait for each call
+/// on the path that a dropped future or descriptor of the driver left to run, and for
+/// each remove of the path through a descriptor of the driver that has not ended. A
+/// list of a directory first waits for each call on a path directly in it that a
+/// dropped future or descriptor of the driver left to run. A `free` first waits for
+/// each call that a dropped future or descriptor of the driver left to run.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {

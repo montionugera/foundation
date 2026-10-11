@@ -21,7 +21,7 @@ impl Cluster {
     /// gives the leader, a follower, and the position of the entry of that home.
     pub(super) fn led(run: u64) -> (Self, u8, u8, Position) {
         let mut cluster = Self::new(run);
-        cluster.script(home);
+        cluster.script(home_to);
         cluster.start();
         cluster.run(seconds(5));
         let board = cluster.board();
@@ -46,7 +46,7 @@ fn a_follower_sets_a_home_through_the_leader() {
         let (mut cluster, leader, from, at) = Cluster::led(run);
         cluster.set(from, from);
         cluster.run(seconds(5));
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(5));
         let board = cluster.board();
         assert_eq!(board.set, [(from, Some(key(from)), Ok(()))], "run {run}");
@@ -120,7 +120,7 @@ fn a_call_on_a_follower_that_is_cut_off_returns_after_the_links_heal() {
 fn a_member_that_is_not_a_voter_sets_no_home() {
     let mut cluster = Cluster::new(5);
     cluster.board.lock().unwrap().learners = [3].into();
-    cluster.script(home);
+    cluster.script(home_to);
     cluster.start();
     cluster.run(seconds(5));
     let board = cluster.board();
@@ -129,7 +129,7 @@ fn a_member_that_is_not_a_voter_sets_no_home() {
     };
     cluster.set(3, leader);
     cluster.run(seconds(5));
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(5));
     let board = cluster.board();
     assert_eq!(board.set, [(3, None, Err(Error::NoVote))]);
@@ -153,7 +153,7 @@ fn set_home_refuses_a_home_that_is_not_a_member() {
 fn set_home_refuses_a_member_that_the_node_appended_and_did_not_apply() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-        let changes = [ticket(), join(4)];
+        let changes = [plant_ticket(), join_change(4)];
         let entries = changes.iter().zip(1..).map(|(change, index)| Entry {
             at: at(index),
             data: Data::Bytes(encoded(change)),
@@ -184,8 +184,8 @@ fn set_home_refuses_a_member_that_the_leader_wrote_and_did_not_apply() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
         let first = elect(&mesh).await;
-        mesh.propose(ticket()).await.unwrap();
-        let joined = mesh.propose(join(4)).await.unwrap();
+        mesh.propose(plant_ticket()).await.unwrap();
+        let joined = mesh.propose(join_change(4)).await.unwrap();
         let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
         assert_eq!(set, Poll::Ready(Err(Error::NotMember(key(4)))));
         let last = joined.index;
@@ -232,7 +232,7 @@ fn a_promoted_node_sets_a_home_from_the_append_of_its_promotion() {
         };
         let append = Body::Append {
             prev: Position::default(),
-            entries: vec![common::change(2, at(1), promoted)],
+            entries: vec![common::voters_entry(2, at(1), promoted)],
             commit: 0,
         };
         assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
@@ -255,7 +255,7 @@ fn a_voter_of_one_half_of_a_joint_configuration_sets_a_home() {
             };
             let append = Body::Append {
                 prev: Position::default(),
-                entries: vec![common::change(2, at(1), joint)],
+                entries: vec![common::voters_entry(2, at(1), joint)],
                 commit: 0,
             };
             assert_eq!(mesh.receive(public(2), proven(2, id, append)), Ok(()));
@@ -288,7 +288,7 @@ fn a_lone_voter_sets_a_home_when_it_leads() {
 fn set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let stopped = Error::Stopped(fail_sync(&node));
         let clock = node.clock();
         let start = clock.now();
@@ -330,13 +330,13 @@ fn set_home_proposes_again_while_the_pool_has_no_block() {
         };
         let mesh = Mesh::start(config).await.unwrap();
         let clock = node.clock();
-        lead(&mesh, &clock, home(1)).await;
+        lead(&mesh, &clock, home_to(1)).await;
         let held = fill(&pool);
-        let mut waits = pin!(mesh.propose(home(1)));
+        let mut waits = pin!(mesh.propose(home_to(1)));
         assert!(now(waits.as_mut()).await.is_pending());
         clock.sleep(TICK).await;
         assert_eq!(
-            started(&mesh, home(1)).await,
+            started(&mesh, home_to(1)).await,
             Poll::Ready(Err(exhausted(93)))
         );
         let mut set = pin!(mesh.set_home(INDEX, key(1)));
@@ -503,14 +503,6 @@ fn a_call_that_waits_for_its_entry_keeps_the_waker_of_its_last_poll() {
         assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!((Arc::strong_count(&old), Arc::strong_count(&new)), (2, 3));
     });
-}
-
-/// A position in the term of the tests.
-fn at(index: u64) -> Position {
-    Position {
-        term: common::TERM,
-        index,
-    }
 }
 
 /// The time between two heartbeats of node 2: less than half of the shortest
@@ -744,14 +736,14 @@ fn a_proposal_with_no_answer_goes_again_only_after_node_1_has_no_leader() {
         leader.silent.set(false);
         let (second, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         let early = early.map(|(change, _)| change);
         ([first, second], early, gap, late, [end, asked.end().await])
     };
     let ((set, quiet), (changes, early, gap, late, ends)) = run(call, leader);
     assert_eq!(set, (Ok(()), Some(key(1))));
-    assert_eq!(changes, [home(1), home(1)]);
+    assert_eq!(changes, [home_to(1), home_to(1)]);
     assert_eq!(early, None);
     // The last heartbeat came at most 300 ms before, and an election timeout is 1 s
     // to 2 s.
@@ -831,7 +823,7 @@ fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
         leader.answer(&mut asked, at(1)).await.unwrap();
         leader.rest(seconds(1)).await;
         let mut sender = Leader::open(&leader.peer, &leader.session).await;
-        let append = leader.append_in(Term(6), &home(1), at(1));
+        let append = leader.append_in(Term(6), &home_to(1), at(1));
         sender.send(append).await.unwrap();
         let more = leader.proposal_within(seconds(3)).await;
         (more.map(|(change, _)| change), asked.end().await)
@@ -901,7 +893,7 @@ fn an_answer_that_comes_after_its_entry_applied_ends_the_call() {
     };
     let ((applied, returned, end), ()) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(HALF).await;
         leader.answer(&mut asked, at(1)).await.unwrap();
         leader.rest(seconds(2)).await;
@@ -1001,7 +993,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
         ),
         (
             "a proposal",
-            Refusal::Answer(Message::Propose { change: home(1) }.encode()),
+            Refusal::Answer(Message::Propose { change: home_to(1) }.encode()),
             Ok(()),
         ),
         ("no message", Refusal::Answer(vec![0xff]), Ok(())),
@@ -1037,7 +1029,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
             let (second, mut asked) = leader.proposal().await;
             let gap = clock.now() - start;
             leader.answer(&mut asked, at(1)).await.unwrap();
-            leader.append(&home(1), at(1)).await;
+            leader.append(&home_to(1), at(1)).await;
             leader.rest(seconds(2)).await;
             ([first, second], gap, end)
         });
@@ -1045,7 +1037,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
         // Node 1 ends its stream after each answer, also one that refuses, and resets
         // it when the leader ends or resets with no answer.
         assert_eq!(end, ended, "{case}");
-        assert_eq!(changes, [home(1), home(1)], "{case}");
+        assert_eq!(changes, [home_to(1), home_to(1)], "{case}");
         let ms = gap.nanos() / Span::MILLISECOND.nanos();
         assert!(
             (100..200).contains(&ms),
@@ -1070,7 +1062,7 @@ fn an_answer_stands_when_the_leader_stopped_its_half() {
         let answer = Message::Proposed { at: at(1) }.encode();
         sender.send(leader.peer.block(&answer)).await.unwrap();
         sender.finish().unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         let more = leader.proposal_within(seconds(3)).await;
         more.map(|(change, _)| change)
     });
@@ -1122,12 +1114,12 @@ fn no_proposal_goes_to_the_leader_while_the_pool_has_no_block() {
         let early = leader.proposal_within(seconds(1)).await;
         let (change, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         (early.map(|(change, _)| change), change)
     });
     assert_eq!(set, (Ok(()), Some(key(1))));
-    assert_eq!((early, change), (None, home(1)));
+    assert_eq!((early, change), (None, home_to(1)));
 }
 
 #[test]
@@ -1141,11 +1133,11 @@ fn a_proposal_goes_on_the_next_session_when_the_session_to_the_leader_closed() {
         leader.beat().await;
         let (change, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         change
     });
-    assert_eq!((set, change), ((Ok(()), Some(key(1))), home(1)));
+    assert_eq!((set, change), ((Ok(()), Some(key(1))), home_to(1)));
 }
 
 /// An index that only a probe for the leader sets.
@@ -1271,7 +1263,7 @@ fn a_call_puts_one_entry_in_the_log_when_the_answer_of_the_leader_is_slow() {
     let (mut cluster, leader, follower, at) = Cluster::asked(0, seconds(30));
     let board = cluster.board();
     assert_eq!(board.set, [(follower, Some(key(follower)), Ok(()))]);
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(10));
     let board = cluster.board();
     assert_eq!((board.led, board.at), (vec![leader], vec![after(at, 2)]));
@@ -1291,7 +1283,7 @@ fn a_call_returns_through_the_next_leader_when_the_leader_crashes() {
         let board = cluster.board();
         let set = [(follower, Some(key(follower)), Ok(()))];
         assert_eq!(board.set, set, "run {run}, {wait} ticks");
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(10));
         let board = cluster.board();
         let next: Vec<u8> = IDS.into_iter().filter(|&id| id != leader).collect();
@@ -1322,10 +1314,29 @@ fn a_call_that_is_cut_off_while_it_waits_for_the_answer_returns_after_the_heal()
             [(follower, Some(key(follower)), Ok(()))],
             "run {run}"
         );
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(5));
         let board = cluster.board();
         let took = (board.led, board.at);
         assert_eq!(took, (vec![leader], vec![after(at, 3)]), "run {run}");
     }
+}
+
+// It pins the panic of today. #1273 decides what `set_home` gives for this refusal.
+#[test]
+#[should_panic(
+    expected = "invariant: a home change is never refused: a change of kind \
+                           1 and 32 bytes is not in the byte form of its kind"
+)]
+fn set_home_shows_the_refusal_of_a_body_that_does_not_decode() {
+    let call = |_, mesh: Mesh| async move { mesh.set_home(INDEX, key(1)).await };
+    let (set, ()) = run(call, |mut leader| async move {
+        let (_, mut asked) = leader.proposal().await;
+        leader.answer(&mut asked, at(1)).await.unwrap();
+        let mut cut = encoded(&home_to(1));
+        cut.pop();
+        leader.append_data(cut, at(1)).await;
+        leader.rest(seconds(2)).await;
+    });
+    panic!("set_home returned {set:?}");
 }

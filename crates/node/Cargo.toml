@@ -51,6 +51,10 @@ node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
 sim = { path = "../sim" }
 
+[[test]]
+name = "memory"
+harness = false
+
 [[bench]]
 name = "scope"
 harness = false

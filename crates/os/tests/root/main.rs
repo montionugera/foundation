@@ -139,7 +139,12 @@ fn files_of_a_mount_point_syncs_only_the_mount() {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    run(|files, _| async move { free::check(&files).await });
+    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
 }
 
 #[test]
