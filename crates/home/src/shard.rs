@@ -2873,6 +2873,35 @@ mod tests {
         });
     }
 
+    /// A handoff that found no room waits for the next append on its index, also when
+    /// the end of a lease of its writer on another index records a handoff.
+    #[test]
+    fn keeps_a_waiting_handoff_at_the_end_of_a_lease_on_another_index() {
+        run(241, |test| async move {
+            let index = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[],
+            }]);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard.open_writer(writer("c", 1, &index)).expect("synced");
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            shard.open_writer(leased).expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.close_writer(c);
+            drop(blocks);
+            test.clock.sleep(Span::from_nanos(400_000)).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "only the open recorded a handoff to b");
+        });
+    }
+
     /// `advance` drops each restored holder whose grace ended, so it leaves no
     /// deadline that came due.
     #[test]
