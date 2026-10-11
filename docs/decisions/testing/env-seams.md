@@ -322,13 +322,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2156#issuecomment-6086107940). `sim`
   gives each `Files` of a node as clones of one. Lost there: the wait in `Files`, which
   cannot see the end of a dropped call without a change to `Driver`.
-  Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` whose driver gives `Full`
-  syncs the directory of the path one time and opens again. It gives `Full` only when
-  the second open does, and a `sync_dir` error as it is. It does this on each `Full`,
-  since a remove from before a restart or from another `Files` also holds room. `os`
-  and `sim` do not change. Lost: the retry in each driver, and the rule in each caller
-  (`blob` retried, `buffer` always synced first). Decided by `laptop.architect-2`,
-  2026-10-08T00:45:04Z
+  Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
+  driver gives `Full` syncs the directory of the path one time and opens again. It
+  gives `Full` only when the second open does, and a `sync_dir` error as it is. It does
+  this on each `Full`, since a remove from before a restart or from another `Files`
+  also holds room. `os` and `sim` do not change. Lost: the retry in each driver, and
+  the rule in each caller (`blob` retried; `buffer` syncs before its create until
+  #2378).
+  Decided by `laptop.architect-2`, 2026-10-08T00:45:04Z
   (https://github.com/synnaxlabs/foundation/issues/1622#issuecomment-6049807597).
   Amended (2026-10-08T17:19:48Z, #1921): on macOS, an accepted socket does not keep
   the receive buffer of its listener, so `os` sets the options of the listener again
