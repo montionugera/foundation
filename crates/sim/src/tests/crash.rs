@@ -791,8 +791,7 @@ fn a_power_crash_in_a_create_that_fills_the_disk_leaves_no_file_with_bytes() {
     assert_eq!(outcomes, BTreeSet::from([(Vec::new(), MIB), (made, MIB)]));
 }
 
-// As when the create makes the file: the create that the draw keeps whole fails, and
-// removes `a`.
+// As with no crash, a create that gives `Full` removes `a`.
 #[test]
 fn a_crash_in_a_create_with_no_room_over_a_durable_file_with_no_bytes_can_remove_it() {
     for crash in [Crash::Process, Crash::Power] {
@@ -888,31 +887,38 @@ async fn drop_an_open(node: &node::Node) {
     pend(pin!(node.files().open(Path::new("a"), Mode::Write))).await;
 }
 
-/// The length of `a` after `dropped` runs, and a create of 1 KiB of `a` then ends: in
-/// flight at a crash by `crash`, or with no crash when `None`.
-fn len_after_a_drop<F, B>(seed: u64, crash: Option<Crash>, dropped: B) -> u64
+/// Asserts that a create of 1 KiB of `a` after `dropped` gives `a` all its bytes with
+/// no crash, and that a crash by each of `crashes` with the create in flight leaves
+/// `a` with no bytes or whole, over 32 seeds, as after a create with no drop.
+fn ends_as_a_drop<F, B>(crashes: &[Crash], dropped: B)
 where
-    B: FnOnce(node::Node) -> F + Send + 'static,
+    B: FnOnce(node::Node) -> F + Copy + Send + 'static,
     F: Future<Output = ()> + 'static,
 {
     let mode = Mode::Create { len: 1_024 };
-    let (mut sim, node) = disk(seed);
-    let Some(crash) = crash else {
-        let len = sim.run_on(&node, move |node, _| async move {
-            dropped(node.clone()).await;
-            node.files().open(Path::new("a"), mode).await.unwrap().len()
-        });
-        return len.unwrap();
-    };
-    crash_after(&mut sim, &node, crash, move |node| async move {
+    let (mut sim, node) = disk(0);
+    let len = sim.run_on(&node, move |node, _| async move {
         dropped(node.clone()).await;
-        hang(node.files().open(Path::new("a"), mode)).await;
+        node.files().open(Path::new("a"), mode).await.unwrap().len()
     });
-    sim.run_on(&node, |node, _| async move {
-        let opened = node.files().open(Path::new("a"), Mode::Read).await;
-        opened.unwrap().len()
-    })
-    .unwrap()
+    assert_eq!(len.unwrap(), 1_024);
+    for &crash in crashes {
+        let lens: BTreeSet<_> = (0..32)
+            .map(|seed| {
+                let (mut sim, node) = disk(seed);
+                crash_after(&mut sim, &node, crash, move |node| async move {
+                    dropped(node.clone()).await;
+                    hang(node.files().open(Path::new("a"), mode)).await;
+                });
+                sim.run_on(&node, |node, _| async move {
+                    let opened = node.files().open(Path::new("a"), Mode::Read).await;
+                    opened.unwrap().len()
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(lens, BTreeSet::from([0, 1_024]), "{crash:?}");
+    }
 }
 
 #[test]
@@ -922,11 +928,7 @@ fn a_crash_ends_a_create_after_a_dropped_open_of_its_file_as_a_drop_does() {
         until_crash(&node).await;
         drop_an_open(&node).await;
     };
-    assert_eq!(len_after_a_drop(0, None, dropped), 1_024);
-    let lens: BTreeSet<_> = (0..32)
-        .map(|seed| len_after_a_drop(seed, Some(Crash::Process), dropped))
-        .collect();
-    assert_eq!(lens, BTreeSet::from([0, 1_024]));
+    ends_as_a_drop(&[Crash::Process], dropped);
 }
 
 /// Makes the durable file `a` with no bytes, and gives its write handle.
@@ -949,13 +951,7 @@ fn a_crash_ends_a_create_after_a_dropped_sync_of_its_file_as_a_drop_does() {
         until_crash(&node).await;
         drop_a_sync(file).await;
     };
-    assert_eq!(len_after_a_drop(0, None, dropped), 1_024);
-    for crash in [Crash::Process, Crash::Power] {
-        let lens: BTreeSet<_> = (0..32)
-            .map(|seed| len_after_a_drop(seed, Some(crash), dropped))
-            .collect();
-        assert_eq!(lens, BTreeSet::from([0, 1_024]), "{crash:?}");
-    }
+    ends_as_a_drop(&[Crash::Process, Crash::Power], dropped);
 }
 
 #[test]
