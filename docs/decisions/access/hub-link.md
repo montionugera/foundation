@@ -184,6 +184,6 @@
   home of its index. For its life it holds the key and the slot of each of those
   channels. So one read holds at most the defined channels of one index, and a link
   holds at most `streams_max` reads. No cap bounds the reads of one subject or of one
-  node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the share, which refuses
-  a read wider than the share at each retry (`laptop.architect`, 2026-10-11T15:17:29Z,
+  node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the share, which refuses a
+  read wider than the share at each retry (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item 4).

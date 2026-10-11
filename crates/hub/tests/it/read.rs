@@ -485,9 +485,7 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
-/// A message after the open stops a read while its frames still come. No test pins that
-/// the read polls the program first: the program cannot tell a frame that the node took
-/// in the poll of the message from one that it took before.
+/// A message after the open stops a read while its frames still come.
 #[test]
 fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
     const FRAMES: i64 = 400;
@@ -515,6 +513,36 @@ fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
     });
     let trailing = serve::Error::Client(client::Error::Trailing);
     assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
+}
+
+/// A finish after the open ends a read whose frames still come; the node takes no frame
+/// after the poll in which the finish arrives.
+#[test]
+fn ends_a_read_with_frames_to_send_at_a_finish_after_its_open() {
+    const FRAMES: i64 = 400;
+    let ready = async |test: &Test| writes_wide(test, FRAMES).await;
+    let home = read_session(310, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
+        agent.sleep(Span::SECOND).await;
+        stream.sender.finish().expect("finishes");
+        let mut frames = 0;
+        let end = loop {
+            match stream.recv().await {
+                Ok(Some(message)) => {
+                    if let Ok(FromHome::Head(_)) = reader.decode(&message) {
+                        frames += 1;
+                    }
+                }
+                end => break end,
+            }
+        };
+        assert_eq!(end, Ok(None));
+        assert_eq!(frames, 228);
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
 /// The channels of a read are removed while its run of places waits for room in the
