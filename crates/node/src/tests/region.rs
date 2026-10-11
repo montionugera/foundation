@@ -413,6 +413,7 @@ fn a_start_with_another_name_after_the_name_file_is_gone() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    let edge = kept(&mut sim, &host).expect("the file");
     sim.run_on(&host, |host, _| async move {
         let files = host.files();
         files.remove(Path::new("name")).await.expect("removes");
@@ -439,8 +440,7 @@ fn a_start_with_another_name_after_the_name_file_is_gone() {
         "{listed:?}"
     );
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-    let kept = kept(&mut sim, &host).expect("the file");
-    assert_eq!(kept[17..22], *b"\x04edge");
+    assert_eq!(kept(&mut sim, &host), Some(edge));
 }
 
 /// A start with no region and another name, on a data directory that stores a
@@ -548,6 +548,24 @@ fn a_founding_that_does_not_read_after_the_name_file_is_gone_stops_the_node() {
     });
     assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Mesh(error)));
     assert_eq!(kept(&mut sim, &host), None);
+}
+
+/// With no file `name`, [`crate::name`] gives the error of a founding that does not
+/// read.
+#[test]
+fn a_founding_that_does_not_read_after_the_name_file_is_gone_fails_the_name() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(FOUNDING), operation);
+    let error = ::mesh::Error::Files(env::files::Error::Io {
+        path: PathBuf::from(FOUNDING),
+        operation,
+        code: 5,
+    });
+    assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
 }
 
 /// With no file `name`, no file `node.key`, or the key of a node with no card in the
