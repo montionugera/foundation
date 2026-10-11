@@ -50,11 +50,14 @@
   so a name has at most one run that waits. This supersedes "A connector that the change
   adds: start its run at once" of item 3 of 6074718616 (`laptop.architect-2`,
   2026-10-10T15:29:59Z:
-  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). While a
-  first reader open waits for a home, no first run starts on the node. At a start in a
-  region with no quorum, an out connector whose index has no home holds each connector
-  of the node until the region names that home (#2380). A region of one node names each
-  home with its own vote (`laptop.architect-2`, 2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The wait
+  for each first open supersedes "starts at once" of that comment (`laptop.architect-2`,
+  2026-10-11T05:23:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item
+  4). While a first reader open waits for a home, no first run starts on the node. At a
+  start in a region with no quorum, an out connector whose index has no home holds each
+  connector of the node until the region names that home (#2380). A region of one node
+  names each home with its own vote (`laptop.architect-2`, 2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, question
   2). So `node` holds one count of the first opens of the connectors that each apply
   adds, pending from that apply until `Supervisor::open` resolves, and starts the first
