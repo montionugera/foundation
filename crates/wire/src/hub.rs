@@ -30,14 +30,16 @@
 pub mod client;
 mod home;
 mod reader;
+pub mod text;
 
 use std::fmt;
 
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
+use types::{name, sample};
 
-use crate::common::{Fields, Writer, body};
+use crate::common::{Fields, Length, Writer, body};
 
 const LATEST: u8 = 1;
 const COMPLETE: u8 = 2;
@@ -163,16 +165,18 @@ impl Open {
     /// names no open, [`Error::Length`] when the length fits no open of that kind, and
     /// [`Error::Channels`] when the open names no channel.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
-                limit_bytes: u64::from_le_bytes(fields.take()?),
+                limit_bytes: u64::from_le_bytes(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };
-        let channels = u32::from_le_bytes(fields.take()?);
+        let channels = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         if channels == 0 {
             return Err(Error::Channels);
@@ -224,12 +228,14 @@ impl Credit {
     /// names no credit, and [`Error::Length`] when `bytes` is not [`Credit::LEN`]
     /// bytes.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
-        let limit_bytes = u64::from_le_bytes(fields.take()?);
+        let limit_bytes = u64::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
     }
@@ -308,8 +314,10 @@ impl Reply {
     /// [`Error::Path`] when a head names no path, [`Error::Series`] when it names no
     /// series, and [`Error::Range`] when its range ends past `u64::MAX`.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         match kind {
             OPENED => {
                 fields.end()?;
@@ -320,10 +328,10 @@ impl Reply {
                 Ok(Self::Behind)
             }
             HEAD => {
-                let [path] = fields.take()?;
-                let seq = u64::from_le_bytes(fields.take()?);
-                let count = u32::from_le_bytes(fields.take()?);
-                let series = u32::from_le_bytes(fields.take()?);
+                let [path] = *fields.take()?;
+                let seq = u64::from_le_bytes(*fields.take()?);
+                let count = u32::from_le_bytes(*fields.take()?);
+                let series = u32::from_le_bytes(*fields.take()?);
                 fields.end()?;
                 let path = path_of(path)?;
                 if series == 0 {
@@ -490,8 +498,11 @@ pub mod ends {
     }
 }
 
+// A variant holds a `Box`, so `Error` has drop glue. A decoder on the frame path
+// makes one only on a defect, never with an eager `ok_or`, which builds and drops one
+// on each message.
 /// A hub message that is not valid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
     Empty,
@@ -572,16 +583,38 @@ pub enum Error {
         kind: u8,
     },
     /// The subject of a hello is not a name.
-    Subject,
+    Subject(text::Error<Box<name::Error>>),
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
-    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX).
+    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX), or a read has an open over
+    /// [`OPEN_BYTES_MAX`](client::OPEN_BYTES_MAX).
     Oversize {
         /// The bytes of the body.
         length: u64,
+        /// The cap of the body.
+        cap: u64,
     },
-    /// A message comes after the body of a request or a response.
+    /// The open of a read names no mode.
+    Mode {
+        /// The mode byte.
+        byte: u8,
+    },
+    /// The open of a read has a pattern that does not read, or none that includes
+    /// names.
+    Selector(text::Error<Box<name::Error>>),
+    /// The places of a read name an index place that is not below their count.
+    Index {
+        /// The place of the index.
+        index: u32,
+        /// The count of places.
+        count: u32,
+    },
+    /// The sample type of a place of a read does not read.
+    Sample(text::Error<sample::Error>),
+    /// The name of a place of a read does not read.
+    Name(text::Error<Box<name::Error>>),
+    /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
     Unfinished {
@@ -653,15 +686,35 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject => f.write_str("the subject of the hello is not a name"),
+            Self::Subject(cause) => {
+                write!(f, "the subject of the hello is not a name: {cause}")
+            }
             Self::SmallOrder => {
                 f.write_str("the key of the hello is a point of small order")
             }
-            Self::Oversize { length } => write!(
+            Self::Oversize { length, cap } => {
+                write!(f, "the body has {length} bytes, over the cap of {cap}")
+            }
+            Self::Mode { byte } => {
+                write!(
+                    f,
+                    "the open of the read names mode {byte}, which no read has"
+                )
+            }
+            Self::Selector(cause) => {
+                write!(f, "the selector of the read does not read: {cause}")
+            }
+            Self::Index { index, count } => write!(
                 f,
-                "the body has {length} bytes, over the cap of {}",
-                client::BODY_BYTES_MAX
+                "the places of the read put the index at place {index} of {count}"
             ),
+            Self::Sample(cause) => write!(
+                f,
+                "the sample type of a place of the read does not read: {cause}"
+            ),
+            Self::Name(cause) => {
+                write!(f, "the name of a place of the read does not read: {cause}")
+            }
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
             }
@@ -676,7 +729,23 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
+                Some(cause)
+            }
+            Self::Sample(cause) => Some(cause),
+            _ => None,
+        }
+    }
+}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
@@ -690,10 +759,13 @@ impl From<body::Error> for Error {
 
 /// The items that remain in a run of `remain` after a message of `items` items.
 fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
-    u32::try_from(items)
+    match u32::try_from(items)
         .ok()
         .and_then(|count| remain.checked_sub(count))
-        .ok_or(Error::Run { items, remain })
+    {
+        Some(rest) => Ok(rest),
+        None => Err(Error::Run { items, remain }),
+    }
 }
 
 /// The slots of one message of a run: `out` as items of `N` bytes, to fill.
@@ -1356,15 +1428,46 @@ mod tests {
 
     #[test]
     fn names_each_error_of_a_client_stream() {
+        let not_utf8 = vec![0xff];
         let cases = [
-            (Error::Subject, "the subject of the hello is not a name"),
+            (
+                Error::Subject(text::Error::Parse(Box::new(name::Error::Empty))),
+                "the subject of the hello is not a name: a name or pattern is empty",
+            ),
             (
                 Error::SmallOrder,
                 "the key of the hello is a point of small order",
             ),
             (
-                Error::Oversize { length: 16_777_217 },
+                Error::Oversize {
+                    length: 16_777_217,
+                    cap: 16_777_216,
+                },
                 "the body has 16777217 bytes, over the cap of 16777216",
+            ),
+            (
+                Error::Mode { byte: 3 },
+                "the open of the read names mode 3, which no read has",
+            ),
+            (
+                Error::Selector(text::Error::Parse(Box::new(name::Error::NoInclude))),
+                "the selector of the read does not read: a selector includes no names",
+            ),
+            (
+                Error::Index { index: 3, count: 3 },
+                "the places of the read put the index at place 3 of 3",
+            ),
+            (
+                Error::Sample(text::Error::Parse(sample::Error::Syntax)),
+                "the sample type of a place of the read does not read: expected a \
+                 sample type such as f64, f32[3], list<u8, 16>, string, or bytes",
+            ),
+            (
+                Error::Name(text::Error::Utf8(
+                    std::str::from_utf8(&not_utf8).unwrap_err(),
+                )),
+                "the name of a place of the read does not read: invalid utf-8 sequence \
+                 of 1 bytes from index 0",
             ),
             (
                 Error::Trailing,
@@ -1378,6 +1481,24 @@ mod tests {
         for (error, text) in cases {
             assert_eq!(error.to_string(), text);
         }
+    }
+
+    #[test]
+    fn gives_the_cause_of_a_text_that_does_not_read() {
+        use std::error::Error as _;
+        let name = text::Error::Parse(Box::new(name::Error::NoInclude));
+        let sample = text::Error::Parse(sample::Error::Syntax);
+        let errors = [
+            (Error::Subject(name.clone()), name.to_string()),
+            (Error::Selector(name.clone()), name.to_string()),
+            (Error::Name(name.clone()), name.to_string()),
+            (Error::Sample(sample.clone()), sample.to_string()),
+        ];
+        for (error, cause) in errors {
+            let source = error.source().map(ToString::to_string);
+            assert_eq!(source, Some(cause), "{error:?}");
+        }
+        assert!(Error::Empty.source().is_none());
     }
 
     fn open() -> impl Strategy<Value = Open> {

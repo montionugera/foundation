@@ -21,16 +21,30 @@
   `Start::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
-  `node.name`, `node.budget`, `node.disk`, `node.memory` (NODE SETTINGS), and
-  `node.failed`. `node.data` is "this user cannot write the data directory":
-  `os::Error::Dir`, and each `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or
-  `EROFS`, in `node::Error::Directory` or in the `buffer::Error::Files` of
-  `node::Error::Buffer`. Its message is "cannot write the data directory {data}:
-  {error}", and its fix "Let this user make and write {data} and each file in it, or
-  give another directory with `--data`". Each other `Directory` error but `Busy`, and
-  each buffer error that neither `node.data` nor NODE SETTINGS (`Pool`) names, is
-  `node.failed`. Lost: `node.data` for the claim of `lock` alone, which leaves a ring
-  that the user cannot write on `node.failed`.
+  `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
+  (NODE SETTINGS), and `node.failed`. `node.data` is "this user cannot use the data
+  directory as it is": each `os::Error::Dir` whatever its errno, and each
+  `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
+  `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
+  `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
+  {error}", and its fix "Make {data} a directory that this user can write, and let it
+  write each file in it, or give another directory with `--data`". The fix also covers a
+  missing parent (`ENOENT`) and a file in its place (`ENOTDIR`). Decided by
+  `laptop.architect-2` (2026-10-10T22:20:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069).
+  Supersedes the cause list and the fix of
+  https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6090417728. Each
+  other error is `node.failed`: each other `Directory` error but `Busy`, each buffer
+  error that neither `node.data` nor NODE SETTINGS (`Pool`) names, and each `Blob`,
+  `Mesh`, or `Group` error that `node.data` does not name. Lost: `node.data` for the
+  claim of `lock` alone, which leaves a ring that the user cannot write on
+  `node.failed`; `files` on each lower error, four public items for one caller; a walk
+  of `source()` with a downcast, type erasure in which a lower error that gives no
+  `source` hides its file call with no failed test. Each match of `files` names each
+  variant, so a new variant that holds a file call fails to compile in `node`, and each
+  new variant needs an edit of `node`. Decided by `laptop.architect`
+  (2026-10-10T15:14:44Z,
+  https://github.com/synnaxlabs/foundation/issues/2282#issuecomment-6098971338).
   `Node::stopper` gives a `Stopper` that stops the node from another thread. A stop
   after the node ended does nothing. Lost: a line that `node` writes itself, a second
   owner of the output form; an entry of the table with a flag that each of its four
@@ -71,5 +85,13 @@
   2026-10-09T23:57:51Z, that reason confirmed, and the first bullet of the ruling
   narrowed to `Applied` and each error but `Config`,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6091313576).
-  `--listen`, and the files `address` and `admin.key`, come with #1744
+  `main` gives `Region::Stored`, so a start whose mesh directory holds no founding
+  founds the root region with the key of `admin.key`, and makes that file when it is
+  not there, and each later start opens that region (NODE MESH). Decided by
+  `laptop.architect-2` (2026-10-10T03:30:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483), and
+  moved to #1744 PR 1b-4 by `laptop.architect` (2026-10-10T22:53:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103048603).
+  `--listen` and the
+  file `address` come with #1744
   (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).
