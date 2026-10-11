@@ -74,7 +74,7 @@ impl Kind for Writer {
         (writes, counts): &Self::Config,
     ) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: writes.clone(),
             counts: counts.clone(),
         })
@@ -265,20 +265,26 @@ fn encode(name: &Name, entry: &Entry, keys: &BTreeMap<Name, Key>) -> Vec<u8> {
     }
 }
 
-/// A kind whose one attribute, `writes`, names the channels that it reads from the mesh
-/// and writes to its device.
+/// A kind that reads the channels of its `select` attribute from the mesh and writes
+/// them to its device.
 struct Commander;
 
 impl Kind for Commander {
-    type Config = Vec<Name>;
+    type Config = connector::reader::Settings;
 
-    fn parse(&self, config: &Document) -> Result<Vec<Name>, Vec<Diagnostic>> {
-        Writer.parse(config).map(|(writes, _)| writes)
+    fn parse(
+        &self,
+        config: &Document,
+    ) -> Result<connector::reader::Settings, Vec<Diagnostic>> {
+        connector::reader::read(config, &[], &[])
     }
 
-    fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
+    fn check(
+        &self,
+        settings: &connector::reader::Settings,
+    ) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: writes.clone(),
+            reader: Some(settings.clone()),
             writes: Vec::new(),
             counts: Vec::new(),
         })
@@ -293,7 +299,7 @@ impl Kind for Commander {
 
     fn run(
         &self,
-        _: Context<Vec<Name>>,
+        _: Context<connector::reader::Settings>,
     ) -> impl Future<Output = Result<(), kind::Error>> {
         std::future::ready(Ok(()))
     }
@@ -323,7 +329,7 @@ impl Kind for Once {
             )]);
         }
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: vec![name("a.time")],
             counts: Vec::new(),
         })
@@ -687,12 +693,12 @@ fn makes_no_writer_of_a_connector_that_writes_to_its_device() {
 connector \"c1\" {{
   kind = \"commander\"
   node = \"n1\"
-  writes = [\"a.value\"]
+  select = \"a.value\"
 }}
 connector \"c2\" {{
   kind = \"commander\"
   node = \"n2\"
-  writes = [\"a.value\"]
+  select = \"a.value\"
 }}
 "
     );
@@ -1605,7 +1611,7 @@ channel \"valve.open\" {{
 connector \"valve\" {{
   kind = \"commander\"
   node = \"edge\"
-  writes = [\"valve.open\"]
+  select = \"valve.open\"
 }}
 {}{}",
         placement("program", "\"valve.time\"", "core"),

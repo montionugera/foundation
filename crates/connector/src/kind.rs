@@ -58,9 +58,11 @@ pub trait Kind: Send + Sync + 'static {
 /// What a checked connector reads and writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Channels {
-    /// The channels it reads from the mesh: commands for the device, or samples it
-    /// sends out.
-    pub reads: Vec<Name>,
+    /// The settings of the reader of the channels it reads from the mesh: commands for
+    /// the device, or samples it sends out. Get them from [`reader::read`]. The
+    /// supervisor opens the reader under the connector's name before each run. `None`
+    /// for a kind that reads no channel.
+    pub reader: Option<reader::Settings>,
     /// The channels it writes to the mesh: samples from the device.
     pub writes: Vec<Name>,
     /// The last segment of each count channel of the kind,
@@ -528,7 +530,7 @@ mod tests {
                 return Err(vec![diagnostic(RANGE, "n is over 8")]);
             }
             Ok(Channels {
-                reads: Vec::new(),
+                reader: None,
                 writes: (0..*n).map(|i| name(&format!("counter.c{i}"))).collect(),
                 counts: vec![name("frames")],
             })
@@ -578,7 +580,7 @@ mod tests {
         assert_eq!(
             channels,
             Ok(Channels {
-                reads: Vec::new(),
+                reader: None,
                 writes,
                 counts: vec![name("frames")],
             })

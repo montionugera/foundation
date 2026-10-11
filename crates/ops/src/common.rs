@@ -52,7 +52,7 @@ impl kind::Kind for Reader {
 
     fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: writes.clone(),
             counts: Vec::new(),
         })
