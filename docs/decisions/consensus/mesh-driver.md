@@ -202,14 +202,14 @@
   node opens the mesh again, and the open makes durable what it gives (MESH LOG). The
   task ends soon after the last `Mesh` drops, a write in progress ends first, and a
   write that waits for a block ends at the next tick; until then a new open gives
-  `Error::Log`. Each open applies the log from index 1, until
-  snapshots (#253). A watch does not keep the group running, and a dropped watch leaves
-  no waker. `open` refuses a node or a voter that is not a member (`Error::NotMember`),
-  and a private key that is not the key of this node's member (`Error::WrongKey`).
-  `Config.founding.members` is a list, and the region state holds each record under the
-  key of its card, so the key of a member has one copy. `open` is the one check of a
-  list for two records of one node: a decoder of a join answer passes its records on and
-  does not check them again (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
+  `Error::Log`. Each open applies the log from index 1, until snapshots (#253). A watch
+  does not keep the group running, and a dropped watch leaves no waker. `open` refuses a
+  node or a voter that is not a member (`Error::NotMember`), and a private key that is
+  not the key of this node's member (`Error::WrongKey`). `Config.founding.members` is a
+  list, and the region state holds each record under the key of its card, so the key of
+  a member has one copy. `open` is the one check of a list for two records of one node:
+  a decoder of a join answer passes its records on and does not check them again
+  (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
   https://github.com/synnaxlabs/foundation/issues/1259#issuecomment-6033747312, which
   reverses the map of the ruling below). The key of a member is the key that its card's
   signature covers, and `open` refuses a member that the region cannot hold, or two
