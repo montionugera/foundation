@@ -4553,6 +4553,54 @@ mod port {
             assert_eq!(out.lock().unwrap().take(), Some(vec![]));
         }
 
+        /// A session whose hold drops leaves its place: at the bound, the place closes
+        /// only the sessions that still hold it.
+        #[test]
+        fn a_session_whose_hold_drops_leaves_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [
+                sim.node(sim::node::Config::default()),
+                sim.node(sim::node::Config::default()),
+            ];
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[0], move |own, tasks| async move {
+                let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
+                let mut places = route::Places::default();
+                let left = transport.accept().await.expect("a session");
+                let hold = places.take(&left, |_| false);
+                let ended = transport.accept().await.expect("a session");
+                let kept = places.take(&ended, |_| false);
+                drop(hold);
+                let (mut sessions, mut holds) = (Vec::new(), Vec::new());
+                for _ in 0..256 {
+                    let session = transport.accept().await.expect("a session");
+                    holds.push(places.take(&session, |_| false));
+                    sessions.push(session);
+                }
+                let closed = closings(std::slice::from_ref(&left), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some(closed.borrow().clone());
+                drop((kept, holds, sessions, left, ended, transport));
+            });
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                let open = first.dial(KEY.public(), &at).await.expect("a session");
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let ended = second.dial(KEY.public(), &at).await.expect("a session");
+                ended.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let (program, _) = program(&own, tasks);
+                let held = fill(&program, &at, 256).await;
+                own.clock().sleep(Span::MINUTE).await;
+                drop((open, ended, held, program, first, second));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
+        }
+
         /// A node with no region: 255 programs and the node [`CLIENT`] fill the bound,
         /// and the node of a second key closes the oldest program. [`CLIENT`] holds
         /// one place by its key: once it closes its session, the next program closes
@@ -4782,6 +4830,102 @@ mod port {
             let of_node = of_node.lock().unwrap().take();
             let of_held = of_held.lock().unwrap().clone();
             (of_node, of_program.lock().unwrap().take(), of_held)
+        }
+
+        /// A node outside the region holds the oldest place with its old
+        /// session, then dials again from a new transport and closes the new session
+        /// at once. Then 256 programs dial. The old session must not outlive the
+        /// bound: it closes, as the newer session won, or as the oldest place.
+        #[test]
+        fn a_redial_that_ends_at_once_keeps_no_session_past_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, first_pool) = transport(&own, tasks.clone(), CLIENT);
+                let old = first.dial(KEY.public(), &at).await.expect("a session");
+                let of_old = closings(std::slice::from_ref(&old), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                dead.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let after_redial = of_old.borrow().clone();
+                let (program, _) = program(&own, tasks.clone());
+                let held = fill(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let old_closed = of_old.borrow().clone();
+                let sent_old = if old_closed.is_empty() {
+                    Some(sent_clock(&old, &first_pool, &own).await)
+                } else {
+                    None
+                };
+                *seen.lock().unwrap() =
+                    Some((after_redial, old_closed, closed.borrow().clone(), sent_old));
+                drop((held, program, first, second, old, dead));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (after_redial, old_closed, closed, sent_old) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(
+                (after_redial, old_closed, closed, sent_old),
+                (vec![], vec![(0, refused())], vec![], None),
+            );
+        }
+
+        /// 8 node keys outside the region each hold a session and send a
+        /// dead redial, then 512 programs dial. At most 256 sessions of peers outside
+        /// the region may stay open, so each old session of the 8 must close.
+        #[test]
+        fn redials_that_end_at_once_hold_no_session_over_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let mut keep = Vec::new();
+                let mut olds = Vec::new();
+                for n in 0..8u8 {
+                    let (first, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    let (second, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                    dead.close(Code(0));
+                    olds.push(old);
+                    keep.push((first, second, dead));
+                }
+                own.clock().sleep(Span::SECOND).await;
+                let of_olds = closings(&olds, &tasks);
+                let (program, _) = program(&own, tasks.clone());
+                let held = fill(&program, &at, 512).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let open_programs = held.len() - closed.borrow().len();
+                let open_olds = olds.len() - of_olds.borrow().len();
+                *seen.lock().unwrap() = Some((open_olds, open_programs));
+                drop((held, program, olds, keep));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (open_olds, open_programs) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert!(
+                open_olds + open_programs <= 256,
+                "{open_olds} old node sessions and {open_programs} programs are open"
+            );
         }
 
         /// The error of the first send that fails on a one-way stream of `session`

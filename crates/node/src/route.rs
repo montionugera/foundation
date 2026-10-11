@@ -57,50 +57,71 @@ pub(crate) async fn accept(
 }
 
 /// A place that a peer outside the region took, held while a session of it runs.
-pub(crate) struct Place {
+struct Place {
     peer: Peer,
-    /// The peer's newest session. The transport closes an older session of a node key
-    /// as a new one arrives (ONE SESSION PER PEER), so no other is open.
-    session: RefCell<Session>,
+    /// Each session of the peer that runs, by serial. A node key can have two open:
+    /// the transport keeps the older session when the newer one has already ended.
+    sessions: RefCell<Vec<(u64, Session)>>,
+}
+
+/// A session's hold on its place. The place frees when its last hold drops.
+pub(crate) struct Hold {
+    place: Rc<Place>,
+    serial: u64,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut sessions = self.place.sessions.borrow_mut();
+        sessions.retain(|(serial, _)| *serial != self.serial);
+    }
 }
 
 /// The places that the peers outside the region hold, oldest first.
 #[derive(Default)]
 pub(crate) struct Places {
     held: VecDeque<Weak<Place>>,
+    serial: u64,
 }
 
 impl Places {
-    /// The place of `session`, whose peer is not a member, which `session` holds while
-    /// it keeps the result: the place that its node key still holds, which keeps its
-    /// age, else a new place. At [`PLACES`], the oldest place frees first. When
-    /// `member` holds for the peer of that place now, its session stays; else it
-    /// closes with `wire::session::REFUSED`.
+    /// The hold of `session`, whose peer is not a member, on its place: the place that
+    /// its node key still holds, which keeps its age, else a new place. At [`PLACES`],
+    /// the oldest place frees first. When `member` holds for the peer of that place
+    /// now, its sessions stay; else each closes with `wire::session::REFUSED`.
     pub(crate) fn take(
         &mut self,
         session: &Session,
         member: impl Fn(Peer) -> bool,
-    ) -> Rc<Place> {
+    ) -> Hold {
         self.held.retain(|place| place.strong_count() > 0);
         let peer = session.peer();
-        let kept = (self.held.iter().filter_map(Weak::upgrade))
-            .find(|place| matches!(peer, Peer::Node(_)) && place.peer == peer);
-        if let Some(place) = kept {
-            place.session.replace(session.clone());
-            return place;
-        }
-        if self.held.len() >= PLACES
-            && let Some(oldest) = self.held.pop_front().and_then(|old| old.upgrade())
-            && !member(oldest.peer)
-        {
-            oldest.session.borrow().close(Code(wire::session::REFUSED));
-        }
-        let place = Rc::new(Place {
-            peer,
-            session: RefCell::new(session.clone()),
+        let kept = match peer {
+            Peer::Node(_) => (self.held.iter().filter_map(Weak::upgrade))
+                .find(|place| place.peer == peer),
+            Peer::Client => None,
+        };
+        let place = kept.unwrap_or_else(|| {
+            if self.held.len() >= PLACES
+                && let Some(oldest) =
+                    self.held.pop_front().and_then(|old| old.upgrade())
+                && !member(oldest.peer)
+            {
+                for (_, open) in oldest.sessions.borrow().iter() {
+                    open.close(Code(wire::session::REFUSED));
+                }
+            }
+            let place = Rc::new(Place {
+                peer,
+                sessions: RefCell::default(),
+            });
+            self.held.push_back(Rc::downgrade(&place));
+            place
         });
-        self.held.push_back(Rc::downgrade(&place));
-        place
+        let serial = self.serial;
+        self.serial += 1;
+        place.sessions.borrow_mut().push((serial, session.clone()));
+        Hold { place, serial }
     }
 }
 
