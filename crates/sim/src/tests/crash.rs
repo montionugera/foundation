@@ -838,6 +838,7 @@ fn a_crash_in_a_create_that_makes_no_file_draws_no_state() {
         node.fail_file(Path::new("a"), Operation::Open);
     };
     let empty = |node: node::Node| async move { drop(create(&node, "a", 0).await) };
+    let full = |node: node::Node| async move { drop(create(&node, "a", KIB).await) };
     for crash in [Crash::Process, Crash::Power] {
         for seed in 0..8 {
             let at = format!("{crash:?} {seed}");
@@ -848,6 +849,7 @@ fn a_crash_in_a_create_that_makes_no_file_draws_no_state() {
             assert!(!draws(seed, crash, "a", 1_024, held), "held a: {at}");
             assert!(!draws(seed, crash, "a", 1_024, failed), "failed a: {at}");
             assert!(draws(seed, crash, "a", 1_024, empty), "empty a: {at}");
+            assert!(!draws(seed, crash, "a", 1_024, full), "full a: {at}");
             assert!(!draws(seed, crash, "a", 0, empty), "empty a, 0: {at}");
         }
     }
@@ -1683,6 +1685,36 @@ fn a_power_cut_with_each_change_durable_draws_nothing() {
             digest_after_a_call(&mut sim, &node)
         });
         assert_eq!(digests[0], digests[1], "{seed}");
+    }
+}
+
+/// The delay of a file call after a crash by `crash` with an open of `a` by `mode`
+/// in flight, over a log of one change. The delay draws from the files stream, so it
+/// shows how many draws the crash made.
+fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
+    let (mut sim, node) = disk(seed);
+    crash_after(&mut sim, &node, crash, move |node| async move {
+        drop(create(&node, "a", 0).await);
+        let files = node.files();
+        files.sync_dir(Path::new("")).await.unwrap();
+        files.create_dir(Path::new("d")).await.unwrap();
+        until_crash(&node).await;
+        hang(files.open(Path::new("a"), mode)).await;
+    });
+    sim.run_on(&node, |node, _| async move {
+        let start = node.clock().now();
+        node.files().free().await.unwrap();
+        node.clock().now() - start
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_power_cut_over_a_log_that_is_not_empty_draws_once() {
+    for seed in 0..8 {
+        let cut = delay_after(seed, Crash::Power, Mode::Write);
+        let create = Mode::Create { len: KIB };
+        assert_eq!(cut, delay_after(seed, Crash::Process, create), "{seed}");
     }
 }
 
