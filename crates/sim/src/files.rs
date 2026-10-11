@@ -76,15 +76,45 @@ impl Call {
         }
     }
 
-    /// The path whose file a call of `path` replaces, makes, or removes.
-    fn changes<'a>(&'a self, path: &'a Path) -> Option<&'a Path> {
+    /// The calls in flight that a call of `path` waits for, if any.
+    fn scope(&self, path: &Path) -> Option<Scope> {
         match self {
             Self::Open(Mode::Write | Mode::Create { .. })
             | Self::Remove
-            | Self::Unlink { .. } => Some(path),
-            Self::Rename { to, .. } => Some(to),
+            | Self::Unlink { .. } => Some(Scope::Path(disk::normal(path))),
+            Self::Rename { to, .. } => Some(Scope::Path(disk::normal(to))),
+            Self::List => Some(Scope::Dir(disk::normal(path))),
+            Self::Free => Some(Scope::Disk),
             _ => None,
         }
+    }
+}
+
+/// The calls of a node that a dropped future or handle left to run, which a call waits
+/// for. Its paths are normal.
+enum Scope {
+    /// The calls on a path whose file the call replaces, makes, or removes.
+    Path(PathBuf),
+    /// The calls on a path directly in a directory that the call lists.
+    Dir(PathBuf),
+    /// Every call.
+    Disk,
+}
+
+impl Scope {
+    /// Whether a call on `path`, which is normal, is in the scope.
+    fn covers(&self, path: &Path) -> bool {
+        match self {
+            Self::Path(on) => on == path,
+            Self::Dir(dir) => path.parent() == Some(dir),
+            Self::Disk => true,
+        }
+    }
+
+    /// Whether the scope also covers each remove through a handle whose future lives.
+    /// Only a call that replaces, makes, or removes a file waits for one.
+    fn live_removes(&self) -> bool {
+        matches!(self, Self::Path(_))
     }
 }
 
@@ -235,8 +265,8 @@ impl Files {
             }
         }
         let mut at = Monotonic(now.0.saturating_add(delay));
-        if let Some(path) = call.changes(&path) {
-            at = at.max(self.wait_end(node, path));
+        if let Some(scope) = call.scope(&path) {
+            at = at.max(self.wait_end(node, &scope));
         }
         self.queue.insert((at, key));
         let flight = Flight {
@@ -253,24 +283,25 @@ impl Files {
         key
     }
 
-    /// The time that a call of `node` that changes what `path` names ends no earlier
-    /// than: the end of the last call on `path` that a dropped future or handle left
-    /// to run, or of a remove through a handle, live or not, or zero. A call without a
-    /// handle is on its path. A call through a handle is on each path that has named
-    /// its file, and on the path of each dropped rename of the file, so it stays on
-    /// them after a rename or a remove.
-    fn wait_end(&self, node: usize, path: &Path) -> Monotonic {
-        let (path, disk) = (disk::normal(path), &self.disks[node]);
+    /// The time that a call of `node` in `scope` ends no earlier than: the end of the
+    /// last call in `scope` that a dropped future or handle left to run, or of a
+    /// remove through a handle, live or not, when the scope covers live removes, or
+    /// zero. A call without a handle is on its path. A call through a handle is on each
+    /// path that has named its file, and on the path of each dropped rename of the
+    /// file, so it stays on them after a rename or a remove.
+    fn wait_end(&self, node: usize, scope: &Scope) -> Monotonic {
+        let disk = &self.disks[node];
         let pending: Vec<_> = (self.queue.iter().rev())
             .map(|(at, key)| (*at, &self.flights[key]))
             .filter(|(_, flight)| {
-                let unlink = matches!(flight.call, Call::Unlink { .. });
+                let unlink =
+                    matches!(flight.call, Call::Unlink { .. }) && scope.live_removes();
                 flight.node == node && (flight.dropped || unlink)
             })
             .collect();
         let moved: BTreeSet<_> = (pending.iter())
             .filter_map(|(_, flight)| match &flight.call {
-                Call::Rename { handle, to } if disk::normal(to) == path => {
+                Call::Rename { handle, to } if scope.covers(&disk::normal(to)) => {
                     Some(handle.inode)
                 }
                 _ => None,
@@ -279,9 +310,10 @@ impl Files {
         (pending.iter())
             .find(|(_, flight)| match flight.call.handle() {
                 Some(handle) => {
-                    moved.contains(&handle.inode) || disk.named_by(handle.inode, &path)
+                    moved.contains(&handle.inode)
+                        || disk.names(handle.inode).any(|name| scope.covers(name))
                 }
-                None => disk::normal(&flight.path) == path,
+                None => scope.covers(&disk::normal(&flight.path)),
             })
             .map_or(Monotonic::default(), |(at, _)| *at)
     }
