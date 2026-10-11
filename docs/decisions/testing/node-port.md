@@ -25,9 +25,9 @@
   handshake, within the bound on sessions of #1628 (below); the mesh checks each message
   of a mesh stream (NODE MESH). With no mesh, at the stop, each session and stream
   future drops, then the transport. A header has 10 s (#1628, below).
-  Amended (2026-10-11, #2420, by `laptop.architect-2`): `Node::start` binds the port
-  once shard 0 has claimed the data directory, before any buffer opens; a failed bind
-  opens no buffer (NODE START;
+  Amended (2026-10-11, #2420, by `laptop.architect-2`): shard 0 binds the port once it
+  has claimed the data directory, before any buffer opens; a failed bind opens no
+  buffer (NODE START;
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
   supersedes the bind before any shard starts of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
