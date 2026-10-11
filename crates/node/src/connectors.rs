@@ -35,6 +35,8 @@ struct Loop {
     changed: cancel::Token,
     /// The loop read `None` and ended.
     ended: bool,
+    /// The last run gave `Config`, so the next apply runs it again.
+    refused: bool,
 }
 
 impl Runs {
@@ -51,8 +53,8 @@ impl Runs {
 
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
-    /// that is new or changed, after the last run of its name returned. Each other
-    /// connector keeps its run.
+    /// that is new or changed, or whose last run gave `Config`, after the last run of
+    /// its name returned. Each other connector keeps its run.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
@@ -69,7 +71,7 @@ impl Runs {
                 return false;
             }
             let wanted = wanted.get(name).copied();
-            if state.connector.as_ref() != wanted {
+            if state.connector.as_ref() != wanted || state.refused {
                 state.connector = wanted.cloned();
                 state.changed.cancel();
                 state.changed = cancel::Token::new();
@@ -84,6 +86,7 @@ impl Runs {
                 connector: Some(connector.clone()),
                 changed: cancel::Token::new(),
                 ended: false,
+                refused: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
             let supervisor = self.supervisor.clone();
@@ -92,6 +95,7 @@ impl Runs {
                 loop {
                     let (connector, changed) = {
                         let mut state = state.borrow_mut();
+                        state.refused = false;
                         let Some(connector) = state.connector.clone() else {
                             state.ended = true;
                             return;
@@ -101,9 +105,13 @@ impl Runs {
                     let kind = connector.kind().as_str();
                     let config = connector.config().document();
                     match supervisor.run(kind, name.clone(), config, &changed).await {
-                        // The status holds its class, and the next change of the
-                        // connector runs it again.
-                        Ok(()) | Err(connector::kind::Error::Config(_)) => {}
+                        // The next change of the connector runs it again.
+                        Ok(()) => {}
+                        // The status holds its class. The fix can be in another
+                        // definition, so the next spec change runs it again.
+                        Err(connector::kind::Error::Config(_)) => {
+                            state.borrow_mut().refused = true;
+                        }
                         Err(error) => {
                             unreachable!(
                                 "invariant: `run` gives only `Config`: {error}"

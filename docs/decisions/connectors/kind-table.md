@@ -5,7 +5,12 @@
   name comes from a file. A run or a discovery fails with one of three classes:
   `Config`, `Device`, and `Retry` (restart with backoff). Decided by the `connector`
   builder in the plan on #338, after `/eb-review`; approved by the coordinator
-  (#338). After `Config`, the connector stops until a spec change changes it
+  (#338). After `Config`, the connector stops until the next spec change, also one
+  that changes only another definition, since the fix can be there: the channels that
+  a reader selects, or the settings of another connector on its endpoint
+  (`laptop.architect-2`, 2026-10-11T03:35:05Z:
+  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6105068890).
+  Supersedes "After `Config`, the connector stops until a spec change changes it"
   (`laptop.architect-2`, 2026-10-09T05:10:43Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
   Supersedes "The supervisor stops; a spec change starts it again" of the plan on #338
