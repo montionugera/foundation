@@ -4,12 +4,15 @@
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
+use std::future::Future as _;
+use std::pin::pin;
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
+use types::time::Span;
 
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
@@ -25,8 +28,10 @@ pub(crate) struct Node {
 }
 
 /// A client of open62541 with an active session, on its own loop and connection
-/// manager, on the thread that made it. A drop closes its connection and waits for
-/// nothing, but leaves its session on the server until the session times out; a
+/// manager, on the thread that made it. Its loop runs only in its calls, so a client
+/// idle for longer than the channel lifetime of its server (often 10 minutes) loses
+/// its connection, and each later read fails. A drop closes its connection and waits
+/// for nothing, but leaves its session on the server until the session times out; a
 /// [`Client::close`] closes the session too.
 pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
@@ -36,6 +41,9 @@ pub(crate) struct Client {
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
+
+/// The time a connect waits for an active session.
+const TIMEOUT: Span = Span::from_nanos(5_000_000_000);
 
 /// The answer of the read in flight.
 #[derive(Default)]
@@ -53,8 +61,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, else the status of open62541
-    /// when it refuses `url` or the connect fails.
+    /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
+    /// is not active after 5 s, else the status of open62541 when it refuses `url` or
+    /// the connect fails.
     ///
     /// # Panics
     ///
@@ -67,6 +76,7 @@ impl Client {
     ) -> Result<Self, Status> {
         let url =
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
+        let mut deadline = pin!(clock.sleep(TIMEOUT));
         let connections = Manager::new(clock, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
@@ -84,13 +94,15 @@ impl Client {
             return Err(status);
         }
         this.connections
-            .drive(|_| {
+            .drive(|cx| {
                 this.connections.events().run();
                 let (_, session, status) = this.state();
                 if status != Status::GOOD {
                     Poll::Ready(Err(status))
                 } else if session == ffi::Session::ACTIVATED {
                     Poll::Ready(Ok(()))
+                } else if deadline.as_mut().poll(cx).is_ready() {
+                    Poll::Ready(Err(Status::BAD_TIMEOUT))
                 } else {
                     Poll::Pending
                 }

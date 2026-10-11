@@ -1,12 +1,14 @@
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::task::Poll;
 
 use env::clock::Clock;
-use env::net::Net;
+use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
+use types::time::Span;
 
 use super::{Answer, Client, Node, answer};
 use crate::connection::Manager;
@@ -270,4 +272,52 @@ fn a_close_frees_the_session_on_the_server_and_a_drop_does_not() {
         .await
     });
     assert_eq!(connects, Some(Status::BAD_TOO_MANY_SESSIONS));
+}
+
+/// Connects to a listener on `node` that gives `accepted` each stream it accepts, and
+/// gives the status of the failed connect and the time it took.
+async fn connect_to_listener(
+    node: &node::Node,
+    mut accepted: impl FnMut(Tcp),
+) -> (Status, Span) {
+    let local = SocketAddr::new(node.addresses()[0], PORT);
+    let listen = tcp::Listen {
+        local,
+        backlog: 4,
+        options: tcp::Options {
+            send_buffer_bytes: 1 << 16,
+            recv_buffer_bytes: 1 << 16,
+            unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
+            delayed: false,
+        },
+    };
+    let mut listener = node.net().listen(&listen).expect("the port is free");
+    let clock = node.clock();
+    let start = clock.now();
+    let mut rng = node.entropy().rng();
+    let url = format!("opc.tcp://{local}");
+    let mut connect = pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
+    let status = poll_fn(|cx| {
+        while let Poll::Ready(stream) = listener.poll_accept(cx) {
+            accepted(stream.expect("the accept works"));
+        }
+        connect.as_mut().poll(cx).map(|connect| connect.err())
+    })
+    .await;
+    (status.expect("the connect fails"), clock.now() - start)
+}
+
+#[test]
+fn a_connect_to_a_listener_that_never_answers_times_out() {
+    let mut streams = Vec::new();
+    let (out, _) = run(0, async move |node| {
+        connect_to_listener(&node, |stream| streams.push(stream)).await
+    });
+    assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
+}
+
+#[test]
+fn a_connect_to_a_listener_that_closes_each_stream_times_out() {
+    let (out, _) = run(0, async |node| connect_to_listener(&node, drop).await);
+    assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
 }
