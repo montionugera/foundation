@@ -2918,6 +2918,25 @@ mod tests {
         });
     }
 
+    /// A handoff that found no room is not recorded at a resend write: the shard does
+    /// not read a resend frame.
+    #[test]
+    fn keeps_a_waiting_handoff_at_a_resend_write() {
+        run(246, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let blocks = test.fill();
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            drop(blocks);
+            let write = frame(&test.pool, &set, &[(2, &[10])]);
+            assert_eq!(shard.write(b, Label::Resend, write), Err(Error::Resend));
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+        });
+    }
+
     /// A handoff that found no room waits, also when the end of a lease of its writer
     /// on another index records a handoff.
     #[test]
