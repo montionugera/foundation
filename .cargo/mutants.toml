@@ -80,8 +80,8 @@ exclude_re = [
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
   # The oracle of `node.key` in the `node_identity` fuzz target and the property
-  # tests. It panics only when `sector::written` is wrong, and the mutants of
-  # `written` show that it does.
+  # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
+  # and the mutants of `written` show that it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
   'crates/node/src/admin\.rs:.*replace check with \(\)',
