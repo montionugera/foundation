@@ -7,7 +7,7 @@
   2026-10-11T10:46:58Z:
   https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840).
   Supersedes "before the next input or frame" of
-  https://github.com/synnaxlabs/foundation/issues/191. Its bytes are empty when no
+  https://github.com/synnaxlabs/foundation/pull/402. Its bytes are empty when no
   writer holds control, else `[authority: u8]` then the holder's subject as UTF-8; the
   entry length gives the subject's length. A restart or a failover starts the gate from
   the last record (X18): `Gate::recover` with its holder, or `Gate::new` when it names
