@@ -1535,6 +1535,25 @@ mod tests {
             }
         }
 
+        // A check of a join gives what its apply gives, and changes nothing.
+        #[test]
+        fn a_check_of_a_join_gives_the_result_of_its_apply(
+            steps in prop::collection::vec(steps(), 0..16),
+        ) {
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                if let Change::Join(join) = &step {
+                    let before = state.clone();
+                    let checked = state.check(join);
+                    prop_assert_eq!(&state, &before);
+                    prop_assert_eq!(checked, state.apply(step).map(drop));
+                } else {
+                    let _applied = state.apply(step);
+                }
+            }
+        }
+
         // More holders never lose a quorum, and every voter is one.
         #[test]
         fn more_holders_keep_a_quorum(
