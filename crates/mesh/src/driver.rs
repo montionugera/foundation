@@ -2534,13 +2534,17 @@ mod tests {
         });
     }
 
-    #[test]
-    fn names_gives_the_name_of_each_founding_member() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
-            assert_eq!(mesh.names(), BTreeSet::from(names));
-        });
+    mod names {
+        use super::*;
+
+        #[test]
+        fn gives_the_name_of_each_founding_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
+                assert_eq!(mesh.names(), BTreeSet::from(names));
+            });
+        }
     }
 
     // One `Ready` holds the entry of the second proposal and commits the first home.
@@ -2637,18 +2641,6 @@ mod tests {
             assert_eq!(format!("{mesh:?}"), "Mesh { .. }");
             let watch = mesh.watch(INDEX);
             assert_eq!(format!("{watch:?}"), "Watch { index: Key(7), .. }");
-        });
-    }
-
-    // The `Debug` text is the behavior under test: no other call shows it.
-    #[test]
-    fn the_debug_text_of_ended_holds_nothing() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut ended = mesh.ended();
-            let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
-            assert_eq!(polled, Poll::Pending);
-            assert_eq!(format!("{ended:?}"), "Ended { .. }");
         });
     }
 
@@ -4401,35 +4393,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(4), reply), Ok(()));
             });
         }
-
-        #[test]
-        fn propose_voters_refuses_a_node_that_is_not_a_member() {
-            solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-                let at = lead(&mesh, &node.clock(), home(1)).await;
-                let refused = mesh.propose_voters([key(1), key(3)].into()).await;
-                assert_eq!(refused, Err(Error::NotMember(key(3))));
-                let text = format!("node {} is not a member of the region", key(3));
-                assert_eq!(refused.unwrap_err().to_string(), text);
-                let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
-                assert_eq!(proposed, Ok(after(at, 1)));
-            });
-        }
-
-        #[test]
-        fn propose_voters_refuses_a_node_whose_join_is_not_applied() {
-            solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
-                write(&mesh, changes(&[join(3)])).await;
-                let refused = mesh.propose_voters([key(2), key(3)].into()).await;
-                assert_eq!(refused, Err(Error::NotMember(key(3))));
-                let follower = raft::Error::NotLeader {
-                    leader: Some(key(2)),
-                };
-                let proposed = mesh.propose_voters([key(2)].into()).await;
-                assert_eq!(proposed, Err(Error::Raft(follower)));
-            });
-        }
     }
 
     #[test]
@@ -5955,50 +5918,88 @@ mod tests {
         }
     }
 
-    #[test]
-    fn member_gives_the_record_of_a_member_and_none_for_another_node() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            assert_eq!(mesh.member(key(2)), Some(common::member(2)));
-            assert_eq!(mesh.member(key(1)), Some(common::member(1)));
-            assert_eq!(mesh.member(key(9)), None);
-        });
-    }
+    mod propose_voters {
+        use super::unapplied::{changes, write};
+        use super::*;
 
-    #[test]
-    fn member_gives_the_record_after_the_group_stops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped));
-            assert_eq!(watch.next().await, Err(cause));
-            assert_eq!(mesh.member(key(1)), Some(common::member(1)));
-            assert_eq!(mesh.member(key(2)), None);
-        });
-    }
-
-    #[test]
-    fn member_gives_the_record_that_its_card_names_for_each_order_of_the_records() {
-        let orders = [
-            [1, 2, 3],
-            [1, 3, 2],
-            [2, 1, 3],
-            [2, 3, 1],
-            [3, 1, 2],
-            [3, 2, 1],
-        ];
-        for order in orders {
-            solo(move |node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &order, &[1]).await.unwrap();
-                for id in IDS {
-                    let member = Some(common::member(id));
-                    assert_eq!(mesh.member(key(id)), member, "{order:?}");
-                }
+        #[test]
+        fn refuses_a_node_that_is_not_a_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let at = lead(&mesh, &node.clock(), home(1)).await;
+                let refused = mesh.propose_voters([key(1), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let text = format!("node {} is not a member of the region", key(3));
+                assert_eq!(refused.unwrap_err().to_string(), text);
+                let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
+                assert_eq!(proposed, Ok(after(at, 1)));
             });
+        }
+
+        #[test]
+        fn refuses_a_node_whose_join_is_not_applied() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
+                write(&mesh, changes(&[join(3)])).await;
+                let refused = mesh.propose_voters([key(2), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let follower = raft::Error::NotLeader {
+                    leader: Some(key(2)),
+                };
+                let proposed = mesh.propose_voters([key(2)].into()).await;
+                assert_eq!(proposed, Err(Error::Raft(follower)));
+            });
+        }
+    }
+
+    mod member {
+        use super::*;
+
+        #[test]
+        fn gives_the_record_of_a_member_and_none_for_another_node() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                assert_eq!(mesh.member(key(2)), Some(common::member(2)));
+                assert_eq!(mesh.member(key(1)), Some(common::member(1)));
+                assert_eq!(mesh.member(key(9)), None);
+            });
+        }
+
+        #[test]
+        fn gives_the_record_after_the_group_stops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut watch = mesh.watch(INDEX);
+                lead(&mesh, &node.clock(), home(1)).await;
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped));
+                assert_eq!(watch.next().await, Err(cause));
+                assert_eq!(mesh.member(key(1)), Some(common::member(1)));
+                assert_eq!(mesh.member(key(2)), None);
+            });
+        }
+
+        #[test]
+        fn gives_the_record_that_its_card_names_for_each_order_of_the_records() {
+            let orders = [
+                [1, 2, 3],
+                [1, 3, 2],
+                [2, 1, 3],
+                [2, 3, 1],
+                [3, 1, 2],
+                [3, 2, 1],
+            ];
+            for order in orders {
+                solo(move |node, tasks| async move {
+                    let mesh = open(&node, &tasks, 1, &order, &[1]).await.unwrap();
+                    for id in IDS {
+                        let member = Some(common::member(id));
+                        assert_eq!(mesh.member(key(id)), member, "{order:?}");
+                    }
+                });
+            }
         }
     }
 
@@ -6029,75 +6030,126 @@ mod tests {
         dialed_at(node, tasks, 1, 0, &IDS, &IDS).await
     }
 
-    #[test]
-    fn ended_waits_for_the_last_mesh_and_the_log() {
-        solo(|node, tasks| async move {
-            let mesh = Mesh::open(dialing(&node, &tasks).await).await.unwrap();
-            let (mut first, second) = (mesh.ended(), mesh.ended());
-            node.clock().sleep(Span::SECOND).await;
-            let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut first).poll(cx))).await;
-            assert_eq!(polled, Poll::Pending);
-            drop(mesh);
-            first.await;
-            second.await;
-            assert_eq!(Mesh::open(dialing(&node, &tasks).await).await.err(), None);
-        });
-    }
+    mod ended {
+        use super::*;
 
-    #[test]
-    fn ended_wakes_each_task_that_waits() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let woken = Rc::new(Cell::new(0));
-            for _ in 0..2 {
-                let (ended, woken) = (mesh.ended(), Rc::clone(&woken));
-                tasks.spawn(async move {
-                    ended.await;
-                    woken.set(woken.get() + 1);
-                });
-            }
-            node.clock().sleep(Span::MILLISECOND).await;
-            drop(mesh);
-            node.clock().sleep(Span::MILLISECOND).await;
-            assert_eq!(woken.get(), 2);
-        });
-    }
-
-    /// The drop of the last mesh stops each wait for a dial, and `ended` does not wait
-    /// for the dial.
-    #[test]
-    fn ended_waits_for_each_task_that_sends_but_not_for_its_dial() {
-        for seed in 0..32 {
-            solo_at(seed, move |node, tasks| async move {
-                let config = dialing(&node, &tasks).await;
-                let transport = Rc::clone(&config.transport);
-                let mesh = Mesh::open(config).await.unwrap();
-                let clock = node.clock();
-                clock.sleep(seconds(5)).await;
-                assert!(Rc::strong_count(&transport) > 2);
-                let ended = mesh.ended();
-                let dropped = clock.now();
+        #[test]
+        fn waits_for_the_last_mesh_and_the_log() {
+            solo(|node, tasks| async move {
+                let mesh = Mesh::open(dialing(&node, &tasks).await).await.unwrap();
+                let (mut first, second) = (mesh.ended(), mesh.ended());
+                node.clock().sleep(Span::SECOND).await;
+                let polled =
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut first).poll(cx))).await;
+                assert_eq!(polled, Poll::Pending);
                 drop(mesh);
-                ended.await;
-                let waited = clock.now() - dropped;
-                assert!(waited <= TICK, "it ended after {waited}");
-                assert_eq!(Rc::strong_count(&transport), 1, "seed {seed}");
+                first.await;
+                second.await;
+                assert_eq!(Mesh::open(dialing(&node, &tasks).await).await.err(), None);
             });
         }
-    }
 
-    #[test]
-    fn ended_resolves_when_the_group_stops() {
-        solo(|node, tasks| async move {
-            let mut config = dialing(&node, &tasks).await;
-            config.founding.voters = [key(1)].into_iter().collect();
-            let mesh = Mesh::open(config).await.unwrap();
-            let cause = fail_sync(&node);
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            assert_eq!(watch.next().await, Err(cause));
-            mesh.ended().await;
-        });
+        #[test]
+        fn wakes_each_task_that_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let woken = Rc::new(Cell::new(0));
+                for _ in 0..2 {
+                    let (ended, woken) = (mesh.ended(), Rc::clone(&woken));
+                    tasks.spawn(async move {
+                        ended.await;
+                        woken.set(woken.get() + 1);
+                    });
+                }
+                node.clock().sleep(Span::MILLISECOND).await;
+                drop(mesh);
+                node.clock().sleep(Span::MILLISECOND).await;
+                assert_eq!(woken.get(), 2);
+            });
+        }
+
+        /// The drop of the last mesh stops each wait for a dial, and `ended` does not
+        /// wait for the dial.
+        #[test]
+        fn waits_for_each_task_that_sends_but_not_for_its_dial() {
+            for seed in 0..32 {
+                solo_at(seed, move |node, tasks| async move {
+                    let config = dialing(&node, &tasks).await;
+                    let transport = Rc::clone(&config.transport);
+                    let mesh = Mesh::open(config).await.unwrap();
+                    let clock = node.clock();
+                    clock.sleep(seconds(5)).await;
+                    assert!(Rc::strong_count(&transport) > 2);
+                    let ended = mesh.ended();
+                    let dropped = clock.now();
+                    drop(mesh);
+                    ended.await;
+                    let waited = clock.now() - dropped;
+                    assert!(waited <= TICK, "it ended after {waited}");
+                    assert_eq!(Rc::strong_count(&transport), 1, "seed {seed}");
+                });
+            }
+        }
+
+        #[test]
+        fn resolves_when_the_group_stops() {
+            solo(|node, tasks| async move {
+                let mut config = dialing(&node, &tasks).await;
+                config.founding.voters = [key(1)].into_iter().collect();
+                let mesh = Mesh::open(config).await.unwrap();
+                let cause = fail_sync(&node);
+                let mut watch = mesh.watch(INDEX);
+                assert_eq!(watch.next().await, Ok(None));
+                assert_eq!(watch.next().await, Err(cause));
+                mesh.ended().await;
+            });
+        }
+
+        #[test]
+        fn polled_twice_holds_one_waker() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let held = Arc::new(Idle);
+                let waker = Waker::from(Arc::clone(&held));
+                let mut cx = Context::from_waker(&waker);
+                let mut ended = mesh.ended();
+                for _ in 0..2 {
+                    assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
+                }
+                drop(waker);
+                assert_eq!(Arc::strong_count(&held), 2);
+                drop(mesh);
+            });
+        }
+
+        #[test]
+        fn leaves_no_waker_when_dropped() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let held = Arc::new(Idle);
+                let waker = Waker::from(Arc::clone(&held));
+                let mut cx = Context::from_waker(&waker);
+                let mut ended = mesh.ended();
+                assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
+                drop(ended);
+                drop(waker);
+                assert_eq!(Arc::strong_count(&held), 1);
+                drop(mesh);
+            });
+        }
+
+        // The `Debug` text is the behavior under test: no other call shows it.
+        #[test]
+        fn debug_text_holds_nothing() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut ended = mesh.ended();
+                let polled =
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
+                assert_eq!(polled, Poll::Pending);
+                assert_eq!(format!("{ended:?}"), "Ended { .. }");
+            });
+        }
     }
 
     /// A waker that a test counts the clones of, which `Waker::noop` does not allow.
@@ -6108,127 +6160,98 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
-    #[test]
-    fn an_ended_polled_twice_holds_one_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let held = Arc::new(Idle);
-            let waker = Waker::from(Arc::clone(&held));
-            let mut cx = Context::from_waker(&waker);
-            let mut ended = mesh.ended();
-            for _ in 0..2 {
-                assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
-            }
-            drop(waker);
-            assert_eq!(Arc::strong_count(&held), 2);
-            drop(mesh);
-        });
-    }
+    mod watch {
+        use super::*;
 
-    #[test]
-    fn a_dropped_ended_leaves_no_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let held = Arc::new(Idle);
-            let waker = Waker::from(Arc::clone(&held));
-            let mut cx = Context::from_waker(&waker);
-            let mut ended = mesh.ended();
-            assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
-            drop(ended);
-            drop(waker);
-            assert_eq!(Arc::strong_count(&held), 1);
-            drop(mesh);
-        });
-    }
+        #[test]
+        fn leaves_no_waker_when_dropped() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let (kept, dropped) = (Arc::new(Idle), Arc::new(Idle));
+                let count = || (Arc::strong_count(&kept), Arc::strong_count(&dropped));
+                let mut watches = Vec::new();
+                for held in [&dropped, &dropped, &kept, &dropped] {
+                    let waker = Waker::from(Arc::clone(held));
+                    let mut cx = Context::from_waker(&waker);
+                    let mut watch = mesh.watch(INDEX);
+                    assert_eq!(watch.next().await, Ok(None));
+                    assert!(pin!(watch.next()).poll(&mut cx).is_pending());
+                    watches.push(watch);
+                }
+                // Each `Arc` here, and the waker that the group holds for each watch.
+                assert_eq!(count(), (2, 4));
+                let stays = watches.remove(2);
+                drop(watches);
+                assert_eq!(count(), (2, 1));
+                drop(stays);
+                assert_eq!(count(), (1, 1));
+            });
+        }
 
-    #[test]
-    fn a_dropped_watch_leaves_no_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let (kept, dropped) = (Arc::new(Idle), Arc::new(Idle));
-            let count = || (Arc::strong_count(&kept), Arc::strong_count(&dropped));
-            let mut watches = Vec::new();
-            for held in [&dropped, &dropped, &kept, &dropped] {
-                let waker = Waker::from(Arc::clone(held));
-                let mut cx = Context::from_waker(&waker);
+        #[test]
+        fn gives_the_cause_when_each_mesh_drops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let mut watch = mesh.watch(INDEX);
                 assert_eq!(watch.next().await, Ok(None));
-                assert!(pin!(watch.next()).poll(&mut cx).is_pending());
-                watches.push(watch);
-            }
-            // Each `Arc` here, and the waker that the group holds for each watch.
-            assert_eq!(count(), (2, 4));
-            let stays = watches.remove(2);
-            drop(watches);
-            assert_eq!(count(), (2, 1));
-            drop(stays);
-            assert_eq!(count(), (1, 1));
-        });
-    }
-
-    #[test]
-    fn a_watch_gives_the_cause_when_each_mesh_drops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            let given = Rc::new(RefCell::new(None));
-            let slot = Rc::clone(&given);
-            tasks.spawn(async move {
-                let waited = watch.next().await;
-                *slot.borrow_mut() = Some((waited, watch.next().await));
+                let given = Rc::new(RefCell::new(None));
+                let slot = Rc::clone(&given);
+                tasks.spawn(async move {
+                    let waited = watch.next().await;
+                    *slot.borrow_mut() = Some((waited, watch.next().await));
+                });
+                node.clock().sleep(TICK).await;
+                assert_eq!(*given.borrow(), None);
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let dropped = Stopped::Dropped;
+                assert_eq!(
+                    given.take(),
+                    Some((Err(dropped.clone()), Err(dropped.clone())))
+                );
+                assert_eq!(dropped.to_string(), "each mesh of the group dropped");
             });
-            node.clock().sleep(TICK).await;
-            assert_eq!(*given.borrow(), None);
-            drop(mesh);
-            node.clock().sleep(TICK).await;
-            let dropped = Stopped::Dropped;
-            assert_eq!(
-                given.take(),
-                Some((Err(dropped.clone()), Err(dropped.clone())))
-            );
-            assert_eq!(dropped.to_string(), "each mesh of the group dropped");
-        });
-    }
+        }
 
-    #[test]
-    fn a_watch_keeps_the_cause_of_a_stop_after_each_mesh_drops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped));
-            assert_eq!(watch.next().await, Err(cause.clone()));
-            drop(mesh);
-            assert_eq!(watch.next().await, Err(cause));
-        });
-    }
-
-    #[test]
-    fn a_watch_that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            lead(&mesh, &node.clock(), home(1)).await;
-            node.clock().sleep(TICK).await;
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let given = Rc::new(RefCell::new(None));
-            let slot = Rc::clone(&given);
-            tasks.spawn(async move {
-                *slot.borrow_mut() = Some(watch.next().await);
+        #[test]
+        fn keeps_the_cause_of_a_stop_after_each_mesh_drops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut watch = mesh.watch(INDEX);
+                lead(&mesh, &node.clock(), home(1)).await;
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped));
+                assert_eq!(watch.next().await, Err(cause.clone()));
+                drop(mesh);
+                assert_eq!(watch.next().await, Err(cause));
             });
-            node.clock().sleep(TICK).await;
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped.clone()));
-            assert_eq!(mesh.outgoing(key(2)).await, Err(stopped));
-            drop(mesh);
-            node.clock().sleep(TICK).await;
-            assert_eq!(given.take(), Some(Err(cause)));
-        });
+        }
+
+        #[test]
+        fn that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                lead(&mesh, &node.clock(), home(1)).await;
+                node.clock().sleep(TICK).await;
+                let mut watch = mesh.watch(INDEX);
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let given = Rc::new(RefCell::new(None));
+                let slot = Rc::clone(&given);
+                tasks.spawn(async move {
+                    *slot.borrow_mut() = Some(watch.next().await);
+                });
+                node.clock().sleep(TICK).await;
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped.clone()));
+                assert_eq!(mesh.outgoing(key(2)).await, Err(stopped));
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                assert_eq!(given.take(), Some(Err(cause)));
+            });
+        }
     }
 
     #[test]
