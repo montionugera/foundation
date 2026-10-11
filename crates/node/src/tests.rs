@@ -5996,7 +5996,7 @@ mod port {
         /// one that changes it starts one. The reader opens after the run of the start,
         /// because a status written before the open is lost to it.
         #[test]
-        fn a_node_runs_a_connector_of_the_spec_it_starts_on() {
+        fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let founding = region(&[member(OWN, &KEY, &host)]);
@@ -6043,17 +6043,17 @@ mod port {
             node.operate(|ops| async move {
                 apply(&ops, own).await;
             });
-            let message = concat!(
-                "the status channels of the connector plant.influx do not open: the ",
-                "home of an index of the writer is node ",
-                "00000000-0000-0000-0000-000000000002, and a writer writes only at ",
-                "this node",
+            let message = format!(
+                "the status channels of the connector plant.influx do not open: the \
+                 home of an index of the writer is node {}, and a writer writes only \
+                 at this node",
+                OTHER.0,
             );
             assert_eq!(
                 sim.run_for(HALF_MINUTE),
                 Err(sim::Error::Panicked {
                     thread: "shard-0".into(),
-                    message: message.into(),
+                    message,
                     seed: 0,
                 })
             );
