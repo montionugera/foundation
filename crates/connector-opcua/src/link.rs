@@ -483,11 +483,15 @@ fn named_outside_tests(
         .collect()
 }
 
-/// Each file that a build of the crate at `root` with [`SIM`] on, with `test` on or
-/// off, reads, sorted.
+/// Each file that a build of the crate at `root` with [`SIM`] on reads, sorted: with
+/// `test` off, with `test` on, and with the test harness.
 fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let (mut files, _) = built(root, &on(&[SIM.to_owned()]));
-    files.extend(built(root, &on(&["test".to_owned(), SIM.to_owned()])).0);
+    let sim = on(&[SIM.to_owned()]);
+    let (mut files, _) = built(root, &sim);
+    files.extend(built(root, &[on(&["test".to_owned()]), sim.clone()].concat()).0);
+    // The harness builds the bodies of test functions, and refuses `-Cpanic=abort`.
+    let harness = ["--test".to_owned(), "-Cpanic=unwind".to_owned()];
+    files.extend(built(root, &[harness.to_vec(), sim].concat()).0);
     files.sort();
     files.dedup();
     files
@@ -497,7 +501,8 @@ fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// reads, and the cfgs that the builds set, sorted. The builds are those on this host,
 /// with the target features of this build, and with each set of the cfgs that the
 /// crate tests and rustc does not know (features among them, less [`SIM`], which only
-/// `base` sets), each with debug assertions on and off and with each panic strategy.
+/// `base` sets), each with debug assertions on and off and with each panic strategy,
+/// unless `base` sets one.
 /// rustc names each such cfg in a build that reads the file that tests it. A file
 /// under a known value of a target cfg that this build does not set, such as
 /// `target_os = "windows"`, is read by no build.
@@ -513,6 +518,11 @@ fn built(
     let mut cfgs: Vec<String> = Vec::new();
     let mut runs = std::collections::BTreeSet::new();
     let mut files = Vec::new();
+    let panics = if base.iter().any(|flag| flag.starts_with("-Cpanic=")) {
+        vec![None]
+    } else {
+        vec![Some("unwind"), Some("abort")]
+    };
     loop {
         let mut known = cfgs.clone();
         known.push(SIM.to_owned());
@@ -523,11 +533,11 @@ fn built(
                 .map(|bit| cfgs[bit].clone())
                 .collect();
             for assertions in ["on", "off"] {
-                for panic in ["unwind", "abort"] {
+                for panic in &panics {
                     let mut flags = base.to_vec();
                     flags.extend(on(&set));
                     flags.push(format!("-Cdebug-assertions={assertions}"));
-                    flags.push(format!("-Cpanic={panic}"));
+                    flags.extend(panic.map(|panic| format!("-Cpanic={panic}")));
                     if runs.insert(flags.clone()) {
                         let (read, unknown) = read_by_rustc(root, &known, &flags);
                         files.extend(read);
@@ -994,6 +1004,23 @@ fn the_scan_cuts_off_the_sim_files_of_a_build_without_test() {
         let named = named_outside_tests(&root, |name| name == "named");
         assert_eq!(named, Vec::<String>::new(), "{case}");
     }
+}
+
+/// A file that only a test function reads is cut off.
+#[test]
+fn the_scan_cuts_off_the_files_of_a_test_function() {
+    let root = create_tree(
+        "test-function",
+        &[
+            (
+                "src/lib.rs",
+                "#[test]\nfn t() {\n    let _: () = include!(\"../c.rs\");\n}\n",
+            ),
+            ("c.rs", "{ fn named() {} }"),
+        ],
+    );
+    let named = named_outside_tests(&root, |name| name == "named");
+    assert_eq!(named, Vec::<String>::new());
 }
 
 /// How [`named_outside_tests`] gives the name `named` in `file` of `root`.
