@@ -3420,6 +3420,32 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_that_resets_queues_the_reset_at_once() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            let message = shard.block(&[0xc; 100]);
+            spend(&mut pair, shard, &mut sender, message::prefix(100).len());
+            let now = pair.now();
+            let written = pair::write(
+                &mut pair.client.endpoint,
+                now,
+                &sender,
+                &mut Some(message),
+            );
+            assert_eq!(written, Ok(Poll::Pending));
+            pair.run(RUN);
+            let now = pair.now();
+            let mut buffer = Vec::new();
+            assert!(pair.client.endpoint.transmit(now, &mut buffer).is_none());
+            pair.client.endpoint.cancel(now, &sender);
+            let mut buffer = Vec::new();
+            let sent = pair.client.endpoint.transmit(now, &mut buffer).is_some();
+            assert!(sent, "the reset goes at once");
+        });
+    }
+
+    #[test]
     fn a_cancel_after_only_the_class_byte_went_keeps_the_stream() {
         testing::run(1, |shard| {
             let mut pair = narrow(shard);
