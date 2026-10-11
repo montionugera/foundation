@@ -249,6 +249,29 @@ fn refuses_an_end_off_the_chain_after_clean_merges_of_the_base() {
 }
 
 #[test]
+fn places_an_end_off_the_chain_before_reading_the_base() {
+    let repo = Repo::new("unrelated");
+    repo.commit("a.txt", "base\n");
+    repo.git(&["switch", "--quiet", "--orphan", "other"]);
+    repo.commit("c.txt", "other\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let unrelated = [
+        "merge",
+        "--quiet",
+        "--no-edit",
+        "--allow-unrelated-histories",
+    ];
+    repo.git(&[&unrelated[..], &["other"]].concat());
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "-c", "rebased"]);
+    let gone = repo.commit("b.md", "one\n");
+    repo.git(&["switch", "--quiet", "-c", "new", "main"]);
+    let head = repo.commit("b.md", "two\n");
+    assert_eq!(repo.place(&gone, &head), Ok(Place::Off));
+    repo.remove();
+}
+
+#[test]
 fn passes_commits_that_change_no_code_after_the_end() {
     let (repo, _) = Repo::with_pr("text");
     let end = repo.commit("a.rs", "fn a() {}\n");
