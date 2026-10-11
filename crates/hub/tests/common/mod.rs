@@ -70,20 +70,23 @@ fn definitions(more: &[Name]) -> Vec<(Name, Definition)> {
             control: None,
         },
     };
+    let index = time.key;
     let data = |key| {
         let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
         Definition::Channel(Channel {
             key: channel::Key::from_u128(key),
-            kind: Kind::Data(Data::new(time.key, None, i64, None).expect("no unit")),
+            kind: Kind::Data(Data::new(index, None, i64, None).expect("no unit")),
         })
     };
-    let mut definitions = vec![(name("value"), data(2))];
+    let mut definitions = vec![
+        (name("time"), Definition::Channel(time)),
+        (name("value"), data(2)),
+    ];
     definitions.extend(
         (100..)
             .zip(more)
             .map(|(key, name)| (name.clone(), data(key))),
     );
-    definitions.push((name("time"), Definition::Channel(time)));
     definitions
 }
 
