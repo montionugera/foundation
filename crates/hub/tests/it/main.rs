@@ -194,6 +194,16 @@ impl Test {
         }
     }
 
+    /// Pauses the hub's tasks, runs `writes`, and sleeps through their commit. Then
+    /// resumes the tasks, and lets the run pick whether main runs again before or
+    /// after the commit task. Gives whether main ran first.
+    async fn race(&self, writes: impl FnOnce()) -> bool {
+        self.pause.pause();
+        writes();
+        self.clock.sleep(SETTLE).await;
+        self.pause.race().await
+    }
+
     /// Mesh time now: the midpoint of the clock's interval.
     fn now(&self) -> i64 {
         let now = self.mesh.now().mesh.expect("the node has mesh time");
@@ -310,7 +320,7 @@ impl Pause {
 }
 
 /// Runs `main` as [`run_on`] does, once for each value of `sim::Config::seed` below
-/// `values`. Panics unless main ran first, as `main` gives from [`Pause::race`], in
+/// `values`. Panics unless main ran first, as `main` gives from [`Test::race`], in
 /// some runs and second in others.
 fn races<F>(
     values: u64,
@@ -319,11 +329,14 @@ fn races<F>(
 ) where
     F: Future<Output = bool> + 'static,
 {
-    let (first, second): (Vec<u64>, Vec<u64>) = (0..values).partition(|&seed| {
+    let (first, second) = (0..values).fold((0, 0), |(first, second), seed| {
         let main = main.clone();
-        run_on(seed, ring, move |test| main(seed, test))
+        if run_on(seed, ring, move |test| main(seed, test)) {
+            (first + 1, second)
+        } else {
+            (first, second + 1)
+        }
     });
-    let (first, second) = (first.len(), second.len());
     assert!(
         first > 0 && second > 0,
         "main ran first in {first} runs and second in {second}"
@@ -349,7 +362,8 @@ where
     run_on(seed, (AREA, BODY_MAX), main);
 }
 
-/// Runs `main` as [`run`] does, on a ring of the area and body max in `ring`.
+/// Runs `main` as [`run`] does, on a ring of the area and body max in `ring`. Gives
+/// what `main` gives.
 fn run_on<T, F>(
     seed: u64,
     ring: (u64, usize),
@@ -374,6 +388,7 @@ where
 }
 
 /// Runs `main` as [`unsynced`] does, on a ring of the area and body max in `ring`.
+/// Gives what `main` gives.
 fn unsynced_on<T, F>(
     seed: u64,
     (area, body_max): (u64, usize),
@@ -935,10 +950,11 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         let reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         test.clock.sleep(SETTLE).await;
-        test.pause.pause();
-        write(&mut writer, &[test.now()], &[1]);
-        test.clock.sleep(SETTLE).await;
-        let first = test.pause.race().await;
+        let first = test
+            .race(|| {
+                write(&mut writer, &[test.now()], &[1]);
+            })
+            .await;
         let Test {
             node,
             clock,
@@ -1578,10 +1594,9 @@ fn ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit(
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         let now = test.now();
-        test.pause.pause();
-        write_samples(&mut writer, now, PAST_WINDOW);
-        test.clock.sleep(SETTLE).await;
-        let first = test.pause.race().await;
+        let first = test
+            .race(|| write_samples(&mut writer, now, PAST_WINDOW))
+            .await;
         let charge = charge(&reader.next().await.expect("a frame").view());
         assert!(charge > WINDOW, "{charge} bytes spend the window");
         // The reader holds the frame, so the next waits for credit.
@@ -1607,12 +1622,13 @@ fn gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window() {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         let now = test.now();
-        test.pause.pause();
-        for n in 0..200 {
-            write_wide(&mut writer, now, n);
-        }
-        test.clock.sleep(SETTLE).await;
-        let first = test.pause.race().await;
+        let first = test
+            .race(|| {
+                for n in 0..200 {
+                    write_wide(&mut writer, now, n);
+                }
+            })
+            .await;
         let mut spent = 0;
         for n in 0..200 {
             let received = reader.next().await.expect("a frame");
@@ -1639,12 +1655,13 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         let now = test.now();
-        test.pause.pause();
-        for n in 0..20 {
-            write_wide(&mut writer, now, n);
-        }
-        test.clock.sleep(SETTLE).await;
-        let first = test.pause.race().await;
+        let first = test
+            .race(|| {
+                for n in 0..20 {
+                    write_wide(&mut writer, now, n);
+                }
+            })
+            .await;
         let frame = reader.next().await.expect("a frame");
         let range = frame.view().range(0).expect("the index is present");
         assert_eq!(
