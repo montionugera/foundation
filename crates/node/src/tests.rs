@@ -3687,6 +3687,25 @@ mod port {
             );
         }
 
+        /// A power cut after `create_key` finds a file leaves no `node.key.new` with
+        /// its keys, also after a start.
+        #[test]
+        fn a_power_cut_after_create_key_finds_a_file_leaves_no_staged_key() {
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, FILE, own());
+                let created = create(&mut sim, &host, PrivateKey([9; 32]));
+                assert!(created.is_err(), "seed {seed}");
+                sim.crash(&host, sim::Crash::Power);
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, NEW), None, "seed {seed}");
+            }
+        }
+
         /// A power cut after `create_key` keeps the key.
         #[test]
         fn a_created_key_survives_a_power_cut() {
@@ -3708,7 +3727,8 @@ mod port {
         fn a_failed_file_call_of_create_key_gives_its_error() {
             use env::files::Operation::{Open, Remove, Rename, Sync, SyncDir, WriteAt};
             let calls = [Remove, Open, WriteAt, Sync, Rename].map(|call| (NEW, call));
-            for (path, operation) in calls.into_iter().chain([("", SyncDir)]) {
+            let others = [(FILE, Open), ("", SyncDir)];
+            for (path, operation) in calls.into_iter().chain(others) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
                 host.fail_file(Path::new(path), operation);

@@ -68,17 +68,37 @@ pub(crate) async fn load(
     }
 }
 
-/// Publishes `identity` as `node.key` in `files`. Call it under the lock of the data
-/// directory, or on a data directory that no node runs on.
+/// Publishes `identity` as `node.key` in `files`, where no `node.key` is. Call it as
+/// [`sector::publish`] says.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there, and
-/// with the error of each other file call that fails.
-pub(crate) async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
+/// [`Error::Directory`] with the error of the first file call that fails.
+async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
     sector::publish(files, Path::new(FILE), &encode(identity))
         .await
         .map_err(Error::Directory)
+}
+
+/// Publishes `identity` as `node.key` in `files`, a data directory that no node runs
+/// on, when no `node.key` is there.
+///
+/// # Errors
+///
+/// [`Error::Directory`] with [`env::files::Error::Exists`] when a file is there, before
+/// it writes anything. [`Error::Directory`] with the error of each other file call that
+/// fails.
+#[cfg(feature = "sim")]
+pub(crate) async fn write_new(files: &Files, identity: &Identity) -> Result<(), Error> {
+    match sector::read::<LEN>(files, Path::new(FILE), TAG).await {
+        Ok(Held::Nothing) => store(files, identity).await,
+        Ok(Held::Written(_) | Held::Foreign) => {
+            Err(Error::Directory(env::files::Error::Exists {
+                path: FILE.into(),
+            }))
+        }
+        Err(error) => Err(Error::Directory(error)),
+    }
 }
 
 /// A new identity: a UUIDv7 key at `now`, and a random private key and seal key.
