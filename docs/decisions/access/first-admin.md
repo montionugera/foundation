@@ -70,13 +70,19 @@
   Scope, with the decision unchanged: this states where "only the user who started the
   node can read the key" and "the first `foundation start`" hold. `os` makes `admin.key`
   at mode 0600 and does not change the mode of one that is there, so a wider mode or an
-  ACL of the data directory can open it to another user (Who attacks in
-  `docs/security.md`). The start that founds the root region founds with a valid
-  `admin.key` in the data directory; when no `admin.key` is there, it makes one, and an
-  `admin.key` that is not valid stops the node (`Error::Admin`, NODE MESH). The first
-  use finds a valid key there only after a start that failed after `admin.key` was
-  durable and before its founding was durable. A key that another writer put there
-  before that start is an act of the operator on the data directory, not a step of the
-  first use. Proposed by `laptop.architect-2` in
-  https://github.com/synnaxlabs/foundation/pull/2296; approval of `laptop.architect`
-  owed.
+  ACL of the data directory can open it to another user, as Who attacks in
+  `docs/security.md` states (approved by `laptop.architect`, 2026-10-11T01:03:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194). The start
+  that founds the root region founds with a valid `admin.key` in the data directory.
+  When no `admin.key` is there, it makes one. When the file holds no valid key, the
+  start stops and does not write over it (NODE MESH; `laptop.architect`,
+  2026-10-11T01:26:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104179974). The first
+  use finds a valid key there only after an earlier start that renamed `admin.key.new`
+  to `admin.key` and stopped before its founding was durable. A key that another writer
+  put there before that start is outside the first use: the operator wrote it, or a user
+  that the operator let write to the data directory (Who attacks in `docs/security.md`).
+  Proposed by `laptop.architect-2` in rounds 5 and 6 of #2296 (round 5:
+  2026-10-11T01:32:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104224546); approval
+  of `laptop.architect` owed.

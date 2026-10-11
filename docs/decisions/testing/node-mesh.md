@@ -169,11 +169,12 @@
   directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
   CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it
   from `Config::entropy` with `sector::publish` as it makes `name` (NODE NAME), before
-  it builds the founding. So a read sees no file or a whole one, and a crash after
-  `admin.key` is durable and before the founding is durable leaves a key that the next
-  start founds with. A file of another length, also one with no bytes, which `publish`
-  never leaves, or of another tag or checksum gives `Error::Admin`, and the node does
-  not write over it. Each other file error on `admin.key` gives `Error::Directory`.
+  it builds the founding. So a read sees no file or a whole one. A start that stops
+  after it renames `admin.key.new` to `admin.key` and before the founding is durable,
+  by a crash or a failed sync of the data directory, can leave a key, and the next
+  start founds with it. A file of another length, also one with no bytes, which
+  `publish` never leaves, or of another tag or checksum gives `Error::Admin`, and the
+  node does not write over it. Each other file error on `admin.key` gives `Error::Directory`.
   `publish` in place of a write in place, by `laptop.architect-2` (2026-10-10T22:20:34Z,
   the audit of #2172):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. A start
