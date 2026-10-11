@@ -161,18 +161,21 @@ pub fn net() -> env::net::Net {
 /// file with a random name beside `path`, syncs it, and renames it over `path`, so a
 /// reader or a crash sees the old file or the new one, and of two writes one wins
 /// whole. A write that fails removes its file, and gives the error of the remove when
-/// that fails. A crash during a write leaves the file.
+/// that fails. A crash during a write leaves the file. The hidden file has a name of 21
+/// bytes: where the OS refuses its path as too long, the write gives `Io` and makes no
+/// file.
+///
+/// The file that a write makes is a new file of this user, with permission bits that
+/// give the group and other users no access, also when it replaces a file that gave
+/// more. It takes nothing from the file that it replaces: not its owner, its group, its
+/// permission bits, or its access control list. Each other hard link of that file keeps
+/// the old bytes.
 ///
 /// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
 /// hidden file and no rename: a reader, a crash, or a failed write can see or leave a
-/// part of them, and two writes at one time can leave a mix of the two. A write on a
-/// symbolic link to nothing gives `NotFound` and makes no file.
-///
-/// A new file gives the group and other users no access. A file that a write replaces
-/// keeps its permission bits, and its owner and its group where the OS lets this user
-/// set them. Where the group is not kept, the file gives its group no access. A write
-/// keeps no set-user-ID, set-group-ID, or sticky bit and no access control list, and
-/// each other hard link of the old file keeps the old bytes.
+/// part of them, and two writes at one time can leave a mix of the two. `os` sets no
+/// owner, group, or permission bit of the file, device, or pipe that takes them. A
+/// write on a symbolic link to nothing gives `NotFound` and makes no file.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {

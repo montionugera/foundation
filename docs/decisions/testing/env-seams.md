@@ -471,31 +471,39 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
   bound holds for a read: the bytes of a file, or the bytes of the entry paths of a
   directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty
-  path names nothing. On `os`, a new file gives the group and other users no access, a
-  file that a write replaces keeps its mode, and a symbolic link, a device, or a pipe
-  at the path takes the bytes in place, with no rename. Lost: a second bound for the
-  count of entries; a rename over each thing at the path, which replaces `/dev/null`
-  with a file for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
+  path names nothing. On `os`, a file that a write makes gives the group and other users
+  no access, also when it replaces a file, and a symbolic link, a device, or a pipe at
+  the path takes the bytes in place, with no rename. Lost: a second bound for the count
+  of entries; a rename over each thing at the path, which replaces `/dev/null` with a
+  file for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
   https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058). A write
   is whole or not at all only when a file or nothing is at the path. In place, a crash
   or a failed write can leave a part of the bytes, and a write on a symbolic link to
-  nothing gives `NotFound` and makes no file. Lost: `create(true)` in the open in
-  place, which makes a file at a path that the user did not name (`laptop.architect-2`,
+  nothing gives `NotFound` and makes no file. Lost: `create(true)` in the open in place,
+  which makes a file at a path that the user did not name (`laptop.architect-2`,
   2026-10-11T15:51:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110806235; the
-  docs, 2026-10-11T16:24:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110806235; the docs,
+  2026-10-11T16:24:16Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111115118).
   In place, a reader can also see a part of the bytes, and two writes at one time can
-  leave a mix of the two. On `os`, a file that a write replaces keeps its permission
-  bits, and its owner and its group where the OS lets the user set them. Where the group
-  is not kept, the file gives its group no access. A write keeps no set-user-ID,
-  set-group-ID, or sticky bit and no access control list. Lost: a failed write when the
-  OS refuses the group, which refuses a file that the user can write in place; group
-  bits cleared with no `fchown`, which closes a file to a group that the user is in; a
-  write in place when the owner or the group cannot be kept, which gives up the whole
-  write where more than one user reads the file; the set-user-ID and set-group-ID bits
-  kept on new bytes, which the kernel clears on a write by a user that is not root
-  (`laptop.architect-2`, 2026-10-11T16:37:30Z:
-  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158).
+  leave a mix of the two (`laptop.architect-2`, 2026-10-11T16:37:30Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158). On `os`,
+  the file that a write makes is a new file of the user, also when it replaces a file.
+  It takes nothing from the old file: not its owner, its group, its permission bits, or
+  its access control list. In place, `os` sets none of them. Lost: the permission bits,
+  the owner, and the group of the old file kept on the new one. A group that the user
+  cannot set, the special bits, an access control list, and the other users of a file
+  whose group is not kept each need a rule of their own, and a gap in one opens the file
+  to a user that the old file did not. Also lost: a write in place on each file that is
+  there, which keeps each of them and gives up the whole write. The cost: an operator
+  that opens a file to a group opens it again after each write, as after the first. Look
+  again when a caller writes a file that the user made, as a formatter of config files.
+  The hidden file has a name of 21 bytes, and a write gives `Io` where the OS refuses
+  its path as too long. Lost: the open and the rename through a handle of the directory,
+  which needs read access to the directory, or an open flag that Linux and macOS do not
+  share (`laptop.architect-2`, 2026-10-11T17:24:53Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111674956).
   Supersedes "keeps its mode" of
-  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058.
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058 and the
+  kept bits, owner, and group of
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158.
