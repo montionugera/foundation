@@ -1605,3 +1605,52 @@ fn a_dropped_watch_of_the_spec_leaves_no_waker() {
         assert_eq!(Arc::strong_count(&held), 1);
     });
 }
+
+#[test]
+fn used_gives_the_spec_in_use_at_once() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        assert_eq!(mesh.used(), in_use(base(), &BTreeMap::new()));
+        let a = create_subjects(&["plant.a"], 1);
+        let first = mesh.apply(base(), a.clone(), BTreeMap::new()).await;
+        let first = first.unwrap();
+        assert_eq!(mesh.spec().await, Ok(in_use(first, &a)));
+        assert_eq!(mesh.used(), in_use(first, &a));
+        let second = commit(&mesh, first, &create_admin()).await;
+        let spec = mesh.spec().await.unwrap();
+        let behind = Some(Behind {
+            pointer: second,
+            cause: admin(),
+        });
+        assert_eq!(spec.behind, behind);
+        assert_eq!(mesh.used(), spec);
+    });
+}
+
+#[test]
+fn used_gives_what_a_woken_watch_of_the_spec_gives() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let mut watch = mesh.watch_spec();
+        assert_eq!(watch.next().await, Ok(mesh.used()));
+        let mut waits = pin!(watch.next());
+        assert!(now(waits.as_mut()).await.is_pending());
+        let a = create_subjects(&["plant.a"], 1);
+        let first = mesh.apply(base(), a.clone(), BTreeMap::new()).await;
+        let given = waits.await;
+        assert_eq!(given, Ok(in_use(first.unwrap(), &a)));
+        assert_eq!(given, Ok(mesh.used()));
+    });
+}
+
+#[test]
+fn used_gives_the_spec_at_the_stop_after_the_group_stops() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let at = mesh.spec().await.unwrap();
+        let stopped = super::send::stop(&node, &mesh);
+        node.clock().sleep(Span::MILLISECOND).await;
+        assert_eq!(mesh.spec().await, Err(stopped));
+        assert_eq!(mesh.used(), at);
+    });
+}

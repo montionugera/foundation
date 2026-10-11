@@ -552,6 +552,13 @@ impl Mesh {
         .await
     }
 
+    /// The spec that this node uses now. It answers also after the group stops, from
+    /// the view at the stop.
+    #[must_use]
+    pub fn used(&self) -> Spec {
+        self.group.borrow().used.spec.clone()
+    }
+
     /// A watch of the spec that this node uses.
     #[must_use]
     pub fn watch_spec(&self) -> Watch {

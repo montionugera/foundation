@@ -188,3 +188,11 @@
   associated function that gives no `Mesh` and reads as a getter of an open mesh.
   Decided by `laptop.architect` (2026-10-10T03:33:06Z:
   https://github.com/synnaxlabs/foundation/issues/2225#issuecomment-6093336972).
+  Amended (2026-10-11, #2326): `Mesh::used() -> used::Spec` gives the spec that this
+  node uses now, with no wait, as `pointer` and `holder` do, also after the group
+  stops. The hub reads it at each open, so an open sees each spec that a task told by
+  `Mesh::spec` or a spec watch knows of. Lost: a hub task that follows the spec watch
+  alone, which `keep` wakes in the same step as the told task; a doc that states the
+  window and a call that waits for the hub. Decided by `laptop.architect`
+  (2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301).
