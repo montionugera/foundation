@@ -186,9 +186,9 @@
   `Code(wire::session::REFUSED)` (superseded by #2325, below). A node's new session
   takes the place of its old one when the old one still holds it at `accept`. The
   transport closes the old session as the new one arrives (ONE SESSION PER PEER), so at
-  the bound another peer can take the place first (`laptop.architect-2`, 15:18 UTC:
-  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077;
-  superseded by #2325, below). It never
+  the bound another peer can take the place first (superseded by #2325, below)
+  (`laptop.architect-2`, 15:18 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
   refuses a member, so a flood of peers outside the region cannot lock a member out
   (`laptop.architect`, 2026-10-11 01:03 UTC:
   https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194).
