@@ -3289,7 +3289,7 @@ mod tests {
             // The stream sends the rest only at the caller's next write.
             let held = half(&mut pair.client, &sender);
             assert_eq!((held.unsent.is_empty(), held.body), (true, 100));
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             let reset = Error::Reset { code: Code(0) };
             let message = shard.block(b"d");
             let written = pair::write(
@@ -3332,7 +3332,7 @@ mod tests {
             let incoming = accept(&mut pair.server);
             let now = pair.now();
             pair.server.endpoint.stop(now, incoming.receiver, Code(9));
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             pair.run(RUN);
             let now = pair.now();
             let message = shard.block(b"d");
@@ -3371,7 +3371,7 @@ mod tests {
                 // Only the half shows that the header went: `spend` opened the
                 // stream, and the peer reads only whole messages.
                 assert!(half(&mut pair.client, &sender).sent(), "the header went");
-                pair.client.endpoint.cancel(now, &sender);
+                pair.client.endpoint.cancel(untimed, &sender);
                 pair.run(RUN);
                 let mut incoming = accept(&mut pair.server);
                 sent.push(100);
@@ -3399,6 +3399,11 @@ mod tests {
         }
     }
 
+    /// The time of a cancel that takes no message.
+    fn untimed() -> Monotonic {
+        panic!("a cancel that takes no message reads the clock")
+    }
+
     #[test]
     fn a_cancel_of_a_stream_that_holds_no_message_does_nothing() {
         testing::run(1, |shard| {
@@ -3409,7 +3414,7 @@ mod tests {
                 let endpoint = &mut pair.client.endpoint;
                 let written = pair::write(endpoint, now, &sender, &mut message);
                 assert_eq!(written, Ok(Poll::Ready(())));
-                endpoint.cancel(now, &sender);
+                endpoint.cancel(untimed, &sender);
                 pair.run(RUN);
             }
             let mut incoming = accept(&mut pair.server);
@@ -3438,7 +3443,7 @@ mod tests {
             let now = pair.now();
             let mut buffer = Vec::new();
             assert!(pair.client.endpoint.transmit(now, &mut buffer).is_none());
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             let mut buffer = Vec::new();
             let sent = pair.client.endpoint.transmit(now, &mut buffer).is_some();
             assert!(sent, "the reset goes at once");
@@ -3462,7 +3467,7 @@ mod tests {
             );
             assert_eq!(written, Ok(Poll::Pending));
             assert_eq!(half(&mut pair.client, &second).unsent.start, 1);
-            pair.client.endpoint.cancel(now, &second);
+            pair.client.endpoint.cancel(|| now, &second);
             let id = second.key().id;
             let message = shard.block(b"d");
             let written = pair::write(
@@ -3497,7 +3502,7 @@ mod tests {
             );
             assert_eq!(written, Ok(Poll::Pending));
             assert_eq!(half(&mut pair.client, &sender).unsent.start, 1);
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             let finished = pair.client.endpoint.finish(now, &mut sender);
             assert_eq!(finished, Ok(()));
             pair.run(RUN);
@@ -3544,7 +3549,7 @@ mod tests {
                 assert_eq!(written, Ok(Poll::Pending));
             }
             let seen = pair.client.events.len();
-            pair.client.endpoint.cancel(now, &third);
+            pair.client.endpoint.cancel(|| now, &third);
             pair.run(Duration::ZERO);
             let writable = Event::Writable {
                 stream: fourth.key(),
@@ -4714,7 +4719,7 @@ mod tests {
             pair.run(RUN);
             let id = sender.key().id;
             let now = pair.now();
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             // The stop goes before the client's reset arrives. The link loses it and
             // the next datagram, so the resent stop comes after the reset's ACK.
             let over = VarInt::from_u64(1 << 32).expect("a varint");
@@ -7467,7 +7472,7 @@ mod tests {
                 assert_eq!(write(&waiting, 1000), Ok(Poll::Pending));
                 assert_eq!(owed(&mut pair), 0);
                 let seen = pair.client.events.len();
-                pair.client.endpoint.cancel(now, &catch_up);
+                pair.client.endpoint.cancel(|| now, &catch_up);
                 pair.run(Duration::ZERO);
                 let writable = Event::Writable {
                     stream: waiting.key(),
@@ -8228,7 +8233,7 @@ mod tests {
                     &mut Some(message),
                 );
                 assert_eq!(written, Ok(Poll::Pending));
-                pair.client.endpoint.cancel(now, &cancelled);
+                pair.client.endpoint.cancel(|| now, &cancelled);
                 for _ in 0..4 {
                     flush(&mut pair, &mut receivers, &mut read, &[&catch_up]);
                 }

@@ -587,8 +587,9 @@ impl Endpoint {
     /// finish gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn of
     /// the message come back now. Does nothing when the stream holds no such
     /// message, as a message of [`Endpoint::try_write`], after a finish or reset of
-    /// `sender`, or when the connection ended.
-    pub(crate) fn cancel(&mut self, now: Monotonic, sender: &Sender) {
+    /// `sender`, or when the connection ended. Calls `now` for the time only when it
+    /// takes a message.
+    pub(crate) fn cancel(&mut self, now: impl FnOnce() -> Monotonic, sender: &Sender) {
         if sender.ended() {
             return;
         }
@@ -599,7 +600,7 @@ impl Endpoint {
         };
         let Connection { inner, streams, .. } = connection;
         if streams.cancel(inner, sender) {
-            self.drive(key.handle, self.instant(now));
+            self.drive(key.handle, self.instant(now()));
         }
     }
 

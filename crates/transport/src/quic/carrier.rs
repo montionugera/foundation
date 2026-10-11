@@ -577,7 +577,7 @@ impl Session {
     pub(crate) fn abandon(&self, sender: &Sender) {
         self.with(|endpoint, clock, slot, _| {
             slot.writing.remove(&sender.key().id);
-            endpoint.cancel(clock.now(), sender);
+            endpoint.cancel(|| clock.now(), sender);
         });
     }
 
