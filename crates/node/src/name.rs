@@ -95,10 +95,12 @@ async fn source(files: &Files) -> Result<Source, Error> {
 /// whose reservation is over 2 MiB, only when the mesh's directory is there.
 async fn founding(files: &Files) -> Result<Option<Founding>, Error> {
     let dir = directory::mesh();
-    match files.list(&dir).await {
-        Err(env::files::Error::NotFound { .. }) => return Ok(None),
-        listed => listed.map_err(Error::Directory)?,
-    };
+    if let Err(error) = files.list(&dir).await {
+        return match error {
+            env::files::Error::NotFound { .. } => Ok(None),
+            error => Err(Error::Directory(error)),
+        };
+    }
     let pool = Rc::new(block::Pool::heap(POOL));
     mesh::founding(files, &dir, pool).await.map_err(Error::Mesh)
 }
