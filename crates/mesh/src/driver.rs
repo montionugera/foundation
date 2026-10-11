@@ -3140,24 +3140,6 @@ mod tests {
             });
         }
 
-        // Members 2 and 4 would share one public key, so that a message of node 4
-        // could pass the sender check under the key of voter 2.
-        #[test]
-        fn a_member_with_the_public_key_of_a_voter_does_not_start() {
-            solo(|node, tasks| async move {
-                let mut config = config(&node, &tasks, 1, &IDS, &IDS).await;
-                let mut card = common::member(2).card.card().clone();
-                card.name = "plant.node4".parse().unwrap();
-                let card = card::Signed::sign(key(4), card, &private(2));
-                config.founding.members.push(Member {
-                    card,
-                    ..common::member(4)
-                });
-                let held = Unfit::Held { key: key(2) };
-                assert_eq!(Mesh::start(config).await.err(), Some(Error::Member(held)));
-            });
-        }
-
         #[test]
         fn refuses_a_request_when_the_node_has_no_voters() {
             solo(|node, tasks| async move {
@@ -5900,6 +5882,24 @@ mod tests {
                 let cause = log::Error::Files(files::Error::Busy { path });
                 assert_eq!(busy, Some(Error::Log(cause)));
                 assert_eq!(open(&node, &tasks, 1, &[1], &[1]).await.err(), None);
+            });
+        }
+
+        // Members 2 and 4 would share one public key, so that a message of node 4
+        // could pass the sender check under the key of voter 2.
+        #[test]
+        fn refuses_a_member_with_the_public_key_of_a_voter() {
+            solo(|node, tasks| async move {
+                let mut config = config(&node, &tasks, 1, &IDS, &IDS).await;
+                let mut card = common::member(2).card.card().clone();
+                card.name = "plant.node4".parse().unwrap();
+                let card = card::Signed::sign(key(4), card, &private(2));
+                config.founding.members.push(Member {
+                    card,
+                    ..common::member(4)
+                });
+                let held = Unfit::Held { key: key(2) };
+                assert_eq!(Mesh::start(config).await.err(), Some(Error::Member(held)));
             });
         }
     }
