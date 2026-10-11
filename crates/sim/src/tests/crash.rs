@@ -889,6 +889,49 @@ fn a_crash_ends_a_create_after_a_dropped_open_of_its_file_as_a_drop_does() {
     assert_eq!(lens, BTreeSet::from([0, 1_024]));
 }
 
+/// Makes the durable file `a` with no bytes, and gives its write handle.
+async fn create_durable_empty(node: &node::Node) -> env::files::File {
+    let file = create(node, "a", 0).await;
+    node.files().sync_dir(Path::new("")).await.unwrap();
+    file
+}
+
+/// Starts a sync of `file`, drops the sync in flight, and drops the file.
+async fn drop_a_sync(file: env::files::File) {
+    pend(pin!(file.sync())).await;
+    drop(file);
+}
+
+#[test]
+fn a_crash_ends_a_create_after_a_dropped_sync_of_its_file_as_a_drop_does() {
+    let mode = Mode::Create { len: 1_024 };
+    let (mut sim, node) = disk(0);
+    let len = sim.run_on(&node, move |node, _| async move {
+        drop_a_sync(create_durable_empty(&node).await).await;
+        node.files().open(Path::new("a"), mode).await.unwrap().len()
+    });
+    assert_eq!(len.unwrap(), 1_024);
+    for crash in [Crash::Process, Crash::Power] {
+        let lens: BTreeSet<_> = (0..32)
+            .map(|seed| {
+                let (mut sim, node) = disk(seed);
+                crash_after(&mut sim, &node, crash, move |node| async move {
+                    let file = create_durable_empty(&node).await;
+                    until_crash(&node).await;
+                    drop_a_sync(file).await;
+                    hang(node.files().open(Path::new("a"), mode)).await;
+                });
+                sim.run_on(&node, |node, _| async move {
+                    let opened = node.files().open(Path::new("a"), Mode::Read).await;
+                    opened.unwrap().len()
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(lens, BTreeSet::from([0, 1_024]), "{crash:?}");
+    }
+}
+
 #[test]
 fn a_create_over_a_held_file_with_no_bytes_is_busy() {
     let (mut sim, node) = disk(0);

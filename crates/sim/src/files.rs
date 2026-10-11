@@ -470,6 +470,9 @@ impl Files {
             // A power cut loses what a sync in flight would make durable.
             let synced = matches!(flight.call, Call::Sync { .. } | Call::SyncDir);
             let (ok, held) = if power && synced {
+                if let Some(handle) = flight.call.handle() {
+                    self.disks[node].release(handle);
+                }
                 (false, flight.held)
             } else {
                 let ended = self.apply(key, flight);
