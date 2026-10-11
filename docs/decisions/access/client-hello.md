@@ -139,6 +139,15 @@
   two commits overlap on both). Each is of three passes of each commit on
   c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
   (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
+  Against its parent d7a67a52e, three passes of each commit on the same machine and
+  CPU, with the flags of BENCH BASELINES: in `wire` `hub`, the split gave 4.257 to
+  4.292 ns on `decode_ends/3` against 4.41 to 4.87 ns (passes apart), and the passes
+  of each other line overlap
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108713214). In
+  `hub` `serve`, `narrow 64k` gave 2288 to 2296 ns per frame against 2307 to 2331 ns
+  (passes apart), the passes of each other line overlap, and each line keeps its
+  allocations
+  (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108750674).
   Decided by `laptop.architect` (2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;
   surface approved 2026-10-11T10:16:56Z,
