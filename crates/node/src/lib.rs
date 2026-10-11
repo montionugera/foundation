@@ -172,6 +172,8 @@ const IDLE: Span = Span::from_nanos(30_000_000_000);
 /// The largest message of a stream, when the pool holds it, a patch as [`WINDOW`]
 /// is.
 const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
+/// The bytes the blob store leaves free on the disk, a patch as [`WINDOW`] is.
+const FLOOR: u64 = 1 << 30;
 
 impl Node {
     /// Binds the node's port at [`Config::listen`], then starts one shard per core,
@@ -192,13 +194,15 @@ impl Node {
     /// founds the root region and reads or makes `admin.key`), then serves the port
     /// until its transport or the mesh's group stops, which stops the node. It admits
     /// each member of the region, and gives other peers at most 256 places at once: one
-    /// for each session of a program, and one for the key of a node. Returns once each
-    /// shard runs or one has failed to start. No shard starts when the disk budget
-    /// holds no ring on each shard ([`Error::Disk`]), when a shard's part of the pool
-    /// budget gives a reservation of more than `usize::MAX` bytes ([`Error::Pool`]),
-    /// when the port does not bind ([`Error::Port`]), or when [`Config::name`] has a
-    /// reserved segment ([`Error::Reserved`]). Any failure stops the node, and
-    /// [`Node::join`] gives the first one (its `# Errors`).
+    /// for each session of a program, and one for the key of a node. At the bound, the
+    /// oldest place frees for a new peer, so a peer outside the region keeps its
+    /// session until 256 later peers took a place. Returns once each shard runs or one
+    /// has failed to start. No shard starts when the disk budget holds no ring on each
+    /// shard ([`Error::Disk`]), when a shard's part of the pool budget gives a
+    /// reservation of more than `usize::MAX` bytes ([`Error::Pool`]), when the port
+    /// does not bind ([`Error::Port`]), or when [`Config::name`] has a reserved segment
+    /// ([`Error::Reserved`]). Any failure stops the node, and [`Node::join`] gives the
+    /// first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -890,6 +894,7 @@ impl Endpoint {
             files: files.clone(),
             dir: directory::blob(),
             pool: Rc::clone(&pool),
+            floor_bytes: FLOOR,
         });
         let store = match store.await {
             Ok(store) => store,

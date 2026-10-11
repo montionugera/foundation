@@ -130,10 +130,13 @@ state on `main`.
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
   a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. Until #2325, a flood of peers outside the
-  region, programs or new node keys, can hold each place and lock out a node that joins
-  and the admin's program. It rejects a stream whose header has not arrived within
-  10 s.
+  of a program, and one for the key of a node. At the bound, the oldest place frees for
+  the new peer, and its sessions close unless its peer is now a member. So a peer
+  outside the region keeps its session until 256 later peers took a place. A flood that
+  takes 256 places in the time that a peer needs to prove its right (a member, the
+  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
+  limit on handshakes before admission bounds that rate (#563). It rejects a stream
+  whose header has not arrived within 10 s.
 
 ### Subject to owner
 
@@ -247,9 +250,23 @@ state on `main`.
   (`env::files`, RAFT DURABILITY, #352 item 3). The node gets `Error::IndexPastLog`
   only once the leader's commit passes its last entry. Not built (#648): the node
   shows the error in its status.
-- The `clock`, `replica`, and `blob` protocols are not built. To attack when they
-  land: who may be a time source, and a binary that a peer serves under a hash it
-  does not match (C9d).
+- The `clock` and `replica` protocols are not built. To attack when they land: who may
+  be a time source.
+- `blob::peer::serve` gives any chunk whose digest the peer names, and stores any chunk
+  that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
+  block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
+  head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
+  peer can fill the disk only to the free floor of the store, plus at most one chunk for
+  each put in flight; then each put of a chunk that the disk does not hold stops with
+  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
+  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
+  memory for each stream. `transport` also holds each chunk whole until the peer
+  acknowledged each byte of it and each byte before it on the stream, so a get can hold
+  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
+  get hold each chunk that its stream sends after it). Who may open a blob stream is not
+  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  The requester is not built (#1229). To attack when it lands: a binary that a peer
+  serves under a hash it does not match (C9d).
 
 ### Time source to `estimate`
 
