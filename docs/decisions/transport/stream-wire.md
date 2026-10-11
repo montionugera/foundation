@@ -50,15 +50,16 @@
   `try_send` gave back is not held. The caller of `send` writes the rest of its message;
   the stream writes the rest of a message from `try_send` or of a finished stream. It
   also writes the rest of a message whose `send` future leaked, from the next use of the
-  sender (CANCELLED SEND). A rest that the stream held for a waiting caller would take
-  each freed byte before the other class's caller wakes. The send budget gives room in
-  the order of the turn. While the owed class competes and a claim of the other class
-  holds room, room that a message of the owed class frees waits for that class's next
-  message, and the budget starts no new message of the other class, so neither class can
-  take the share through the budget (#819). A change of this share changes the share
-  bound of `transport/benches/send.rs` in the same PR. The share holds because each
-  window is at least twice the message limit, so one message of each class fits:
-  architect-2 (#1998, 2026-10-09 03:45 UTC):
+  sender (CANCELLED SEND; `laptop.architect-2`, 2026-10-11T17:27:26Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6111698287). A rest
+  that the stream held for a waiting caller would take each freed byte before the other
+  class's caller wakes. The send budget gives room in the order of the turn. While the
+  owed class competes and a claim of the other class holds room, room that a message of
+  the owed class frees waits for that class's next message, and the budget starts no new
+  message of the other class, so neither class can take the share through the budget
+  (#819). A change of this share changes the share bound of `transport/benches/send.rs`
+  in the same PR. The share holds because each window is at least twice the message
+  limit, so one message of each class fits: architect-2 (#1998, 2026-10-09 03:45 UTC):
   https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6073837407. The
   share: architect-2 (#977, 2026-10-07 17:15 UTC):
   https://github.com/synnaxlabs/foundation/issues/977#issuecomment-6042983190. The
