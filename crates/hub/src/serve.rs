@@ -104,15 +104,16 @@ pub enum Error {
         /// The body bytes that the open requests and reads of `subject` held.
         held: u64,
     },
-    /// The reader of a read did not open. Code: `UNKNOWN` for
-    /// [`reader::Error::Empty`], `MALFORMED` for `ManyIndexes`, `NOT_HOME` for
-    /// `Remote`, `BUSY` for `Pool`,
-    /// the code of the home's refusal but `FAILED` for its `MALFORMED`, and `FAILED`
-    /// for each other.
+    /// The reader of a read did not open. Code: `UNKNOWN` for [`reader::Error::Empty`],
+    /// `MALFORMED` for `ManyIndexes`, `NOT_HOME` for `Remote`, `BUSY` for `Pool`, the
+    /// code of the home's refusal but `FAILED` for its `MALFORMED`, and `FAILED` for
+    /// `Mesh`, `Transport`, and `Message`. A read gives no `Unsynced`.
     Reader(Box<reader::Error>),
     /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
     /// `BUSY` for `Pool`, the code of the home's refusal but `FAILED` for its
-    /// `MALFORMED`, and `FAILED` for each other.
+    /// `MALFORMED`, and `FAILED` for `Buffer`, `Stream`, `Message`, `Frame`, and
+    /// `Credit`. A read gives no `Behind`, which it sends as a reply before it finishes
+    /// the stream, and no `Replaced`.
     Ended(Box<reader::Ended>),
 }
 
@@ -419,11 +420,7 @@ async fn open(
         return Ok(None);
     };
     let keys = opening.into_keys();
-    let slots = {
-        let mut state = state.borrow_mut();
-        state.carry(keys[at]);
-        state.assigned(keys[at], &keys)
-    };
+    let slots = state.borrow_mut().slots(keys[at], &keys);
     let index = slots[at];
     let channels = Channels {
         keys: keys.into(),

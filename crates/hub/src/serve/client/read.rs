@@ -10,10 +10,11 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{Mode, Open, Places, Read, Refusal, place};
+use wire::hub::client::{Mode, Open, Place, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
 use crate::State;
+use crate::channel::Channel;
 use crate::link::Session;
 use crate::reader::{self, Home, Matched, Reader};
 use crate::serve::{Error, Event, Layout, alloc, reply};
@@ -37,13 +38,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, matched, layout)) =
+    let Some((reader, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, &matched).await?;
+    start(state, sender, places).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -102,21 +103,26 @@ async fn here<F>(
     mut open: Held,
     mode: reader::Mode,
     mut program: Pin<&mut F>,
-) -> Result<Option<(Reader, Matched, Layout)>, Error>
+) -> Result<Option<(Reader, Matched<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
     let refused = |error| Error::Reader(Box::new(error));
     let found = {
-        let mut matched = pin!(reader::matched(state, || open.select()));
+        let place = |name: &Name, channel: &Channel| Place {
+            key: channel.key(),
+            data_type: channel.sample(),
+            name: name.clone(),
+        };
+        let mut found = pin!(reader::find(state, || open.select(), place));
         poll_fn(|cx| match program.as_mut().poll(cx) {
             Poll::Ready(finished) => Poll::Ready(Err(finished)),
-            Poll::Pending => matched.as_mut().poll(cx).map(Ok),
+            Poll::Pending => found.as_mut().poll(cx).map(Ok),
         })
         .await
     };
     drop(open);
-    let (matched, home) = match found {
+    let (places, home) = match found {
         Ok(found) => found.map_err(refused)?,
         Err(finished) => return finished.map(|()| None),
     };
@@ -125,27 +131,27 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let reader = Reader::here(state, &matched, channels, mode).map_err(refused)?;
-    Ok(Some((reader, matched, layout)))
+    let reader = Reader::here(state, channels, mode).map_err(refused)?;
+    Ok(Some((reader, places, layout)))
 }
 
-/// Sends the places of `matched`, their run, and `Opened`.
+/// Sends `places`, their run, and `Opened`, and drops the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    matched: &Matched,
+    places: Matched<Place>,
 ) -> Result<(), Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
-        count: u32::try_from(matched.places.len())
+        count: u32::try_from(places.items.len())
             .expect("invariant: each place has its own slot, a u32"),
-        index: u32::try_from(matched.index)
+        index: u32::try_from(places.index)
             .expect("invariant: the index is one of the places"),
     }
     .encode(&mut block);
     sender.send(block.freeze()).await?;
     let most = sender.bytes_max().min(state.borrow().home.pool().largest());
-    for message in place::messages(&matched.places, most) {
+    for message in place::messages(&places.items, most) {
         let mut block = alloc(state, message.encoded_len())?;
         message.encode(&mut block);
         sender.send(block.freeze()).await?;

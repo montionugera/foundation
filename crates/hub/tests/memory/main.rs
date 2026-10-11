@@ -34,8 +34,8 @@ use transport::{Class, Code};
 use types::channel;
 use types::name::Selector;
 use types::time::Span;
-use wire::hub::client::{self, BODY_BYTES_MAX, OPEN_BYTES_MAX, Place};
-use wire::hub::{BUSY, Open, keys};
+use wire::hub::client::{self, BODY_BYTES_MAX, FromNode, OPEN_BYTES_MAX, Place};
+use wire::hub::{BUSY, FromHome, Open, keys};
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -51,6 +51,7 @@ fn main() {
     holds_no_more_bytes_for_an_open_that_names_one_channel_many_times();
     holds_no_places_while_a_read_waits_for_its_home();
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
+    holds_no_places_once_a_read_opens();
 }
 
 /// Patterns `x` that fill the open of a read of `value` to [`OPEN_BYTES_MAX`]: one
@@ -74,7 +75,7 @@ fn holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap() {
         let transport = Rc::new(transport);
         let region =
             region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
-        let hub = common::hub_in(&node, tasks.clone(), region, &[]).await;
+        let hub = common::hub_in(&node, tasks.clone(), Some(region), &[]).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -295,7 +296,7 @@ fn holds_no_places_while_a_read_waits_for_its_home() {
         let transport = Rc::new(transport);
         let region =
             region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
-        let hub = common::hub_in(&node, tasks.clone(), region, &wide).await;
+        let hub = common::hub_in(&node, tasks.clone(), Some(region), &wide).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -332,4 +333,92 @@ fn holds_no_places_while_a_read_waits_for_its_home() {
         "a read of one channel holds {one} bytes, and one of {WIDE} holds {wide}: its \
          places are {places} bytes"
     );
+}
+
+/// A read of [`WIDE`] channels with long names holds, once it opens, about as many
+/// bytes as a read of [`WIDE`] channels with short names: at most a tenth of the
+/// bytes by which their names differ.
+fn holds_no_places_once_a_read_opens() {
+    let long = "x".repeat(240);
+    let longs = (0..WIDE).map(|n| name(&format!("l.{long}.{n}")));
+    let shorts = (0..WIDE).map(|n| name(&format!("s.{n}")));
+    let more: Vec<_> = longs.chain(shorts).collect();
+    let (longs, shorts) = more.split_at(WIDE);
+    let differ: usize = longs
+        .iter()
+        .zip(shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let hub = common::hub_in(&node, tasks.clone(), None, &more).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        // The first read of each set grows the pools and the state of its channels.
+        let _first = opened(&agent, "l.**").await;
+        let _second = opened(&agent, "s.**").await;
+        agent.sleep(common::SETTLE).await;
+        let before = ALLOCATOR.held();
+        let _long = opened(&agent, "l.**").await;
+        agent.sleep(common::SETTLE).await;
+        let long = ALLOCATOR.held();
+        let _short = opened(&agent, "s.**").await;
+        agent.sleep(common::SETTLE).await;
+        let short = ALLOCATOR.held();
+        *kept.lock().expect("not poisoned") = Some((long - before, short - long));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(4, home, program);
+    let (long, short) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        long.abs_diff(short) < differ / 10,
+        "a read of {WIDE} channels with long names holds {long} bytes, and one with \
+         short names holds {short}: their names differ by {differ} bytes"
+    );
+}
+
+/// A complete read of `select` by `agent`, after the program got its places, their
+/// run, and `Opened`. The program holds nothing of the places.
+async fn opened(agent: &Agent, select: &str) -> agent::Stream {
+    let mut stream = agent.read(client::Mode::Complete, &[select]).await;
+    let mut start = client::Reader::new(client::Mode::Complete);
+    let mut next = async || {
+        let message = stream.recv().await.expect("receives");
+        message.expect("a message before the finish")
+    };
+    let Ok(FromNode::Places(_)) = start.decode(&next().await) else {
+        panic!("the places come first");
+    };
+    let mut reader = loop {
+        let Ok(FromNode::Run { home, .. }) = start.decode(&next().await) else {
+            panic!("a message of the run of places");
+        };
+        if let Some(home) = home {
+            break home;
+        }
+    };
+    assert!(
+        matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
+        "then `Opened`"
+    );
+    stream
 }

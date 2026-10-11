@@ -31,12 +31,13 @@ pub(crate) async fn hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
     (hub, now.nanos())
 }
 
-/// A hub on a new shard of node 1 in `region`, with mesh time, and with `time`,
-/// `value`, and each of `more`, an `i64` channel on `time`, defined.
+/// A hub on a new shard of node 1 in `region`, or alone with no region, with mesh
+/// time, and with `time`, `value`, and each of `more`, an `i64` channel on `time`,
+/// defined.
 pub(crate) async fn hub_in(
     node: &sim::node::Node,
     tasks: Tasks,
-    region: hub::Region,
+    region: Option<hub::Region>,
     more: &[Name],
 ) -> Hub {
     let env = env(node, tasks);
@@ -49,7 +50,7 @@ pub(crate) async fn hub_in(
         node: types::node::Key::from_u128(1),
         time,
         entropy,
-        region: Some(region),
+        region,
     });
     hub.set_definitions(
         definitions(more)

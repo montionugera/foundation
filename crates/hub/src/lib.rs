@@ -504,13 +504,15 @@ impl State {
         self.home.carry(slot);
     }
 
-    /// The slot of each of `keys` in its role: `index` as an index, and each other key
-    /// as a data channel of its defined sample type. It does not carry `index`.
+    /// Carries `index` at the home, and gives the slot of each of `keys` in its role:
+    /// `index` as an index, and each other key as a data channel of its defined
+    /// sample type.
     ///
     /// # Panics
     ///
     /// When a key of `keys` is not defined.
-    fn assigned(&mut self, index: Key, keys: &[Key]) -> Box<[types::channel::Slot]> {
+    fn slots(&mut self, index: Key, keys: &[Key]) -> Box<[types::channel::Slot]> {
+        self.carry(index);
         let assigned = self.interner.slots();
         let slot = assigned.index(index);
         keys.iter()
