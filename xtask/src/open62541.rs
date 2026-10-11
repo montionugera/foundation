@@ -288,8 +288,9 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 /// any reference to a clock function other than a call, such as its address in code or
 /// data, through which any code can call it, each inlined function, an `#include_next`,
 /// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
-/// is not GCC or that builds for neither x86-64 nor aarch64, and each instruction whose
-/// key the list of its architecture does not admit.
+/// is not GCC or that builds for neither x86-64 nor aarch64, a symbol whose name holds
+/// a character other than a letter, a digit, `_`, `.`, or `$`, and each instruction
+/// whose key the list of its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -572,6 +573,7 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
     let mut problems = line_directives(copy, Path::new("")).map_err(|e| vec![e])?;
     for (source, object, preprocessed) in objects {
         let mut objdump = Command::new("objdump");
+        problems.extend(odd_symbols(source, &object).map_err(|e| vec![e])?);
         objdump.arg("-dr").args(architecture.options).arg(&object);
         let disassembly = exec(&mut objdump).map_err(|e| vec![e])?;
         problems.extend(
@@ -609,6 +611,26 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// An error for each symbol of `object`, built from `source`, whose name holds a
+/// character other than a letter, a digit, `_`, `.`, or `$`. objdump can show such a
+/// name as an addend or a function header.
+fn odd_symbols(source: &str, object: &Path) -> Result<Vec<String>, String> {
+    Ok(symbols([object], &[])?
+        .into_iter()
+        .filter(|name| {
+            !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
+        })
+        .map(|name| {
+            format!(
+                "{source}: the symbol `{name}` holds a character other than a letter, \
+                 a digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+            )
+        })
+        .collect())
 }
 
 /// An error for each `#line` directive or line marker in a `.c` or `.h` file under
@@ -1026,20 +1048,15 @@ impl Uses {
 }
 
 /// The type and the symbol of a line of `objdump -r` or `objdump -dr` that holds a
-/// relocation: an offset, a type, and the symbol to the end of the line, with its
-/// addend, if any, after it.
+/// relocation: an offset, a type, and the symbol to the end of the line, less its
+/// addend. The name holds no `+` or `-`: [`odd_symbols`] refuses one.
 fn relocation(line: &str) -> Option<(&str, &str)> {
     let (_, rest) = line.trim_start().split_once([' ', '\t'])?;
     let (kind, symbol) = rest.trim_start().split_once([' ', '\t'])?;
     if !kind.starts_with("R_") {
         return None;
     }
-    let symbol = symbol.trim();
-    let symbol = match symbol.rsplit_once(['+', '-']) {
-        Some((name, addend)) if addend.starts_with("0x") => name,
-        _ => symbol,
-    };
-    Some((kind, symbol))
+    Some((kind, symbol.trim().split(['+', '-']).next()?))
 }
 
 /// An architecture that the check builds for.
@@ -1207,8 +1224,10 @@ fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)>
         {
             section = name;
             function = None;
-        } else if let Some(name) =
-            line.strip_suffix(">:").and_then(|l| l.split_once(" <"))
+        } else if let Some(name) = line
+            .strip_suffix(">:")
+            .and_then(|l| l.split_once(" <"))
+            .filter(|_| line.starts_with(|c: char| c.is_ascii_hexdigit()))
         {
             // A section with no symbol at its start shows as `<.text>`.
             function = Some(name.1).filter(|name| !name.starts_with('.'));
@@ -1448,6 +1467,26 @@ RELOCATION RECORDS FOR [.text.g]:
         );
     }
 
+    /// A relocation against a symbol named `y <h>:` ends in `>:`, as a function header
+    /// does.
+    #[test]
+    fn references_reads_no_relocation_line_as_a_function_header() {
+        let disassembly = "\
+Disassembly of section .text:
+
+0000000000000000 <f>:
+   0:\t90000000 \tadrp\tx0, 0 <f>
+\t\t\t0: R_AARCH64_ADR_PREL_PG_HI21\ty <h>:
+   4:\t94000000 \tbl\t0 <clock_gettime>
+\t\t\t4: R_AARCH64_CALL26\tclock_gettime
+";
+        let outside = BTreeSet::from(["clock_gettime".to_owned()]);
+        assert_eq!(
+            Vec::from_iter(references(disassembly, "", &outside)),
+            [labeled(".text", "f", Access::Call, "clock_gettime")]
+        );
+    }
+
     /// A quoted symbol of top-level `asm` can hold spaces.
     #[test]
     fn references_reads_no_relocation_in_a_header() {
@@ -1470,7 +1509,6 @@ Disassembly of section R_X86_64_PLT32 UA_DateTime_now+:
             "\t\t\t4: R_AARCH64_CALL26\th i",
             "0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004",
             "\t\t\t1: R_X86_64_PLT32\tUA_DateTime_now+0x4",
-            "0000000000000008 R_X86_64_64       a-b",
             "   8:\t94000000 \tbl\t0 <f R_AARCH64_CALL26 UA_DateTime_now>",
             "OFFSET           TYPE              VALUE",
         ];
@@ -1481,7 +1519,6 @@ Disassembly of section R_X86_64_PLT32 UA_DateTime_now+:
                 Some(("R_AARCH64_CALL26", "h i")),
                 Some(("R_X86_64_PLT32", "UA_DateTime_now")),
                 Some(("R_X86_64_PLT32", "UA_DateTime_now")),
-                Some(("R_X86_64_64", "a-b")),
                 None,
                 None,
             ]
@@ -3053,8 +3090,10 @@ End of search list.
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
-    /// Names that only `asm` makes: a symbol with spaces, a function name with a
-    /// relocation type and a clock name, and sections whose names end in `:` and `]:`.
+    /// Names that only `asm` makes: symbols that objdump cannot show exactly, and
+    /// sections whose names end in `:` and `]:`. `g` calls `y <h>:` with no addend, so
+    /// its relocation line ends in `>:`. The global `getpid x` is there so that a read
+    /// of a defined name to its first space would admit the call of `getpid`.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[cfg_attr(
@@ -3066,30 +3105,56 @@ End of search list.
         assert_eq!(result, Ok(()));
         let path = root.join("patches/open62541/src/util/ua_util.c");
         let old = std::fs::read_to_string(&path).unwrap();
-        let call = if cfg!(target_arch = "x86_64") {
-            "call"
+        let (call, header) = if cfg!(target_arch = "x86_64") {
+            ("call", r#"\"y <h>:\"+4"#)
         } else {
-            "bl"
+            ("bl", r#"\"y <h>:\""#)
         };
-        let function = "f R_X86_64_64 UA_DateTime_now+";
         let asm = format!(
-            r#"__asm__(".pushsection .data\n.quad \"h i\"\n.popsection\n"
+            r#"__asm__(".pushsection .data\n.quad \"h i\"\n.quad \"h-0x4\"\n"
+        ".quad \"k+0x1\"\n.globl \"getpid x\"\n\"getpid x\":\n.popsection\n"
         ".pushsection \".text]:\",\"aw\"\n.quad UA_DateTime_now\n.popsection\n"
-        ".pushsection \".text.g:\",\"ax\"\n\"{function}\":\n"
-        "{call} UA_DateTime_now\nret\n.popsection");
+        ".pushsection \".text.g:\",\"ax\"\ng:\n{call} {header}\n"
+        "{call} UA_DateTime_now\n{call} getpid\nret\n.popsection");
 "#
         );
         std::fs::write(&path, old + &asm).unwrap();
+        let file = "src/util/ua_util.c";
+        let refused = |name: &str| {
+            format!(
+                "{file}: the symbol `{name}` holds a character other than a letter, a \
+                 digit, `_`, `.`, or `$`, so objdump cannot show it exactly"
+            )
+        };
         assert_eq!(
             check(&root),
             Err(vec![
-                "src/util/ua_util.c: the section `.data` references `h i` outside a \
-                 function, so a use through it escapes FUNCTION_SYMBOLS"
-                    .to_owned(),
-                "src/util/ua_util.c: the section `.text]:` takes the address of \
-                 `UA_DateTime_now`, so a call through it escapes FUNCTION_SYMBOLS"
-                    .to_owned(),
-                unlisted_clock("src/util/ua_util.c", function),
+                refused("getpid x"),
+                refused("h i"),
+                refused("h-0x4"),
+                refused("k+0x1"),
+                refused("y <h>:"),
+                format!(
+                    "{file}: the section `.data` references `h i` outside a function, \
+                     so a use through it escapes FUNCTION_SYMBOLS"
+                ),
+                format!(
+                    "{file}: the section `.text]:` takes the address of \
+                     `UA_DateTime_now`, so a call through it escapes FUNCTION_SYMBOLS"
+                ),
+                unlisted_clock(file, "g"),
+                format!(
+                    "{file}: `g` calls `getpid`, which no list admits. Find whether a \
+                     node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with the \
+                     reason"
+                ),
+                format!(
+                    "{file}: `g` calls `y <h>:`, which no list admits. Find whether a \
+                     node runs it; if not, or if it reads no clock, file, network, \
+                     randomness, or process state, add it to FUNCTION_SYMBOLS with the \
+                     reason"
+                ),
             ])
         );
         remove(&root).and_then(|()| remove(&repo)).unwrap();
