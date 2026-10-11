@@ -19,20 +19,26 @@
   outside the region, makes `mesh` give one check of a card name against a region, which
   `fits` calls and `node` calls before the claim. No release kept a reserved name. Only
   a build of `main` before this check could, and a start of its data directory with
-  another name gives `node.renamed`, whose fix names another data directory. Lost: a
-  check in `ops::cli`, which covers one caller and leaves `node` free to keep the name;
-  a write of the name only after the region opens, which founds the region before the
-  file `name` exists, so a crash between them leaves a region whose card name no file
-  holds; a start that writes over a kept reserved name, a branch in `name::keep` and in
-  four public docs for a state that no release has. Decided by `laptop.architect-2`
+  another name gives `node.renamed`, whose second fix, another data directory, is the
+  way out (`--name {stored}` gives `node.reserved`). Lost: a check in `ops::cli`, which
+  covers one caller and leaves `node` free to keep the name; a write of the name only
+  after the region opens, which founds the region before the file `name` exists, so a
+  crash between them leaves a region whose card name no file holds; a start that writes
+  over a kept reserved name, a branch in `name::keep`, in three public docs, and in this
+  record, for a state that no release has. Proposed in round 1 of #2331
   (2026-10-11T01:19:28Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104132104); approved
   by `laptop.architect` at `172d1b6e0` (2026-10-11T01:22:34Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104154087). The one
-  test, the trigger, the reason of the write after the region opens, and the lost write
-  over a kept reserved name: proposed in round 2 (2026-10-11T01:39:35Z,
-  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104275190) and round
-  3 of #2331; approval of `laptop.architect` owed.
+  test, the trigger, the way out of a kept reserved name, the reason of the write after
+  the region opens, and the lost write over a kept reserved name: proposed in rounds 2
+  to 4 of #2331 (round 2: 2026-10-11T01:39:35Z,
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104275190; round 3:
+  2026-10-11T01:57:16Z,
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104399766; round 4:
+  2026-10-11T02:43:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104716716); approval
+  of `laptop.architect` owed.
   The file is the only copy of the name on the node, and the source of the name that
   the node puts in its card when it founds a region (#1744) or joins one by ticket
   (#1157). In the region, `card.name` is the one copy (MEMBER RECORD). Trigger: the
