@@ -36,3 +36,10 @@
   that drop. No byte of the dropped send went, so the rule above says that it
   changes nothing (`laptop.architect-2`, 2026-10-11T12:39:23Z:
   https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6109111453).
+  One case is outside the rule for a future that leaks. In a build that unwinds, a
+  `send_parts` that panics on a range drops its future. When it is the first use of
+  the sender after the leak, that drop cancels the leaked message as its own. The
+  panic is a defect of the caller, and a release build aborts at it. Lost: a lookup
+  of the stream ahead of the range check on each send, and state in the future
+  (`laptop.architect-2`, 2026-10-11T15:05:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6110385022).
