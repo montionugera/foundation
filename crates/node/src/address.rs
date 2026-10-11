@@ -81,7 +81,7 @@ pub(crate) async fn hold(
 }
 
 /// Writes `address` in the file, made of zero bytes when it is not there, and made
-/// again when it has another length. Closes the file when the write fails.
+/// again when it has another length.
 async fn write(files: &Files, address: &Address) -> Result<File, env::files::Error> {
     let path = Path::new(FILE);
     let mode = Mode::Create { len: LEN as u64 };
@@ -92,13 +92,8 @@ async fn write(files: &Files, address: &Address) -> Result<File, env::files::Err
         }
         opened => opened?,
     };
-    match sector::write(files, &file, &encode(address)).await {
-        Ok(()) => Ok(file),
-        Err(error) => {
-            file.close().await;
-            Err(error)
-        }
-    }
+    sector::write(files, &file, &encode(address)).await?;
+    Ok(file)
 }
 
 /// Writes the file empty after a failed open or write, which can leave the address
