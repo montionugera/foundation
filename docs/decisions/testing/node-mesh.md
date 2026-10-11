@@ -171,12 +171,14 @@
   from `Config::entropy` with `sector::publish` as it makes `name` (NODE NAME), before
   it builds the founding. So a read sees no file or a whole one. A start that stops
   after it renames `admin.key.new` to `admin.key` and before the founding is durable
-  leaves a key that the next start founds with, unless a crash loses the rename before a
-  sync of the data directory succeeds: the sync of `publish`, or the claim of the next
+  leaves a key that a later start founds with, unless a crash loses the rename before a
+  sync of the data directory succeeds: the sync of `publish`, or the claim of a later
   start after that sync fails (approved by `laptop.architect` at `9ec5ee63e`,
   2026-10-11T02:49:17Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104757560). A file
-  of another length, also one with no bytes, which `publish` never leaves, or of another
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104757560, and "a
+  later start" at `d70848450`, 2026-10-11T03:02:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104845006). A file of
+  another length, also one with no bytes, which `publish` never leaves, or of another
   tag or checksum gives `Error::Admin`, and the node does not write over it. Each other
   file error on `admin.key` gives `Error::Directory`. `publish` in place of a write in
   place, by `laptop.architect-2` (2026-10-10T22:20:34Z, the audit of #2172):
