@@ -124,16 +124,17 @@
   Supersedes "A stalled request holds its reservation until its stream or session
   ends; only an admitted subject can do this"
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483).
-  A read takes no request turn: a link serves its reads beside its one open request.
-  The transport session's `streams_max` bounds the reads of a link; there is no
-  `READS_MAX`. A program holds one of the 256 places of a node (`PLACES` in
-  `node::route`) for each session, so a node holds at most 256 × `streams_max` reads of
-  programs, each with the places that its selector matches. The node holds the open of a
-  read before it checks its signature, so the open reserves its length under
-  `BODIES_BYTES_MAX` and the subject's share, as a request body does, until the node
-  decoded it; an open that does not fit stops with `BUSY` (`serve::Error::Share` or
-  `Bodies`). The node opens an unnamed `hub::reader::Reader` for the read, at this node
-  or at the home of another node.
+  A read takes no request turn: a link serves its reads beside its one open request. The
+  transport session's `streams_max` bounds the reads of a link; there is no `READS_MAX`.
+  A program holds one of the 256 peer places of `node::route` (its `PLACES` patch) for
+  each session, so while that patch holds, a node holds at most 256 × `streams_max`
+  reads of programs. The size of one read has no bound past the definitions: its
+  selector can match each channel. The node holds the open of a read before it checks
+  its signature, so the open reserves its length under `BODIES_BYTES_MAX` and the
+  subject's share, as a request body does, until the node decoded it; an open that does
+  not fit stops with `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an
+  unnamed `hub::reader::Reader` for the read, at this node or at the home of another
+  node.
   `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
   and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
   exhaustive `match`: `UNKNOWN` for a selector that matches no channel, `MALFORMED` for
@@ -141,11 +142,11 @@
   `Transport`, `Message`, `Frame`, `Credit`). `Unsynced`, `Remote`, and `Replaced`
   cannot come for an unnamed reader, so their arms panic. Decided by `laptop.architect`
   (2026-10-10T23:31:47Z,
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items
-  2, 5, and 6). The ruling approved the plan
-  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402),
-  which gives the other codes (item 6): `UNKNOWN` for a removed channel, `BUSY` for
-  the pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal
-  for a refusal of the home. A complete read that misses a frame gets `Behind` and the
-  finish of the stream (item 3), as a HUB WIRE session does, so the arm of
-  `Ended::Behind` panics too.
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items 2,
+  5, and 6). The ruling approved the plan
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402), which
+  gives the other codes (plan item 6): `UNKNOWN` for a removed channel, `BUSY` for the
+  pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal for a
+  refusal of the home. A complete read that misses a frame gets `Behind` and the finish
+  of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
+  panics too.
