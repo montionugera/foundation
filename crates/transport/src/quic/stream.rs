@@ -49,8 +49,7 @@ pub(crate) struct Sender {
     bytes_max: usize,
 }
 
-/// What a connection keeps of a stream that this side sends on, until the stream
-/// finishes or resets.
+/// What a connection keeps of a stream that this side sends on.
 #[derive(Debug)]
 struct Half {
     key: Key,

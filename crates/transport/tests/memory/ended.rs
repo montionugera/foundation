@@ -4,7 +4,6 @@
 
 use std::mem;
 use std::net::SocketAddr;
-use std::ops::Range;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
@@ -26,6 +25,9 @@ const PAUSE: Span = Span::from_nanos(100_000_000);
 const ACT: Span = Span::from_nanos(200_000_000);
 /// The parts of the message that the window cuts.
 const PARTS: usize = 150;
+/// More than the parts that the window takes before it cuts the message: its room
+/// after the fill holds 8 runs, and the margin covers the other heap changes.
+const TAKEN: usize = 16;
 /// The bytes of each part: one over the longest chunk that noq-proto copies, so that
 /// each part stays apart in the list.
 const RUN: usize = 1453;
@@ -47,8 +49,9 @@ pub(crate) fn main() {
     for end in [End::Stop, End::Cancel, End::Close, End::PeerClose] {
         let [sent, sent_after] = run(end, false);
         let [parted, parted_after] = run(end, true);
-        // The heap also changes for other causes in the end, the same in each run.
-        let list = PARTS * mem::size_of::<Range<usize>>();
+        // The heap also changes for other causes in the end, by about the same in
+        // each run.
+        let list = (PARTS - TAKEN) * mem::size_of::<Part>();
         assert!(
             parted + sent_after >= sent + parted_after + list,
             "{end:?}: the heap goes from {parted} to {parted_after} bytes after a \
