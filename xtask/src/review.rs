@@ -205,7 +205,8 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
 /// later round posted at or after `SURFACE_CUTOFF` must name `architecture` when
 /// `surface_change` gives a phrase for its range (`History::surface_change`). For that
-/// rule, a round comment after the first is a later round, whatever its number.
+/// rule, a round comment after the first is a later round, whatever its number, and
+/// so is a first round comment whose number is above 1.
 fn problems(
     record: &Record,
     head: &str,
