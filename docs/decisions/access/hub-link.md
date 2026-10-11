@@ -1,9 +1,12 @@
 - **HUB LINK (2026-10-08)** `Hub::link(session)` gives a `hub::Link` for one transport
   session. `node` calls `Link::serve` for each hub stream that NODE PORT serves once it
   reads its header. On a client link, the first stream given to `serve` is its hello
-  stream, and each later one a request stream; `serve` takes the role at the call
-  (`laptop.architect`, 2026-10-08T18:56:15Z,
-  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066908418).
+  stream, and each later one a request stream or a read stream, by its first message
+  (`client::First::decode`); `serve` takes the role at the call (`laptop.architect`,
+  2026-10-08T18:56:15Z,
+  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066908418; the read
+  stream by `laptop.architect`, 2026-10-10T23:31:47Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608).
   `hub::Config` gets `node` (the `via` that `admit` checks), `time` (`clock::Reader`),
   and `entropy` (the nonces). The link waits for `Admitted::ends` of a hello with
   `clock::Reader::reach` (CLOCK REACH), so `hub` knows nothing of how mesh time moves
@@ -119,3 +122,25 @@
   Supersedes "A stalled request holds its reservation until its stream or session
   ends; only an admitted subject can do this"
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483).
+  A read takes no request turn: a link serves its reads beside its one open request.
+  The transport session's `streams_max` bounds the reads of a link; there is no
+  `READS_MAX`. The node holds the open of a read before it checks its signature, so
+  the open reserves its length under `BODIES_BYTES_MAX` and the subject's share, as a
+  request body does, until the node decoded it; an open that does not fit stops with
+  `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an unnamed
+  `hub::reader::Reader` for the read, at this node or at the home of another node.
+  `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
+  and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
+  exhaustive `match`: `UNKNOWN` for a selector that matches no channel or a removed
+  channel, `MALFORMED` for channels on more than one index, `BUSY` for the pool, and
+  `FAILED` for the buffer, the mesh, and the path to the home (`Stream`, `Transport`,
+  `Message`, `Frame`, `Credit`). `Unsynced`, `Remote`, and `Replaced` cannot come for
+  an unnamed reader, so their arms panic. Decided by `laptop.architect`
+  (2026-10-10T23:31:47Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items
+  2, 5, and 6). A refusal of the home keeps its code, but its `MALFORMED` is `FAILED`:
+  it tells of the path between the nodes, not of the program's read. A complete read
+  that misses a frame gets `Behind` and the finish of the stream, as a HUB WIRE session
+  does, so the arm of `Ended::Behind` panics too (box1.builder-2, 2026-10-11T13:16:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6109426348, sent
+  to `laptop.architect`).
