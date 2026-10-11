@@ -1,6 +1,12 @@
 //! Entry points for the fuzz targets. Needs the `sim` feature.
 
+use std::ops::Range;
+use std::path::PathBuf;
+
+use raft::{Entry, Hard};
+
 use crate::change::Change;
+use crate::driver::used;
 use crate::entry;
 use crate::log;
 use crate::message::Message;
@@ -52,14 +58,112 @@ pub fn seal_log_record(bytes: &mut [u8]) {
     log::seal(bytes);
 }
 
+/// Writes the checks of each record in each file that `dir` frames, as
+/// [`scan_log_dir`] reads them. From the start of a file, at each header that is not
+/// zeros, it writes the body check over the length that the header claims, then the
+/// header check, and goes on to the next record. A body check of zeros stays, so that
+/// record is torn. It stops at the end of a file, at a header of zeros, and after the
+/// header check of a record that claims more bytes than the file holds.
+#[expect(clippy::missing_panics_doc, reason = "each frame is in `dir`")]
+pub fn seal_log_dir(dir: &mut [u8]) {
+    for (_, body) in frames(dir) {
+        log::seal_file(dir.get_mut(body).expect("invariant: a frame is in `dir`"));
+    }
+}
+
+/// What an open reads from a log directory, and the log files that it leaves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scan {
+    /// The last hard state written, or the default with none.
+    pub hard: Hard,
+    /// The entries from index 1.
+    pub entries: Vec<Entry>,
+    /// The log files that the open leaves, in the framing of [`scan_log_dir`]: each
+    /// file in number order, named `log-<n>`, and no file after the one that holds the
+    /// end. That file has zeros after its last record, and each file before it is as
+    /// read. With no log file, it holds none.
+    pub files: Vec<u8>,
+}
+
+/// What an open reads from the log directory that `dir` frames, and the files that it
+/// leaves. `dir` is each file one after another: a byte of name length, the name, a
+/// 2-byte little-endian body length, then the body. A file cut short ends with the
+/// input. A name that is not UTF-8 reads with U+FFFD.
+///
+/// # Errors
+///
+/// What an open gives for these files: [`log::Error::Stray`], [`log::Error::Corrupt`],
+/// or [`log::Error::Version`].
+pub fn scan_log_dir(dir: &[u8]) -> Result<Scan, log::Error> {
+    let (stored, left) = log::open_files(&unframe(dir))?;
+    Ok(Scan {
+        hard: stored.hard,
+        entries: stored.entries,
+        files: frame(&left),
+    })
+}
+
+/// The name of the file in the folder `spec` of a mesh directory that names the
+/// pointer that `name` names, or `None` when `name` names no pointer.
+#[must_use]
+pub fn round_trip_spec_name(name: &[u8]) -> Option<Vec<u8>> {
+    let pointer = used::pointer(std::str::from_utf8(name).ok()?)?;
+    Some(used::file(pointer).into_os_string().into_encoded_bytes())
+}
+
+// The path and the bytes of each file that `dir` frames.
+fn unframe(dir: &[u8]) -> Vec<(PathBuf, Vec<u8>)> {
+    let get = |range| dir.get(range).expect("invariant: a frame is in `dir`");
+    frames(dir)
+        .into_iter()
+        .map(|(name, body)| {
+            let name = String::from_utf8_lossy(get(name)).into_owned();
+            (PathBuf::from(name), get(body).to_vec())
+        })
+        .collect()
+}
+
+// The framing of `files`, each named `log-<n>` for its place.
+fn frame(files: &[Vec<u8>]) -> Vec<u8> {
+    let mut dir = Vec::new();
+    for (number, bytes) in files.iter().enumerate() {
+        let name = format!("log-{number}");
+        dir.push(u8::try_from(name.len()).expect("invariant: a log name is short"));
+        dir.extend(name.as_bytes());
+        let len = u16::try_from(bytes.len())
+            .expect("invariant: an open leaves no file longer than it read");
+        dir.extend(len.to_le_bytes());
+        dir.extend(bytes);
+    }
+    dir
+}
+
+// The name and the body of each file that `dir` frames, as ranges of `dir`.
+fn frames(dir: &[u8]) -> Vec<(Range<usize>, Range<usize>)> {
+    let span = |from: usize, len: usize| from..from.saturating_add(len).min(dir.len());
+    let mut frames = Vec::new();
+    let mut at = 0;
+    while let Some(&len) = dir.get(at) {
+        let name = span(at.saturating_add(1), usize::from(len));
+        let length = span(name.end, 2);
+        let len = match dir.get(length.clone()) {
+            Some(&[low, high]) => u16::from_le_bytes([low, high]),
+            _ => 0,
+        };
+        let body = span(length.end, usize::from(len));
+        at = body.end;
+        frames.push((name, body));
+    }
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::ops::Range;
+    use std::path::Path;
 
     use raft::{
-        Answer, Body, Data, Entry, Grant, Hard, Link, Position, Proof, Signature, Term,
-        Voters,
+        Answer, Body, Data, Grant, Link, Position, Proof, Signature, Term, Voters,
     };
     use spec::Pointer;
 
@@ -785,5 +889,539 @@ mod tests {
         let before = short.clone();
         seal_log_record(&mut short);
         assert_eq!(short, before);
+    }
+
+    /// A log file of `len` bytes that holds `records` back to back from its start.
+    fn log_file(records: &[&[u8]], len: usize) -> Vec<u8> {
+        let mut file = records.concat();
+        assert!(file.len() <= len);
+        file.resize(len, 0);
+        file
+    }
+
+    /// The framing of `files`, each a name and its bytes.
+    fn framed(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, bytes) in files {
+            out.push(u8::try_from(name.len()).unwrap());
+            out.extend(name.as_bytes());
+            out.extend(u16::try_from(bytes.len()).unwrap().to_le_bytes());
+            out.extend(*bytes);
+        }
+        out
+    }
+
+    fn empty(index: u64) -> Entry {
+        Entry {
+            at: at(1, index),
+            data: Data::Empty,
+        }
+    }
+
+    /// Record `number` with an empty entry at `index`.
+    fn log_record(number: u64, index: u64) -> Vec<u8> {
+        log::encode(number, None, &[empty(index)])
+    }
+
+    /// A scan that read `hard` and `entries`, and leaves `files`.
+    fn scanned(hard: Hard, entries: Vec<Entry>, files: Vec<u8>) -> Scan {
+        Scan {
+            hard,
+            entries,
+            files,
+        }
+    }
+
+    /// A scan that read no hard state and an empty entry at each index from 1 to
+    /// `last`, and leaves `files`.
+    fn empties(last: u64, files: Vec<u8>) -> Scan {
+        scanned(Hard::default(), (1..=last).map(empty).collect(), files)
+    }
+
+    /// Record `number` with an empty entry at `index`, and a body check of zeros.
+    fn torn(number: u64, index: u64) -> Vec<u8> {
+        let mut record = log_record(number, index);
+        record[26..HEADER].fill(0);
+        log::seal_file(&mut record);
+        record
+    }
+
+    fn corrupt(file: &str, offset: usize) -> log::Error {
+        log::Error::Corrupt {
+            path: Path::new("log").join(file),
+            offset: offset.try_into().unwrap(),
+        }
+    }
+
+    fn stray(file: &str) -> log::Error {
+        log::Error::Stray {
+            path: Path::new("log").join(file),
+        }
+    }
+
+    type LogDirInput = (&'static str, Vec<u8>, Result<Scan, log::Error>);
+
+    const LEN: usize = 1024;
+
+    /// Record `number` with an empty entry at `number + 1`.
+    fn numbered(number: u64) -> Vec<u8> {
+        log_record(number, number.strict_add(1))
+    }
+
+    /// Each input of `mesh_log_dir`, built from values, and what its scan gives.
+    fn log_dir_inputs() -> Vec<LogDirInput> {
+        [record_inputs(), torn_inputs(), file_inputs(), name_inputs()].concat()
+    }
+
+    /// Inputs of the records of one file.
+    fn record_inputs() -> Vec<LogDirInput> {
+        let r0 = numbered(0);
+        let len = r0.len();
+        let record = log::encode(0, Some(hard(true)), &[empty(1)]);
+        let one = log_file(&[&record], LEN);
+        // A record that leaves less than a header before the first sector end, so the
+        // next starts at the second sector.
+        let filler = |len: usize| Entry {
+            at: at(1, 1),
+            data: Data::Bytes(vec![7; len]),
+        };
+        let short = log::encode(0, None, &[filler(0)]).len();
+        let fill = log::encode(0, None, &[filler(490_usize.strict_sub(short))]);
+        assert_eq!(fill.len(), 490);
+        let mut sector = log_file(&[&fill], 512);
+        let sector_entries = vec![filler(490_usize.strict_sub(short)), empty(2)];
+        sector.extend(log_file(&[&log_record(1, 2)], 512));
+        let version = as_version_2(r0.clone());
+        let mut cut = log_file(&[&r0], LEN);
+        cut.truncate(len.strict_sub(1));
+        log::seal_file(&mut cut);
+        let mut garbage = r0.clone();
+        garbage.extend([1; 10]);
+        let one_file = |bytes: &[u8]| framed(&[("log-0", bytes)]);
+        vec![
+            (
+                "one_record",
+                framed(&[("lock", &[]), ("log-0", &one)]),
+                Ok(scanned(hard(true), vec![empty(1)], one_file(&one))),
+            ),
+            (
+                "next_sector",
+                one_file(&sector),
+                Ok(scanned(Hard::default(), sector_entries, one_file(&sector))),
+            ),
+            (
+                "number_gap",
+                one_file(&log_file(&[&r0, &numbered(2)], LEN)),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "version_2",
+                one_file(&log_file(&[&version], LEN)),
+                Err(version_2("log-0")),
+            ),
+            ("body_cut", one_file(&cut), Err(corrupt("log-0", 0))),
+            (
+                "entries_do_not_follow",
+                one_file(&log_file(&[&log_record(0, 2)], LEN)),
+                Err(corrupt("log-0", 0)),
+            ),
+            ("garbage", one_file(&garbage), Err(corrupt("log-0", len))),
+        ]
+    }
+
+    /// Inputs of a torn record.
+    fn torn_inputs() -> Vec<LogDirInput> {
+        let [r0, r1, r2] = [0, 1, 2].map(numbered);
+        let len = r0.len();
+        let zeros = vec![0; LEN];
+        let torn_end = log_file(&[&r0, &torn(1, 2)], LEN);
+        let kept = log_file(&[&r0], LEN);
+        vec![
+            (
+                "torn_end",
+                framed(&[("log-0", &torn_end)]),
+                Ok(empties(1, framed(&[("log-0", &kept)]))),
+            ),
+            (
+                "torn_end_in_next_file",
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&torn(1, 2)], LEN))]),
+                Ok(empties(
+                    1,
+                    framed(&[("log-0", &kept), ("log-1", &[0; LEN])]),
+                )),
+            ),
+            (
+                "torn_not_next",
+                framed(&[("log-0", &log_file(&[&r0, &torn(5, 2)], LEN))]),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "after_torn",
+                framed(&[("log-0", &log_file(&[&r0, &torn(1, 2), &r2], LEN))]),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "torn_before_next_file",
+                framed(&[("log-0", &torn_end), ("log-1", &log_file(&[&r2], LEN))]),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "torn_end_before_next_record",
+                framed(&[("log-0", &torn_end), ("log-1", &log_file(&[&r1], LEN))]),
+                Err(corrupt("log-0", len)),
+            ),
+            (
+                "torn_end_before_garbage_file",
+                framed(&[
+                    ("log-0", &log_file(&[&torn(0, 1)], LEN)),
+                    ("log-1", &[1; 10]),
+                ]),
+                Err(corrupt("log-1", 0)),
+            ),
+            (
+                "torn_first_before_empty_files",
+                framed(&[
+                    ("log-0", &log_file(&[&torn(0, 1)], LEN)),
+                    ("log-1", &zeros),
+                    ("log-2", &zeros),
+                ]),
+                Err(corrupt("log-1", 0)),
+            ),
+        ]
+    }
+
+    /// Inputs of the order of the files.
+    fn file_inputs() -> Vec<LogDirInput> {
+        let [r0, r1, r2] = [0, 1, 2].map(numbered);
+        let two = log_file(&[&r0, &r1], LEN);
+        let kept = log_file(&[&r0], LEN);
+        let zeros = vec![0; LEN];
+        // Bytes after the zero header that ends a file before the end file stay.
+        let mut after_end = kept.clone();
+        after_end[r0.len().strict_add(HEADER).strict_add(10)] = 9;
+        let after_end_files =
+            framed(&[("log-0", &after_end), ("log-1", &log_file(&[&r1], LEN))]);
+        let version = as_version_2(log::encode(9, None, &[empty(2)]));
+        vec![
+            (
+                "two_files",
+                framed(&[("log-1", &log_file(&[&r2], LEN)), ("log-0", &two)]),
+                Ok(empties(
+                    3,
+                    framed(&[("log-0", &two), ("log-1", &log_file(&[&r2], LEN))]),
+                )),
+            ),
+            (
+                "stale_next_file",
+                framed(&[("log-0", &two), ("log-1", &log_file(&[&r1], LEN))]),
+                Err(corrupt("log-1", 0)),
+            ),
+            (
+                "next_file_past_next",
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&r2], LEN))]),
+                Err(corrupt("log-0", r0.len())),
+            ),
+            (
+                "next_file_of_version_2",
+                framed(&[("log-0", &kept), ("log-1", &log_file(&[&version], LEN))]),
+                Err(version_2("log-1")),
+            ),
+            (
+                "garbage_next_file",
+                framed(&[("log-0", &kept), ("log-1", &[1; 10])]),
+                Err(corrupt("log-1", 0)),
+            ),
+            (
+                "bytes_after_a_file_end",
+                after_end_files.clone(),
+                Ok(empties(2, after_end_files)),
+            ),
+            (
+                "empty_file_before_record",
+                framed(&[("log-0", &zeros), ("log-1", &kept)]),
+                Err(corrupt("log-0", 0)),
+            ),
+            (
+                "empty_file_before_garbage",
+                framed(&[("log-0", &zeros), ("log-1", &[1; 10])]),
+                Err(corrupt("log-0", 0)),
+            ),
+            (
+                "empty_files_before_record",
+                framed(&[("log-0", &zeros), ("log-1", &zeros), ("log-2", &kept)]),
+                Err(corrupt("log-0", 0)),
+            ),
+            (
+                "empty_file_not_last",
+                framed(&[("log-0", &kept), ("log-1", &zeros), ("log-2", &zeros)]),
+                Err(corrupt("log-1", 0)),
+            ),
+            (
+                "spare",
+                framed(&[("log-0", &kept), ("log-1", &zeros)]),
+                Ok(empties(1, framed(&[("log-0", &kept)]))),
+            ),
+        ]
+    }
+
+    /// Inputs of the names of the files and of the framing.
+    fn name_inputs() -> Vec<LogDirInput> {
+        vec![
+            ("empty", Vec::new(), Ok(empties(0, Vec::new()))),
+            ("lock", framed(&[("lock", &[])]), Ok(empties(0, Vec::new()))),
+            (
+                "stray",
+                framed(&[("lock", &[]), ("other", &[])]),
+                Err(stray("other")),
+            ),
+            (
+                "leading_zero",
+                framed(&[("log-01", &[])]),
+                Err(stray("log-01")),
+            ),
+            ("past_count", framed(&[("log-1", &[])]), Err(stray("log-1"))),
+            (
+                "repeated",
+                framed(&[("log-0", &[]), ("log-0", &[])]),
+                Err(stray("log-0")),
+            ),
+            ("cut_in_name", vec![5, b'l', b'o'], Err(stray("lo"))),
+            (
+                "cut_in_length",
+                [&framed(&[("log-0", &[])])[..6], &[16]].concat(),
+                Ok(empties(0, framed(&[("log-0", &[])]))),
+            ),
+        ]
+    }
+
+    /// `record` with format version 2, sealed.
+    fn as_version_2(mut record: Vec<u8>) -> Vec<u8> {
+        record[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        log::seal_file(&mut record);
+        record
+    }
+
+    fn version_2(file: &str) -> log::Error {
+        log::Error::Version {
+            path: Path::new("log").join(file),
+            found: 2,
+        }
+    }
+
+    #[test]
+    fn each_log_dir_input_is_what_its_name_says() {
+        let inputs = inputs!("mesh_log_dir":
+            "empty",
+            "lock",
+            "one_record",
+            "two_files",
+            "next_sector",
+            "torn_end",
+            "torn_not_next",
+            "after_torn",
+            "torn_before_next_file",
+            "torn_end_before_next_record",
+            "torn_end_before_garbage_file",
+            "torn_first_before_empty_files",
+            "stale_next_file",
+            "next_file_past_next",
+            "number_gap",
+            "version_2",
+            "body_cut",
+            "entries_do_not_follow",
+            "garbage",
+            "empty_file_before_record",
+            "empty_file_not_last",
+            "spare",
+            "torn_end_in_next_file",
+            "next_file_of_version_2",
+            "garbage_next_file",
+            "empty_file_before_garbage",
+            "empty_files_before_record",
+            "bytes_after_a_file_end",
+            "stray",
+            "leading_zero",
+            "past_count",
+            "repeated",
+            "cut_in_name",
+            "cut_in_length",
+        );
+        assert_eq!(count_files("mesh_log_dir"), inputs.len());
+        let built = log_dir_inputs();
+        assert_eq!(built.len(), inputs.len());
+        for (name, want, scanned) in built {
+            assert_eq!(inputs[name], want, "{name}");
+            let mut sealed = want.clone();
+            seal_log_dir(&mut sealed);
+            assert_eq!(sealed, want, "{name} is not sealed");
+            assert_eq!(scan_log_dir(&want), scanned, "{name}");
+        }
+    }
+
+    #[test]
+    fn seal_log_dir_seals_each_record_of_each_file() {
+        let [r0, r1] = [0, 1].map(|number| log_record(number, number.strict_add(1)));
+        let sealed = framed(&[
+            ("log-0", &log_file(&[&r0, &r1], 1024)),
+            ("log-1", &log_file(&[&log_record(2, 3)], 1024)),
+        ]);
+        let mut dir = sealed.clone();
+        // A byte of each record's body, in each file.
+        for at in
+            [8 + HEADER, 8 + r0.len() + HEADER, 8 + 1024 + 8 + HEADER].map(|at| at + 5)
+        {
+            dir[at] ^= 1;
+        }
+        assert_eq!(scan_log_dir(&dir), Err(corrupt("log-0", 0)));
+        seal_log_dir(&mut dir);
+        assert_ne!(dir, sealed);
+        assert_eq!(scan_log_dir(&dir).map(|scan| scan.entries.len()), Ok(3));
+    }
+
+    #[test]
+    fn a_file_of_the_largest_length_comes_back_whole() {
+        let file = log_file(&[&log_record(0, 1)], usize::from(u16::MAX));
+        let dir = framed(&[("log-0", &file)]);
+        assert_eq!(scan_log_dir(&dir).map(|scan| scan.files), Ok(dir));
+    }
+
+    #[test]
+    fn seal_log_dir_keeps_a_body_check_of_zeros() {
+        let r0 = log_record(0, 1);
+        let torn = torn(1, 2);
+        let mut dir = framed(&[("log-0", &log_file(&[&r0, &torn], 1024))]);
+        let before = dir.clone();
+        seal_log_dir(&mut dir);
+        assert_eq!(dir, before);
+    }
+
+    #[test]
+    fn seal_log_dir_stops_after_the_header_of_a_short_body() {
+        let r0 = log_record(0, 1);
+        let mut file = log_file(&[&r0], 1024);
+        file[18..26].copy_from_slice(&2000_u64.to_le_bytes());
+        let mut dir = framed(&[("log-0", &file)]);
+        seal_log_dir(&mut dir);
+        let mut sealed = r0.clone();
+        sealed[18..26].copy_from_slice(&2000_u64.to_le_bytes());
+        let (claimed, rest) = sealed.split_at_mut(8);
+        claimed.copy_from_slice(&crate::file::check(&rest[..HEADER - 8]));
+        assert_eq!(&dir[8..8 + r0.len()], &sealed[..]);
+        assert_eq!(scan_log_dir(&dir), Err(corrupt("log-0", 0)));
+    }
+
+    #[test]
+    fn a_cut_frame_ends_with_the_input() {
+        let name = [5, b'l', b'o', b'g', b'-', b'0'];
+        let scan = |tail: &[u8]| scan_log_dir(&[&name[..], tail].concat());
+        let zeros = |len| Ok(empties(0, framed(&[("log-0", &vec![0; len])])));
+        assert_eq!(scan_log_dir(&[]), Ok(empties(0, Vec::new())));
+        assert_eq!(scan_log_dir(&[5, b'l', b'o']), Err(stray("lo")));
+        assert_eq!(scan(&[]), zeros(0));
+        assert_eq!(scan(&[16]), zeros(0));
+        assert_eq!(scan(&[16, 0, 0, 0, 0]), zeros(3));
+        assert_eq!(scan(&[1, 0, 0, 0]), Err(stray("")));
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_reads_with_the_replacement_character() {
+        let dir = [2, b'a', 0xFF, 0, 0];
+        assert_eq!(scan_log_dir(&dir), Err(stray("a\u{FFFD}")));
+    }
+
+    fn refs(records: &[Vec<u8>]) -> Vec<&[u8]> {
+        records.iter().map(Vec::as_slice).collect()
+    }
+
+    proptest::proptest! {
+        // The oracle of `mesh_log_dir`: an open of the files that an open leaves reads
+        // the same log, and the files are a fixed point after two opens.
+        #[test]
+        fn a_scan_of_the_files_a_scan_leaves_gives_them(
+            records in 0_u64..6,
+            split in 0_u64..6,
+            tail in 0_u8..4,
+            flip in proptest::option::of((0_usize..2048, 1_u8..=255)),
+        ) {
+            let split = split.min(records);
+            let all: Vec<_> = (0..records).map(|n| log_record(n, n.strict_add(1))).collect();
+            let (first, second) = all.split_at(usize::try_from(split).unwrap());
+            let mut second = refs(second);
+            let torn = torn(records, records.strict_add(1));
+            if tail == 1 {
+                second.push(&torn);
+            }
+            let mut files = vec![("log-0", log_file(&refs(first), 1024))];
+            if tail != 2 {
+                files.push(("log-1", log_file(&second, 1024)));
+            }
+            if tail == 3 {
+                files.push(("log-2", vec![0; 1024]));
+            }
+            let named: Vec<(&str, &[u8])> =
+                files.iter().map(|(name, bytes)| (*name, bytes.as_slice())).collect();
+            let mut dir = framed(&named);
+            if let Some((at, mask)) = flip {
+                let at = at.strict_rem(dir.len());
+                dir[at] ^= mask;
+            }
+            seal_log_dir(&mut dir);
+            if let Ok(first) = scan_log_dir(&dir) {
+                let second = scan_log_dir(&first.files).unwrap();
+                let third = scan_log_dir(&second.files).unwrap();
+                proptest::prop_assert_eq!(third, second.clone());
+                proptest::prop_assert_eq!(
+                    (second.hard, second.entries),
+                    (first.hard, first.entries)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_spec_name_input_is_what_its_name_says() {
+        let inputs = inputs!("mesh_spec_name":
+            "pointer",
+            "version_0",
+            "upper_case",
+            "short_root",
+            "long_root",
+            "odd_root",
+            "not_hex",
+            "no_dash",
+            "plus_version",
+            "not_utf8",
+            "trailing_slash",
+        );
+        assert_eq!(count_files("mesh_spec_name"), inputs.len());
+        let root = "ab".repeat(32);
+        let named = |text: String| text.into_bytes();
+        let valid = [
+            ("pointer", named(format!("7-{root}"))),
+            ("version_0", named(format!("0-{root}"))),
+        ];
+        for (name, want) in valid {
+            assert_eq!(inputs[name], want, "{name}");
+            let round_trip = round_trip_spec_name(&want);
+            assert_eq!(round_trip.as_deref(), Some(&want[..]), "{name}");
+        }
+        let refused = [
+            ("upper_case", named(format!("7-{}", "AB".repeat(32)))),
+            ("short_root", named(format!("7-{}", "ab".repeat(31)))),
+            ("long_root", named(format!("7-{root}ab"))),
+            ("odd_root", named(format!("7-{root}a"))),
+            ("not_hex", named(format!("7-{}gg", "ab".repeat(31)))),
+            ("no_dash", named(format!("7{root}"))),
+            ("plus_version", named(format!("+7-{root}"))),
+            ("trailing_slash", named(format!("7-{root}/"))),
+            (
+                "not_utf8",
+                [&named(format!("7-{root}"))[..], &[0xFF]].concat(),
+            ),
+        ];
+        for (name, want) in refused {
+            assert_eq!(inputs[name], want, "{name}");
+            assert_eq!(round_trip_spec_name(&want), None, "{name}");
+        }
     }
 }
