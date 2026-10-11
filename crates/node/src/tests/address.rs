@@ -329,15 +329,16 @@ fn a_failed_file_call_of_the_publish_stops_the_node() {
 }
 
 /// A sync of the data directory that fails at any time of a start stops the node,
-/// which holds no `address` once it has ended.
+/// which holds no `address` once it has ended. The last sync of a start is the one
+/// of the publish.
 #[test]
 fn a_failed_sync_of_the_data_directory_leaves_no_address() {
-    let failed = Error::Directory(env::files::Error::Io {
+    let sync = env::files::Error::Io {
         path: PathBuf::new(),
         operation: env::files::Operation::SyncDir,
         code: 5,
-    });
-    let mut seen = [false; 2];
+    };
+    let mut last = None;
     for step in 0..600 {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);
@@ -347,16 +348,28 @@ fn a_failed_sync_of_the_data_directory_leaves_no_address() {
         host.fail_file(Path::new(""), env::files::Operation::SyncDir);
         assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {after:?}");
         let joined = stop(&mut sim, node);
-        assert!(
-            joined == Ok(()) || joined == Err(failed.clone()),
-            "at {after:?}"
-        );
-        seen[usize::from(joined.is_ok())] = true;
+        let files = ::buffer::Error::Files(sync.clone());
+        let opened = |core| Error::Buffer {
+            core,
+            error: files.clone(),
+        };
+        let failed = [Error::Directory(sync.clone()), opened(0), opened(1)];
+        match &joined {
+            Ok(()) => {}
+            Err(error) => {
+                assert!(failed.contains(error), "at {after:?}: {error:?}");
+                last = Some(error.clone());
+            }
+        }
         assert_eq!(held(&mut sim, &host), None, "at {after:?}");
+        if step == 599 {
+            assert_eq!(joined, Ok(()), "a start with no sync left");
+        }
     }
     assert_eq!(
-        seen, [true; 2],
-        "a sync that fails and a start with none left"
+        last,
+        Some(Error::Directory(sync)),
+        "the sync of the publish"
     );
 }
 
