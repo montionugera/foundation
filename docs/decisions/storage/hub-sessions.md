@@ -25,8 +25,9 @@
   state into the hub. Decided by `laptop.architect` (2026-10-08T01:43:19Z:
   https://github.com/synnaxlabs/foundation/issues/1718#issuecomment-6050444671). A
   waiting local hub reader has given back every frame, as it grants at each `next` call,
-  so it never waits at a miss with none waiting. The hub `serve` tests reach that wake
-  through a peer's grant:
+  so it never waits at a miss with none waiting. A served session gets credit only from
+  its peer's grants, so its serve task waits at such a miss when the peer sends none.
+  Three hub `serve` tests reach the wake of that miss:
   `sends_behind_and_finishes_when_a_complete_session_misses_a_frame`,
   `charges_a_complete_session_by_the_frame_the_peer_builds`, and
   `sends_each_frame_before_a_miss_then_behind`. The `delivery` tests and the home `sim`
@@ -40,17 +41,30 @@
   frame until a later commit past its window ends, gets each frame before the miss, then
   `Ended::Behind`. Decided by `laptop.architect` (2026-10-08T07:23:30Z:
   https://github.com/synnaxlabs/foundation/issues/1170#issuecomment-6054827276).
+  Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
+  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183): the
+  ruling said that no hub test reaches that wake, and it gave the two hub `sim` tests as
+  they were before #2388.
   Supersedes https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   The hub `sim` tests `drops_the_commit_it_waits_for_with_the_hub` (64 values),
   `ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit`,
   `gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window`, and
   `ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame` (32 values
-  each) hold the hub tasks through a commit, then let the `sim` value pick whether
-  main or the commit task runs first, and check that both orders ran. Decided by
-  `laptop.director` (2026-10-11T10:05:33Z:
-  https://github.com/synnaxlabs/foundation/issues/2388#issuecomment-6107876336), by
-  the rule of https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6107110442
-  (#2388).
+  each) hold the hub tasks through a commit, then let the `sim` value pick whether main
+  or the commit task runs first, and check that both orders ran (#2388). A `sim` test in
+  which the two sides of a wake are ready at one instant, over 32 values of `seed` or
+  more, meets the loom and shuttle rule of `docs/claude/testing.md` when its PR states
+  how many of the values ran each order. Decided by `laptop.director`
+  (2026-10-11T08:25:27Z:
+  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6107110442), for these
+  tests (2026-10-11T10:05:33Z:
+  https://github.com/synnaxlabs/foundation/issues/2388#issuecomment-6107876336).
+  The three hub `serve` tests of the wake of a session that missed a frame with none
+  waiting run one order for each value: the serve task waits, then the wake wakes it.
+  The other order needs a message of the peer at the instant of the miss commit, which
+  the transport times, and there the message polls the serve task, so the wake does no
+  work. Decided by `laptop.director` (2026-10-11T10:55:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108286003).
   After a warmup, a write and `next` make no heap allocation, while frames wait, while a
   reader waits, and in the write that wakes a latest reader, which a counting allocator
   test binary checks (COUNTING ALLOCATOR); it does not count the commit task. `next`
