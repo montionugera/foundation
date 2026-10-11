@@ -69,7 +69,7 @@ impl Rig {
             }
         };
         #[cfg(unix)]
-        sweep(&dir);
+        sweep(&dir, remove);
         let rig = Self {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
@@ -284,11 +284,11 @@ fn keep(path: &Path, pool: u64, disk: u64) {
     std::fs::write(path, budget(pool, disk)).expect("write the budget file");
 }
 
-/// Removes each directory `foundation-node-<pid>-*` beside `made` that the owner of
-/// `made` owns and whose PID names no process. The files of a node that still runs in
-/// one stay on the disk until that node ends.
+/// Removes with `remove` each directory `foundation-node-<pid>-*` beside `made` that
+/// the owner of `made` owns and whose PID names no process. The files of a node that
+/// still runs in one stay on the disk until that node ends.
 #[cfg(unix)]
-fn sweep(made: &Path) {
+fn sweep(made: &Path, remove: impl Fn(&Path) -> std::io::Result<()>) {
     use std::os::unix::fs::MetadataExt;
 
     let temp = made
@@ -738,35 +738,17 @@ fn a_rig_removes_a_directory_that_a_test_left_read_only() {
 /// leaves the directory for a later sweep.
 #[test]
 #[cfg(unix)]
-fn a_rig_passes_over_a_directory_that_a_process_writes_in() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let dead = left(gone(), "busy", |_| {});
-    let stop = Arc::new(AtomicBool::new(false));
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "a process writes in the directory while the sweep removes it"
-    )]
-    let writer = std::thread::spawn({
-        let (dead, stop) = (dead.clone(), Arc::clone(&stop));
-        move || {
-            for file in 0.. {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Err(error) = std::fs::write(dead.join(format!("{file}")), "") {
-                    assert_eq!(error.kind(), ErrorKind::NotFound);
-                    break;
-                }
-            }
-        }
-    });
-    for _ in 0..20 {
-        drop(Rig::new());
+fn a_sweep_passes_over_a_directory_that_a_process_writes_in() {
+    // In the rig's directory, which no other sweep reads.
+    let rig = Rig::new();
+    let made = rig.dir.join(format!("{PREFIX}{}-made-0", std::process::id()));
+    let dead = rig.dir.join(format!("{PREFIX}{}-busy-0", gone()));
+    for dir in [&made, &dead] {
+        std::fs::create_dir(dir).expect("make the directory");
     }
-    stop.store(true, Ordering::Relaxed);
-    writer.join().expect("join the writer");
-    drop(Rig::new());
+    sweep(&made, |_| Err(ErrorKind::DirectoryNotEmpty.into()));
+    assert!(dead.exists(), "{} is gone", dead.display());
+    sweep(&made, remove);
     assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
