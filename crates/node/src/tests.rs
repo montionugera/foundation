@@ -3563,8 +3563,8 @@ mod port {
             }
         }
 
-        /// A file of another length that is not 0, or of another tag or checksum, stops
-        /// the node, which keeps the file.
+        /// A file of another length, or of another tag or checksum, stops the node,
+        /// which keeps the file.
         #[test]
         fn a_key_that_is_not_valid_stops_the_node() {
             // Each tag byte with one bit changed, and the tag of the next form.

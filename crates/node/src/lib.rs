@@ -1197,7 +1197,7 @@ pub enum Error {
     /// The chunk store did not open. The node took no session.
     Blob(blob::Error),
     /// The file `node.key` in the data directory is not a key that a node wrote:
-    /// another length that is not 0, or another tag or checksum. The node took no
+    /// another length, also no bytes, or another tag or checksum. The node took no
     /// session and does not write over the file, because a new key is a new node to its
     /// region.
     Key,

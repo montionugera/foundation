@@ -60,9 +60,7 @@ pub(crate) async fn load(
                 }
             };
             let identity = create(now, entropy);
-            sector::publish(files, Path::new(FILE), &encode(&identity))
-                .await
-                .map_err(Error::Directory)?;
+            store(files, &identity).await?;
             Ok(identity)
         }
         Held::Written(bytes) => Ok(fields(&bytes)),
@@ -71,13 +69,12 @@ pub(crate) async fn load(
 }
 
 /// Publishes `identity` as `node.key` in `files`. Call it under the lock of the data
-/// directory.
+/// directory, or on a data directory that no node runs on.
 ///
 /// # Errors
 ///
 /// [`Error::Directory`] with [`env::files::Error::Exists`] when the file is there, and
 /// with the error of each other file call that fails.
-#[cfg(feature = "sim")]
 pub(crate) async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
     sector::publish(files, Path::new(FILE), &encode(identity))
         .await
