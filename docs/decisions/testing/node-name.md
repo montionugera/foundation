@@ -107,20 +107,21 @@
   gives no `Error::NoCard`. The CLI prints the error as `node.failed`, as it prints
   `Error::Key`, and the message states the way out: restore `node.key` from a backup of
   this node, or give another data directory. Only a loss of files gives the state, such
-  as a removal by hand. A start with a file `name` reads no founding, as before, so a
-  key with no card then gives `Error::Mesh` from the open of the region. Lost: the write
-  as before, stated here and in the text of `node.unnamed`. Once the first `node.key` is
-  back, a start with the card name then gives `Error::Renamed`, and a start with the
-  written name runs on a card with another name (#2355). Lost: no write, and a start
-  that goes on to the open of the region. A start with `Region::Absent` then runs a node
-  with no stored name, a start with no `node.key` makes a key that no region knows, and
-  `node::name` still gives `Error::Unnamed`, whose fix does not help. Lost: `Error::Key`
-  for the state. Its text says that the file is not a key that a node wrote, which is
-  false for a whole key and for no file. Trigger: the join by ticket (#1157). A node
-  that joined has no card in the founding, so the change of the trigger above, which
-  takes the stored name from the node's member in the region, also states when a node
-  then gets `Error::NoCard`. Decided by `laptop.architect-2`, #2433
-  (2026-10-11T20:13:04Z,
+  as a removal by hand. A start with a file `name` reads no founding in the claim, as
+  before. With `Region::Stored`, a key with no card then gives `Error::Mesh` with
+  `mesh::Error::NotMember` from the open of the region. A start with `Region::Absent`
+  opens no region, so it gives no error for that key. Lost: the write as before, stated
+  here and in the text of `node.unnamed`. Once the first `node.key` is back, a start
+  with the card name then gives `Error::Renamed`, and a start with the written name runs
+  on a card with another name (#2355). Lost: no write, and a start that goes on to the
+  open of the region. A start with `Region::Absent` then runs a node with no stored
+  name, a start with no `node.key` makes a key that no region knows, and `node::name`
+  still gives `Error::Unnamed`, whose fix does not help. Lost: `Error::Key` for the
+  state. Its text says that the file is not a key that a node wrote, which is false for
+  a whole key and for no file. Trigger: the join by ticket (#1157). A node that joined
+  has no card in the founding, so the change of the trigger above, which takes the
+  stored name from the node's member in the region, also states when a node then gets
+  `Error::NoCard`. Decided by `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462; rule 1,
   2026-10-11T21:02:22Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491).
