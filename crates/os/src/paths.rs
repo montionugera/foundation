@@ -1,9 +1,10 @@
 //! The files of the host by the paths that a user gave.
 
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::Path;
 
 use env::paths::{Error, Found};
 use rustix::io::Errno;
@@ -17,10 +18,21 @@ impl env::paths::Driver for Driver {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        let mut new = path.as_os_str().to_owned();
+        if path.as_os_str().is_empty() {
+            return Err(Error::NotFound);
+        }
+        // `/`, `.`, and a path that ends in `..` name a directory.
+        let Some(name) = path.file_name() else {
+            return Err(Error::Io {
+                code: Errno::ISDIR.raw_os_error(),
+            });
+        };
+        let mut new = name.to_owned();
         new.push(".new");
-        let new = PathBuf::from(new);
-        let written = create(&new, bytes).and_then(|()| fs::rename(&new, path));
+        let new = path.with_file_name(new);
+        // A new file gives other users no access. A replaced file keeps its mode.
+        let mode = fs::metadata(path).map_or(0o600, |old| old.permissions().mode());
+        let written = create(&new, bytes, mode).and_then(|()| fs::rename(&new, path));
         if written.is_err() {
             // The error of the write is the one to give.
             drop(fs::remove_file(&new));
@@ -49,15 +61,18 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     Ok(Found::File(bytes))
 }
 
-/// Writes `bytes` as a new file at `path`, synced, so a power cut after the rename
-/// leaves the whole file.
-fn create(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Writes `bytes` as a new file at `path` with `mode`, synced, so a power cut after
+/// the rename leaves the whole file.
+fn create(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     #[expect(clippy::disallowed_methods, reason = "os writes the user's files")]
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
+        .mode(0o600)
         .open(path)?;
+    // The open keeps the mode of a `<path>.new` that was there.
+    file.set_permissions(Permissions::from_mode(mode))?;
     file.write_all(bytes)?;
     file.sync_all()
 }

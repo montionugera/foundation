@@ -255,10 +255,12 @@ impl Node {
     /// The files of the node's host by path: a tree in memory, apart from the node's
     /// disk, with no file at first. A directory is there while a file is under it, so
     /// a write makes each directory above its file. A relative path is under `/`, the
-    /// working directory. `.` and `..` act on the path as text. A call takes no time,
+    /// working directory. `.` and `..` act on the path as text. A path that ends in
+    /// `/` names a directory, and an empty path names nothing. A call takes no time,
     /// may come from any thread, and acts at once. A crash of the node keeps the tree.
     /// A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path through a
-    /// file, and 21 (`EISDIR`) for a write on a directory.
+    /// file or a write on a path that ends in `/`, and 21 (`EISDIR`) for a write on a
+    /// directory.
     #[must_use]
     pub fn paths(&self) -> env::paths::Paths {
         env::paths::Paths::new(self.0.clone())

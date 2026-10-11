@@ -27,6 +27,11 @@ impl Paths {
     ) -> Result<Found, Error> {
         let at = self.check(node, path)?;
         if let Some(bytes) = self.files.get(&(node, at.clone())) {
+            if slashed(path) {
+                return Err(Error::Io {
+                    code: NOT_DIRECTORY,
+                });
+            }
             if bytes.len() > most {
                 return Ok(Found::Large);
             }
@@ -52,7 +57,16 @@ impl Paths {
         bytes: &[u8],
     ) -> Result<(), Error> {
         let at = self.check(node, path)?;
-        if at == Path::new("/") || self.under(node, &at).next().is_some() {
+        if at == Path::new("/") {
+            return Err(Error::Io { code: DIRECTORY });
+        }
+        // Linux gives this for a file, a directory, or nothing.
+        if slashed(path) {
+            return Err(Error::Io {
+                code: NOT_DIRECTORY,
+            });
+        }
+        if self.under(node, &at).next().is_some() {
             return Err(Error::Io { code: DIRECTORY });
         }
         self.files.insert((node, at), bytes.to_vec());
@@ -67,6 +81,9 @@ impl Paths {
     /// The path of a call from `/`, after the fault that waits on it and a file on
     /// the way to it.
     fn check(&mut self, node: usize, path: &Path) -> Result<PathBuf, Error> {
+        if path.as_os_str().is_empty() {
+            return Err(Error::NotFound);
+        }
         let at = absolute(path);
         let fault = self.faults.get_mut(&(node, at.clone()));
         if let Some(code) = fault.and_then(VecDeque::pop_front) {
@@ -94,6 +111,11 @@ impl Paths {
             .map(|(_, file)| file)
             .filter(move |file| *file != dir)
     }
+}
+
+/// Whether `path` ends in `/`, and so names a directory.
+fn slashed(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().ends_with(b"/")
 }
 
 /// `path` from `/`, the working directory of each host, with no `.` or `..`.

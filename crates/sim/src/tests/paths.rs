@@ -1,6 +1,6 @@
 //! Tests of the files of a node's host through `env::paths`.
 
-#[path = "../../../os/tests/common/paths.rs"]
+#[path = "../../../env/tests/common/paths.rs"]
 mod cases;
 
 use std::path::{Path, PathBuf};
@@ -19,25 +19,7 @@ fn run(case: fn(&Host<'_>)) {
     });
 }
 
-macro_rules! cases {
-    ($($case:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $case() {
-                run(cases::$case);
-            }
-        )*
-    };
-}
-
-cases!(
-    a_file_at_the_bound_reads_whole,
-    a_file_over_the_bound_reads_large,
-    a_directory_lists_in_name_order,
-    a_path_with_nothing_is_not_found,
-    a_write_replaces_the_file,
-    a_path_through_a_file_fails,
-);
+cases::tests!(run);
 
 #[test]
 fn a_relative_path_is_under_the_root() {
@@ -63,7 +45,12 @@ fn a_relative_path_is_under_the_root() {
 fn a_write_on_the_root_is_on_a_directory() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let on_dir = node.paths().write(Path::new("/"), b"x");
-    assert_eq!(on_dir, Err(Error::Io { code: 21 }));
+    assert_eq!(
+        on_dir,
+        Err(Error::Io {
+            code: cases::DIRECTORY
+        })
+    );
 }
 
 #[test]

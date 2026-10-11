@@ -35,6 +35,7 @@ mod files;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -158,7 +159,9 @@ pub fn net() -> env::net::Net {
 
 /// The real files of the host by path. A write makes `<path>.new` beside `path`,
 /// syncs it, and renames it over `path`, so a reader or a crash sees the old file or
-/// the new one. A write that fails removes `<path>.new`.
+/// the new one. A write that fails removes `<path>.new`. A new file has mode `0600`,
+/// and a file that a write replaces keeps its mode.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {
     env::paths::Paths::new(paths::Driver)

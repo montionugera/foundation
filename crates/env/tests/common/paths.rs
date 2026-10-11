@@ -1,6 +1,7 @@
-//! The cases of `env::paths` that `os` and `sim` both pass.
+//! The cases of `env::paths` that `os` and `sim` both pass. The tests of each include
+//! this file by `#[path]`, so it uses only `env` and `std`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found, Paths};
 
@@ -16,8 +17,35 @@ pub(crate) struct Host<'a> {
 }
 
 /// `ENOTDIR` and `EISDIR` on Linux and macOS.
-const NOT_DIRECTORY: i32 = 20;
-const DIRECTORY: i32 = 21;
+pub(crate) const NOT_DIRECTORY: i32 = 20;
+pub(crate) const DIRECTORY: i32 = 21;
+
+/// One `#[test]` for each case, which gives the case to `$run`. Call it where this
+/// module is in scope as `cases`.
+macro_rules! tests {
+    ($run:ident) => {
+        cases::tests!(
+            @each $run,
+            a_file_at_the_bound_reads_whole,
+            a_file_over_the_bound_reads_large,
+            a_directory_lists_in_name_order,
+            a_path_with_nothing_is_not_found,
+            a_write_replaces_the_file,
+            a_path_through_a_file_fails,
+            a_path_that_ends_in_a_slash_names_a_directory,
+            an_empty_path_is_not_found,
+        );
+    };
+    (@each $run:ident, $($case:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $case() {
+                $run(cases::$case);
+            }
+        )*
+    };
+}
+pub(crate) use tests;
 
 pub(crate) fn a_file_at_the_bound_reads_whole(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
@@ -86,4 +114,35 @@ pub(crate) fn a_path_through_a_file_fails(host: &Host<'_>) {
     assert_eq!(on_dir, Err(Error::Io { code: DIRECTORY }));
     let entries = vec![config, file];
     assert_eq!(paths.read(dir, 0), Ok(Found::Directory(entries)));
+}
+
+pub(crate) fn a_path_that_ends_in_a_slash_names_a_directory(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let file = dir.join("plant.hcl");
+    paths.write(&file, b"x").unwrap();
+    let slashed = PathBuf::from(format!("{}/", file.display()));
+    let through = Error::Io {
+        code: NOT_DIRECTORY,
+    };
+    assert_eq!(paths.read(&slashed, 1), Err(through));
+    assert_eq!(paths.write(&slashed, b"y"), Err(through));
+    let none = PathBuf::from(format!("{}/", dir.join("none").display()));
+    assert_eq!(paths.read(&none, 1), Err(Error::NotFound));
+    assert_eq!(paths.write(&none, b"y"), Err(through));
+    let config = dir.join("config");
+    (host.make_dir)(&config);
+    paths.write(&config.join("a.hcl"), b"x").unwrap();
+    let slashed = PathBuf::from(format!("{}/", config.display()));
+    let entries = vec![slashed.join("a.hcl")];
+    assert_eq!(paths.read(&slashed, 0), Ok(Found::Directory(entries)));
+    assert_eq!(paths.write(&slashed, b"y"), Err(through));
+    assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
+    let entries = vec![config, file];
+    assert_eq!(paths.read(dir, 0), Ok(Found::Directory(entries)));
+}
+
+pub(crate) fn an_empty_path_is_not_found(host: &Host<'_>) {
+    let paths = host.paths;
+    assert_eq!(paths.read(Path::new(""), 0), Err(Error::NotFound));
+    assert_eq!(paths.write(Path::new(""), b"x"), Err(Error::NotFound));
 }

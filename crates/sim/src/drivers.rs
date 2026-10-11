@@ -6,6 +6,7 @@ mod paths;
 mod serial;
 
 use std::cell::RefCell;
+use std::fmt;
 use std::future::poll_fn;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -29,6 +30,12 @@ use crate::state::{Due, Futures, Outcome, Shared, Start, State, lock};
 pub(crate) struct Node {
     pub(crate) shared: Shared,
     pub(crate) node: usize,
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Node").field(&self.node).finish()
+    }
 }
 
 impl Node {

@@ -1,6 +1,5 @@
 //! The `env::paths` driver of a simulated node.
 
-use std::fmt;
 use std::path::Path;
 
 use env::paths::{Error, Found};
@@ -15,11 +14,5 @@ impl env::paths::Driver for Node {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         lock(&self.shared).paths().write(self.node, path, bytes)
-    }
-}
-
-impl fmt::Debug for Node {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Node").field(&self.node).finish()
     }
 }
