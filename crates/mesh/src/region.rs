@@ -740,6 +740,16 @@ mod tests {
     }
 
     #[test]
+    fn a_spec_change_that_lists_a_home_moves_the_version_also_when_it_gives_none() {
+        let mut state = state();
+        assert_eq!(state.apply(homed(spec(0, 1, 2, &[]), &[(7, 2)])), Ok(true));
+        let moved = state.pointer();
+        assert_eq!(state.apply(homed(spec(1, 2, 2, &[]), &[(7, 1)])), Ok(false));
+        assert_eq!(state.home(index(7)), Some(node(2)));
+        assert_eq!(state.pointer(), moved.next(digest(2)));
+    }
+
+    #[test]
     fn named_gives_the_key_of_the_member_with_the_name() {
         let state = state();
         assert_eq!(state.named(&name("plant.node2")), Some(node(2)));

@@ -8,6 +8,7 @@ mod admin;
 pub mod bench;
 mod budget;
 mod cause;
+mod connectors;
 mod directory;
 #[cfg(feature = "sim")]
 #[doc(hidden)]
@@ -249,6 +250,7 @@ impl Node {
             region,
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
+            net: config.net.clone(),
         };
         let parts = parts
             .into_iter()
@@ -783,6 +785,8 @@ struct Endpoint {
     region: Opening,
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
+    /// The network, which the node's connectors reach their devices and stores on.
+    net: env::net::Net,
 }
 
 /// The region that shard 0 opens, with what it needs to found the root region.
@@ -898,17 +902,19 @@ impl Serve {
     /// Keeps the budgets ([`budget::keep`]), loads the node's identity
     /// ([`identity::load`]), and opens the endpoint, then runs each task given with a
     /// hub over `home` that knows each channel of the spec that the mesh uses, and of
-    /// each spec that takes effect later, and serves the node's port, until `guard`
-    /// completes, the transport stops, or the mesh's group stops, by the rank of
-    /// [`end`]. A transport or a group that ends it goes into `failed` before it drops
-    /// the tasks given that still run. Before it returns, it drops the tasks, the hub,
-    /// `home`, `guard`, each session and stream future, the operations on the mesh,
-    /// the mesh, and the transport, and waits for each task of the mesh to end, with a
-    /// mesh, and for the transport to free the port. Unless the socket broke, the port
-    /// is freed only after the hub lets go of the region, as [`hub::Hub::new`] states.
-    /// Runs no task and takes no session when a shard did not open, or when the
-    /// budgets were not kept, the identity did not load, or the mesh did not open,
-    /// which goes into `failed`.
+    /// each spec that takes effect later, runs each connector that the spec in use
+    /// places on this node ([`connectors::Runs`]), and serves the node's port, until
+    /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
+    /// of [`end`]. A transport or a group that ends it goes into `failed` before it
+    /// drops the tasks given that still run. Before it returns, it drops the tasks, the
+    /// hub, `home`, `guard`, the runs of the connectors, each session and stream
+    /// future, the operations on the mesh, the mesh, and the transport, and waits for
+    /// each task of the mesh to end, with a mesh, and for the transport to free the
+    /// port. Unless the socket broke, the port is freed only after the hub lets go of
+    /// the region, as [`hub::Hub::new`] states, and after each task that a connector's
+    /// run spawned has ended. Runs no task and takes no session when a shard did not
+    /// open, or when the budgets were not kept, the identity did not load, or the mesh
+    /// did not open, which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
@@ -937,42 +943,49 @@ impl Serve {
             Err(error) => return fail(error),
         };
         let (key, entropy) = (identity.key, self.endpoint.entropy.clone());
-        let clock = self.endpoint.clock.clone();
+        let (clock, net) = (self.endpoint.clock.clone(), self.endpoint.net.clone());
         let opened = self.endpoint.open(identity, files, pool, tasks.clone());
         let (transport, mesh) = opened.await;
         let freed = transport.ended();
         let (inbox, time) = (self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
-        // ends, on each path, or is a task of the mesh, awaited below, or of the hub,
-        // which ends as `hub::Hub::new` states. So the port is freed before `lock`
-        // drops.
+        // ends, on each path, or is a task of the mesh, awaited below, a task of the
+        // hub, which ends as `hub::Hub::new` states, or a task that a connector's run
+        // spawned, which its kind ends at the cancel. So the port is freed before
+        // `lock` drops.
         let served = async move {
-            let mesh = match mesh {
-                Ok(mesh) => mesh,
-                Err(error) => {
-                    fail(error);
-                    return None;
-                }
+            let Ok(mesh) = mesh.map_err(&fail) else {
+                return None;
             };
             let region = mesh.clone().map(|mesh| hub::Region {
                 mesh,
                 transport: Rc::clone(&transport),
-            });
-            let ops = mesh.as_ref().map(|mesh| {
-                let (time, entropy) = (time.clone(), entropy.clone());
-                Rc::new(operations(mesh.clone(), time, entropy))
             });
             let hub = hub::Hub::new(hub::Config {
                 home,
                 interner,
                 tasks: tasks.clone(),
                 node: key,
-                time,
-                entropy,
+                time: time.clone(),
+                entropy: entropy.clone(),
                 region,
             });
+            let parts = mesh.as_ref().map(|mesh| {
+                let kinds = Arc::new(kinds());
+                let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
+                let config = connector::supervisor::Config {
+                    kinds,
+                    clock: clock.clone(),
+                    entropy,
+                    net,
+                    tasks: tasks.clone(),
+                    hub: hub.clone(),
+                };
+                (ops, (mesh, runs(mesh, key, config)))
+            });
+            let (ops, runs) = parts.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let group = follow(mesh.as_ref(), hub.clone()).await;
+            let group = follow(runs, hub.clone()).await;
             let port =
                 route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
             let stop = until(guard, port, group, fail);
@@ -1007,13 +1020,15 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh` with the connector kinds of [`kinds`], whose keys
+/// The operations on `mesh` with the connector kinds `kinds`, whose keys
 /// [`channel_key`] makes.
 fn operations(
-    mesh: mesh::Mesh,
-    time: clock::Reader,
-    entropy: env::entropy::Entropy,
-) -> ops::Node {
+    mesh: &mesh::Mesh,
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+    kinds: Arc<connector::kind::Table>,
+) -> Rc<ops::Node> {
+    let (time, entropy) = (time.clone(), entropy.clone());
     let key = move || channel_key(&time, &entropy);
     let front_ends = ops::FrontEnds::new(
         "hcl",
@@ -1021,7 +1036,19 @@ fn operations(
             read: config_hcl::read,
         },
     );
-    ops::Node::new(mesh, key, front_ends, Arc::new(kinds()))
+    Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
+}
+
+/// The runs of the connectors that the spec in use places on the node `key` of
+/// `mesh`, on a supervisor made from `config`.
+fn runs(
+    mesh: &mesh::Mesh,
+    key: types::node::Key,
+    config: connector::supervisor::Config,
+) -> connectors::Runs {
+    let member = mesh.member(key);
+    let member = member.expect("invariant: a mesh opens only on a member");
+    connectors::Runs::new(config, member.card.card().name.clone())
 }
 
 /// The connector kinds of this binary.
@@ -1029,28 +1056,34 @@ fn kinds() -> connector::kind::Table {
     connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
-/// Gives `hub` what the spec that `mesh` uses defines, then returns a future that gives
-/// it that of each later spec in use and resolves with the stop of the group, or never
-/// resolves when the node has no mesh.
+/// Gives `hub` what the spec that `mesh` uses defines and makes `runs` match it, then
+/// returns a future that does so for each later spec in use and resolves with the
+/// stop of the group, or never resolves when the node has no mesh.
+/// The hub knows each spec before the runs do, so a run finds its status channels.
+/// The future holds the runs.
 async fn follow(
-    mesh: Option<&mesh::Mesh>,
+    mesh: Option<(&mesh::Mesh, connectors::Runs)>,
     hub: hub::Hub,
 ) -> impl Future<Output = mesh::Stopped> + use<> {
-    let define = move |spec: mesh::used::Spec| hub.set_definitions(&*spec.definitions);
-    let mut watch = mesh.map(mesh::Mesh::watch_spec);
-    let first = match &mut watch {
-        Some(watch) => watch.next().await.map(&define),
+    let define = move |spec: mesh::used::Spec, runs: &mut connectors::Runs| {
+        hub.set_definitions(&*spec.definitions);
+        runs.apply(&spec.definitions);
+    };
+    let mut followed = mesh.map(|(mesh, runs)| (mesh.watch_spec(), runs));
+    let first = match &mut followed {
+        Some((watch, runs)) => watch.next().await.map(|spec| define(spec, runs)),
         None => Ok(()),
     };
     async move {
-        let Some(mut watch) = watch else {
+        let Some((mut watch, mut runs)) = followed else {
             return std::future::pending().await;
         };
         if let Err(stopped) = first {
             return stopped;
         }
         loop {
-            if let Err(stopped) = watch.next().await.map(&define) {
+            let next = watch.next().await;
+            if let Err(stopped) = next.map(|spec| define(spec, &mut runs)) {
                 return stopped;
             }
         }

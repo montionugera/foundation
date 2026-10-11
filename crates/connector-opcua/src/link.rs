@@ -1,4 +1,4 @@
-//! Checks that the open62541 copy and `shim.c` compile and link.
+//! Checks that the open62541 copy, `shim.c`, and `server.c` compile and link.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -147,10 +147,10 @@ fn shim_compiler() -> cc::Tool {
         .get_compiler()
 }
 
-/// Gives each pragma of `shim.c` after the preprocessor, which joins split lines and
-/// expands `_Pragma`.
-fn shim_pragmas() -> Vec<String> {
-    let path = std::path::Path::new(ROOT).join("src/shim.c");
+/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
+/// lines and expands `_Pragma`.
+fn shim_pragmas(file: &str) -> Vec<String> {
+    let path = src().join(file);
     let output = shim_compiler()
         .to_command()
         .arg("-E")
@@ -213,14 +213,17 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
         crate::child::run(name, &[]);
         return;
     }
-    assert_eq!(
-        shim_pragmas(),
-        [
-            "#pragma GCC diagnostic push",
-            "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
-            "#pragma GCC diagnostic pop",
-        ]
-    );
+    for file in ["shim.c", "server.c"] {
+        assert_eq!(
+            shim_pragmas(file),
+            [
+                "#pragma GCC diagnostic push",
+                "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
+                "#pragma GCC diagnostic pop",
+            ],
+            "{file}"
+        );
+    }
     let headers = "#include <open62541/types.h>";
     assert_eq!(check_shim(headers, ""), "");
     let parameter = "int in_the_headers(int unused) { return 0; }";
@@ -292,9 +295,9 @@ fn the_copy_links_the_timer() {
     assert_eq!(distinct.len(), functions.len());
 }
 
-/// Each symbol outside the copy and `shim.c` that they may name in glibc: on x86-64
-/// with GCC or Clang at each optimization level, and on 64-bit Arm with Clang at
-/// `-O2` and `-moutline-atomics`. None gives or takes a heap block, so no block
+/// Each symbol outside the copy, `shim.c`, and `server.c` that they may name in glibc:
+/// on x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
+/// at `-O2` and `-moutline-atomics`. None gives or takes a heap block, so no block
 /// crosses between the allocator of libc and `src/alloc.rs`.
 const OUTSIDE: [&str; 35] = [
     "_GLOBAL_OFFSET_TABLE_",
@@ -422,22 +425,25 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
 
-/// The shim takes no value from the PCG32 generator of the copy, which OPEN62541
-/// SOURCE bars for each nonce, key, and session token of Foundation code.
+/// Neither the shim nor the test server takes a value from the PCG32 generator of the
+/// copy, which OPEN62541 SOURCE bars for each nonce, key, and session token of
+/// Foundation code.
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     let shim: Vec<_> = std::fs::read_dir(env!("OUT_DIR"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.to_string_lossy().ends_with("-shim.o"))
+        .filter(|path| {
+            let path = path.to_string_lossy();
+            path.ends_with("-shim.o") || path.ends_with("-server.o")
+        })
         .collect();
-    assert_eq!(shim.len(), 1, "{shim:?}");
+    assert_eq!(shim.len(), 2, "{shim:?}");
     let undefined = names(&shim, "--undefined-only");
-    assert!(
-        undefined.contains("UA_Client_newWithConfig"),
-        "{undefined:?}"
-    );
+    for name in ["UA_Client_newWithConfig", "UA_Server_newWithConfig"] {
+        assert!(undefined.contains(name), "{name} in {undefined:?}");
+    }
     let drawn: Vec<_> = ["UA_UInt32_random", "UA_Guid_random"]
         .into_iter()
         .filter(|name| undefined.contains(*name))
@@ -455,48 +461,69 @@ fn src() -> std::path::PathBuf {
     root().join("src")
 }
 
+/// The cfg of the code that only tests, benchmarks, and fuzz targets build, which the
+/// scan counts as test code.
+const SIM: &str = "feature=\"sim\"";
+
 /// Each identifier for which `named` holds, as `path: identifier`, in the Rust
 /// outside tests of the crate at `root`: each `.rs` file outside `tests/` and each
-/// file that a build of the library reads ([`built`]), less each file that a test
-/// build reads and no build of the library reads. Comments and inline modules count.
+/// file that a build of the library reads ([`built`]), less each file that a build
+/// with [`SIM`] on reads ([`tested`]) and no build of the library reads. Comments
+/// and inline modules count.
 fn named_outside_tests(
     root: &std::path::Path,
     named: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    let (built, cfgs) = built(root);
-    let mut flags = on(&cfgs);
-    flags.push("--test".to_owned());
-    let (tested, _) = read_by_rustc(root, &cfgs, &flags);
+    let (library, _) = built(root, &[]);
+    let tested = tested(root);
     let tests = root.join("tests");
     let mut files = files_under(root, "rs");
     files.retain(|path| !path.starts_with(&tests));
-    files.extend(built.iter().cloned());
+    files.extend(library.iter().cloned());
     files.sort();
     files.dedup();
     files
         .into_iter()
-        .filter(|path| built.contains(path) || !tested.contains(path))
+        .filter(|path| library.contains(path) || !tested.contains(path))
         .flat_map(|path| named_in(&path, &named))
         .collect()
 }
 
-/// Each file that a build of the library of the crate at `root` reads, and the cfgs
-/// that the builds set, sorted. The builds are those on this host, with the target
-/// features of this build, and with each set of the cfgs that the crate tests and
-/// rustc does not know (features among them), each with debug assertions on and off
-/// and with each panic strategy. rustc names each such cfg in a build that reads the
-/// file that tests it. A file under a known value of a target cfg that this build does
-/// not set, such as `target_os = "windows"`, is read by no build.
+/// Each file that a build of the crate at `root` with [`SIM`] on reads, sorted: with
+/// `test` off, and with the test harness.
+fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let sim = on(&[SIM.to_owned()]);
+    let (mut files, _) = built(root, &sim);
+    // rustc refuses `--test` with `-Cpanic=abort`, but still gives the files it read.
+    files.extend(built(root, &[vec!["--test".to_owned()], sim].concat()).0);
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Each file that a build of the library of the crate at `root` with the flags `base`
+/// reads, and the cfgs that the builds set, sorted. The builds are those on this host,
+/// with the target features of this build, and with each set of the cfgs that the
+/// crate tests and rustc does not know (features among them, less [`SIM`], which only
+/// `base` sets), each with debug assertions on and off and with each panic strategy.
+/// rustc names each such cfg in a build that reads the file that tests it. A file
+/// under a known value of a target cfg that this build does not set, such as
+/// `target_os = "windows"`, is read by no build.
 ///
 /// # Panics
 ///
 /// On a value that rustc does not know of a cfg other than `feature`, since the scan
 /// cannot know which values a build gives it.
-fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
+fn built(
+    root: &std::path::Path,
+    base: &[String],
+) -> (Vec<std::path::PathBuf>, Vec<String>) {
     let mut cfgs: Vec<String> = Vec::new();
     let mut runs = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     loop {
+        let mut known = cfgs.clone();
+        known.push(SIM.to_owned());
         let mut found = Vec::new();
         for set in 0..1usize << cfgs.len() {
             let set: Vec<_> = (0..cfgs.len())
@@ -505,11 +532,12 @@ fn built(root: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
                 .collect();
             for assertions in ["on", "off"] {
                 for panic in ["unwind", "abort"] {
-                    let mut flags = on(&set);
+                    let mut flags = base.to_vec();
+                    flags.extend(on(&set));
                     flags.push(format!("-Cdebug-assertions={assertions}"));
                     flags.push(format!("-Cpanic={panic}"));
                     if runs.insert(flags.clone()) {
-                        let (read, unknown) = read_by_rustc(root, &cfgs, &flags);
+                        let (read, unknown) = read_by_rustc(root, &known, &flags);
                         files.extend(read);
                         found.extend(unknown);
                     }
@@ -561,26 +589,22 @@ fn read_by_rustc(
     let features = env!("CONNECTOR_OPCUA_TARGET_FEATURES").split(',');
     let features: Vec<_> = features.map(|feature| format!("+{feature}")).collect();
     let features = features.join(",");
-    // rustc checks cfgs only when it emits more than dep-info, and each thread needs a
-    // directory of its own for the metadata.
-    let out = std::path::Path::new(env!("OUT_DIR"))
-        .join("scan-out")
-        .join(format!(
-            "{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+    // rustc checks cfgs only when it emits more than dep-info.
+    let out = scan_out();
+    // rustc makes no directory when it stops at a parse error.
+    std::fs::create_dir_all(&out).unwrap();
     let output = std::process::Command::new("rustc")
         .args(["--edition", "2024", "--crate-type", "lib"])
         .arg(format!("-Ctarget-feature={features}"))
         .args(["--emit", "dep-info=-,metadata", "--out-dir"])
-        .arg(out)
+        .arg(&out)
         .args(checked.iter().flat_map(|cfg| ["--check-cfg", cfg]))
         .args(["--force-warn", "unexpected_cfgs"])
         .args(flags)
         .arg(root.join("src/lib.rs"))
         .output()
         .unwrap();
+    std::fs::remove_dir_all(&out).unwrap();
     let deps = String::from_utf8(output.stdout).unwrap();
     let errors = String::from_utf8(output.stderr).unwrap();
     assert!(!deps.is_empty(), "rustc gives no files: {errors}");
@@ -590,6 +614,14 @@ fn read_by_rustc(
         .map(|path| std::fs::canonicalize(path.replace("\\ ", " ")).unwrap())
         .collect();
     (files, unknown_cfgs(&errors))
+}
+
+/// The directory of the metadata that [`read_by_rustc`] writes, one for each thread.
+fn scan_out() -> std::path::PathBuf {
+    let thread = std::thread::current().id();
+    std::path::Path::new(env!("OUT_DIR"))
+        .join("scan-out")
+        .join(format!("{}-{thread:?}", std::process::id()))
 }
 
 /// Each cfg that the warnings of rustc in `errors` give as unknown. Only the head and
@@ -654,17 +686,22 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 }
 
-/// Each identifier of `path` for which `named` holds, as `path: identifier`. A byte
-/// that is not UTF-8 splits identifiers.
+/// Each identifier of `path` for which `named` holds, as `path:line: identifier`. A
+/// byte that is not UTF-8 splits identifiers.
 #[expect(
     clippy::disallowed_methods,
     reason = "a test reads the files of the crate"
 )]
 fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String> {
     let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
-    let found = words(&text).filter(|word| named(word));
+    let lines = (1..).zip(text.lines());
+    let found = lines.flat_map(|(line, text)| {
+        words(text)
+            .filter(|word| named(word))
+            .map(move |word| (line, word))
+    });
     found
-        .map(|word| format!("{}: {word}", path.display()))
+        .map(|(line, word)| format!("{}:{line}: {word}", path.display()))
         .collect()
 }
 
@@ -672,13 +709,15 @@ fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String>
 /// no test file.
 #[test]
 fn the_scan_names_only_the_files_outside_tests() {
-    let src = src();
-    let named = named_outside_tests(&root(), |name| name == "shim_client_new");
-    let at = |file: &str| format!("{}: shim_client_new", src.join(file).display());
-    assert_eq!(named, [at("bench.rs"), at("ffi.rs")]);
+    let client = |name: &str| name == "shim_client_new";
+    let named = named_outside_tests(&root(), client);
+    let found = named_in(&src().join("ffi.rs"), client);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(named, found);
 }
 
-/// A file that only a test build reads is cut off, with the files that it declares.
+/// A file that only a test build reads, also with [`SIM`] on, is cut off, with the
+/// files that it declares.
 #[test]
 fn the_scan_cuts_off_only_the_files_of_a_test_build() {
     let root = create_tree(
@@ -686,9 +725,11 @@ fn the_scan_cuts_off_only_the_files_of_a_test_build() {
         &[
             (
                 "src/lib.rs",
-                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n",
+                "#[cfg(test)]\n#[allow(unused)]\nmod t;\nmod p;\n\
+                 #[cfg(feature = \"sim\")]\nmod s;\n",
             ),
             ("src/t.rs", "mod u;"),
+            ("src/s.rs", "fn named() {}"),
             ("src/t/u.rs", "fn named() {}"),
             ("src/p.rs", "fn named() {}"),
         ],
@@ -858,7 +899,7 @@ fn the_scan_reads_no_cfg_from_a_quoted_comment() {
     );
     let named = named_outside_tests(&root, |name| name == "named");
     assert_eq!(named, [at(&root, "src/o.rs")]);
-    assert_eq!(built(&root).1, ["feature=\"foo\""]);
+    assert_eq!(built(&root, &[]).1, ["feature=\"foo\""]);
     let lib = "#[cfg(target_os = \"nope\")] // = note: as for `feature` x\nmod f;\n";
     let root = create_tree("hidden", &[("src/lib.rs", lib), ("src/f.rs", "")]);
     let refused = std::panic::catch_unwind(|| named_outside_tests(&root, |_| false));
@@ -886,11 +927,15 @@ fn the_scan_builds_with_the_target_features_of_the_build() {
 }
 
 /// The builds of the library set each cfg that the crate tests and rustc does not
-/// know.
+/// know, less [`SIM`], and only the builds with [`SIM`] on read the code behind it.
 #[test]
 fn the_scan_builds_each_cfg_of_the_crate() {
-    let (_, cfgs) = built(&root());
-    assert_eq!(cfgs, ["asan", "feature=\"open62541\"", "feature=\"sim\""]);
+    let (library, cfgs) = built(&root(), &[]);
+    assert_eq!(cfgs, ["asan", "feature=\"open62541\""]);
+    let bench = src().join("bench.rs");
+    assert!(!library.contains(&bench), "{library:?}");
+    let tested = tested(&root());
+    assert!(tested.contains(&bench), "{tested:?}");
 }
 
 /// A test mock that a `path` attribute gives in place of a module is cut off, and
@@ -913,9 +958,102 @@ fn the_scan_reads_the_module_that_a_test_mock_shadows() {
     assert_eq!(named, [at(&root, "src/clock.rs")]);
 }
 
-/// How [`named_outside_tests`] gives the name `named` in `file` of `root`.
+/// A file that only a test build reads is cut off also under a cfg that only test
+/// code tests, or under debug assertions off or panics that abort.
+#[test]
+fn the_scan_cuts_off_the_files_of_each_test_build() {
+    for (parent, at) in [("test", "t"), ("feature = \"sim\"", "s")] {
+        for (case, cfg) in [
+            ("feature", "feature = \"bar\""),
+            ("name", "outer"),
+            ("assertions", "not(debug_assertions)"),
+            ("abort", "panic = \"abort\""),
+        ] {
+            let lib = format!("#[cfg({parent})]\nmod m;\n");
+            let m = format!("#[cfg({cfg})]\nmod b;\n");
+            let root = create_tree(
+                &format!("tested-{at}-{case}"),
+                &[
+                    ("src/lib.rs", &lib),
+                    ("src/m.rs", &m),
+                    ("src/m/b.rs", "fn named() {}"),
+                ],
+            );
+            let named = named_outside_tests(&root, |name| name == "named");
+            assert_eq!(named, Vec::<String>::new(), "{parent}, {case}");
+        }
+    }
+}
+
+/// A file behind [`SIM`] that only a build without `test` reads, as of a benchmark or
+/// a fuzz target, is cut off.
+#[test]
+fn the_scan_cuts_off_the_sim_files_of_a_build_without_test() {
+    for (case, lib, b) in [
+        (
+            "nested",
+            "#[cfg(feature = \"sim\")]\nmod m;\n",
+            "src/m/b.rs",
+        ),
+        (
+            "all",
+            "#[cfg(all(feature = \"sim\", not(test)))]\nmod b;\n",
+            "src/b.rs",
+        ),
+    ] {
+        let root = create_tree(
+            &format!("untested-{case}"),
+            &[
+                ("src/lib.rs", lib),
+                ("src/m.rs", "#[cfg(not(test))]\nmod b;\n"),
+                (b, "fn named() {}"),
+            ],
+        );
+        let named = named_outside_tests(&root, |name| name == "named");
+        assert_eq!(named, Vec::<String>::new(), "{case}");
+    }
+}
+
+/// A file that only a test function reads is cut off.
+#[test]
+fn the_scan_cuts_off_the_files_of_a_test_function() {
+    let root = create_tree(
+        "test-function",
+        &[
+            (
+                "src/lib.rs",
+                "#[test]\nfn t() {\n    let _: () = include!(\"../c.rs\");\n}\n",
+            ),
+            ("c.rs", "{ fn named() {} }"),
+        ],
+    );
+    let named = named_outside_tests(&root, |name| name == "named");
+    assert_eq!(named, Vec::<String>::new());
+}
+
+/// A scan leaves no output of rustc behind.
+#[test]
+fn the_scan_removes_its_output() {
+    let root = create_tree("output", &[("src/lib.rs", "fn named() {}")]);
+    read_by_rustc(&root, &[], &[]);
+    assert!(!scan_out().exists(), "{}", scan_out().display());
+}
+
+/// A crate that rustc cannot parse fails the scan with the errors of rustc.
+#[test]
+fn the_scan_of_a_crate_that_does_not_parse_gives_the_errors_of_rustc() {
+    let root = create_tree("unparsed", &[("src/lib.rs", "fn named( {}")]);
+    let refused = std::panic::catch_unwind(|| read_by_rustc(&root, &[], &[]));
+    let message = *refused.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.starts_with("rustc gives no files: "), "{message}");
+    let file = format!("{}:1:", root.join("src/lib.rs").display());
+    assert!(message.contains(&file), "{message}");
+    assert!(!scan_out().exists(), "{}", scan_out().display());
+}
+
+/// How [`named_outside_tests`] gives the name `named` on line 1 of `file` of `root`.
 fn at(root: &std::path::Path, file: &str) -> String {
-    format!("{}: named", root.join(file).display())
+    format!("{}:1: named", root.join(file).display())
 }
 
 /// A directory under `OUT_DIR` named `name` that holds only `files`.
@@ -944,28 +1082,76 @@ fn the_rust_draws_nothing_from_the_generator_of_the_copy() {
     assert!(drawn.is_empty(), "the Rust names {drawn:?}");
 }
 
-/// Outside tests, the Rust builds no server and names no `UA_random_seed`, so it
-/// reaches none of `setDefaultConfig`, `interruptServer`, and `UA_random_seed`, which
-/// `cargo xtask open62541` lets call the global clock.
+/// Each identifier for which `named` holds in the production code of the crate at
+/// `root`, as [`named_in`] gives it: the Rust of [`named_outside_tests`], and each `.c`
+/// and `.h` file of `src/` but the test server `src/server.c`, which only a build with
+/// `sim` compiles.
+fn named_in_production(
+    root: &std::path::Path,
+    named: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let src = root.join("src");
+    let server = src.join("server.c");
+    let mut found = named_outside_tests(root, &named);
+    for path in [files_under(&src, "c"), files_under(&src, "h")].concat() {
+        if path != server {
+            found.extend(named_in(&path, &named));
+        }
+    }
+    found
+}
+
+/// The production code builds no server and names no `UA_random_seed`, so it reaches
+/// none of `setDefaultConfig`, `interruptServer`, and `UA_random_seed`, which `cargo
+/// xtask open62541` lets call the global clock.
 #[test]
-fn the_rust_outside_tests_builds_no_server() {
-    let named = named_outside_tests(&root(), |name| {
+fn the_production_code_builds_no_server() {
+    let named = named_in_production(&root(), |name| {
         name.starts_with("UA_Server")
             || ["shim_server_new", "UA_random_seed"].contains(&name)
     });
-    assert!(named.is_empty(), "the Rust outside tests names {named:?}");
+    assert!(named.is_empty(), "the production code names {named:?}");
+}
+
+#[test]
+fn the_production_scan_reads_the_c_but_the_server_file() {
+    let root = create_tree(
+        "production",
+        &[
+            ("src/lib.rs", "fn named() {}"),
+            (
+                "src/shim.c",
+                "UA_Client *shim_client_new(UA_EventLoop *el) {\n    \
+                 UA_ServerConfig_setMinimal(&config, 4840, NULL);\n",
+            ),
+            ("src/server.c", "UA_Server *shim_server_new(void);"),
+            ("src/alloc.h", "UA_Server *server;"),
+        ],
+    );
+    let server = |name: &str| name.starts_with("UA_Server") || name == "named";
+    assert_eq!(
+        named_in_production(&root, server),
+        [
+            at(&root, "src/lib.rs"),
+            format!(
+                "{}:2: UA_ServerConfig_setMinimal",
+                root.join("src/shim.c").display()
+            ),
+            format!("{}:1: UA_Server", root.join("src/alloc.h").display()),
+        ]
+    );
 }
 
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`
-/// `cargo xtask open62541` lets call the global clock. Outside tests, the Rust names
-/// neither it nor a `UA_Log_Stdout` function. `shim_client_new` gives a client the
-/// logger of its loop, and the stderr tests of `event` check that.
+/// `cargo xtask open62541` lets call the global clock. The production code names
+/// neither `UA_Client_new` nor a `UA_Log_Stdout` function. `shim_client_new` gives a
+/// client the logger of its loop, and the stderr tests of `event` check that.
 #[test]
-fn the_rust_outside_tests_gives_no_client_the_stdout_logger() {
-    let named = named_outside_tests(&root(), |name| {
-        name.starts_with("UA_Client_new") || name.starts_with("UA_Log_Stdout")
+fn the_production_code_gives_no_client_the_stdout_logger() {
+    let named = named_in_production(&root(), |name| {
+        name == "UA_Client_new" || name.starts_with("UA_Log_Stdout")
     });
-    assert!(named.is_empty(), "the Rust outside tests names {named:?}");
+    assert!(named.is_empty(), "the production code names {named:?}");
 }
 
 /// `cargo xtask open62541` lets `interruptServer` and `UA_random_seed` call the global
@@ -988,7 +1174,7 @@ fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
 }
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`, with [`the_rust_and_the_shim_give_a_client_no_security_policy`].
+/// open62541`, with [`the_production_code_gives_a_client_no_security_policy`].
 #[test]
 fn the_shim_refuses_encryption() {
     let errors =
@@ -1001,18 +1187,14 @@ fn the_shim_refuses_encryption() {
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
 /// open62541`: the default config of a client with encryption off has only the policy
-/// `None`, and outside tests, neither the Rust nor the C under `src/` names a security
-/// policy.
+/// `None`, and the production code names no security policy.
 #[test]
-fn the_rust_and_the_shim_give_a_client_no_security_policy() {
+fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
         name.starts_with("UA_SecurityPolicy")
             || ["securityPolicies", "authSecurityPolicies"].contains(&name)
     };
-    let mut named = named_outside_tests(&root(), policy);
-    for path in [files_under(&src(), "c"), files_under(&src(), "h")].concat() {
-        named.extend(named_in(&path, policy));
-    }
+    let named = named_in_production(&root(), policy);
     assert!(named.is_empty(), "names {named:?}");
 }
 
