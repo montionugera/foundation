@@ -385,6 +385,17 @@ mod run {
             assert_eq!(place::decode(&bytes), Err(error), "{at} {byte}");
         }
     }
+
+    #[test]
+    fn gives_the_first_defect_in_the_order_of_the_bytes() {
+        let mut bytes = encode_run(&[pt(1, "u8", "a")]);
+        bytes[17] = b'x';
+        bytes[19] = 5;
+        assert_eq!(
+            place::decode(&bytes),
+            Err(Error::Sample(Unread::Parse(sample::Error::Syntax)))
+        );
+    }
 }
 
 #[test]
