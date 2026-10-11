@@ -3702,18 +3702,12 @@ mod tests {
                 ]);
                 let entries = iter::zip(2.., data)
                     .map(|(index, data)| Entry {
-                        at: Position {
-                            term: common::TERM,
-                            index,
-                        },
+                        at: at(index),
                         data,
                     })
                     .collect();
                 let append = Body::Append {
-                    prev: Position {
-                        term: common::TERM,
-                        index: 1,
-                    },
+                    prev: at(1),
                     entries,
                     commit: 0,
                 };
@@ -3819,31 +3813,30 @@ mod tests {
         /// the term after, which 2 and 4 elected.
         pub(super) fn replacing() -> Vec<Entry> {
             let next = Term(common::TERM.0 + 2);
-            let at = |term, index| Position { term, index };
             let set = |incoming: &[u8], outgoing: &[u8]| Voters {
                 incoming: incoming.iter().map(|&id| key(id)).collect(),
                 outgoing: outgoing.iter().map(|&id| key(id)).collect(),
             };
             vec![
                 Entry {
-                    at: at(later(), 1),
+                    at: common::at(later().0, 1),
                     data: changes(&[join_change(4)]).remove(0),
                 },
                 common::voters_entry_voted(
                     3,
-                    at(later(), 2),
+                    common::at(later().0, 2),
                     set(&[2, 3, 4], &[2, 3]),
                     &[2, 3],
                 ),
                 common::voters_entry_voted(
                     3,
-                    at(later(), 3),
+                    common::at(later().0, 3),
                     set(&[2, 3, 4], &[]),
                     &[2, 3],
                 ),
                 common::voters_entry_voted(
                     2,
-                    at(next, 4),
+                    common::at(next.0, 4),
                     set(&[2, 3, 4], &[]),
                     &[2, 4],
                 ),
@@ -3996,10 +3989,7 @@ mod tests {
         // its election and the chain of leader 3 of `later` that makes 4 a voter
         // from index 2.
         fn elected_through_chain(votes: &[(u8, u8)]) -> raft::Message {
-            let at = |index| Position {
-                term: later(),
-                index,
-            };
+            let at = |index| common::at(later().0, index);
             let set = |outgoing: &[u8]| Voters {
                 incoming: [2, 3, 4].map(key).into(),
                 outgoing: outgoing.iter().map(|&id| key(id)).collect(),
@@ -4227,10 +4217,7 @@ mod tests {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &[2, 3]).await.unwrap();
                 write(&mesh, changes(&[join_change(4), join_change(6)])).await;
-                let at = |index| Position {
-                    term: later(),
-                    index,
-                };
+                let at = |index| common::at(later().0, index);
                 let replace = Body::Append {
                     prev: Position {
                         term: common::TERM,
