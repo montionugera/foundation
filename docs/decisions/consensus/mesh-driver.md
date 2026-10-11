@@ -182,16 +182,15 @@
   an entry, and a newer build can. An entry with no change (the first entry of a leader)
   is not a change of 0 bytes. A committed entry of a known kind whose body does not
   decode is `Refused::Body` on every node, and the group goes on, so one voter that
-  proposes bad bytes cannot halt the region. One `pub(crate)` type of `change` holds
-  the kind and the length of such a body: `Malformed::Body` and `Refused::Body` each
-  hold it, and the driver moves it from one to the other. Decided by
-  `laptop.architect` (2026-10-11T12:05:22Z):
-  https://github.com/synnaxlabs/foundation/issues/1509#issuecomment-6108834570. From
-  the first stable release (C9d), a change to the body or to a cap of a known kind
-  (the 64 status entries of a `Join`) takes a new kind, which writers use only after
-  the format flag (C9d) allows it; a node of an older build stops at it and never
-  applies it differently. Decided by
-  `laptop.architect` (2026-10-07T10:55:00Z):
+  proposes bad bytes cannot halt the region. One `pub(crate)` type of `change` holds the
+  kind and the length of such a body: `Malformed::Body` and `Refused::Body` each hold
+  it, and the driver moves it from one to the other. Decided by `laptop.architect`
+  (2026-10-11T12:05:22Z):
+  https://github.com/synnaxlabs/foundation/issues/1509#issuecomment-6108834570. From the
+  first stable release (C9d), a change to the body or to a cap of a known kind (the 64
+  status entries of a `Join`) takes a new kind, which writers use only after the format
+  flag (C9d) allows it; a node of an older build stops at it and never applies it
+  differently. Decided by `laptop.architect` (2026-10-07T10:55:00Z):
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036422521. The
   start of the rule was changed by `laptop.architect` at 2026-10-08T17:20:54Z
   (https://github.com/synnaxlabs/foundation/pull/1934#issuecomment-6065295958): before
