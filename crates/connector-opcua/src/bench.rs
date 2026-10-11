@@ -34,16 +34,16 @@ pub struct Client {
 }
 
 impl Client {
-    /// Makes and starts a loop on `clock` with a client and `timers` repeated timers
-    /// of 1 ms.
+    /// Makes and starts a loop on `clock` and `rng`, with a client and `timers`
+    /// repeated timers of 1 ms.
     ///
     /// # Panics
     ///
     /// Panics if open62541 refuses the client, or, with the status name, if it gives a
     /// status other than `Good` for the first run or a timer.
     #[must_use]
-    pub fn new(clock: Clock, timers: usize) -> Self {
-        let events = Loop::new(clock, &mut Rng::from_seed(0));
+    pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
+        let events = Loop::new(clock, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client = unsafe { ffi::shim_client_new(events.raw()) };
         let raw = NonNull::new(client).expect("open62541 refused the client");
@@ -135,10 +135,10 @@ struct Answers {
 }
 
 impl Manager {
-    /// Makes the manager on `clock` and `net`, with its listener on `address` and port
-    /// 4840, and drives it until each client is connected. Then it runs `body` on the
-    /// manager, and deletes the server and the clients, also after a panic in the
-    /// connect or in `body`, which it then resumes.
+    /// Makes the manager on `clock`, `net`, and `rng`, with its listener on `address`
+    /// and port 4840, and drives it until each client is connected. Then it runs `body`
+    /// on the manager, and deletes the server and the clients, also after a panic in
+    /// the connect or in `body`, which it then resumes.
     ///
     /// # Panics
     ///
@@ -154,9 +154,10 @@ impl Manager {
         net: Net,
         address: IpAddr,
         idle: usize,
+        mut rng: Rng,
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
-        let this = Self::new(Clock::clone(&clock), net, address, idle);
+        let this = Self::new(Clock::clone(&clock), net, address, idle, &mut rng);
         let value = caught(async {
             this.connect(&clock).await;
             body(&this).await
@@ -166,11 +167,16 @@ impl Manager {
         value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 
-    fn new(clock: Clock, net: Net, address: IpAddr, idle: usize) -> Self {
+    fn new(
+        clock: Clock,
+        net: Net,
+        address: IpAddr,
+        idle: usize,
+        rng: &mut Rng,
+    ) -> Self {
         let sessions = u16::try_from(idle.saturating_add(1))
             .expect("open62541 counts sessions in 16 bits");
         let local = SocketAddr::new(address, PORT);
-        let rng = &mut Rng::from_seed(0);
         let manager = ManuallyDrop::new(
             connection::Manager::listening(clock, net, local, u32::from(sessions), rng)
                 .expect("the port is free"),
@@ -439,7 +445,8 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let (clock, address) = (node.clock(), node.addresses()[0]);
             let body = async |manager: &Manager| body(manager, clock).await;
-            Manager::scope(node.clock(), node.net(), address, idle, body).await;
+            let rng = node.entropy().rng();
+            Manager::scope(node.clock(), node.net(), address, idle, rng, body).await;
         })
         .expect("the run ends");
     }
@@ -452,11 +459,13 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
             let body = async |_: &Manager| panic!("the body panics");
-            let scope = Manager::scope(node.clock(), node.net(), address, 0, body);
+            let rng = node.entropy().rng();
+            let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             let panic = caught(scope).await.expect_err("the body panics");
             assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
             let body = async |manager: &Manager| manager.answers();
-            let scope = Manager::scope(node.clock(), node.net(), address, 0, body);
+            let rng = node.entropy().rng();
+            let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             assert_eq!(scope.await, 0);
         })
         .expect("the run ends");
@@ -489,7 +498,8 @@ mod tests {
                 panic!("the body panics");
             };
             let address = node.addresses()[0];
-            let scope = Manager::scope(node.clock(), node.net(), address, 0, body);
+            let rng = node.entropy().rng();
+            let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             let panic = caught(scope).await.expect_err("the close panics");
             let message = panic.downcast_ref::<String>().map(String::as_str);
             assert_eq!(
@@ -552,8 +562,10 @@ mod tests {
             let address = node.addresses()[0];
             for _ in 0..2 {
                 let body = async |manager: &Manager| manager.answers();
+                let rng = node.entropy().rng();
                 let answers =
-                    Manager::scope(node.clock(), node.net(), address, 3, body).await;
+                    Manager::scope(node.clock(), node.net(), address, 3, rng, body)
+                        .await;
                 assert_eq!(answers, 0);
             }
         })
@@ -601,7 +613,8 @@ mod tests {
         let node = sim.node(node::Config::default());
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
-            Manager::scope(node.clock(), node.net(), address, idle, body).await;
+            let rng = node.entropy().rng();
+            Manager::scope(node.clock(), node.net(), address, idle, rng, body).await;
         })
         .expect("the run ends");
     }
@@ -661,8 +674,9 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let (clock, address) = (node.clock(), node.addresses()[0]);
             let start = clock.now();
+            let rng = node.entropy().rng();
             let scope =
-                Manager::scope(node.clock(), node.net(), address, 0, async |_| ());
+                Manager::scope(node.clock(), node.net(), address, 0, rng, async |_| ());
             let panic = caught(scope).await.expect_err("the connect does not end");
             assert_eq!(clock.now() - start, Span::from_nanos(60_000_000_000));
             let message = panic.downcast_ref::<String>().map(String::as_str);
@@ -715,7 +729,8 @@ mod tests {
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
-            Manager::scope(node.clock(), node.net(), address, 0, body).await;
+            let rng = node.entropy().rng();
+            Manager::scope(node.clock(), node.net(), address, 0, rng, body).await;
         })
         .expect("the run ends");
     }
@@ -737,7 +752,9 @@ mod tests {
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
-            let scope = Manager::scope(node.clock(), node.net(), address, idle, body);
+            let rng = node.entropy().rng();
+            let scope =
+                Manager::scope(node.clock(), node.net(), address, idle, rng, body);
             let panic = caught(scope).await.expect_err("the connect panics");
             panic
                 .downcast_ref::<String>()
@@ -780,8 +797,8 @@ mod tests {
     #[test]
     fn a_run_runs_the_due_timers() {
         let mut sim = sim::Sim::new(sim::Config::default());
-        let clock = sim.node(sim::node::Config::default()).clock();
-        let mut client = Client::new(clock, 1);
+        let node = sim.node(sim::node::Config::default());
+        let mut client = Client::new(node.clock(), &mut node.entropy().rng(), 1);
         let first = client.next().expect("a timer waits");
         sim.run_for(Span::MILLISECOND).expect("the run has no task");
         client.run();
@@ -791,8 +808,8 @@ mod tests {
     #[test]
     fn the_debug_gives_the_next_timer() {
         let mut sim = sim::Sim::new(sim::Config::default());
-        let clock = sim.node(sim::node::Config::default()).clock();
-        let client = Client::new(clock, 0);
+        let node = sim.node(sim::node::Config::default());
+        let client = Client::new(node.clock(), &mut node.entropy().rng(), 0);
         assert_eq!(
             format!("{client:?}"),
             "Client { next: Some(Monotonic(3601000000000)), .. }"

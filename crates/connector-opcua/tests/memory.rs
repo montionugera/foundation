@@ -85,9 +85,9 @@ fn c_allocates_through_the_global_allocator() {
 
 fn the_drop_frees_the_client_its_loop_and_its_timers() {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
+    let node = sim.node(sim::node::Config::default());
     let before = ALLOCATOR.held();
-    let client = Client::new(env::clock::Clock::clone(&clock), 100);
+    let client = Client::new(node.clock(), &mut node.entropy().rng(), 100);
     let held = ALLOCATOR.held().strict_sub(before);
     assert!(
         held > 100 * size_of::<usize>(),
@@ -151,7 +151,8 @@ fn a_client_frees_what_it_holds() {
             }
             held
         };
-        client::Server::scope(node.clock(), node.net(), address, body).await
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     let held = sim.run_on(&node, run).expect("the run ends");
     assert_eq!(

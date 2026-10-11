@@ -10,6 +10,7 @@ use std::future::{Future as _, poll_fn};
 use std::pin::pin;
 
 use connector_opcua::bench::{Client, Manager, client};
+use env::rng::Rng;
 use sim::Sim;
 use types::time::Span;
 
@@ -26,17 +27,17 @@ fn main() {
     a_read_of_a_client_allocates_a_fixed_count();
 }
 
-fn sim() -> (Sim, env::clock::Clock) {
+fn sim() -> (Sim, env::clock::Clock, Rng) {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
-    (sim, clock)
+    let node = sim.node(sim::node::Config::default());
+    (sim, node.clock(), node.entropy().rng())
 }
 
 /// The positive control: the copy allocates one entry for each timer.
 fn the_count_holds_the_allocations_of_c() {
-    let ((_sim, none), (_other, timers)) = (sim(), sim());
-    let (none, base) = ALLOCATOR.count(|| Client::new(none, 0));
-    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, 100));
+    let ((_sim, none, mut rng), (_other, timers, mut other)) = (sim(), sim());
+    let (none, base) = ALLOCATOR.count(|| Client::new(none, &mut rng, 0));
+    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, &mut other, 100));
     assert_eq!(count - base, 100, "the timers of 100 against 0 allocated");
     drop((none, timers));
 }
@@ -45,8 +46,9 @@ fn the_count_holds_the_allocations_of_c() {
 /// too. After each run, the timers wait 1 ms more.
 fn a_run_allocates_nothing() {
     for timers in [1, 100, 10_000] {
-        let (mut sim, clock) = sim();
-        let mut client = Client::new(env::clock::Clock::clone(&clock), timers);
+        let (mut sim, clock, mut rng) = sim();
+        let mut client =
+            Client::new(env::clock::Clock::clone(&clock), &mut rng, timers);
         for at in 1..=2000 {
             sim.run_for(Span::MILLISECOND).expect("the run has no task");
             let ((), count) = ALLOCATOR.count(|| client.run());
@@ -64,8 +66,8 @@ fn a_run_allocates_nothing() {
 const URI: &[u8] = b"urn:open62541.unconfigured.application";
 
 fn the_drop_frees_the_client() {
-    let (_sim, clock) = sim();
-    let client = Client::new(clock, 0);
+    let (_sim, clock, mut rng) = sim();
+    let client = Client::new(clock, &mut rng, 0);
     let ((), freed) = ALLOCATOR.freed_holding(URI, || drop(client));
     assert_eq!(freed, 1, "the drop freed the URI of the client");
 }
@@ -117,7 +119,8 @@ fn reads(idle: usize) -> Vec<[u64; 4]> {
             }
             counts
         };
-        Manager::scope(node.clock(), node.net(), address, idle, body).await
+        let rng = node.entropy().rng();
+        Manager::scope(node.clock(), node.net(), address, idle, rng, body).await
     };
     sim.run_on(&node, run).expect("the run ends")
 }
@@ -160,7 +163,8 @@ fn client_reads() -> Vec<u64> {
             client.close().await;
             counts.split_off(1)
         };
-        client::Server::scope(node.clock(), node.net(), address, body).await
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     sim.run_on(&node, run).expect("the run ends")
 }

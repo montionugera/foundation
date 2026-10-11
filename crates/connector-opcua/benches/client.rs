@@ -49,7 +49,8 @@ async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> [Vec<u64>; 2] {
         client.close().await;
         [polls, rounds]
     };
-    Server::scope(node.clock(), node.net(), address, body).await
+    let rng = node.entropy().rng();
+    Server::scope(node.clock(), node.net(), address, rng, body).await
 }
 
 #[expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
