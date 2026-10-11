@@ -3935,7 +3935,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_633_776;
+        const WRITE: i64 = 1_793_498_387;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -4889,7 +4889,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -4899,7 +4899,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..2 {
+            for _ in 0..7 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
