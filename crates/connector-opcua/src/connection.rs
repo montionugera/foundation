@@ -152,6 +152,16 @@ impl Manager {
         &self.events
     }
 
+    /// Gives the port of the listener of [`Manager::listening`], until a listen open
+    /// takes it.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn port(&self) -> Option<u16> {
+        let listener = self.state().listener.take();
+        let port = listener.as_ref().map(|listener| listener.local().port());
+        self.state().listener.set(listener);
+        port
+    }
+
     /// Moves the connections on and calls `run` until `run` gives a value, and gives
     /// it. `run` runs the loop with a timeout of 0, alone or through its client or
     /// server, and may poll its own sources with the context it gets. Between calls,
@@ -1059,7 +1069,5 @@ unsafe extern "C" fn closed(application: *mut c_void, _: *mut c_void) {
     }
 }
 
-#[cfg(any(test, feature = "sim"))]
-mod server;
 #[cfg(test)]
 mod tests;
