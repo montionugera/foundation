@@ -4149,14 +4149,9 @@ mod port {
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let endpoint = Endpoint {
-                    part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    bound: listen(&own),
-                    region: Opening::Given(region(&members)),
-                    clock: own.clock(),
-                    entropy: own.entropy(),
-                    net: own.net(),
-                };
+                let (opening, clock) = (Opening::Given(region(&members)), own.clock());
+                let endpoint =
+                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -5695,14 +5690,9 @@ mod port {
                     opener: Opener::from_bytes(SEAL),
                 };
                 let definitions = founding.definitions.clone();
-                let endpoint = Endpoint {
-                    part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    bound: listen(&own),
-                    region: Opening::Given(founding),
-                    clock: own.clock(),
-                    entropy: own.entropy(),
-                    net: own.net(),
-                };
+                let (opening, clock) = (Opening::Given(founding), own.clock());
+                let endpoint =
+                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =

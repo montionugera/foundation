@@ -252,16 +252,8 @@ impl Node {
             #[cfg(feature = "sim")]
             Region::Given(founding) => Opening::Given(founding.clone()),
         };
-        let at = address::bound(&bound);
-        let part = bound.split(NonZeroUsize::MIN).pop();
-        let endpoint = Endpoint {
-            part: part.expect("invariant: a port splits into the parts asked for"),
-            bound: at,
-            region,
-            clock: config.clock.clone(),
-            entropy: config.entropy.clone(),
-            net: config.net.clone(),
-        };
+        let (clock, entropy) = (config.clock.clone(), config.entropy.clone());
+        let endpoint = Endpoint::new(bound, region, clock, entropy, config.net.clone());
         let parts = parts
             .into_iter()
             .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
@@ -853,6 +845,28 @@ impl Opening {
 }
 
 impl Endpoint {
+    /// The endpoint of the node's one part of `port`.
+    fn new(
+        port: transport::Port,
+        region: Opening,
+        clock: env::clock::Clock,
+        entropy: env::entropy::Entropy,
+        net: env::net::Net,
+    ) -> Self {
+        let bound = address::bound(&port);
+        let mut parts = port.split(NonZeroUsize::MIN);
+        Self {
+            part: parts
+                .pop()
+                .expect("invariant: a port splits into the parts asked for"),
+            bound,
+            region,
+            clock,
+            entropy,
+            net,
+        }
+    }
+
     /// Where a program reaches the node of `identity`, whose transport [`Self::open`]
     /// makes with its private key.
     fn address(&self, identity: &identity::Identity) -> address::Address {
