@@ -28,8 +28,8 @@ pub struct Config {
     /// put bodies and the reply heads of [`peer::serve`]. Its largest block bounds a
     /// chunk.
     pub pool: Rc<Pool>,
-    /// The bytes the store leaves free on the disk. A put that would leave fewer
-    /// gives [`Error::Floor`].
+    /// The bytes the store leaves free on the disk. A put that takes new room and
+    /// would leave fewer gives [`Error::Floor`].
     pub floor_bytes: u64,
 }
 
@@ -47,8 +47,8 @@ pub enum Error {
         /// The digest of the bytes.
         found: Digest,
     },
-    /// A put would leave less free on the disk than [`Config::floor_bytes`]. Nothing
-    /// is written.
+    /// A put that takes new room would leave less free on the disk than
+    /// [`Config::floor_bytes`]. Nothing is written.
     Floor {
         /// The bytes of the chunk.
         len: usize,

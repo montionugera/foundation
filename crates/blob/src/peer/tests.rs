@@ -335,11 +335,11 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
     );
 }
 
-/// `serve` holds the chunk that it sends, and `transport` holds each chunk with a
-/// byte in flight: the chunks that fill the window, and one that the peer
-/// acknowledged in part. The pool has room for these and their reply heads, and the
-/// get asks for more than twice that, so a server that reads ahead ends the stream
-/// with a pool error.
+/// `serve` holds the chunk that it sends. With acknowledgments in order, `transport`
+/// holds each chunk with a byte in flight: the chunks that fill the window, and one
+/// that the peer acknowledged in part. The pool has room for these and their reply
+/// heads, and the get asks for more than twice that, so a server that reads ahead
+/// ends the stream with a pool error.
 #[test]
 fn a_get_of_many_chunks_holds_the_window_and_two_chunks() {
     const LEN: usize = 64 << 10;

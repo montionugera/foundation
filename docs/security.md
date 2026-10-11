@@ -254,14 +254,17 @@ state on `main`.
   block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
   head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
   peer can fill the disk only to the free floor of the store, plus at most one chunk for
-  each put in flight; then each put stops with `FULL`. No code removes a chunk (#1233),
-  so that room stays taken, and the node's own puts of new chunks then give
-  `Error::Floor` too. `serve` holds at most one chunk in memory for each stream.
-  `transport` also holds each chunk whole while a byte of it is in flight, within the
-  window of the session, so a get can hold more than one chunk. Who may open a blob
-  stream is not built: `node` rejects each one until it routes them from member nodes
-  only (#1229). The requester is not built (#1229). To attack when it lands: a binary
-  that a peer serves under a hash it does not match (C9d).
+  each put in flight; then each put of a chunk that the disk does not hold stops with
+  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
+  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
+  memory for each stream. `transport` also holds each chunk whole until the peer
+  acknowledged each byte of it and each byte before it on the stream, so a get can hold
+  more than one chunk. The bound is `transport`'s, and it is open (#2361). To attack
+  when `node` routes blob streams (#1229): a get whose peer holds back one
+  acknowledgment (#2361). Who may open a blob stream is not built: `node` rejects each
+  one until it routes them from member nodes only (#1229). The requester is not built
+  (#1229). To attack when it lands: a binary that a peer serves under a hash it does not
+  match (C9d).
 
 ### Time source to `estimate`
 
