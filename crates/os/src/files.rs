@@ -320,7 +320,7 @@ fn data(dir: &Path) -> io::Result<OwnedFd> {
 }
 
 /// Opens directory `path` of `at`, first makes it when it is not there, and syncs the
-/// directory that holds it, unless `path` is a mount point.
+/// directory that holds it, unless `path` is on another device than its holder.
 fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
     match fs::mkdirat(&at, path, DIR) {
         Ok(()) | Err(Errno::EXIST) => {}

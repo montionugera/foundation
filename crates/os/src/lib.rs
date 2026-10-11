@@ -167,8 +167,9 @@ pub fn net() -> env::net::Net {
 /// # Errors
 ///
 /// - [`Error::Dir`] when the OS cannot open or make `dir` or `dir/data`, or cannot open
-///   or sync the directory that holds each. It does not sync the holder of a mount
-///   point: that entry is the mount's to keep.
+///   or sync the directory that holds each. It does not sync the holder of a
+///   directory on another device than that holder, such as a mount point of another
+///   file system: that entry is the mount's to keep.
 /// - [`Error::Thread`] when the I/O thread cannot start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn files(
