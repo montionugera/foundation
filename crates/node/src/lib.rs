@@ -191,12 +191,16 @@ impl Node {
     /// file `node.key` in the data directory, and makes the file at the first start
     /// once it has mesh time, unless `create_key` made it, then opens the mesh of
     /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
-    /// founds the root region and reads or makes `admin.key`), then serves the port
-    /// until its transport or the mesh's group stops, which stops the node. It admits
-    /// each member of the region, and gives other peers at most 256 places at once: one
-    /// for each session of a program, and one for the key of a node. At the bound, the
-    /// oldest place frees for a new peer, so a peer outside the region keeps its
-    /// session until 256 later peers took a place. Returns once each shard runs or one
+    /// founds the root region and reads or makes `admin.key`), then writes the file
+    /// `address` in the data directory, with the node's key, the public key of its
+    /// transport, and the bound address, then serves the port until its transport or
+    /// the mesh's group stops, which stops the node. It removes `address` when it stops
+    /// serving, before the lock drops; a crash leaves the file. It admits each member
+    /// of the region, and gives other peers at most 256 places at once: one for each
+    /// session of a program, and one for the key of a node. At the bound, the oldest
+    /// place frees for a new peer, and its session closes unless its peer is now a
+    /// member, so a peer outside the region keeps its session until 256 later peers
+    /// took a place. Returns once each shard runs or one
     /// has failed to start. No shard starts when the disk budget holds no ring on each
     /// shard ([`Error::Disk`]), when a shard's part of the pool budget gives a
     /// reservation of more than `usize::MAX` bytes ([`Error::Pool`]), when the port
@@ -433,8 +437,10 @@ impl Node {
     /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
     /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
     /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
-    /// [`Error::Mesh`] for a stored region or a mesh that did not open, or
+    /// [`Error::Mesh`] for a stored region or a mesh that did not open,
+    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
     /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not remove,
     /// else [`Error::Panicked`] for the first shard by core that panicked. Any failed
     /// shard stops the node.
     pub fn join(self) -> Result<(), Error> {
@@ -925,16 +931,18 @@ impl Serve {
     /// each spec that takes effect later, runs each connector that the spec in use
     /// places on this node ([`connectors::Runs`]), and serves the node's port, until
     /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
-    /// of [`end`]. A transport or a group that ends it goes into `failed` before it
-    /// drops the tasks given that still run. Before it returns, it drops the tasks, the
+    /// of [`end`], with the file `address` of `files` there while it serves
+    /// ([`address::hold`]). A transport or a group that ends it goes into `failed`
+    /// before it drops the tasks given that still run, and the error of `address`
+    /// after it, unless one is there. Before it returns, it drops the tasks, the
     /// hub, `home`, `guard`, the runs of the connectors, each session and stream
     /// future, the operations on the mesh, the mesh, and the transport, and waits for
     /// each task of the mesh to end, with a mesh, and for the transport to free the
     /// port. Unless the socket broke, the port is freed only after the hub lets go of
     /// the region, as [`hub::Hub::new`] states, and after each task that a connector's
     /// run spawned has ended. Runs no task and takes no session when a shard did not
-    /// open, or when the budgets were not kept, the identity did not load, or the mesh
-    /// did not open, which goes into `failed`.
+    /// open, or when the budgets were not kept, the identity did not load, the mesh
+    /// did not open, or `address` was not written, which goes into `failed`.
     async fn run(
         self,
         home: home::Shard,
@@ -1184,8 +1192,8 @@ pub enum Error {
         cores: usize,
     },
     /// A file call that locks the data directory, reads or records its shard count or
-    /// the node's name or its budgets, or reads or writes the node's key or the first
-    /// admin's key, failed.
+    /// the node's name or its budgets, reads or writes the node's key or the first
+    /// admin's key, or writes or removes the file `address`, failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),

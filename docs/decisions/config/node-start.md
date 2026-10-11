@@ -92,6 +92,26 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483), and
   moved to #1744 PR 1b-4 by `laptop.architect` (2026-10-10T22:53:09Z,
   https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103048603).
-  `--listen` and the
-  file `address` come with #1744
-  (https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6053227526).
+  `start --listen` gives `Start::listen`, the address of the node's one port,
+  `127.0.0.1:0` by default, so the node takes a free port and no other host reaches it
+  until the user gives an address. `main` gives it as `node::Config::listen`. A port
+  that does not bind is `node.failed`, and a value that is no socket address is
+  `ops.argument`. Shard 0 writes the file `address` in the data directory whole, as
+  `admin.key` is written, after the mesh opens and before the port takes a session:
+  the node's key, the public key of its transport, and the bound socket address, in
+  one sector with a CRC32C. Its form is private to `node`, and the fuzz target
+  `node_identity` takes it by its length. Shard 0 removes it when it stops serving,
+  before the lock drops, with no sync of the directory. A crash leaves it, and the
+  next start writes it again. The port can free before the remove: a program proves
+  the node by its public key, so no reader needs that order. A failed write is
+  `Error::Directory` and stops the node before it serves; a failed remove is
+  `Error::Directory` unless the node already failed. Lost: a fixed port with no file,
+  where two nodes on one host need two flags and the CLI still reads the public key
+  from the data directory; the address in `lock`, whose open by a reader races with a
+  start. Decided by `laptop.architect-2` (2026-10-08T05:42:09Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935;
+  2026-10-11T07:10:55Z, plan revision 4,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913;
+  2026-10-11T08:01:23Z, the remove before the lock drops but not before the port
+  frees,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106927243).
