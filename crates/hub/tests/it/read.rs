@@ -545,6 +545,23 @@ fn ends_a_read_with_frames_to_send_at_a_finish_after_its_open() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A finish that comes with the open ends a read before the node opens its reader.
+#[test]
+fn ends_a_read_at_a_finish_that_comes_with_its_open() {
+    let home = read_session(
+        319,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            stream.sender.finish().expect("finishes");
+            assert_eq!(stream.recv().await, Ok(None));
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// The channels of a read are removed while its run of places waits for room in the
 /// program's window.
 #[test]
