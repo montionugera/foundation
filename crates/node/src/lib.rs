@@ -192,18 +192,12 @@ impl Node {
     /// until its transport or the mesh's group stops, which stops the node. It admits
     /// each member of the region, and gives other peers at most 256 places at once: one
     /// for each session of a program, and one for the key of a node. Returns once each
-    /// shard runs or one has failed to start. When the disk budget holds no ring on
-    /// each shard, no shard starts, and [`Node::join`] gives [`Error::Disk`] with the
-    /// budget, the shard count, and the least budget. When a shard's part of the pool
-    /// budget gives a reservation of more than `usize::MAX` bytes, no shard starts
-    /// either, and [`Node::join`] gives [`Error::Pool`]. Nor does one for a
-    /// [`Config::name`] with a reserved segment, and [`Node::join`] gives
-    /// [`Error::Reserved`]. A failed start, a shard with no memory, a data directory
-    /// that another node holds or that was made for another shard count, a key file
-    /// that is not valid, a file `name` that holds another name or that no node wrote,
-    /// or a buffer or a mesh that does not open stops the node, and [`Node::join`]
-    /// returns its error. The `# Errors` of [`Node::join`] gives which error comes
-    /// first.
+    /// shard runs or one has failed to start. No shard starts when the disk budget
+    /// holds no ring on each shard ([`Error::Disk`]), when a shard's part of the pool
+    /// budget gives a reservation of more than `usize::MAX` bytes ([`Error::Pool`]),
+    /// or when [`Config::name`] has a reserved segment ([`Error::Reserved`]). Any
+    /// failure stops the node, and [`Node::join`] gives the first one (its
+    /// `# Errors`).
     ///
     /// # Panics
     ///
