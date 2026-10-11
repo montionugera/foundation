@@ -1185,7 +1185,7 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
     let temp = std::env::temp_dir();
     for run in 0..20 {
-        let dir = temp.join(format!("walked-{}-{run}", std::process::id()));
+        let dir = temp.join(format!("{PREFIX}{}-walked-{run}", std::process::id()));
         for sub in 0..300 {
             let sub = dir.join(format!("d{sub}"));
             std::fs::create_dir_all(&sub).expect("make a directory");
