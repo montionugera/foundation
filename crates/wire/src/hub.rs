@@ -561,11 +561,11 @@ pub enum Error {
         /// The seq plus the count of the head before it.
         end: u64,
     },
-    /// A message of a run has more keys or ends than remain in the run.
+    /// A message of a run has more keys, ends, or places than remain in the run.
     Run {
-        /// The keys or ends of the message.
+        /// The keys, ends, or places of the message.
         items: usize,
-        /// The keys or ends that remain in the run.
+        /// The keys, ends, or places that remain in the run.
         remain: u32,
     },
     /// A message of a body has more bytes than remain in the body.
@@ -614,6 +614,11 @@ pub enum Error {
     Sample(text::Error<sample::Error>),
     /// The name of a place of a read does not read.
     Name(text::Error<Box<name::Error>>),
+    /// The index place of a read has a sample type that is not `Stamp`.
+    Unstamped {
+        /// The sample type of the index place.
+        sample: sample::Type,
+    },
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
@@ -715,6 +720,10 @@ impl fmt::Display for Error {
             Self::Name(cause) => {
                 write!(f, "the name of a place of the read does not read: {cause}")
             }
+            Self::Unstamped { sample } => write!(
+                f,
+                "the index place of the read has sample type {sample}, not timestamp"
+            ),
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
             }

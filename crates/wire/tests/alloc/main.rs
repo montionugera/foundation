@@ -229,27 +229,40 @@ fn blob_heads() {
 /// The cut and the encode of a run of 3 places, one place a message. Each place is
 /// formatted once at each cut that tries it and once at its encode: 8 times in all.
 fn place_messages() {
-    use wire::hub::client::{Place, place};
+    use wire::hub::client::{FromNode, Mode, Place, Places, Reader, place};
 
-    let places = [1, 2, 3].map(|key| Place {
-        key: channel::Key::from_u128(key),
-        data_type: "u8".parse().expect("a sample type"),
-        name: "a".parse().expect("a name"),
-    });
-    let mut out = [0; 63];
+    let places =
+        [(1, "timestamp"), (2, "u8"), (3, "u8")].map(|(key, data_type)| Place {
+            key: channel::Key::from_u128(key),
+            data_type: data_type.parse().expect("a sample type"),
+            name: "a".parse().expect("a name"),
+        });
+    let mut out = [0; 70];
     let mut lens = [0; 3];
     let ((), allocations) = ALLOCATOR.count(|| {
-        let at = out.chunks_mut(21).zip(&mut lens);
-        for (message, (out, len)) in place::messages(&places, 21).zip(at) {
+        let mut rest = &mut out[..];
+        for (message, len) in place::messages(&places, 28).zip(&mut lens) {
             *len = message.encoded_len();
-            message.encode(out);
+            let (into, after) = rest.split_at_mut(*len);
+            message.encode(into);
+            rest = after;
         }
     });
     assert_eq!(allocations, 8, "the place messages allocated another count");
-    assert_eq!(lens, [21; 3], "each place is a message");
-    let decoded: Vec<_> = out
-        .chunks(21)
-        .flat_map(|message| place::decode(message).expect("a message decodes"))
-        .collect();
+    assert_eq!(lens, [28, 21, 21], "each place is a message");
+    let mut reader = Reader::new(Mode::Complete);
+    let mut first = [0; Places::LEN];
+    Places { count: 3, index: 0 }.encode(&mut first);
+    reader.decode(&first).expect("the places decode");
+    let mut rest = &out[..];
+    let mut decoded = Vec::new();
+    for len in lens {
+        let (message, after) = rest.split_at(len);
+        match reader.decode(message) {
+            Ok(FromNode::Run(run)) => decoded.extend(run),
+            other => panic!("a message of the run: {other:?}"),
+        }
+        rest = after;
+    }
     assert_eq!(decoded, places, "the run round trips");
 }

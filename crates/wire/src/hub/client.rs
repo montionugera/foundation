@@ -9,7 +9,7 @@
 //! - A read stream carries one reader session. The program sends a [`Read`] and then
 //!   its [`Open`] as a body. The node sends [`Places`] and the run of its [`place`]s,
 //!   and then the replies of a reader session as [`super::Reader`] decodes them, from
-//!   `Opened`. The program sends no credit.
+//!   `Opened`. The program sends no credit, and decodes the stream with [`Reader`].
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
@@ -54,7 +54,9 @@ use crate::header::MALFORMED;
 
 mod read;
 
-pub use read::{Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, place};
+pub use read::{
+    FromNode, Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, place,
+};
 
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;

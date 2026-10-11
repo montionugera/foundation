@@ -59,10 +59,19 @@ impl Reader {
     /// When `open.channels` is 0.
     #[must_use]
     pub fn new(open: &Open) -> Self {
-        assert!(open.channels > 0, "an open names at least one channel");
+        Self::of(open.channels, open.mode == Mode::Latest)
+    }
+
+    /// A decoder for a session of `places` places, latest when `latest`.
+    ///
+    /// # Panics
+    ///
+    /// When `places` is 0.
+    pub(in crate::hub) fn of(places: u32, latest: bool) -> Self {
+        assert!(places > 0, "an open names at least one channel");
         Self {
-            places: open.channels,
-            latest: open.mode == Mode::Latest,
+            places,
+            latest,
             next: Next::Opened,
             end: 0,
         }
