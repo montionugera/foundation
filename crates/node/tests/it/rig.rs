@@ -28,8 +28,8 @@ pub(crate) const POOL: u64 = 1 << 30;
 const PREFIX: &str = "foundation-node-";
 
 /// One `foundation` node in a temporary directory of its own. Drop kills the node and
-/// removes the directory. A failed test keeps its directory until the next run on
-/// Unix: [`Rig::new`] removes each directory of a test process that is gone.
+/// removes the directory. A failed test keeps its directory until the next run on Unix:
+/// [`Rig::new`] removes each directory of a test process that is gone.
 #[derive(Debug)]
 pub(crate) struct Rig {
     /// The working directory of each command. It holds `plant.hcl`.
@@ -47,8 +47,8 @@ impl Rig {
     /// this user that is gone, also when a node that it started still runs there. A
     /// directory in which such a node makes a file during the removal stays until a
     /// later rig. Its data directory keeps a pool budget of 1 GiB and a disk budget of
-    /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter
-    /// of the host's free disk, and each shard's ring fits.
+    /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter of
+    /// the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
         Rig::with_cores(os::shards().expect("read the cores").cores().get())
     }
@@ -332,8 +332,8 @@ fn sweep(made: &Path, remove: impl Fn(&Path) -> std::io::Result<()>) {
     }
 }
 
-/// Removes the directory `path` of this user, also when a test that took the write
-/// bit of a directory in it ended before it gave it back.
+/// Removes the directory `path` of this user, also when a test that took the write bit
+/// of a directory in it ended before it gave it back.
 #[cfg(unix)]
 fn remove(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
@@ -1184,8 +1184,7 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
     });
 }
 
-/// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`]
-/// runs.
+/// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`] runs.
 const DIES: &str = "RIG_DIES";
 
 /// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills its
