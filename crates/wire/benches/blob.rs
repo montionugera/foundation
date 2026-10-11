@@ -10,8 +10,8 @@ fn main() {
     divan::main();
 }
 
-/// [`Server::decode`], called out of line as production calls it, so that no bench
-/// measures the inlining of its one call site.
+/// [`Server::decode`], called out of line, so that no bench measures its inlining into
+/// the timed loop.
 #[inline(never)]
 fn decode_at_server<'m>(
     server: &Server,
