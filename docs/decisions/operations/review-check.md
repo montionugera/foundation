@@ -278,7 +278,9 @@
   approved at 2026-10-11T20:32:18Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113438520), and
   ruled for the rules of review round 1 at 2026-10-11T21:06:14Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113751754). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113751754), and
+  approved with those rules at 2026-10-11T21:24:40Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113934252). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
