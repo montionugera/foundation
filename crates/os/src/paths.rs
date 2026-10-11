@@ -21,12 +21,8 @@ impl env::paths::Driver for Driver {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         if names_directory(path) {
-            // Such a path resolves only to a directory, so a stat that succeeds finds
-            // one.
-            let directory = Error::Io {
-                code: Errno::ISDIR.raw_os_error(),
-            };
-            return Err(fs::metadata(path).map_or_else(|e| error(&e), |_| directory));
+            // Such a path resolves only to a directory, so the open fails.
+            return in_place(path, bytes).map_err(|e| error(&e));
         }
         let kept = match fs::symlink_metadata(path) {
             Ok(old) if old.is_file() => Some(old.permissions()),
