@@ -326,6 +326,42 @@ fn a_retry_gets_only_the_missed_chunk_and_keeps_the_chunks_it_read() {
     });
 }
 
+// The change lists each chunk of its tree, and the store lacks one. One retry after
+// the put of that chunk reads the spec.
+#[test]
+fn a_retry_after_a_read_of_listed_chunks_gets_only_the_missed_chunk() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let definitions = create_large(200);
+        let mut chunks = Chunks::default();
+        let update = spec::region::tree(&mut chunks, &definitions);
+        let lacked = *update.chunks.iter().find(|at| **at != update.root).unwrap();
+        let held = update.chunks.iter().copied().filter(|at| *at != lacked);
+        let held: Vec<Digest> = held.collect();
+        assert!(held.len() > 3);
+        put(&mesh.store, &mesh.pool, &chunks, &held).await.unwrap();
+        let settled = mesh.settle_spec(
+            base(),
+            update.root,
+            update.chunks.iter().copied().collect(),
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        let moved = settled.await.unwrap();
+        let missing = spec::region::Error::Tree(tree::Error::Missing(lacked));
+        let behind = Some(Behind {
+            pointer: moved,
+            cause: Cause::Read(missing),
+        });
+        assert_eq!(mesh.spec().await.unwrap().behind, behind);
+        put(&mesh.store, &mesh.pool, &chunks, &[lacked])
+            .await
+            .unwrap();
+        node.clock().sleep(seconds(2)).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &definitions)));
+    });
+}
+
 #[test]
 fn a_failed_get_of_the_store_leaves_the_node_behind_until_a_retry() {
     solo(|node, tasks| async move {
@@ -887,6 +923,43 @@ fn a_newer_pointer_drops_the_chunks_got_for_the_one_it_replaces() {
                 let digest = Digest::of(chunk);
                 assert!(chunks.get(digest).is_some(), "{count}: {digest}");
             }
+        }
+    });
+}
+
+// No public call shows the chunks that the task holds for the newest pointer.
+#[test]
+fn a_failed_read_keeps_no_listed_chunk_of_another_tree() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let mut chunks = Chunks::default();
+        let other = spec::region::tree(&mut chunks, &create_subjects(&["plant.c"], 1));
+        let other: Vec<Digest> = other.chunks.into_iter().collect();
+        put(&mesh.store, &mesh.pool, &chunks, &other).await.unwrap();
+        let update = spec::region::tree(&mut chunks, &create_large(200));
+        let lacked = *update.chunks.iter().find(|at| **at != update.root).unwrap();
+        let held = update.chunks.iter().copied().filter(|at| *at != lacked);
+        let held: Vec<Digest> = held.collect();
+        put(&mesh.store, &mesh.pool, &chunks, &held).await.unwrap();
+        let settled = mesh.settle_spec(
+            base(),
+            update.root,
+            other.iter().copied().collect(),
+            [key(1)].into(),
+            BTreeMap::new(),
+        );
+        let moved = settled.await.unwrap();
+        let missing = spec::region::Error::Tree(tree::Error::Missing(lacked));
+        let behind = Some(Behind {
+            pointer: moved,
+            cause: Cause::Read(missing),
+        });
+        assert_eq!(mesh.spec().await.unwrap().behind, behind);
+        let group = mesh.group.borrow();
+        let got = &group.used.newest.as_ref().unwrap().got;
+        for chunk in got {
+            let digest = Digest::of(chunk);
+            assert!(!other.contains(&digest), "{digest}");
         }
     });
 }
