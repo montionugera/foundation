@@ -41,7 +41,7 @@ pub(crate) struct Identity {
 /// [`Error::Key`] for a file that [`load`] did not write, and [`Error::Directory`]
 /// for a file call that fails.
 pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error> {
-    Ok(written(files).await?.map(|bytes| node_key(&bytes)))
+    Ok(read(files).await?.map(|bytes| node_key(&bytes)))
 }
 
 /// The identity in `node.key` of `files`. When the file is not there, makes a new one
@@ -58,7 +58,7 @@ pub(crate) async fn load(
     clock: &clock::Reader,
     entropy: &env::entropy::Entropy,
 ) -> Result<Identity, Error> {
-    match written(files).await? {
+    match read(files).await? {
         None => {
             clock.reach(Stamp::from_nanos(i64::MIN)).await;
             let now = match clock.status() {
@@ -82,7 +82,7 @@ pub(crate) async fn load(
 /// # Errors
 ///
 /// As [`load`].
-async fn written(files: &Files) -> Result<Option<[u8; LEN]>, Error> {
+async fn read(files: &Files) -> Result<Option<[u8; LEN]>, Error> {
     let held = sector::read(files, Path::new(FILE), TAG).await;
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
