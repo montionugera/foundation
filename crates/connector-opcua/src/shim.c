@@ -21,7 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The reason of `encryptUserIdentityTokenEcc` in `CLOCK_CALLS` of `cargo xtask
+/* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
  * open62541` needs encryption off. */
 #ifdef UA_ENABLE_ENCRYPTION
 #error "connector-opcua builds open62541 with encryption off"
