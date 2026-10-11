@@ -415,11 +415,9 @@ impl Shard {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
         for place in 0..self.indexes.len() {
-            let gate = &mut self.indexes[place].gate;
-            if gate.deadline().is_none_or(|due| monotonic < due) {
+            if !self.indexes[place].gate.advance(monotonic) {
                 continue;
             }
-            gate.advance(monotonic);
             // No writer opens before mesh time.
             let Some(mesh) = mesh else {
                 continue;

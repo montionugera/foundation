@@ -215,16 +215,19 @@ impl Gate {
     /// Applies what has come due by `now`: a holder whose control lease ran out loses
     /// control, and a recovered holder that did not reopen in time is dropped. Call it
     /// at [`Gate::deadline`]. After it, [`Gate::deadline`] is `None` or later than
-    /// `now`.
-    pub fn advance(&mut self, now: Monotonic) {
-        if self.deadline().is_none_or(|due| now < due) {
-            return;
+    /// `now`. Returns whether anything came due.
+    pub fn advance(&mut self, now: Monotonic) -> bool {
+        let mut due = false;
+        // A lease taken at the last monotonic reading ends at that reading.
+        while self.deadline().is_some_and(|at| at <= now) {
+            if let Seat::Held { key, .. } = self.seat {
+                let i = self.position(key);
+                self.claims[i].expired = true;
+            }
+            self.elect(now);
+            due = true;
         }
-        if let Seat::Held { key, .. } = self.seat {
-            let i = self.position(key);
-            self.claims[i].expired = true;
-        }
-        self.elect(now);
+        due
     }
 
     /// When the gate next changes on its own, or `None` when only an input can change
@@ -626,6 +629,16 @@ mod tests {
             assert_eq!(gate.deadline(), Some(at(u64::MAX)));
             assert_eq!(write(&mut gate, a, at(u64::MAX - 1)), Ok(()));
             assert_eq!(write(&mut gate, a, at(u64::MAX)), Err(Error::Expired));
+        }
+
+        #[test]
+        fn is_passed_by_each_waiter_whose_lease_ends_at_the_last_monotonic_reading() {
+            let mut gate = Gate::new();
+            gate.open(writer("a", 100), Some(lease(1)), at(u64::MAX - 1));
+            gate.open(writer("b", 100), Some(lease(1)), at(u64::MAX - 1));
+            assert!(gate.advance(at(u64::MAX)));
+            assert_eq!(gate.holder(), None);
+            assert_eq!(gate.deadline(), None);
         }
 
         #[test]
