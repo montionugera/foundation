@@ -149,7 +149,8 @@ impl<'a> History<'a> {
     /// the decision `<path>` in `<merge>`", and one that this tree has a conflict in
     /// gives "has a conflict in the decision `<path>` between its start and the base",
     /// each also when the conflict leaves no markers or the range ends with the text of
-    /// the base. `from` and
+    /// the base. A `.rs` file under `crates/<crate>/src/` gives the same two phrases
+    /// with "the source file `<path>`", whatever the conflict changes. `from` and
     /// `end` are as in `code_change`, with its two phrases: "has `<text>`, which names
     /// no commit", and "holds the base at more than one newest commit: `<commit>`,
     /// `<commit>`".
@@ -173,15 +174,23 @@ impl<'a> History<'a> {
                 ..
             } => (from, end, base, merged),
         };
-        let decision = |path: &str| path.starts_with(DECISIONS);
-        if let Some((path, merge)) = self.resolved(&from, &end, &base, decision)? {
-            return Ok(Some(format!(
-                "resolves a conflict in the decision `{path}` in `{merge}`"
-            )));
+        let surface = |path: &str| path.starts_with(DECISIONS) || crate_source(path);
+        let file = |path: &str| {
+            let kind = if path.starts_with(DECISIONS) {
+                "decision"
+            } else {
+                "source file"
+            };
+            format!("the {kind} `{path}`")
+        };
+        if let Some((path, merge)) = self.resolved(&from, &end, &base, surface)? {
+            let file = file(&path);
+            return Ok(Some(format!("resolves a conflict in {file} in `{merge}`")));
         }
-        if let Some(path) = merged.conflict(decision) {
+        if let Some(path) = merged.conflict(surface) {
+            let file = file(path);
             return Ok(Some(format!(
-                "has a conflict in the decision `{path}` between its start and the base"
+                "has a conflict in {file} between its start and the base"
             )));
         }
         for entry in self.diff(&merged.tree, &end)? {

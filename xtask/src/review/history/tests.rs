@@ -2619,7 +2619,79 @@ fn a_merge_that_resolves_a_conflict_in_a_source_file_changes_the_surface() {
         .unwrap();
     assert!(!merge.status.success(), "{merge:?}");
     let end = repo.commit(lib, "fn a() { base(); }\n");
-    assert_eq!(repo.surface_change(&start, &end), Ok(Some(item(lib))));
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!(
+            "resolves a conflict in the source file `{lib}` in `{end}`"
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_source_file_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
+    let repo = Repo::new("surface-item-moddel");
+    let lib = "crates/a/src/lib.rs";
+    let base = repo.commit(lib, "pub fn a() {}\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit(lib, "pub fn a() {}\npub fn b() {}\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    repo.git(&["rm", "--quiet", lib]);
+    repo.git(&["commit", "--quiet", "-m", "rm"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit(lib, "pub fn a() {}\npub fn b() {}\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!(
+            "resolves a conflict in the source file `{lib}` in `{end}`"
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_source_file_conflict_of_the_start_and_the_base_changes_the_surface() {
+    let (repo, _) = Repo::with_pr("surface-item-closed");
+    let lib = "crates/a/src/lib.rs";
+    repo.advance_main(lib, "fn a() {}\n// old\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let start = repo.commit(lib, "fn a() {}\n// pr\n");
+    repo.commit(lib, "fn a() {}\n// old\n");
+    repo.advance_main(lib, "fn a() {}\n// base\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    assert_eq!(
+        repo.surface_change(&start, &repo.head()),
+        Ok(Some(format!(
+            "has a conflict in the source file `{lib}` between its start and the base"
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_conflict_outside_each_surface_changes_no_surface() {
+    let repo = Repo::new("surface-conflict-other");
+    let base = repo.commit("docs/x.md", "a doc\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("docs/x.md", "the doc of the PR\n");
+    repo.advance_main("docs/x.md", "the doc of the base\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/x.md", "the doc of the base\n");
+    assert_eq!(repo.surface_change(&start, &end), Ok(None));
     repo.remove();
 }
 
