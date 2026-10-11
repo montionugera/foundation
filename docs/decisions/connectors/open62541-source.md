@@ -79,10 +79,15 @@
   symbol, access), read from `objdump -dr` as the clock check reads a call. The function
   is the whole label of the function symbol, such as `parse.0` for a nested function,
   and the access is a call or an address. So a listed symbol in a new function of a file
-  fails, and so does the address of a listed symbol that its function only calls.
-  `FUNCTION_SYMBOLS` lists these keys, the clock calls among them. A reference from
-  outside a function fails when `SYMBOLS` does not admit it. Decided by
-  `laptop.architect`
+  fails, and so does the address of a listed symbol that its function only calls. A
+  function that has the address of a listed name is that listed function: a weak alias
+  gives one function two names. An empty listed function before a new one gives the new
+  one its address only with no `-ffunction-sections`. That is an edit made to hide, and
+  review of each copy PR covers it. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC). `FUNCTION_SYMBOLS` lists these keys, the clock calls among
+  them. A reference from outside a function fails when `SYMBOLS` does not admit it.
+  Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094336509,
   2026-10-10 05:46 UTC). The whole label and the access: approved by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094746609,
