@@ -1169,8 +1169,11 @@ impl Sending {
         pushed
     }
 
-    /// Writes the rest of the message that `half` holds to `inner`. `Ready` once it
-    /// holds no message, and `Pending` while it holds one.
+    /// Writes the rest of the message that `half` holds to `inner`, before the next
+    /// `message` of a write. `Ready` once it holds no message, and `Pending` while it
+    /// holds one. A `Some` while the caller writes the rest shows that the write that
+    /// gave it never ended, as a leaked future: the stream then writes that rest by
+    /// itself, and a cancel leaves it.
     ///
     /// # Errors
     ///
@@ -1179,7 +1182,11 @@ impl Sending {
         &mut self,
         inner: &mut noq_proto::Connection,
         half: &mut Half,
+        message: Option<&Block>,
     ) -> Result<Poll<()>, Error> {
+        if message.is_some() && half.rest == Rest::Caller {
+            half.rest = Rest::Pump;
+        }
         half.notified = false;
         half.check()?;
         if half.holds() && self.write(inner, half, None).is_pending() {
@@ -1538,10 +1545,7 @@ impl Streams {
     /// after it, and takes the block. Leaves it while the stream holds part of an
     /// earlier message. `Ready` when the stream holds no message: it took all of
     /// `message`, or with `None`, all of the one before. `Pending` while it holds
-    /// one, and [`Event::Writable`] follows when a later write can take more. A write
-    /// with `Some` while the stream holds a message whose rest the caller writes
-    /// shows that the write that gave it never ended, as a leaked future. The stream
-    /// then writes that rest by itself, and a cancel leaves it.
+    /// one, and [`Event::Writable`] follows when a later write can take more.
     ///
     /// # Errors
     ///
@@ -1555,10 +1559,11 @@ impl Streams {
         bytes: usize,
     ) -> Result<Poll<()>, Error> {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        if message.is_some() && half.rest == Rest::Caller {
-            half.rest = Rest::Pump;
-        }
-        if self.sending.resume(inner, half)?.is_pending() {
+        if self
+            .sending
+            .resume(inner, half, message.as_ref())?
+            .is_pending()
+        {
             return Ok(Poll::Pending);
         }
         let Some(message) = message.take() else {
@@ -1588,7 +1593,11 @@ impl Streams {
         bytes: usize,
     ) -> Result<(), Error> {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        if self.sending.resume(inner, half)?.is_pending() {
+        if self
+            .sending
+            .resume(inner, half, message.as_ref())?
+            .is_pending()
+        {
             return Ok(());
         }
         let Sending {

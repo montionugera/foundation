@@ -1296,6 +1296,57 @@ mod tests {
     }
 
     #[test]
+    fn a_try_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
+        let bodies = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::clone(&bodies);
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            move |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let mut count = 0;
+                let cut = loop {
+                    count += 1;
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                sent.store(count, Ordering::SeqCst);
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                let tried = sender.try_send(side.block(b"b")).expect("open");
+                assert!(tried.is_some(), "it waits behind the cut message");
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+                drop(sender);
+            },
+            move |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let receiver = &mut incoming.receiver;
+                let mut got = 0;
+                loop {
+                    let message = receiver.recv().await.expect("read");
+                    let message = message.expect("a message");
+                    if message.len() == 60_000 {
+                        got += 1;
+                    }
+                    if got > 0 && got == bodies.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
     fn a_cut_send_dropped_after_the_close_does_nothing() {
         let (mut sim, ..) = testing::sessions(
             0,
