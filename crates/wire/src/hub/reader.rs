@@ -3,8 +3,10 @@ use types::frame::{Path, Range};
 use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends, rest_of_run};
 use crate::common::body;
 
-/// The decoder at the reader's node: it takes each message from the home, in order,
-/// and checks the order and the runs of the session.
+/// The decoder of the replies of a reader session, at the reader's node and at the
+/// program, which gets it from [`client::Reader`](crate::hub::client::Reader). It
+/// takes each message from the home, in order, and checks the order and the runs of
+/// the session.
 #[derive(Debug)]
 pub struct Reader {
     places: u32,

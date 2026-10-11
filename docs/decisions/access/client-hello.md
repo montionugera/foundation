@@ -92,6 +92,8 @@
   (https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106494175;
   `laptop.architect`, 2026-10-11T07:53:39Z,
   https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729).
+  Supersedes `FromNode::Home`, `body`, `end`, and item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921.
   `client::Reader` is the one public path that decodes `Places` and the run
   (`laptop.architect`, 2026-10-11T01:56:00Z,
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669). The

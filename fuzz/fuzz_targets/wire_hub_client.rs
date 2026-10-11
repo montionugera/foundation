@@ -168,6 +168,9 @@ fn drive(bytes: &[u8], mode: Mode) {
                         channels: reply.count,
                     })
                 });
+                // `hub::Reader` has no `PartialEq`. Its derived `Debug` shows each
+                // field, so an equal text is an equal state; `wire_hub_reader` checks
+                // its replies.
                 assert_eq!(
                     format!("{home:?}"),
                     format!("{session:?}"),

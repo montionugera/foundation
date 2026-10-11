@@ -1031,9 +1031,8 @@ proptest! {
     }
 
     /// A fault after any message of a cut run but the last gives its exact error: a
-    /// second
-    /// `Places` or a reply reads as run bytes too short for a place, and a message of
-    /// one more place than remain gives `Run`.
+    /// second `Places` or a reply reads as run bytes too short for a place, and a
+    /// message of one more place than remain gives `Run`.
     #[test]
     fn refuses_a_fault_after_any_message_of_a_run(
         mut places in places(),
