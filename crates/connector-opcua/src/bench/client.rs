@@ -152,6 +152,9 @@ mod tests {
 
     use super::Server;
 
+    /// The only peers of the server are the clients of `Server::connect`, which give no
+    /// nonce or session token, and `Sim::digest` hashes no bytes, so only the generator
+    /// of open62541 on this thread shows the rng of a scope and of its clients.
     #[test]
     fn each_scope_draws_from_its_rng() {
         let mut sim = Sim::new(sim::Config::default());

@@ -452,6 +452,9 @@ mod tests {
         .expect("the run ends");
     }
 
+    /// A `Manager` gives no nonce or session token of its clients, and `Sim::digest`
+    /// hashes no bytes, so only the generator of open62541 on this thread shows that a
+    /// scope takes its `rng`.
     #[test]
     fn each_scope_draws_from_its_rng() {
         let mut sim = Sim::new(sim::Config::default());
@@ -819,6 +822,8 @@ mod tests {
         });
     }
 
+    /// A `Client` never connects, and no call of it gives the values of its loop, so
+    /// only the generator of open62541 on this thread shows that `new` takes its `rng`.
     #[test]
     fn each_client_of_one_rng_draws_other_values() {
         let mut sim = sim::Sim::new(sim::Config::default());
