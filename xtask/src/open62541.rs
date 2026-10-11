@@ -3,6 +3,7 @@
 //! [`EXTRA`].
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -573,7 +574,7 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
         let disassembly = exec(&mut objdump).map_err(|e| vec![e])?;
         problems.extend(
             instructions(&disassembly)
-                .into_iter()
+                .iter()
                 .filter_map(|found| architecture.refuses(source, found)),
         );
         let relocations = exec(Command::new("objdump").arg("-r").arg(&object));
@@ -836,14 +837,38 @@ fn inlined(info: &str) -> Vec<String> {
 /// address.
 const CALLS: [&str; 3] = ["R_X86_64_PLT32", "R_AARCH64_CALL26", "R_AARCH64_JUMP26"];
 
-/// A relocation against a symbol outside the copy or a function of [`CLOCKS`].
+/// The section of a reference or an instruction, and the function symbol that labels
+/// it. It displays as the subject of an error.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Reference {
-    /// The section that holds it.
+struct Place {
     section: String,
     /// The function symbol that labels it in `objdump -d`, whole, such as `parse.0`
     /// for a nested function, or `None` when no function symbol labels it.
     function: Option<String>,
+}
+
+impl Place {
+    fn new(section: &str, function: Option<&str>) -> Self {
+        Self {
+            section: section.to_owned(),
+            function: function.map(str::to_owned),
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.function {
+            Some(function) => write!(f, "`{function}`"),
+            None => write!(f, "the section `{}`", self.section),
+        }
+    }
+}
+
+/// A relocation against a symbol outside the copy or a function of [`CLOCKS`].
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Reference {
+    place: Place,
     access: Access,
     symbol: String,
 }
@@ -883,8 +908,7 @@ fn references(
             && (outside.contains(symbol) || CLOCKS.contains(&symbol))
         {
             found.insert(Reference {
-                section: section.to_owned(),
-                function: function.map(str::to_owned),
+                place: Place::new(section, function),
                 access: if CALLS.contains(&kind) {
                     Access::Call
                 } else {
@@ -923,28 +947,27 @@ impl Uses {
     /// reference outside a function that [`SYMBOLS`] does not admit.
     fn add(&mut self, file: &str, found: Reference) -> Option<String> {
         let Reference {
-            section,
-            function,
+            place,
             access,
             symbol,
         } = found;
         if CLOCKS.contains(&symbol.as_str()) && access == Access::Address {
-            let site = function
-                .map_or(format!("the section `{section}`"), |function| {
-                    format!("`{function}`")
-                });
             return Some(format!(
-                "{file}: {site} takes the address of `{symbol}`, so a call through it \
-                 escapes FUNCTION_SYMBOLS"
+                "{file}: {place} takes the address of `{symbol}`, so a call through \
+                 it escapes FUNCTION_SYMBOLS"
             ));
         }
         if SYMBOLS.contains(&symbol.as_str()) {
             return None;
         }
-        let Some(function) = function else {
+        let Place {
+            function: Some(function),
+            ..
+        } = place
+        else {
             return Some(format!(
-                "{file}: the section `{section}` references `{symbol}` outside a \
-                 function, so a use through it escapes FUNCTION_SYMBOLS"
+                "{file}: {place} references `{symbol}` outside a function, so a use \
+                 through it escapes FUNCTION_SYMBOLS"
             ));
         };
         self.keys
@@ -1012,7 +1035,8 @@ struct Architecture {
     list: &'static str,
     /// The options of `objdump -d` for it.
     options: &'static [&'static str],
-    /// Each key of [`instructions`] that the copy may run.
+    /// Each key of [`instructions`] that the copy may run. Each reads no clock, file,
+    /// network, randomness, or process state: only registers, flags, and memory.
     instructions: &'static [&'static str],
 }
 
@@ -1033,8 +1057,7 @@ const ARCHITECTURES: [Architecture; 2] = [
     },
 ];
 
-/// The keys of [`instructions`] that the copy may run on x86-64. Each reads no clock,
-/// file, network, randomness, or process state: only registers, flags, and memory.
+/// [`Architecture::instructions`] of x86-64.
 #[rustfmt::skip]
 const X86_64: [&str; 109] = [
     "adc", "add", "addsd", "addss", "and", "call", "cdq", "cdqe", "cmp", "comisd",
@@ -1055,8 +1078,7 @@ const X86_64: [&str; 109] = [
     "cmovne", "cmovno", "cmovnp", "cmovns", "cmovo", "cmovp", "cmovs",
 ];
 
-/// The keys of [`instructions`] that the copy may run on aarch64. Each reads no clock,
-/// file, network, randomness, or process state: only registers, flags, and memory.
+/// [`Architecture::instructions`] of aarch64.
 #[rustfmt::skip]
 const AARCH64: [&str; 85] = [
     "adc", "add", "adds", "adr", "adrp", "and", "asr", "b", "bfi", "bfxil", "bl", "blr",
@@ -1095,19 +1117,14 @@ impl Architecture {
 
     /// The error of `found`, an instruction of `file`, when this architecture does not
     /// admit its key.
-    fn refuses(&self, file: &str, found: Instruction) -> Option<String> {
+    fn refuses(&self, file: &str, found: &Instruction) -> Option<String> {
         if self.instructions.contains(&found.key.as_str()) {
             return None;
         }
-        let site = found
-            .function
-            .map_or(format!("the section `{}`", found.section), |function| {
-                format!("`{function}`")
-            });
         Some(format!(
-            "{file}: {site} runs `{}`, which {} does not admit. Add it only when it \
-             reads no clock, file, network, randomness, or process state",
-            found.key, self.list
+            "{file}: {} runs `{}`, which {} does not admit. Add it only when it reads \
+             no clock, file, network, randomness, or process state",
+            found.place, found.key, self.list
         ))
     }
 }
@@ -1115,10 +1132,7 @@ impl Architecture {
 /// An instruction of a function or a section, as [`instructions`] keys it.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Instruction {
-    /// The section that holds it.
-    section: String,
-    /// The function symbol that labels it, as in [`Reference`].
-    function: Option<String>,
+    place: Place,
     /// Its mnemonic in lowercase, after each prefix of [`PREFIXES`] before it, and
     /// with the system register of `mrs` and `msr`, which reads a counter or the
     /// thread pointer.
@@ -1139,8 +1153,7 @@ fn instructions(disassembly: &str) -> BTreeSet<Instruction> {
                 return None;
             }
             Some(Instruction {
-                section: section.to_owned(),
-                function: function.map(str::to_owned),
+                place: Place::new(section, function),
                 key: key(&fields.collect::<Vec<_>>().join(" "))?,
             })
         })
@@ -1167,11 +1180,12 @@ fn key(instruction: &str) -> Option<String> {
     Some(key.join(" "))
 }
 
-/// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
-/// it and the function symbol that labels it, or `None` when no function symbol does.
+/// Each line of `disassembly`, the output of `objdump -d`, that is not the header of a
+/// section or a function, with the section that holds it and the function symbol that
+/// labels it, or `None` when no function symbol does.
 fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
     let (mut section, mut function) = ("", None);
-    disassembly.lines().map(move |line| {
+    disassembly.lines().filter_map(move |line| {
         if let Some(name) = line.strip_prefix("Disassembly of section ") {
             section = name.trim_end_matches(':');
             function = None;
@@ -1180,8 +1194,10 @@ fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)>
         {
             // A section with no symbol at its start shows as `<.text>`.
             function = Some(name.1).filter(|name| !name.starts_with('.'));
+        } else {
+            return Some((section, function, line));
         }
-        (section, function, line)
+        None
     })
 }
 
@@ -1298,7 +1314,7 @@ mod tests {
         symbol: &str,
     ) -> Reference {
         Reference {
-            function: Some(function.to_owned()),
+            place: Place::new(section, Some(function)),
             ..unlabeled(section, access, symbol)
         }
     }
@@ -1306,8 +1322,7 @@ mod tests {
     /// A reference from `section` that no function labels.
     fn unlabeled(section: &str, access: Access, symbol: &str) -> Reference {
         Reference {
-            section: section.to_owned(),
-            function: None,
+            place: Place::new(section, None),
             access,
             symbol: symbol.to_owned(),
         }
@@ -1427,8 +1442,7 @@ Disassembly of section .text.stamp:
   48:\t54000040 \tb.eq\t50 <count+0x10>  // b.none
 ";
         let found = |section: &str, function: Option<&str>, key: &str| Instruction {
-            section: section.to_owned(),
-            function: function.map(str::to_owned),
+            place: Place::new(section, function),
             key: key.to_owned(),
         };
         let stamp = |key| found(".text.stamp", Some("stamp"), key);
@@ -1456,17 +1470,16 @@ Disassembly of section .text.stamp:
     fn an_architecture_refuses_each_key_outside_its_list() {
         let [x86, arm] = &ARCHITECTURES;
         let found = |function: Option<&str>, key: &str| Instruction {
-            section: ".text.stamp".to_owned(),
-            function: function.map(str::to_owned),
+            place: Place::new(".text.stamp", function),
             key: key.to_owned(),
         };
-        assert_eq!(x86.refuses("a.c", found(Some("stamp"), "rep stos")), None);
+        assert_eq!(x86.refuses("a.c", &found(Some("stamp"), "rep stos")), None);
         assert_eq!(
-            arm.refuses("a.c", found(Some("stamp"), "mrs tpidr_el0")),
+            arm.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
             None
         );
         assert_eq!(
-            x86.refuses("a.c", found(Some("stamp"), "rdtsc")),
+            x86.refuses("a.c", &found(Some("stamp"), "rdtsc")),
             Some(
                 "a.c: `stamp` runs `rdtsc`, which X86_64 does not admit. Add it only \
                  when it reads no clock, file, network, randomness, or process state"
@@ -1474,7 +1487,7 @@ Disassembly of section .text.stamp:
             )
         );
         assert_eq!(
-            arm.refuses("a.c", found(None, "mrs cntvct_el0")),
+            arm.refuses("a.c", &found(None, "mrs cntvct_el0")),
             Some(
                 "a.c: the section `.text.stamp` runs `mrs cntvct_el0`, which AARCH64 \
                  does not admit. Add it only when it reads no clock, file, network, \
@@ -1483,7 +1496,7 @@ Disassembly of section .text.stamp:
             )
         );
         assert_eq!(
-            x86.refuses("a.c", found(Some("stamp"), "mrs tpidr_el0")),
+            x86.refuses("a.c", &found(Some("stamp"), "mrs tpidr_el0")),
             Some(
                 "a.c: `stamp` runs `mrs tpidr_el0`, which X86_64 does not admit. Add \
                  it only when it reads no clock, file, network, randomness, or process \
@@ -1492,7 +1505,7 @@ Disassembly of section .text.stamp:
             )
         );
         assert_eq!(
-            arm.refuses("a.c", found(Some("stamp"), "rep stos")),
+            arm.refuses("a.c", &found(Some("stamp"), "rep stos")),
             Some(
                 "a.c: `stamp` runs `rep stos`, which AARCH64 does not admit. Add it \
                  only when it reads no clock, file, network, randomness, or process \
@@ -2645,10 +2658,17 @@ End of search list.
              return low ^ high;\n\
          }\n",
         &[
-            "`draw` runs `rdrand`, which X86_64",
-            "`stamp` runs `rdtsc`, which X86_64",
-            "`stamped` runs `rdtsc`, which X86_64",
-            "inlines `__rdtsc`",
+            "src/util/ua_util.c: `draw` runs `rdrand`, which X86_64 does not admit. \
+             Add it only when it reads no clock, file, network, randomness, or \
+             process state",
+            "src/util/ua_util.c: `stamp` runs `rdtsc`, which X86_64 does not admit. \
+             Add it only when it reads no clock, file, network, randomness, or \
+             process state",
+            "src/util/ua_util.c: `stamped` runs `rdtsc`, which X86_64 does not admit. \
+             Add it only when it reads no clock, file, network, randomness, or \
+             process state",
+            "src/util/ua_util.c: inlines `__rdtsc`, so a clock call in it hides in its \
+             caller",
         ],
     );
 
@@ -2666,9 +2686,14 @@ End of search list.
              return n;\n\
          }\n",
         &[
-            "`draw` runs `mrs rndr`, which AARCH64",
-            "`stamped` runs `mrs cntvct_el0`, which AARCH64",
-            "inlines `__rndr`",
+            "src/util/ua_util.c: `draw` runs `mrs rndr`, which AARCH64 does not admit. \
+             Add it only when it reads no clock, file, network, randomness, or \
+             process state",
+            "src/util/ua_util.c: `stamped` runs `mrs cntvct_el0`, which AARCH64 does not admit. \
+             Add it only when it reads no clock, file, network, randomness, or \
+             process state",
+            "src/util/ua_util.c: inlines `__rndr`, so a clock call in it hides in its \
+             caller",
         ],
     );
 
@@ -2684,24 +2709,10 @@ End of search list.
         let path = root.join("patches/open62541/src/util/ua_util.c");
         let old = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, old + READS.0).unwrap();
-        let file = "src/util/ua_util.c";
-        let errors = READS
-            .1
-            .iter()
-            .filter(|error| !error.is_empty())
-            .map(|error| {
-                if error.starts_with("inlines") {
-                    format!(
-                        "{file}: {error}, so a clock call in it hides in its caller"
-                    )
-                } else {
-                    format!(
-                        "{file}: {error} does not admit. Add it only when it reads no \
-                     clock, file, network, randomness, or process state"
-                    )
-                }
-            });
-        assert_eq!(check(&root), Err(errors.collect()));
+        assert_eq!(
+            check(&root),
+            Err(READS.1.iter().map(|&error| error.to_owned()).collect())
+        );
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
