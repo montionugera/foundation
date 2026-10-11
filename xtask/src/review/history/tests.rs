@@ -2308,6 +2308,24 @@ fn a_range_that_adds_changes_or_removes_a_decision_is_a_decision_change() {
 }
 
 #[test]
+fn a_decision_path_in_another_case_is_a_decision_change() {
+    let paths = [
+        "docs/Decisions/x.md",
+        "Docs/decisions/x.md",
+        "DOCS/DECISIONS/x.md",
+    ];
+    for (n, path) in paths.into_iter().enumerate() {
+        let (repo, start) = Repo::with_pr(&format!("decision-case-{n}"));
+        let end = repo.commit(path, "a rule\n");
+        assert_eq!(
+            repo.decision_change(&start, &end),
+            Ok(Some(DECISION.replace("docs/decisions/x.md", path)))
+        );
+        repo.remove();
+    }
+}
+
+#[test]
 fn a_range_that_changes_no_decision_is_no_decision_change() {
     let (repo, start) = Repo::with_pr("decision-none");
     repo.commit("docs/decisions.md", "a list\n");

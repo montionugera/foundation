@@ -788,9 +788,14 @@ const CODE: Kind = Kind {
     noun: "the code file ",
 };
 
-/// The files under `docs/decisions/`.
+/// The files under `docs/decisions/`, in any ASCII case of those letters: a file
+/// system that folds case shows such a path as a decision.
 const DECISION: Kind = Kind {
-    counts: |path| path.starts_with("docs/decisions/"),
+    counts: |path| {
+        let decisions = "docs/decisions/";
+        let start = path.get(..decisions.len());
+        start.is_some_and(|start| start.eq_ignore_ascii_case(decisions))
+    },
     noun: "the decision ",
 };
 

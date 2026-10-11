@@ -2464,6 +2464,22 @@ fn a_later_round_whose_range_changes_a_decision_requires_architecture() {
 }
 
 #[test]
+fn a_later_round_that_adds_a_decision_in_another_case_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision-case");
+    let end = repo.commit("docs/Decisions/x.md", "a rule\n");
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &end]),
+        "a.txt\nb.txt\ndocs/Decisions/x.md"
+    );
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace("docs/decisions/x.md", "docs/Decisions/x.md")]
+    );
+    repo.remove();
+}
+
+#[test]
 fn a_later_round_of_a_text_pr_whose_range_changes_a_decision_requires_architecture() {
     let (repo, start) = Repo::with_pr("review-decision-text");
     let end = repo.commit("docs/decisions/x.md", "a rule\n");
