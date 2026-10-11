@@ -703,13 +703,13 @@ fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
 /// no OK: no comment link ([`links`]) is after it in the value, and the words
 /// [`UNRISKY`] are not between it and the next issue.
 fn unokayed(deferred: &str) -> Option<String> {
-    let lower = deferred.to_ascii_lowercase();
-    let mut issues = issues(deferred).peekable();
+    let tail = &deferred[links(deferred).last().unwrap_or(0)..];
+    let lower = tail.to_ascii_lowercase();
+    let mut issues = issues(tail).peekable();
     while let Some(issue) = issues.next() {
-        let next = issues.peek().map_or(deferred.len(), |next| next.start);
-        let marked = lower[issue.end..next].contains(UNRISKY);
-        if !marked && links(deferred).all(|at| (..issue.end).contains(&at)) {
-            return Some(deferred[issue].to_string());
+        let next = issues.peek().map_or(tail.len(), |next| next.start);
+        if !lower[issue.end..next].contains(UNRISKY) {
+            return Some(tail[issue].to_string());
         }
     }
     None
