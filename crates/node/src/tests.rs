@@ -6478,39 +6478,47 @@ mod port {
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
         /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader and the run of the start race, and with the
-        /// seed 1 the reader opens first, so it sees that run.
+        /// one that keeps it. The reader and the run of the start race, so a seed can
+        /// hide a part of that run, and the test asserts that one seed sees it whole.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
-            let mut sim = sim::Sim::new(sim::Config {
-                seed: 1,
-                ..sim::Config::default()
-            });
-            let host = keyed(&mut sim, 2);
-            let founding = region(&[member(OWN, &KEY, &host)]);
-            let placed = connector("influx");
-            let (node, definitions) =
-                applied(&mut sim, &host, founding.clone(), placed.clone());
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let node = start(&host, founding);
-            let read = read_status(&node, &definitions);
-            assert_eq!(sim.run_for(TEN), Ok(()));
-            let other = text("other", &[]);
-            let kept = format!("{placed}{other}");
-            let changed = kept.replace("influx:8086", "influx:8087");
-            for text in [kept, changed] {
-                node.operate(|ops| async move {
-                    apply(&ops, text).await;
-                });
-                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
-            }
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
             let run = [(0, 0), (3, 1), (2, 1)];
-            assert_eq!(*read.lock().unwrap(), [run, run, run].concat());
+            let all = [run, run, run].concat();
+            let mut whole = false;
+            for seed in 0..16 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let founding = region(&[member(OWN, &KEY, &host)]);
+                let placed = connector("influx");
+                let (node, definitions) =
+                    applied(&mut sim, &host, founding.clone(), placed.clone());
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let node = start(&host, founding);
+                let read = read_status(&node, &definitions);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let other = text("other", &[]);
+                let kept = format!("{placed}{other}");
+                let changed = kept.replace("influx:8086", "influx:8087");
+                for text in [kept, changed] {
+                    node.operate(|ops| async move {
+                        apply(&ops, text).await;
+                    });
+                    assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                }
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let read = read.lock().unwrap();
+                let hidden = all.len().saturating_sub(read.len()).min(run.len());
+                assert_eq!(*read, all[hidden..], "seed {seed}");
+                whole |= hidden == 0;
+            }
+            assert!(whole, "no seed sees the run of the start");
         }
 
         /// A connector that an apply moves from another member to this node keeps its
