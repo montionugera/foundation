@@ -487,14 +487,16 @@ impl Disk {
         self.log.push(change);
     }
 
-    /// Whether a [`Mode::Create`] open of `path` makes its file when the disk has
-    /// room: the open succeeds, and finds no entry or a file with no bytes.
-    pub(crate) fn makes(&self, path: &Path) -> bool {
-        match self.target(path, Mode::Create { len: 0 }) {
+    /// Whether a [`Mode::Create`] open of `path` with `len` bytes makes its file when
+    /// the disk has room: the open succeeds, and finds no entry, or a file with no
+    /// bytes that it gives bytes.
+    pub(crate) fn makes(&self, path: &Path, len: u64) -> bool {
+        match self.target(path, Mode::Create { len }) {
             Ok(Target::New { .. }) => true,
-            Ok(Target::File(inode)) => {
-                matches!(&self.inodes[&inode], Inode::File(file) if file.len == 0)
-            }
+            Ok(Target::File(inode)) => match &self.inodes[&inode] {
+                Inode::File(file) => len != 0 && file.len == 0,
+                Inode::Dir(_) => false,
+            },
             Err(_) => false,
         }
     }

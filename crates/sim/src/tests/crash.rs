@@ -796,10 +796,10 @@ fn digest_after_a_call(sim: &mut Sim, node: &node::Node) -> u64 {
     sim.digest()
 }
 
-/// Whether a crash by `crash` in a create open of `path`, after `before`, draws a
-/// state: the digest after a later call differs from that after a crash in a write
-/// open of `path`.
-fn draws<F, B>(seed: u64, crash: Crash, path: &'static str, before: B) -> bool
+/// Whether a crash by `crash` in a create open of `len` bytes of `path`, after
+/// `before`, draws a state: the digest after a later call differs from that after a
+/// crash in a write open of `path`.
+fn draws<F, B>(seed: u64, crash: Crash, path: &'static str, len: u64, before: B) -> bool
 where
     B: FnOnce(node::Node) -> F + Copy + Send + 'static,
     F: Future<Output = ()> + 'static,
@@ -813,7 +813,7 @@ where
         });
         digest_after_a_call(&mut sim, &node)
     };
-    digest(Mode::Create { len: 1_024 }) != digest(Mode::Write)
+    digest(Mode::Create { len }) != digest(Mode::Write)
 }
 
 #[test]
@@ -829,15 +829,18 @@ fn a_crash_in_a_create_that_makes_no_file_draws_no_state() {
     let failed = |node: node::Node| async move {
         node.fail_file(Path::new("a"), Operation::Open);
     };
+    let empty = |node: node::Node| async move { drop(create(&node, "a", 0).await) };
     for crash in [Crash::Process, Crash::Power] {
         for seed in 0..8 {
             let at = format!("{crash:?} {seed}");
-            assert!(draws(seed, crash, "a", nothing), "a: {at}");
-            assert!(!draws(seed, crash, "d", dir), "d: {at}");
-            assert!(!draws(seed, crash, "x/a", nothing), "x/a: {at}");
-            assert!(!draws(seed, crash, "a/", nothing), "a/: {at}");
-            assert!(!draws(seed, crash, "a", held), "held a: {at}");
-            assert!(!draws(seed, crash, "a", failed), "failed a: {at}");
+            assert!(draws(seed, crash, "a", 1_024, nothing), "a: {at}");
+            assert!(!draws(seed, crash, "d", 1_024, dir), "d: {at}");
+            assert!(!draws(seed, crash, "x/a", 1_024, nothing), "x/a: {at}");
+            assert!(!draws(seed, crash, "a/", 1_024, nothing), "a/: {at}");
+            assert!(!draws(seed, crash, "a", 1_024, held), "held a: {at}");
+            assert!(!draws(seed, crash, "a", 1_024, failed), "failed a: {at}");
+            assert!(draws(seed, crash, "a", 1_024, empty), "empty a: {at}");
+            assert!(!draws(seed, crash, "a", 0, empty), "empty a, 0: {at}");
         }
     }
 }

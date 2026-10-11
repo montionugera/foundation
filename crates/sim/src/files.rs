@@ -454,10 +454,13 @@ impl Files {
             let close = flight.call.handle().map(|handle| handle.key);
             closes.extend(close.and_then(|key| self.closing.remove(&key)));
             let kind = mem::discriminant(&flight.call);
-            let drawn = (matches!(flight.call, Call::Open(Mode::Create { .. }))
-                && !flight.failed
-                && self.disks[node].makes(&flight.path))
-            .then(|| match self.rng.below(2) {
+            let makes = match flight.call {
+                Call::Open(Mode::Create { len }) => {
+                    self.disks[node].makes(&flight.path, len)
+                }
+                _ => false,
+            };
+            let drawn = (makes && !flight.failed).then(|| match self.rng.below(2) {
                 0 => Cut::Whole,
                 _ => Cut::Empty,
             });
