@@ -401,16 +401,73 @@ fn panics_on_the_body_of_a_read_over_the_cap() {
     let _body = read(OPEN_BYTES_MAX + 1).body();
 }
 
+/// Each sample type at its largest counts. The matches fail to compile when a scalar
+/// or a shape is added, so that a new one cannot pass the 300-byte bound unchecked.
+fn largest_types() -> Vec<Type> {
+    use Scalar::{
+        Bool, F32, F64, I8, I16, I32, I64, Span, Stamp, U8, U16, U32, U64, Uuid,
+    };
+    let scalars = [
+        Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Stamp, Span, Uuid,
+    ];
+    for scalar in scalars {
+        match scalar {
+            Bool | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | F32 | F64 | Stamp
+            | Span | Uuid => {}
+        }
+    }
+    let sides = Sides {
+        rows: u16::MAX,
+        columns: u16::MAX,
+    };
+    let mut types = vec![Type::String, Type::Bytes];
+    for element in scalars {
+        types.extend([
+            Type::Scalar(element),
+            Type::Array {
+                element,
+                len: u32::MAX,
+            },
+            Type::List {
+                element,
+                max: u32::MAX,
+            },
+            Type::Matrix { element, sides },
+        ]);
+    }
+    for sample in &types {
+        match sample {
+            Type::Scalar(_)
+            | Type::Array { .. }
+            | Type::List { .. }
+            | Type::String
+            | Type::Bytes
+            | Type::Matrix { .. } => {}
+        }
+    }
+    types
+}
+
 #[test]
 fn fits_the_largest_place_in_300_bytes() {
-    let largest = pt(
-        1,
-        "list<timestamp, 4294967295>",
-        &"a".repeat(Name::MAX_BYTES),
-    );
-    let runs: Vec<_> = place::messages(std::slice::from_ref(&largest), 300).collect();
-    assert_eq!(runs, [std::slice::from_ref(&largest)]);
-    assert_eq!(place::encoded_len(&[largest]), 300);
+    let name: Name = "a".repeat(Name::MAX_BYTES).parse().unwrap();
+    let places: Vec<_> = largest_types()
+        .into_iter()
+        .map(|sample| Place {
+            key: channel::Key::from_u128(1),
+            sample,
+            name: name.clone(),
+        })
+        .collect();
+    for place in &places {
+        let one = std::slice::from_ref(place);
+        let runs: Vec<_> = place::messages(one, 300).collect();
+        assert_eq!(runs, [one], "{}", place.sample);
+    }
+    let largest = places
+        .iter()
+        .map(|place| place::encoded_len(std::slice::from_ref(place)));
+    assert_eq!(largest.max(), Some(300));
 }
 
 #[test]
