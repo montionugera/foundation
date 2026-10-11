@@ -549,14 +549,21 @@
   the server. That exception: approved by `laptop.architect-2` at `c9a61bcaf`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
   2026-10-11 10:14 UTC).
-  A `client::Client` owns its connection manager, and so its loop, and its
-  `UA_Client`. Its `close` sends a CloseSession with `UA_Client_disconnectAsync` and
-  drives its manager until the channel is closed. Its drop calls `shim_client_free`,
-  which stops the loop, then deletes the client. On a stopped loop the delete makes no
-  synchronous call, so it sends no CloseSession, and the session stays on the server
-  until it times out. Since the drop stops the whole loop, the loop of a client holds
-  no other client or server. A read keeps its answer in the client, which outlives the
-  delete that calls the callback of each read in flight, and the callback drops the
-  answer of a request that is not the read in flight. Proposed in
-  https://github.com/synnaxlabs/foundation/pull/2397, for `laptop.architect-2` to
-  approve.
+  A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
+  Its `close` sends a CloseSession with `UA_Client_disconnectAsync` and drives its
+  manager until the channel is closed. Its drop calls `shim_client_free`, which stops
+  the loop, then deletes the client. On a stopped loop, open62541 refuses the
+  synchronous CloseSession of the delete and does not wait for the channel to close, so
+  the delete sends no CloseSession, and the session stays on the server until it times
+  out. Since the drop stops the whole loop, the loop of a client holds no other client
+  or server. Before a run returns, the kind closes its client with `close`. A drop is
+  only for a run whose future drops or that panics, because each session that a drop
+  leaves holds one of the sessions of its server until then. A read keeps its answer in
+  the client, which outlives the delete that calls the callback of each read in flight,
+  and the callback drops the answer of a request that is not the read in flight. Lost: a
+  drop that sends the CloseSession. A delete on a started loop sends it in a synchronous
+  call, and that call waits for an answer that only a drive of the manager reads.
+  Proposed in https://github.com/synnaxlabs/foundation/pull/2397. Approved by
+  `laptop.architect-2`, with the rule for the kind and the lost design as its texts
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
+  2026-10-11 12:52 UTC).
