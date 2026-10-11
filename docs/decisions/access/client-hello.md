@@ -64,10 +64,11 @@
   name) (`laptop.architect`, 2026-10-10T23:52:16Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103487682), then
   the replies of HUB WIRE from `Opened`. As in HUB WIRE, a message of the run holds
-  whole places, and no more than remain; and a latest read needs a stream of class
-  `Latest`, and a complete read one of class `Complete`, else `MALFORMED` (the plan
-  that the ruling below approves,
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402). The
+  whole places; and a latest read needs a stream of class `Latest`, and a complete
+  read one of class `Complete`, else `MALFORMED` (box1.builder-2,
+  2026-10-10T23:26:58Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402,
+  approved by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
