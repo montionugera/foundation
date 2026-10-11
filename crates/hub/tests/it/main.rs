@@ -1115,7 +1115,7 @@ fn ends_the_commit_task_in_its_commit_wait_once_the_hub_drops() {
 
 /// Once the hub and each session drop at a commit, before or after the commit task
 /// polls it, the hub holds no commit: a commit of the home that resolves holds the
-/// ring open until it drops. The commit task ends.
+/// ring open until it drops. The commit and gate tasks end.
 #[test]
 fn drops_the_commit_it_waits_for_with_the_hub() {
     races(64, (AREA, BODY_MAX), |seed, test| async move {
@@ -1150,7 +1150,7 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         drop(commit);
         assert_eq!(open().await, Ok(()), "seed {seed}");
         clock.sleep(Span::from_nanos(1)).await;
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         first
     });
 }
