@@ -134,8 +134,8 @@
   key is a new node to its region. Amended (2026-10-11, #2305, by
   `laptop.architect-2`, 2026-10-10 22:20 UTC):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. This
-  supersedes `Mode::Create` and the file with no bytes or with 100 zero bytes as a key
-  not yet written, of
+  supersedes `Mode::Create` and the file with no bytes or with 68 zero bytes (100 since
+  `foundation/key/2`) as a key not yet written, of
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320, and the
   write back at each start, of
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. Each other
