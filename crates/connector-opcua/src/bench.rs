@@ -829,6 +829,24 @@ mod tests {
         assert_eq!(rng.next_u64(), fresh.next_u64(), "a client drew no value");
     }
 
+    /// A `Client` has no peer, and the count on the rng of the caller passes when a
+    /// loop seeds from a constant, so only the generator of open62541 on this thread
+    /// shows that each loop takes the value it draws.
+    #[test]
+    fn each_client_of_one_rng_draws_other_values() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let mut rng = node.entropy().rng();
+        let first = Client::new(node.clock(), &mut rng, 0);
+        // SAFETY: it draws from the generator of this thread.
+        let a = unsafe { ffi::test::UA_UInt32_random() };
+        let second = Client::new(node.clock(), &mut rng, 0);
+        // SAFETY: as above.
+        let b = unsafe { ffi::test::UA_UInt32_random() };
+        drop((first, second));
+        assert_ne!(a, b, "two clients drew the same value");
+    }
+
     #[test]
     fn a_run_runs_the_due_timers() {
         let mut sim = sim::Sim::new(sim::Config::default());

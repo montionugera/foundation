@@ -26,7 +26,7 @@ fn main() {
 /// The ns of the polls and of the whole of each timed read.
 async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> [Vec<u64>; 2] {
     let address = node.addresses()[0];
-    let body = async |server: &Server<'_>| {
+    let body = async |server: &Server| {
         let mut client = server.connect().await;
         let (mut polls, mut rounds) = (Vec::new(), Vec::new());
         for read in 0..WARMUP + ROUNDS {
@@ -49,7 +49,7 @@ async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> [Vec<u64>; 2] {
         client.close().await;
         [polls, rounds]
     };
-    let rng = &mut node.entropy().rng();
+    let rng = node.entropy().rng();
     Server::scope(node.clock(), node.net(), address, rng, body).await
 }
 
