@@ -8,10 +8,8 @@ use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
 
 use super::apply::Counted;
-use super::send::{self, LIMIT, Peer, at, create_config, stop};
+use super::send::{self, LIMIT, Peer, create_config, stop};
 use super::*;
-use crate::applied::Outcome;
-use crate::change::Undecoded;
 
 impl Cluster {
     /// Node `node` sets `home` as the home at its next tick.
@@ -1324,32 +1322,21 @@ fn a_call_that_is_cut_off_while_it_waits_for_the_answer_returns_after_the_heal()
     }
 }
 
-// It reads `applied`: a call shows this refusal only when a leader writes other bytes
-// at the position that it answered, and `set_home` then panics.
+// It pins the panic of today. #1273 decides what `set_home` gives for this refusal.
 #[test]
-fn a_committed_body_that_does_not_decode_is_refused_with_its_kind_and_length() {
-    solo(|node, tasks| async move {
-        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-        let floor = mesh.group.borrow_mut().applied.open();
-        let mut cut = encoded(&home_to(2));
+#[should_panic(
+    expected = "invariant: a home change is never refused: a change of kind \
+                           1 and 32 bytes is not in the byte form of its kind"
+)]
+fn set_home_shows_the_refusal_of_a_body_that_does_not_decode() {
+    let call = |_, mesh: Mesh| async move { mesh.set_home(INDEX, key(1)).await };
+    let (set, ()) = run(call, |mut leader| async move {
+        let (_, mut asked) = leader.proposal().await;
+        leader.answer(&mut asked, at(1)).await.unwrap();
+        let mut cut = encoded(&home_to(1));
         cut.pop();
-        let undecoded = Undecoded {
-            kind: 1,
-            length: 32,
-        };
-        let append = Body::Append {
-            prev: Position::default(),
-            entries: vec![Entry {
-                at: at(1),
-                data: Data::Bytes(cut),
-            }],
-            commit: 1,
-        };
-        assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
-        let reply = mesh.outgoing(key(2)).await.unwrap();
-        assert_eq!(reply, message(1, 2, Body::AppendReply { last: 1 }));
-        let outcome = mesh.group.borrow().applied.outcome(&floor, at(1));
-        assert_eq!(outcome, Outcome::Applied(Err(Refused::Body(undecoded))));
-        mesh.group.borrow_mut().applied.close(&floor);
+        leader.append_data(cut, at(1)).await;
+        leader.rest(seconds(2)).await;
     });
+    panic!("set_home returned {set:?}");
 }
