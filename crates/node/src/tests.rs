@@ -4994,7 +4994,7 @@ mod port {
             let kept = (vec![(0, refused())], vec![]);
             let fresh = (vec![], vec![(0, refused())]);
             let mut outcomes = Vec::new();
-            for seed in 0..8 {
+            for seed in 0..32 {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()

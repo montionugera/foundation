@@ -4,9 +4,11 @@
 mod channel;
 pub mod client;
 mod commit;
+mod gate;
 mod link;
 pub mod reader;
 pub mod serve;
+mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
 pub mod writer;
@@ -108,6 +110,8 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
+    /// The gate task, woken at each writer open and close.
+    gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
     node: types::node::Key,
@@ -122,8 +126,9 @@ struct State {
 }
 
 impl Hub {
-    /// A hub over `config.home` that knows no channel yet. Spawns a task on
-    /// `config.tasks` that ends when the home's buffer fails. The hub holds the home
+    /// A hub over `config.home` that knows no channel yet. Spawns two tasks on
+    /// `config.tasks`: one that ends when the home's buffer fails, and one that applies
+    /// the end of each control lease and grace at the home. The hub holds the home
     /// and `config.region` until the hub and each value and future that it gave,
     /// directly or through another such value, drop. Each task of the hub ends at its
     /// next poll after that, and then holds neither. So a `::home::Commit` taken before
@@ -155,9 +160,10 @@ impl Hub {
             opened: 0,
             woken: Vec::new(),
             commit: commit::Task::new(next),
+            gate: task::Waiter::default(),
             failed: None,
             node,
-            time,
+            time: time.clone(),
             entropy,
             rules: access::Rules::default(),
             region,
@@ -165,6 +171,7 @@ impl Hub {
             bodies: serve::client::Bodies::default(),
         }));
         tasks.spawn(commit::run(Rc::downgrade(&state)));
+        tasks.spawn(gate::run(Rc::downgrade(&state), time));
         Self(state)
     }
 
@@ -444,6 +451,7 @@ impl State {
     fn close_writer(&mut self, key: ::home::writer::Key) {
         if self.writers.remove(key) {
             self.home.close_writer(key);
+            self.gate.wake();
         }
     }
 
