@@ -22,8 +22,8 @@ const SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 pub(crate) struct Builds {
     /// The open62541 copy, with its warnings off.
     pub(crate) library: Build,
-    /// `src/shim.c`, and with the feature `sim` the test server `src/server.c`: our
-    /// code, so its warnings are errors.
+    /// `src/shim.c`, and, from [`configure`] with `CARGO_FEATURE_SIM`, the test server
+    /// `src/server.c`: our code, so its warnings are errors.
     pub(crate) shim: Build,
     /// Whether the C builds with the address sanitizer.
     pub(crate) address_sanitized: bool,
@@ -52,10 +52,10 @@ pub(crate) fn configure(
     Ok(builds)
 }
 
-/// Gives the builds of the open62541 copy at `copy` and of our C ([`Builds::shim`]).
-/// `flags` is the text of the copy's `flags.txt`, whose include paths are relative to
-/// the copy. `sources` is the text of `sources.txt`, one file of the copy on each line.
-/// The shim build holds `src/shim.c` alone: [`configure`] adds `src/server.c`.
+/// Gives the builds of the open62541 copy at `copy` and of `src/shim.c`
+/// ([`Builds::shim`]). `flags` is the text of the copy's `flags.txt`, whose include
+/// paths are relative to the copy. `sources` is the text of `sources.txt`, one file of
+/// the copy on each line.
 pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     let mut library = Build::new();
     library.warnings(false);
