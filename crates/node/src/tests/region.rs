@@ -380,9 +380,12 @@ fn remove(sim: &mut sim::Sim, host: &sim::node::Node, path: &'static str) {
     .expect("the run ends");
 }
 
-/// Removes the file `name` on `host` and makes the removal durable.
-fn remove_name(sim: &mut sim::Sim, host: &sim::node::Node) {
+/// Removes the file `name` on `host`, makes the removal durable, and gives the bytes
+/// that it held.
+fn remove_name(sim: &mut sim::Sim, host: &sim::node::Node) -> Vec<u8> {
+    let held = kept(sim, host).expect("the file");
     remove(sim, host, crate::name::FILE);
+    held
 }
 
 /// The name that [`crate::name`] gives on `host` with no name given.
@@ -400,13 +403,9 @@ fn named(
     named.expect("the run ends")
 }
 
-/// The name in the file `name` on `host`. It reads the file alone, as
-/// [`crate::name`] also gives the card name.
-fn kept(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<types::name::Name> {
-    let kept = sim.run_on(host, |host, _| async move {
-        crate::name::read(&host.files()).await
-    });
-    kept.expect("the run ends").expect("reads")
+/// The bytes of the file `name` on `host`, or `None` when it is not there.
+fn kept(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Vec<u8>> {
+    bytes(sim, host, crate::name::FILE)
 }
 
 #[test]
@@ -440,7 +439,8 @@ fn a_start_with_another_name_after_the_name_file_is_gone() {
         "{listed:?}"
     );
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-    assert_eq!(kept(&mut sim, &host), Some("edge".parse().unwrap()));
+    let kept = kept(&mut sim, &host).expect("the file");
+    assert_eq!(kept[17..22], *b"\x04edge");
 }
 
 /// A start with no region and another name, on a data directory that stores a
@@ -471,7 +471,7 @@ fn the_name_after_the_name_file_is_gone_is_the_card_name() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-    remove_name(&mut sim, &host);
+    let edge = remove_name(&mut sim, &host);
     let named = sim.run_on(&host, |host, _| async move {
         crate::name(&host.files(), None).await
     });
@@ -479,14 +479,14 @@ fn the_name_after_the_name_file_is_gone_is_the_card_name() {
     assert_eq!(named, "edge".parse::<types::name::Name>().unwrap());
     let node = Node::start(Config {
         region: Region::Stored,
-        name: named.clone(),
+        name: named,
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(node.join(), Ok(()));
-    assert_eq!(kept(&mut sim, &host), Some(named));
+    assert_eq!(kept(&mut sim, &host), Some(edge));
 }
 
 /// A crash at each time of a start with no file `name` leaves a data directory that
