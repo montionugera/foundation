@@ -182,7 +182,11 @@
   status writer that does not open panics on an unknown or remote channel, which is a
   defect, because the plan homes the index on the connector's node (above), and gives
   `Ok` when the mesh stopped (`laptop.architect-2`, 2026-10-09T18:46:26Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087144669). An
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087144669). Until
+  #2337, an apply that moves a connector to another member keeps its status index and
+  the home of that index (S12), so its run on the new member panics
+  (`laptop.architect-2`, 2026-10-11T01:46:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6104325892). An
   unknown channel after the cancel of the call also gives `Ok`, because `node` removes
   the status channels of a connector before it cancels its run. This supersedes "a panic
   is right" of item 2 of 6087144669 for `Unknown` in a cancelled call
