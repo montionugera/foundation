@@ -244,9 +244,9 @@ struct Recorded {
 /// whose task ends `linger` after the cancel, the kind `quick`, whose task ends at the
 /// cancel, the kind `brief`, whose run returns at once, and the kinds `source`, a
 /// [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a [`Sink`] of a
-/// selector that matches no channel. Each spec also defines [`data`]. Drops the runs at `dropped`,
-/// if given. Gives each start of a run, each cancel, and each frame got until 10 s,
-/// from the time the hub opened.
+/// selector that matches no channel. Each spec also defines [`data`]. Drops the runs
+/// at `dropped`, if given. Gives each start of a run, each cancel, and each frame got
+/// until 10 s, from the time the hub opened.
 fn record(
     seed: u64,
     linger: Option<Span>,
@@ -823,6 +823,19 @@ fn an_out_connector_gets_the_first_frame_of_an_in_connector_of_the_next_apply() 
     second.push(("plant.b", "source", NODE, 0));
     let got = got_on_each_seed(|| vec![on(0, first.clone()), on(0, second.clone())]);
     assert_eq!(got, vec![vec!["plant.a".to_owned()]; 32]);
+}
+
+/// Two out connectors and an in connector, so one open resolves while two are pending.
+#[test]
+fn each_out_connector_of_an_apply_gets_the_first_frame_of_its_in_connector() {
+    let spec = vec![
+        ("plant.a", "sink", NODE, 0),
+        ("plant.b", "source", NODE, 0),
+        ("plant.c", "sink", NODE, 0),
+    ];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    let both = vec!["plant.a".to_owned(), "plant.c".to_owned()];
+    assert_eq!(got, vec![both; 32]);
 }
 
 /// The reader open of `void` fails, since its selector matches no channel.
