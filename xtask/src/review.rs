@@ -114,6 +114,10 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one fact of the comment, and none excludes another"
+)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -129,6 +133,9 @@ struct Round {
     /// The `Hot path:` end line names a function, so the round requires
     /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
     hot: bool,
+    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
+    /// name `architecture` when its range changes a decision.
+    decision_bound: bool,
 }
 
 /// A round comment that does not parse.
@@ -223,10 +230,7 @@ fn problems(
         .comments
         .iter()
         .filter(|c| c.author == BOT)
-        .filter_map(|c| {
-            let bound = c.created.as_str() >= DECISION_CUTOFF;
-            round(c).map(|round| (bound, round))
-        })
+        .filter_map(round)
         .collect();
     if rounds.is_empty() {
         problems.push(format!(
@@ -234,7 +238,7 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (bound, parsed)) in rounds.iter().enumerate() {
+    for (i, parsed) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
@@ -244,7 +248,7 @@ fn problems(
                     &record.files,
                     last,
                     code_change,
-                    (later && *bound).then_some(decision_change),
+                    (later && round.decision_bound).then_some(decision_change),
                 )?);
             }
             Err(e) => {
@@ -255,12 +259,9 @@ fn problems(
         }
         problems.extend(parsed.performance.clone());
     }
-    if let Some((
-        _,
-        Parsed {
-            round: Ok(round), ..
-        },
-    )) = rounds.last()
+    if let Some(Parsed {
+        round: Ok(round), ..
+    }) = rounds.last()
     {
         if round.findings > 0 {
             problems.push(format!(
@@ -509,6 +510,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             findings,
             fixed: fixed(&shown),
             hot,
+            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
