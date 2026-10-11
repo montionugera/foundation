@@ -3050,6 +3050,7 @@ mod tests {
                     node.files().list(Path::new(DIR)).await.unwrap()
                 })
                 .unwrap();
+            sim.crash(&node, Crash::Power);
             let kept = stored(&mut sim, &node).unwrap();
             if kept.entries != [bytes(1, 10)] {
                 lost.push((seed, names, kept.entries));
@@ -3072,12 +3073,16 @@ mod tests {
             create_spare(&mut sim, &node, 512);
             let ended = sim
                 .run_on(&node, move |node, _| async move {
-                    let ended = cut(open(&node), waits).await.is_some();
+                    let ended = match cut(open(&node), waits).await {
+                        Some(opened) => opened.map(|_| true).unwrap(),
+                        None => false,
+                    };
                     let (mut log, _) = open(&node).await.unwrap();
                     log.write(None, &[bytes(2, LARGE)]).await.unwrap();
                     ended
                 })
                 .unwrap();
+            sim.crash(&node, Crash::Power);
             let kept = stored(&mut sim, &node).unwrap();
             if kept.entries != [bytes(1, 10), bytes(2, LARGE)] {
                 lost.push(waits);
@@ -3191,7 +3196,10 @@ mod tests {
                 .run_on(&node, move |node, _| async move {
                     let (mut log, _) = open(&node).await.unwrap();
                     let large = [bytes(1, LARGE)];
-                    cut(log.write(None, &large), waits).await.is_some()
+                    match cut(log.write(None, &large), waits).await {
+                        Some(written) => written.map(|()| true).unwrap(),
+                        None => false,
+                    }
                 })
                 .unwrap();
             sim.crash(&node, Crash::Power);

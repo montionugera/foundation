@@ -85,11 +85,11 @@
   once. The log removes a file that it holds through its handle (`File::remove`): the
   spare at an open, and an end file with no record that a write makes again, larger
   (#1314, decided by `laptop.architect`, 2026-10-07T20:26:12Z:
-  https://github.com/synnaxlabs/foundation/issues/1314#issuecomment-6046201661). So
-  the create has the room of the removed file (#1350). It needs no `sync_dir` of its
-  own: `Files::open` syncs the directory and tries again on `Full` (ENV SEAMS, #2375).
-  The
-  next write puts zeros over the bytes of the stopped write and syncs, and only then
+  https://github.com/synnaxlabs/foundation/issues/1314#issuecomment-6046201661). With
+  no handle left, the create of the larger file gets the room of the removed one,
+  because `Files::open` syncs the directory and opens again on `Full` (ENV SEAMS,
+  #1622; #1350). The next write puts zeros over the bytes of the stopped write and
+  syncs, and only then
   writes its record: with one sync, a power cut can keep the record and not the zeros
   (SIM CRASH), and an open then reads the old bytes as a header (PR 1 of #1091, approved
   by the architect, 2026-10-07T05:29:41Z:
