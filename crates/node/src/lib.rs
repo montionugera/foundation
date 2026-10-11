@@ -87,10 +87,10 @@ pub struct Config<M> {
     /// The node's name. The first start on a data directory keeps it in the file
     /// `name`. Get it with [`name`] before the start. A later start with another name
     /// than the stored one fails with [`Error::Renamed`], and a name with a reserved
-    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores
-    /// a founding, the node's card in it holds the name too, and a start whose file
-    /// `name` is gone writes it again from the card. [`Node::join`] gives the first
-    /// failure.
+    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores a
+    /// founding with the node's card, that card holds the name too, and a start whose
+    /// file `name` is gone writes it again from the card. [`Node::join`] gives the
+    /// first failure.
     pub name: types::name::Name,
 }
 
