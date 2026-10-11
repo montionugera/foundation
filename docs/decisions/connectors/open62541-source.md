@@ -552,7 +552,11 @@
   A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
   Its `close` first waits for the answer to a CreateSession in flight, or for its
   request timeout, because a CloseSession sent before that answer has no session token,
-  and the server keeps the session that it then makes. Then it sends a CloseSession with
+  and the server keeps the session that it then makes. The wait works around
+  `UA_Client_disconnectAsync`, which sends that CloseSession. Lost: a patch of
+  `UA_Client_disconnectAsync` in the copy that defers the CloseSession until the
+  CreateSession answer. It changes the session state machine of a release file that each
+  new tag must carry again. Then it sends a CloseSession with
   `UA_Client_disconnectAsync` and drives its manager until the channel is closed. Its
   drop calls `shim_client_free`, which stops the loop, then deletes the client. On a
   stopped loop, open62541 refuses the synchronous CloseSession of the delete and does
@@ -569,6 +573,6 @@
   https://github.com/synnaxlabs/foundation/pull/2397. Approved by `laptop.architect-2`,
   with the rule for the kind and the lost design as its texts
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
-  2026-10-11 12:52 UTC). The wait for the CreateSession: proposed in
+  2026-10-11 12:52 UTC). The wait for the CreateSession and its lost design: proposed in
   https://github.com/synnaxlabs/foundation/pull/2397, for `laptop.architect-2` to
   approve.

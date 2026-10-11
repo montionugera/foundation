@@ -61,7 +61,8 @@ impl Client {
     ///
     /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
     /// is not active after the request timeout of the client (5 s), else the status of
-    /// open62541 when it refuses `url` or the connect fails.
+    /// open62541 when it refuses `url` or the connect fails. The close after an error
+    /// waits at most one more request timeout.
     ///
     /// # Panics
     ///
@@ -94,10 +95,10 @@ impl Client {
             .connections
             .drive(|cx| {
                 this.connections.events().run();
-                let (_, session, status) = this.state();
-                if status != Status::GOOD {
-                    Poll::Ready(Err(status))
-                } else if session == ffi::Session::ACTIVATED {
+                let state = this.state();
+                if state.status != Status::GOOD {
+                    Poll::Ready(Err(state.status))
+                } else if state.session == ffi::Session::ACTIVATED {
                     Poll::Ready(Ok(()))
                 } else if deadline.as_mut().poll(cx).is_ready() {
                     Poll::Ready(Err(Status::BAD_TIMEOUT))
@@ -155,7 +156,7 @@ impl Client {
         self.connections
             .drive(|_| {
                 self.connections.events().run();
-                if self.state().1 == ffi::Session::CREATE_REQUESTED {
+                if self.state().session == ffi::Session::CREATE_REQUESTED {
                     Poll::Pending
                 } else {
                     Poll::Ready(())
@@ -167,7 +168,7 @@ impl Client {
         self.connections
             .drive(|_| {
                 self.connections.events().run();
-                if self.state().0 == ffi::Channel::CLOSED {
+                if self.state().channel == ffi::Channel::CLOSED {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -176,9 +177,8 @@ impl Client {
             .await;
     }
 
-    /// Gives the channel state, the session state, and the connect status of the
-    /// client.
-    fn state(&self) -> (ffi::Channel, ffi::Session, Status) {
+    /// Gives the state of the client.
+    fn state(&self) -> State {
         let (mut channel, mut session, mut status) =
             (ffi::Channel(0), ffi::Session(0), 0);
         // SAFETY: the client lives.
@@ -190,8 +190,20 @@ impl Client {
                 &raw mut status,
             );
         }
-        (channel, session, Status(status))
+        State {
+            channel,
+            session,
+            status: Status(status),
+        }
     }
+}
+
+/// The state of a client.
+struct State {
+    channel: ffi::Channel,
+    session: ffi::Session,
+    /// The connect status.
+    status: Status,
 }
 
 impl Drop for Client {
