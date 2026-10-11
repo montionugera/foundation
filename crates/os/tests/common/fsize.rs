@@ -6,15 +6,18 @@ use std::process::Command;
 
 use rustix::process::{Resource, getrlimit};
 
-/// Runs `test` in a process whose file size limit is `bytes`, a multiple of 512, and
-/// that ignores `SIGXFSZ`. A process with another limit runs the test of this thread
-/// again, alone, in a child that has the limit, and panics with the error output of
-/// a child that fails.
+/// Runs `test` in a child of this test binary that runs only the test of this thread,
+/// has a file size limit of `bytes`, a multiple of 512, and ignores `SIGXFSZ`. Panics
+/// with the error output of a child that fails.
 pub(crate) fn under(bytes: u64, test: impl FnOnce()) {
-    // `ulimit -f` counts blocks of 512 bytes. With another limit, each child would
-    // start a child.
-    assert_eq!(bytes % 512, 0);
-    if getrlimit(Resource::Fsize).current == Some(bytes) {
+    const CHILD: &str = "OS_FSIZE_CHILD";
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the parent sets it for the child"
+    )]
+    if std::env::var_os(CHILD).is_some() {
+        // `ulimit -f` counts blocks of 512 bytes.
+        assert_eq!(getrlimit(Resource::Fsize).current, Some(bytes));
         return test();
     }
     let thread = std::thread::current();
@@ -27,6 +30,7 @@ pub(crate) fn under(bytes: u64, test: impl FnOnce()) {
         .arg((bytes / 512).to_string())
         .arg(std::env::current_exe().unwrap())
         .arg(name)
+        .env(CHILD, "1")
         .output()
         .unwrap();
     let error = String::from_utf8_lossy(&output.stderr);
