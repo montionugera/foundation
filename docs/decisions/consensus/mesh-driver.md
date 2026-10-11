@@ -190,14 +190,14 @@
   it, a format keeps version 1, so the homes of a spec change go in kind 4. It
   supersedes the start of the rule of
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036422521. Each later
-  call gives `Error::Stopped` with the first cause, and `stamp` gives
-  `Unstamped::Stopped` (MEMBER RECORD). A watch gives the `Stopped` itself,
+  call gives `Error::Stopped` with the first cause. A watch gives the `Stopped` itself,
   also after each `Mesh` drops (MESH SURFACE). `member` has no error (#562): it gives
   the record that the node holds, also after a stop (approved by the architect,
   2026-10-07T08:07:48Z:
-  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). A stopped
-  group does not start again: the node opens the mesh again, and the open makes durable
-  what it gives (MESH LOG). The task ends soon after the last `Mesh` drops, a write in
+  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). `stamp`
+  gives `Unstamped::Stopped` (MEMBER RECORD). A stopped group does not start again: the
+  node opens the mesh again, and the open makes durable what it gives (MESH LOG). The
+  task ends soon after the last `Mesh` drops, a write in
   progress ends first, and a write that waits for a block ends at the next tick; until
   then a new open gives `Error::Log`. Each open applies the log from index 1, until
   snapshots (#253). A watch does not keep the group running, and a dropped watch leaves
