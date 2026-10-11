@@ -39,7 +39,7 @@ pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
 use types::{name, sample};
 
-use crate::common::{Fields, Writer, body};
+use crate::common::{Fields, Length, Writer, body};
 
 const LATEST: u8 = 1;
 const COMPLETE: u8 = 2;
@@ -168,7 +168,7 @@ impl Open {
         let Some((&kind, rest)) = bytes.split_first() else {
             return Err(Error::Empty);
         };
-        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(rest, bytes.len());
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
@@ -234,7 +234,7 @@ impl Credit {
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(rest, bytes.len());
         let limit_bytes = u64::from_le_bytes(fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
@@ -317,7 +317,7 @@ impl Reply {
         let Some((&kind, rest)) = bytes.split_first() else {
             return Err(Error::Empty);
         };
-        let mut fields = Fields::new(rest, || Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(rest, bytes.len());
         match kind {
             OPENED => {
                 fields.end()?;
@@ -498,6 +498,9 @@ pub mod ends {
     }
 }
 
+// A variant holds a `Box`, so `Error` has drop glue. A decoder on the frame path
+// makes one only on a defect, never with an eager `ok_or`: the drop costs about 10 ns
+// a frame.
 /// A hub message that is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -758,6 +761,12 @@ impl<E: fmt::Display> fmt::Display for Unread<E> {
 }
 
 impl<E: std::error::Error> std::error::Error for Unread<E> {}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {

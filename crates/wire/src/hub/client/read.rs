@@ -5,7 +5,7 @@ use types::name::{Name, Selector, Written};
 use types::sample::Type;
 
 use super::{Body, READ, fields};
-use crate::common::Writer;
+use crate::common::{Fields, Writer};
 use crate::hub::{COMPLETE, Error, LATEST, Unread};
 
 /// The most bytes of the open of a read: 64 KiB.
@@ -139,23 +139,19 @@ impl Open {
     /// names no mode, [`Error::Length`] when a pattern ends past the open, and
     /// [`Error::Selector`] when a pattern does not read or none includes names.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&mode, mut rest) = bytes.split_first().ok_or(Error::Empty)?;
+        let (&mode, rest) = bytes.split_first().ok_or(Error::Empty)?;
         let mode = match mode {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete,
             kind => return Err(Error::Kind { kind }),
         };
+        let mut fields = Fields::new(rest, bytes.len());
         let mut patterns = Vec::new();
-        while !rest.is_empty() {
-            let length = || Error::Length { len: bytes.len() };
-            let (&len, after) = rest.split_first_chunk::<2>().ok_or_else(length)?;
-            let (pattern, after) = after
-                .split_at_checked(usize::from(u16::from_le_bytes(len)))
-                .ok_or_else(length)?;
-            let pattern = std::str::from_utf8(pattern)
+        while !fields.is_empty() {
+            let len = u16::from_le_bytes(fields.take()?);
+            let pattern = std::str::from_utf8(fields.take_slice(usize::from(len))?)
                 .map_err(|error| Error::Selector(Unread::Utf8(error)))?;
             patterns.push(pattern);
-            rest = after;
         }
         let select = Selector::new(patterns)
             .map_err(|error| Error::Selector(Unread::Parse(Box::new(error))))?;
@@ -250,7 +246,7 @@ pub mod place {
     use types::channel;
 
     use super::Place;
-    use crate::common::Writer;
+    use crate::common::{Fields, Writer};
     use crate::hub::{Error, Unread};
 
     /// `places` cut into the messages of the run, in order: each holds as many whole
@@ -328,30 +324,23 @@ pub mod place {
         if message.is_empty() {
             return Err(Error::Empty);
         }
-        let length = || Error::Length { len: message.len() };
-        let mut rest = message;
+        let mut fields = Fields::new(message, message.len());
         let mut places = Vec::new();
-        while !rest.is_empty() {
-            let (&key, after) = rest.split_first_chunk::<16>().ok_or_else(length)?;
-            let (sample, after) = text(after, length)?;
-            let sample = Unread::read(sample).map_err(Error::Sample)?;
-            let (name, after) = text(after, length)?;
-            let name = Unread::read(name).map_err(Error::Name)?;
+        while !fields.is_empty() {
+            let key = u128::from_le_bytes(fields.take()?);
+            let [len] = fields.take()?;
+            let sample = Unread::read(fields.take_slice(usize::from(len))?)
+                .map_err(Error::Sample)?;
+            let [len] = fields.take()?;
+            let name = Unread::read(fields.take_slice(usize::from(len))?)
+                .map_err(Error::Name)?;
             places.push(Place {
-                key: channel::Key::from_u128(u128::from_le_bytes(key)),
+                key: channel::Key::from_u128(key),
                 sample,
                 name,
             });
-            rest = after;
         }
         Ok(places)
-    }
-
-    /// The text at the front of `bytes`, its length a `u8`, and the bytes after it.
-    /// Bytes that end inside the text give `length`.
-    fn text(bytes: &[u8], length: impl Fn() -> Error) -> Result<(&[u8], &[u8]), Error> {
-        let (&len, rest) = bytes.split_first().ok_or_else(&length)?;
-        rest.split_at_checked(usize::from(len)).ok_or_else(length)
     }
 }
 
