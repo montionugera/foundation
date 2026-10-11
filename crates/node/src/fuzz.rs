@@ -9,8 +9,8 @@ use crate::{address, admin, identity, sector};
 ///
 /// # Panics
 ///
-/// When a decode gives a value for bytes that its file never holds, refuses bytes
-/// that its file can hold, or gives a value that does not encode to the bytes.
+/// When a decode gives a value for bytes that its encode does not write, refuses
+/// bytes that its encode writes, or gives a value that does not encode to the bytes.
 pub fn identity(data: &[u8]) {
     if let Some(bytes) = file(data) {
         identity::check(&bytes);
