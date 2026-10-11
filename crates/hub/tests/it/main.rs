@@ -294,12 +294,18 @@ impl Pause {
         self.polls.get() == polls
     }
 
-    /// Whether the task of `cx` waits, which holds its waker.
-    fn holds(&self, cx: &Context<'_>) -> bool {
-        let mut held = self.held.borrow_mut();
-        held.as_mut()
-            .map(|held| held.push(cx.waker().clone()))
-            .is_some()
+    /// Polls `task` and counts the poll, or, while paused, holds the waker of `cx`.
+    fn poll<F: Future + ?Sized>(
+        &self,
+        cx: &mut Context<'_>,
+        task: Pin<&mut F>,
+    ) -> Poll<F::Output> {
+        if let Some(held) = self.held.borrow_mut().as_mut() {
+            held.push(cx.waker().clone());
+            return Poll::Pending;
+        }
+        self.polls.set(self.polls.get() + 1);
+        task.poll(cx)
     }
 }
 
@@ -318,14 +324,7 @@ impl env::tasks::Driver for Counted {
     fn spawn(&self, mut task: env::tasks::Task) {
         let (ended, pause) = (Rc::clone(&self.ended), Rc::clone(&self.pause));
         self.tasks.spawn(async move {
-            std::future::poll_fn(|cx| {
-                if pause.holds(cx) {
-                    return Poll::Pending;
-                }
-                pause.polls.set(pause.polls.get() + 1);
-                task.as_mut().poll(cx)
-            })
-            .await;
+            std::future::poll_fn(|cx| pause.poll(cx, task.as_mut())).await;
             ended.set(ended.get() + 1);
         });
     }
