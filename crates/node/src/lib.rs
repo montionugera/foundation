@@ -599,8 +599,7 @@ impl Role {
     }
 }
 
-/// Whether no peer reaches one node at `ip`: a multicast IP or the IPv4 broadcast
-/// IP, also as an IPv4-mapped IPv6 address.
+/// Whether `ip`, in its canonical form, is a multicast IP or the IPv4 broadcast IP.
 fn unreachable(ip: IpAddr) -> bool {
     let ip = ip.to_canonical();
     ip.is_multicast() || ip == Ipv4Addr::BROADCAST
