@@ -1256,15 +1256,18 @@ mod tests {
         }
 
         #[test]
-        fn gives_full_of_an_open_to_write_with_no_sync() {
+        fn gives_full_of_an_open_to_read_or_write_with_no_sync() {
             let (files, calls) = Fixed::files(0);
+            let results = [Mode::Read, Mode::Write]
+                .map(|mode| ready(files.open(Path::new("ring/full"), mode)).map(drop));
+            let full = Err(Error::Full {
+                path: "ring/full".into(),
+            });
+            assert_eq!(results, [full.clone(), full]);
             assert_eq!(
-                ready(files.open(Path::new("ring/full"), Mode::Write)).map(drop),
-                Err(Error::Full {
-                    path: "ring/full".into()
-                })
+                *calls.borrow(),
+                ["open ring/full Read", "open ring/full Write"]
             );
-            assert_eq!(*calls.borrow(), ["open ring/full Write"]);
         }
 
         #[test]
