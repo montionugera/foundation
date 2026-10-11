@@ -38,34 +38,25 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is
-/// not there or holds a reserved name. Call it under the lock of the data directory,
-/// after the sync of the directory that the claim makes: a failed sync of an earlier
-/// start can leave a name that a read sees but a crash loses.
+/// not there. Call it under the lock of the data directory, after the sync of the
+/// directory that the claim makes: a failed sync of an earlier start can leave a name
+/// that a read sees but a crash loses.
 ///
 /// # Errors
 ///
-/// [`Error::Renamed`] when the file holds another name that is not reserved,
-/// [`Error::Name`] for a file that a node did not write, and [`Error::Directory`] for
-/// a file call that fails.
+/// [`Error::Renamed`] when the file holds another name, [`Error::Name`] for a file
+/// that a node did not write, and [`Error::Directory`] for a file call that fails.
 pub(crate) async fn keep(files: &Files, name: &Name) -> Result<(), Error> {
     match read(files).await? {
-        None => {}
-        Some(stored) if stored == *name => return Ok(()),
-        // A region refuses a reserved name in a card, so no region holds this one.
-        Some(stored) if stored.reserved() => files
-            .remove(Path::new(FILE))
+        None => sector::publish(files, Path::new(FILE), &encode(name))
             .await
-            .map_err(Error::Directory)?,
-        Some(stored) => {
-            return Err(Error::Renamed {
-                stored,
-                given: name.clone(),
-            });
-        }
+            .map_err(Error::Directory),
+        Some(stored) if stored == *name => Ok(()),
+        Some(stored) => Err(Error::Renamed {
+            stored,
+            given: name.clone(),
+        }),
     }
-    sector::publish(files, Path::new(FILE), &encode(name))
-        .await
-        .map_err(Error::Directory)
 }
 
 /// The bytes of the file that holds `name`.
