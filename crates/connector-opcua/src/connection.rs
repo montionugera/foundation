@@ -339,8 +339,8 @@ impl State {
     }
 
     /// Moves on each connection in `again` and each that those steps add, until none
-    /// is left, and gives whether it moved one. An accept or a failed accept adds one
-    /// to `again`.
+    /// is left, and gives whether it moved one. An accept or a failed accept after a
+    /// run adds one to `again`.
     fn move_on_again(&self, cx: &mut Context<'_>) -> bool {
         let mut moved = false;
         loop {
