@@ -31,7 +31,7 @@ use crate::applied::Applied;
 use crate::bytes::block;
 use crate::change::{Change, Join, Malformed};
 use crate::claim::{self, Known, Signer};
-use crate::error::{Error, Stopped};
+use crate::error::{self, Error, Stopped};
 use crate::log::{self, Log};
 use crate::member::Member;
 use crate::message::Message;
@@ -588,7 +588,7 @@ impl fmt::Display for Unstamped {
                  epoch, so it stamps no join",
             ),
             Self::Status(many) => many.fmt(f),
-            Self::Stopped(stopped) => write!(f, "the group stopped: {stopped}"),
+            Self::Stopped(stopped) => error::write_stopped(f, stopped),
             Self::Refused(refused) => refused.fmt(f),
         }
     }
