@@ -18,13 +18,13 @@ const POOL: block::Config = match block::Config::new(4096) {
 /// What a file of `N` bytes holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Held<const N: usize> {
-    /// No file. For [`open`] and [`peek`], also no bytes or `N` zero bytes: a crash
-    /// kept a write in place from its end.
+    /// No file. For [`open`], also no bytes or `N` zero bytes: a crash kept a write
+    /// in place from its end.
     Nothing,
     /// The bytes that a node wrote, with the tag and a checksum that matches.
     Written([u8; N]),
-    /// A file that no node wrote: another tag or checksum. For [`read`] and [`peek`],
-    /// also another length.
+    /// A file that no node wrote: another tag or checksum. For [`read`], also another
+    /// length.
     Foreign,
 }
 
@@ -42,30 +42,13 @@ pub(crate) async fn open<const N: usize>(
     tag: &[u8],
 ) -> Result<(File, Held<N>), env::files::Error> {
     let file = files.open(path, Mode::Create { len: N as u64 }).await?;
-    let held = held(&bytes(&file).await?, tag);
-    Ok((file, held))
-}
-
-/// What `path` in `files`, which [`open`] makes, holds, as [`open`] reads it. Opens it
-/// to read only, so it makes nothing and waits for no lock.
-///
-/// # Errors
-///
-/// The error of each file call that fails, except [`env::files::Error::NotFound`],
-/// which gives [`Held::Nothing`].
-pub(crate) async fn peek<const N: usize>(
-    files: &Files,
-    path: &Path,
-    tag: &[u8],
-) -> Result<Held<N>, env::files::Error> {
-    let Some(file) = reader(files, path).await? else {
-        return Ok(Held::Nothing);
+    let bytes = bytes(&file).await?;
+    let held = if bytes == [0; N] {
+        Held::Nothing
+    } else {
+        written(&bytes, tag).map_or(Held::Foreign, Held::Written)
     };
-    match file.len() {
-        0 => Ok(Held::Nothing),
-        len if len == N as u64 => Ok(held(&bytes(&file).await?, tag)),
-        _ => Ok(Held::Foreign),
-    }
+    Ok((file, held))
 }
 
 /// What `path` in `files`, which [`publish`] makes, holds. Opens it to read only, so
@@ -80,8 +63,10 @@ pub(crate) async fn read<const N: usize>(
     path: &Path,
     tag: &[u8],
 ) -> Result<Held<N>, env::files::Error> {
-    let Some(file) = reader(files, path).await? else {
-        return Ok(Held::Nothing);
+    let file = match files.open(path, Mode::Read).await {
+        Ok(file) => file,
+        Err(env::files::Error::NotFound { .. }) => return Ok(Held::Nothing),
+        Err(error) => return Err(error),
     };
     if file.len() != N as u64 {
         return Ok(Held::Foreign);
@@ -154,24 +139,6 @@ pub(crate) fn summed<const N: usize>(body: &[u8]) -> Option<[u8; N]> {
     bytes[..N - 4].copy_from_slice(body);
     checksum(&mut bytes);
     Some(bytes)
-}
-
-/// `path` in `files`, opened to read only, or `None` when it is not there.
-async fn reader(files: &Files, path: &Path) -> Result<Option<File>, env::files::Error> {
-    match files.open(path, Mode::Read).await {
-        Ok(file) => Ok(Some(file)),
-        Err(env::files::Error::NotFound { .. }) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-/// What `bytes` of a file that [`open`] makes hold.
-fn held<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> Held<N> {
-    if *bytes == [0; N] {
-        Held::Nothing
-    } else {
-        written(bytes, tag).map_or(Held::Foreign, Held::Written)
-    }
 }
 
 /// The `N` bytes of `file`, which has `N` bytes.

@@ -34,14 +34,15 @@ pub(crate) struct Identity {
     pub(crate) opener: Opener,
 }
 
-/// The node key in `node.key` of `files`, or `None` when [`load`] finds no key. Opens
+/// The node key in `node.key` of `files`, or `None` when the file is not there. Opens
 /// the file to read only, so it makes nothing and waits for no lock.
 ///
 /// # Errors
 ///
-/// [`Error::Key`] and [`Error::Directory`], as [`load`] gives them.
+/// [`Error::Key`] for a file that [`load`] did not write, and [`Error::Directory`]
+/// for a file call that fails.
 pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error> {
-    let held = sector::peek(files, Path::new(FILE), TAG).await;
+    let held = sector::read(files, Path::new(FILE), TAG).await;
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
         Held::Written(bytes) => Ok(Some(node_key(&bytes))),
