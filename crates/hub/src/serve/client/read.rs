@@ -1,10 +1,8 @@
 //! The read stream of a client session.
 
 use std::cell::RefCell;
-use std::future::poll_fn;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
-use std::task::Poll;
 
 use access::proof;
 use transport::Class;
@@ -17,7 +15,7 @@ use crate::State;
 use crate::channel::Channel;
 use crate::link::Session;
 use crate::reader::{self, Home, Matched, Reader};
-use crate::serve::{Error, Event, Layout, alloc, reply};
+use crate::serve::{Error, Layout, alloc, reply, unless};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
 /// reader, and sends its places, then each frame of the reader until the program
@@ -50,20 +48,17 @@ pub(super) async fn serve(
 
 /// The verified open of a read, which holds its reservation until it drops.
 struct Held {
-    /// The selector of the first decode, until the read takes it.
-    select: Option<Selector>,
     bytes: Vec<u8>,
     _reserved: Reserved,
 }
 
 impl Held {
-    /// The selector of the open, decoded again after the first take.
-    fn select(&mut self) -> Selector {
-        self.select.take().unwrap_or_else(|| {
-            Open::decode(&self.bytes)
-                .expect("invariant: the open decoded once")
-                .select
-        })
+    /// The selector of the open, decoded at each call, so that no decoded selector
+    /// lives across a wait.
+    fn select(&self) -> Selector {
+        Open::decode(&self.bytes)
+            .expect("invariant: the open decoded once")
+            .select
     }
 }
 
@@ -79,8 +74,7 @@ async fn open(
     let reserved = Reserved::new(&session.state, subject, read.length)?;
     let bytes = body(receiver, read.body()).await?;
     verify(session, proof::Kind::Read, &bytes, &read.signature)?;
-    let open = Open::decode(&bytes)?;
-    let (wanted, mode) = match open.mode {
+    let (wanted, mode) = match Open::decode(&bytes)?.mode {
         Mode::Latest => (Class::Latest, reader::Mode::Latest),
         Mode::Complete => (Class::Complete, reader::Mode::Complete),
     };
@@ -88,7 +82,6 @@ async fn open(
         return Err(Error::Class(class));
     }
     let held = Held {
-        select: Some(open.select),
         bytes,
         _reserved: reserved,
     };
@@ -100,32 +93,25 @@ async fn open(
 /// reservation of `open` until the open decodes after the wait for the home.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
-    mut open: Held,
+    open: Held,
     mode: reader::Mode,
-    mut program: Pin<&mut F>,
+    program: Pin<&mut F>,
 ) -> Result<Option<(Reader, Matched<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
     let refused = |error| Error::Reader(Box::new(error));
-    let found = {
-        let place = |name: &Name, channel: &Channel| Place {
-            key: channel.key(),
-            data_type: channel.sample(),
-            name: name.clone(),
-        };
-        let mut found = pin!(reader::find(state, || open.select(), place));
-        poll_fn(|cx| match program.as_mut().poll(cx) {
-            Poll::Ready(finished) => Poll::Ready(Err(finished)),
-            Poll::Pending => found.as_mut().poll(cx).map(Ok),
-        })
-        .await
+    let place = |name: &Name, channel: &Channel| Place {
+        key: channel.key(),
+        data_type: channel.sample(),
+        name: name.clone(),
     };
+    let found = unless(program, reader::find(state, || open.select(), place)).await;
     drop(open);
-    let (places, home) = match found {
-        Ok(found) => found.map_err(refused)?,
-        Err(finished) => return finished.map(|()| None),
+    let Some(found) = found? else {
+        return Ok(None);
     };
+    let (places, home) = found.map_err(refused)?;
     let channels = match home {
         Home::Here(channels) => channels,
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
@@ -173,32 +159,22 @@ where
     F: Future<Output = Result<(), Error>>,
 {
     loop {
-        let event = {
-            let mut next = pin!(reader.next());
-            // The program polls first, so the node takes no frame after its message.
-            poll_fn(|cx| match program.as_mut().poll(cx) {
-                Poll::Ready(finished) => Poll::Ready(Event::Finished(finished)),
-                Poll::Pending => next.as_mut().poll(cx).map(Event::Frame),
-            })
-            .await
+        let Some(next) = unless(program.as_mut(), reader.next()).await? else {
+            sender.finish()?;
+            return Ok(());
         };
-        match event {
-            Event::Finished(finished) => {
-                finished?;
-                sender.finish()?;
-                return Ok(());
-            }
-            Event::Frame(Ok(taken)) => {
+        match next {
+            Ok(taken) => {
                 layout
                     .send(state, sender, taken.view().frame(), taken.set())
                     .await?;
             }
-            Event::Frame(Err(reader::Ended::Behind)) => {
+            Err(reader::Ended::Behind) => {
                 sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
                 sender.finish()?;
                 return Ok(());
             }
-            Event::Frame(Err(ended)) => return Err(Error::Ended(Box::new(ended))),
+            Err(ended) => return Err(Error::Ended(Box::new(ended))),
         }
     }
 }

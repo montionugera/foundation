@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::future::poll_fn;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::slice;
 use std::task::{Context, Poll};
@@ -308,49 +308,47 @@ async fn serve(
     // gives up a frame only in the poll that returns it.
     let mut peer = pin!(peer(receiver, home, complete.as_ref()));
     loop {
-        let event = {
-            let mut take = pin!(session.take());
-            // `take` polls after `peer` in each poll: a grant wakes no session, so a
-            // frame that waits for credit goes out only at the take after its grant
-            // (CREDIT RULES).
-            poll_fn(|cx| match peer.as_mut().poll(cx) {
-                Poll::Ready(finished) => Poll::Ready(Event::Finished(finished)),
-                Poll::Pending => take.as_mut().poll(cx).map(Event::Frame),
-            })
-            .await
+        // A grant wakes no session, so a frame that waits for credit goes out only at
+        // the take after its grant (CREDIT RULES).
+        let Some(taken) = unless(peer.as_mut(), session.take()).await? else {
+            sender.finish()?;
+            return Ok(());
         };
-        match event {
-            Event::Finished(finished) => {
-                finished?;
-                sender.finish()?;
-                return Ok(());
-            }
-            Event::Frame(Ok((frame, lens))) => {
+        match taken {
+            Ok((frame, lens)) => {
                 layout.send(state, sender, &frame, &lens.set).await?;
             }
-            Event::Frame(Err(Stop::Behind)) => {
+            Err(Stop::Behind) => {
                 sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
                 sender.finish()?;
                 return Ok(());
             }
-            Event::Frame(Err(Stop::Buffer(error))) => {
-                return Err(Error::Buffer(error));
-            }
-            Event::Frame(Err(Stop::Removed(key))) => {
-                return Err(Error::Removed(key));
-            }
-            Event::Frame(Err(Stop::Replaced)) => {
+            Err(Stop::Buffer(error)) => return Err(Error::Buffer(error)),
+            Err(Stop::Removed(key)) => return Err(Error::Removed(key)),
+            Err(Stop::Replaced) => {
                 unreachable!("invariant: a served session has no name to take over")
             }
         }
     }
 }
 
-/// What the loop of a served session or read wakes for.
-enum Event<F, S> {
-    /// The peer finished, or broke the stream or HUB WIRE.
-    Finished(Result<(), Error>),
-    Frame(Result<F, S>),
+/// Runs `work` until it ends, unless `peer` ends first: `None` when the peer finished,
+/// or its error when it broke the stream or HUB WIRE. `peer` polls first in each poll,
+/// so the node does no work after the peer's finish or message.
+async fn unless<P, W>(
+    mut peer: Pin<&mut P>,
+    work: W,
+) -> Result<Option<W::Output>, Error>
+where
+    P: Future<Output = Result<(), Error>>,
+    W: Future,
+{
+    let mut work = pin!(work);
+    poll_fn(|cx| match peer.as_mut().poll(cx) {
+        Poll::Ready(finished) => Poll::Ready(finished.map(|()| None)),
+        Poll::Pending => work.as_mut().poll(cx).map(|output| Ok(Some(output))),
+    })
+    .await
 }
 
 /// Reads what the peer sends after the keys run, and grants each credit. Returns when
