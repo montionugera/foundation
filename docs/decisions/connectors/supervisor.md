@@ -82,11 +82,15 @@
   starts no run, so no old run holds that open. The first run of a loop starts at its
   first `Opened::run` that no change cancelled, also when that call gives `Config`
   (`laptop.architect-2`, 2026-10-11T13:01:50Z:
-  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109296962). `node`
-  keeps one loop for each name, until the loop reads the removal of its connector after
-  its last run returned. An addition of a name that has a loop is a change. So the first
-  open of an out connector that an apply adds resolves before the first run of an in
-  connector that this apply or a later one adds starts. A changed out connector opens
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109296962). Lost: a
+  share that the loop takes at its next poll after the change (`36da82ebe`): a first
+  run can start between the apply and that poll (`laptop.architect-2`,
+  2026-10-11T13:01:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109296962, item 2).
+  `node` keeps one loop for each name, until the loop reads the removal of its connector
+  after its last run returned. An addition of a name that has a loop is a change. So the
+  first open of an out connector that an apply adds resolves before the first run of an
+  in connector that this apply or a later one adds starts. A changed out connector opens
   its reader again only after its old run returned, so an in connector that its apply
   adds can write before that open, and those frames do not come again before #274
   (`laptop.architect-2`, 2026-10-11T12:26:28Z:
