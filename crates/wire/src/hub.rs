@@ -172,11 +172,11 @@ impl Open {
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
-                limit_bytes: u64::from_le_bytes(fields.take()?),
+                limit_bytes: u64::from_le_bytes(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };
-        let channels = u32::from_le_bytes(fields.take()?);
+        let channels = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         if channels == 0 {
             return Err(Error::Channels);
@@ -235,7 +235,7 @@ impl Credit {
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let limit_bytes = u64::from_le_bytes(fields.take()?);
+        let limit_bytes = u64::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
     }
@@ -328,10 +328,10 @@ impl Reply {
                 Ok(Self::Behind)
             }
             HEAD => {
-                let [path] = fields.take()?;
-                let seq = u64::from_le_bytes(fields.take()?);
-                let count = u32::from_le_bytes(fields.take()?);
-                let series = u32::from_le_bytes(fields.take()?);
+                let [path] = *fields.take()?;
+                let seq = u64::from_le_bytes(*fields.take()?);
+                let count = u32::from_le_bytes(*fields.take()?);
+                let series = u32::from_le_bytes(*fields.take()?);
                 fields.end()?;
                 let path = path_of(path)?;
                 if series == 0 {

@@ -138,8 +138,8 @@ impl Put {
 
     /// The put in `fields`, the fields of a put after its kind.
     fn fields(mut fields: Fields<'_>) -> Result<Self, Error> {
-        let digest = Digest(fields.take()?);
-        let len = u32::from_le_bytes(fields.take()?);
+        let digest = Digest(*fields.take()?);
+        let len = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { digest, len })
     }
@@ -224,14 +224,14 @@ impl Reply {
         };
         let reply = match kind {
             CHUNK => Self::Chunk {
-                digest: Digest(fields.take()?),
-                len: u32::from_le_bytes(fields.take()?),
+                digest: Digest(*fields.take()?),
+                len: u32::from_le_bytes(*fields.take()?),
             },
             ABSENT => Self::Absent {
-                digest: Digest(fields.take()?),
+                digest: Digest(*fields.take()?),
             },
             STORED => Self::Stored {
-                digest: Digest(fields.take()?),
+                digest: Digest(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };

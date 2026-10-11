@@ -47,8 +47,8 @@ impl Read {
     /// [`OPEN_BYTES_MAX`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, READ)?;
-        let length = u64::from_le_bytes(fields.take()?);
-        let signature = fields.take()?;
+        let length = u64::from_le_bytes(*fields.take()?);
+        let signature = *fields.take()?;
         fields.end()?;
         if length > OPEN_BYTES_MAX {
             return Err(Error::Oversize {
@@ -147,7 +147,7 @@ impl Open {
         };
         let mut patterns = Vec::new();
         while !fields.is_empty() {
-            let len = u16::from_le_bytes(fields.take()?);
+            let len = u16::from_le_bytes(*fields.take()?);
             let pattern = std::str::from_utf8(fields.take_slice(usize::from(len))?)
                 .map_err(|error| Error::Selector(text::Error::Utf8(error)))?;
             patterns.push(pattern);
@@ -207,8 +207,8 @@ impl Places {
     /// [`Error::Length`], and [`Error::Index`] when `index` is not below `count`.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, READ)?;
-        let count = u32::from_le_bytes(fields.take()?);
-        let index = u32::from_le_bytes(fields.take()?);
+        let count = u32::from_le_bytes(*fields.take()?);
+        let index = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         if index >= count {
             return Err(Error::Index { index, count });
@@ -326,11 +326,11 @@ pub mod place {
         let mut fields = Fields::new(message);
         let mut places = Vec::new();
         while !fields.is_empty() {
-            let key = u128::from_le_bytes(fields.take()?);
-            let [len] = fields.take()?;
+            let key = u128::from_le_bytes(*fields.take()?);
+            let [len] = *fields.take()?;
             let sample = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Sample)?;
-            let [len] = fields.take()?;
+            let [len] = *fields.take()?;
             let name = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Name)?;
             places.push(Place {

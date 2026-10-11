@@ -224,9 +224,9 @@ impl Challenge {
     /// [`Error::Length`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let nonce = fields.take()?;
-        let earliest = stamp(fields.take()?);
-        let latest = stamp(fields.take()?);
+        let nonce = *fields.take()?;
+        let earliest = stamp(*fields.take()?);
+        let latest = stamp(*fields.take()?);
         fields.end()?;
         Ok(Self {
             nonce,
@@ -271,14 +271,14 @@ impl Signed {
     /// [`Error::Length`], [`Error::Subject`], and then [`Error::SmallOrder`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let [len] = fields.take()?;
+        let [len] = *fields.take()?;
         let subject = fields.take_slice(usize::from(len))?;
-        let key = fields.take()?;
-        let via = u128::from_le_bytes(fields.take()?);
-        let connection = fields.take()?;
-        let nonce = fields.take()?;
-        let expires = stamp(fields.take()?);
-        let signature = fields.take()?;
+        let key = *fields.take()?;
+        let via = u128::from_le_bytes(*fields.take()?);
+        let connection = *fields.take()?;
+        let nonce = *fields.take()?;
+        let expires = stamp(*fields.take()?);
+        let signature = *fields.take()?;
         fields.end()?;
         let subject: Name = text::read(subject).map_err(Error::Subject)?;
         let key = PublicKey::new(key).map_err(|_small| Error::SmallOrder)?;
@@ -332,8 +332,8 @@ impl Request {
     /// [`Error::Length`], and [`Error::Oversize`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
-        let signature = fields.take()?;
+        let length = *fields.take()?;
+        let signature = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,
@@ -408,7 +408,7 @@ impl Response {
     /// As [`Request::decode`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
+        let length = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,

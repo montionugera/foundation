@@ -73,8 +73,8 @@ impl<'b> Fields<'b> {
     }
 
     /// Takes the next field of `N` bytes.
-    pub(crate) fn take<const N: usize>(&mut self) -> Result<[u8; N], Length> {
-        let (&field, rest) = self.rest.split_first_chunk().ok_or(self.length())?;
+    pub(crate) fn take<const N: usize>(&mut self) -> Result<&'b [u8; N], Length> {
+        let (field, rest) = self.rest.split_first_chunk().ok_or(self.length())?;
         self.rest = rest;
         Ok(field)
     }
