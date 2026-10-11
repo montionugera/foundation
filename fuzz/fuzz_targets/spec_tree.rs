@@ -3,7 +3,8 @@
 //! in name order, `get` agrees with it on each name, and `apply` gives a tree whose
 //! entries are those entries with the changes. `spec::region::definitions` gives the
 //! error of that `diff`, the first entry in name order that is not a definition, or
-//! the decoded entries exactly when `spec::region::tree` of them has the same root.
+//! the decoded entries exactly when `spec::region::tree` of them has the same root,
+//! with each chunk of that `diff`.
 //!
 //! Input: a count of chunks, each a count of pieces, each a length, bytes, and a
 //! link. A length from `KEY` to `VALUE - 1` adds the entry key `p.a`, `p.b`, or
@@ -28,6 +29,9 @@ use spec::tree::{self, Change, Chunks, Diff, Error};
 use types::channel::Key;
 use types::digest::Digest;
 use types::name::Name;
+
+/// The entries of a diff from the empty tree, and its chunks.
+type Whole = (Vec<(Name, Vec<u8>)>, Vec<Digest>);
 
 const DELETE: u8 = 255;
 const KEY: u8 = 250;
@@ -98,8 +102,8 @@ fn check(
     names: &BTreeSet<Name>,
     changes: &[Change],
 ) {
-    let whole =
-        tree::diff(chunks, tree::empty(), root).map(|diff| entries(root, &diff));
+    let whole = tree::diff(chunks, tree::empty(), root)
+        .map(|diff| (entries(root, &diff), diff.chunks));
     let got: Vec<_> = names
         .iter()
         .map(|name| tree::get(chunks, root, name).map(|value| value.map(Vec::from)))
@@ -117,7 +121,7 @@ fn check(
     if let Err(error) = &applied {
         named(chunks, error);
     }
-    let Ok(whole) = whole else {
+    let Ok((whole, _)) = whole else {
         return;
     };
     let mut expected: BTreeMap<Name, Vec<u8>> = whole.into_iter().collect();
@@ -152,31 +156,59 @@ fn check(
 }
 
 /// `region::definitions` of the tree at `root`, where `whole` is its `diff` from the
-/// empty tree.
-fn read(chunks: &Chunks, root: Digest, whole: &Result<Vec<(Name, Vec<u8>)>, Error>) {
-    let expected = whole
-        .clone()
-        .map_err(region::Error::Tree)
-        .and_then(|entries| {
-            let definitions = entries
-                .into_iter()
-                .map(|(key, bytes)| match Definition::decode(&bytes) {
-                    Ok(definition) => Ok((key, definition)),
-                    Err(error) => Err(region::Error::Definition { key, error }),
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
+/// empty tree: its entries and its chunks.
+fn read(chunks: &Chunks, root: Digest, whole: &Result<Whole, Error>) {
+    match region::definitions(chunks, root) {
+        Ok((definitions, kept)) => {
+            let (entries, digests) = whole.as_ref().expect("a diff reads the tree");
+            assert_eq!(
+                definitions,
+                decoded(entries),
+                "definitions are not the decode"
+            );
             let rebuilt = region::tree(&mut Chunks::default(), &definitions).root;
-            if rebuilt == root {
-                Ok(definitions)
-            } else {
-                Err(region::Error::Tree(Error::Corrupt(root)))
+            assert_eq!(rebuilt, root, "definitions read a tree of another root");
+            for &digest in digests {
+                assert!(kept.get(digest).is_some(), "chunk {digest} is not kept");
             }
-        });
-    assert_eq!(
-        region::definitions(chunks, root),
-        expected,
-        "definitions is not the decode of the tree"
-    );
+        }
+        Err(region::Error::Tree(Error::Corrupt(at))) if at == root && whole.is_ok() => {
+            let (entries, _) = whole.as_ref().expect("a diff reads the tree");
+            let rebuilt = region::tree(&mut Chunks::default(), &decoded(entries)).root;
+            assert_ne!(rebuilt, root, "the tree of the definitions is refused");
+        }
+        Err(region::Error::Tree(error)) => {
+            assert_eq!(
+                whole.as_ref().err(),
+                Some(&error),
+                "not the error of a diff"
+            );
+        }
+        Err(region::Error::Definition { key, error }) => {
+            let (entries, _) = whole.as_ref().expect("a diff reads the tree");
+            let at = entries.partition_point(|(before, _)| *before < key);
+            let (found, bytes) = entries.get(at).expect("the value of the key");
+            assert_eq!(*found, key, "the key of the error is not in the tree");
+            assert_eq!(
+                Definition::decode(bytes),
+                Err(error),
+                "not the error of its key"
+            );
+            for (before, bytes) in &entries[..at] {
+                let decoded = Definition::decode(bytes);
+                assert!(decoded.is_ok(), "{before} before {key} is not a definition");
+            }
+        }
+    }
+}
+
+/// The definition of each entry, which each decodes.
+fn decoded(entries: &[(Name, Vec<u8>)]) -> BTreeMap<Name, Definition> {
+    let decode = |bytes| Definition::decode(bytes).expect("each value is a definition");
+    entries
+        .iter()
+        .map(|(key, bytes)| (key.clone(), decode(bytes)))
+        .collect()
 }
 
 /// The chunk an error names is absent for `Missing` and present for `Corrupt`. The
