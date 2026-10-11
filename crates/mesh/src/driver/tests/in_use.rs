@@ -1657,8 +1657,9 @@ fn used_gives_the_spec_at_the_stop_after_the_group_stops() {
 
 /// Checks a run of `node` whose group stopped while `used` gave the spec of `at`, after
 /// the change to `first`, with `definitions`, committed: after a power cut, the next
-/// open uses the spec of the file that the run left. Gives whether the stop came after
-/// the file of `first` was made and before `used` took it.
+/// open uses the spec of the file that the run left. Gives whether the run left the
+/// file of `first` while `used` gave the base spec, as when the stop came while `hold`
+/// ran.
 fn open_after_a_stop(
     sim: &mut Sim,
     node: &sim::node::Node,

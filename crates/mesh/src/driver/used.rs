@@ -427,7 +427,8 @@ pub(super) async fn keep(
         let done = hold(gave, &files, &held, pointer).await;
         let Some(group) = group.upgrade() else { return };
         let mut group = group.borrow_mut();
-        // `used` keeps the view at the stop, although the file is durable.
+        // After a stop, `used` keeps the view at the stop, also when a taken spec's
+        // file is now durable.
         if group.running().is_err() {
             return;
         }
