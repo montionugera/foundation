@@ -22,8 +22,8 @@
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
-  (NODE SETTINGS), and `node.failed`. `node.data` is "this user cannot use the data
-  directory as it is": each `os::Error::Dir` whatever its errno, and each
+  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot
+  use the data directory as it is": each `os::Error::Dir` whatever its errno, and each
   `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
   `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
   `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
@@ -94,9 +94,15 @@
   https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103048603).
   `start --listen` gives `Start::listen`, the address of the node's one port,
   `127.0.0.1:0` by default, so the node takes a free port and no other host reaches it
-  until the user gives an address. `main` gives it as `node::Config::listen`. A port
-  that does not bind is `node.failed`, and a value that is no socket address is
-  `ops.argument`. Shard 0 writes the file `address` in the data directory whole, as
+  until the user gives an address. `main` gives it as `node::Config::listen`. A value
+  that is no socket address is `ops.argument`. A port that does not bind is
+  `node.port`, since the user chose the address: its message is the text of
+  `node::Error::Port`, and its fix "Give `--listen` an address of this host with a
+  port that is free and that this user can bind". Lost: `node.failed`, which gives an
+  agent no fix for a value that it gave. Decided by `laptop.architect-2`
+  (2026-10-11T10:21:07Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
+  Shard 0 writes the file `address` in the data directory whole, as
   `admin.key` is written, after the mesh opens and before the port takes a session:
   the node's key, the public key of its transport, and the bound socket address, in
   one sector with a CRC32C. Its form is private to `node`, and the fuzz target

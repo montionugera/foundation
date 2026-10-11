@@ -608,10 +608,10 @@ fn a_start_on_a_port_that_another_socket_holds_fails() {
             Some(1),
             "",
             &*format!(
-                "error[node.failed]: cannot bind the node's port at {at}: address {at} \
+                "error[node.port]: cannot bind the node's port at {at}: address {at} \
                  is in use\n\
-                 fix: Fix the cause that the message states, then start the node \
-                 again\n"
+                 fix: Give `--listen` an address of this host with a port that is free \
+                 and that this user can bind\n"
             )
         )
     );
