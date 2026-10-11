@@ -62,8 +62,8 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] for a file call that fails: one of the open or the write,
-/// else the empty write.
+/// [`Error::Directory`] for a file call that fails: one of the remove, the open, or
+/// the write, else the empty write.
 pub(crate) async fn hold(
     files: &Files,
     address: &Address,
