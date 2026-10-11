@@ -2358,6 +2358,85 @@ mod tests {
         assert!(!send.pending.has_unsent_data());
     }
 
+    /// The bytes that the send buffers of `state` hold.
+    fn held(state: &StreamsState) -> u64 {
+        let streams = state.send.values().flatten();
+        streams.map(|stream| stream.pending.held()).sum()
+    }
+
+    #[test]
+    fn send_window_counts_each_held_byte() {
+        let mut server = make(Side::Server);
+        let a = open_with_credit(&mut server);
+        let b = Streams {
+            state: &mut server,
+            conn_state: &ConnState::established(),
+        }
+        .open(Dir::Uni)
+        .expect("should be able to open a stream");
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        for (id, len) in [(a, 3000), (b, 2000)] {
+            let mut stream = SendStream {
+                id,
+                state: &mut server,
+                pending: &mut retransmits,
+                conn_state: &conn_state,
+            };
+            assert_eq!(stream.write(&vec![0xFF; len]), Ok(len));
+            let send = server.send.get_mut(&id).and_then(|s| s.as_mut());
+            let send = send.expect("a send stream");
+            send.pending.poll_transmit(len + 16);
+        }
+        assert_eq!((server.unacked_data, held(&server)), (5000, 5000));
+
+        let ack = |id, offsets, fin| frame::StreamMeta { id, offsets, fin };
+        let steps = [
+            (Some(ack(a, 1200..2400, false)), 5000),
+            (Some(ack(a, 1200..2400, false)), 5000),
+            (Some(ack(b, 0..1000, false)), 4000),
+            (None, 4000),
+            (Some(ack(a, 0..1200, false)), 1600),
+            (Some(ack(a, 0..2400, false)), 1600),
+        ];
+        for (step, (ack, unacked)) in steps.into_iter().enumerate() {
+            match ack {
+                Some(frame) => server.received_ack_of(frame),
+                None => server.retransmit(frame::StreamMeta {
+                    id: a,
+                    offsets: 0..1200,
+                    fin: false,
+                }),
+            }
+            assert_eq!(
+                (server.unacked_data, held(&server)),
+                (unacked, unacked),
+                "{step}"
+            );
+        }
+
+        let mut stream = SendStream {
+            id: b,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        stream.reset(0u32.into()).expect("the stream resets");
+        assert_eq!((server.unacked_data, held(&server)), (600, 600));
+        server.received_ack_of(ack(b, 1000..2000, false));
+        assert_eq!((server.unacked_data, held(&server)), (600, 600));
+
+        let mut stream = SendStream {
+            id: a,
+            state: &mut server,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        stream.finish().expect("the stream finishes");
+        server.received_ack_of(ack(a, 2400..3000, true));
+        assert_eq!((server.unacked_data, held(&server)), (0, 0));
+    }
+
     #[test]
     fn reset_before_0rtt_rejection_sends_no_data() {
         let mut client = make(Side::Client);
