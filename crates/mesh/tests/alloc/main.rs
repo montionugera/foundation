@@ -25,7 +25,7 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 const FEW: usize = 512;
 /// The tenths of a tree build that the allocations of an apply and a read of one more
 /// definition stay under. The bound covers each allocation of the apply and the read,
-/// not the tree builds alone: they give 42.8, and a second build at the read adds 10.
+/// not the tree builds alone: they give 42.9, and a second build at the read adds 10.
 const BUILDS: u64 = 48;
 
 fn main() {
