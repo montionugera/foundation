@@ -374,6 +374,41 @@ fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
     });
 }
 
+// The node keeps only the chunks of the tree in use, so a change back to an older tree
+// gets its root, whose get fails.
+#[test]
+fn a_read_gets_the_root_of_a_tree_that_the_node_used_before() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let (a, b) = (
+            create_subjects(&["plant.a"], 1),
+            create_subjects(&["plant.b"], 1),
+        );
+        let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
+        let second = mesh.apply(first, b.clone(), BTreeMap::new()).await.unwrap();
+        let path = Path::new(BLOB).join(first.root.to_string());
+        node.fail_file(&path, Operation::Open);
+        let holders = [key(1)].into();
+        let listed = [first.root].into();
+        let settled =
+            mesh.settle_spec(second, first.root, listed, holders, BTreeMap::new());
+        let moved = settled.await.unwrap();
+        let cause = files::Error::Io {
+            path,
+            operation: Operation::Open,
+            code: 5,
+        };
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: moved,
+                cause: Cause::Blob(blob::Error::Files(cause)),
+            }),
+            ..in_use(second, &b)
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
+    });
+}
+
 // The read misses one of two chunks. The retry gets it, and the next read waits on a
 // get of the other, so the cause of the first read stays.
 #[test]
