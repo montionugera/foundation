@@ -112,6 +112,12 @@ impl<'a> View<'a> {
         Self { frame, mask }
     }
 
+    /// The whole frame, with the series that the mask leaves out.
+    #[must_use]
+    pub fn frame(&self) -> &'a Frame {
+        self.frame
+    }
+
     /// The key set of the frame and the mask.
     #[must_use]
     pub fn key_set(&self) -> key_set::Key {
@@ -353,6 +359,7 @@ mod tests {
         assert_eq!(view.range(0), None);
         assert_eq!(view.range(1), frame.range(1));
         assert_eq!(view.range(1), Some(Range::default()));
+        assert!(std::ptr::eq(view.frame(), &raw const frame));
     }
 
     #[test]

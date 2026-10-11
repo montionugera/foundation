@@ -145,7 +145,7 @@ async fn relay(
             }
             Ok(Ok(taken)) => {
                 layout
-                    .send(state, sender, taken.frame(), taken.set())
+                    .send(state, sender, taken.view().frame(), taken.set())
                     .await?;
             }
             Ok(Err(reader::Ended::Behind)) => {

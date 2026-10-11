@@ -71,22 +71,17 @@ pub struct Config {
 /// channels and their index.
 #[derive(Debug)]
 pub struct Received<'a> {
-    frame: &'a Frame,
+    view: View<'a>,
     lens: &'a Lens,
     /// The `given` of the reader.
     given: &'a Cell<Option<u64>>,
 }
 
 impl<'a> Received<'a> {
-    /// The whole frame, which the view masks.
-    pub(crate) fn frame(&self) -> &'a Frame {
-        self.frame
-    }
-
     /// The frame through the mask. Its series are encoded.
     #[must_use]
     pub fn view(&self) -> View<'a> {
-        View::new(self.frame, &self.lens.mask)
+        self.view
     }
 
     /// The key set that the view's entries index.
@@ -99,7 +94,7 @@ impl<'a> Received<'a> {
     /// frame is safe at its target.
     #[must_use]
     pub fn position(&self) -> Position {
-        let position = self.lens.after(self.frame);
+        let position = self.lens.after(self.view.frame());
         self.given.set(Some(position.live));
         position
     }
@@ -502,7 +497,7 @@ impl Reader {
             };
             let frame = self.frame.insert(frame);
             Ok(Received {
-                frame,
+                view: View::new(frame, &lens.mask),
                 lens,
                 given: &self.given,
             })
