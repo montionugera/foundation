@@ -22,14 +22,11 @@ fn in_use(pointer: Pointer, definitions: &BTreeMap<Name, Definition>) -> Spec {
 /// What a read of a node of a cluster gives once the spec of `pointer`, with
 /// `definitions`, took effect.
 fn seen(pointer: Pointer, definitions: &BTreeMap<Name, Definition>) -> Seen {
-    let mut chunks = Chunks::default();
-    spec::region::tree(&mut chunks, definitions);
     Seen {
         pointer: Some(pointer),
         definitions: definitions.clone(),
         behind: None,
         newest: None,
-        chunks,
     }
 }
 
