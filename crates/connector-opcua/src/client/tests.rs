@@ -189,12 +189,18 @@ fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
 }
 
 #[test]
-fn a_read_after_the_server_closes_fails_with_its_status() {
-    let (read, _) = run(0, async |node| {
+fn a_read_after_the_server_closes_fails_and_open62541_refuses_the_next() {
+    let (reads, _) = run(0, async |node| {
         let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
-        client.read(VALUE).await
+        (client.read(VALUE).await, client.read(VALUE).await)
     });
-    assert_eq!(read, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
+    assert_eq!(
+        reads,
+        (
+            Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+            Err(Status::BAD_SERVER_NOT_CONNECTED)
+        )
+    );
 }
 
 /// The answer of a read whose future dropped goes to its own slot, which the callback
@@ -229,7 +235,8 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
 
 /// A drop of a client with an active session ends, and calls the callback of each
 /// read in flight, so the answer of a client must outlive its delete. The server then
-/// closes.
+/// closes. The test reads through C on the private client, since `read` borrows the
+/// client, so no public call keeps a read in flight across a drop.
 #[test]
 fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
     let (value, _) = run(0, async |node| {

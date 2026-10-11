@@ -86,13 +86,9 @@ impl Client {
             answer: Box::default(),
             connections,
         };
-        // SAFETY: the client lives, and copies the URL.
-        let status = Status(unsafe {
-            ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr())
-        });
-        if status != Status::GOOD {
-            return Err(status);
-        }
+        // SAFETY: the client lives, and copies the URL. The drive reads the status that
+        // it gives from the state of the client.
+        unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
         this.connections
             .drive(|cx| {
                 this.connections.events().run();
