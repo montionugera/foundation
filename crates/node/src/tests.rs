@@ -6180,6 +6180,32 @@ mod name {
         assert_eq!(read(&mut sim, &host), kept, "keeps the file");
     }
 
+    /// A name that fails the claim stops the start before any ring opens.
+    #[test]
+    fn a_name_that_fails_the_claim_opens_no_ring() {
+        let renamed = Error::Renamed {
+            stored: name("edge"),
+            given: name("cloud"),
+        };
+        for (stored, error) in [(None, Error::Name), (Some(name("edge")), renamed)] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            match stored {
+                Some(stored) => sim
+                    .run_on(&host, move |host, _| async move {
+                        crate::name::keep(&host.files(), &stored).await
+                    })
+                    .expect("the run ends")
+                    .expect("keeps the name"),
+                None => write(&mut sim, &host, FILE, vec![0; LEN]),
+            }
+            let started = start_and_stop(&mut sim, &host, "cloud");
+            assert_eq!(started, Err(error.clone()));
+            let made = ["lock", "name", "shards-2"].map(PathBuf::from);
+            assert_eq!(listed(&mut sim, &host, ""), made, "{error}");
+        }
+    }
+
     /// A reserved name is the first failure, also before a disk budget that holds no
     /// ring.
     #[test]
