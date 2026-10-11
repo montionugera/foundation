@@ -381,11 +381,7 @@ fn performer(text: &[Vec<String>]) -> bool {
 /// lines, has a line `Text fixes:` with a value ([`stated`]).
 fn fixed(shown: &Shown<'_>) -> bool {
     let blocks = shown.before_end().iter();
-    states(
-        blocks.map(|block| shown.paragraph(Some(block))),
-        FIXES,
-        &[FIXES],
-    )
+    states(blocks.map(|block| shown.paragraph(Some(block))), FIXES, &[])
 }
 
 /// The reviewers that the value of a `Reviewers:` line lists.
@@ -505,20 +501,23 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
 /// `text` ([`Shown::text`]) has a value ([`stated`]).
 fn named(text: &[Vec<String>]) -> bool {
-    states(text.iter().map(Vec::as_slice), END[2], &END)
+    states(text.iter().map(Vec::as_slice), END[2], &END[..2])
 }
 
 /// Whether a line of `paragraphs` starts with `name:` and has a value ([`stated`]),
-/// which may wrap onto the lines after it up to one that starts an entry of `names`
-/// ([`entries`]).
+/// which may wrap onto the lines after it up to one that starts an entry of `name` or
+/// of `others` ([`entries`]).
 fn states<'p>(
     paragraphs: impl IntoIterator<Item = &'p [String]>,
     name: &str,
-    names: &[&str],
+    others: &[&str],
 ) -> bool {
+    let names: Vec<&str> = std::iter::once(name)
+        .chain(others.iter().copied())
+        .collect();
     paragraphs.into_iter().any(|p| {
         (0..p.len()).any(|i| {
-            let (values, _) = entries(&p[i..], names);
+            let (values, _) = entries(&p[i..], &names);
             values
                 .first()
                 .is_some_and(|(n, value)| *n == name && stated(value))
