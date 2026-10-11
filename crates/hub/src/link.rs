@@ -96,7 +96,7 @@ impl Link {
                     serve::run(&state, incoming).await.map(|()| Served::Ended)
                 }
                 Role::Hello(session) => client::hello(&session, incoming).await,
-                Role::Later(session) => client::stream(&session, incoming).await,
+                Role::Later(session) => client::later(&session, incoming).await,
             }
         }
     }

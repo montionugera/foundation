@@ -340,8 +340,9 @@ async fn expiry(session: &Session) -> Error {
     }
 }
 
-/// Serves a request or read stream of `session`, by the kind of its first message.
-pub(crate) async fn stream(
+/// Serves a later stream of `session`, a request or a read, by the kind of its first
+/// message.
+pub(crate) async fn later(
     session: &Rc<Session>,
     incoming: Incoming,
 ) -> Result<Served, Error> {
