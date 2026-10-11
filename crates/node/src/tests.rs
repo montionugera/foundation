@@ -4713,51 +4713,6 @@ mod port {
             drop(node);
         }
 
-        /// A node outside the region holds the oldest place, 255 programs fill the
-        /// bound, and the node dials again from a new transport. The node's transport
-        /// closes the old session, as the newer one wins, and the new one takes the
-        /// old one's place with its age: the next program closes it, and no program.
-        #[test]
-        fn a_node_outside_the_region_that_dials_again_keeps_its_place_and_its_age() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-            let node = start(&hosts[0], region(&pair(&hosts)));
-            let listen = listen(&hosts[0]);
-            let attacker = sim.node(sim::node::Config::default());
-            let out = Arc::new(Mutex::new(None));
-            let seen = Arc::clone(&out);
-            shard(&attacker, move |own, tasks| async move {
-                let at = [Address::Udp(listen)];
-                let (first, _) = transport(&own, tasks.clone(), CLIENT);
-                let old = first.dial(KEY.public(), &at).await.expect("a session");
-                own.clock().sleep(Span::SECOND).await;
-                let (program, pool) = program(&own, tasks.clone());
-                let held = create_sessions(&program, &at, 255).await;
-                let closed = closings(&held, &tasks);
-                let (second, second_pool) = transport(&own, tasks, CLIENT);
-                let new = second.dial(KEY.public(), &at).await.expect("a session");
-                let of_new = sent_clock(&new, &second_pool, &own).await;
-                let of_old = old.closed().await;
-                let next = program.dial(KEY.public(), &at).await.expect("a session");
-                let of_next = sent_clock(&next, &pool, &own).await;
-                let new_closed = new.closed().await;
-                own.clock().sleep(Span::SECOND).await;
-                let closed = closed.borrow().clone();
-                *seen.lock().unwrap() =
-                    Some((of_old, of_new, of_next, new_closed, closed));
-                drop((held, program, first, second, next));
-            });
-            run_and_stop(&mut sim, &node);
-            assert_eq!(node.join(), Ok(()));
-            let (of_old, of_new, of_next, new_closed, closed) =
-                out.lock().unwrap().take().expect("the peer ran");
-            assert_eq!(of_old, transport::Error::PeerClosed { code: Code(0) });
-            assert_eq!(of_new, admitted());
-            assert_eq!(of_next, admitted());
-            assert_eq!(new_closed, refused());
-            assert_eq!(closed, vec![]);
-        }
-
         /// 255 programs and the old session of a node outside the region fill the
         /// bound, and the node dials again while a program dials too. Both get a
         /// session, and the program closes the oldest program. A redial after the
@@ -4940,6 +4895,67 @@ mod port {
             assert!(
                 open_olds + open_programs <= 256,
                 "{open_olds} old node sessions and {open_programs} programs are open"
+            );
+        }
+
+        /// A node outside the region holds the oldest place, 255 programs fill the
+        /// bound, and the node dials again from a new transport, which closes the old
+        /// session. When the old session still holds the place at `accept`, the new one
+        /// keeps its age, and the next program closes it; else the new one takes a new
+        /// place, and the next program closes the oldest program. No other session
+        /// closes, and each outcome occurs at some seed.
+        #[test]
+        fn a_node_that_dials_again_keeps_its_age_or_takes_a_new_place() {
+            let kept = (vec![(0, refused())], vec![]);
+            let fresh = (vec![], vec![(0, refused())]);
+            let mut outcomes = Vec::new();
+            for seed in 0..8 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = start(&hosts[0], region(&pair(&hosts)));
+                let listen = listen(&hosts[0]);
+                let attacker = sim.node(sim::node::Config::default());
+                let out = Arc::new(Mutex::new(None));
+                let seen = Arc::clone(&out);
+                shard(&attacker, move |own, tasks| async move {
+                    let at = [Address::Udp(listen)];
+                    let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    own.clock().sleep(Span::SECOND).await;
+                    let (program, _) = program(&own, tasks.clone());
+                    let held = create_sessions(&program, &at, 255).await;
+                    let closed = closings(&held, &tasks);
+                    let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                    let new = second.dial(KEY.public(), &at).await.expect("a session");
+                    let of_old = old.closed().await;
+                    own.clock().sleep(Span::SECOND).await;
+                    let next =
+                        program.dial(KEY.public(), &at).await.expect("a session");
+                    let later = [new, next];
+                    let of_later = closings(&later, &tasks);
+                    own.clock().sleep(Span::SECOND).await;
+                    let of_later = of_later.borrow().clone();
+                    *seen.lock().unwrap() =
+                        Some((of_old, (of_later, closed.borrow().clone())));
+                    drop((held, program, first, second, later));
+                });
+                run_and_stop(&mut sim, &node);
+                assert_eq!(node.join(), Ok(()));
+                let (of_old, outcome) =
+                    out.lock().unwrap().take().expect("the peer ran");
+                assert_eq!(of_old, transport::Error::PeerClosed { code: Code(0) });
+                assert!(
+                    outcome == kept || outcome == fresh,
+                    "seed {seed}: {outcome:?}"
+                );
+                outcomes.push(outcome);
+            }
+            assert!(
+                outcomes.contains(&kept) && outcomes.contains(&fresh),
+                "{outcomes:?}"
             );
         }
 
