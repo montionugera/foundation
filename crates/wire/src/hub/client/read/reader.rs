@@ -14,9 +14,15 @@ pub struct Reader {
 /// The message the stream expects next.
 #[derive(Debug)]
 enum Next {
+    Before(Before),
+    Home(hub::Reader),
+}
+
+/// The message the stream expects before the last place.
+#[derive(Debug)]
+enum Before {
     Places,
     Run { places: Places, remain: u32 },
-    Home(hub::Reader),
 }
 
 /// One message of a read stream from the node.
@@ -36,7 +42,7 @@ impl Reader {
     pub fn new(mode: Mode) -> Self {
         Self {
             latest: mode == Mode::Latest,
-            next: Next::Places,
+            next: Next::Before(Before::Places),
         }
     }
 
@@ -57,24 +63,61 @@ impl Reader {
     pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromNode<'m>, Error> {
         match &mut self.next {
             Next::Home(reader) => reader.decode(message).map(FromNode::Home),
-            Next::Places | Next::Run { .. } => self.places(message),
+            Next::Before(before) => {
+                let (event, home) = before.decode(message, self.latest)?;
+                if let Some(home) = home {
+                    self.next = Next::Home(home);
+                }
+                Ok(event)
+            }
         }
     }
 
-    /// Decodes a message before the last place.
+    /// As [`hub::Reader::body`](crate::hub::Reader::body), and `None` before the
+    /// last place.
+    #[must_use]
+    pub fn body(&self) -> Option<usize> {
+        match &self.next {
+            Next::Home(reader) => reader.body(),
+            Next::Before(_) => None,
+        }
+    }
+
+    /// As [`hub::Reader::end`](crate::hub::Reader::end), and [`Error::Finished`]
+    /// before the last place.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Finished`] before the last place, and the errors of
+    /// [`hub::Reader::end`] after it.
+    pub fn end(&self) -> Result<(), Error> {
+        match &self.next {
+            Next::Home(reader) => reader.end(),
+            Next::Before(_) => Err(Error::Finished),
+        }
+    }
+}
+
+impl Before {
+    /// Decodes `message`. After the last place, it also gives the session, latest
+    /// when `latest`.
     #[cold]
     #[inline(never)]
-    fn places<'m>(&mut self, message: &'m [u8]) -> Result<FromNode<'m>, Error> {
-        match &mut self.next {
-            Next::Places => {
+    fn decode<'m>(
+        &mut self,
+        message: &'m [u8],
+        latest: bool,
+    ) -> Result<(FromNode<'m>, Option<hub::Reader>), Error> {
+        match self {
+            Self::Places => {
                 let places = Places::decode(message)?;
-                self.next = Next::Run {
+                *self = Self::Run {
                     places,
                     remain: places.count,
                 };
-                Ok(FromNode::Places(places))
+                Ok((FromNode::Places(places), None))
             }
-            Next::Run { places, remain } => {
+            Self::Run { places, remain } => {
                 let run = place::decode(message)?;
                 let rest = rest_of_run(*remain, run.len())?;
                 let first = (places.count.checked_sub(*remain))
@@ -89,36 +132,9 @@ impl Reader {
                     });
                 }
                 *remain = rest;
-                if rest == 0 {
-                    self.next = Next::Home(hub::Reader::of(places.count, self.latest));
-                }
-                Ok(FromNode::Run(run))
+                let home = (rest == 0).then(|| hub::Reader::of(places.count, latest));
+                Ok((FromNode::Run(run), home))
             }
-            Next::Home(_) => unreachable!("the session decodes after the last place"),
-        }
-    }
-
-    /// As [`hub::Reader::body`](crate::hub::Reader::body), and `None` before the
-    /// last place.
-    #[must_use]
-    pub fn body(&self) -> Option<usize> {
-        match &self.next {
-            Next::Home(reader) => reader.body(),
-            Next::Places | Next::Run { .. } => None,
-        }
-    }
-
-    /// As [`hub::Reader::end`](crate::hub::Reader::end), and [`Error::Finished`]
-    /// before the last place.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Finished`] before the last place, and the errors of
-    /// [`hub::Reader::end`] after it.
-    pub fn end(&self) -> Result<(), Error> {
-        match &self.next {
-            Next::Home(reader) => reader.end(),
-            Next::Places | Next::Run { .. } => Err(Error::Finished),
         }
     }
 }
