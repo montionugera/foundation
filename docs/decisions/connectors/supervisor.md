@@ -43,17 +43,26 @@
   Supersedes "At a spec change, `node` cancels each run and awaits it before it starts
   the new supervisor" of
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231. A
-  connector that a change adds starts at once, unless the last run of its name has
-  not returned: then it starts after that run returned, so no two runs write one set
-  of status channels. A change of a connector whose run waits changes the connector
-  that the run starts with, so a name has at most one run that waits. This supersedes
-  "A connector that the change adds: start its run at once" of item 3 of 6074718616
-  (`laptop.architect-2`, 2026-10-10T15:29:59Z:
-  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). After a
-  run returns, the supervisor waits, with no timeout, until each task that the run
-  spawned through `Context::tasks` ended, and only then starts its backoff. A task
-  that does not end at the cancel is a defect of its kind (`laptop.architect-2`,
-  2026-10-08T19:04:15Z:
+  connector that a change adds starts once each open of the change resolved (below),
+  unless the last run of its name has not returned: then it starts after that run
+  returned, so no two runs write one set of status channels. A change of a connector
+  whose run waits changes the connector that the run starts with, so a name has at most
+  one run that waits. This supersedes "A connector that the change adds: start its run
+  at once" of item 3 of 6074718616 (`laptop.architect-2`, 2026-10-10T15:29:59Z:
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). While a
+  first reader open waits for a home, no first run starts on the node. At a start in a
+  region with no quorum, an out connector whose index has no home holds each connector
+  of the node until the region names that home (#2380). A region of one node names each
+  home with its own vote (`laptop.architect-2`, 2026-10-11T07:34:44Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, question
+  2). So `node` starts a first run only once no `Supervisor::open` on the node is
+  pending. The open of each connector that an apply adds is pending from that apply, and
+  each later open from the time it starts. So a connector that a change adds starts once
+  each open of that change resolved, and an out connector of the change reads each frame
+  of an in connector of the change. After a run returns, the supervisor waits, with no
+  timeout, until each task that the run spawned through `Context::tasks` ended, and only
+  then starts its backoff. A task that does not end at the cancel is a defect of its
+  kind (`laptop.architect-2`, 2026-10-08T19:04:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337). It also
   waits so before it returns (`laptop.architect-2`, 2026-10-09T01:06:45Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6072159701, item
