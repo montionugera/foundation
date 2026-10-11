@@ -4,22 +4,24 @@ use std::mem::MaybeUninit;
 use std::thread;
 
 use env::thread::Error;
+use tokio::sync::oneshot;
 
 /// Holds each of SIGINT and SIGTERM that reaches the process: one that the calling
 /// thread does not block and whose action is not `SIG_IGN`. Holds it on the calling
-/// thread and each thread it starts later, and starts thread `signal`, which calls
-/// `fire` at the first, then takes them as with no hold, so a signal that the caller
+/// thread and each thread it starts later, and starts thread `signal`, which fires the
+/// receiver at the first, then takes them as with no hold, so a signal that the caller
 /// blocked stays blocked. The thread has no handle: it lives until the process ends,
-/// to take the second signal. Gives whether it holds one: with none, no thread starts
-/// and `fire` drops. When the thread cannot start, the mask stays as it was.
+/// to take the second signal. Gives `None` when it holds neither: then no thread
+/// starts. When the thread cannot start, the mask stays as it was.
 #[expect(
     clippy::disallowed_methods,
     reason = "an env Handle joins its thread, and this one never ends"
 )]
-pub(crate) fn hold(fire: impl FnOnce() + Send + 'static) -> Result<bool, Error> {
+pub(crate) fn hold() -> Result<Option<oneshot::Receiver<()>>, Error> {
     let Some(set) = reaching() else {
-        return Ok(false);
+        return Ok(None);
     };
+    let (fire, fired) = oneshot::channel();
     // Before the start, so that the thread inherits the block.
     let old = mask(libc::SIG_BLOCK, &set);
     let name = "signal";
@@ -27,7 +29,7 @@ pub(crate) fn hold(fire: impl FnOnce() + Send + 'static) -> Result<bool, Error> 
         .name(name.to_owned())
         .spawn(move || serve(&set, &old, fire))
     {
-        Ok(_) => Ok(true),
+        Ok(_) => Ok(Some(fired)),
         Err(e) => {
             mask(libc::SIG_SETMASK, &old);
             Err(Error::Start {
@@ -40,6 +42,7 @@ pub(crate) fn hold(fire: impl FnOnce() + Send + 'static) -> Result<bool, Error> 
 
 /// The set of SIGINT and SIGTERM that reach the process, or `None` when neither does.
 fn reaching() -> Option<libc::sigset_t> {
+    // An empty block changes nothing and gives the mask.
     let blocked = mask(libc::SIG_BLOCK, &empty());
     let mut set = empty();
     let mut any = false;
@@ -76,14 +79,15 @@ fn empty() -> libc::sigset_t {
     unsafe { set.assume_init() }
 }
 
-/// Calls `fire` at the first signal of `set`, then sets the mask of the thread to
+/// Fires `fire` at the first signal of `set`, then sets the mask of the thread to
 /// `old`, the mask before the hold.
-fn serve(set: &libc::sigset_t, old: &libc::sigset_t, fire: impl FnOnce()) -> ! {
+fn serve(set: &libc::sigset_t, old: &libc::sigset_t, fire: oneshot::Sender<()>) -> ! {
     let mut signal = 0;
     // SAFETY: `set` is an initialized sigset, and `signal` an int that the call writes.
     let rc = unsafe { libc::sigwait(set, &raw mut signal) };
     assert_eq!(rc, 0, "invariant: sigwait of a valid set does not fail");
-    fire();
+    // The future may be gone, as when the process stops on its own.
+    fire.send(()).unwrap_or(());
     mask(libc::SIG_SETMASK, old);
     // A signal goes only to a thread that takes it, so this one stays.
     loop {
