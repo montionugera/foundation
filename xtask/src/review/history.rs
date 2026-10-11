@@ -41,23 +41,28 @@ impl<'a> History<'a> {
             return Ok(Place::Off);
         };
         let base = self.base()?;
-        let mut commit =
+        let head =
             self.git(&["rev-parse", "--verify", &format!("{head}^{{commit}}")])?;
+        let range = format!("{end}..{head}");
+        let chain = self.git(&["rev-list", "--first-parent", "--parents", &range])?;
+        let chain: Vec<_> = chain.lines().collect();
+        let parent = chain.last().and_then(|line| line.split(' ').nth(1));
+        if end != head && parent != Some(end.as_str()) {
+            return Ok(Place::Off);
+        }
         let mut place = Place::Head;
-        while commit != end {
-            let line = self.git(&["rev-list", "--parents", "-n", "1", &commit])?;
-            if let [_, parent] = line.split(' ').collect::<Vec<_>>()[..] {
+        for line in chain {
+            let commits: Vec<_> = line.split(' ').collect();
+            if commits.len() == 2 {
                 place = Place::Before;
-                commit = parent.to_string();
                 continue;
             }
-            let Some((first, second)) = self.base_merge(&line, &base)? else {
+            let Some((first, second)) = self.base_merge(line, &base)? else {
                 return Ok(Place::Off);
             };
-            if !self.clean(&commit, first, second)? {
+            if !self.clean(commits[0], first, second)? {
                 return Ok(Place::Off);
             }
-            commit = first.to_string();
         }
         Ok(place)
     }

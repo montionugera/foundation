@@ -234,6 +234,21 @@ fn places_on_the_first_parent_chain_only() {
 }
 
 #[test]
+fn refuses_an_end_off_the_chain_after_clean_merges_of_the_base() {
+    let (repo, _) = Repo::with_pr("off");
+    let old = repo.advance_main("c.md", "one\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let main = repo.advance_main("c.md", "two\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let end = repo.commit("a.md", "text\n");
+    let head = repo.commit("b.md", "text\n");
+    assert_eq!(repo.place(&end, &head), Ok(Place::Before));
+    assert_eq!(repo.place(&main, &head), Ok(Place::Off));
+    assert_eq!(repo.place(&old, &head), Ok(Place::Off));
+    repo.remove();
+}
+
+#[test]
 fn passes_commits_that_change_no_code_after_the_end() {
     let (repo, _) = Repo::with_pr("text");
     let end = repo.commit("a.rs", "fn a() {}\n");
