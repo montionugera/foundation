@@ -14,7 +14,7 @@
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
 //! request, response, or read, so the receiver counts it to find where it ends. No
-//! message follows the body of a request or a response.
+//! message follows a body.
 //!
 //! The program knows the kind of each stream, so it calls the `decode` of the message
 //! that it expects. The node knows the kind of the hello stream only: it decodes the
@@ -429,7 +429,7 @@ impl Response {
     }
 }
 
-/// The rest of the body of one request or response.
+/// The rest of the body of one request, response, or read.
 #[derive(Debug)]
 pub struct Body(body::Count);
 
