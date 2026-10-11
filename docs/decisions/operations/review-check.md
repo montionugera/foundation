@@ -109,9 +109,7 @@
   (`git merge-tree`) and the range to the head changes no code, read as the range of a
   round with `Breaker: skipped` is read. When a commit that is not a merge follows it,
   its round comment has a line `Text fixes:` that is not `Text fixes: none`
-  (TEXT FIXES). The line counts when it starts a line of a top-level paragraph after the
-  round heading, other than the end lines, and when the first word of its value, read as
-  that of an end line, is not `none`. Decided by the director at 2026-10-10T23:01:29Z
+  (TEXT FIXES). Decided by the director at 2026-10-10T23:01:29Z
   (https://github.com/synnaxlabs/foundation/issues/2315), 2026-10-10T23:21:22Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281), and
   2026-10-10T23:29:42Z
@@ -120,10 +118,15 @@
   (https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621).
   Supersedes ruling 1 of
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989
-  (2026-10-07T06:15:46Z). A merge of the base is not clean when the base moves a path
-  that the PR changed since their merge base, and that is not code, to a code path, by
-  the rename detection of the merge. A base move of a path that the PR did not change
-  stays clean. Decided by the director at 2026-10-07T17:21:14Z
+  (2026-10-07T06:15:46Z). The line counts when it starts a line of a top-level paragraph
+  after the round heading, other than the end lines, and when the first word of its
+  value, read as that of an end line, is not `none`. Decided by the director at
+  2026-10-11T00:54:34Z
+  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358). A merge
+  of the base is not clean when the base moves a path that the PR changed since their
+  merge base, and that is not code, to a code path, by the rename detection of the
+  merge. A base move of a path that the PR did not change stays clean. Decided by the
+  director at 2026-10-07T17:21:14Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385). When
   the last round is a later round with `Breaker: skipped`, it fails if its range changes
   code: a change to a file that is not a `.md` file (its lines, its mode, or its path),
