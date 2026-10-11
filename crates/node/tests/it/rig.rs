@@ -1188,8 +1188,8 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`walked`] and while [`left`] fills its draft, as
-/// a killed run does. Does nothing when [`DIES`] is not set.
+/// Aborts after it made the tree of [`create_tree`] and while [`left`] fills its
+/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1198,7 +1198,7 @@ fn a_run_dies_while_it_leaves_a_directory() {
         reason = "the parent test sets it for the child"
     )]
     if std::env::var_os(DIES).is_some() {
-        walked(0);
+        create_tree(0);
         left(gone(), "died", |_| std::process::abort());
     }
 }
@@ -1238,7 +1238,7 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
 #[cfg(unix)]
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
     for run in 0..20 {
-        let dir = walked(run);
+        let dir = create_tree(run);
         let path = dir.clone();
         #[expect(
             clippy::disallowed_methods,
@@ -1264,7 +1264,7 @@ fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
 /// Makes the tree that [`a_walk_that_another_sweep_removes_ends_only_when_it_is_gone`]
 /// walks in its `run`: 300 directories of 10 files each.
 #[cfg(unix)]
-fn walked(run: u32) -> PathBuf {
+fn create_tree(run: u32) -> PathBuf {
     let dir = draft(&format!("walked-{run}"));
     for sub in 0..300 {
         let sub = dir.join(format!("d{sub}"));
