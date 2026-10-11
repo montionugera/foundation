@@ -568,6 +568,19 @@ fn a_founding_that_does_not_read_after_the_name_file_is_gone_fails_the_name() {
     assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
 }
 
+/// With no file `name` and no file `node.key`, [`crate::name`] reads no founding, so a
+/// founding that does not read gives no error.
+#[test]
+fn a_directory_with_no_node_key_reads_no_founding_for_the_name() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    remove(&mut sim, &host, identity::FILE);
+    host.fail_file(Path::new(FOUNDING), env::files::Operation::ReadAt);
+    assert_eq!(named(&mut sim, &host), Err(Error::Unnamed));
+}
+
 /// With no file `name`, no file `node.key`, or the key of a node with no card in the
 /// founding, gives no stored name, and a file `node.key` that a node did not write
 /// gives [`Error::Key`].

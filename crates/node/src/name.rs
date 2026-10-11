@@ -110,12 +110,12 @@ fn same(stored: Name, given: &Name) -> Result<(), Error> {
 /// stores, or `None` with no founding, no file `node.key`, or no card of the node in
 /// the founding.
 async fn card(files: &Files) -> Result<Option<Name>, Error> {
+    let Some(key) = identity::key(files).await? else {
+        return Ok(None);
+    };
     let pool = Rc::new(block::Pool::heap(POOL));
     let founding = mesh::founding(files, &directory::mesh(), pool).await;
     let Some(founding) = founding.map_err(Error::Mesh)? else {
-        return Ok(None);
-    };
-    let Some(key) = identity::key(files).await? else {
         return Ok(None);
     };
     let mut members = founding.members.into_iter();

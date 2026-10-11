@@ -3990,7 +3990,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_498_387;
+        const WRITE: i64 = 1_793_740_641;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -6478,11 +6478,14 @@ mod port {
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
         /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader opens before the node has mesh time, so it
-        /// sees the run of the start.
+        /// one that keeps it. The reader and the run of the start race, and with the
+        /// seed 1 the reader opens first, so it sees that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
-            let mut sim = sim::Sim::new(sim::Config::default());
+            let mut sim = sim::Sim::new(sim::Config {
+                seed: 1,
+                ..sim::Config::default()
+            });
             let host = keyed(&mut sim, 2);
             let founding = region(&[member(OWN, &KEY, &host)]);
             let placed = connector("influx");
