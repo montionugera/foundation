@@ -105,12 +105,9 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let unnamed = |text: &str| format!("has `{text}`, which names no commit");
-        let Some(from_sha) = self.named(from)? else {
-            return Ok(Some(unnamed(from)));
-        };
-        let Some(end_sha) = self.sha(end)? else {
-            return Ok(Some(unnamed(end)));
+        let (from_sha, end_sha) = match self.ends(from, end)? {
+            Ok(ends) => ends,
+            Err(unnamed) => return Ok(Some(unnamed)),
         };
         if from_sha == end_sha {
             return Ok(None);
@@ -136,25 +133,62 @@ impl<'a> History<'a> {
                 )));
             }
         }
-        let bases = self.git(&["merge-base", "--all", &end_sha, &base])?;
-        let mut bases: Vec<_> = bases.lines().collect();
-        bases.sort_unstable();
-        let [newest] = bases[..] else {
-            return Ok(Some(format!(
-                "holds the base at more than one newest commit: `{}`",
-                bases.join("`, `")
-            )));
+        let newest = match self.newest(&end_sha, &base)? {
+            Ok(newest) => newest,
+            Err(many) => return Ok(Some(many)),
         };
-        let merged = self.merged(&from_sha, newest)?;
+        let merged = self.merged(&from_sha, &newest)?;
         if let Some(path) = merged.code_conflict() {
             return Ok(Some(format!(
                 "has a conflict in `{path}` between its start and the base"
             )));
         }
-        if let Some(moved) = self.moved_into_code(&from_sha, newest, &merged.tree)? {
+        if let Some(moved) = self.moved_into_code(&from_sha, &newest, &merged.tree)? {
             return Ok(Some(moved));
         }
         self.first_change(&merged.tree, &end_sha)
+    }
+
+    /// The commits that `from` and `end` name, as `code_change` reads them. The inner
+    /// `Err` is the phrase "has `<text>`, which names no commit" for the first of the
+    /// two that names none.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn ends(
+        &self,
+        from: &str,
+        end: &str,
+    ) -> Result<Result<(String, String), String>, String> {
+        let unnamed = |text: &str| format!("has `{text}`, which names no commit");
+        let Some(from_sha) = self.named(from)? else {
+            return Ok(Err(unnamed(from)));
+        };
+        let Some(end_sha) = self.sha(end)? else {
+            return Ok(Err(unnamed(end)));
+        };
+        Ok(Ok((from_sha, end_sha)))
+    }
+
+    /// The newest commit of `base`, the SHA of the base, that the commit `end` holds.
+    /// The inner `Err` is the phrase "holds the base at more than one newest commit:
+    /// `<commit>`, `<commit>`".
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn newest(&self, end: &str, base: &str) -> Result<Result<String, String>, String> {
+        let bases = self.git(&["merge-base", "--all", end, base])?;
+        let mut bases: Vec<_> = bases.lines().collect();
+        bases.sort_unstable();
+        let [newest] = bases[..] else {
+            return Ok(Err(format!(
+                "holds the base at more than one newest commit: `{}`",
+                bases.join("`, `")
+            )));
+        };
+        Ok(Ok(newest.to_string()))
     }
 
     /// The first code change from the tree-ish `old` to `new`, as `code_change`
