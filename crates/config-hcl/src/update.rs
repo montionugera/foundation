@@ -1116,6 +1116,13 @@ mod tests {
         let out = "a = \"x\\n\"\nb = 2\nc = 3\n";
         let want = "a = <<EOT\nx\nEOT\nb = 2\nc = 3\n";
         assert!(!quoted_at_end("a = 1\nb = 2", out, want));
+        let out = "ba = \"x\\n\"\na = 2\nc = 3\n";
+        let want = "ba = <<EOT\nx\nEOT\na = 2\nc = 3\n";
+        assert!(!quoted_at_end("ba = 1\na = 2", out, want), "line");
+        assert!(
+            !quoted_at_end("a = 1", "a = \"x\"\n", "a = <<EOT\nx\nEOT\n"),
+            "one line"
+        );
         assert_eq!(
             updated("a = 1\nb = 2", "a = \"x\\n\"\nb = 2"),
             "a = <<EOT\nx\nEOT\nb = 2"
@@ -1124,13 +1131,8 @@ mod tests {
 
     #[test]
     fn quotes_the_last_value_of_an_unended_text_with_more_bytes_on_its_line() {
-        let new = "a = \"x\\n\"";
-        let out = updated("a = 1  ", new);
-        let want = updated("a = 1  \n", new);
-        assert_eq!(out, "a = \"x\\n\"  ");
-        assert_eq!(want, "a = <<EOT\nx\nEOT  \n");
-        assert!(quoted_at_end("a = 1  ", &out, &want));
         for (text, new) in [
+            ("a = 1  ", "a = \"x\\n\""),
             ("a = 1  ", "a = \"x\\n\"\nb = 2"),
             ("a = 1\t", "a = \"x\\n\""),
             ("\u{feff}a = 1", "a = \"x\\n\""),
