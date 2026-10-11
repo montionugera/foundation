@@ -272,7 +272,8 @@ impl std::error::Error for Error {}
 
 /// The future of [`Shard::committed`] and [`Shard::next_commit`]. It does not borrow
 /// the shard, and it holds the shard's ring open until it drops. Held past the drop of
-/// the shard, it resolves only once the buffer ended, with an error or with none.
+/// the shard, it resolves once the buffer ended: with the error that ended the buffer
+/// when that came before what it waits for was durable, else with `Ok`.
 #[derive(Debug)]
 pub struct Commit(buffer::Commit);
 

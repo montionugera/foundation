@@ -1007,9 +1007,8 @@ async fn write(shared: &Shared, sealed: &[Sealed]) -> Result<(), files::Error> {
 
 /// The future of [`Buffer::committed`] and [`Buffer::next_commit`]. It does not borrow
 /// the buffer, and it holds the ring open until it drops. Held past the drop of the
-/// buffer, it resolves once the task ended: with `Ok` when what it waits for was
-/// durable before the end, else with the error that ended the task, or with `Ok` when
-/// no error ended it.
+/// buffer, it resolves once the task ended: with the error that ended the task when
+/// that came before what it waits for was durable, else with `Ok`.
 #[derive(Debug)]
 pub struct Commit {
     waiter: Waiter,
