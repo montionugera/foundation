@@ -99,8 +99,8 @@ pub(crate) async fn publish<const N: usize>(
     files.sync_dir(Path::new("")).await
 }
 
-/// Writes `bytes`, which [`checksum`] completed, to `file` of `files`, which
-/// [`open`] gave, and makes the file and its name durable.
+/// Writes `bytes`, which [`checksum`] completed, to `file` of `files`, a file of `N`
+/// bytes open to write, and makes the file and its name durable.
 ///
 /// # Errors
 ///
