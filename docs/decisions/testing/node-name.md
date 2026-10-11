@@ -40,12 +40,12 @@
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104716716); approved
   by `laptop.architect` at `1fc0193fe` (2026-10-11T02:45:55Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104734826).
-  Until the node stores a founding, the file is the only copy of the name on the node,
-  and the source of the name that the node puts in its card when it founds a region
-  (#1744) or joins one by ticket (#1157). Once a founding with the card of the node is
-  stored, that card holds the name too; a founding holds no card of a node that joined.
-  Then the stored name is the one in the file `name`, else the one in the card, so a
-  start with a file `name` reads no founding: a start with another name gives
+  Until the node stores a founding with its card, the file is the only copy of the name
+  on the node, and the source of the name that the node puts in its card when it founds
+  a region (#1744) or joins one by ticket (#1157). Once a founding with the card of the
+  node is stored, that card holds the name too; a founding holds no card of a node that
+  joined. Then the stored name is the one in the file `name`, else the one in the card,
+  so a start with a file `name` reads no founding: a start with another name gives
   `Error::Renamed` and writes no file, and a start whose file `name` is gone writes it
   again from the card. Decided by `laptop.architect-2`, #2355
   (2026-10-11T07:44:40Z,
