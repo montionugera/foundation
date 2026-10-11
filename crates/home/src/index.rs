@@ -12,14 +12,15 @@ use crate::{Refusal, split};
 
 /// One index of a shard. It reads no clock: each input takes the time.
 #[derive(Debug)]
+#[repr(C)]
 pub(crate) struct Index {
+    /// Who may write the index.
+    pub(crate) gate: Gate,
+    order: Order,
     /// The index's channel.
     pub(crate) key: channel::Key,
     /// The index's slot in the shard.
     pub(crate) slot: Slot,
-    /// Who may write the index.
-    pub(crate) gate: Gate,
-    order: Order,
 }
 
 /// A frame that passed [`Index::check`]. [`Index::spend`] spends it.
