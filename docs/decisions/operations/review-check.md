@@ -243,16 +243,16 @@
   serves each such round of the PR, and each edit states the range of the run. The last
   round fails when its `Public surface:` line holds the word `owed`, or when the first
   word of its value is not `none` and the line holds no comment link. The first comment
-  link after the words `departs from` is no approval and does not count on that line. A
-  word is the text between two spaces, with the punctuation at its ends removed. In a PR
-  that changes a file of a risk crate (`crates/<name>/`, with `<name>` in `RISK` in
-  `xtask/src/review.rs`, which holds the risk crates of ENGINEERS in
-  `docs/decisions/operations/engineers.md`), the last round also fails when its
-  `Deferred:` line names an issue with no comment link after it in the line and without
-  the words `not in a risk crate` between it and the next issue of the line. The first
-  word `none` does not stop this rule. A file that the PR moves counts at its old path
-  and at its new one, in each rule that reads the files of the PR. An issue is each
-  `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
+  link after each `departs from` is no approval and does not count on that line. The
+  words of a line are the parts that its spaces divide it into, each with the
+  punctuation at its ends removed. In a PR that changes a file of a risk crate
+  (`crates/<name>/`, with `<name>` in `RISK` in `xtask/src/review.rs`, which holds the
+  risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`), the last round
+  also fails when its `Deferred:` line names an issue with no comment link after it in
+  the line and without the words `not in a risk crate` between it and the next issue of
+  the line. The first word `none` does not stop this rule. A file that the PR moves
+  counts at its old path and at its new one, in each rule that reads the files of the
+  PR. An issue is each `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. The problem
   names the round and the first such issue. A comment link is a URL in the text of the
@@ -276,7 +276,9 @@
   ruled at 2026-10-11T10:47:32Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6108222189), and
   approved at 2026-10-11T20:32:18Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113438520). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113438520), and
+  ruled for the rules of review round 1 at 2026-10-11T21:06:14Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113751754). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.

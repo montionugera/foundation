@@ -3418,6 +3418,24 @@ fn a_later_steps_line_keeps_the_order_of_the_end_lines() {
     );
 }
 
+/// The `Public surface:` value of the last round of PR 2372, of 2026-10-11T10:48:34Z.
+const SURFACE_2372: &str = "\
+    `crates/connector-opcua/src/server.rs:21-36` (`Server::start` takes `host` in \
+    place of `url`, with its doc and `# Panics`), departs from \
+    https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141, \
+    approved by \
+    https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108264821 at \
+    `a9486b9df`; `docs/decisions/connectors/open62541-source.md:516-543`, departs \
+    from https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141, \
+    approved by \
+    https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993 at \
+    `c9a61bcaf`; the `Server::close` contract, approved by \
+    https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355 at \
+    `d6d834286`; `crates/connector-opcua/src/bench.rs:148-149` (the `# Panics` of \
+    `bench::Manager::scope`), approved by \
+    https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108214318 at \
+    `6ac5b7127` (a9486b9df applies its own optional text fix)";
+
 #[test]
 fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
     let check = |surface: &str| check(&record(vec![surfaced(surface)]));
@@ -3433,6 +3451,7 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Route`, departs from {OK}, approved in {OK}"),
         format!("`hub::Route` ({OK}), and `hub::Send` (departs from {OK})"),
         "none, since the doc of `hub::Route` departs from no ruling".to_string(),
+        SURFACE_2372.to_string(),
     ] {
         assert_eq!(check(&surface), Vec::<String>::new(), "{surface}");
     }
