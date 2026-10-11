@@ -3056,11 +3056,11 @@ mod tests {
 
     // The write of a record that does not fit removes `log-0` and makes it again. The
     // caller drops the write at each wait, so also while the remove or the create is
-    // in flight.
+    // in flight. Few run values reach an open that lists before the dropped call ends.
     #[test]
     fn an_open_after_a_dropped_write_opens_in_each_run() {
         let mut failed = Vec::new();
-        for run in 0..16 {
+        for run in 0..64 {
             for waits in 0.. {
                 let (mut sim, node) = create_node(run);
                 let (ended, error) = sim
