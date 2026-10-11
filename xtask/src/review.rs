@@ -488,10 +488,10 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
 }
 
-/// What the comment `shown` lacks before its round heading, as the words of a problem,
-/// or `None`. Its first three lines of text there are its name line (a bold session
+/// What the comment `shown` lacks at its start, as the words of a problem, or `None`.
+/// Its first three lines of text ([`Shown::start`]) are its name line (a bold session
 /// name, ` · `, and a role), `Quality: <n>/10` with `n` from 1 to 10, and a summary
-/// line.
+/// line. A name, a role, or a summary line that is [`blank`] is not one.
 fn lack(shown: &Shown<'_>) -> Option<&'static str> {
     let mut lines = shown.start.iter().map(String::as_str);
     let role = shown
@@ -500,10 +500,10 @@ fn lack(shown: &Shown<'_>) -> Option<&'static str> {
         .zip(lines.next())
         .and_then(|(s, line)| {
             line.strip_prefix(s)
-                .filter(|_| !s.is_empty())?
+                .filter(|_| !blank(s))?
                 .strip_prefix(" · ")
         });
-    if role.is_none_or(str::is_empty) {
+    if role.is_none_or(blank) {
         return Some("does not start with a name line `**<session>** · <role>`");
     }
     let rating = lines
@@ -515,10 +515,16 @@ fn lack(shown: &Shown<'_>) -> Option<&'static str> {
              name line",
         );
     }
-    if lines.next().is_none_or(str::is_empty) {
+    if lines.next().is_none_or(blank) {
         return Some("has no summary line after its `Quality:` line");
     }
     None
+}
+
+/// Whether `line`, a line of [`texts`], shows no text: it is empty, or holds only
+/// images and the spaces between them.
+fn blank(line: &str) -> bool {
+    line.chars().all(|c| c == '\u{FFFC}' || c == ' ')
 }
 
 /// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
@@ -608,9 +614,9 @@ struct Shown<'a> {
     /// The text of the bold span that starts the comment, when its first block is a
     /// paragraph that starts with one.
     session: Option<String>,
-    /// The lines of each top-level paragraph before the heading, as GitHub shows them
-    /// ([`texts`]). A paragraph that comrak places in the wrong lines ([`misplaced`])
-    /// gives no line.
+    /// The lines of the top-level paragraphs with which the comment starts, as GitHub
+    /// shows them ([`texts`]): those before the first block that is not a paragraph. A
+    /// paragraph that comrak places in the wrong lines ([`misplaced`]) gives no line.
     start: Vec<String>,
     /// Each top-level block after the heading: the index in `text` of a paragraph, or
     /// `None` for any other block. The footnotes come last, as GitHub shows them.
@@ -653,7 +659,8 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
-        shown.session = session(root);
+        // Whether each top-level block so far is a paragraph.
+        let mut unbroken = true;
         let mut hiding = Vec::new();
         for node in root.descendants() {
             let data = node.data.borrow();
@@ -664,6 +671,7 @@ impl<'a> Shown<'a> {
             if top && shown.number.is_some() {
                 shown.blocks.push(index);
             }
+            unbroken &= !top || index.is_some();
             match &data.value {
                 NodeValue::Heading(_) if top && shown.number.is_none() => {
                     shown.number = number(node);
@@ -677,7 +685,10 @@ impl<'a> Shown<'a> {
                     let open = bracket(node, data.sourcepos.end.line);
                     hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
                     let lines = texts(node);
-                    if top && shown.number.is_none() {
+                    if top && unbroken {
+                        if node.previous_sibling().is_none() {
+                            shown.session = session(node);
+                        }
                         shown.start.extend_from_slice(&lines);
                     }
                     shown.text.push(lines);
@@ -735,12 +746,11 @@ impl<'a> Shown<'a> {
     }
 }
 
-/// The text of the bold span that starts the comment `root` ([`Shown::session`]).
-fn session<'n>(root: &'n AstNode<'n>) -> Option<String> {
-    let block = root.first_child()?;
-    let span = block.first_child()?;
-    let bold = matches!(block.data.borrow().value, NodeValue::Paragraph)
-        && matches!(span.data.borrow().value, NodeValue::Strong);
+/// The text of the bold span that starts `paragraph`, or `None` when it starts with
+/// none.
+fn session<'n>(paragraph: &'n AstNode<'n>) -> Option<String> {
+    let span = paragraph.first_child()?;
+    let bold = matches!(span.data.borrow().value, NodeValue::Strong);
     bold.then(|| texts(span).join(" "))
 }
 

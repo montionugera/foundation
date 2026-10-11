@@ -2458,6 +2458,13 @@ fn fails_a_round_that_does_not_start_with_a_name_line() {
         format!("> {NAME}\n> {rating}"),
         format!("- {NAME}\n  {rating}"),
         format!("- a\n\n{NAME}\n{rating}"),
+        format!("# **laptop.integrator-2** notes\n\n{NAME}\n{rating}"),
+        format!("**a** note · role\n{rating}"),
+        format!("*laptop.integrator-2* · integrator\n{rating}"),
+        format!("`laptop.integrator-2` · integrator\n{rating}"),
+        format!("**![](x)** · integrator\n{rating}"),
+        format!("**![](x) ![](y)** · integrator\n{rating}"),
+        format!("**laptop.integrator-2** · ![](x)\n{rating}"),
     ] {
         assert_eq!(
             check(&record(vec![headed(&head)])),
@@ -2504,6 +2511,8 @@ fn fails_a_round_with_no_summary_line_after_its_rating() {
         format!("{NAME}\nQuality: 8/10\n\u{200b}"),
         format!("{NAME}\nQuality: 8/10\n\n- {SUMMARY}"),
         format!("{NAME}\nQuality: 8/10\n\n> {SUMMARY}"),
+        format!("{NAME}\nQuality: 8/10\n![](x)"),
+        format!("{NAME}\nQuality: 8/10\n![](x) ![](y)"),
     ] {
         assert_eq!(
             check(&record(vec![headed(&head)])),
@@ -2518,10 +2527,51 @@ fn a_round_posted_before_the_cutoff_of_the_rating_needs_no_name_line() {
     let rating = format!("Quality: 8/10\n{SUMMARY}");
     let before = headed_at(&rating, "2026-10-11T15:59:59Z");
     assert_eq!(check(&record(vec![before])), Vec::<String>::new());
-    assert_eq!(
-        check(&record(vec![headed(&rating)])),
-        unrated("does not start with a name line `**<session>** · <role>`")
-    );
+    for created in [
+        RATING_CUTOFF,
+        "2026-10-11T16:00:01Z",
+        "2026-10-14T09:30:00Z",
+    ] {
+        assert_eq!(
+            check(&record(vec![headed_at(&rating, created)])),
+            unrated("does not start with a name line `**<session>** · <role>`"),
+            "{created}"
+        );
+    }
+}
+
+#[test]
+fn fails_a_round_with_a_block_that_is_not_a_paragraph_between_its_three_lines() {
+    let name = "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+                name line";
+    let summary = "has no summary line after its `Quality:` line";
+    for between in [
+        "- The breaker found a defect.",
+        "> a",
+        "```\na\n```",
+        "| a |\n|---|\n| b |",
+        "## Notes",
+        "---",
+    ] {
+        for (head, what) in [
+            (
+                format!("{NAME}\n\n{between}\n\nQuality: 8/10\n{SUMMARY}"),
+                name,
+            ),
+            (
+                format!("{NAME}\nQuality: 8/10\n\n{between}\n\n{SUMMARY}"),
+                summary,
+            ),
+        ] {
+            assert_eq!(check(&record(vec![headed(&head)])), unrated(what), "{head}");
+        }
+    }
+}
+
+#[test]
+fn names_raw_html_before_the_name_line_of_a_rated_round_as_raw_html() {
+    let head = format!("<details>\n\n{NAME}\nQuality: 8/10\n{SUMMARY}");
+    assert_eq!(check(&record(vec![headed(&head)])), vec![raw("<details>")]);
 }
 
 #[test]
