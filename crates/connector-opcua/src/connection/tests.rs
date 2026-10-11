@@ -245,7 +245,11 @@ impl Side {
     }
 
     /// The count of connections in the table. A connection that open62541 has closed
-    /// and whose stream is gone shows only here.
+    /// and whose stream is gone shows only here, so only this kills a mutant that keeps
+    /// it at `Step::Gone`. No caller can see the kept entry: it has no stream, send, or
+    /// callback, a pass steps it to `Step::Gone` again with no call into C and no I/O,
+    /// a new connection gets a new id, and a `BTreeMap` frees no node that still holds
+    /// another entry.
     fn connections(&self) -> usize {
         self.manager.state().table.borrow().len()
     }
