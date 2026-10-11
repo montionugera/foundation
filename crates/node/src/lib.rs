@@ -83,10 +83,10 @@ pub struct Config<M> {
     pub listen: SocketAddr,
     /// The region whose mesh the node opens.
     pub region: Region,
-    /// The node's name. The first start on a data directory keeps it in the file
-    /// `name`; a later start with another name stops with [`Error::Renamed`]. A name
-    /// with a reserved segment starts no shard ([`Error::Reserved`]). Get it with
-    /// [`name`] before the start.
+    /// The node's name. A start keeps it in the file `name` of the data directory
+    /// when the file holds no name or a reserved one; a start with another name stops
+    /// with [`Error::Renamed`]. A name with a reserved segment starts no shard
+    /// ([`Error::Reserved`]). Get it with [`name`] before the start.
     pub name: types::name::Name,
 }
 
@@ -481,7 +481,7 @@ pub async fn create_key(
 /// The name of the node of the data directory `files`: `given`, else the one that the
 /// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
 /// reads also while another node runs on `files`. A `given` that is not the stored
-/// name stops the start with [`Error::Renamed`].
+/// name stops the start with [`Error::Renamed`], unless the stored name is reserved.
 ///
 /// # Errors
 ///
@@ -1182,7 +1182,8 @@ pub enum Error {
     /// The file `name` in the data directory is not a name that a node wrote. The node
     /// does not write over it.
     Name,
-    /// The data directory holds the node `stored`, and the start gave `given`.
+    /// The data directory holds the node `stored`, which is not reserved, and the
+    /// start gave `given`.
     Renamed {
         /// The name in the data directory.
         stored: types::name::Name,

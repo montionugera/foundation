@@ -6193,6 +6193,79 @@ mod name {
         assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
     }
 
+    /// Keeps the reserved name `@x` on `host`, as a build with no check of it did.
+    fn keep_reserved(sim: &mut sim::Sim, host: &sim::node::Node) {
+        let kept = sim
+            .run_on(host, |host, _| async move {
+                crate::name::keep(&host.files(), &name("@x")).await
+            })
+            .expect("the run ends");
+        assert_eq!(kept, Ok(()));
+    }
+
+    /// A build that had no check of a reserved name could keep one. No region holds
+    /// it, so a start with another name writes over it.
+    #[test]
+    fn a_start_with_another_name_writes_over_a_kept_reserved_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        keep_reserved(&mut sim, &host);
+        assert_eq!(resolve(&mut sim, &host, None), Ok(name("@x")));
+        let reserved = Error::Reserved { name: name("@x") };
+        assert_eq!(start_and_stop(&mut sim, &host, "@x"), Err(reserved));
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        assert_eq!(resolve(&mut sim, &host, None), Ok(name("edge")));
+        assert_eq!(
+            start_and_stop(&mut sim, &host, "@y"),
+            Err(Error::Reserved { name: name("@y") })
+        );
+        assert_eq!(resolve(&mut sim, &host, None), Ok(name("edge")));
+    }
+
+    /// A crash at any time during the write over a kept reserved name leaves that
+    /// name, no name, or the new one, and a start with the new name then runs.
+    #[test]
+    fn a_crash_during_the_write_over_a_reserved_name_leaves_a_start_that_runs() {
+        let mut found = Vec::new();
+        for after in (0..10_000_000).step_by(5_000).map(Span::from_nanos) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            keep_reserved(&mut sim, &host);
+            let node = Node::start(Config {
+                name: name("edge"),
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
+            sim.crash(&host, sim::Crash::Process);
+            drop(node);
+            sim.crash(&host, sim::Crash::Power);
+            let resolved = resolve(&mut sim, &host, None);
+            let left = [Ok(name("@x")), Err(Error::Unnamed), Ok(name("edge"))];
+            assert!(left.contains(&resolved), "at {after:?}: {resolved:?}");
+            assert_eq!(
+                start_and_stop(&mut sim, &host, "edge"),
+                Ok(()),
+                "at {after:?}"
+            );
+            assert_eq!(
+                resolve(&mut sim, &host, None),
+                Ok(name("edge")),
+                "at {after:?}"
+            );
+            let done = resolved == Ok(name("edge"));
+            found.push(resolved);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(found.first(), Some(&Ok(name("@x"))));
+        assert_eq!(
+            found.last(),
+            Some(&Ok(name("edge"))),
+            "no crash left the new name"
+        );
+    }
+
     /// A file of another length that is not 0, or that `encode` does not give, is
     /// not a name: also one whose padding is not zero, under a checksum that holds.
     #[test]
