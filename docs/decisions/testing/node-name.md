@@ -114,8 +114,9 @@
   Decided by `laptop.architect-2`, #1732: 2026-10-09T18:30:45Z, the file and the
   errors,
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545;
-  2026-10-09T19:54:21Z, the only copy on the node, the source of the card's name, the
-  trigger, the given name first, and the first lost designs,
+  2026-10-09T19:54:21Z, the only copy on the node and the trigger (both superseded by
+  #2355, above), the source of the card's name, the given name first, and the first
+  lost designs,
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088201970;
   2026-10-09T20:09:33Z, the write by rename, a file of zeros or with no bytes, and the
   last two lost designs,
