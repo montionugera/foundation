@@ -685,7 +685,7 @@ fn gone() -> u32 {
 #[cfg(unix)]
 fn left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
     let temp = std::env::temp_dir();
-    let draft = temp.join(format!("left-{}-{test}", std::process::id()));
+    let draft = temp.join(format!("left-{}-{pid}-{test}", std::process::id()));
     let data = draft.join("foundation-data/data");
     std::fs::create_dir_all(&data).expect("make the directory");
     fill(&data);
@@ -728,31 +728,40 @@ fn a_rig_removes_a_directory_that_a_test_left_read_only() {
     assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
+/// A sweep that fails to remove a directory because a process still makes files in it
+/// leaves the directory for a later sweep.
 #[test]
 #[cfg(unix)]
-fn a_rig_keeps_a_directory_that_a_process_writes_in() {
+fn a_rig_passes_over_a_directory_that_a_process_writes_in() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let dead = left(gone(), "busy", |_| {});
     let stop = Arc::new(AtomicBool::new(false));
-    let writer = {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a process writes in the directory while the sweep removes it"
+    )]
+    let writer = std::thread::spawn({
         let (dead, stop) = (dead.clone(), Arc::clone(&stop));
-        std::thread::spawn(move || {
+        move || {
             for file in 0.. {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                // The sweep removes the directory between two writes.
-                let _ = std::fs::write(dead.join(format!("{file}")), "");
+                if let Err(error) = std::fs::write(dead.join(format!("{file}")), "") {
+                    assert_eq!(error.kind(), ErrorKind::NotFound);
+                    break;
+                }
             }
-        })
-    };
+        }
+    });
     for _ in 0..20 {
         drop(Rig::new());
     }
     stop.store(true, Ordering::Relaxed);
     writer.join().expect("join the writer");
-    let _ = std::fs::remove_dir_all(dead);
+    drop(Rig::new());
+    assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
 #[test]
@@ -1173,20 +1182,24 @@ fn a_left_directory_is_whole_when_other_rigs_sweep() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let sweepers: Vec<_> = (0..8)
-        .map(|i| {
+        .map(|sweeper| {
             let stop = Arc::clone(&stop);
-            std::thread::Builder::new()
-                .name(format!("sweeper-{i}"))
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "rigs on other test threads sweep while a test leaves a directory"
+            )]
+            let spawn = std::thread::Builder::new()
+                .name(format!("sweeper-{sweeper}"))
                 .spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
                         drop(Rig::new());
                     }
-                })
-                .expect("start a sweeper")
+                });
+            spawn.expect("start a sweeper")
         })
         .collect();
     let mut failure = None;
-    for _ in 0..50 {
+    for _ in 0..100 {
         let run = std::panic::catch_unwind(
             a_rig_removes_a_directory_that_a_test_left_read_only,
         );
