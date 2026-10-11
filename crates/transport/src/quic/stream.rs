@@ -1169,11 +1169,11 @@ impl Sending {
         pushed
     }
 
-    /// Writes the rest of the message that `half` holds to `inner`, before the next
-    /// message of a write, when `writing`. `Ready` once it holds no message, and
-    /// `Pending` while it holds one. `writing` while the rest is the caller's shows
-    /// that the write that gave it never ended, as a leaked future, and the rest
-    /// becomes the stream's ([`Rest::Pump`]).
+    /// Writes the rest of the message that `half` holds to `inner`. `Ready` once it
+    /// holds no message, and `Pending` while it holds one. `writing` says that the call
+    /// is a write that brings a new message. While the rest is the caller's, such a
+    /// call shows that the write that gave the rest never ended, as a leaked future,
+    /// and the rest becomes the stream's ([`Rest::Pump`]).
     ///
     /// # Errors
     ///
