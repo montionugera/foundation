@@ -86,7 +86,9 @@
   review of each copy PR covers it. The function at the address of a listed name:
   decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
-  2026-10-11 07:37 UTC). `FUNCTION_SYMBOLS` lists these keys, the clock calls among
+  2026-10-11 07:37 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). `FUNCTION_SYMBOLS` lists these keys, the clock calls among
   them. A reference from outside a function fails when `SYMBOLS` does not admit it.
   Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094336509,
@@ -124,17 +126,17 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
   2026-10-11 05:48 UTC). The copy compiles with `-fno-dollars-in-identifiers`, a line of
-  `flags.txt`, so the connector and the check read `$` in the same way and no function
-  has a name that holds `$`: on aarch64, `objdump` gives no function header to a
-  function named `$x` or `$d`, as it gives none to a mapping symbol, and in a section
-  that holds another function, the code of such a function reads as code of the function
-  before it. `cc` reads a macro name only up to its `$`, in the two builds alike. The
-  symbol name rule still admits `$`, because each mapping symbol holds one. Lost: the
-  extent of each function from the symbol table, a second parser for a name that no file
-  of the copy has. Lost: the flag in the check alone, with which the two builds read
-  `#define X$ 1` in two ways. `cargo xtask open62541` writes that line after the flags
-  of the release, and the check fails on a `flags.txt` without it. Decided by
-  `laptop.architect-2`
+  `flags.txt`, so the connector and the check read `$` in the same way and no C
+  identifier gives a function a name that holds `$`: on aarch64, `objdump` gives no
+  function header to a function named `$x` or `$d`, as it gives none to a mapping
+  symbol, and in a section that holds another function, the code of such a function
+  reads as code of the function before it. `cc` reads a macro name only up to its `$`,
+  in the two builds alike. The symbol name rule still admits `$`, because each mapping
+  symbol holds one. Lost: the extent of each function from the symbol table, a second
+  parser for a name that no file of the copy has. Lost: the flag in the check alone,
+  with which the two builds read `#define X$ 1` in two ways. `cargo xtask open62541`
+  writes that line after the flags of the release, and the check fails on a `flags.txt`
+  without it. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
   2026-10-11 07:37 UTC). A `#line` directive or a line marker in a copy file fails the
   check, because it moves the file that the include check reads. Decided by
@@ -168,14 +170,16 @@
   compiled with the flags of the connector. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
   2026-10-08 13:31 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
-  flags below are the only flags that `build.rs` names outside `flags.txt`, so the
-  objects of the check do not have them. The `cc` crate gives each compile of the
-  connector flags of its own, such as `-fPIC` and the `-O` level of the profile. The
-  check does not have them, so the two builds differ in each macro that such a flag sets
-  (#2381). The check adds `-g -O0` and `-fno-stack-protector` (above), and no other flag
-  that changes the code. This sentence: approved by `laptop.architect`
-  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6093693327,
-  2026-10-10 04:19 UTC). A `-W` flag with no `,` is a warning, which changes no code, so
+  flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`
+  crate also gives each compile of the connector flags from the profile and the target
+  of the Rust build, such as the optimization level, `-fPIC`, and `-g`. The objects of
+  the check have none of these flags. The check adds `-g -O0` and `-fno-stack-protector`
+  (above), and no other flag. So the two builds differ in the macros that these flags
+  set, such as `__OPTIMIZE__`, `__PIE__`, and `_FORTIFY_SOURCE`. Until #2381, the check
+  does not read code that a file of the copy puts under such a macro. These sentences:
+  stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). A `-W` flag with no `,` is a warning, which changes no code, so
   `collect` leaves it out by that pattern, not by name. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
   2026-10-08 13:57 UTC) and `laptop.director`

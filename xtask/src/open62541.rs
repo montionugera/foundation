@@ -211,10 +211,10 @@ const LEFT_OUT: [&str; 4] = [
     "-fno-fat-lto-objects",
 ];
 
-/// The flag of our own that `flags.txt` holds, so the connector and the check compile
-/// the same C. With it, `cc` takes no `$` in an identifier, so no function has a name
-/// that holds `$`: objdump gives no header to a function named as a mapping symbol of
-/// aarch64 (`$x`, `$d`).
+/// The flag of our own that `flags.txt` holds, so the connector and the check read `$`
+/// in the same way. With it, `cc` takes no `$` in an identifier, so no C identifier
+/// gives a function a name that holds `$`: objdump gives no header to a function named
+/// as a mapping symbol of aarch64 (`$x`, `$d`).
 const NO_DOLLARS: &str = "-fno-dollars-in-identifiers";
 
 /// The symbols outside the copy that any file of it may reference. Each reads no clock,
