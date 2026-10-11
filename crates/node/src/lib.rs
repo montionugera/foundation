@@ -257,7 +257,7 @@ impl Node {
             let pool = config.budget.pool;
             return Self::failed(Error::Pool { pool, cores }, regional);
         };
-        Self::launch(config, parts.into_iter().zip(0..count))
+        Self::launch(config, regional, parts.into_iter().zip(0..count))
     }
 
     /// A node that failed with `error` before any shard started. `regional` is whether
@@ -273,8 +273,10 @@ impl Node {
     }
 
     /// Starts the shards of `config`, each with its part and its number in `parts`.
+    /// `regional` is whether `config` has a region.
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
+        regional: bool,
         parts: impl Iterator<Item = ((block::Config, buffer::Layout), u32)>,
     ) -> Self {
         let bind = Bind::new(&config);
@@ -291,7 +293,6 @@ impl Node {
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let regional = !matches!(bind.region, Region::Absent);
         let (mesh, clock) = clock::Clock::new(monotonic.clone());
         let serve = Serve {
             interner: last,
@@ -299,7 +300,7 @@ impl Node {
             inbox,
             time: clock.clone(),
         };
-        let roles = Role::all(mesh, wall, first, (bind, serve), config.name, cores);
+        let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
         let mut error = None;
         for (core, ((((config, layout), number), role), (take, give))) in
@@ -526,8 +527,9 @@ fn error(
 
 /// A shard's steps, made before the shard starts: shard 0's claim of the data
 /// directory and bind of the port, then the open of the shard's buffer, with the
-/// shard's home over it, held until the node stops. The shards open one after another, in order of core, because
-/// each open assigns slots in the node's one interner.
+/// shard's home over it, held until the node stops. The shards open one after
+/// another, in order of core, because each open assigns slots in the node's one
+/// interner.
 struct Open {
     /// The shard's number on its node: its core.
     shard: u32,
@@ -573,7 +575,8 @@ impl Role {
         mesh: clock::Clock,
         wall: env::wall::Wall,
         give: Give<Interner>,
-        (bind, serve): (Bind, Serve),
+        bind: Bind,
+        serve: Serve,
         name: types::name::Name,
         cores: usize,
     ) -> impl Iterator<Item = Self> {
@@ -647,13 +650,13 @@ impl Open {
                 tasks.spawn(async { mesh.run(wall).await });
                 let cores = closed.len() + 1;
                 let claimed = self.claim(&files, cores, &name, bind, give).await;
-                let (lock, endpoint) = claimed.unzip();
+                let Some((lock, endpoint)) = claimed else {
+                    return;
+                };
                 let (shard, pool) = (tasks.clone(), Rc::new(pool));
                 let (own, mesh_files) = (Rc::clone(&pool), files.clone());
                 let failed = Arc::clone(&self.failed);
                 let hold = async move |home, guard| {
-                    let endpoint = endpoint
-                        .expect("invariant: a buffer opens only after the port bound");
                     serve
                         .run(endpoint, home, mesh_files, own, shard, guard, &failed)
                         .await;
