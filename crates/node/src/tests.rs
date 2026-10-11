@@ -6168,13 +6168,14 @@ mod name {
     }
 
     /// A reserved name that is not the stored name stops the start as reserved, not
-    /// as renamed, and the node keeps the stored name.
+    /// as renamed, and the node keeps the stored name. `node::name` does not check it.
     #[test]
     fn a_reserved_name_comes_before_the_stored_name() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
         let kept = read(&mut sim, &host);
+        assert_eq!(resolve(&mut sim, &host, Some("@x")), Ok(name("@x")));
         let started = start_and_stop(&mut sim, &host, "@x");
         assert_eq!(started, Err(Error::Reserved { name: name("@x") }));
         assert_eq!(read(&mut sim, &host), kept, "keeps the file");
