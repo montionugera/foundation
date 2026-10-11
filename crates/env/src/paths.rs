@@ -138,6 +138,7 @@ pub trait Driver: Debug {
 #[must_use]
 pub fn names_directory(path: &Path) -> bool {
     let bytes = path.as_os_str().as_encoded_bytes();
+    // A separator is ASCII, and no byte of a longer character is ASCII in these bytes.
     let name = bytes.rsplit(|&byte| is_separator(char::from(byte))).next();
     matches!(name, Some(b"" | b"." | b".."))
 }
