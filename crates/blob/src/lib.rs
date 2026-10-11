@@ -197,8 +197,10 @@ impl Store {
     /// [`Error::Mismatch`] when `chunk` does not hash to `digest`; nothing is written
     /// in either case. [`Error::Floor`] when the chunk would leave fewer bytes free
     /// than the floor, and [`Error::Files`] when a file call fails, among them `Full`
-    /// when the disk has no room; the chunk then reads as absent. The floor counts
-    /// the whole chunk as new room, and not the puts in flight.
+    /// when the disk has no room; the chunk then reads as absent. A put over a file
+    /// of the chunk's length takes no new room, so the floor does not refuse it. Each
+    /// other put counts the whole chunk as new room. The floor does not count the
+    /// puts in flight.
     pub async fn put(&self, digest: Digest, chunk: &Block) -> Result<(), Error> {
         let largest = self.pool.largest();
         if chunk.len() > largest {
@@ -408,7 +410,9 @@ impl<'a> Flight<'a> {
         let len =
             u64::try_from(chunk.len()).expect("invariant: a length fits in 64 bits");
         let free_bytes = store.files.free().await?;
-        if free_bytes.saturating_sub(len) < store.floor_bytes {
+        if free_bytes.saturating_sub(len) < store.floor_bytes
+            && !self.sized(&path, len).await?
+        {
             return Err(Error::Floor {
                 len: chunk.len(),
                 free_bytes,
@@ -442,6 +446,20 @@ impl<'a> Flight<'a> {
         written?;
         store.files.sync_dir(&store.dir).await?;
         Ok(())
+    }
+
+    /// Whether the file at `path` has `len` bytes, so that a write of the chunk takes
+    /// no new room.
+    async fn sized(&self, path: &Path, len: u64) -> Result<bool, Error> {
+        match self.store.files.open(path, Mode::Write).await {
+            Ok(file) => {
+                let sized = file.len() == len;
+                file.close().await;
+                Ok(sized)
+            }
+            Err(files::Error::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -737,6 +755,66 @@ mod tests {
                 let error = store.put(digest, &block).await.unwrap_err();
                 assert_eq!(error, io(Path::new(""), Operation::Free));
                 assert_absent(&store, digest).await;
+                store.put(digest, &block).await.unwrap();
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn over_a_file_of_its_length_under_the_floor_stores_the_chunk() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                let (_, other) = chunk(9, 3000);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(digest), &other).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                store.put(digest, &block).await.unwrap();
+                let got = store.get(digest).await.unwrap().unwrap();
+                assert_eq!(&got[..], &block[..]);
+                assert_eq!(node.files().free().await.unwrap(), free_bytes);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn over_a_file_of_another_length_under_the_floor_gives_floor_and_keeps_it() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                let (_, other) = chunk(9, 512);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(digest), &other).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let floor_bytes = free_bytes + 1;
+                let store = open_leaving(&node, floor_bytes).await;
+                let error = store.put(digest, &block).await.unwrap_err();
+                let expected = Error::Floor {
+                    len: 3000,
+                    free_bytes,
+                    floor_bytes,
+                };
+                assert_eq!(error, expected);
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, [PathBuf::from(digest.to_string())]);
+                assert_eq!(node.files().free().await.unwrap(), free_bytes);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn over_a_file_under_the_floor_whose_open_fails_gives_io() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(digest), &block).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                node.fail_file(&path(digest), Operation::Open);
+                let error = store.put(digest, &block).await.unwrap_err();
+                assert_eq!(error, io(&path(digest), Operation::Open));
                 store.put(digest, &block).await.unwrap();
             })
             .unwrap();
