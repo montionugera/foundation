@@ -22,7 +22,8 @@ impl Server {
     /// server URL `opc.tcp://{host}:{port}` on the port of the listener of `manager`,
     /// and room for `sessions` sessions and secure channels, and starts it. With an
     /// empty `host`, the discovery URL of the server has the address of the listener as
-    /// its host.
+    /// its host, and a listener on an unspecified address gives the server no discovery
+    /// URL.
     ///
     /// # Safety
     ///
