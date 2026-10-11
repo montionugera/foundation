@@ -163,7 +163,7 @@ impl Count {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Running,
-    /// Waits for the next run, at this time by the node's clock.
+    /// Waits for the next try, at this time by the node's clock.
     Waiting(Monotonic),
     Stopped,
     Ending,
@@ -352,8 +352,8 @@ impl Writer {
         })
     }
 
-    /// Writes `state` 1 with the next run `span` after the write, and returns the
-    /// time of the next run.
+    /// Writes `state` 1 with the next try `span` after the write, and returns the
+    /// time of the next try.
     pub(crate) async fn wait(&self, span: Span) -> Monotonic {
         self.applied().await;
         let next = self.clock.now() + span;
@@ -543,7 +543,7 @@ impl Session {
     }
 
     /// Writes one frame of the last value of each status channel at `stamp`, with
-    /// `next` the time of the next run by the hub's clock, while one waits.
+    /// `next` the time of the next try by the hub's clock, while one waits.
     ///
     /// # Errors
     ///
@@ -613,7 +613,7 @@ impl Session {
     }
 
     /// Fills `draft` with the last value of each status channel at `stamp`, with
-    /// `next` the time of the next run by the hub's clock, while one waits.
+    /// `next` the time of the next try by the hub's clock, while one waits.
     fn fill(
         &self,
         draft: &mut Draft,

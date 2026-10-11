@@ -110,15 +110,16 @@ impl fmt::Debug for Opened<'_> {
 
 impl Opened<'_> {
     /// Runs the connector, and restarts it with backoff after any error but `Config`.
-    /// Before each run but the first, and before its start status, opens the reader
-    /// again under the connector's name, so each run reads its own start. A reader
-    /// open that fails ends that run with its error. The waits start again from the
-    /// first after a run that lasted at least a minute. Never starts a run before the
-    /// last one returned and each task it spawned through [`Context::tasks`] ended,
-    /// or after `cancel` is cancelled. Writes the connector's status channels as the
-    /// connector: the whole status at each start and change of state, and a change
-    /// of counts alone at most once each second. Each change of state, a start too,
-    /// waits until the home applied the state before it or `cancel` is cancelled.
+    /// Before each run but the first, after the backoff and before the start status,
+    /// opens the reader again under the connector's name. That open waits while the
+    /// mesh names no home for the index that it selects. A reader open that fails ends
+    /// that run with its error. The waits start again from the first after a run that
+    /// lasted at least a minute. Never starts a run before the last one returned and
+    /// each task it spawned through [`Context::tasks`] ended, or after `cancel` is
+    /// cancelled. Writes the connector's status channels as the connector: the whole
+    /// status at each start and change of state, and a change of counts alone at most
+    /// once each second. Each change of state, a start too, waits until the home
+    /// applied the state before it or `cancel` is cancelled.
     ///
     /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
     /// channels opened, or when `cancel` is cancelled: at once while the channels are

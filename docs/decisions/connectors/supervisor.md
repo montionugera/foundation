@@ -28,9 +28,9 @@
   1 and 2). The text from "A reader with a hold" to the #274 test is from
   `laptop.architect` (2026-10-11T07:34:36Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Each run
-  gets a child of the caller's token, which the supervisor cancels
-  once the run returns or its future drops, so each task that the run spawned to wait on
-  it ends with the run (`laptop.architect-2`, 2026-10-08T17:58:15Z:
+  gets a child of the caller's token, which the supervisor cancels once the run returns
+  or its future drops, so each task that the run spawned to wait on it ends with the run
+  (`laptop.architect-2`, 2026-10-08T17:58:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6065930789). A drop of
   the future of `Opened::run` cancels the run and does not wait for its tasks
   (`laptop.architect-2`, 2026-10-09T01:30:51Z:
@@ -109,7 +109,7 @@
   | `state` | `u8` | 0 running, 1 waiting to restart, 2 stopped, 3 ending |
   | `class` | `u8` | the end of the last run: 0 none or `Ok`, 1 `Config`, 2 `Device`, 3 `Retry` |
   | `restarts` | `u64` | the restarts in this call |
-  | `backoff` | `Span` | the wait from this sample to the next run, 0 unless `state` is 1 |
+  | `backoff` | `Span` | the wait from this sample to the next try, 0 unless `state` is 1 |
   | `error` | `String` | the text of the error that ended the last run, empty when `class` is 0 |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
@@ -119,11 +119,11 @@
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
   `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
   device error does not make a frame too large. `backoff` is the wait that is left to
-  the next run by the node's clock at the write, less the time by which the frame is
+  the next try by the node's clock at the write, less the time by which the frame is
   stamped after the hub's time (below). So a frame written again later gives the wait
-  that is left, a frame stamped ahead gives a wait that ends at the next run, and a step
+  that is left, a frame stamped ahead gives a wait that ends at the next try, and a step
   of the hub's time during the wait does not change it. The wait is by the node's
-  clock, so while the hub's time slews, the next run is up to 500 ppm (MESH SLEW) of
+  clock, so while the hub's time slews, the next try is up to 500 ppm (MESH SLEW) of
   the wait from the frame's time plus `backoff`. Decided by the `connector` builder in
   the plan on #420 (2026-10-10T03:22:36Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074),
@@ -135,11 +135,11 @@
   `backoff` text is approved by `laptop.architect` (2026-10-10T05:38:31Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904). The cut
   and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
-  opens its reader before its start status, so while the reader open of a restart waits
-  for a home, `state` stays 1 and the next run starts later than `backoff` gives
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). A try is
+  the reader open of a restart, which comes before its start status
   (`laptop.architect-2`, 2026-10-11T07:34:44Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413).
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). So while
+  that open waits for a home, `state` stays 1 with a `backoff` whose wait has ended.
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or
