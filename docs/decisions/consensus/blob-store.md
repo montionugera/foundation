@@ -53,12 +53,14 @@
   `node` pulls `Status`); one method for each count (two reads for one pulled value); a
   reader for other threads, as `clock::Reader` (one collector reads the counts, and
   `node` owns where it runs); a cause with each failure (no caller reads one).
-  Amended (`laptop.architect`, 2026-10-11T10:36:11Z,
-  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108135919): a get of
-  a file that a put of this open left before its end adds none to `corruptions`, because
-  a dropped put is no fault, and `blob::peer::serve` drops a put when its stream ends. A
-  file that a put of an earlier open left counts, as a torn write does: the open lists
-  names and cannot tell the two. Lost: each such get counts (the count then rises on a
-  sound disk in normal work). Cost: damage in such a file is not counted before a put
-  writes the file again. Supersedes "`corruptions` keeps its rule" (item 3 of that
-  ruling) and its doc of the field.
+  Amended (`laptop.architect`, 2026-10-11T10:40:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108172602):
+  `corruptions` counts the times a get made a digest absent because the bytes of its
+  file did not hash to it. A get whose read ran into a put of the digest adds none,
+  because `env::files` gives unknown bytes for calls in flight on one range. A file that
+  a put of this open left before its end adds none, because a dropped put is no fault,
+  and `blob::peer::serve` drops a put when its stream ends. A file that a put of an
+  earlier open left adds one, as a torn write does: the open lists names and cannot tell
+  the two. Lost: each get that read bytes that do not hash counts (the count then rises
+  on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
+  that ruling) and its doc of the field.

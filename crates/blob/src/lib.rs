@@ -95,9 +95,10 @@ impl std::error::Error for Error {}
 /// What a [`Store`] counted after its open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Status {
-    /// The gets that read a file whose bytes did not hash to its digest, but not a file
-    /// that a put of this open left before its end. A file that a crash tore counts,
-    /// and so does one that a put of an earlier open left before its end.
+    /// The times a get made a digest absent because the bytes of its file did not hash
+    /// to it. A file that a put of this open left before its end adds none. A file
+    /// that a crash tore adds one, and so does one that a put of an earlier open left
+    /// before its end.
     pub corruptions: u64,
     /// The gets and puts that gave [`Error::Files`]. A full disk
     /// (`files::Error::Full`) is not one.
@@ -285,13 +286,16 @@ impl Store {
         Peek::of(self.chunks.borrow().get(&digest))
     }
 
-    /// Makes `digest` absent after a read of it found no chunk, unless a put changed
-    /// its state from `seen` during the read: the put's bytes are newer.
-    fn forget(&self, digest: Digest, seen: Peek) {
+    /// Makes `digest` absent after a read of it found no chunk, unless its state
+    /// changed from `seen` during the read: the bytes of a put are newer, and the read
+    /// of another get was first. Gives whether it made the digest absent.
+    fn forget(&self, digest: Digest, seen: Peek) -> bool {
         let mut chunks = self.chunks.borrow_mut();
-        if Peek::of(chunks.get(&digest)) == seen {
+        let unchanged = Peek::of(chunks.get(&digest)) == seen;
+        if unchanged {
             chunks.remove(&digest);
         }
+        unchanged
     }
 
     /// Ends when no put of `digest` is in flight.
@@ -333,11 +337,12 @@ impl Store {
         if Digest::of(&block) == digest {
             return Ok(Some(block));
         }
-        if !seen.left() {
+        // A read that ran into a put has unknown bytes, so only a get that makes the
+        // digest absent counts.
+        if self.forget(digest, seen) && !seen.left() {
             self.corruptions
                 .set(self.corruptions.get().saturating_add(1));
         }
-        self.forget(digest, seen);
         Ok(None)
     }
 
@@ -1601,7 +1606,7 @@ mod tests {
                 assert_eq!(store.status().corruptions, 1);
                 store.put(digest, &block).await.unwrap();
                 assert!(stale.await.unwrap().is_none());
-                assert_eq!(store.status().corruptions, 2);
+                assert_eq!(store.status().corruptions, 1);
                 node.fail_file(&path(digest), Operation::WriteAt);
                 store.put(digest, &block).await.unwrap();
                 let got = store.get(digest).await.unwrap().unwrap();
@@ -1672,6 +1677,7 @@ mod tests {
                     }
                 }
                 assert!(stale.await.unwrap().is_none());
+                assert_eq!(store.status().corruptions, 0);
                 let got = store.get(digest).await.unwrap().unwrap();
                 assert_eq!(&got[..], &block[..]);
             })
@@ -1814,6 +1820,26 @@ mod tests {
                 }
                 assert_absent(&store, digest).await;
                 assert_eq!(store.status(), status(0, 0));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn counts_one_corruption_for_two_gets_that_read_one_changed_chunk() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                store.put(digest, &block).await.unwrap();
+                put_bytes(&node, digest, 2999, &[8]).await;
+                let mut second = pin!(store.get(digest));
+                for _ in 0..2 {
+                    assert!(poll_once(&mut second).await.is_pending());
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                }
+                assert_absent(&store, digest).await;
+                assert!(second.await.unwrap().is_none());
+                assert_eq!(store.status(), status(1, 0));
             })
             .unwrap();
         }
