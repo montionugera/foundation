@@ -24,6 +24,7 @@ const DATA: Code = Code::new("node.data");
 const UNNAMED: Code = Code::new("node.unnamed");
 const RENAMED: Code = Code::new("node.renamed");
 const NAME: Code = Code::new("node.name");
+const RESERVED: Code = Code::new("node.reserved");
 const DISK: Code = Code::new("node.disk");
 const MEMORY: Code = Code::new("node.memory");
 const BUDGET: Code = Code::new("node.budget");
@@ -349,6 +350,14 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             RENAMED,
             format!("the data directory {data} holds the node {stored}, not {given}"),
             format!("Give `--name {stored}`, or another data directory with `--data`"),
+        ),
+        node::Error::Reserved { name } => (
+            RESERVED,
+            format!(
+                "the name {name} has a segment that starts with `@`, which is reserved \
+                 for Foundation"
+            ),
+            "Give a name with no segment that starts with `@`".to_owned(),
         ),
         node::Error::Name => (
             NAME,

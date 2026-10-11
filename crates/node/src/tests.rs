@@ -6148,6 +6148,25 @@ mod name {
         );
     }
 
+    /// A region refuses a reserved name, so a start keeps none, and a later start
+    /// with another name runs.
+    #[test]
+    fn a_reserved_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        for given in ["@x", "a.@b"] {
+            let reserved = Error::Reserved { name: name(given) };
+            assert_eq!(start_and_stop(&mut sim, &host, given), Err(reserved));
+            assert_eq!(read(&mut sim, &host), None, "keeps no name: {given}");
+        }
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        assert_eq!(
+            Error::Reserved { name: name("a.@b") }.to_string(),
+            "the name a.@b has a segment that starts with `@`, which is reserved for \
+             Foundation; give another name"
+        );
+    }
+
     /// A file of another length that is not 0, or that `encode` does not give, is
     /// not a name: also one whose padding is not zero, under a checksum that holds.
     #[test]

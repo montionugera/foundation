@@ -106,6 +106,23 @@ fn a_restart_with_another_name_fails() {
 }
 
 #[test]
+fn a_first_start_with_a_reserved_name_fails_and_a_start_with_another_name_runs() {
+    let mut rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "@x"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.reserved]: the name @x has a segment that starts with `@`, \
+             which is reserved for Foundation\n\
+             fix: Give a name with no segment that starts with `@`\n"
+        )
+    );
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+}
+
+#[test]
 fn a_first_start_with_no_name_fails() {
     let rig = Rig::new();
     assert_eq!(

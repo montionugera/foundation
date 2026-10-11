@@ -84,8 +84,9 @@ pub struct Config<M> {
     /// The region whose mesh the node opens.
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
-    /// `name`; a later start with another name stops with [`Error::Renamed`]. Get it
-    /// with [`name`] before the start.
+    /// `name`; a later start with another name stops with [`Error::Renamed`]. A name
+    /// with a reserved segment starts no shard ([`Error::Reserved`]). Get it with
+    /// [`name`] before the start.
     pub name: types::name::Name,
 }
 
@@ -195,12 +196,14 @@ impl Node {
     /// each shard, no shard starts, and [`Node::join`] gives [`Error::Disk`] with the
     /// budget, the shard count, and the least budget. When a shard's part of the pool
     /// budget gives a reservation of more than `usize::MAX` bytes, no shard starts
-    /// either, and [`Node::join`] gives [`Error::Pool`]. A failed start, a shard with
-    /// no memory, a data directory that another node holds or that was made for another
-    /// shard count, a key file that is not valid, a file `name` that holds another name
-    /// or that no node wrote, or a buffer or a mesh that does not open stops the node,
-    /// and [`Node::join`] returns its error. The `# Errors` of [`Node::join`] gives
-    /// which error comes first.
+    /// either, and [`Node::join`] gives [`Error::Pool`]. Nor does one for a
+    /// [`Config::name`] with a reserved segment, and [`Node::join`] gives
+    /// [`Error::Reserved`]. A failed start, a shard with no memory, a data directory
+    /// that another node holds or that was made for another shard count, a key file
+    /// that is not valid, a file `name` that holds another name or that no node wrote,
+    /// or a buffer or a mesh that does not open stops the node, and [`Node::join`]
+    /// returns its error. The `# Errors` of [`Node::join`] gives which error comes
+    /// first.
     ///
     /// # Panics
     ///
@@ -209,6 +212,10 @@ impl Node {
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
         let cores = config.shards.cores().get();
         let regional = !matches!(config.region, Region::Absent);
+        if config.name.reserved() {
+            let name = config.name;
+            return Self::failed(Error::Reserved { name }, regional);
+        }
         let parts = match parts(config.budget.pool, config.budget.disk, cores) {
             Ok(parts) => parts,
             Err(small) => {
@@ -411,9 +418,10 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// The first failure: [`Error::Disk`] for a disk budget that holds no ring on each
-    /// shard, [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part
-    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
+    /// [`Error::Disk`] for a disk budget that holds no ring on each shard,
+    /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
+    /// pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
     /// data directory that shard 0 could not claim, else [`Error::Buffer`] for the
@@ -1189,6 +1197,12 @@ pub enum Error {
     },
     /// The data directory holds no node name, and the start gave none.
     Unnamed,
+    /// The start gave `name`, which has a segment that starts with `@`. A region
+    /// refuses it, so no shard started and the data directory keeps no name.
+    Reserved {
+        /// The name the start gave.
+        name: types::name::Name,
+    },
     /// The file `budget` in the data directory does not hold budgets that a node
     /// wrote. The node does not write over it.
     Budget,
@@ -1218,6 +1232,7 @@ impl Error {
             | Self::Name
             | Self::Renamed { .. }
             | Self::Unnamed
+            | Self::Reserved { .. }
             | Self::Budget => None,
         }
     }
@@ -1284,6 +1299,11 @@ impl fmt::Display for Error {
             ),
             Self::Unnamed => f.write_str(
                 "the data directory holds no node name; give the node a name",
+            ),
+            Self::Reserved { name } => write!(
+                f,
+                "the name {name} has a segment that starts with `@`, which is reserved \
+                 for Foundation; give another name"
             ),
             Self::Budget => f.write_str(
                 "the file `budget` in the data directory does not hold budgets that a \
