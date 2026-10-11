@@ -5,12 +5,13 @@
   ephemeral node, the time offline after which the region removes it), and the key of
   each status channel (X27) by its name relative to the node's name (`clock.offset`,
   never the full name); `card.name` is the one copy of the node's name in region state.
-  The node's own copy is its file `name`, and once it stores a founding, also its card
-  in the founding (NODE NAME). Supersedes "the one copy of the
+  The node's own copy is its file `name` (NODE NAME). Supersedes "the one copy of the
   node's name" of
   https://github.com/synnaxlabs/foundation/issues/242#issuecomment-6031533205
   (`laptop.architect`, 2026-10-09T19:53:33Z,
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088190305).
+  Once the node stores a founding, its card in the founding is a copy too (NODE NAME,
+  #2355).
   The joining node gives its own release's names; the voters assign the keys at join
   (X27). A status name keeps its meaning and data type in every release, and a change
   takes a new name, so `hub` resolves a status channel from the record alone. The byte
