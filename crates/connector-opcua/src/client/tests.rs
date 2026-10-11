@@ -408,20 +408,28 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
 
 /// The close after a connect that times out can take two more request timeouts: one
 /// for the answer to the `CreateSession`, then one for the `CloseSession`. The server
-/// gets the `CreateSession` just before the deadline, answers it at 9 s, and then
-/// stops. open62541 checks the timeouts of requests once a second.
+/// gets the `CreateSession` just before the deadline, or just after the check of
+/// timeouts at 4 s, answers it just before its timeout, and then stops. open62541
+/// checks the timeouts of requests once a second from the start of the connect, so
+/// the close ends at most 10 s after the deadline.
 #[test]
-fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_after_it_fails()
- {
-    let took = times_out_and_closes(&[
+fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later() {
+    let before_the_deadline = times_out_and_closes(&[
         Span::from_nanos(0),
         Span::from_nanos(4_998_000_000),
         Span::from_nanos(4_999_500_000),
         Span::from_nanos(9_000_000_000),
         Span::from_nanos(9_000_100_000),
     ]);
-    let window = Span::from_nanos(14_000_000_000)..=Span::from_nanos(17_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    let after_a_check = times_out_and_closes(&[
+        Span::from_nanos(0),
+        Span::from_nanos(4_001_000_000),
+        Span::from_nanos(4_002_500_000),
+        Span::from_nanos(9_999_000_000),
+        Span::from_nanos(9_999_100_000),
+    ]);
+    let bound = Span::from_nanos(15_000_000_000);
+    assert_eq!((before_the_deadline, after_a_check), (bound, bound));
 }
 
 /// Connects to a server with room for one session that stops at the first time of
