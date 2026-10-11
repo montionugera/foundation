@@ -1008,6 +1008,24 @@ fn a_change_after_the_first_open_resolved_holds_the_other_first_runs() {
     assert_eq!(missed_after_kind("sink", "source"), Vec::<u64>::new());
 }
 
+/// A change of a connector whose first run started takes no share: the old task of
+/// `hold` lingers 2 s after the cancel, and the first run of an addition of that apply
+/// does not wait for it.
+#[test]
+fn a_change_after_the_first_run_takes_no_share() {
+    let first = vec![("plant.a", "hold", NODE, 0)];
+    let second = vec![("plant.a", "hold", NODE, 1), ("plant.b", "quick", NODE, 0)];
+    let steps = vec![on(0, first), on(1_000, second)];
+    assert_eq!(
+        starts(Some(ms(2_000)), steps),
+        [
+            start("plant.a", 0, 0),
+            start("plant.b", 1_000, 0),
+            start("plant.a", 3_000, 1),
+        ]
+    );
+}
+
 /// On `seed`, the sinks `plant.a` and `plant.c` and the source `plant.b` at 0, and at
 /// 5 s, the instant of the mesh time, after `yields` polls of other tasks, an apply that
 /// changes `plant.a`. Gives `None` when a run of `plant.a` or `plant.b` started before
