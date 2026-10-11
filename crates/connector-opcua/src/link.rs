@@ -295,9 +295,9 @@ fn the_copy_links_the_timer() {
     assert_eq!(distinct.len(), functions.len());
 }
 
-/// Each symbol outside the copy and `shim.c` that they may name in glibc: on x86-64
-/// with GCC or Clang at each optimization level, and on 64-bit Arm with Clang at
-/// `-O2` and `-moutline-atomics`. None gives or takes a heap block, so no block
+/// Each symbol outside the copy, `shim.c`, and `server.c` that they may name in glibc:
+/// on x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
+/// at `-O2` and `-moutline-atomics`. None gives or takes a heap block, so no block
 /// crosses between the allocator of libc and `src/alloc.rs`.
 const OUTSIDE: [&str; 35] = [
     "_GLOBAL_OFFSET_TABLE_",
