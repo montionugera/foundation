@@ -551,8 +551,9 @@
   2026-10-11 10:14 UTC).
   A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
   Its `close` first waits for the answer to a CreateSession in flight, or for its
-  request timeout, because a CloseSession sent before that answer has no session token,
-  and the server keeps the session that it then makes. The wait works around
+  request timeout. The server refuses a CloseSession sent before that answer, since it
+  has no session token, and when the answer then comes, open62541 activates the session,
+  which the server keeps after the channel closes. The wait works around
   `UA_Client_disconnectAsync`, which sends that CloseSession. Lost: a patch of
   `UA_Client_disconnectAsync` in the copy that defers the CloseSession until the
   CreateSession answer. It changes the session state machine of a release file that each

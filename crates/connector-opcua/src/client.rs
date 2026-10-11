@@ -55,7 +55,8 @@ impl Client {
     /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
     /// session, and gives it once the session is active. On an error, it closes the
-    /// session that it made.
+    /// session that it made with [`Client::close`], so an error can come after the
+    /// request timeout.
     ///
     /// # Errors
     ///
@@ -153,8 +154,8 @@ impl Client {
     /// that lost its connection cannot close its session, which stays on the server
     /// until it times out.
     pub(crate) async fn close(self) {
-        // A CloseSession sent before the CreateSession answer has no session token, so
-        // the server keeps the session that it makes.
+        // The server refuses a CloseSession sent before the CreateSession answer, and
+        // open62541 then activates the session, which the server keeps.
         self.connections
             .drive(|_| {
                 self.connections.events().run();
