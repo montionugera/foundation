@@ -52,9 +52,10 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
 ///
 /// # Errors
 ///
-/// [`Error::Name`] for a file `name` that a node did not write, [`Error::Mesh`] for a
-/// founding that does not read, [`Error::Key`] for a file `node.key` that a node did
-/// not write, and [`Error::Directory`] for a file call that fails.
+/// With no file `name`: [`Error::Key`] for a file `node.key` that a node did not write,
+/// and [`Error::Mesh`] for a founding of that key that does not read. [`Error::Name`]
+/// for a file `name` that a node did not write, and [`Error::Directory`] for a file
+/// call that fails.
 pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
     match source(files).await? {
         Source::File(stored) | Source::Card(stored) => Ok(Some(stored)),
