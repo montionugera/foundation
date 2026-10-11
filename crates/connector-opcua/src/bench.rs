@@ -549,7 +549,7 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager, caught};
+    use super::{Client, Manager, Server, caught};
     use crate::ffi;
 
     /// The delay of the default link.
@@ -792,6 +792,28 @@ mod tests {
             assert_eq!(clock.now() - start, Span::from_nanos(60_000_000_000));
             let message = panic.downcast_ref::<String>().map(String::as_str);
             assert_eq!(message, Some("0 of 1 clients connected in 1m"));
+        })
+        .expect("the run ends");
+    }
+
+    #[test]
+    fn a_reader_reads_the_double_of_its_server() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        sim.run_on(&node, move |node, _| async move {
+            let address = node.addresses()[0];
+            let body = async |server: &Server| {
+                let mut reader = server.connect().await;
+                reader.read().await;
+                let debug = format!("{server:?} {reader:?}");
+                reader.close().await;
+                debug
+            };
+            let debug = Server::scope(node.clock(), node.net(), address, body).await;
+            assert_eq!(
+                debug,
+                format!(r#"Server {{ url: "opc.tcp://{address}:4840", .. }} Reader {{ .. }}"#)
+            );
         })
         .expect("the run ends");
     }
