@@ -20,10 +20,11 @@
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704), and a
   body that ends early is `Client` with `Unfinished` (`laptop.architect`,
   2026-10-08T16:52:55Z,
-  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697). The
-  variant was `Message` until the split of `wire::hub::client::Error` (CLIENT HELLO;
-  `laptop.architect`, 2026-10-11T10:16:56Z,
-  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027).
+  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697).
+  `serve::Error::Client` holds each of them (CLIENT HELLO; `laptop.architect`,
+  2026-10-11T10:16:56Z,
+  https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107983027, item
+  4). Supersedes `serve::Error::Message` for them, of the two comments above.
   Supersedes item 5 (`serve::Error::Hello`) of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6058789738.
   Lost: a `Config::clock` beside `time`, with a loop in `hub` that knows the slew;
