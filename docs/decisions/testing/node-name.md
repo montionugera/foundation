@@ -61,21 +61,14 @@
   `name::keep` reads the founding under the lock, after the file `name` and before the
   write, through `mesh::founding` with a pool of its own (the shard's buffer is not open
   yet), and takes the card of the key in `node.key`. A founding with no card of that key
-  gives no stored name. So does a data directory with no `node.key`. Trigger: the merge
-  of #2384, after which `identity::load` refuses a `node.key` with no bytes or of zeros,
-  makes `name::card` read `node.key` before the founding, so a data directory with no
-  `node.key` makes no pool and reads no founding (`laptop.architect-2`, code fix 8,
-  2026-10-11T10:19:18Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495; at that
-  merge, 2026-10-11T10:47:57Z,
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108225390). Lost: a
-  check of the name after `Mesh::open`, through `Mesh::member`, which a node that joins
-  by ticket can also use; it is a second source beside the founding that `node::name`
-  reads, and it adds a mesh that opens and closes at once. A file `name` that holds a
-  whole name other than the card name comes only from a write by hand, or from a
-  `Region::Given` whose card holds another name than `Config::name`, which only a build
-  with the feature `sim` can give. A start with the card name then gives
-  `Error::Renamed` with the file name. (`laptop.architect-2`, 2026-10-11T11:10:39Z,
+  gives no stored name. So does a data directory with no `node.key`. Lost: a check of
+  the name after `Mesh::open`, through `Mesh::member`, which a node that joins by ticket
+  can also use; it is a second source beside the founding that `node::name` reads, and
+  it adds a mesh that opens and closes at once. A file `name` that holds a whole name
+  other than the card name comes only from a write by hand, or from a `Region::Given`
+  whose card holds another name than `Config::name`, which only a build with the feature
+  `sim` can give. A start with the card name then gives `Error::Renamed` with the file
+  name. (`laptop.architect-2`, 2026-10-11T11:10:39Z,
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108401950.) Proposed
   in the revised plan of #2355 (2026-10-11T08:11:24Z,
   https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6107004445);
