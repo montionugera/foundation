@@ -2,7 +2,7 @@
 
 use std::fs::{self, Permissions};
 use std::io::Read;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -77,6 +77,10 @@ fn a_write_of_a_name_of_the_longest_length_succeeds() {
 #[test]
 fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
     let scratch = Scratch::new();
+    // On macOS a file takes the group of its directory, and the OS drops the setgid
+    // bit of a file whose group this user is not in, as under `/tmp`.
+    let group = rustix::process::getegid().as_raw();
+    chown(&scratch.0, None, Some(group)).unwrap();
     let path = scratch.0.join("plant.hcl");
     for old in [0o600, 0o664, 0o4755, 0o2755, 0o1755] {
         fs::write(&path, b"old").unwrap();
