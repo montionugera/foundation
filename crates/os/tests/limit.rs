@@ -11,8 +11,8 @@
 #[expect(dead_code, reason = "this binary only makes a scratch directory")]
 mod disk;
 
-use std::fs::{self, Permissions};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::fs;
+use std::os::unix::fs::symlink;
 
 use disk::{Scratch, mode};
 use env::paths::{Error, Found};
@@ -47,7 +47,6 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     fs::create_dir(&kept).unwrap();
     let open = kept.join("plant");
     fs::write(&open, b"old plan").unwrap();
-    fs::set_permissions(&open, Permissions::from_mode(0o644)).unwrap();
     #[cfg(target_os = "macos")]
     append_only(&kept, true);
 
@@ -90,6 +89,6 @@ fn a_write_past_the_size_limit_removes_its_file_and_leaves_a_part_in_place() {
     };
     hidden.retain(|entry| *entry != open);
     assert_eq!(hidden.len(), left, "{hidden:?}");
-    // The part of the bytes that stays does not have the bits of the old file yet.
+    // Only this user reads the part of the bytes that stays.
     assert!(hidden.iter().all(|part| mode(part) == 0o600));
 }

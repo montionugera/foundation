@@ -1,7 +1,6 @@
 //! `os` with `sudo`: files on a small filesystem that the test mounts, a listener
-//! that an operator aborts, and a write on a file of another user or group or in a
-//! directory that refuses a remove. Only one CI step on a GitHub-hosted runner runs
-//! this target.
+//! that an operator aborts, and a write as root or in a directory that refuses a
+//! remove. Only one CI step on a GitHub-hosted runner runs this target.
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 #![cfg(target_os = "linux")]
@@ -17,8 +16,6 @@ use env::files::{Error, Files, Mode};
 mod disk;
 #[path = "../it/free.rs"]
 mod free;
-#[path = "../common/groups.rs"]
-mod groups;
 #[path = "../it/kept.rs"]
 mod kept;
 mod paths;

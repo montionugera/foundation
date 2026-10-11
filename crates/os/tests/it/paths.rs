@@ -75,47 +75,16 @@ fn a_write_of_a_name_of_the_longest_length_succeeds() {
 }
 
 #[test]
-fn a_write_keeps_the_mode_of_the_file_it_replaces() {
+fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
     let scratch = Scratch::new();
-    let (private, open) = (scratch.0.join("secret.hcl"), scratch.0.join("plant.hcl"));
-    for (path, mode) in [(&private, 0o600), (&open, 0o664)] {
-        fs::write(path, b"old").unwrap();
-        fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
-        os::paths().write(path, b"new").unwrap();
-    }
-    assert_eq!((mode(&private), mode(&open)), (0o600, 0o664));
-}
-
-#[test]
-fn a_write_keeps_no_setuid_setgid_or_sticky_bit_of_the_file_it_replaces() {
-    let scratch = Scratch::new();
-    let path = scratch.0.join("tool");
-    for old in [0o4755, 0o2755, 0o1755] {
+    let path = scratch.0.join("plant.hcl");
+    for old in [0o600, 0o664, 0o4755, 0o2755, 0o1755] {
         fs::write(&path, b"old").unwrap();
         fs::set_permissions(&path, Permissions::from_mode(old)).unwrap();
         assert_eq!(mode(&path), old);
         os::paths().write(&path, b"new").unwrap();
-        assert_eq!(mode(&path), 0o755, "{old:o}");
+        assert_eq!(mode(&path), 0o600, "{old:o}");
     }
-}
-
-/// The user of a CI runner on Linux can be in one group. There
-/// `root::paths::a_write_keeps_a_group_of_the_user_on_a_file_of_another_user` has
-/// the kept group.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_write_keeps_a_group_of_the_user_that_a_new_file_does_not_get() {
-    use std::os::unix::fs::{MetadataExt, chown};
-    let scratch = Scratch::new();
-    let path = scratch.0.join("secret.hcl");
-    fs::write(&path, b"old").unwrap();
-    let made = fs::metadata(&path).unwrap().gid();
-    let other = crate::groups::other(made);
-    chown(&path, None, Some(other)).unwrap();
-    fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
-    os::paths().write(&path, b"new").unwrap();
-    let new = fs::metadata(&path).unwrap();
-    assert_eq!((new.gid(), mode(&path)), (other, 0o640));
 }
 
 #[test]
