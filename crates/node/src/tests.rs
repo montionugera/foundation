@@ -3705,6 +3705,7 @@ mod port {
                 sim.crash(&host, sim::Crash::Power);
                 assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "seed {seed}");
                 assert_eq!(bytes(&mut sim, &host, NEW), None, "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, FILE), Some(own()), "seed {seed}");
             }
         }
 
