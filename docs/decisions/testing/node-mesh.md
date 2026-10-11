@@ -174,9 +174,9 @@
   by a crash or a failed sync of the data directory, can leave a key, and the next
   start founds with it. A file of another length, also one with no bytes, which
   `publish` never leaves, or of another tag or checksum gives `Error::Admin`, and the
-  node does not write over it. Each other file error on `admin.key` gives `Error::Directory`.
-  `publish` in place of a write in place, by `laptop.architect-2` (2026-10-10T22:20:34Z,
-  the audit of #2172):
+  node does not write over it. Each other file error on `admin.key` gives
+  `Error::Directory`. `publish` in place of a write in place, by `laptop.architect-2`
+  (2026-10-10T22:20:34Z, the audit of #2172):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. A start
   that reads a founding reads no `admin.key`, so a start with a founding and no
   `admin.key` starts. A founding that does not read gives `Error::Mesh`. `Error::Admin`
