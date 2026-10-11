@@ -39,7 +39,11 @@ pub(crate) fn configure(
     sources: &str,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Builds, String> {
-    let mut builds = builds(copy, flags, sources, env("CARGO_FEATURE_SIM").is_some());
+    let mut builds = builds(copy, flags, sources);
+    if env("CARGO_FEATURE_SIM").is_some() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        builds.shim.file(root.join("src/server.c"));
+    }
     builds.sanitize(env)?;
     // After `sanitize`, which can replace the compiler with clang.
     check(&builds.library.get_compiler())?;
@@ -49,13 +53,7 @@ pub(crate) fn configure(
 /// Gives the builds of the open62541 copy at `copy` and of our C ([`Builds::shim`]).
 /// `flags` is the text of the copy's `flags.txt`, whose include paths are relative to
 /// the copy. `sources` is the text of `sources.txt`, one file of the copy on each line.
-/// The shim build holds the test server `src/server.c` only when `simulated` holds.
-pub(crate) fn builds(
-    copy: &Path,
-    flags: &str,
-    sources: &str,
-    simulated: bool,
-) -> Builds {
+pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     let mut library = Build::new();
     library.warnings(false);
     let mut shim = Build::new();
@@ -80,9 +78,6 @@ pub(crate) fn builds(
         library.file(copy.join(source));
     }
     shim.file(root.join("src/shim.c"));
-    if simulated {
-        shim.file(root.join("src/server.c"));
-    }
     Builds {
         library,
         shim,

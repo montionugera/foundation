@@ -86,7 +86,7 @@ mod tests {
 
     /// The builds of `compiler::builds`, for `TARGET` and with the compiler `path`.
     fn builds(path: &str) -> compiler::Builds {
-        let mut builds = compiler::builds(Path::new("/copy"), "-std=c99", "a.c", false);
+        let mut builds = compiler::builds(Path::new("/copy"), "-std=c99", "a.c");
         for build in [&mut builds.library, &mut builds.shim] {
             child::tool(build.compiler(path), TARGET);
         }
@@ -305,21 +305,15 @@ mod tests {
             return;
         }
         let copy = Path::new("/copy");
-        let flags = "-Ideps\n-Iinclude\n-std=c99";
-        let sources = "a.c\nsrc/b.c";
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for (sim, files) in [
-            (false, vec![src.join("shim.c")]),
-            (true, vec![src.join("shim.c"), src.join("server.c")]),
-        ] {
-            let shim = compiler::builds(copy, flags, sources, sim).shim;
-            assert_eq!(shim.get_files().collect::<Vec<_>>(), files, "sim: {sim}");
-        }
         let compiler::Builds { library, shim, .. } =
-            compiler::builds(copy, flags, sources, false);
+            compiler::builds(copy, "-Ideps\n-Iinclude\n-std=c99", "a.c\nsrc/b.c");
         assert_eq!(
             library.get_files().collect::<Vec<_>>(),
             [copy.join("a.c"), copy.join("src/b.c")]
+        );
+        assert_eq!(
+            shim.get_files().collect::<Vec<_>>(),
+            [Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shim.c")]
         );
         let dirs = ["/copy/deps", "/copy/include"];
         let header = format!(
