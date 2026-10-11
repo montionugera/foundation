@@ -143,7 +143,9 @@ struct Recorded {
 /// Applies each step at its time, with the kind `hold`, whose task ends `linger` after
 /// the cancel, the kind `quick`, whose task ends at the cancel, and the kind `brief`,
 /// whose run returns at once, and drops the runs at `dropped`, if given. Gives each
-/// start of a run and each cancel until 10 s, from the time the hub opened.
+/// start of a run and each cancel until 10 s, from the time the hub opened, in order
+/// of time, then of name: the sim polls the tasks that are ready at one instant in a
+/// random order.
 fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recorded {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
@@ -195,7 +197,9 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         };
         let since = |events: &Starts| {
             let events = events.lock().expect("no panic");
-            events.iter().map(since).collect()
+            let mut events: Events = events.iter().map(since).collect();
+            events.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+            events
         };
         Recorded {
             starts: since(&starts),
@@ -422,11 +426,166 @@ fn a_connector_whose_run_returned_starts_no_run_until_it_changes() {
     assert_eq!(starts, [start("plant.a", 0, 0), start("plant.a", 2_000, 1)]);
 }
 
+/// A kind whose run records its start, spawns a task that ends `flush` after the
+/// cancel, opens a reader on `plant.data.**`, and holds the reader until the cancel.
+struct Select {
+    starts: Starts,
+    flush: Span,
+}
+
+impl Kind for Select {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), 0);
+        self.starts.lock().expect("no panic").push(start);
+        let (cancel, clock, flush) =
+            (ctx.cancel().clone(), ctx.clock().clone(), self.flush);
+        ctx.tasks().spawn(async move {
+            cancel.wait().await;
+            clock.sleep(flush).await;
+        });
+        let select = Attribute {
+            key: "select".into(),
+            key_span: None,
+            value: Value {
+                kind: value::Kind::String("plant.data.**".into()),
+                span: None,
+            },
+        };
+        let document = Document {
+            attributes: Map::new(vec![select]).expect("distinct keys"),
+            blocks: Vec::new(),
+        };
+        let settings = connector::reader::read(&document, &[], &[]).expect("settings");
+        let reader = ctx.reader(&settings).await?;
+        ctx.cancel().wait().await;
+        drop(reader);
+        Ok(())
+    }
+}
+
+/// The counts of the runs of a connector of [`Select`] at 4 s and 10 s. Its first run
+/// gets `Config`, since no channel matches. At 1 s, a spec change adds the channels
+/// that it selects, with the connector unchanged. At 5 s, an apply keeps the connector
+/// and its run.
+fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config::default());
+    sim.run_on(&node, move |node, tasks| async move {
+        let starts = Starts::default();
+        let select = Select {
+            starts: Arc::clone(&starts),
+            flush,
+        };
+        let kinds = Table::new().with("select", select);
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let config = testing::create_config(env, node.net(), kinds).await;
+        let hub = config.hub.clone();
+        let clock = node.clock();
+        let start = clock.now();
+        let mut runs = Runs::new(config, name(NODE));
+        let first = definitions(&[("plant.a", "select", NODE, 0)]);
+        hub.set_definitions(&first);
+        runs.apply(&first);
+        clock.sleep_until(start + ms(1_000)).await;
+        let mut second = first.clone();
+        let index = types::channel::Key::from_u128(900);
+        second.insert(
+            name("plant.data.time"),
+            Definition::Channel(spec::channel::Channel {
+                key: index,
+                kind: spec::channel::Kind::Index {
+                    error: None,
+                    control: None,
+                },
+            }),
+        );
+        let data = spec::channel::Data::new(
+            index,
+            None,
+            spec::data_type::DataType::Sample(types::sample::Type::Scalar(
+                types::sample::Scalar::F64,
+            )),
+            None,
+        )
+        .expect("data");
+        second.insert(
+            name("plant.data.value"),
+            Definition::Channel(spec::channel::Channel {
+                key: types::channel::Key::from_u128(901),
+                kind: spec::channel::Kind::Data(data),
+            }),
+        );
+        hub.set_definitions(&second);
+        runs.apply(&second);
+        clock.sleep_until(start + ms(4_000)).await;
+        let early = starts.lock().expect("no panic").len();
+        clock.sleep_until(start + ms(5_000)).await;
+        runs.apply(&second);
+        clock.sleep_until(start + ms(10_000)).await;
+        let started = starts.lock().expect("no panic").len();
+        drop(runs);
+        (early, started)
+    })
+}
+
+/// The spec change that adds the selected channels is the fix that `Config` names, so
+/// the connector runs again.
+#[test]
+fn a_spec_change_that_adds_the_selected_channels_runs_the_connector_again() {
+    assert_eq!(starts_of_select(Span::ZERO), Ok((2, 2)));
+}
+
+/// The task of the refused run ends at 2 s, so the spec change at 1 s comes before
+/// `run` returned `Config`. It still runs the connector again.
+#[test]
+fn a_spec_change_while_a_refused_run_ends_runs_the_connector_again() {
+    assert_eq!(starts_of_select(ms(2_000)), Ok((2, 2)));
+}
+
 /// A node gets its first mesh time 1 s after its hub opened, and the spec that the
 /// mesh uses at that time removes the connector whose run waits to open its status.
+/// The sim polls the run and the removal in a random order, so each seed checks that
+/// no run starts after the removal, and some seed removes the connector first.
 #[test]
 fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
-    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let runs: Vec<(usize, usize)> =
+        (0..16).map(removal_as_the_mesh_time_arrives).collect();
+    for (seed, &(removed, started)) in runs.iter().enumerate() {
+        assert_eq!(started, removed, "seed {seed}");
+    }
+    assert!(runs.contains(&(0, 0)), "{runs:?}");
+}
+
+/// Runs the scene of the test above with `seed`. Gives the count of starts at the
+/// removal and at 10 s.
+fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
+    let mut sim = ::sim::Sim::new(::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    });
     let node = sim.node(::sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
         let starts = Starts::default();
@@ -464,9 +623,10 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
         let probe = definitions(&[("plant.b", "quick", "plant.edge", 0)]);
         placed.extend(probe);
         hub.set_definitions(&placed);
-        // The probe waits for the mesh time before the run does, so it removes the
-        // connector in the instant that the time arrives, before the run polls again.
         let (probe_hub, probe_runs) = (hub.clone(), std::rc::Rc::clone(&runs));
+        let removed = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (probe_starts, probe_removed) =
+            (Arc::clone(&starts), std::rc::Rc::clone(&removed));
         tasks.spawn(async move {
             let config = hub::writer::Config {
                 subject: name("plant.probe"),
@@ -479,12 +639,13 @@ fn a_removal_as_the_mesh_time_arrives_ends_the_run_that_waits_for_it() {
             let empty = definitions(&[]);
             probe_hub.set_definitions(&empty);
             probe_runs.borrow_mut().apply(&empty);
+            probe_removed.set(Some(probe_starts.lock().expect("no panic").len()));
         });
         runs.borrow_mut().apply(&placed);
         clock.sleep_until(start + ms(10_000)).await;
         let started = starts.lock().expect("no panic").len();
         drop(runs);
-        started
+        (removed.get().expect("the probe removed it"), started)
     });
-    assert_eq!(run, Ok(0));
+    run.expect("the run ends")
 }

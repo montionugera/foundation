@@ -152,6 +152,16 @@ impl Manager {
         &self.events
     }
 
+    /// Gives the port of the listener of [`Manager::listening`], until a listen open
+    /// takes it.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn port(&self) -> Option<u16> {
+        let listener = self.state().listener.take();
+        let port = listener.as_ref().map(|listener| listener.local().port());
+        self.state().listener.set(listener);
+        port
+    }
+
     /// Moves the connections on and calls `run` until `run` gives a value, and gives
     /// it. `run` runs the loop with a timeout of 0, alone or through its client or
     /// server, and may poll its own sources with the context it gets. Between calls,
@@ -209,8 +219,8 @@ impl Manager {
         .await
     }
 
-    /// Connects, reads, and writes each connection until each waits or accepts a
-    /// stream, and has the task of `cx` woken when one can go on.
+    /// Connects, reads, and writes each connection until each waits, and has the task
+    /// of `cx` woken when one can go on.
     fn pass(&self, cx: &mut Context<'_>) {
         let state = self.state();
         state.park(cx.waker());
@@ -339,8 +349,8 @@ impl State {
     }
 
     /// Moves on each connection in `again` and each that those steps add, until none
-    /// is left, and gives whether it moved one. An accept or a failed accept adds one
-    /// to `again`.
+    /// is left, and gives whether it moved one. An accept or a failed accept after a
+    /// run adds one to `again`.
     fn move_on_again(&self, cx: &mut Context<'_>) -> bool {
         let mut moved = false;
         loop {
@@ -432,7 +442,8 @@ impl State {
         self.wake(id);
     }
 
-    /// Moves connection `id` on until it waits or accepts a stream.
+    /// Moves connection `id` on until it waits, which a listen connection does after
+    /// an accept.
     fn move_on(&self, id: usize, cx: &mut Context<'_>) {
         #[cfg(feature = "sim")]
         self.moves.set(self.moves.get() + 1);
@@ -457,11 +468,7 @@ impl State {
                     return;
                 }
                 Step::Established => self.call(id, ffi::ESTABLISHED, &mut []),
-                Step::Accepted(tcp) => {
-                    self.accept(id, tcp);
-                    self.accepted.set(Some(id));
-                    return;
-                }
+                Step::Accepted(tcp) => self.accept(id, tcp),
                 Step::Read(n) => self.call(id, ffi::ESTABLISHED, &mut read[..n]),
             }
         }
@@ -482,7 +489,8 @@ impl State {
     }
 
     /// Adds `tcp`, which listen connection `listen` accepted, as a new connection
-    /// with the context that `listen` has now, and gives it `ESTABLISHED`.
+    /// with the context that `listen` has now, gives it `ESTABLISHED`, and has the
+    /// drive resume `listen` after the next run of the loop.
     fn accept(&self, listen: usize, tcp: Tcp) {
         let callback = self
             .table
@@ -502,6 +510,7 @@ impl State {
         let mut text = [0; ADDRESS_BYTES];
         self.establish(id, Params::Remote(ip_text(peer.ip(), &mut text)));
         self.wake(id);
+        self.accepted.set(Some(listen));
     }
 
     /// Calls the connection callback of `id` with `state` and `message`.
@@ -1060,7 +1069,5 @@ unsafe extern "C" fn closed(application: *mut c_void, _: *mut c_void) {
     }
 }
 
-#[cfg(any(test, feature = "sim"))]
-mod server;
 #[cfg(test)]
 mod tests;

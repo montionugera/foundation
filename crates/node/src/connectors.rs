@@ -15,8 +15,9 @@ use crate::scope::Scope;
 /// The runs of the connectors that the spec in use places on one node, on one
 /// supervisor. Dropped, it drops each run. Each name has one loop, a future that runs
 /// its connector, and after each change the connector of that change, until a change
-/// removes it. So no two runs of one name overlap, also across a removal and an
-/// addition.
+/// removes it. After a run that gave `Config`, the next apply runs the connector again,
+/// also one that came before `run` returned. So no two runs of one name overlap, also
+/// across a removal and an addition.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     /// The name of the node in the region.
@@ -33,6 +34,9 @@ struct Loop {
     connector: Option<Connector>,
     /// Cancelled when `connector` changes. It cancels the run in progress.
     changed: cancel::Token,
+    /// Cancelled at each apply. A run that gave `Config` runs again once the token of
+    /// its start is cancelled, also by an apply before `run` returned.
+    applied: cancel::Token,
     /// The loop read `None` and ended.
     ended: bool,
 }
@@ -51,8 +55,8 @@ impl Runs {
 
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
-    /// that is new or changed, after the last run of its name returned. Each other
-    /// connector keeps its run.
+    /// that is new or changed, or whose last run gave `Config`, after the last run of
+    /// its name returned. Each other connector keeps its run.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
@@ -68,6 +72,8 @@ impl Runs {
             if state.ended {
                 return false;
             }
+            state.applied.cancel();
+            state.applied = cancel::Token::new();
             let wanted = wanted.get(name).copied();
             if state.connector.as_ref() != wanted {
                 state.connector = wanted.cloned();
@@ -83,6 +89,7 @@ impl Runs {
             let state = Rc::new(RefCell::new(Loop {
                 connector: Some(connector.clone()),
                 changed: cancel::Token::new(),
+                applied: cancel::Token::new(),
                 ended: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
@@ -90,27 +97,28 @@ impl Runs {
             let name = name.clone();
             self.scope.spawn(Box::pin(async move {
                 loop {
-                    let (connector, changed) = {
+                    let (connector, changed, applied) = {
                         let mut state = state.borrow_mut();
                         let Some(connector) = state.connector.clone() else {
                             state.ended = true;
                             return;
                         };
-                        (connector, state.changed.clone())
+                        (connector, state.changed.clone(), state.applied.clone())
                     };
                     let kind = connector.kind().as_str();
                     let config = connector.config().document();
                     match supervisor.run(kind, name.clone(), config, &changed).await {
-                        // The status holds its class, and the next change of the
-                        // connector runs it again.
-                        Ok(()) | Err(connector::kind::Error::Config(_)) => {}
+                        // The next change of the connector runs it again.
+                        Ok(()) => changed.wait().await,
+                        // The status holds its class. The fix can be in another
+                        // definition, so the next spec change runs it again.
+                        Err(connector::kind::Error::Config(_)) => applied.wait().await,
                         Err(error) => {
                             unreachable!(
                                 "invariant: `run` gives only `Config`: {error}"
                             )
                         }
                     }
-                    changed.wait().await;
                 }
             }));
         }

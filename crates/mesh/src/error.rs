@@ -182,7 +182,7 @@ impl fmt::Display for Error {
             }
             Self::Malformed => f.write_str("a message on a mesh stream is not valid"),
             Self::Stream(cause) => write!(f, "a mesh stream failed: {cause}"),
-            Self::Stopped(stopped) => write!(f, "the group stopped: {stopped}"),
+            Self::Stopped(stopped) => write_stopped(f, stopped),
             Self::Stale { base, pointer } => write!(
                 f,
                 "the spec changed: the pointer is {pointer}, not the base {base}"
@@ -231,6 +231,14 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Writes the text of a stop: `the group stopped: `, then `stopped`.
+pub(crate) fn write_stopped(
+    f: &mut fmt::Formatter<'_>,
+    stopped: &Stopped,
+) -> fmt::Result {
+    write!(f, "the group stopped: {stopped}")
+}
 
 fn write_problems(
     f: &mut fmt::Formatter<'_>,
