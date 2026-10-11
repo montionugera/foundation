@@ -5405,6 +5405,9 @@ mod port {
             let free_bytes = sim
                 .run_on(&host, |host, _| async move {
                     let files = host.files();
+                    // The stop removes `address` with no sync, so the room it held
+                    // frees only at the next sync of the directory.
+                    files.sync_dir(Path::new("")).await.expect("syncs");
                     let free_bytes = files.free().await.expect("the free bytes");
                     let len = free_bytes - (1 << 30) + 1;
                     let mode = env::files::Mode::Create { len };
