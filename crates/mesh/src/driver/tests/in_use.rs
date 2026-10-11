@@ -67,6 +67,30 @@ async fn commit(
         .unwrap()
 }
 
+/// Settles the change from `base` to the tree of `definitions`, after a put of each
+/// chunk of that tree. The change lists the root of `base`, whose get fails.
+async fn settle_listing_base(
+    node: &sim::node::Node,
+    mesh: &Mesh,
+    base: Pointer,
+    definitions: &BTreeMap<Name, Definition>,
+) -> Pointer {
+    let mut chunks = Chunks::default();
+    let update = spec::region::tree(&mut chunks, definitions);
+    put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
+        .await
+        .unwrap();
+    node.fail_file(
+        &Path::new(BLOB).join(base.root.to_string()),
+        Operation::Open,
+    );
+    let holders = [key(1)].into();
+    let listed = [base.root].into();
+    mesh.settle_spec(base, update.root, listed, holders, BTreeMap::new())
+        .await
+        .unwrap()
+}
+
 /// Waits until the pointer of `mesh` is `pointer`, as after the replay of its log.
 async fn reach(mesh: &Mesh, clock: &Clock, pointer: Pointer) {
     for _ in 0..100 {
@@ -356,20 +380,48 @@ fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
             create_subjects(&["plant.b"], 1),
         );
         let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
-        let mut chunks = Chunks::default();
-        let update = spec::region::tree(&mut chunks, &b);
-        put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
-            .await
-            .unwrap();
-        node.fail_file(
-            &Path::new(BLOB).join(first.root.to_string()),
-            Operation::Open,
+        let moved = settle_listing_base(&node, &mesh, first, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    });
+}
+
+// The open after a power cut keeps the chunks of the tree in use.
+#[test]
+fn a_read_after_an_open_gets_no_listed_chunk_of_the_tree_in_use() {
+    let a = create_subjects(&["plant.a"], 1);
+    let first = pointer(1, &a);
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, move |node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        assert_eq!(
+            mesh.apply(base(), a.clone(), BTreeMap::new()).await,
+            Ok(first)
         );
-        let holders = [key(1)].into();
-        let listed = [first.root].into();
-        let settled =
-            mesh.settle_spec(first, update.root, listed, holders, BTreeMap::new());
-        let moved = settled.await.unwrap();
+        assert_eq!(mesh.spec().await, Ok(in_use(first, &a)));
+    })
+    .unwrap();
+    sim.crash(&node, Crash::Power);
+    sim.run_on(&node, move |node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        reach(&mesh, &node.clock(), first).await;
+        let b = create_subjects(&["plant.b"], 1);
+        let moved = settle_listing_base(&node, &mesh, first, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_read_gets_no_listed_chunk_of_the_founding_tree() {
+    solo(|node, tasks| async move {
+        let founding = create_subjects(&["plant.app"], 1);
+        let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
+        config.founding.definitions = founding.clone();
+        let mesh = Mesh::start(config).await.unwrap();
+        let b = create_subjects(&["plant.b"], 1);
+        let founded = pointer(0, &founding);
+        let moved = settle_listing_base(&node, &mesh, founded, &b).await;
         assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
     });
 }
@@ -386,6 +438,7 @@ fn a_read_gets_the_root_of_a_tree_that_the_node_used_before() {
         );
         let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
         let second = mesh.apply(first, b.clone(), BTreeMap::new()).await.unwrap();
+        assert_eq!(mesh.spec().await, Ok(in_use(second, &b)));
         let path = Path::new(BLOB).join(first.root.to_string());
         node.fail_file(&path, Operation::Open);
         let holders = [key(1)].into();
