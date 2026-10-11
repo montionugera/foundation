@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found};
+use env::paths::{Error, Found, names_directory};
 use rustix::io::Errno;
 
 use crate::entropy;
@@ -22,16 +22,6 @@ impl env::paths::Driver for Driver {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
     }
-}
-
-/// Whether `path` is empty or ends in `/`, `.`, or `..`, so that it names a directory.
-/// `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
-/// hidden file would go beside that directory or in it. The stat does not stop this:
-/// the directory can come after it.
-fn names_directory(path: &Path) -> bool {
-    let bytes = path.as_os_str().as_encoded_bytes();
-    let name = bytes.rsplit(|&byte| byte == b'/').next();
-    matches!(name, Some(b"" | b"." | b".."))
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
@@ -60,8 +50,11 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
+    // hidden file would go beside that directory or in it. The stat does not stop
+    // this: the directory can come after it. Such a path resolves only to a
+    // directory, so the open fails.
     if names_directory(path) {
-        // Such a path resolves only to a directory, so the open fails.
         return in_place(path, bytes);
     }
     match fs::symlink_metadata(path) {

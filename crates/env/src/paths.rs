@@ -131,6 +131,16 @@ pub trait Driver: Debug {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error>;
 }
 
+/// Whether `path` is empty or ends in `/`, `.`, or `..`. By its text, such a path names
+/// a directory or nothing, never a file. It reads no file. The methods of `Path` do not
+/// give this: they drop an end in `/` or `.`.
+#[must_use]
+pub fn names_directory(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let name = bytes.rsplit(|&byte| byte == b'/').next();
+    matches!(name, Some(b"" | b"." | b".."))
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -177,5 +187,15 @@ mod tests {
             paths.write(Path::new("a"), b""),
             Err(Error::Io { code: 28 })
         );
+    }
+
+    #[test]
+    fn a_path_that_is_empty_or_ends_in_a_slash_or_dots_names_a_directory() {
+        for path in ["", "/", "a/", "a//", ".", "..", "a/.", "a/.."] {
+            assert!(names_directory(Path::new(path)), "{path:?}");
+        }
+        for path in ["a", "/a", "a/b", ".a", "a.", "..a", "a/..."] {
+            assert!(!names_directory(Path::new(path)), "{path:?}");
+        }
     }
 }

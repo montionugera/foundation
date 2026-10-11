@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{Error, Found};
+use env::paths::{Error, Found, names_directory};
 
 /// `ENOTDIR` and `EISDIR` on Linux.
 const NOT_DIRECTORY: i32 = 20;
@@ -117,13 +117,6 @@ impl Paths {
             .map(|(_, file)| file)
             .filter(move |file| *file != dir)
     }
-}
-
-/// Whether `path` ends in `/`, `.`, or `..`, and so names a directory.
-fn names_directory(path: &Path) -> bool {
-    let bytes = path.as_os_str().as_encoded_bytes();
-    let name = bytes.rsplit(|&byte| byte == b'/').next();
-    matches!(name, Some(b"" | b"." | b".."))
 }
 
 /// `path` from `/`, the working directory of each host, with no `.` or `..`.
