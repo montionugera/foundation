@@ -79,6 +79,8 @@ async fn source(files: &Files) -> Result<Source, Error> {
     if let Some(stored) = read(files).await? {
         return Ok(Source::File(stored));
     }
+    // The founding first: a first start makes `node.key` durable before it. The key
+    // also with no founding, so that `Error::Key` comes before `Unnamed`.
     let founding = founding(files).await?;
     let key = identity::key(files).await?;
     let Some(founding) = founding else {
