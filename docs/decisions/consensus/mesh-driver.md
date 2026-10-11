@@ -75,8 +75,8 @@
   peer with no ticket gets no join into the log of an honest voter. A peer with a
   valid ticket can still name the key of a node whose join is not applied, because
   the node key is not bound to the card's public key: a known result, until #2345
-  (`laptop.director`, 2026-10-07T20:44:33Z,
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6046505889).
+  (`laptop.architect`, 2026-10-11T03:31:12Z,
+  https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526).
   A hard proof that lost such a claim can be no quorum at a node with a newer
   configuration, which then learns the term from the leader. A follower answers a
   cut run with the last entry it kept, and the leader sends the rest from there.
