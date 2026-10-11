@@ -1415,6 +1415,9 @@ Disassembly of section .text:
         );
     }
 
+    /// No caller sees a header line: `key` of its empty text is `None`, and
+    /// `relocation` finds no `R_` word in it. So only this test kills a `places` that
+    /// gives one.
     #[test]
     fn places_gives_each_line_but_the_headers() {
         let disassembly = "\
