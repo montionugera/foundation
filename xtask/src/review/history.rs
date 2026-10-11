@@ -153,7 +153,9 @@ impl<'a> History<'a> {
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a
-    /// change of the base does not count, and a conflict in that tree does. `from` and
+    /// change of the base does not count. A file under `docs/decisions/` that this
+    /// tree has a conflict in gives "has a conflict in the decision `<path>` between
+    /// its start and the base", also when the conflict leaves no markers. `from` and
     /// `end` are as in `code_change`, with its two phrases: "has `<text>`, which names
     /// no commit", and "holds the base at more than one newest commit: `<commit>`,
     /// `<commit>`".
@@ -171,6 +173,11 @@ impl<'a> History<'a> {
             Range::Unread(phrase) => return Ok(Some(phrase)),
             Range::Read { end, merged, .. } => (end, merged),
         };
+        if let Some(path) = merged.conflict(|path| path.starts_with(DECISIONS)) {
+            return Ok(Some(format!(
+                "has a conflict in the decision `{path}` between its start and the base"
+            )));
+        }
         let decision = self
             .diff(&merged.tree, &end)?
             .into_iter()

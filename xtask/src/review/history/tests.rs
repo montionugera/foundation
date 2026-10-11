@@ -2239,6 +2239,9 @@ fn a_start_with_an_early_commit_time_reads() {
 /// The phrase of a change to the decision `x.md`.
 const DECISION: &str = "changes the decision `docs/decisions/x.md`";
 
+/// The start of the phrase of a conflict in the decision `x.md`.
+const CONFLICT: &str = "has a conflict in the decision `docs/decisions/x.md`";
+
 #[test]
 fn a_range_that_adds_changes_or_removes_a_decision_changes_the_surface() {
     let (repo, start) = Repo::with_pr("surface-decision");
@@ -2311,7 +2314,33 @@ fn a_merge_that_resolves_a_conflict_in_a_decision_changes_the_surface() {
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
         repo.surface_change(&start, &end),
-        Ok(Some(DECISION.to_string()))
+        Ok(Some(format!("{CONFLICT} between its start and the base")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_decision_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
+    let repo = Repo::new("surface-moddel");
+    let base = repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    repo.git(&["rm", "--quiet", "docs/decisions/x.md"]);
+    repo.git(&["commit", "--quiet", "-m", "rm"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("{CONFLICT} between its start and the base")))
     );
     repo.remove();
 }
