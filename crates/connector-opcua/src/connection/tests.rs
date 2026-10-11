@@ -701,6 +701,9 @@ async fn write(stream: &mut Tcp, bytes: &[u8]) {
     }
 }
 
+/// The test counts the connections through the private table, since no public call
+/// closes a stream while a manager lives. A gone connection that stays in it changes no
+/// status, call, or wire byte, but keeps its entry and a move in each pass.
 #[test]
 fn a_connect_gives_opening_then_established_and_the_peer_reads_each_send() {
     let mut network = Network::new();
@@ -3563,7 +3566,9 @@ fn a_close_before_the_first_read_waits_for_the_end_of_the_peer() {
 }
 
 /// The server of [`burst`] holds at most 100 secure channels. A burst of accepts must
-/// not hold more, and each accept moves on only the listen connection again.
+/// not hold more, and each accept moves on only the listen connection again. The test
+/// counts the moves through the private `State::moves`, since a move of a connection
+/// that waits is CPU work that changes no byte, wake, or callback.
 #[test]
 fn a_burst_of_accepts_holds_no_more_than_the_most_secure_channels() {
     // A pass of the whole table after each accept makes more than 10,000.

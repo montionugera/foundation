@@ -293,27 +293,48 @@ impl State {
         Ok(())
     }
 
+    /// Checks `join` as [`State::apply`] does, with no change to the state.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refused`] that [`State::apply`] gives for `join`.
+    pub(crate) fn check(&self, join: &Join) -> Result<(), Refused> {
+        self.admitted(join).map(drop)
+    }
+
     // Admits the node of `join`. The ticket counts a use only when all checks pass.
     fn join(&mut self, join: Join) -> Result<(), Refused> {
-        let card = join.card.check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
-        let record =
-            self.tickets
-                .get_mut(&join.ticket.to_bytes())
-                .ok_or(Refused::Unknown {
-                    public_key: join.ticket,
-                })?;
-        record
-            .admit(&card, &join.admission, join.at)
-            .map_err(Refused::Ticket)?;
+        let (card, names) = self.admitted(&join)?;
+        let record = self
+            .tickets
+            .get_mut(&join.ticket.to_bytes())
+            .expect("invariant: admitted checks that the ticket is recorded");
+        record.count();
         let member = Member {
             card,
             admission: join.admission,
-            ephemeral: record.options.ephemeral,
+            ephemeral: record.ephemeral(),
             status: join.status,
         };
         self.insert(member, names);
         Ok(())
+    }
+
+    // The checked card of `join` and its names from `fits`, when the region admits
+    // it.
+    fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
+        let card = join.card.clone().check().map_err(Refused::Forged)?;
+        let names = self.fits(&card, &join.status)?;
+        let record =
+            self.tickets
+                .get(&join.ticket.to_bytes())
+                .ok_or(Refused::Unknown {
+                    public_key: join.ticket,
+                })?;
+        record
+            .check(&card, &join.admission, join.at)
+            .map_err(Refused::Ticket)?;
+        Ok((card, names))
     }
 
     // Adds `member`, whose names `fits` gave.
@@ -957,9 +978,9 @@ mod tests {
     #[test]
     fn a_join_admits_the_node_with_the_ticket_options() {
         let mut state = state();
-        let join = join(7, 3, "plant.edge.a");
-        let admission = join.admission;
-        assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
+        let first = join(7, 3, "plant.edge.a");
+        let admission = first.admission;
+        assert_eq!(apply_join(&mut state, first), Ok(false));
         let expected = Member {
             card: signed(3, "plant.edge.a"),
             admission,
@@ -967,7 +988,15 @@ mod tests {
             status: status([(name("disk"), index(9))]),
         };
         assert_eq!(state.member(node(3)), Some(&expected));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1067,7 +1096,6 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     // `plant.@changes` is the region's changes channel.
@@ -1163,7 +1191,6 @@ mod tests {
             );
             assert_eq!(state, before);
         }
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     #[test]
@@ -1183,10 +1210,17 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(0));
         let other = with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]);
         assert_eq!(apply_join(&mut state, other), Ok(false));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 5, "plant.edge.c"), &[("disk", 11)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1510,6 +1544,25 @@ mod tests {
                         prop_assert_eq!(moved, given);
                     }
                     (Ok(_), _) => {}
+                }
+            }
+        }
+
+        // A check of a join gives what its apply gives, and changes nothing.
+        #[test]
+        fn a_check_of_a_join_gives_the_result_of_its_apply(
+            steps in prop::collection::vec(steps(), 0..16),
+        ) {
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                if let Change::Join(join) = &step {
+                    let before = state.clone();
+                    let checked = state.check(join);
+                    prop_assert_eq!(&state, &before);
+                    prop_assert_eq!(checked, state.apply(step).map(drop));
+                } else {
+                    let _applied = state.apply(step);
                 }
             }
         }
