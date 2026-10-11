@@ -3483,7 +3483,7 @@ mod tests {
                 };
                 let twin = card::Signed::sign(key(4), card, &common::private(2));
                 let joins = [
-                    ticket(),
+                    plant_ticket(),
                     join_change_with(&twin, 7, Stamp::EPOCH),
                     join_change(5),
                 ];
@@ -3641,7 +3641,7 @@ mod tests {
                 forged.card.card.public_key = public(5);
                 write(
                     &mesh,
-                    changes(&[ticket(), Change::Join(forged), join_change(4)]),
+                    changes(&[plant_ticket(), Change::Join(forged), join_change(4)]),
                 )
                 .await;
                 let vote = |signer, commit| {
@@ -4289,7 +4289,7 @@ mod tests {
         fn a_written_join_does_not_move_the_key_of_an_applied_member() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &[2, 3]).await.unwrap();
-                write(&mesh, changes(&[ticket(), join_change(4)])).await;
+                write(&mesh, changes(&[plant_ticket(), join_change(4)])).await;
                 let commit = proven(2, 1, Body::Heartbeat { commit: 2 });
                 assert_eq!(mesh.receive(public(2), commit), Ok(()));
                 node.clock().sleep(Span::MILLISECOND).await;
@@ -5034,8 +5034,8 @@ mod tests {
         assert_eq!(draws[0], draws[1]);
     }
 
-    /// Ticket `id`, which admits `plant.*` until `expiry`, any number of times when
-    /// `reusable`.
+    /// The change that records ticket `id`, which admits `prefix` until `expiry`, any
+    /// number of times when `reusable`.
     fn ticket_of(id: u8, prefix: &str, reusable: bool, expiry: Stamp) -> Change {
         let options = Options {
             prefix: prefix.parse().unwrap(),
@@ -5043,14 +5043,11 @@ mod tests {
             expiry,
             ephemeral: None,
         };
-        Change::Ticket {
-            public_key: public(id),
-            options,
-        }
+        common::ticket_change(id, options)
     }
 
     /// Ticket 7, which admits `plant.*` any number of times.
-    fn ticket() -> Change {
+    fn plant_ticket() -> Change {
         ticket_of(7, "plant", true, Stamp::from_nanos(1))
     }
 
@@ -5115,7 +5112,7 @@ mod tests {
         over.truncate(over.len() - 8);
         over.extend(common::status_bytes(65));
         let changes = [
-            encoded(&ticket()),
+            encoded(&plant_ticket()),
             over,
             encoded(&join_change(4)),
             encoded(&home_to(1)),
@@ -5137,7 +5134,7 @@ mod tests {
             let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
             let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(None));
-            lead(&mesh, &node.clock(), ticket()).await;
+            lead(&mesh, &node.clock(), plant_ticket()).await;
             let Change::Join(mut forged) = join_change(3) else {
                 unreachable!()
             };
@@ -5274,7 +5271,7 @@ mod tests {
     fn a_join_for_a_voter_changes_neither_its_record_nor_the_votes() {
         let other = common::signed(2, "plant.other");
         let changes = [
-            encoded(&ticket()),
+            encoded(&plant_ticket()),
             encoded(&join_change_with(&other, 7, Stamp::EPOCH)),
             encoded(&home_to(1)),
         ];
@@ -5516,7 +5513,7 @@ mod tests {
             let Change::Ticket {
                 public_key,
                 mut options,
-            } = ticket()
+            } = plant_ticket()
             else {
                 unreachable!()
             };
@@ -7014,7 +7011,7 @@ mod tests {
         fn history() -> Vec<Entry> {
             vec![
                 empty(at(4, 1)),
-                bytes(at(4, 2), &ticket()),
+                bytes(at(4, 2), &plant_ticket()),
                 bytes(at(4, 3), &join_change(4)),
                 common::voters_entry_voted(
                     2,

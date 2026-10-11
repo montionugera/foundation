@@ -8,7 +8,7 @@ use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
 
 use super::apply::Counted;
-use super::send::{self, LIMIT, Peer, create_config, stop};
+use super::send::{self, LIMIT, Peer, at, create_config, stop};
 use super::*;
 
 impl Cluster {
@@ -153,7 +153,7 @@ fn set_home_refuses_a_home_that_is_not_a_member() {
 fn set_home_refuses_a_member_that_the_node_appended_and_did_not_apply() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-        let changes = [ticket(), join_change(4)];
+        let changes = [plant_ticket(), join_change(4)];
         let entries = changes.iter().zip(1..).map(|(change, index)| Entry {
             at: at(index),
             data: Data::Bytes(encoded(change)),
@@ -184,7 +184,7 @@ fn set_home_refuses_a_member_that_the_leader_wrote_and_did_not_apply() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
         let first = elect(&mesh).await;
-        mesh.propose(ticket()).await.unwrap();
+        mesh.propose(plant_ticket()).await.unwrap();
         let joined = mesh.propose(join_change(4)).await.unwrap();
         let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
         assert_eq!(set, Poll::Ready(Err(Error::NotMember(key(4)))));
@@ -503,14 +503,6 @@ fn a_call_that_waits_for_its_entry_keeps_the_waker_of_its_last_poll() {
         assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!((Arc::strong_count(&old), Arc::strong_count(&new)), (2, 3));
     });
-}
-
-/// A position in the term of the tests.
-fn at(index: u64) -> Position {
-    Position {
-        term: common::TERM,
-        index,
-    }
 }
 
 /// The time between two heartbeats of node 2: less than half of the shortest

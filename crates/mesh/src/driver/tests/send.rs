@@ -376,7 +376,7 @@ fn a_task_that_waits_in_a_dial_holds_no_block() {
 }
 
 /// A position in the term of the tests.
-fn at(index: u64) -> Position {
+pub(super) fn at(index: u64) -> Position {
     Position {
         term: common::TERM,
         index,
@@ -443,7 +443,7 @@ fn a_message_for_a_node_with_no_member_record_drops_and_its_task_goes_on() {
         let append = Body::Append {
             prev: at(1),
             entries: vec![
-                entry(2, Data::Bytes(encoded(&ticket()))),
+                entry(2, Data::Bytes(encoded(&plant_ticket()))),
                 entry(3, Data::Bytes(encoded(&join))),
             ],
             commit: 3,

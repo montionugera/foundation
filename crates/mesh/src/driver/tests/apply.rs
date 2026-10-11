@@ -12,6 +12,7 @@ use spec::subject::Subject;
 use super::send::stop;
 use super::*;
 use crate::change::HOMES_MAX;
+use crate::common::name;
 
 impl Cluster {
     /// Node `node` proposes the spec change of `definitions` on `base` at its next
@@ -811,10 +812,6 @@ fn specs(entries: &[Entry]) -> Vec<Change> {
     };
     let spec = |change: &Change| matches!(change, Change::Spec { .. });
     entries.iter().filter_map(change).filter(spec).collect()
-}
-
-fn name(text: &str) -> Name {
-    text.parse().unwrap()
 }
 
 /// An index channel of key `7 + at` at the tree key `plant.i<at>`, for each `at` below

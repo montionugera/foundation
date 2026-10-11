@@ -862,7 +862,7 @@ mod tests {
 
     // A change of `leader` at `at` to voters 1, 2 and 3, with a signed vote of
     // each of `voted` that is not the leader.
-    fn change_voted(leader: u8, at: Position, voted: &[u8]) -> raft::Entry {
+    fn three_voters_entry(leader: u8, at: Position, voted: &[u8]) -> raft::Entry {
         let three = Voters {
             incoming: [key(1), key(2), key(3)].into(),
             outgoing: BTreeSet::new(),
@@ -880,8 +880,8 @@ mod tests {
         };
         let entries = vec![
             bytes(1),
-            change_voted(2, at(2), &[1, 2, 3]),
-            change_voted(2, at(3), &[2, 3, 4]),
+            three_voters_entry(2, at(2), &[1, 2, 3]),
+            three_voters_entry(2, at(3), &[2, 3, 4]),
             bytes(4),
         ];
         let append = Body::Append {
@@ -930,7 +930,7 @@ mod tests {
             term: TERM,
             index: 3,
         };
-        entries[2] = change_voted(4, at, &[1, 2, 3]);
+        entries[2] = three_voters_entry(4, at, &[1, 2, 3]);
         assert_eq!(checked(&mut message, members(&[1, 2, 3])), Ok(()));
         assert_eq!(run_entries(&message), &run_entries(&run())[..2]);
     }
