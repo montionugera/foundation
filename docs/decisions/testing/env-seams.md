@@ -425,3 +425,21 @@
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440; the text
   of the thread with no handle: `laptop.architect-2`, 2026-10-09T19:05:37Z:
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087447005).
+  Amended (2026-10-11, #2324): `os::interrupt` changes only what a signal that reaches
+  the process does, never which signals reach it. At the call, it leaves out each of
+  SIGINT and SIGTERM that the mask of the calling thread blocks or whose action is
+  `SIG_IGN`, also for the first signal. With both left out, no thread starts and the
+  future never completes. Lost: owning both signals at each call (unblock each and set
+  the default action), which overrides the choice of the parent, such as the ignored
+  SIGINT of a job that a script starts with `&`. `os::files` syncs no holder of a
+  directory on another device than its holder (a mount point): `mkdirat` makes a
+  directory on its holder's device, so no start made that entry. Each other case keeps
+  the sync at each call. Lost: no sync when `dir` was there, which opens the crash
+  window again, and `EINVAL` from the sync taken as success, which hides a file system
+  that cannot keep the node's entries (`laptop.architect-2`, 2026-10-10T23:40:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164).
+  Supersedes, for a signal that the calling thread blocks or ignores, the hold of SIGINT
+  and SIGTERM of
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545, and, for
+  a directory on another device than its holder, the sync of the holder at each call of
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440.
