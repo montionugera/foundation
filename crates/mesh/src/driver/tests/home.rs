@@ -2,7 +2,7 @@
 //! 1 with node 2 as a raw peer that plays its leader.
 
 use std::future::pending;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
@@ -470,7 +470,7 @@ fn a_dropped_call_leaves_the_waker_of_each_other_call_that_waits_for_its_entry()
     solo(|node, tasks| async move {
         let mesh = create_leader(&node, &tasks).await;
         let held = [(); 3].map(|()| Arc::new(Idle));
-        let wakers = held.clone().map(Waker::from);
+        let wakers = held.each_ref().map(|held| Waker::from(Arc::clone(held)));
         let mut calls = [1, 2, 3].map(|id| Box::pin(mesh.set_home(INDEX, key(id))));
         for _ in 0..2 {
             for (call, waker) in calls.iter_mut().zip(&wakers) {
@@ -809,12 +809,12 @@ fn a_try_ends_when_the_same_leader_leads_a_later_term() {
 // group.
 #[test]
 fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
-    let asked = Arc::new(Mutex::new(false));
+    let asked = Arc::new(AtomicBool::new(false));
     let got = Arc::clone(&asked);
     let call = move |node: sim::node::Node, mesh: Mesh| async move {
         let clock = node.clock();
         let mut call = pin!(set(mesh.clone()));
-        while !*asked.lock().unwrap() {
+        while !asked.load(Ordering::Relaxed) {
             assert!(now(call.as_mut()).await.is_pending());
             clock.sleep(Span::MILLISECOND).await;
         }
@@ -827,7 +827,7 @@ fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
     let (set, (more, end)) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
         leader.silent.set(true);
-        *got.lock().unwrap() = true;
+        got.store(true, Ordering::Relaxed);
         leader.answer(&mut asked, at(1)).await.unwrap();
         leader.rest(seconds(1)).await;
         let mut sender = Leader::open(&leader.peer, &leader.session).await;
@@ -846,7 +846,7 @@ fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
 // waker.
 #[test]
 fn a_call_that_waits_for_the_answer_keeps_the_waker_of_its_last_poll() {
-    let asked = Arc::new(Mutex::new(false));
+    let asked = Arc::new(AtomicBool::new(false));
     let got = Arc::clone(&asked);
     let call = move |node: sim::node::Node, mesh: Mesh| async move {
         let (old, new) = (Arc::new(Idle), Arc::new(Idle));
@@ -854,7 +854,7 @@ fn a_call_that_waits_for_the_answer_keeps_the_waker_of_its_last_poll() {
         let new_waker = Waker::from(Arc::clone(&new));
         let mut call = Box::pin(mesh.set_home(INDEX, key(1)));
         let mut cx = Context::from_waker(&old_waker);
-        while !*asked.lock().unwrap() {
+        while !asked.load(Ordering::Relaxed) {
             assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
             node.clock().sleep(Span::MILLISECOND).await;
         }
@@ -867,7 +867,7 @@ fn a_call_that_waits_for_the_answer_keeps_the_waker_of_its_last_poll() {
     let (counts, ()) = run(call, |mut leader| async move {
         let (_, _asked) = leader.proposal().await;
         leader.silent.set(true);
-        *got.lock().unwrap() = true;
+        got.store(true, Ordering::Relaxed);
         leader.rest(seconds(3)).await;
     });
     assert_eq!(counts, [4, 2, 4]);
@@ -918,19 +918,19 @@ fn an_answer_that_comes_after_its_entry_applied_ends_the_call() {
 
 #[test]
 fn a_dropped_call_that_waits_for_the_answer_stops_its_stream() {
-    let asked = Arc::new(Mutex::new(false));
+    let asked = Arc::new(AtomicBool::new(false));
     let got = Arc::clone(&asked);
     let call = move |node: sim::node::Node, mesh: Mesh| async move {
         let clock = node.clock();
         let mut call = pin!(mesh.set_home(INDEX, key(1)));
-        while !*asked.lock().unwrap() {
+        while !asked.load(Ordering::Relaxed) {
             assert_eq!(now(call.as_mut()).await, Poll::Pending);
             clock.sleep(Span::MILLISECOND).await;
         }
     };
     let ((), (late, end, more)) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
-        *got.lock().unwrap() = true;
+        got.store(true, Ordering::Relaxed);
         leader.rest(HALF).await;
         let late = leader.answer(&mut asked, at(1)).await;
         let end = asked.end().await;
