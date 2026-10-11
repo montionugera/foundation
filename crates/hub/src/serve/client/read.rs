@@ -64,7 +64,7 @@ async fn open(
         name: None,
         hold: Span::ZERO,
     };
-    Reader::open(state, config)
+    Reader::open(state, config, reader::Reach::Home)
         .await
         .map_err(|error| Error::Reader(Box::new(error)))
 }
@@ -146,17 +146,18 @@ async fn relay(
 ///
 /// # Panics
 ///
-/// For an error that only a named reader gives.
+/// For `Unsynced`, which only a named reader gives.
 pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
     match error {
         reader::Error::Empty => Refusal::Unknown,
+        reader::Error::Remote { .. } => Refusal::NotHome,
         reader::Error::ManyIndexes { .. } => Refusal::Malformed,
         reader::Error::Pool(_) => Refusal::Busy,
         reader::Error::Refused(refusal) => from_home(*refusal),
         reader::Error::Mesh(_)
         | reader::Error::Transport(_)
         | reader::Error::Message(_) => Refusal::Failed,
-        reader::Error::Unsynced | reader::Error::Remote { .. } => {
+        reader::Error::Unsynced => {
             panic!("invariant: an unnamed reader does not give {error:?}")
         }
     }

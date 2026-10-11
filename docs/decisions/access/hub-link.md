@@ -129,13 +129,18 @@
   reserves its length under `BODIES_BYTES_MAX` and the subject's share, as a request
   body does, until the node decoded it. An open that does not fit stops with `BUSY`
   (`serve::Error::Share` or `Bodies`). The node opens an unnamed `hub::reader::Reader`
-  for the read, at this node or at the home of another node.
+  for the read, only at the home of its index. A read whose home is another node stops
+  with `NOT_HOME` (`serve::Error::Reader` with `Remote`) before the node opens a stream
+  to that home, and it interns no key set (#2419). Decided by `laptop.architect`
+  (2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
+  3). Supersedes "or at the home of another node" of plan item 1.
   `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
   and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
   exhaustive `match`: `UNKNOWN` for a selector that matches no channel, `MALFORMED` for
   channels on more than one index, and `FAILED` for the path to the home (`Stream`,
-  `Transport`, `Message`, `Frame`, `Credit`). `Unsynced`, `Remote`, and `Replaced`
-  cannot come for an unnamed reader, so their arms panic. Decided by `laptop.architect`
+  `Transport`, `Message`, `Frame`, `Credit`). `Unsynced` and `Replaced` cannot come
+  for an unnamed reader, so their arms panic. Decided by `laptop.architect`
   (2026-10-10T23:31:47Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items 2,
   5, and 6). The ruling approved the plan

@@ -243,8 +243,8 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
-    /// The reader is named, and the home of its index is `home`, another node. A named
-    /// reader opens only at the home of its index.
+    /// The home of the index is `home`, another node, and this reader opens only at the
+    /// home of its index: a named reader, or the reader of a program's read.
     Remote {
         /// The home.
         home: types::node::Key,
@@ -277,8 +277,8 @@ impl fmt::Display for Error {
             ),
             Self::Remote { home } => write!(
                 f,
-                "the home of the index of the reader is node {home}, and a named reader \
-                 opens only at this node"
+                "the home of the index of the reader is node {home}, and this reader \
+                 opens only at the home"
             ),
             Self::Mesh(stopped) => write!(f, "the mesh stopped: {stopped}"),
             Self::Transport(error) => {
@@ -305,6 +305,15 @@ impl From<::home::reader::Unsynced> for Error {
     fn from(::home::reader::Unsynced: ::home::reader::Unsynced) -> Self {
         Self::Unsynced
     }
+}
+
+/// Where an unnamed reader may open: a named one opens only at the home of its index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// At this node, or at the home of another node.
+    Mesh,
+    /// Only at this node, the home of its index, else [`Error::Remote`].
+    Home,
 }
 
 /// A reader session through the reader's channels. Dropping it closes the session;
@@ -397,8 +406,8 @@ impl Local {
 }
 
 impl Reader {
-    /// Opens a reader on the channels that `config.select` matches, and gives what
-    /// it matched.
+    /// Opens a reader on the channels that `config.select` matches, where `reach`
+    /// allows, and gives what it matched.
     ///
     /// # Panics
     ///
@@ -406,6 +415,7 @@ impl Reader {
     pub(crate) async fn open(
         state: &Rc<RefCell<State>>,
         config: Config,
+        reach: Reach,
     ) -> Result<(Self, Matched), Error> {
         let Config {
             select,
@@ -426,7 +436,7 @@ impl Reader {
         let (matched, away) = matched(state, &select).await?;
         let index = matched.places[matched.index].key;
         if let Some(home) = away {
-            if named.is_some() {
+            if named.is_some() || reach == Reach::Home {
                 return Err(Error::Remote { home });
             }
             let data = matched

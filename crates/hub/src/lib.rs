@@ -253,7 +253,7 @@ impl Hub {
         &self,
         config: reader::Config,
     ) -> Result<Reader, reader::Error> {
-        let (reader, _) = Reader::open(&self.0, config).await?;
+        let (reader, _) = Reader::open(&self.0, config, reader::Reach::Mesh).await?;
         Ok(reader)
     }
 

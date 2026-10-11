@@ -104,7 +104,8 @@ pub enum Error {
         held: u64,
     },
     /// The reader of a read did not open. Code: `UNKNOWN` for
-    /// [`reader::Error::Empty`], `MALFORMED` for `ManyIndexes`, `BUSY` for `Pool`,
+    /// [`reader::Error::Empty`], `MALFORMED` for `ManyIndexes`, `NOT_HOME` for
+    /// `Remote`, `BUSY` for `Pool`,
     /// the code of the home's refusal but `FAILED` for its `MALFORMED`, and `FAILED`
     /// for each other.
     Reader(Box<reader::Error>),
@@ -767,8 +768,8 @@ mod tests {
     /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
     /// its code. A refusal of the home keeps its code. Only a remote reader gives a
     /// refusal, `Error::Pool`, `Transport`, and `Message`, and `Ended::Pool`,
-    /// `Stream`, `Message`, `Frame`, and `Credit`. No `it` test reaches a remote
-    /// reader until #2409, so this test pins those arms.
+    /// `Stream`, `Message`, `Frame`, and `Credit`. A read opens no remote reader until
+    /// #2419, so this test pins those arms.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn each_error_of_the_reader_of_a_read_has_its_code() {
@@ -784,6 +785,12 @@ mod tests {
         };
         let mut cases = vec![
             (Error::Reader(Box::new(reader::Error::Empty)), UNKNOWN),
+            (
+                Error::Reader(Box::new(reader::Error::Remote {
+                    home: types::node::Key::from_u128(2),
+                })),
+                NOT_HOME,
+            ),
             (
                 Error::Reader(Box::new(reader::Error::ManyIndexes {
                     first: "a".parse().expect("a name"),

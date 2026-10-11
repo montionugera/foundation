@@ -17,13 +17,13 @@ use wire::header::MALFORMED;
 use wire::hub::client::{
     self, BODY_BYTES_MAX, FromNode, Mode, Open, Place, Places, REFUSED,
 };
-use wire::hub::{BUSY, FAILED, FromHome, UNKNOWN};
+use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
 use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
 use super::serve::{decoded, got, next, places as placed};
 use super::{
-    AREA, BODY_MAX, COMMIT, DataType, I64, POOL, RING, STAMP, Test, channels, region,
-    without, write, write_wide,
+    AREA, BODY_MAX, COMMIT, DataType, I64, NODE, POOL, RING, STAMP, TIME, TIME_B, Test,
+    channels, region, without, write, write_wide,
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::net::{HOME, own_pool, transport};
@@ -559,4 +559,58 @@ fn stops_a_read_on_a_stopped_mesh_as_failed() {
     let mesh = serve::Error::Reader(Box::new(reader::Error::Mesh(stopped)));
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(served, [Err(mesh), Ok(Got::Ended)]);
+}
+
+/// A node serves a read only of an index whose home it is: a read whose home is
+/// another node stops with `NOT_HOME` and interns no key set.
+#[test]
+fn stops_a_read_whose_home_is_another_node_as_not_home() {
+    let (served, sets) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+    let (kept, counted) = (Arc::clone(&served), Arc::clone(&sets));
+    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
+        let region =
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+        let mut test =
+            Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
+        test.sync().await;
+        test.set_home(TIME, region::OTHER).await;
+        test.set_home(TIME_B, NODE).await;
+        test.hub.set_rules(rules());
+        let before = test.writer("a", &["value-b"]).await.set().key().get();
+        let session = transport.accept().await.expect("a session");
+        let link = test.hub.link(session.clone());
+        let accepted = Rc::new(Cell::new(0));
+        tasks.spawn(serve_each(
+            &session,
+            &link,
+            &tasks,
+            &node.clock(),
+            &kept,
+            &accepted,
+        ));
+        session.closed().await;
+        recorded(&node, &kept, accepted.get()).await;
+        let after = test.writer("a", &["time-b"]).await.set().key().get();
+        *counted.lock().expect("not poisoned") = Some((before, after));
+    };
+    run_program(314, home, |node, tasks, at| {
+        as_agent(node, tasks, at, |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Latest, &["value"]).await;
+            assert_eq!(stream.recv().await, reset_with(NOT_HOME));
+            finish(&mut agent).await;
+        })
+    });
+    let remote = reader::Error::Remote {
+        home: region::OTHER,
+    };
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    assert_eq!(
+        served,
+        [Err(serve::Error::Reader(Box::new(remote))), Ok(Got::Ended)]
+    );
+    let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
+    assert_eq!(after, before + 1);
 }
