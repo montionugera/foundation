@@ -34,7 +34,8 @@ impl Paths {
     }
 
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
-    /// each entry of a directory, in name order.
+    /// each entry of a directory whose entry names hold at most `most` bytes in all,
+    /// in name order.
     ///
     /// # Errors
     ///
@@ -46,7 +47,7 @@ impl Paths {
     /// use env::paths::{Found, Paths};
     ///
     /// fn entries(paths: &Paths) -> Vec<PathBuf> {
-    ///     match paths.read(Path::new("plans"), 0) {
+    ///     match paths.read(Path::new("plans"), 1 << 16) {
     ///         Ok(Found::Directory(entries)) => entries,
     ///         _ => Vec::new(),
     ///     }
@@ -81,7 +82,7 @@ impl Paths {
 pub enum Found {
     /// A file of at most `most` bytes: its bytes.
     File(Vec<u8>),
-    /// A file of more than `most` bytes.
+    /// A file of more than `most` bytes, or a directory whose entry names hold more.
     Large,
     /// A directory: the path of each entry, in name order.
     Directory(Vec<PathBuf>),

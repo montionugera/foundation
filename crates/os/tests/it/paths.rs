@@ -86,7 +86,7 @@ fn a_write_on_a_path_that_ends_in_a_slash_keeps_the_files_inside() {
     let user = Ok(Found::File(b"user".to_vec()));
     assert_eq!(paths.read(&config.join(".new"), 4), user);
     let entries = Ok(Found::Directory(vec![config]));
-    assert_eq!(paths.read(&scratch.0, 0), entries);
+    assert_eq!(paths.read(&scratch.0, 64), entries);
 }
 
 #[test]
@@ -97,4 +97,26 @@ fn a_write_on_a_path_with_no_name_writes_nothing() {
     for path in ["/", ".", "..", "a/.."] {
         assert_eq!(paths.write(Path::new(path), b"x"), on_dir, "{path}");
     }
+}
+
+#[test]
+fn two_writers_of_one_path_each_write_whole() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("plant.plan");
+    let (a, b) = (vec![b'a'; 1 << 20], vec![b'b'; 1 << 20]);
+    for _ in 0..8 {
+        #[expect(clippy::disallowed_methods, reason = "os is the crate under test")]
+        std::thread::scope(|scope| {
+            let writers =
+                [&a, &b].map(|bytes| scope.spawn(|| os::paths().write(&path, bytes)));
+            for writer in writers {
+                assert_eq!(writer.join().unwrap(), Ok(()));
+            }
+        });
+        let read = os::paths().read(&path, 1 << 20);
+        let whole = [&a, &b].map(|bytes| Ok(Found::File(bytes.clone())));
+        assert!(whole.contains(&read), "a mixed or failed write");
+    }
+    let entries = Ok(Found::Directory(vec![path]));
+    assert_eq!(os::paths().read(&scratch.0, 64), entries);
 }

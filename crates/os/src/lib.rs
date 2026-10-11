@@ -157,10 +157,11 @@ pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
 }
 
-/// The real files of the host by path. A write makes `<path>.new` beside `path`,
-/// syncs it, and renames it over `path`, so a reader or a crash sees the old file or
-/// the new one. A write that fails removes `<path>.new`. A new file has mode `0600`,
-/// and a file that a write replaces keeps its mode.
+/// The real files of the host by path. A write makes a file with a random name
+/// beside `path`, syncs it, and renames it over `path`, so a reader or a crash sees
+/// the old file or the new one, and of two writes one wins whole. A write that fails
+/// removes its file, but a crash during a write leaves it. A new file has mode
+/// `0600`, and a file that a write replaces keeps its mode.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {

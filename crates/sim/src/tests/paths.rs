@@ -31,12 +31,12 @@ fn a_relative_path_is_under_the_root() {
     assert_eq!(paths.read(Path::new("/plant.hcl"), 1), file);
     let entries = vec![PathBuf::from("config/a.hcl")];
     assert_eq!(
-        paths.read(Path::new("config"), 0),
+        paths.read(Path::new("config"), 64),
         Ok(Found::Directory(entries))
     );
     let entries = ["/../config", "/../plant.hcl"].map(PathBuf::from).to_vec();
     assert_eq!(
-        paths.read(Path::new("/.."), 0),
+        paths.read(Path::new("/.."), 64),
         Ok(Found::Directory(entries))
     );
 }
@@ -84,6 +84,13 @@ fn each_host_has_its_own_files_and_a_crash_keeps_them() {
         b.paths().read(Path::new("/plant.hcl"), 1),
         Err(Error::NotFound)
     );
+    b.paths().write(Path::new("/config/a.hcl"), b"y").unwrap();
+    let entries = vec![PathBuf::from("/plant.hcl")];
+    assert_eq!(
+        a.paths().read(Path::new("/"), 64),
+        Ok(Found::Directory(entries))
+    );
+    a.paths().write(Path::new("/config"), b"z").unwrap();
 }
 
 #[test]

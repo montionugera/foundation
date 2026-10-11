@@ -1,13 +1,15 @@
 //! The files of the host by the paths that a user gave.
 
-use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use env::entropy::Driver as _;
 use env::paths::{Error, Found};
 use rustix::io::Errno;
+
+use crate::entropy;
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -27,17 +29,24 @@ impl env::paths::Driver for Driver {
                 code: Errno::ISDIR.raw_os_error(),
             });
         };
+        let mut key = [0; 8];
+        entropy::Driver.fill(&mut key);
         let mut new = name.to_owned();
-        new.push(".new");
+        new.push(format!(".{:016x}.new", u64::from_le_bytes(key)));
         let new = path.with_file_name(new);
         // A new file gives other users no access. A replaced file keeps its mode.
         let mode = fs::metadata(path).map_or(0o600, |old| old.permissions().mode());
-        let written = create(&new, bytes, mode).and_then(|()| fs::rename(&new, path));
-        if written.is_err() {
-            // The error of the write is the one to give.
-            drop(fs::remove_file(&new));
+        let file = open(&new).map_err(|e| error(&e))?;
+        let written = fill(file, bytes, mode).and_then(|()| fs::rename(&new, path));
+        if let Err(e) = written {
+            match fs::remove_file(&new) {
+                // Only an I/O fault keeps the file. The error of the write says why
+                // the write failed.
+                Ok(()) | Err(_) => {}
+            }
+            return Err(error(&e));
         }
-        written.map_err(|e| error(&e))
+        Ok(())
     }
 }
 
@@ -45,9 +54,15 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
     let file = File::open(path)?;
     if file.metadata()?.is_dir() {
-        let mut names = fs::read_dir(path)?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<io::Result<Vec<OsString>>>()?;
+        let (mut names, mut size) = (Vec::new(), 0_usize);
+        for entry in fs::read_dir(path)? {
+            let name = entry?.file_name();
+            size = size.saturating_add(name.len());
+            if size > most {
+                return Ok(Found::Large);
+            }
+            names.push(name);
+        }
         names.sort_unstable();
         let entries = names.into_iter().map(|name| path.join(name)).collect();
         return Ok(Found::Directory(entries));
@@ -61,17 +76,19 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     Ok(Found::File(bytes))
 }
 
-/// Writes `bytes` as a new file at `path` with `mode`, synced, so a power cut after
-/// the rename leaves the whole file.
-fn create(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+/// Makes a file at `path` that only this user can read or write.
+fn open(path: &Path) -> io::Result<File> {
     #[expect(clippy::disallowed_methods, reason = "os writes the user's files")]
-    let mut file = OpenOptions::new()
+    OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    // The open keeps the mode of a `<path>.new` that was there.
+        .open(path)
+}
+
+/// Writes `bytes` to `file` with `mode`, synced, so a power cut after the rename
+/// leaves the whole file.
+fn fill(mut file: File, bytes: &[u8], mode: u32) -> io::Result<()> {
     file.set_permissions(Permissions::from_mode(mode))?;
     file.write_all(bytes)?;
     file.sync_all()

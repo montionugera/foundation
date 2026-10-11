@@ -45,6 +45,9 @@ impl Paths {
         if names.is_empty() && at != Path::new("/") {
             return Err(Error::NotFound);
         }
+        if names.iter().map(|name| name.len()).sum::<usize>() > most {
+            return Ok(Found::Large);
+        }
         let entries = names.into_iter().map(|name| path.join(name)).collect();
         Ok(Found::Directory(entries))
     }
