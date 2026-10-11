@@ -98,3 +98,11 @@ fn each_host_has_its_own_files_and_a_crash_keeps_them() {
         Err(Error::NotFound)
     );
 }
+
+#[test]
+fn the_files_of_a_host_show_its_node() {
+    let mut sim = Sim::new(Config::default());
+    sim.node(node::Config::default());
+    let b = sim.node(node::Config::default());
+    assert_eq!(format!("{:?}", b.paths()), "Paths(Node(1))");
+}
