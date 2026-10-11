@@ -196,7 +196,7 @@ impl<C> Context<C> {
     ///
     /// # Panics
     ///
-    /// When the hub gives an error that its contract excludes for this open.
+    /// When the hub gives `Unsynced`, since [`hub::Hub::writer`] waits for mesh time.
     pub async fn writer(
         &self,
         channels: Vec<Name>,
@@ -227,8 +227,9 @@ impl<C> Context<C> {
     /// # Panics
     ///
     /// As [`hub::Hub::reader`]: when `settings.hold` is negative, or is not zero in
-    /// `Latest` mode. [`reader::read`] gives neither. When the hub gives an error
-    /// that its contract excludes for this open.
+    /// `Latest` mode. [`reader::read`] gives neither. When the hub gives `Unsynced`,
+    /// since a run starts only once the node has mesh time, or an error of a reader
+    /// away from its home, since a named reader opens only at its home.
     pub async fn reader(
         &self,
         settings: &reader::Settings,

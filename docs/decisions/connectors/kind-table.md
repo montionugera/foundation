@@ -33,7 +33,7 @@
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104945733),
   approved by `laptop.architect-2` (2026-10-11T03:21:41Z,
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104976908). The
-  text of the panics: `laptop.architect` (2026-10-11,
+  reasons: `laptop.architect` (2026-10-11,
   https://github.com/synnaxlabs/foundation/pull/2348#issuecomment-6105112575).
   `Table::check` takes where the file names the kind and puts `connector.unknown-kind`
   there; `discover` and `run` take their kind from the spec, which has no spans
