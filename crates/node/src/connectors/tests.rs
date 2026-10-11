@@ -478,7 +478,8 @@ impl Kind for Select {
 
 /// The count of the runs of a connector of [`Select`] until 10 s. Its first run gets
 /// `Config`, since no channel matches. At 1 s, a spec change adds the channels that it
-/// selects, with the connector unchanged.
+/// selects, with the connector unchanged. At 5 s, an apply keeps the connector and its
+/// run.
 fn starts_of_select(flush: Span) -> Result<usize, ::sim::Error> {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
@@ -534,6 +535,8 @@ fn starts_of_select(flush: Span) -> Result<usize, ::sim::Error> {
             }),
         );
         hub.set_definitions(&second);
+        runs.apply(&second);
+        clock.sleep_until(start + ms(5_000)).await;
         runs.apply(&second);
         clock.sleep_until(start + ms(10_000)).await;
         let started = starts.lock().expect("no panic").len();
