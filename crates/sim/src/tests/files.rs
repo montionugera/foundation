@@ -2794,33 +2794,33 @@ fn a_write_open_does_not_wait_for_a_dropped_write_of_another_file_after_a_rename
     assert!(!held.is_empty());
 }
 
-/// The names in the data directory once `drop_call` starts a call on `node` whose
-/// future drops after one poll.
-fn list_after_dropped<F>(value: u64, drop_call: F) -> Vec<PathBuf>
+/// The names in `dir` once `drop_call` starts a call on `node` whose future drops
+/// after one poll.
+fn list_after_dropped<F>(value: u64, dir: &'static str, drop_call: F) -> Vec<PathBuf>
 where
     F: AsyncFnOnce(&node::Node) + Send + 'static,
 {
     run(value, MIB, move |node, _| async move {
         drop_call(&node).await;
-        node.files().list(Path::new("")).await.unwrap()
+        node.files().list(Path::new(dir)).await.unwrap()
     })
 }
 
-/// Checks that each run of `drop_call` lists `names`.
-fn assert_lists<F>(names: &[&str], drop_call: &F)
+/// Checks that each run of `drop_call` lists `names` in `dir`.
+fn assert_lists<F>(dir: &'static str, names: &[&str], drop_call: &F)
 where
     F: AsyncFnOnce(&node::Node) + Clone + Send + 'static,
 {
     let names: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
     for value in 0..32 {
-        let found = list_after_dropped(value, drop_call.clone());
+        let found = list_after_dropped(value, dir, drop_call.clone());
         assert_eq!(found, names, "value {value}");
     }
 }
 
 #[test]
 fn a_list_waits_for_a_dropped_remove_in_its_directory() {
-    assert_lists(&[], &async |node| {
+    assert_lists("", &[], &async |node| {
         let files = node.files();
         drop(create(node, "a", KIB).await);
         let mut remove = Box::pin(files.remove(Path::new("a")));
@@ -2829,8 +2829,19 @@ fn a_list_waits_for_a_dropped_remove_in_its_directory() {
 }
 
 #[test]
+fn a_list_waits_for_a_dropped_remove_in_a_directory_in_the_data_directory() {
+    assert_lists("d", &[], &async |node| {
+        let files = node.files();
+        files.create_dir(Path::new("d")).await.unwrap();
+        drop(create(node, "d/a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("d/a")));
+        pend(remove.as_mut()).await;
+    });
+}
+
+#[test]
 fn a_list_waits_for_a_dropped_create_in_its_directory() {
-    assert_lists(&["a"], &async |node| {
+    assert_lists("", &["a"], &async |node| {
         let files = node.files();
         let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len: KIB }));
         pend(made.as_mut()).await;
@@ -2839,7 +2850,7 @@ fn a_list_waits_for_a_dropped_create_in_its_directory() {
 
 #[test]
 fn a_list_waits_for_a_dropped_rename_to_a_path_in_its_directory() {
-    assert_lists(&["b"], &async |node| {
+    assert_lists("", &["b"], &async |node| {
         let mut file = create(node, "a", KIB).await;
         let mut rename = Box::pin(file.rename(Path::new("b")));
         // The first poll starts the sync of the rename. The sleep outlasts the sync, so
@@ -2852,7 +2863,7 @@ fn a_list_waits_for_a_dropped_rename_to_a_path_in_its_directory() {
 
 #[test]
 fn a_list_waits_for_a_dropped_remove_through_a_handle_in_its_directory() {
-    assert_lists(&[], &async |node| {
+    assert_lists("", &[], &async |node| {
         let file = create(node, "a", KIB).await;
         let mut remove = Box::pin(file.remove());
         pend(remove.as_mut()).await;
@@ -2861,7 +2872,7 @@ fn a_list_waits_for_a_dropped_remove_through_a_handle_in_its_directory() {
 
 #[test]
 fn a_list_waits_for_a_dropped_create_dir_in_its_directory() {
-    assert_lists(&["d"], &async |node| {
+    assert_lists("", &["d"], &async |node| {
         let files = node.files();
         let mut made = Box::pin(files.create_dir(Path::new("d")));
         pend(made.as_mut()).await;
