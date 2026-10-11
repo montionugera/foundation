@@ -96,7 +96,6 @@ mod pins {
         bytes.extend(b"f32[3]");
         bytes.push(9);
         bytes.extend(b"site_a.pt");
-        assert_eq!(place.encoded_len(), 33);
         assert_eq!(encode_run(&[place]), bytes);
     }
 }
@@ -313,6 +312,22 @@ mod run {
         assert_eq!(place::decode(&[]), Err(Error::Empty));
     }
 
+    /// Each place of `u8` named `a` is 21 bytes.
+    #[test]
+    fn cuts_a_run_into_messages_of_as_many_whole_places_as_fit() {
+        let places = [pt(1, "u8", "a"), pt(2, "u8", "a"), pt(3, "u8", "a")];
+        let cut = |max| {
+            place::messages(&places, max)
+                .map(<[Place]>::len)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cut(21), vec![1, 1, 1]);
+        assert_eq!(cut(41), vec![1, 1, 1]);
+        assert_eq!(cut(42), vec![2, 1]);
+        assert_eq!(cut(63), vec![3]);
+        assert_eq!(place::messages(&[], 0).count(), 0);
+    }
+
     #[test]
     fn refuses_a_message_that_ends_inside_a_place() {
         let bytes = encode_run(&[pt(1, "u8", "a")]);
@@ -349,6 +364,12 @@ fn panics_on_a_read_over_the_cap() {
 #[should_panic(expected = "the index is at place 2 of 2")]
 fn panics_on_places_with_the_index_at_the_count() {
     Places { count: 2, index: 2 }.encode(&mut [0; Places::LEN]);
+}
+
+#[test]
+#[should_panic(expected = "a place of 21 bytes is over a message of 20")]
+fn panics_on_a_place_over_a_message() {
+    place::messages(&[pt(1, "u8", "a")], 20).for_each(drop);
 }
 
 #[test]
@@ -450,5 +471,18 @@ proptest! {
             rest = after;
         }
         prop_assert_eq!(decoded, places);
+    }
+
+    #[test]
+    fn cuts_a_run_into_full_messages_under_the_max(places in places(), max in 100..300_usize) {
+        let messages: Vec<_> = place::messages(&places, max).collect();
+        for message in &messages {
+            prop_assert!(place::encoded_len(message) <= max);
+        }
+        for (message, next) in messages.iter().zip(messages.iter().skip(1)) {
+            let grown = [*message, &next[..1]].concat();
+            prop_assert!(place::encoded_len(&grown) > max);
+        }
+        prop_assert_eq!(messages.concat(), places);
     }
 }

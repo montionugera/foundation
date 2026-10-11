@@ -222,6 +222,17 @@ pub struct Place {
     pub name: Name,
 }
 
+impl Place {
+    /// The bytes of the encoded place.
+    fn encoded_len(&self) -> usize {
+        self.sample
+            .to_string()
+            .len()
+            .saturating_add(self.name.as_str().len())
+            .saturating_add(18)
+    }
+}
+
 /// The run of places after a [`Places`], in place order. A message of the run holds
 /// whole places.
 pub mod place {
@@ -231,16 +242,34 @@ pub mod place {
     use crate::common::Writer;
     use crate::hub::Error;
 
-    impl Place {
-        /// The bytes of the encoded place.
-        #[must_use]
-        pub fn encoded_len(&self) -> usize {
-            self.sample
-                .to_string()
-                .len()
-                .saturating_add(self.name.as_str().len())
-                .saturating_add(18)
-        }
+    /// `places` cut into the messages of the run, in order: each holds as many whole
+    /// places as fit in `max` bytes.
+    ///
+    /// # Panics
+    ///
+    /// While it iterates, when a place is over `max` bytes.
+    pub fn messages(places: &[Place], max: usize) -> impl Iterator<Item = &[Place]> {
+        let mut rest = places;
+        std::iter::from_fn(move || {
+            let mut bytes = 0_usize;
+            let fit = rest
+                .iter()
+                .take_while(|place| {
+                    bytes = bytes.saturating_add(place.encoded_len());
+                    bytes <= max
+                })
+                .count();
+            if let Some(first) = rest.first() {
+                assert!(
+                    fit > 0,
+                    "a place of {} bytes is over a message of {max}",
+                    first.encoded_len()
+                );
+            }
+            let (message, after) = rest.split_at(fit);
+            rest = after;
+            (!message.is_empty()).then_some(message)
+        })
     }
 
     /// The bytes of `places`, one message of the run.
