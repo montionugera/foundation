@@ -614,7 +614,7 @@ fn stops_a_request_whose_body_did_not_come() {
     assert_eq!(
         home.served,
         [
-            Err(serve::Error::Message(unfinished)),
+            Err(serve::Error::Message(unfinished.clone())),
             Err(serve::Error::Stream(closed_with(0))),
         ]
     );

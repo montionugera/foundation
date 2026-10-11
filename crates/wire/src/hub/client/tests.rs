@@ -1,6 +1,12 @@
 use proptest::prelude::*;
+use types::name;
 
 use super::*;
+
+/// The cause of `bytes` that are not UTF-8.
+fn not_utf8(bytes: &[u8]) -> Text {
+    Text::Utf8(std::str::from_utf8(bytes).unwrap_err())
+}
 
 const KEY: [u8; 32] = [
     0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
@@ -203,14 +209,33 @@ mod signed {
     #[test]
     fn refuses_a_subject_that_is_not_a_name() {
         let mut hello = encode_signed(&signed("a.b"));
-        for subject in [*b"a..", *b"a.*", [0xff, b'.', b'b']] {
+        let cases = [
+            (
+                *b"a..",
+                Text::from(name::Error::Segment {
+                    input: "a..".to_owned(),
+                    segment: String::new(),
+                }),
+            ),
+            (
+                *b"a.*",
+                Text::from(name::Error::Wildcard {
+                    input: "a.*".to_owned(),
+                }),
+            ),
+            ([0xff, b'.', b'b'], not_utf8(&[0xff])),
+        ];
+        for (subject, cause) in cases {
             hello[2..5].copy_from_slice(&subject);
-            assert_eq!(Signed::decode(&hello), Err(Error::Subject));
+            assert_eq!(Signed::decode(&hello), Err(Error::Subject(cause)));
         }
         let mut empty = encode_signed(&signed("a"));
         empty.remove(2);
         empty[1] = 0;
-        assert_eq!(Signed::decode(&empty), Err(Error::Subject));
+        assert_eq!(
+            Signed::decode(&empty),
+            Err(Error::Subject(Text::from(name::Error::Empty)))
+        );
     }
 
     #[test]
@@ -227,7 +252,13 @@ mod signed {
         let mut hello = encode_signed(&signed("a"));
         hello[2] = b'*';
         hello[3..35].copy_from_slice(&[0; 32]);
-        assert_eq!(Signed::decode(&hello), Err(Error::Subject));
+        let wildcard = name::Error::Wildcard {
+            input: "*".to_owned(),
+        };
+        assert_eq!(
+            Signed::decode(&hello),
+            Err(Error::Subject(Text::from(wildcard)))
+        );
     }
 }
 

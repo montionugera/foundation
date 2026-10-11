@@ -45,7 +45,7 @@ pub(crate) struct Fields<'b, E> {
     length: E,
 }
 
-impl<'b, E: Copy> Fields<'b, E> {
+impl<'b, E: Clone> Fields<'b, E> {
     /// A reader of the fields in `rest`, which gives `length` for a wrong length.
     pub(crate) fn new(rest: &'b [u8], length: E) -> Self {
         Self { rest, length }
@@ -53,14 +53,20 @@ impl<'b, E: Copy> Fields<'b, E> {
 
     /// Takes the next field of `N` bytes.
     pub(crate) fn take<const N: usize>(&mut self) -> Result<[u8; N], E> {
-        let (&field, rest) = self.rest.split_first_chunk().ok_or(self.length)?;
+        let (&field, rest) = self
+            .rest
+            .split_first_chunk()
+            .ok_or_else(|| self.length.clone())?;
         self.rest = rest;
         Ok(field)
     }
 
     /// Takes the next field of `len` bytes.
     pub(crate) fn take_slice(&mut self, len: usize) -> Result<&'b [u8], E> {
-        let (field, rest) = self.rest.split_at_checked(len).ok_or(self.length)?;
+        let (field, rest) = self
+            .rest
+            .split_at_checked(len)
+            .ok_or_else(|| self.length.clone())?;
         self.rest = rest;
         Ok(field)
     }
@@ -70,7 +76,7 @@ impl<'b, E: Copy> Fields<'b, E> {
         if self.rest.is_empty() {
             Ok(())
         } else {
-            Err(self.length)
+            Err(self.length.clone())
         }
     }
 }

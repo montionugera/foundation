@@ -48,7 +48,7 @@ use types::name::Name;
 use types::node;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN};
+use super::{BUSY, Error, FAILED, NOT_HOME, Text, UNKNOWN};
 use crate::common::{Fields, Writer, body};
 use crate::header::MALFORMED;
 
@@ -281,9 +281,9 @@ impl Signed {
         let signature = fields.take()?;
         fields.end()?;
         let subject = std::str::from_utf8(subject)
-            .ok()
-            .and_then(|subject| subject.parse::<Name>().ok())
-            .ok_or(Error::Subject)?;
+            .map_err(Text::from)
+            .and_then(|subject| subject.parse::<Name>().map_err(Text::from))
+            .map_err(Error::Subject)?;
         let key = PublicKey::new(key).map_err(|_small| Error::SmallOrder)?;
         Ok(Self {
             hello: Hello {

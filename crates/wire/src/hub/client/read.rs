@@ -147,11 +147,11 @@ impl Open {
         };
         let mut patterns = Vec::new();
         while !rest.is_empty() {
-            let length = Error::Length { len: bytes.len() };
-            let (&len, after) = rest.split_first_chunk::<2>().ok_or(length)?;
+            let length = || Error::Length { len: bytes.len() };
+            let (&len, after) = rest.split_first_chunk::<2>().ok_or_else(length)?;
             let (pattern, after) = after
                 .split_at_checked(usize::from(u16::from_le_bytes(len)))
-                .ok_or(length)?;
+                .ok_or_else(length)?;
             patterns
                 .push(std::str::from_utf8(pattern).map_err(|_utf8| Error::Selector)?);
             rest = after;
@@ -325,11 +325,11 @@ pub mod place {
         if message.is_empty() {
             return Err(Error::Empty);
         }
-        let length = Error::Length { len: message.len() };
+        let length = || Error::Length { len: message.len() };
         let mut rest = message;
         let mut places = Vec::new();
         while !rest.is_empty() {
-            let (&key, after) = rest.split_first_chunk::<16>().ok_or(length)?;
+            let (&key, after) = rest.split_first_chunk::<16>().ok_or_else(length)?;
             let (sample, after) = text(after, length)?;
             let (name, after) = text(after, length)?;
             places.push(Place {
@@ -344,9 +344,10 @@ pub mod place {
 
     /// The text at the front of `bytes`, its length a `u8`, and the bytes after it.
     /// Bytes that end inside the text give `length`.
-    fn text(bytes: &[u8], length: Error) -> Result<(&str, &[u8]), Error> {
-        let (&len, rest) = bytes.split_first().ok_or(length)?;
-        let (text, rest) = rest.split_at_checked(usize::from(len)).ok_or(length)?;
+    fn text(bytes: &[u8], length: impl Fn() -> Error) -> Result<(&str, &[u8]), Error> {
+        let (&len, rest) = bytes.split_first().ok_or_else(&length)?;
+        let (text, rest) =
+            rest.split_at_checked(usize::from(len)).ok_or_else(length)?;
         let text = std::str::from_utf8(text).map_err(|_utf8| Error::Place)?;
         Ok((text, rest))
     }

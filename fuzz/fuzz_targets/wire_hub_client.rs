@@ -52,7 +52,7 @@ fn decode<T>(
                 matches!(
                     error,
                     Error::Length { .. }
-                        | Error::Subject
+                        | Error::Subject(_)
                         | Error::SmallOrder
                         | Error::Oversize { .. }
                         | Error::Index { .. }

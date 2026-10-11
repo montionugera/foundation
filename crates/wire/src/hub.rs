@@ -32,10 +32,12 @@ mod home;
 mod reader;
 
 use std::fmt;
+use std::str::Utf8Error;
 
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
+use types::{name, sample};
 
 use crate::common::{Fields, Writer, body};
 
@@ -491,7 +493,7 @@ pub mod ends {
 }
 
 /// A hub message that is not valid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
     Empty,
@@ -572,7 +574,7 @@ pub enum Error {
         kind: u8,
     },
     /// The subject of a hello is not a name.
-    Subject,
+    Subject(Text),
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
@@ -668,7 +670,9 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject => f.write_str("the subject of the hello is not a name"),
+            Self::Subject(text) => {
+                write!(f, "the subject of the hello is not a name: {text}")
+            }
             Self::SmallOrder => {
                 f.write_str("the key of the hello is a point of small order")
             }
@@ -700,7 +704,64 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Subject(text) => Some(text),
+            _ => None,
+        }
+    }
+}
+
+/// Why a text in a message does not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Text {
+    /// The bytes are not UTF-8.
+    Utf8(Utf8Error),
+    /// The text is not a sample type.
+    Sample(sample::Error),
+    /// The text is not a name, or not a selector. Boxed, so that its text stays out
+    /// of [`Error`].
+    Name(Box<name::Error>),
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Utf8(error) => error.fmt(f),
+            Self::Sample(error) => error.fmt(f),
+            Self::Name(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Text {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Utf8(error) => error,
+            Self::Sample(error) => error,
+            Self::Name(error) => &**error,
+        })
+    }
+}
+
+impl From<Utf8Error> for Text {
+    fn from(error: Utf8Error) -> Self {
+        Self::Utf8(error)
+    }
+}
+
+impl From<sample::Error> for Text {
+    fn from(error: sample::Error) -> Self {
+        Self::Sample(error)
+    }
+}
+
+impl From<name::Error> for Text {
+    fn from(error: name::Error) -> Self {
+        Self::Name(Box::new(error))
+    }
+}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
@@ -1381,7 +1442,10 @@ mod tests {
     #[test]
     fn names_each_error_of_a_client_stream() {
         let cases = [
-            (Error::Subject, "the subject of the hello is not a name"),
+            (
+                Error::Subject(Text::from(name::Error::Empty)),
+                "the subject of the hello is not a name: a name or pattern is empty",
+            ),
             (
                 Error::SmallOrder,
                 "the key of the hello is a point of small order",
