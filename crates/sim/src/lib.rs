@@ -567,11 +567,13 @@ impl fmt::Debug for Sim {
 /// How a node crashes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Crash {
-    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk
-    /// keeps each call that ended. Each file call in flight takes effect at the
-    /// crash, as if its future dropped, so a write keeps any subset of its sectors,
-    /// and a [`Mode::Create`](env::files::Mode::Create) open that makes a file
-    /// leaves it whole or with no bytes. Each TCP stream and listener drops.
+    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk keeps
+    /// each call that ended. Each file call in flight takes effect at the crash, as if
+    /// its future dropped, so a write keeps any subset of its sectors, and a
+    /// [`Mode::Create`](env::files::Mode::Create) open that makes a file leaves it
+    /// whole or with no bytes. When the disk has no room for its bytes, that open
+    /// leaves no file at its path, as with no crash, or a file with no bytes. Each TCP
+    /// stream and listener drops.
     Process,
     /// The machine loses power and boots again.
     ///

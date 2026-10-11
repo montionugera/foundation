@@ -3065,6 +3065,36 @@ mod tests {
         );
     }
 
+    // An open removes the spare `log-1`. The caller drops the open at each wait, so
+    // also while the remove is in flight.
+    #[test]
+    fn an_open_after_a_dropped_open_opens_in_each_run() {
+        let mut failed = Vec::new();
+        for run in 0..16 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                create_spare(&mut sim, &node, 512);
+                let (ended, error) = sim
+                    .run_on(&node, move |node, _| async move {
+                        let ended = cut(open(&node), waits).await.is_some();
+                        (ended, open(&node).await.err())
+                    })
+                    .unwrap();
+                if let Some(error) = error {
+                    failed.push((run, waits, error.to_string()));
+                }
+                if ended {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            failed,
+            [],
+            "(run, the wait of the drop, the error of the open)"
+        );
+    }
+
     // An open removes the spare `log-1`, and a later write makes `log-1` again. The
     // caller drops the open at each wait, so also while the remove is in flight.
     #[test]
