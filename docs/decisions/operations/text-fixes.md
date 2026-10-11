@@ -6,26 +6,26 @@
   whose fix the `reviewer` gives as the exact new text, is a `Text fixes:` item, not a
   finding. That text of a deferral or a later step is the body of the issue that the
   author files for it, or the author's comment on an existing issue, never text that
-  another session wrote. A text that states a deferral in a risk crate is no text place,
-  also when it states a later step or another deferral. A test in it is the code of the
-  test, and each sentence that states what the test asserts or what must pass. The
-  author applies an item as given, and the `reviewer` of the next round, when one runs,
-  checks it where the author applied it. An item that gives only facts and links, or
-  that asks the author to find a fact or give a reason, is a finding, and its fix gets a
-  round. When that fix changes no code, the round runs `reviewer` alone. A text item
-  still needs each approval that its file needs. In the range after a review round
-  (REVIEW CHECK), code is each change to a file that is not a `.md` file, other than a
-  `.rs` line that, trimmed, is empty or starts with `//`. The last round may end at a
-  commit from which only clean merges of the base and commits that apply its `Text
-  fixes:` items reach the head. `cargo xtask review` checks that each merge after the
-  last round is a clean merge of the base (`git merge-tree`), that the commits after it
-  change no code, and, when one that is not a merge follows it, that its round comment
-  has a line `Text fixes:` that is not `Text fixes: none` (#2315). It cannot check that
-  a commit applies only those items. Evidence (`laptop.monitor`, 102 PRs merged from
-  2026-10-09T00:00Z): a median of 7 rounds per PR, about 44% of the findings in text,
-  and each text fix moved the head and started a round. Late rounds still found defects
-  in code (#2191, #2003), so a code fix keeps its round. The person, at
-  2026-10-10T15:50:57Z, in the `laptop.monitor` chat
+  another session wrote. A test in it is the code of the test, and each sentence that
+  states what the test asserts or what must pass. A finding in that body or comment is
+  no `Text fixes:` item when the body or comment states a deferral in a risk crate, also
+  when it states a later step or another deferral. The author applies an item as given,
+  and the `reviewer` of the next round, when one runs, checks it where the author
+  applied it. An item that gives only facts and links, or that asks the author to find a
+  fact or give a reason, is a finding, and its fix gets a round. When that fix changes
+  no code, the round runs `reviewer` alone. A text item still needs each approval that
+  its file needs. In the range after a review round (REVIEW CHECK), code is each change
+  to a file that is not a `.md` file, other than a `.rs` line that, trimmed, is empty or
+  starts with `//`. The last round may end at a commit from which only clean merges of
+  the base and commits that apply its `Text fixes:` items reach the head. `cargo xtask
+  review` checks that each merge after the last round is a clean merge of the base (`git
+  merge-tree`), that the commits after it change no code, and, when one that is not a
+  merge follows it, that its round comment has a line `Text fixes:` that is not `Text
+  fixes: none` (#2315). It cannot check that a commit applies only those items. Evidence
+  (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a median of 7 rounds per
+  PR, about 44% of the findings in text, and each text fix moved the head and started a
+  round. Late rounds still found defects in code (#2191, #2003), so a code fix keeps its
+  round. The person, at 2026-10-10T15:50:57Z, in the `laptop.monitor` chat
   (https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621): "Yes,
   let's do that please". The director decided the items and the code test at
   2026-10-10T23:02:11Z
@@ -55,8 +55,14 @@
   (https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106336431), made a
   text that states such a deferral no text place also when it states a later step or
   another deferral, because one comment can state both
-  (https://github.com/synnaxlabs/foundation/issues/2105#issuecomment-6105778995). Ruling
-  point 3 and the change to #2315 at 2026-10-10T23:10:40Z
+  (https://github.com/synnaxlabs/foundation/issues/2105#issuecomment-6105778995). The
+  director, at 2026-10-11T07:02:40Z
+  (https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106487131),
+  limited that sentence to the issue body or the comment of the author, because its
+  words "A text" also covered a `.md` file and an end line of a round comment that state
+  such a deferral, and put it after the sentence on a test, because "A test in it" then
+  read as a test in that text. Ruling point 3 and the change to #2315 at
+  2026-10-10T23:10:40Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103182934) added
   the `Text fixes:` line check. The change at 23:21:22Z
   (https://github.com/synnaxlabs/foundation/issues/2315#issuecomment-6103264281)
