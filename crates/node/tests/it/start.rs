@@ -1,6 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::rig::Rig;
+use crate::rig::{self, Rig};
 use crate::text;
 
 /// The exit status, the standard output, and the standard error of `output`.
@@ -47,6 +47,24 @@ fn a_data_directory_with_a_newline_prints_one_line() {
             ""
         )
     );
+    let data = rig.dir.join("a\nb");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test reads what the rig wrote to the disk"
+    )]
+    let kept = std::fs::read(data.join("data/budget")).expect("read the budget file");
+    assert_eq!(kept, rig::budget(rig::POOL, rig.disk));
+    // The disk budget bounds the length of each ring, not the other files of the node.
+    let entries =
+        std::fs::read_dir(data.join("data")).expect("read the data directory");
+    let rings = (entries.map(|entry| entry.expect("read an entry").file_name()))
+        .filter(|name| name.to_str().is_some_and(|name| name.starts_with("shard-")))
+        .map(|shard| {
+            let path = data.join("data").join(shard).join("ring");
+            std::fs::metadata(path).expect("read the ring").len()
+        })
+        .sum::<u64>();
+    assert!((1..=rig.disk).contains(&rings), "{rings} bytes of rings");
 }
 
 #[test]
@@ -642,6 +660,23 @@ fn a_start_on_a_port_that_another_socket_holds_fails() {
                  fix: Give `--listen` an address of this host with a port that is free \
                  and that this user can bind\n"
             )
+        )
+    );
+}
+
+#[test]
+fn a_start_at_a_multicast_ip_fails() {
+    let rig = Rig::new();
+    let listen = ["start", "--name", "edge", "--listen", "224.0.0.1:0"];
+    assert_eq!(
+        ended(&rig.run(&listen, b"")),
+        (
+            Some(1),
+            "",
+            "error[node.port]: cannot bind the node's port at 224.0.0.1:0: a \
+             multicast or broadcast IP is not an address of a host\n\
+             fix: Give `--listen` an address of this host with a port that is free \
+             and that this user can bind\n"
         )
     );
 }

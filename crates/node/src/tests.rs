@@ -2969,6 +2969,67 @@ mod port {
         drop(held);
     }
 
+    /// A multicast IP or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address,
+    /// starts no shard and makes no file.
+    #[test]
+    fn a_listen_that_no_peer_reaches_starts_no_shard() {
+        let refused = [
+            "224.0.0.1:0",
+            "239.255.255.255:7000",
+            "255.255.255.255:0",
+            "[ff02::1]:0",
+            "[ff0e::1]:7000",
+            "[::ffff:224.0.0.1]:0",
+            "[::ffff:255.255.255.255]:0",
+        ];
+        for text in refused {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(Error::Listen { listen }), "{text}");
+            assert_eq!(host.shard_starts().len(), 0, "{text}");
+            assert_eq!(listed(&mut sim, &host, ""), Vec::<PathBuf>::new(), "{text}");
+        }
+        let listen = "[::ffff:224.0.0.1]:0".parse().expect("a socket address");
+        assert_eq!(
+            Error::Listen { listen }.to_string(),
+            "cannot bind the node's port at [::ffff:224.0.0.1]:0: a multicast or \
+             broadcast IP is not an address of a host"
+        );
+    }
+
+    /// The refused listen comes after a reserved name and before a disk budget that
+    /// holds no ring.
+    #[test]
+    fn a_refused_listen_comes_between_a_reserved_name_and_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let listen = "224.0.0.1:0".parse().expect("a socket address");
+        let small = || Config {
+            listen,
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk: Size::from_bytes(1),
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        };
+        let reserved: types::name::Name = "@x".parse().expect("a name");
+        let named = Node::start(Config {
+            name: reserved.clone(),
+            ..small()
+        });
+        let unnamed = Node::start(small());
+        assert_eq!(sim.run(), Ok(()));
+        let name = reserved;
+        assert_eq!(named.join(), Err(Error::Reserved { name }));
+        assert_eq!(unnamed.join(), Err(Error::Listen { listen }));
+    }
+
     /// The node takes no session when a buffer does not open.
     #[test]
     fn a_node_whose_buffer_does_not_open_takes_no_session() {

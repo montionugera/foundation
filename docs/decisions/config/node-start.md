@@ -103,6 +103,17 @@
   this user can bind". Lost: `node.failed`, which gives an agent no fix for a value that
   it gave. Decided by `laptop.architect-2` (2026-10-11T10:21:07Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
+  A `--listen` whose IP is multicast or the IPv4 broadcast IP, also as an IPv4-mapped
+  IPv6 address, binds on Linux, and no peer reaches a node at it. `node` refuses it
+  before the bind with `node::Error::Listen`, which is `node.port` with the same fix.
+  `node` does not refuse a subnet broadcast IP of an interface, which only the
+  interface table shows. Trigger: the first change that gives `node` the addresses of
+  the interfaces of its host. Lost: a refusal in `ops::cli` as `ops.argument`, which
+  leaves each other caller of `node::Config::listen` open; a refusal in the UDP bind
+  of `env::net`, where a connector that receives multicast binds such an IP;
+  `node::Error::Port` with an OS code that no OS call gave; a code of its own for the
+  same fix. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
   Shard 0 writes the file `address` in the data directory in place, after the mesh opens
   and before the port takes a session: the node's key, the public key of its transport,
   and the bound socket address, in one sector with a CRC32C. Its form is private to

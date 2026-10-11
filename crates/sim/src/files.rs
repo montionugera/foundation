@@ -486,10 +486,13 @@ impl Files {
             let close = flight.call.handle().map(|handle| handle.key);
             closes.extend(close.and_then(|key| self.closing.remove(&key)));
             let kind = mem::discriminant(&flight.call);
-            let drawn = (matches!(flight.call, Call::Open(Mode::Create { .. }))
-                && !flight.failed
-                && self.disks[node].makes(&flight.path))
-            .then(|| match self.rng.below(2) {
+            let makes = match flight.call {
+                Call::Open(Mode::Create { len }) => {
+                    self.disks[node].makes(&flight.path, len)
+                }
+                _ => false,
+            };
+            let drawn = (makes && !flight.failed).then(|| match self.rng.below(2) {
                 0 => Cut::Whole,
                 _ => Cut::Empty,
             });
@@ -499,10 +502,13 @@ impl Files {
             // A power cut loses what a sync in flight would make durable.
             let synced = matches!(flight.call, Call::Sync { .. } | Call::SyncDir);
             let (ok, held) = if power && synced {
+                if let Some(handle) = flight.call.handle() {
+                    self.disks[node].release(handle);
+                }
                 (false, flight.held)
             } else {
                 let ended = self.apply(key, flight);
-                (ended.result.is_ok(), ended.held)
+                (ended.result.is_ok(), self.discard(node, ended))
             };
             (at, key, kind, drawn, ok).hash(&mut self.digest);
             orphans.extend(held);
