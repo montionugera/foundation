@@ -1,9 +1,10 @@
-//! The decoders of `wire::hub::client` never panic, each but `Open::decode` refuses a
-//! message of another kind with `Error::Kind`, each message that decodes encodes to
-//! its bytes, each body ends at its length and nowhere else, each refusal of a body is
-//! the one that its rest gives, a read stream gives its places, then its run, and with
-//! the last place the decoder of a session of their count and the mode, and each valid
-//! message made from the input reads back.
+//! The decoders of `wire::hub::client` never panic, each but `Open::decode` and
+//! `Reader::decode` refuses a message of another kind with `Error::Kind`,
+//! `Reader::decode` refuses a first message of another kind with it, each message that
+//! decodes encodes to its bytes, each body ends at its length and nowhere else, each
+//! refusal of a body is the one that its rest gives, a read stream gives its places,
+//! then its run, and with the last place the decoder of a session of their count and
+//! the mode, and each valid message made from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
