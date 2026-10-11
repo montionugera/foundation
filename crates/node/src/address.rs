@@ -54,8 +54,9 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
 
 /// Holds the file `address` of `files` with `address` while `serve` runs: makes it,
 /// awaits `serve`, and removes it. A read meanwhile sees the file whole or no file.
-/// When the file cannot be made, does not poll `serve`, and removes what the try
-/// left. Call it under the lock of the data directory.
+/// When the file cannot be made, does not poll `serve`, and removes the file `address`
+/// that the try left; the next start removes an `address.new` that it left. Call it
+/// under the lock of the data directory.
 ///
 /// # Errors
 ///
