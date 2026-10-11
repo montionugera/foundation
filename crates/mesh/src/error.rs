@@ -232,8 +232,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Writes the text of an error that gives `stopped`: [`Error::Stopped`], and the stop of
-/// a stamp.
+/// Writes the text of a stop: `the group stopped: `, then `stopped`.
 pub(crate) fn write_stopped(
     f: &mut fmt::Formatter<'_>,
     stopped: &Stopped,
