@@ -747,9 +747,10 @@ mod tests {
     }
 
     /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
-    /// `out` has a value on one line, each after the line of `text` up to the value of
-    /// the attribute that ends `text`. After the closer, `want` holds the rest of
-    /// `out`, with a line end that `out` lacks when the closer's line is the last.
+    /// `out` has a value on one line: the value of the top attribute of `out` with
+    /// the key of the attribute that ends `text`. After the closer, `want` holds the
+    /// rest of `out`, with a line end that `out` lacks when the closer's line is the
+    /// last.
     fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
@@ -775,17 +776,18 @@ mod tests {
             .strip_suffix('\n')
             .filter(|t| !t.contains('\n'))
             .unwrap_or(tail);
-        let end = text.trim_end().len();
-        let lead = read(Source(0), text).ok().and_then(|document| {
-            document.attributes.iter().find_map(|attribute| {
-                let value = attribute.value.span?;
-                let start = usize::try_from(value.start().offset).ok()?;
-                (usize::try_from(value.end().offset).ok()? == end)
-                    .then(|| text.get(..start)?.rsplit('\n').next())?
+        let at = |text: &str, place: fn(Span) -> u32, offset: usize| {
+            read(Source(0), text).ok().and_then(|document| {
+                document.attributes.iter().find_map(|attribute| {
+                    let value = attribute.value.span?;
+                    (usize::try_from(place(value)).ok()? == offset)
+                        .then(|| attribute.key.clone())
+                })
             })
-        });
-        lead.is_some()
-            && out.get(..start).and_then(|head| head.rsplit('\n').next()) == lead
+        };
+        let key = at(text, |span| span.end().offset, text.trim_end().len());
+        key.is_some()
+            && at(out, |span| span.start().offset, start) == key
             && out
                 .get(start..)
                 .and_then(|rest| rest.strip_suffix(tail))
@@ -1119,6 +1121,9 @@ mod tests {
         let out = "ba = \"x\\n\"\na = 2\nc = 3\n";
         let want = "ba = <<EOT\nx\nEOT\na = 2\nc = 3\n";
         assert!(!quoted_at_end("ba = 1\na = 2", out, want), "line");
+        let out = "b {\na = \"x\\n\"\n}\na = 2\nc = 3\n";
+        let want = "b {\na = <<EOT\nx\nEOT\n}\na = 2\nc = 3\n";
+        assert!(!quoted_at_end("b {\na = 1\n}\na = 2", out, want), "block");
         assert!(
             !quoted_at_end("a = 1", "a = \"x\"\n", "a = <<EOT\nx\nEOT\n"),
             "one line"
