@@ -72,15 +72,16 @@
   at mode 0600 and does not change the mode of one that is there, so a wider mode or an
   ACL of the data directory can open it to another user (Who attacks in
   `docs/security.md`). The start that founds the root region reads a valid `admin.key`
-  in the data directory and founds with it. When no `admin.key` is there, it makes one.
-  When the file holds no valid key, the start stops and does not write over it (NODE
-  MESH). "Only the user who started the node can read the key" holds for a key that a
-  start of the node made, also one that an earlier start left when it stopped before its
-  founding was durable (NODE MESH), while no mode or ACL that the operator set opens it
-  to another user. It does not hold for a key that another writer put there: the
-  operator, or a user that the operator let write to the data directory (Who attacks in
-  `docs/security.md`). The mode, the ACL, the founding with a valid key, and the start
-  that makes a key or stops: approved by `laptop.architect` at `927af5461`
+  in the data directory and founds with it, also one that a start left when it failed
+  after `admin.key` was durable and before its founding was durable. When no `admin.key`
+  is there, it makes one. When the file holds no valid key, the start stops and does not
+  write over it (NODE MESH). "Only the user who started the node can read the key" holds
+  for a key that a start of the node made, also one that an earlier start left when it
+  stopped before its founding was durable (NODE MESH), while no mode or ACL that the
+  operator set opens it to another user. It does not hold for a key that another writer
+  put there: the operator, or a user that the operator let write to the data directory
+  (Who attacks in `docs/security.md`). The mode, the ACL, the founding with a valid key,
+  and the start that makes a key or stops: approved by `laptop.architect` at `927af5461`
   (2026-10-11T01:26:07Z,
   https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104179974). The
   founding with a key that an earlier start left: decided by `laptop.architect`
