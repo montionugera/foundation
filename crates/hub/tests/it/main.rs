@@ -1135,8 +1135,8 @@ fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
     });
 }
 
-/// Only a new carry can make the home's deadline earlier, so only the first open of
-/// a reader on an index polls the gate task.
+/// A carry can make the home's deadline earlier only when it is new, so only the first
+/// open of a reader on an index polls the gate task.
 #[test]
 fn polls_the_gate_task_at_a_reader_open_only_when_its_index_is_new() {
     run(23, |test| async move {
