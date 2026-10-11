@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::poll_fn;
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::rc::{Rc, Weak};
@@ -46,7 +45,7 @@ pub(super) struct Used {
 /// effect or a newer pointer replaces it.
 pub(super) struct Newest {
     pub(super) pointer: Pointer,
-    // The chunks that its change listed, until a read takes them.
+    // The chunks that its change listed. Each read gets them again.
     listed: BTreeSet<Digest>,
     // Each chunk of its tree that a read got from the store.
     pub(super) got: Vec<Vec<u8>>,
@@ -175,7 +174,7 @@ impl Used {
                 for chunk in &newest.got {
                     chunks.insert(chunk.clone());
                 }
-                let listed = mem::take(&mut newest.listed);
+                let listed = newest.listed.clone();
                 Job::Read { listed, chunks }
             }
         };
@@ -437,8 +436,8 @@ pub(super) async fn keep(
 
 // The definitions of the spec of `pointer`, and the chunks of its tree, when it reads
 // and has no problem. `chunks` holds the tree in use. The read gets each chunk of
-// `listed` that `chunks` lacks and each chunk that the tree needs from `store`, and
-// adds each to `got`.
+// `listed` that `chunks` lacks from `store`, then each other chunk that the tree needs,
+// and adds only the second kind to `got`.
 async fn read(
     store: &blob::Store,
     prefix: &Prefix,
@@ -453,7 +452,6 @@ async fn read(
         }
         if let Some(chunk) = store.get(digest).await.map_err(Cause::Blob)? {
             chunks.insert(chunk.to_vec());
-            got.push(chunk.to_vec());
         }
     }
     let (definitions, kept) = loop {
