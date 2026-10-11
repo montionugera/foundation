@@ -110,7 +110,18 @@
   because it moves the file that the include check reads. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,
-  2026-10-08 10:42 UTC). No flag of the upstream build is lost with no error. Decided
+  2026-10-08 10:42 UTC). A builtin or an intrinsic that reads a clock or randomness,
+  such as `__rdtsc()`, makes no symbol and no relocation, and a new tag can add it as
+  honest C. So the check reads each instruction of `objdump -d` and fails on each
+  mnemonic outside a closed list for the architecture of the build, with the file, the
+  function, and the mnemonic. A move of a system register (`mrs`, `msr`) is keyed by its
+  register too. An entry goes in the list only when it reads no clock, randomness,
+  file, network, or process state. Lost: a deny list of such instructions, which passes
+  one that it does not name, such as one of a later extension. Until #2330, the check
+  passes such a builtin, and review of each copy PR covers it. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
+  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided
   by `laptop.director`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060613260,
   2026-10-08 13:10 UTC). `cargo xtask open62541` puts each flag of a compile in
