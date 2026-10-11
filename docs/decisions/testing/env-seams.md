@@ -330,8 +330,8 @@
   the rule in each caller (`blob` retried, `buffer` always synced first). Decided by
   `laptop.architect-2`, 2026-10-08T00:45:04Z
   (https://github.com/synnaxlabs/foundation/issues/1622#issuecomment-6049807597).
-  `buffer` keeps its sync before the ring create until #2378 (round 1 of #2375,
-  https://github.com/synnaxlabs/foundation/pull/2375#issuecomment-6106613325).
+  `buffer` keeps its sync before the ring create until #2378 (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/2375#issuecomment-6106773891).
   Amended (2026-10-08T17:19:48Z, #1921): on macOS, an accepted socket does not keep
   the receive buffer of its listener, so `os` sets the options of the listener again
   on each accepted socket, on every OS. The listener still sets them before `listen`:
