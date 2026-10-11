@@ -773,7 +773,8 @@ mod tests {
             return false;
         };
         let tail = tail
-            .strip_suffix('\n')
+            .strip_suffix("\r\n")
+            .or_else(|| tail.strip_suffix('\n'))
             .filter(|t| !t.contains('\n'))
             .unwrap_or(tail);
         let values = |text: &str| {
@@ -1173,6 +1174,16 @@ mod tests {
             ("/* c */ a = 1", "a = \"x\\n\""),
         ] {
             let ended = format!("{text}\n");
+            let (out, want) = (updated(text, new), updated(&ended, new));
+            assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
+        }
+    }
+
+    #[test]
+    fn quotes_the_last_value_of_an_unended_text_with_a_crlf_line() {
+        for text in ["a = 1\nb = 2\r\nc = 3", "a = 1\nb = 2\r\nc = 3  "] {
+            let new = "a = 1\nb = 2\nc = \"x\\n\"";
+            let ended = format!("{text}\r\n");
             let (out, want) = (updated(text, new), updated(&ended, new));
             assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
         }
