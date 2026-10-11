@@ -521,7 +521,6 @@ fn round(comment: &Comment) -> Option<Parsed> {
         .iter()
         .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
     let number = shown.number.as_deref()?;
-    let text = &shown.text;
     let lines = shown.fields().iter().map(String::as_str);
     let field = |name| lines.clone().find_map(|l: &str| l.strip_prefix(name));
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
@@ -531,9 +530,9 @@ fn round(comment: &Comment) -> Option<Parsed> {
         || [reviewers, range, findings].iter().any(Option::is_some)
         || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
-        let performer =
-            reviewers.map_or_else(|| performer(text), |r| r.contains("performance"));
-        (old && !performer && named(text)).then(|| {
+        let performer = reviewers
+            .map_or_else(|| performer(&shown.text), |r| r.contains("performance"));
+        (old && !performer && named(&shown.text)).then(|| {
             format!(
                 "review round {number} names no performance, which this round requires."
             )
