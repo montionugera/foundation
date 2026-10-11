@@ -336,6 +336,8 @@ impl Channel {
 pub(crate) struct Session(pub(crate) c_int);
 
 impl Session {
+    /// `UA_SESSIONSTATE_CREATE_REQUESTED`.
+    pub(crate) const CREATE_REQUESTED: Self = Self(1);
     /// `UA_SESSIONSTATE_ACTIVATED`.
     pub(crate) const ACTIVATED: Self = Self(4);
 }

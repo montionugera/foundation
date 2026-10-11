@@ -385,17 +385,60 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
 /// server makes the session 3 ms after the connect starts and activates it later.
 #[test]
 fn a_connect_that_times_out_closes_its_session() {
-    let (connects, _) = run(0, async |node| {
+    let connects = connects_after_a_stall(Span::from_nanos(3_000_000), None);
+    assert_eq!(connects, (Some(Status::BAD_TIMEOUT), None));
+}
+
+/// A connect that times out before the server answers its `CreateSession` closes the
+/// session that the server makes after the deadline. In the run of seed 0, the server
+/// gets the `CreateSession` before 2.5 ms and answers it 100 us after the deadline.
+#[test]
+fn a_connect_that_times_out_before_the_server_makes_its_session_closes_it() {
+    let connects = connects_after_a_stall(
+        Span::from_nanos(2_500_000),
+        Some(Span::from_nanos(5_000_100_000)),
+    );
+    assert_eq!(connects, (Some(Status::BAD_TIMEOUT), None));
+}
+
+/// A connect that times out before a server that stops answers its `CreateSession`
+/// ends once that request times out, and leaves no session.
+#[test]
+fn a_connect_whose_create_session_gets_no_answer_ends() {
+    let connects = connects_after_a_stall(Span::from_nanos(2_500_000), None);
+    assert_eq!(connects, (Some(Status::BAD_TIMEOUT), None));
+}
+
+/// Connects to a server with room for one session that stops from `from` after the
+/// connect starts until `to`, or until the connect ends when `to` is `None`. Then
+/// connects a second client. Gives the error of each connect.
+fn connects_after_a_stall(
+    from: Span,
+    to: Option<Span>,
+) -> (Option<Status>, Option<Status>) {
+    run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
             let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
             let first = {
                 let mut connect =
                     pin!(Client::connect(clock, net, &mut peer.rng, &url));
-                let mut made = pin!(peer.clock.sleep(Span::from_nanos(3_000_000)));
+                let mut stop = pin!(peer.clock.sleep(from));
+                let mut resume = to.map(|to| Box::pin(peer.clock.sleep(to)));
+                let mut stopped = false;
                 poll_fn(|cx| {
-                    if !paused.get() && made.as_mut().poll(cx).is_ready() {
+                    if !stopped && stop.as_mut().poll(cx).is_ready() {
+                        stopped = true;
                         paused.set(true);
+                    }
+                    if stopped
+                        && let Some(at) = &mut resume
+                        && at.as_mut().poll(cx).is_ready()
+                    {
+                        resume = None;
+                        paused.set(false);
+                        // `serve` runs the server before this body.
+                        cx.waker().wake_by_ref();
                     }
                     connect.as_mut().poll(cx)
                 })
@@ -413,6 +456,6 @@ fn a_connect_that_times_out_closes_its_session() {
             (first, second)
         })
         .await
-    });
-    assert_eq!(connects, (Some(Status::BAD_TIMEOUT), None));
+    })
+    .0
 }

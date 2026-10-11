@@ -147,8 +147,21 @@ impl Client {
     }
 
     /// Closes the session and the connection of the client, and waits until the
-    /// connection is closed.
+    /// connection is closed. When the server has not answered the request that makes
+    /// the session, it waits for that answer or for its request timeout first.
     pub(crate) async fn close(self) {
+        // A CloseSession sent before the CreateSession answer has no session token, so
+        // the server keeps the session that it makes.
+        self.connections
+            .drive(|_| {
+                self.connections.events().run();
+                if self.state().1 == ffi::Session::CREATE_REQUESTED {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
         // SAFETY: the client lives. On a failure to send, it closes the connection.
         unsafe { ffi::UA_Client_disconnectAsync(self.raw.as_ptr()) };
         self.connections
