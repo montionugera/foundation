@@ -1,4 +1,4 @@
-//! `node::sector::written` gives the bytes of `node.key` or `admin.key` exactly when
+//! `node::sector::written` takes the bytes of `node.key` or `admin.key` exactly when
 //! they have the tag of their file and the CRC32C, and the encode of their fields gives
 //! them back.
 //!
