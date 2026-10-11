@@ -316,9 +316,14 @@ fn a_create_that_finds_no_room_syncs_the_directory_once() {
     for seed in 0..16 {
         let (created, digest) = create_with_no_room(seed, false);
         let (opened, calls) = create_with_no_room(seed, true);
+        let path = PathBuf::from("b");
         assert_eq!(digest, calls, "seed {seed}");
-        assert_eq!(created, Err(Error::Full { path: "b".into() }), "seed {seed}");
-        assert_eq!(opened, Err(Error::NotFound { path: "b".into() }), "seed {seed}");
+        assert_eq!(
+            created,
+            Err(Error::Full { path: path.clone() }),
+            "seed {seed}"
+        );
+        assert_eq!(opened, Err(Error::NotFound { path }), "seed {seed}");
     }
 }
 
