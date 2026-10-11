@@ -644,10 +644,8 @@ fn a_node_holds_the_file_address_while_it_runs_and_writes_it_empty_at_sigterm() 
     rig.start();
     let held = std::fs::read(&address).expect("read the file address");
     assert_eq!(held.len(), 99);
-    assert!(
-        held.iter().any(|&byte| byte != 0),
-        "the file holds no address"
-    );
+    assert_eq!(held[..20], *b"foundation/address/1");
+    assert_eq!(held[95..], crc32c::crc32c(&held[..95]).to_le_bytes());
     assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
     let stopped = std::fs::read(&address).expect("read the file address");
     assert_eq!(stopped, [0; 99]);

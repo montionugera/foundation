@@ -208,6 +208,24 @@ fn a_running_node_holds_the_address_of_the_corpus() {
     assert_eq!(stop(&mut sim, node), Ok(()));
 }
 
+/// A task given that reads `address` at its first poll reads the node's address.
+#[test]
+fn a_task_reads_the_address_at_its_first_poll() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    let out = Arc::new(Mutex::new(None));
+    let (slot, own) = (Arc::clone(&out), host.clone());
+    node.spawn(move |_| async move {
+        let bytes = read(&own.files()).await;
+        *slot.lock().unwrap() = Some(bytes.and_then(|bytes| address::decode(&bytes)));
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    let read = out.lock().unwrap().take().expect("the task ran");
+    assert_eq!(read, Some(of(&host, PORT)));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+}
+
 /// A clean stop writes `address` empty: the input `address-zeros` of the fuzz
 /// corpus, which holds no address.
 #[test]
@@ -371,6 +389,27 @@ fn a_failed_file_call_of_the_write_stops_the_node() {
     }
 }
 
+/// A hold whose write fails at its sync gives the error, does not poll `serve`, and
+/// writes the file empty.
+#[test]
+fn a_hold_whose_write_fails_does_not_poll_serve() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    host.fail_file(Path::new(FILE), env::files::Operation::Sync);
+    let address = of(&host, PORT);
+    let held = sim.run_on(&host, move |host, _| async move {
+        let serve = std::pin::pin!(async { panic!("serve is polled") });
+        address::hold(&host.files(), &address, serve).await
+    });
+    let error = Error::Directory(env::files::Error::Io {
+        path: PathBuf::from(FILE),
+        operation: env::files::Operation::Sync,
+        code: 5,
+    });
+    assert_eq!(held, Ok(Err(error)));
+    assert_eq!(bytes(&mut sim, &host), Some([0; LEN]));
+}
+
 /// A failed remove of an `address` of another length stops the node with its error,
 /// and leaves the file.
 #[test]
@@ -509,7 +548,11 @@ fn a_failed_empty_write_after_the_transport_stops_gives_the_transport_error() {
         error: env::net::Error::Io { code: 5 },
     };
     assert_eq!(node.join(), Err(Error::Transport(error)));
-    assert!(held(&mut sim, &host).is_some(), "the empty write failed");
+    assert_eq!(
+        held(&mut sim, &host),
+        Some(of(&host, PORT)),
+        "the empty write failed"
+    );
 }
 
 /// A node whose rings and `address` are made starts again after another writer

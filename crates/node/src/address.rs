@@ -56,7 +56,8 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
 /// place, awaits `serve`, and writes it empty. The first hold on a data directory
 /// makes the file, and a later one writes in its room, so it needs no free bytes.
 /// Writes over a file of another length after it removes it. When the write fails,
-/// does not poll `serve`. Call it under the lock of the data directory.
+/// does not poll `serve`. Does not drop `serve`: the caller drops it after it has read
+/// the error. Call it under the lock of the data directory.
 ///
 /// # Errors
 ///
@@ -69,11 +70,17 @@ pub(crate) async fn hold(
 ) -> Result<(), Error> {
     let file = open(files).await.map_err(Error::Directory)?;
     let written = sector::write(files, &file, &encode(address)).await;
-    if written.is_ok() {
+    let emptied = if written.is_ok() {
         serve.await;
-    }
-    // Also after a write that failed, which can leave the address.
-    let emptied = sector::clear::<LEN>(&file).await;
+        sector::clear::<LEN>(&file).await
+    } else {
+        // The write can leave the address, and a failed sync poisons `file`.
+        file.close().await;
+        match files.open(Path::new(FILE), env::files::Mode::Write).await {
+            Ok(file) => sector::clear::<LEN>(&file).await,
+            Err(error) => Err(error),
+        }
+    };
     written.and(emptied).map_err(Error::Directory)
 }
 
