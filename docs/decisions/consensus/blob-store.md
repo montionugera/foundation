@@ -35,8 +35,12 @@
   sentence of item 1 of the 17:23:56Z ruling, "the next put or get of the digest reads
   the file first". Every open makes the directory and syncs its parent, because an
   earlier open can have stopped between the two. A put removes a file of another length
-  at its name and writes the chunk. A create that gives `Full` syncs the directory one
-  time and opens again, because `Files::remove` counts the room of a removed file as
-  used until `sync_dir` on its directory ends. A second `Full` is the error of the put.
-  Decided by `laptop.architect` (2026-10-07T20:47:57Z):
-  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177.
+  at its name and writes the chunk. `Files::open` syncs the directory one time and
+  opens again when a create gives `Full`, since `Files::remove` counts the room of a
+  removed file as used until `sync_dir` on its directory ends. A `Full` from
+  `Files::open` is the error of the put. Decided by `laptop.architect`
+  (2026-10-07T20:47:57Z):
+  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177. The
+  retry moved from `blob` into `Files::open` (ENV SEAMS, #1622): `laptop.architect-2`,
+  2026-10-08T00:45:04Z
+  (https://github.com/synnaxlabs/foundation/issues/1622#issuecomment-6049807597).
