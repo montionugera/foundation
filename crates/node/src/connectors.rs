@@ -17,13 +17,10 @@ use crate::scope::Scope;
 /// its connector, and after each change the connector of that change, until a change
 /// removes it. After a run that gave `Config`, the next apply runs the connector again,
 /// also one that came before `run` returned. So no two runs of one name overlap, also
-/// across a removal and an addition. The first run of a connector that an apply adds,
-/// whose name has no loop, starts only once no first open of such a connector is
-/// pending on the node. So the first open of such an out connector resolves before the
-/// first run of such an in connector of its apply, or of a later one, starts. A change
-/// before that first run is still such a first open, counted from its apply. A later
-/// change, also an addition of a name that has a loop, opens in the loop of the name
-/// and does not wait.
+/// across a removal and an addition. The first run of a loop starts only once no open
+/// of a loop whose first run has not started is pending, counted from the apply that
+/// added or changed its connector. A change after the first run of a loop does not
+/// wait.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     opens: Rc<Opens>,
@@ -35,7 +32,7 @@ pub(crate) struct Runs {
     loops: BTreeMap<Name, Rc<RefCell<Loop>>>,
 }
 
-/// The count of the first opens of added connectors that have not resolved.
+/// The count of the first opens of loops that have not resolved.
 struct Opens {
     pending: Cell<usize>,
     /// Cancelled, and replaced, each time `pending` goes to 0.
@@ -82,12 +79,43 @@ struct Loop {
     applied: cancel::Token,
     /// The loop read `None` and ended.
     ended: bool,
-    /// The first run started: a call of `Opened::run` that no change cancelled.
-    started: bool,
-    /// The count of the pending first open, from the apply that added the connector,
-    /// or changed it before the first run, until that open resolves. Counted in the
-    /// apply, so before any loop polls.
-    share: Option<Pending>,
+    first: First,
+}
+
+/// Where a loop is before its first run.
+enum First {
+    /// Its first open is pending, and holds this count from the apply that added or
+    /// changed the connector, so before any loop polls.
+    Opening(#[expect(dead_code, reason = "held for its drop")] Pending),
+    /// Its first open resolved, or the connector is gone, and no run started.
+    Waiting,
+    /// A call of `Opened::run` that no change cancelled started.
+    Started,
+}
+
+impl Loop {
+    /// Sets the connector to `wanted`, and cancels the run of the old one. Before the
+    /// first run, a change counts the next open in `opens`, and a removal frees it.
+    fn change(&mut self, wanted: Option<Connector>, opens: &Rc<Opens>) {
+        self.connector = wanted;
+        self.changed.cancel();
+        self.changed = cancel::Token::new();
+        match (&self.connector, &self.first) {
+            (None, First::Opening(_)) => self.first = First::Waiting,
+            (Some(_), First::Waiting) => self.first = First::Opening(opens.begin()),
+            _ => {}
+        }
+    }
+
+    /// Frees the count of a first open that resolved with `changed` not cancelled.
+    /// Returns whether the first run must wait for the other first opens.
+    fn opened(&mut self, changed: &cancel::Token) -> bool {
+        if changed.cancelled() || matches!(self.first, First::Started) {
+            return false;
+        }
+        self.first = First::Waiting;
+        true
+    }
 }
 
 impl Runs {
@@ -109,9 +137,8 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. The first run of an
-    /// added connector whose name has no loop waits until no first open of such a
-    /// connector is pending.
+    /// its name returned. Each other connector keeps its run. The first run of a loop
+    /// waits until no open of a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
         let wanted: BTreeMap<&Name, &Connector> = definitions
             .iter()
@@ -131,14 +158,7 @@ impl Runs {
             state.applied = cancel::Token::new();
             let wanted = wanted.get(name).copied();
             if state.connector.as_ref() != wanted {
-                state.connector = wanted.cloned();
-                state.changed.cancel();
-                state.changed = cancel::Token::new();
-                if state.connector.is_none() {
-                    state.share = None;
-                } else if !state.started && state.share.is_none() {
-                    state.share = Some(self.opens.begin());
-                }
+                state.change(wanted.cloned(), &self.opens);
             }
             true
         });
@@ -151,8 +171,7 @@ impl Runs {
                 changed: cancel::Token::new(),
                 applied: cancel::Token::new(),
                 ended: false,
-                started: false,
-                share: Some(self.opens.begin()),
+                first: First::Opening(self.opens.begin()),
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
             let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
@@ -164,7 +183,7 @@ impl Runs {
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its
-/// first run starts once `opens` settled, with its own share dropped.
+/// first run starts once `opens` settled, with its own count freed.
 async fn run(
     supervisor: Supervisor,
     opens: Rc<Opens>,
@@ -184,11 +203,12 @@ async fn run(
         let config = connector.config().document();
         let opened = supervisor.open(kind, name.clone(), config, &changed);
         let opened = opened.await;
-        // A change before the open resolved keeps the share for the next open.
-        if !state.borrow().started && !changed.cancelled() {
-            drop(state.borrow_mut().share.take());
+        let first = state.borrow_mut().opened(&changed);
+        if first {
             changed.race(opens.settled()).await;
-            state.borrow_mut().started = !changed.cancelled();
+            if !changed.cancelled() {
+                state.borrow_mut().first = First::Started;
+            }
         }
         match opened.run().await {
             // The next change of the connector runs it again.
