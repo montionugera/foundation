@@ -30,3 +30,9 @@
   (https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108181340), text by
   `laptop.architect-2` (2026-10-11T10:52:02Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108256946).
+  The publish task (#728) is the one product caller of `Collector::collect`, with one
+  call for each status period. The period is 100 ms or more, and the rate of the data
+  does not change it, so `collect` runs at most 10 times each second and is not a hot
+  path. Lost: a benchmark of `collect`. Ruled by `laptop.architect-2`
+  (2026-10-11T11:43:20Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108659691).
