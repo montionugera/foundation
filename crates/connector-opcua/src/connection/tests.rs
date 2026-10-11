@@ -3217,7 +3217,7 @@ fn a_read_takes_the_receive_buffer_at_once() {
 
 /// Each purged stream of a peer that reads until its stream ends and never closes stays
 /// in the table for `LINGER`. The table must hold no more than the 100 secure channels
-/// of the minimal config and [`CLOSES`] closing streams.
+/// of the server of [`bound`] and [`CLOSES`] closing streams.
 #[test]
 fn streams_that_a_purge_closes_are_no_more_than_the_bound() {
     let network = Network::new();
