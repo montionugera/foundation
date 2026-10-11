@@ -1162,8 +1162,8 @@ pub enum Error {
     },
     /// A file call that locks the data directory, reads or records its shard count or
     /// the node's name or its budgets, or reads or writes the node's key or the first
-    /// admin's key, failed. Also [`env::files::Error::Exists`] when `create_key` finds a
-    /// file at `node.key`, with no file call that failed.
+    /// admin's key, failed. Also [`env::files::Error::Exists`] when `create_key` finds
+    /// a file at `node.key`, with no file call that failed.
     /// [`env::files::Error::Busy`] on `lock` is another node that runs on the data
     /// directory.
     Directory(env::files::Error),
