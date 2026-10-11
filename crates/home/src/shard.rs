@@ -2895,6 +2895,29 @@ mod tests {
         });
     }
 
+    /// A handoff that found no room is recorded at the next close of a writer on its
+    /// index.
+    #[test]
+    fn records_a_waiting_handoff_at_the_close_of_another_writer() {
+        run(245, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard
+                .open_writer(writer("subject-c", 1, &set))
+                .expect("synced");
+            let blocks = test.fill();
+            shard
+                .open_writer(writer("subject-b", 2, &set))
+                .expect("synced");
+            drop(blocks);
+            shard.close_writer(c);
+            shard.committed().await.expect("the commit ends");
+            let to_b = [&[2], "subject-b".as_bytes()].concat();
+            let handoffs = find(&test.ring().await, &to_b);
+            assert_eq!(handoffs.len(), 2, "the close of c records each index of b");
+        });
+    }
+
     /// A handoff that found no room waits, also when the end of a lease of its writer
     /// on another index records a handoff.
     #[test]
