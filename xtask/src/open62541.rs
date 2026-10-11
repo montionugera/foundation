@@ -1185,6 +1185,8 @@ fn key(instruction: &str) -> Option<String> {
 
 /// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
 /// it and the function symbol that labels it, or `None` when no function symbol does.
+/// The header of a section or a function comes as an empty line, so a symbol name in
+/// it reads as no relocation or instruction.
 fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
     let (mut section, mut function) = ("", None);
     disassembly.lines().map(move |line| {
@@ -1196,8 +1198,10 @@ fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)>
         {
             // A section with no symbol at its start shows as `<.text>`.
             function = Some(name.1).filter(|name| !name.starts_with('.'));
+        } else {
+            return (section, function, line);
         }
-        (section, function, line)
+        (section, function, "")
     })
 }
 
@@ -1409,6 +1413,43 @@ Disassembly of section .text:
         assert_eq!(
             Vec::from_iter(found.iter().map(|found| found.symbol.as_str())),
             ["UA_DateTime_now", "strtod"]
+        );
+    }
+
+    /// `.text` holds only its headers, with no blank line after them.
+    #[test]
+    fn references_reads_no_relocation_of_a_disassembled_section_again() {
+        let disassembly = "\
+Disassembly of section .text:
+0000000000000000 <f>:
+Disassembly of section .text.g:
+0000000000000000 <g>:
+   0:\tc3\tret
+";
+        let relocations = "\
+RELOCATION RECORDS FOR [.text]:
+0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004
+RELOCATION RECORDS FOR [.text.g]:
+0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, relocations, &BTreeSet::new())),
+            []
+        );
+    }
+
+    /// A quoted symbol of top-level `asm` can hold spaces.
+    #[test]
+    fn references_reads_no_relocation_in_a_header() {
+        let disassembly = "\
+Disassembly of section R_X86_64_PLT32 UA_DateTime_now+:
+
+0000000000000000 <f R_X86_64_PLT32 UA_DateTime_now+>:
+   0:\tc3                   \tret
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, "", &BTreeSet::new())),
+            []
         );
     }
 
