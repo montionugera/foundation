@@ -898,7 +898,12 @@ mod tests {
             .map(|seed| {
                 let mut unsynced = Disk::new(1 << 20);
                 assert!(unsynced.create_dir(1, Path::new("d")).is_ok());
-                unsynced.crash(Crash::Power, &mut Rng::from_seed(seed))
+                let mut rng = Rng::from_seed(seed);
+                let kept = unsynced.crash(Crash::Power, &mut rng);
+                let mut once = Rng::from_seed(seed);
+                assert_eq!(kept, once.below(2));
+                assert_eq!(rng.next_u64(), once.next_u64());
+                kept
             })
             .collect();
         assert_eq!(kept, BTreeSet::from([0, 1]));
