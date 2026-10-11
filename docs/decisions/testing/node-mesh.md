@@ -107,8 +107,9 @@
   the keys. Else it makes the file with `sector::publish` (amended, #2305, by
   `laptop.architect-2`, 2026-10-10 22:20 UTC:
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702). This
-  supersedes the `Length` error and the file with no bytes or with 100 zero bytes as no
-  key, of https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986.
+  supersedes the `Length` error and the file with no bytes or with 68 zero bytes (100
+  since `foundation/key/2`) as no key, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986.
   There is no new `Error` variant, as the advice of `Error::Key` is wrong for this
   case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
   runs the simulation to its end: a node that runs never ends, and a task of a test runs

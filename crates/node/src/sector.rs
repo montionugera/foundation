@@ -99,10 +99,9 @@ pub(crate) fn check<const N: usize>(
     tag: &[u8],
     encode: impl Fn(&[u8; N]) -> [u8; N],
 ) {
-    let valid = encode(bytes) == *bytes;
     match written(bytes, tag) {
-        Some(_) => assert!(valid, "decodes {bytes:02x?}"),
-        None => assert!(!valid, "refuses {bytes:02x?}"),
+        Some(given) => assert_eq!(encode(&given), *bytes, "decodes {bytes:02x?}"),
+        None => assert_ne!(encode(bytes), *bytes, "refuses {bytes:02x?}"),
     }
 }
 
