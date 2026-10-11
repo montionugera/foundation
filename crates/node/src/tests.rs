@@ -2009,6 +2009,34 @@ mod lock {
         assert_eq!(seen, [true; 2]);
     }
 
+    /// A node that serves stops, and a second node at its port starts at a step of
+    /// that stop: it finds the lock held or serves, and never fails on the port.
+    #[test]
+    fn a_start_at_each_step_of_the_stop_of_a_node_at_its_port_never_fails_on_the_port()
+    {
+        let mut seen = [false; 2];
+        for step in 0..400 {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let first = start_on(&host, 0);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+            first.stop();
+            let delay = Span::from_nanos(step * 5_000);
+            assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+            let second = start_on(&host, 0);
+            let probe = probe(&second);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+            second.stop();
+            assert_eq!(sim.run(), Ok(()), "at {step}");
+            assert_eq!(first.join(), Ok(()), "at {step}");
+            let served = fate(&probe) == Fate::Ran;
+            let expected = if served { Ok(()) } else { Err(busy()) };
+            assert_eq!(second.join(), expected, "at {step}");
+            seen[usize::from(served)] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
     /// Two nodes that start at once on a new data directory: one claims it, and the
     /// other stops before it reads a name or opens a ring.
     #[test]
