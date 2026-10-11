@@ -346,6 +346,7 @@ fn remove(path: &Path) -> std::io::Result<()> {
 }
 
 /// Gives the owner each permission on the directory `path` and each directory in it.
+/// Gives `NotFound` only when `path` is gone.
 #[cfg(unix)]
 fn writable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -354,7 +355,11 @@ fn writable(path: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            writable(&entry.path())?;
+            match writable(&entry.path()) {
+                // Another sweep removed it.
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                walked => walked?,
+            }
         }
     }
     Ok(())
