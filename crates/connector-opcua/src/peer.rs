@@ -43,8 +43,9 @@ const NONE: &[u8] = b"http://opcfoundation.org/UA/SecurityPolicy#None";
 ///
 /// # Panics
 ///
-/// If the connect fails, or if the server answers with other than an `ACK`, an
-/// `OpenSecureChannelResponse`, and a `CreateSessionResponse` with `Good`.
+/// If the connect, a write, a read, or the close fails, if the server closes the
+/// stream, or if it answers with other than an `ACK`, an `OpenSecureChannelResponse`,
+/// and a `CreateSessionResponse` with `Good` whose ids are GUIDs of namespace 1.
 pub(crate) async fn session(net: &Net, remote: SocketAddr) -> [[u8; 16]; 2] {
     let config = tcp::Config {
         remote,
