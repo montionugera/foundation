@@ -244,8 +244,8 @@ impl Queue {
 
     /// Runs `call` after every call that reached the queue before it. The future first
     /// waits for room in the queue; after that, `call` runs also when the future drops.
-    /// This order makes a write open, a remove, a rename, a list, and a `free` wait for
-    /// each call that a drop left to run, as `env::files` requires.
+    /// This order gives each wait for a call that a drop left to run that `env::files`
+    /// requires.
     ///
     /// # Panics
     ///
