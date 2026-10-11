@@ -58,13 +58,16 @@ impl Paths {
         self.0.read(path, most)
     }
 
-    /// Writes `bytes` as the file at `path`, whole or not at all, in place of a file
-    /// that is there.
+    /// Writes `bytes` as the file at `path`, and replaces a file that is there. The
+    /// write is whole or not at all when a file or nothing is at `path`. A symbolic
+    /// link, a device, or a pipe at `path` takes the bytes in place, and a crash or a
+    /// failed write can leave a part of them.
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when the directory of `path`, or the directory that it
-    /// names, is not there, else [`Error::Io`].
+    /// [`Error::NotFound`] when the directory of `path`, the directory that it names,
+    /// or the file that a symbolic link at `path` names is not there, else
+    /// [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
@@ -94,7 +97,8 @@ pub enum Found {
 /// Why a call of [`Paths`] failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// Nothing is at the path, or the directory of a file to write is not there.
+    /// Nothing is at the path, or the directory or the link target that a write needs
+    /// is not there.
     NotFound,
     /// The OS refused the call with `code`.
     Io {

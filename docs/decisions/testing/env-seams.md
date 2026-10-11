@@ -476,4 +476,12 @@
   at the path takes the bytes in place, with no rename. Lost: a second bound for the
   count of entries; a rename over each thing at the path, which replaces `/dev/null`
   with a file for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
-  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058).
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058). A write
+  is whole or not at all only when a file or nothing is at the path. In place, a crash
+  or a failed write can leave a part of the bytes, and a write on a symbolic link to
+  nothing gives `NotFound` and makes no file. Lost: `create(true)` in the open in
+  place, which makes a file at a path that the user did not name (`laptop.architect-2`,
+  2026-10-11T15:51:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110806235; the
+  docs, 2026-10-11T16:24:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111115118).
