@@ -274,8 +274,8 @@ impl Manager {
     ///
     /// # Panics
     ///
-    /// If a channel is not closed after the drive of [`Server::close`], as the delete of
-    /// its client would then wait for a close that nothing drives.
+    /// If a channel is not closed after the drive of [`Server::close`], as the delete
+    /// of its client would then wait for a close that nothing drives.
     async fn close(mut self) {
         for client in &self.clients {
             // SAFETY: the client lives.
