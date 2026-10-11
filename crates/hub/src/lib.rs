@@ -601,7 +601,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Wake, Waker};
 
+    use spec::channel::{Channel, Kind};
+    use spec::definition::Definition;
     use types::channel::Key;
+    use types::name::{Name, Selector};
+    use types::time::Span;
+
+    use crate::{Hub, reader};
 
     struct Wakes(AtomicUsize);
 
@@ -611,8 +617,20 @@ mod tests {
         }
     }
 
+    /// Counts the wakes of the gate task from now. The gate task polls only when
+    /// woken, so it does not take its waker back while the count stays 0.
+    fn counted(hub: &Hub) -> Arc<Wakes> {
+        let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+        let counter = Waker::from(Arc::clone(&wakes));
+        hub.0
+            .borrow_mut()
+            .gate
+            .polled(&Context::from_waker(&counter));
+        wakes
+    }
+
     #[test]
-    fn wakes_the_gate_task_only_at_a_new_carry() {
+    fn wakes_the_gate_task_at_a_reader_open_only_when_its_index_is_new() {
         let mut sim = sim::Sim::new(sim::Config {
             seed: 194,
             ..sim::Config::default()
@@ -627,20 +645,29 @@ mod tests {
                 tasks,
             };
             let (hub, _) = crate::testing::open(env).await;
-            let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
-            let mut state = hub.0.borrow_mut();
-            state
-                .gate
-                .polled(&Context::from_waker(&Waker::from(Arc::clone(&wakes))));
-            let index = Key::from_u128(7);
-            state.carry(index);
+            let time: Name = "time".parse().expect("a valid name");
+            let index = Definition::Channel(Channel {
+                key: Key::from_u128(1),
+                kind: Kind::Index {
+                    error: None,
+                    control: None,
+                },
+            });
+            hub.set_definitions([(&time, &index)]);
+            let config = || reader::Config {
+                select: Selector::new(["time"]).expect("a selector"),
+                mode: reader::Mode::Latest,
+                subject: "reader".parse().expect("a valid name"),
+                name: None,
+                hold: Span::ZERO,
+            };
+            let wakes = counted(&hub);
+            let first = hub.reader(config()).await.expect("the reader opens");
             assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
-            state.carry(index);
-            assert_eq!(
-                wakes.0.load(Ordering::Relaxed),
-                1,
-                "a carry again is no wake"
-            );
+            let wakes = counted(&hub);
+            let second = hub.reader(config()).await.expect("the reader opens");
+            assert_eq!(wakes.0.load(Ordering::Relaxed), 0, "the index is carried");
+            drop((first, second));
         })
         .expect("the run ends");
     }

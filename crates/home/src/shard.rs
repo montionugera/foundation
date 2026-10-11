@@ -860,7 +860,6 @@ impl Shard {
     fn record_waiting(&mut self, places: impl Iterator<Item = usize>, mesh: Stamp) {
         match record(&self.buffer, &mut self.indexes, places, mesh) {
             Ok(_) => {}
-            // The next write returns it.
             Err(_failed) => {}
         }
     }
