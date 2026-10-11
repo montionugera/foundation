@@ -201,7 +201,19 @@ impl Test {
         self.pause.pause();
         writes();
         self.clock.sleep(SETTLE).await;
-        self.pause.race().await
+        let polls = self.pause.polls.get();
+        self.pause.resume();
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await;
+        self.pause.polls.get() == polls
     }
 
     /// Mesh time now: the midpoint of the clock's interval.
@@ -284,24 +296,6 @@ impl Pause {
     fn resume(&self) {
         let held = self.held.borrow_mut().take().unwrap_or_default();
         held.into_iter().for_each(Waker::wake);
-    }
-
-    /// Resumes, then lets the run pick whether main runs again before or after the
-    /// tasks it wakes. Gives whether main ran first.
-    async fn race(&self) -> bool {
-        let polls = self.polls.get();
-        self.resume();
-        let mut yielded = false;
-        std::future::poll_fn(|cx| {
-            if yielded {
-                return Poll::Ready(());
-            }
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await;
-        self.polls.get() == polls
     }
 
     /// Polls `task` and counts the poll, or, while paused, holds the waker of `cx`.
