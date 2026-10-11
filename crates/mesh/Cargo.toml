@@ -29,5 +29,9 @@ sim = { path = "../sim" }
 name = "memory"
 harness = false
 
+[[test]]
+name = "alloc"
+harness = false
+
 [lints]
 workspace = true
