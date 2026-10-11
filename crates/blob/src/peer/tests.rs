@@ -385,6 +385,65 @@ fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
 }
 
 #[test]
+fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            node.fail_file(&path(digest), Operation::Sync);
+            let io = files::Error::Io {
+                path: path(digest),
+                operation: Operation::Sync,
+                code: 5,
+            };
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Store(crate::Error::Files(io))));
+            assert!(store.get(digest).await.unwrap().is_none());
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
+#[test]
+fn a_reset_in_a_body_after_a_get_ends_the_stream_and_stores_nothing() {
+    let absent = Digest::of(b"absent");
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Stream(reset(5))));
+            assert!(store.get(digest).await.unwrap().is_none());
+            let listed = node.files().list(Path::new(DIR)).await.unwrap();
+            assert_eq!(listed, Vec::<PathBuf>::new());
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[absent]).await;
+            assert_eq!(stream.reply().await, Reply::Absent { digest: absent });
+            stream.put(digest, 3000).await;
+            stream.send(&bytes[..1000]).await;
+            let Stream {
+                sender,
+                mut receiver,
+                ..
+            } = stream;
+            sender.reset(Code(5));
+            assert_eq!(receiver.recv().await.err(), Some(reset(0)));
+        },
+    );
+}
+
+#[test]
 fn a_put_of_the_empty_chunk_has_no_body() {
     let (digest, _) = chunk(0, 0);
     run(
@@ -540,6 +599,35 @@ fn a_put_over_the_largest_block_stops_with_too_large() {
             let mut stream = peer.open().await;
             stream.put(digest, len).await;
             assert_eq!(stream.reset().await, reset(TOO_LARGE));
+        },
+    );
+}
+
+#[test]
+fn a_put_over_the_largest_block_stops_the_body_with_too_large() {
+    let digest = Digest::of(b"a large chunk");
+    let max = create_pool().largest();
+    let len = u32::try_from(max + 1).unwrap();
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            let large = wire::blob::Error::TooLarge { len, max };
+            assert_eq!(serve(&store, incoming).await, Err(Error::Wire(large)));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, len).await;
+            let part = [7; 1024];
+            let stopped = loop {
+                let block = stream.pool.copy(&part).expect("the pool has room");
+                if let Err(error) = stream.sender.send(block).await {
+                    break error;
+                }
+            };
+            let code = Code(TOO_LARGE);
+            assert_eq!(stopped, transport::Error::Stopped { code });
         },
     );
 }
