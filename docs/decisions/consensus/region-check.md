@@ -25,8 +25,8 @@
   It also gives the chunks of the tree that its root check builds, and no other
   chunk. So `mesh` keeps them, and builds no tree for a spec that it reads
   (`laptop.architect-2`, 2026-10-08T16:16:05Z,
-  https://github.com/synnaxlabs/foundation/pull/1891#issuecomment-6064178995). "For a
-  spec that it reads" narrows that ruling, as `mesh` builds a tree at open and at apply
+  https://github.com/synnaxlabs/foundation/pull/1891#issuecomment-6064178995). `mesh`
+  still builds a tree at open and at apply: the ruling names only the read in `used.rs`
   (`laptop.architect`, 2026-10-11T06:04:15Z,
   https://github.com/synnaxlabs/foundation/pull/2359#issuecomment-6106076707).
   `plan` (#1082) maps a key to its region with the function of `spec::region`, and
