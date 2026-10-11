@@ -964,10 +964,7 @@ impl Serve {
         };
         // After each buffer has opened, so a budget that gives a shard too little is
         // not kept.
-        let loaded = async {
-            budget::keep(&files, self.budget).await?;
-            identity::load(&files, &self.time, &self.endpoint.entropy).await
-        };
+        let loaded = load(&files, self.budget, &self.time, &self.endpoint.entropy);
         let Ok(identity) = loaded.await.map_err(&fail) else {
             return;
         };
@@ -1002,20 +999,22 @@ impl Serve {
                 entropy: entropy.clone(),
                 region,
             });
-            let kinds = Arc::new(kinds());
-            let ops = mesh
-                .as_ref()
-                .map(|mesh| operations(mesh, &time, &entropy, Arc::clone(&kinds)));
-            let supervisor = connector::supervisor::Config {
-                kinds,
-                clock: clock.clone(),
-                entropy,
-                net,
-                tasks: tasks.clone(),
-                hub: hub.clone(),
-            };
+            let parts = mesh.as_ref().map(|mesh| {
+                let kinds = Arc::new(kinds());
+                let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
+                let config = connector::supervisor::Config {
+                    kinds,
+                    clock: clock.clone(),
+                    entropy,
+                    net,
+                    tasks: tasks.clone(),
+                    hub: hub.clone(),
+                };
+                (ops, (mesh, runs(mesh, key, config)))
+            });
+            let (ops, runs) = parts.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let group = follow(mesh.as_ref(), key, supervisor).await;
+            let group = follow(runs, hub.clone()).await;
             let port =
                 route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
             let stop = until(guard, port, group, fail);
@@ -1033,6 +1032,18 @@ impl Serve {
         }
         freed.await;
     }
+}
+
+/// Keeps the budgets in `files` ([`budget::keep`]), then loads the node's identity
+/// from them ([`identity::load`]).
+async fn load(
+    files: &env::files::Files,
+    budget: Budget,
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+) -> Result<identity::Identity, Error> {
+    budget::keep(files, budget).await?;
+    identity::load(files, time, entropy).await
 }
 
 /// A new channel key: a UUIDv7 at mesh time read through `time`, with random bits
@@ -1074,34 +1085,37 @@ fn operations(
     Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
 }
 
+/// The runs of the connectors that the spec in use places on the node `key` of
+/// `mesh`, on a supervisor made from `config`.
+fn runs(
+    mesh: &mesh::Mesh,
+    key: types::node::Key,
+    config: connector::supervisor::Config,
+) -> connectors::Runs {
+    let member = mesh.member(key);
+    let member = member.expect("invariant: a mesh opens only on a member");
+    connectors::Runs::new(config, member.card.card().name.clone())
+}
+
 /// The connector kinds of this binary.
 fn kinds() -> connector::kind::Table {
     connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
-/// Makes the runs of the connectors that the spec in use places on the node `key` of
-/// `mesh`, on a supervisor made from `config`. Gives the supervisor's hub what the
-/// spec that `mesh` uses defines and makes the runs match it, then returns a future
-/// that does so for each later spec in use and resolves with the stop of the group,
-/// or never resolves when the node has no mesh.
+/// Gives `hub` what the spec that `mesh` uses defines and makes `runs` match it, then
+/// returns a future that does so for each later spec in use and resolves with the
+/// stop of the group, or never resolves when the node has no mesh.
 /// The hub knows each spec before the runs do, so a run finds its status channels.
 /// The future holds the runs.
 async fn follow(
-    mesh: Option<&mesh::Mesh>,
-    key: types::node::Key,
-    config: connector::supervisor::Config,
+    mesh: Option<(&mesh::Mesh, connectors::Runs)>,
+    hub: hub::Hub,
 ) -> impl Future<Output = mesh::Stopped> + use<> {
-    let hub = config.hub.clone();
     let define = move |spec: mesh::used::Spec, runs: &mut connectors::Runs| {
         hub.set_definitions(&*spec.definitions);
         runs.apply(&spec.definitions);
     };
-    let mut followed = mesh.map(|mesh| {
-        let member = mesh.member(key);
-        let member = member.expect("invariant: a mesh opens only on a member");
-        let runs = connectors::Runs::new(config, member.card.card().name.clone());
-        (mesh.watch_spec(), runs)
-    });
+    let mut followed = mesh.map(|(mesh, runs)| (mesh.watch_spec(), runs));
     let first = match &mut followed {
         Some((watch, runs)) => watch.next().await.map(|spec| define(spec, runs)),
         None => Ok(()),
