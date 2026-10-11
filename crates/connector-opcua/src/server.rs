@@ -2,7 +2,7 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::ffi::CString;
+use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::task::Poll;
 
@@ -32,13 +32,12 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If `manager` has no listener that a listen open did not take, `host` holds a
-    /// NUL, or open62541 refuses the server or its start.
-    pub(crate) unsafe fn start(manager: &Manager, host: &str, sessions: u16) -> Self {
+    /// If `manager` has no listener that a listen open did not take, or open62541
+    /// refuses the server or its start.
+    pub(crate) unsafe fn start(manager: &Manager, host: &CStr, sessions: u16) -> Self {
         let port = manager
             .port()
             .expect("a server starts on a manager with a listener that no server took");
-        let host = CString::new(host).expect("no NUL");
         let events = manager.events().raw();
         // SAFETY: the loop outlives the server, as the caller ensures.
         let raw = unsafe {
@@ -49,6 +48,25 @@ impl Server {
         let status = Status(unsafe { ffi::test::UA_Server_run_startup(raw.as_ptr()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the server start");
         Self { raw, events }
+    }
+
+    /// Adds the variable `node` with the Double `value`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    #[cfg(test)]
+    pub(crate) fn add_double(&self, node: crate::client::Node, value: f64) {
+        // SAFETY: the server lives.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_double(
+                self.raw(),
+                node.namespace,
+                node.key,
+                value,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
     /// Gives the server, for a call that reads or changes it.
