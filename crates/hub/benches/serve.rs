@@ -82,7 +82,7 @@ const SAMPLES: usize = 256;
 const AREA: u64 = 1 << 28;
 /// A pool of 4 times the budget of `home::testing::shard`. A frame keeps its block
 /// until the group commit after it ends, and in some orders of the tasks the frames
-/// of `two sets 1472` filled 8 MiB before one did, so that a write got `Lost`.
+/// of `two sets 1472` need more than 8 MiB before one ends.
 const BUDGET: u64 = 1 << 25;
 /// How long the bench waits between two checks of what the peer read.
 const STEP: Span = Span::MILLISECOND;
