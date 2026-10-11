@@ -7160,7 +7160,7 @@ mod name {
     }
 
     /// As [`a_read_during_a_start_gives_no_name_or_the_name`], with a start that founds
-    /// a region: a read that sees the founding also sees `node.key`.
+    /// a region.
     #[test]
     fn a_read_during_a_start_that_founds_a_region_gives_no_name_or_the_name() {
         reads_during_a_start(&Region::Stored, 0..16);
