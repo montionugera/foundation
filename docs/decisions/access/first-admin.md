@@ -71,8 +71,12 @@
   node can read the key" and "the first `foundation start`" hold. `os` makes `admin.key`
   at mode 0600 and does not change the mode of one that is there, so a wider mode or an
   ACL of the data directory can open it to another user (Who attacks in
-  `docs/security.md`). The start that founds the root region reads a valid `admin.key`
-  in the data directory and founds with it, also one that a start left when it failed
-  after `admin.key` was durable and before its founding was durable; else it makes one
-  (NODE MESH). Approved by `laptop.architect` (2026-10-11T01:18:38Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104126249).
+  `docs/security.md`). The start that founds the root region founds with a valid
+  `admin.key` in the data directory; when no `admin.key` is there, it makes one, and an
+  `admin.key` that is not valid stops the node (`Error::Admin`, NODE MESH). The first
+  use finds a valid key there only after a start that failed after `admin.key` was
+  durable and before its founding was durable. A key that another writer put there
+  before that start is an act of the operator on the data directory, not a step of the
+  first use. Proposed by `laptop.architect-2` in
+  https://github.com/synnaxlabs/foundation/pull/2296; approval of `laptop.architect`
+  owed.
