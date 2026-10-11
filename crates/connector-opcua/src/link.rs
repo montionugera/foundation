@@ -711,8 +711,12 @@ fn named_in(path: &std::path::Path, named: impl Fn(&str) -> bool) -> Vec<String>
 fn the_scan_names_only_the_files_outside_tests() {
     let client = |name: &str| name == "shim_client_new";
     let named = named_outside_tests(&root(), client);
-    let found = named_in(&src().join("ffi.rs"), client);
-    assert_eq!(found.len(), 1, "{found:?}");
+    let found = [
+        named_in(&src().join("client.rs"), client),
+        named_in(&src().join("ffi.rs"), client),
+    ]
+    .concat();
+    assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(named, found);
 }
 
