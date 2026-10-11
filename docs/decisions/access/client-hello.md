@@ -139,10 +139,10 @@
   two commits overlap on both). Each is of three passes of each commit on
   c7i.metal-24xl (Xeon Platinum 8488C, CPU 2)
   (https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6106581972).
-  Against its parent d7a67a52e, at 7000b19ba, three passes of each commit on one
-  c7i.metal-24xl for each bench (Xeon Platinum 8488C, CPU 2), with the flags of BENCH
-  BASELINES. Each result is the median of the head passes against that of the base
-  passes. In `wire` `hub`
+  The split, at 7000b19ba, then ran against its parent d7a67a52e, with the flags of
+  BENCH BASELINES. Each bench got three passes of each commit on one c7i.metal-24xl
+  (Xeon Platinum 8488C, CPU 2). Each result is the median of the head passes against
+  that of the base passes. In `wire` `hub`
   (https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108713214),
   `decode_ends/3` gave -0.55 ns (4.257 to 4.292 against 4.41 to 4.87 ns, passes apart).
   The passes of each other line overlap: `decode_a_body/1` -0.53 ns, `/8` -0.02 ns,
@@ -156,7 +156,10 @@
   apart), and `timer` gave +1 (15 against 14 in each pass, passes apart). The passes of
   each other line overlap: `narrow 1472` -42, `wide 1472` +2, `complete 1472` -8,
   `complete half 1472` -6, `one set 1472` -20, `two sets 1472` -18, `wide 64k` -11. Each
-  line keeps its allocations.
+  line keeps its allocations. `timer` times an empty closure, so no line that times
+  product code is slower with its passes apart. `laptop.architect` accepted each line
+  that is slower by the median (2026-10-11T12:22:17Z,
+  https://github.com/synnaxlabs/foundation/pull/2392#issuecomment-6108970867).
   Decided by `laptop.architect` (2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794;
   surface approved 2026-10-11T10:16:56Z,
