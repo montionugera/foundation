@@ -37,6 +37,11 @@ pub(crate) fn key(id: u8) -> node::Key {
     node::Key::from_u128(u128::from(id))
 }
 
+/// The node key of `bits`, for a key that a property test draws.
+pub(crate) fn node(bits: u128) -> node::Key {
+    node::Key::from_u128(bits)
+}
+
 pub(crate) fn private(id: u8) -> PrivateKey {
     PrivateKey([id; 32])
 }

@@ -835,13 +835,12 @@ mod tests {
     use proptest::prelude::*;
     use raft::{Change, Data, Grant, Proof, Signature, Voters};
     use sim::{Crash, Sim};
-    use types::node;
     use types::time::Span;
 
     use super::*;
     use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
-    use crate::common::create_pool;
+    use crate::common::{create_pool, node};
 
     const DIR: &str = "mesh";
 
@@ -886,14 +885,10 @@ mod tests {
         file.sync().await.unwrap();
     }
 
-    fn key(id: u128) -> node::Key {
-        node::Key::from_u128(id)
-    }
-
     fn hard(term: u64, vote: Option<u128>) -> Hard {
         Hard {
             term: Term(term),
-            vote: vote.map(key),
+            vote: vote.map(node),
             leader: None,
             proof: None,
         }
@@ -903,11 +898,11 @@ mod tests {
     fn proof(grant: Grant, candidate: u128, voters: &[u128]) -> Proof {
         let signed = |&voter: &u128| {
             let signature = Signature([voter.to_le_bytes()[0]; 64]);
-            (key(voter), Some(signature))
+            (node(voter), Some(signature))
         };
         Proof {
             grant,
-            candidate: key(candidate),
+            candidate: node(candidate),
             voters: voters.iter().map(signed).collect(),
         }
     }
@@ -932,15 +927,15 @@ mod tests {
             voters,
             votes: Proof {
                 grant: Grant::Vote,
-                candidate: key(1),
-                voters: [(key(1), Some(Signature([1; 64])))].into(),
+                candidate: node(1),
+                voters: [(node(1), Some(Signature([1; 64])))].into(),
             },
             signature: Some(Signature([signature; 64])),
         })
     }
 
     fn voters(incoming: &[u128], outgoing: &[u128]) -> Data {
-        let set = |ids: &[u128]| ids.iter().copied().map(key).collect();
+        let set = |ids: &[u128]| ids.iter().copied().map(node).collect();
         let voters = Voters {
             incoming: set(incoming),
             outgoing: set(outgoing),
@@ -2040,7 +2035,7 @@ mod tests {
             sim.run_on(&node, move |node, _| async move {
                 drop(open(&node).await.unwrap());
                 let hard = Hard {
-                    leader: Some(key(2)),
+                    leader: Some(crate::common::node(2)),
                     proof: Some(proof(Grant::Vote, 2, &[2, 3])),
                     ..hard(5, Some(2))
                 };
@@ -2061,7 +2056,7 @@ mod tests {
     #[test]
     fn a_hard_record_has_one_byte_form() {
         let hard = Hard {
-            leader: Some(key(2)),
+            leader: Some(node(2)),
             proof: Some(proof(Grant::Vote, 2, &[2, 3])),
             ..hard(5, Some(2))
         };
@@ -2082,7 +2077,7 @@ mod tests {
     #[should_panic(expected = "invariant: a claim is signed before it is encoded")]
     fn encode_panics_on_an_unsigned_proof_entry() {
         let mut proof = proof(Grant::Vote, 2, &[2, 3]);
-        proof.voters.insert(key(2), None);
+        proof.voters.insert(node(2), None);
         let hard = Hard {
             proof: Some(proof),
             ..hard(5, Some(2))
@@ -3422,7 +3417,7 @@ mod tests {
     }
 
     fn data() -> impl Strategy<Value = Data> {
-        let keys = || prop::collection::btree_set(any::<u128>().prop_map(key), 0..4);
+        let keys = || prop::collection::btree_set(any::<u128>().prop_map(node), 0..4);
         prop_oneof![
             Just(Data::Empty),
             prop::collection::vec(any::<u8>(), 0..64).prop_map(Data::Bytes),
@@ -3452,10 +3447,10 @@ mod tests {
         prop::option::of((grant, any::<u128>(), voters)).prop_map(|proof| {
             proof.map(|(grant, candidate, voters)| Proof {
                 grant,
-                candidate: key(candidate),
+                candidate: node(candidate),
                 voters: voters
                     .into_iter()
-                    .map(|(voter, signature)| (key(voter), Some(signature)))
+                    .map(|(voter, signature)| (node(voter), Some(signature)))
                     .collect(),
             })
         })
@@ -3466,7 +3461,7 @@ mod tests {
         prop::option::of((any::<u64>(), keys.clone(), keys, proofs())).prop_map(
             |hard| {
                 hard.map(|(term, vote, leader, proof)| Hard {
-                    leader: leader.map(key),
+                    leader: leader.map(node),
                     proof,
                     ..self::hard(term, vote)
                 })

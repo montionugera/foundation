@@ -1280,6 +1280,7 @@ mod tests {
     use crate::status::Many;
     use crate::ticket::{self, Options};
     use crate::used::{Behind, Spec};
+    use send::at;
 
     const IDS: [u8; 3] = [1, 2, 3];
     const PORT: u16 = 7000;
@@ -3735,10 +3736,6 @@ mod tests {
                     voters(TERM, &[2, 4], &[2, 3]),
                     voters(TERM, &[2, 4], &[]),
                 ]);
-                let at = |index| Position {
-                    term: common::TERM,
-                    index,
-                };
                 let entries = std::iter::zip(2.., data)
                     .map(|(index, data)| Entry {
                         at: at(index),
@@ -4299,10 +4296,6 @@ mod tests {
                     unreachable!()
                 };
                 forged.card.card.public_key = public(5);
-                let at = |index| Position {
-                    term: common::TERM,
-                    index,
-                };
                 let next = Body::Append {
                     prev: at(2),
                     entries: vec![Entry {
@@ -4340,10 +4333,6 @@ mod tests {
                 let mesh = open(&node, &tasks, 1, &IDS, &[2, 3]).await.unwrap();
                 let homes = append(common::TERM, changes(&[home_to(1), home_to(1)]));
                 assert_eq!(mesh.receive(public(2), proven(2, 1, homes)), Ok(()));
-                let at = |index| Position {
-                    term: common::TERM,
-                    index,
-                };
                 let mut data = changes(&[join_change(4), home_to(1)]).into_iter();
                 let entries = [3, 4].map(|index| Entry {
                     at: at(index),
@@ -4370,10 +4359,6 @@ mod tests {
                     append(common::TERM, changes(&[home_to(1), join_change(4)]));
                 assert_eq!(mesh.receive(public(2), proven(2, 1, joined)), Ok(()));
                 mesh.group.borrow_mut().unapplied.clear();
-                let at = |index| Position {
-                    term: common::TERM,
-                    index,
-                };
                 let next = Body::Append {
                     prev: at(2),
                     entries: vec![Entry {
