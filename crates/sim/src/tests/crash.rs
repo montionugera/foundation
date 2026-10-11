@@ -804,8 +804,19 @@ fn digest_after_a_call(sim: &mut Sim, node: &node::Node) -> u64 {
     sim.digest()
 }
 
+/// The delay of a file call on `node`. It draws from the files stream, so it shows
+/// how many draws came before it. Unlike the digest, it holds no result of a call.
+fn delay_of_a_call(sim: &mut Sim, node: &node::Node) -> Span {
+    sim.run_on(node, |node, _| async move {
+        let start = node.clock().now();
+        node.files().free().await.unwrap();
+        node.clock().now() - start
+    })
+    .unwrap()
+}
+
 /// Whether a crash by `crash` in a create open of `len` bytes of `path`, after
-/// `before`, draws a state: the digest after a later call differs from that after a
+/// `before`, draws a state: the delay of a later call differs from that after a
 /// crash in a write open of `path`.
 fn draws<F, B>(seed: u64, crash: Crash, path: &'static str, len: u64, before: B) -> bool
 where
@@ -819,7 +830,7 @@ where
             until_crash(&node).await;
             hang(node.files().open(Path::new(path), mode)).await;
         });
-        digest_after_a_call(&mut sim, &node)
+        delay_of_a_call(&mut sim, &node)
     };
     digest(Mode::Create { len }) != digest(Mode::Write)
 }
@@ -1732,9 +1743,7 @@ fn a_power_cut_with_each_change_durable_draws_nothing() {
 }
 
 /// The delay of a file call after a crash by `crash` with an open of `a` by `mode`
-/// in flight, over a log of one change. The delay draws from the files stream, so it
-/// shows how many draws the crash made. The digest holds the kind of crash, so runs
-/// with different crashes compare by delay.
+/// in flight, over a log of one change.
 fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
     let (mut sim, node) = disk(seed);
     crash_after(&mut sim, &node, crash, move |node| async move {
@@ -1745,12 +1754,7 @@ fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
         until_crash(&node).await;
         hang(files.open(Path::new("a"), mode)).await;
     });
-    sim.run_on(&node, |node, _| async move {
-        let start = node.clock().now();
-        node.files().free().await.unwrap();
-        node.clock().now() - start
-    })
-    .unwrap()
+    delay_of_a_call(&mut sim, &node)
 }
 
 // A `Process` crash in a create that makes a file draws once, so it is the reference
