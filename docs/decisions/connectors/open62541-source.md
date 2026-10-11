@@ -434,7 +434,12 @@
   thread an `Rng` whose next value differs: after the same start value, the generator
   gives the same numbers again. Approved by `laptop.architect-2` at `c1285785f`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520,
-  2026-10-11 17:47 UTC).
+  2026-10-11 17:47 UTC). Lost: a `Loop::new` that mixes the next value with a draw from
+  the generator, so that equal values give different numbers. A run then depends on what
+  its thread drew before, so the same value does not give the same run, and the first
+  loop of a thread has no start value to draw from. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111912275,
+  2026-10-11 17:51 UTC).
   The logger of the loop writes each message of level warning and up to fd 2, and
   drops the lower levels: it formats the line into a stack buffer of 512 bytes with
   `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
