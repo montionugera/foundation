@@ -45,9 +45,9 @@
   region (#1744) or joins one by ticket (#1157). Once a founding with the card of the
   node is stored, that card holds the name too; a founding holds no card of a node that
   joined. Then the stored name is the one in the file `name`, else the one in the card,
-  so a start with a file `name` reads no founding: a start with another name gives
-  `Error::Renamed` and writes no file, and a start whose file `name` is gone writes it
-  again from the card. Decided by `laptop.architect-2`, #2355
+  so a start with a file `name` reads no founding in the claim: a start with another
+  name gives `Error::Renamed` and writes no file, and a start whose file `name` is gone
+  writes it again from the card. Decided by `laptop.architect-2`, #2355
   (2026-10-11T07:44:40Z,
   https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760; the file
   first, 2026-10-11T10:19:18Z,
@@ -124,7 +124,15 @@
   `Error::NoCard`. Decided by `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462; rule 1,
   2026-10-11T21:02:22Z,
-  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491).
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491). The
+  three sentences on a start with a file `name`: given by `laptop.architect`
+  (2026-10-11T22:58:15Z,
+  https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114847005), approved
+  by `laptop.architect-2` at `5ac58719e` (2026-10-11T23:00:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114863408). They
+  supersede "A start with a file `name` reads no founding, as before, so a key with no
+  card then gives `Error::Mesh` from the open of the region." of
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462.
   Supersedes "A founding with no card of that key gives no stored name. So does a data
   directory with no `node.key`." of
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495.
