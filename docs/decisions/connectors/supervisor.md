@@ -132,8 +132,11 @@
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093511014), and by
   the node's clock after round 2 (finding 1, 2026-10-10T05:36:36Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094269805). The
-  `backoff` text is approved by `laptop.architect` (2026-10-10T05:38:31Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904). The cut
+  `backoff` text is approved by `laptop.architect` with "next run"
+  (2026-10-10T05:38:31Z:
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904) and with
+  "next try" (2026-10-11T10:03:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The cut
   and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
   opens its reader before its start status (`laptop.architect-2`, 2026-10-11T07:34:44Z:
