@@ -211,8 +211,8 @@ fn a_read_after_the_server_closes_fails_and_open62541_refuses_the_next() {
     );
 }
 
-/// The answer of a read whose future dropped goes to its own slot, which the callback
-/// frees, so the next read gets its own answer.
+/// The server answers a read whose future dropped before the next read, and the
+/// callback drops that answer, so the next read gets its own answer.
 #[test]
 fn a_read_after_a_dropped_read_gets_its_own_answer() {
     let (reads, _) = run(0, async |node| {
@@ -226,6 +226,7 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
                 })
                 .await;
             }
+            peer.clock.sleep(Span::from_nanos(10_000_000)).await;
             (
                 client.read(TIME).await,
                 client.read(VALUE).await,

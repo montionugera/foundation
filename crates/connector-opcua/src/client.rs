@@ -84,9 +84,9 @@ impl Client {
             connections,
         };
         // SAFETY: the client lives.
-        let timeout = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
+        let timeout_ms = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
         let mut deadline =
-            pin!(clock.sleep(Span::from_nanos(i64::from(timeout) * 1_000_000)));
+            pin!(clock.sleep(Span::from_nanos(i64::from(timeout_ms) * 1_000_000)));
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
