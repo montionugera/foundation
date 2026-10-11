@@ -3,7 +3,8 @@
   returned, and none after a cancel. `open` resolves once the status channels and the
   reader opened, or once the first run cannot start: the kind is unknown, the config
   does not parse or check, the mesh stopped, the reader open failed, or `cancel` is
-  cancelled. It runs no code of the kind's `run`, so the connector writes no frame
+  cancelled. The reader open waits while the mesh names no home for the index that it
+  selects. `open` runs no code of the kind's `run`, so the connector writes no frame
   before `Opened::run`. Dropped, the `Opened` closes the reader and writes no status.
   So `node` can open the reader of an out connector before an in connector starts.
   Before each run, also a run after a backoff, the supervisor opens the reader from
@@ -11,13 +12,15 @@
   `Context::reader`. A failed open ends that run with the class of its error (KIND
   TABLE), and the kind's `run` is not called. A run whose reader ends with
   `hub::reader::Ended::Behind` returns `Retry`, and the frames between the two opens
-  do not come again before #274 (`laptop.architect-2`, 2026-10-11T05:11:21Z:
+  do not come again before #274. A reader with a hold opens again at its held
+  position, so it stays `Behind` at each open within its hold (HOME NAMED READERS)
+  (`laptop.architect-2`, 2026-10-11T05:11:21Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, items 1
   and 3; 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
-  3, and 5). Each run gets a child of the caller's token, which the supervisor cancels once the run returns or its future
-  drops, so each task that the run spawned to wait on it ends with the run
-  (`laptop.architect-2`, 2026-10-08T17:58:15Z:
+  3, and 5). Each run gets a child of the caller's token, which the supervisor cancels
+  once the run returns or its future drops, so each task that the run spawned to wait
+  on it ends with the run (`laptop.architect-2`, 2026-10-08T17:58:15Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6065930789). A drop of
   the future of `Opened::run` cancels the run and does not wait for its tasks
   (`laptop.architect-2`, 2026-10-09T01:30:51Z:

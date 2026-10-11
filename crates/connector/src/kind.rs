@@ -222,7 +222,8 @@ impl<C> Context<C> {
     /// connector's name, from the settings that `check` gave. `None` when `check`
     /// gave none, or after the first call. When the reader ends with
     /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
-    /// new reader before the next run.
+    /// new reader before the next run. A reader with a hold opens again at its held
+    /// position, so while the home keeps no frame there, each later run gets `Behind`.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
@@ -375,15 +376,16 @@ const LEASE: Code = Code::new("connector.lease");
 ///
 /// # Panics
 ///
-/// For `Unsynced`, since a run starts only once the node has mesh time, and for an
-/// error of a reader away from its home, since a named reader opens only at its home.
+/// For `Unsynced`, since the supervisor opens a reader only after the status channels,
+/// which wait for mesh time, and for an error of a reader away from its home, since a
+/// named reader opens only at its home.
 pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     use hub::reader::Error as Hub;
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
         Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
-        Hub::Unsynced => panic!("invariant: a run started before mesh time: {error}"),
+        Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
             panic!("invariant: a named reader away from its home gave: {error}")
         }
@@ -878,7 +880,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "invariant: a run started before mesh time: the node has no mesh \
+        expected = "invariant: a reader opened before mesh time: the node has no mesh \
                     time yet: open the named reader again later"
     )]
     fn panics_for_a_reader_that_has_no_mesh_time() {
