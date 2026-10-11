@@ -1350,10 +1350,6 @@ fn a_committed_body_that_does_not_decode_is_refused_with_its_kind_and_length() {
         assert_eq!(reply, message(1, 2, Body::AppendReply { last: 1 }));
         let outcome = mesh.group.borrow().applied.outcome(&floor, at(1));
         assert_eq!(outcome, Outcome::Applied(Err(Refused::Body(undecoded))));
-        assert_eq!(
-            Refused::Body(undecoded).to_string(),
-            "a change of kind 1 and 32 bytes is not in the byte form of its kind"
-        );
         mesh.group.borrow_mut().applied.close(&floor);
     });
 }

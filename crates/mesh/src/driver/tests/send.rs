@@ -375,12 +375,9 @@ fn a_task_that_waits_in_a_dial_holds_no_block() {
     });
 }
 
-/// A position in the term of the tests.
+/// The position `index` of `TERM`.
 pub(super) fn at(index: u64) -> Position {
-    Position {
-        term: common::TERM,
-        index,
-    }
+    common::at(common::TERM.0, index)
 }
 
 /// The config of a node 1 with no record of node 4, and the append of node 2 whose
