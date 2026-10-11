@@ -20,8 +20,8 @@
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411).
   Trimming must keep the last record of each index (#406). Until it does, a trim
   (STORE TRIM) can free that record, and a holder whose record a trim freed gets no
-  grace after a restart. Retention deletes nothing
-  (decided by `laptop.architect`, 2026-10-07T12:30:53Z and 2026-10-07T12:59:37Z:
+  grace after a restart. Retention deletes nothing (decided by `laptop.architect`,
+  2026-10-07T12:30:53Z and 2026-10-07T12:59:37Z:
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6037946637 and
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6038431739).
   Supersedes https://github.com/synnaxlabs/foundation/pull/402 in its clause that
