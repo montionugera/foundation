@@ -361,6 +361,24 @@ fn panics_on_a_read_over_the_cap() {
 }
 
 #[test]
+#[should_panic(expected = "an open of 65537 bytes is over the cap of 65536")]
+fn panics_on_the_body_of_a_read_over_the_cap() {
+    let _body = read(OPEN_BYTES_MAX + 1).body();
+}
+
+#[test]
+fn fits_the_largest_place_in_300_bytes() {
+    let largest = pt(
+        1,
+        "list<timestamp, 4294967295>",
+        &"a".repeat(Name::MAX_BYTES),
+    );
+    let runs: Vec<_> = place::messages(std::slice::from_ref(&largest), 300).collect();
+    assert_eq!(runs, [std::slice::from_ref(&largest)]);
+    assert_eq!(place::encoded_len(&[largest]), 300);
+}
+
+#[test]
 #[should_panic(expected = "the index is at place 2 of 2")]
 fn panics_on_places_with_the_index_at_the_count() {
     Places { count: 2, index: 2 }.encode(&mut [0; Places::LEN]);

@@ -31,11 +31,7 @@ impl Read {
     ///
     /// When `length` is over [`OPEN_BYTES_MAX`], or `out` is not [`Read::LEN`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
-        assert!(
-            self.length <= OPEN_BYTES_MAX,
-            "an open of {} bytes is over the cap of {OPEN_BYTES_MAX}",
-            self.length
-        );
+        self.check();
         let mut out = Writer::new(out, Self::LEN);
         out.put(&[READ]);
         out.put(&self.length.to_le_bytes());
@@ -64,9 +60,22 @@ impl Read {
     }
 
     /// The open that follows this read.
+    ///
+    /// # Panics
+    ///
+    /// When `length` is over [`OPEN_BYTES_MAX`].
     #[must_use]
     pub fn body(&self) -> Body {
+        self.check();
         Body::new(self.length)
+    }
+
+    fn check(&self) {
+        assert!(
+            self.length <= OPEN_BYTES_MAX,
+            "an open of {} bytes is over the cap of {OPEN_BYTES_MAX}",
+            self.length
+        );
     }
 }
 
@@ -243,11 +252,12 @@ pub mod place {
     use crate::hub::Error;
 
     /// `places` cut into the messages of the run, in order: each holds as many whole
-    /// places as fit in `max` bytes.
+    /// places as fit in `max` bytes. A place is at most 300 bytes.
     ///
     /// # Panics
     ///
-    /// While it iterates, when a place is over `max` bytes.
+    /// While it iterates, when a place is over `max` bytes. A `max` of at least 300
+    /// never panics.
     pub fn messages(places: &[Place], max: usize) -> impl Iterator<Item = &[Place]> {
         let mut rest = places;
         std::iter::from_fn(move || {
