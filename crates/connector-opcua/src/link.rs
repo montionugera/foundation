@@ -484,14 +484,12 @@ fn named_outside_tests(
 }
 
 /// Each file that a build of the crate at `root` with [`SIM`] on reads, sorted: with
-/// `test` off, with `test` on, and with the test harness.
+/// `test` off, and with the test harness.
 fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let sim = on(&[SIM.to_owned()]);
     let (mut files, _) = built(root, &sim);
-    files.extend(built(root, &[on(&["test".to_owned()]), sim.clone()].concat()).0);
-    // The harness builds the bodies of test functions, and refuses `-Cpanic=abort`.
-    let harness = ["--test".to_owned(), "-Cpanic=unwind".to_owned()];
-    files.extend(built(root, &[harness.to_vec(), sim].concat()).0);
+    // rustc refuses `--test` with `-Cpanic=abort`, but still gives the files it read.
+    files.extend(built(root, &[vec!["--test".to_owned()], sim].concat()).0);
     files.sort();
     files.dedup();
     files
@@ -501,8 +499,7 @@ fn tested(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// reads, and the cfgs that the builds set, sorted. The builds are those on this host,
 /// with the target features of this build, and with each set of the cfgs that the
 /// crate tests and rustc does not know (features among them, less [`SIM`], which only
-/// `base` sets), each with debug assertions on and off and with each panic strategy,
-/// unless `base` sets one.
+/// `base` sets), each with debug assertions on and off and with each panic strategy.
 /// rustc names each such cfg in a build that reads the file that tests it. A file
 /// under a known value of a target cfg that this build does not set, such as
 /// `target_os = "windows"`, is read by no build.
@@ -518,11 +515,6 @@ fn built(
     let mut cfgs: Vec<String> = Vec::new();
     let mut runs = std::collections::BTreeSet::new();
     let mut files = Vec::new();
-    let panics = if base.iter().any(|flag| flag.starts_with("-Cpanic=")) {
-        vec![None]
-    } else {
-        vec![Some("unwind"), Some("abort")]
-    };
     loop {
         let mut known = cfgs.clone();
         known.push(SIM.to_owned());
@@ -533,11 +525,11 @@ fn built(
                 .map(|bit| cfgs[bit].clone())
                 .collect();
             for assertions in ["on", "off"] {
-                for panic in &panics {
+                for panic in ["unwind", "abort"] {
                     let mut flags = base.to_vec();
                     flags.extend(on(&set));
                     flags.push(format!("-Cdebug-assertions={assertions}"));
-                    flags.extend(panic.map(|panic| format!("-Cpanic={panic}")));
+                    flags.push(format!("-Cpanic={panic}"));
                     if runs.insert(flags.clone()) {
                         let (read, unknown) = read_by_rustc(root, &known, &flags);
                         files.extend(read);
