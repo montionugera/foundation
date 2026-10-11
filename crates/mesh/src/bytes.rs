@@ -219,8 +219,7 @@ pub(crate) fn put_optional_key(key: Option<node::Key>, out: &mut Vec<u8>) {
 ///
 /// # Panics
 ///
-/// When `signature` is `None`: the caller signs every grant and change before it
-/// encodes one.
+/// When `signature` is `None`: the caller signs each claim before it encodes one.
 pub(crate) fn put_signature(signature: Option<Signature>, out: &mut Vec<u8>) {
     let Signature(bytes) =
         signature.expect("invariant: a claim is signed before it is encoded");

@@ -841,7 +841,7 @@ mod tests {
     use super::*;
     use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
-    use crate::common::create_pool;
+    use crate::common::{at, create_pool, key};
 
     const DIR: &str = "mesh";
 
@@ -886,25 +886,18 @@ mod tests {
         file.sync().await.unwrap();
     }
 
-    fn key(id: u128) -> node::Key {
-        node::Key::from_u128(id)
-    }
-
     fn hard(term: u64, vote: Option<u128>) -> Hard {
         Hard {
             term: Term(term),
-            vote: vote.map(key),
+            vote: vote.map(node::Key::from_u128),
             leader: None,
             proof: None,
         }
     }
 
-    // Each voter signs with its key's low byte, 64 times.
-    fn proof(grant: Grant, candidate: u128, voters: &[u128]) -> Proof {
-        let signed = |&voter: &u128| {
-            let signature = Signature([voter.to_le_bytes()[0]; 64]);
-            (key(voter), Some(signature))
-        };
+    // Each voter signs with its id, 64 times.
+    fn proof(grant: Grant, candidate: u8, voters: &[u8]) -> Proof {
+        let signed = |&voter: &u8| (key(voter), Some(Signature([voter; 64])));
         Proof {
             grant,
             candidate: key(candidate),
@@ -913,9 +906,8 @@ mod tests {
     }
 
     fn entry(term: u64, index: u64, data: Data) -> Entry {
-        let term = Term(term);
         Entry {
-            at: raft::Position { term, index },
+            at: at(term, index),
             data,
         }
     }
@@ -939,8 +931,8 @@ mod tests {
         })
     }
 
-    fn voters(incoming: &[u128], outgoing: &[u128]) -> Data {
-        let set = |ids: &[u128]| ids.iter().copied().map(key).collect();
+    fn voters(incoming: &[u8], outgoing: &[u8]) -> Data {
+        let set = |ids: &[u8]| ids.iter().copied().map(key).collect();
         let voters = Voters {
             incoming: set(incoming),
             outgoing: set(outgoing),
@@ -3422,7 +3414,12 @@ mod tests {
     }
 
     fn data() -> impl Strategy<Value = Data> {
-        let keys = || prop::collection::btree_set(any::<u128>().prop_map(key), 0..4);
+        let keys = || {
+            prop::collection::btree_set(
+                any::<u128>().prop_map(node::Key::from_u128),
+                0..4,
+            )
+        };
         prop_oneof![
             Just(Data::Empty),
             prop::collection::vec(any::<u8>(), 0..64).prop_map(Data::Bytes),
@@ -3452,10 +3449,12 @@ mod tests {
         prop::option::of((grant, any::<u128>(), voters)).prop_map(|proof| {
             proof.map(|(grant, candidate, voters)| Proof {
                 grant,
-                candidate: key(candidate),
+                candidate: node::Key::from_u128(candidate),
                 voters: voters
                     .into_iter()
-                    .map(|(voter, signature)| (key(voter), Some(signature)))
+                    .map(|(voter, signature)| {
+                        (node::Key::from_u128(voter), Some(signature))
+                    })
                     .collect(),
             })
         })
@@ -3466,7 +3465,7 @@ mod tests {
         prop::option::of((any::<u64>(), keys.clone(), keys, proofs())).prop_map(
             |hard| {
                 hard.map(|(term, vote, leader, proof)| Hard {
-                    leader: leader.map(key),
+                    leader: leader.map(node::Key::from_u128),
                     proof,
                     ..self::hard(term, vote)
                 })
