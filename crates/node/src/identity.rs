@@ -34,18 +34,17 @@ pub(crate) struct Identity {
     pub(crate) opener: Opener,
 }
 
-/// The node key in `node.key` of `files`, or `None` when the file is not there. Opens
+/// The node key in `node.key` of `files`, or `None` when [`load`] finds no key. Opens
 /// the file to read only, so it makes nothing and waits for no lock.
 ///
 /// # Errors
 ///
-/// [`Error::Key`] for a file that [`load`] did not write, and [`Error::Directory`]
-/// for a file call that fails.
+/// [`Error::Key`] and [`Error::Directory`], as [`load`] gives them.
 pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error> {
-    let held = sector::read(files, Path::new(FILE), TAG).await;
+    let held = sector::peek(files, Path::new(FILE), TAG).await;
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
-        Held::Written(bytes) => Ok(Some(fields(&bytes).key)),
+        Held::Written(bytes) => Ok(Some(node_key(&bytes))),
         Held::Foreign => Err(Error::Key),
     }
 }
@@ -147,12 +146,16 @@ fn decode(bytes: &[u8; LEN]) -> Option<Identity> {
     sector::written(bytes, TAG).map(|bytes| fields(&bytes))
 }
 
+/// The node key in `bytes`, whatever its tag and checksum.
+fn node_key(bytes: &[u8; LEN]) -> types::node::Key {
+    let key = bytes[16..32].try_into().expect("invariant: 16 bytes");
+    types::node::Key::from_u128(u128::from_be_bytes(key))
+}
+
 /// The keys in `bytes`, whatever its tag and checksum.
 fn fields(bytes: &[u8; LEN]) -> Identity {
     Identity {
-        key: types::node::Key::from_u128(u128::from_be_bytes(
-            bytes[16..32].try_into().expect("invariant: 16 bytes"),
-        )),
+        key: node_key(bytes),
         private_key: PrivateKey(bytes[32..64].try_into().expect("invariant: 32 bytes")),
         opener: Opener::from_bytes(
             bytes[64..BODY].try_into().expect("invariant: 32 bytes"),
