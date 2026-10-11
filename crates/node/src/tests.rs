@@ -6757,6 +6757,17 @@ mod name {
     }
 
     #[test]
+    fn the_text_of_no_card_states_the_two_ways_out() {
+        assert_eq!(
+            Error::NoCard.to_string(),
+            "the data directory stores a region and holds no file `name`, and the file \
+             `node.key` is not there or holds a key that the founding of the region \
+             does not hold; restore `node.key` from a backup of this node, or give \
+             another data directory"
+        );
+    }
+
+    #[test]
     fn the_first_start_keeps_its_name_for_each_later_start() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
@@ -7145,17 +7156,40 @@ mod name {
     /// later time, gives no name or the whole name.
     #[test]
     fn a_read_during_a_start_gives_no_name_or_the_name() {
-        for (seed, later) in (0..64).flat_map(|seed| [(seed, false), (seed, true)]) {
+        reads_during_a_start(&Region::Absent, 0..64);
+    }
+
+    /// As [`a_read_during_a_start_gives_no_name_or_the_name`], with a start that founds
+    /// a region: a read that sees the founding also sees `node.key`.
+    #[test]
+    fn a_read_during_a_start_that_founds_a_region_gives_no_name_or_the_name() {
+        reads_during_a_start(&Region::Stored, 0..16);
+    }
+
+    /// Reads the name during a first and a later start with `region`, on each of
+    /// `seeds`, and checks that each read gives no name or the whole name.
+    fn reads_during_a_start(region: &Region, seeds: std::ops::Range<u64>) {
+        for (seed, later) in seeds.flat_map(|seed| [(seed, false), (seed, true)]) {
             for offset in (0..200_000).step_by(20_000) {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
+                let start = || {
+                    Node::start(Config {
+                        region: region.clone(),
+                        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                    })
+                };
                 if later {
-                    assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+                    let node = start();
+                    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+                    node.stop();
+                    assert_eq!(sim.run(), Ok(()));
+                    assert_eq!(node.join(), Ok(()));
                 }
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                let node = start();
                 assert_eq!(sim.run_for(Span::from_nanos(offset)), Ok(()));
                 let found = reads(&host, 400);
                 assert_eq!(sim.run_for(Span::SECOND), Ok(()));
@@ -7179,16 +7213,31 @@ mod name {
     /// whole name, and the whole name once each ring has opened.
     #[test]
     fn a_crash_during_the_first_start_leaves_no_name_or_the_whole_name() {
+        crashes_during_the_first_start(&Region::Absent, 0..8);
+    }
+
+    /// As [`a_crash_during_the_first_start_leaves_no_name_or_the_whole_name`], with a
+    /// start that founds a region.
+    #[test]
+    fn a_crash_during_a_first_start_that_founds_a_region_leaves_no_name_or_the_name() {
+        crashes_during_the_first_start(&Region::Stored, 0..4);
+    }
+
+    /// Crashes the first start with `region` every 25 µs, on each of `seeds`, and checks
+    /// the name that a read then gives.
+    fn crashes_during_the_first_start(region: &Region, seeds: std::ops::Range<u64>) {
         let crashes = [sim::Crash::Process, sim::Crash::Power];
-        for (seed, crash) in (0..8).flat_map(|seed| crashes.map(|crash| (seed, crash)))
-        {
+        for (seed, crash) in seeds.flat_map(|seed| crashes.map(|crash| (seed, crash))) {
             for after in (0..).step_by(25_000).map(Span::from_nanos) {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                let node = Node::start(Config {
+                    region: region.clone(),
+                    ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                });
                 let probe = probe(&node);
                 let run = sim.run_for(after);
                 assert_eq!(run, Ok(()), "seed {seed}: {crash:?} at {after:?}");

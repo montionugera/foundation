@@ -440,6 +440,32 @@ fn a_key_file_that_holds_no_key_fails() {
 }
 
 #[test]
+fn a_region_with_no_name_file_and_no_key_file_fails_with_and_with_no_name() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    for file in ["name", "node.key"] {
+        let path = rig.dir.join("foundation-data/data").join(file);
+        std::fs::remove_file(path).expect("remove the file");
+    }
+    for args in [&["start", "--name", "other"][..], &["start"]] {
+        assert_eq!(
+            ended(&rig.run(args, b"")),
+            (
+                Some(1),
+                "",
+                "error[node.failed]: the data directory stores a region and holds no \
+                 file `name`, and the file `node.key` is not there or holds a key that \
+                 the founding of the region does not hold; restore `node.key` from a \
+                 backup of this node, or give another data directory\n\
+                 fix: Fix the cause that the message states, then start the node again\n"
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
     use std::os::unix::fs::PermissionsExt;
 
