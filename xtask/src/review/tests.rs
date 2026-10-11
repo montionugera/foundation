@@ -1242,6 +1242,14 @@ fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
              found in string"
         ]
     );
+    let round = ROUND.replace("Findings: none", "Findings: ![](x)2![](y)");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![
+            "review round 3 has `Findings: ![]2![]`, not a count or `none`: invalid \
+             digit found in string"
+        ]
+    );
     let round = ROUND.replace("`38cba24f..c77c67d7`", "c77c67d7![](x)");
     assert_eq!(
         check(&record(vec![bot(&round)])),
