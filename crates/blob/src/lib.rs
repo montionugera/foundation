@@ -95,8 +95,9 @@ impl std::error::Error for Error {}
 /// What a [`Store`] counted after its open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Status {
-    /// The gets that read a file whose bytes did not hash to its digest. A write that
-    /// a crash tore is one.
+    /// The gets that read a file whose bytes did not hash to its digest, but not a file
+    /// that a put of this open left before its end. A file that a crash tore counts,
+    /// and so does one that a put of an earlier open left before its end.
     pub corruptions: u64,
     /// The gets and puts that gave [`Error::Files`]. A full disk
     /// (`files::Error::Full`) is not one.
@@ -332,8 +333,10 @@ impl Store {
         if Digest::of(&block) == digest {
             return Ok(Some(block));
         }
-        self.corruptions
-            .set(self.corruptions.get().saturating_add(1));
+        if !seen.left() {
+            self.corruptions
+                .set(self.corruptions.get().saturating_add(1));
+        }
         self.forget(digest, seen);
         Ok(None)
     }
@@ -360,6 +363,12 @@ impl Peek {
             Some(State::Held(serial)) => Self::Held(*serial),
             Some(State::Writing(_)) => Self::Writing,
         }
+    }
+
+    /// Whether a put of this open left the file before its end, so its bytes say
+    /// nothing of the disk. Only the open lists a file by serial 0.
+    fn left(self) -> bool {
+        matches!(self, Self::Listed(1..))
     }
 }
 
@@ -1789,6 +1798,47 @@ mod tests {
             .unwrap();
         }
 
+        // The put drops with its create in flight, which leaves a file of zeros. No
+        // crash, no fault, and no write from outside the store.
+        #[test]
+        fn counts_no_corruption_for_a_get_after_a_dropped_put() {
+            let (mut sim, node) = create_default_node(5);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                {
+                    let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                }
+                assert_absent(&store, digest).await;
+                assert_eq!(store.status(), status(0, 0));
+            })
+            .unwrap();
+        }
+
+        // The open lists names, so it cannot tell the file from a torn write.
+        #[test]
+        fn counts_a_corruption_for_a_get_after_a_dropped_put_of_an_earlier_open() {
+            let (mut sim, node) = create_default_node(5);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                {
+                    let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                }
+                drop(store);
+                let store = open(&node).await.unwrap();
+                assert_absent(&store, digest).await;
+                assert_eq!(store.status(), status(1, 0));
+            })
+            .unwrap();
+        }
+
         #[test]
         fn counts_a_put_whose_write_fails() {
             let (mut sim, node) = create_default_node(0);
@@ -1798,6 +1848,8 @@ mod tests {
                 node.fail_file(&path(digest), Operation::WriteAt);
                 let error = store.put(digest, &block).await.unwrap_err();
                 assert_eq!(error, io(&path(digest), Operation::WriteAt));
+                assert_eq!(store.status(), status(0, 1));
+                assert_absent(&store, digest).await;
                 assert_eq!(store.status(), status(0, 1));
                 store.put(digest, &block).await.unwrap();
                 assert_eq!(store.status(), status(0, 1));

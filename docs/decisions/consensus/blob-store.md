@@ -46,9 +46,19 @@
   `Store::status` gives `blob::Status`, the counts of the store after its open.
   `corruptions` counts the gets that read a file whose bytes did not hash to its digest.
   `failures` counts the gets and puts that gave `Error::Files` other than `Full`. `node`
-  pulls it on the shard of the store (STATUS CHANNELS). It supersedes the crate-private
-  count. Lost: the names `Faults` and `Store::faults` (`transport` and `clock` name the
-  value that `node` pulls `Status`); one method for each count (two reads for one pulled
-  value); a reader for other threads, as `clock::Reader` (one collector reads the
-  counts, and `node` owns where it runs); a cause with each failure (no caller reads
-  one).
+  pulls it on the shard of the store (STATUS CHANNELS). Supersedes the crate-private
+  count of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6043124789. Lost:
+  the names `Faults` and `Store::faults` (`transport` and `clock` name the value that
+  `node` pulls `Status`); one method for each count (two reads for one pulled value); a
+  reader for other threads, as `clock::Reader` (one collector reads the counts, and
+  `node` owns where it runs); a cause with each failure (no caller reads one).
+  Amended (`laptop.architect`, 2026-10-11T10:36:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108135919): a get of
+  a file that a put of this open left before its end adds none to `corruptions`, because
+  a dropped put is no fault, and `blob::peer::serve` drops a put when its stream ends. A
+  file that a put of an earlier open left counts, as a torn write does: the open lists
+  names and cannot tell the two. Lost: each such get counts (the count then rises on a
+  sound disk in normal work). Cost: damage in such a file is not counted before a put
+  writes the file again. Supersedes "`corruptions` keeps its rule" (item 3 of that
+  ruling) and its doc of the field.
