@@ -214,7 +214,8 @@ impl Gate {
 
     /// Applies what has come due by `now`: a holder whose control lease ran out loses
     /// control, and a recovered holder that did not reopen in time is dropped. Call it
-    /// at [`Gate::deadline`].
+    /// at [`Gate::deadline`]. After it, [`Gate::deadline`] is `None` or later than
+    /// `now`.
     pub fn advance(&mut self, now: Monotonic) {
         if self.deadline().is_none_or(|due| now < due) {
             return;

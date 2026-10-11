@@ -403,13 +403,14 @@ impl Shard {
     }
 
     /// Applies what came due by now in the gate of each carried index: a holder whose
-    /// control lease ran out loses control, and a restored holder that did not reopen in
-    /// its grace is dropped. Appends a handoff for each index whose holder changed and
-    /// that has an open writer, as [`close_writer`](Self::close_writer) does. Call it at
-    /// [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n) time for
-    /// n carried indexes, plus O(c) for each index that came due, for c claims of open
-    /// writers. An index with no open writer records its handoff at the next open of a
-    /// writer on it.
+    /// control lease ran out loses control, and a restored holder that did not reopen
+    /// in its grace is dropped. Appends a handoff for each index whose holder changed
+    /// and that has an open writer, as [`close_writer`](Self::close_writer) does. Call
+    /// it at [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n)
+    /// time for n carried indexes, plus O(c) for each index that came due, for c claims
+    /// of open writers. An index with no open writer records its handoff at the next
+    /// open of a writer on it. After it, [`deadline`](Self::deadline) is `None` or
+    /// later than the shard's monotonic time at the call.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
@@ -2865,8 +2866,8 @@ mod tests {
         });
     }
 
-    /// The hub's gate task sleeps to `deadline` again after each `advance`, so a
-    /// deadline that `advance` leaves due spins it.
+    /// `advance` drops a restored holder whose grace ended, so it leaves no deadline
+    /// that came due.
     #[test]
     fn advances_past_the_end_of_the_grace_before_the_node_has_mesh_time() {
         let (mut sim, node) = cut_after(237, false);
@@ -2886,13 +2887,17 @@ mod tests {
     fn records_the_handoff_to_a_waiting_writer_at_the_end_of_a_lease_in_index_order() {
         run(234, |test| async move {
             let (mut shard, _, set) = test.leased().await;
-            shard
-                .open_writer(writer("subject-b", 1, &set))
-                .expect("synced");
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            shard.open_writer(leased).expect("synced");
             test.clock.sleep(WAIT).await;
-            assert!(shard.deadline() <= Some(test.reader.now().monotonic));
+            let now = test.reader.now().monotonic;
+            assert!(shard.deadline() <= Some(now));
             let marked = test.now();
             shard.advance();
+            assert!(shard.deadline() > Some(now), "b's lease ends later");
             shard.committed().await.expect("the commit ends");
             let ring = test.ring().await;
             assert_eq!(find(&ring, &handoff_to("subject-b")).len(), 2);
@@ -2902,7 +2907,6 @@ mod tests {
                 headers(&ring, marked),
                 [(zero, 0, 0, 0, 1), (two, 0, 0, 0, 1)]
             );
-            assert_eq!(shard.deadline(), None);
         });
     }
 
