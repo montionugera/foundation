@@ -15,22 +15,22 @@
   that needs another value, makes `GRACE` a `Config` field (`laptop.architect`, #275,
   2026-10-10T04:04:50Z, item 4). A lease or a grace that ends with no call records its
   handoff at its end: the hub's gate task calls `Shard::advance` at `Shard::deadline`,
-  on the monotonic clock of the hub's `clock::Reader`. A handoff is not on disk while
-  the ring or the pool has no room for it, and a restart or a failover in that time
-  starts the gate from the record before it. Only room held back for one handoff of
-  each index, in the pool and in the ring, closes this. Trigger to look again: a
-  measured case where a ring or a pool stays full across a handoff in a workload on the
-  milestone path. Until #2385, such a handoff waits for the next write, writer open or
-  close, or end of a lease or a grace on its index (INDEX FRAMES), also after the room
-  comes back (`laptop.architect`, #2385, 2026-10-11T08:16:48Z, the OK of the deferral,
-  item 4, and the trigger of its "Lost" list:
-  https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587). Until
-  #2314, an index with no open writer records its handoff at the next open of a writer
-  on it (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
+  on the monotonic clock of the hub's `clock::Reader`. Until #2314, an index with no
+  open writer records its handoff at the next open of a writer on it
+  (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102872368 and
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411;
   its scope until #2314: `laptop.architect`, 2026-10-11T00:56:34Z,
-  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6103966961).
+  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6103966961). A
+  handoff is not on disk while the ring or the pool has no room for it, and a restart
+  or a failover in that time starts the gate from the record before it. Only room held
+  back for one handoff of each index, in the pool and in the ring, closes this. Trigger
+  to look again: a measured case where a ring or a pool stays full across a handoff in
+  a workload on the milestone path. Until #2385, such a handoff waits for the next
+  write, writer open or close, or end of a lease or a grace on its index
+  (INDEX FRAMES), also after the room comes back (`laptop.architect`, #2385,
+  2026-10-11T08:16:48Z, the OK of the deferral, item 4, and the trigger of its "Lost"
+  list: https://github.com/synnaxlabs/foundation/issues/2385#issuecomment-6107045587).
   Trimming must keep the last record of each index (#406). Until it does, a trim
   (STORE TRIM) can free that record, and a holder whose record a trim freed gets no
   grace after a restart. Retention deletes nothing (decided by `laptop.architect`,
