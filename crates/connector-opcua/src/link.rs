@@ -1043,17 +1043,14 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
 }
 
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`
-/// `cargo xtask open62541` lets call the global clock. Outside tests, the Rust names
-/// no `UA_Client_new` function, and the production code names no `UA_Log_Stdout`
-/// function. `shim_client_new` gives a client the logger of its loop, and the stderr
-/// tests of `event` check that.
+/// `cargo xtask open62541` lets call the global clock. The production code names
+/// neither `UA_Client_new` nor a `UA_Log_Stdout` function. `shim_client_new` gives a
+/// client the logger of its loop, and the stderr tests of `event` check that.
 #[test]
 fn the_production_code_gives_no_client_the_stdout_logger() {
-    let mut named =
-        named_outside_tests(&root(), |name| name.starts_with("UA_Client_new"));
-    named.extend(named_in_production(&root(), |name| {
-        name.starts_with("UA_Log_Stdout")
-    }));
+    let named = named_in_production(&root(), |name| {
+        name == "UA_Client_new" || name.starts_with("UA_Log_Stdout")
+    });
     assert!(named.is_empty(), "the production code names {named:?}");
 }
 
@@ -1077,7 +1074,7 @@ fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
 }
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`, with [`the_rust_and_the_shim_give_a_client_no_security_policy`].
+/// open62541`, with [`the_production_code_gives_a_client_no_security_policy`].
 #[test]
 fn the_shim_refuses_encryption() {
     let errors =
@@ -1092,7 +1089,7 @@ fn the_shim_refuses_encryption() {
 /// open62541`: the default config of a client with encryption off has only the policy
 /// `None`, and the production code names no security policy.
 #[test]
-fn the_rust_and_the_shim_give_a_client_no_security_policy() {
+fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
         name.starts_with("UA_SecurityPolicy")
             || ["securityPolicies", "authSecurityPolicies"].contains(&name)
