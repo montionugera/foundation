@@ -25,8 +25,9 @@ pub fn tree(chunks: &mut Chunks, definitions: &BTreeMap<Name, Definition>) -> Up
         .expect("invariant: a tree from the empty tree reads no chunk")
 }
 
-/// The definitions of the region tree at `root`, by tree key: the inverse of
-/// [`tree`]. It does not check the definitions: [`check`](super::check) does.
+/// The definitions of the region tree at `root`, by tree key, and a [`Chunks`] that
+/// holds each chunk of that tree and no other: the inverse of [`tree`]. It does not
+/// check the definitions: [`check`](super::check) does.
 ///
 /// # Errors
 ///
@@ -41,7 +42,7 @@ pub fn tree(chunks: &mut Chunks, definitions: &BTreeMap<Name, Definition>) -> Up
 pub fn definitions(
     chunks: &Chunks,
     root: Digest,
-) -> Result<BTreeMap<Name, Definition>, Error> {
+) -> Result<(BTreeMap<Name, Definition>, Chunks), Error> {
     let diff = tree::diff(chunks, tree::empty(), root).map_err(Error::Tree)?;
     let definitions = diff
         .changes
@@ -59,10 +60,11 @@ pub fn definitions(
             }
         })
         .collect::<Result<_, _>>()?;
-    if tree(&mut Chunks::default(), &definitions).root != root {
+    let mut kept = Chunks::default();
+    if tree(&mut kept, &definitions).root != root {
         return Err(Error::Tree(tree::Error::Corrupt(root)));
     }
-    Ok(definitions)
+    Ok((definitions, kept))
 }
 
 /// Why [`definitions`] cannot read a tree.

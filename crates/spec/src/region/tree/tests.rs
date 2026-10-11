@@ -75,14 +75,35 @@ proptest! {
         }
         let mut chunks = Chunks::default();
         let update = tree(&mut chunks, &defined);
-        prop_assert_eq!(definitions(&chunks, update.root), Ok(defined));
+        let (read, kept) = definitions(&chunks, update.root).unwrap();
+        prop_assert_eq!(read, defined);
+        for digest in update.chunks {
+            prop_assert!(kept.get(digest).is_some(), "{digest} is not kept");
+        }
+    }
+}
+
+#[test]
+fn definitions_give_the_chunks_of_their_tree_and_no_other() {
+    let first = create_definitions(&[("plant.time", index(1))]);
+    let second = create_definitions(&[("site.time", index(2))]);
+    let mut chunks = Chunks::default();
+    let update = tree(&mut chunks, &first);
+    let other = tree(&mut chunks, &second);
+    let (read, kept) = definitions(&chunks, update.root).unwrap();
+    assert_eq!(read, first);
+    for digest in &update.chunks {
+        assert_eq!(kept.get(*digest), chunks.get(*digest));
+    }
+    for digest in other.chunks.iter().filter(|d| !update.chunks.contains(d)) {
+        assert_eq!(kept.get(*digest), None);
     }
 }
 
 #[test]
 fn definitions_of_the_empty_tree_are_none() {
     assert_eq!(
-        definitions(&Chunks::default(), tree::empty()),
+        definitions(&Chunks::default(), tree::empty()).map(|(read, _)| read),
         Ok(BTreeMap::new())
     );
 }
@@ -91,7 +112,7 @@ fn definitions_of_the_empty_tree_are_none() {
 fn definitions_without_a_chunk_of_the_tree_give_the_missing_chunk() {
     let defined = create_definitions(&[("plant.time", index(1))]);
     let update = tree(&mut Chunks::default(), &defined);
-    let read = definitions(&Chunks::default(), update.root);
+    let read = definitions(&Chunks::default(), update.root).map(|(read, _)| read);
     let missing = Error::Tree(tree::Error::Missing(update.root));
     assert_eq!(read, Err(missing.clone()));
     assert_eq!(
@@ -108,7 +129,7 @@ fn definitions_with_a_value_that_does_not_decode_give_its_key() {
         Change::Set(name("plant.x"), vec![255]),
     ];
     let update = tree::apply(&mut chunks, tree::empty(), sets).unwrap();
-    let read = definitions(&chunks, update.root);
+    let read = definitions(&chunks, update.root).map(|(read, _)| read);
     let error = Error::Definition {
         key: name("plant.x"),
         error: definition::Error::Newer { found: 255 },
@@ -129,7 +150,8 @@ fn definitions_give_definitions_with_a_problem() {
     ]);
     let mut chunks = Chunks::default();
     let update = tree(&mut chunks, &defined);
-    assert_eq!(definitions(&chunks, update.root), Ok(defined));
+    let read = definitions(&chunks, update.root).map(|(read, _)| read);
+    assert_eq!(read, Ok(defined));
 }
 
 #[test]
@@ -139,7 +161,8 @@ fn definitions_of_a_tree_cut_at_other_boundaries_give_its_root() {
     let b = chunks.insert(leaf(&[("p.b", index(2).encode())]));
     let root = chunks.insert(parent(&[("p.a", a), ("p.b", b)]));
     let corrupt = Error::Tree(tree::Error::Corrupt(root));
-    assert_eq!(definitions(&chunks, root), Err(corrupt.clone()));
+    let read = definitions(&chunks, root).map(|(read, _)| read);
+    assert_eq!(read, Err(corrupt.clone()));
     assert_eq!(
         corrupt.to_string(),
         format!("chunk {root} is not a chunk of a spec tree")
@@ -176,7 +199,7 @@ fn definitions_of_a_tree_with_a_chunk_that_is_not_a_tree_give_the_chunk() {
     let b = chunks.insert(vec![1]);
     let root = chunks.insert(parent(&[("p.a", a), ("p.b", b)]));
     assert_eq!(
-        definitions(&chunks, root),
+        definitions(&chunks, root).map(|(read, _)| read),
         Err(Error::Tree(tree::Error::Corrupt(b)))
     );
 }

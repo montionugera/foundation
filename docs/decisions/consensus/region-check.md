@@ -22,6 +22,10 @@
   It refuses a tree that is not the tree of its definitions (`laptop.architect-2`,
   2026-10-08T14:05:00Z,
   https://github.com/synnaxlabs/foundation/pull/1891#issuecomment-6061622909).
+  It also gives the chunks of the tree that its root check builds, and no other
+  chunk, so `mesh` keeps them and builds no tree (`laptop.architect-2`,
+  2026-10-08T16:16:05Z,
+  https://github.com/synnaxlabs/foundation/pull/1891#issuecomment-6064178995).
   `plan` (#1082) maps a key to its region with the function of `spec::region`, and
   keeps no copy (`laptop.architect-2`, 2026-10-08T09:09:16Z,
   https://github.com/synnaxlabs/foundation/pull/1844#issuecomment-6056571263). The
