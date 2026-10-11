@@ -17,7 +17,9 @@
   open writer records its handoff at the next open of a writer on it
   (`laptop.architect`, #2307, 2026-10-10T22:30:30Z and 2026-10-10T22:46:08Z:
   https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102872368 and
-  https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411).
+  https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6102995411;
+  its scope until #2314: `laptop.architect`, 2026-10-11T00:56:34Z,
+  https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6103966961).
   Trimming must keep the last record of each index (#406). Until it does, a trim
   (STORE TRIM) can free that record, and a holder whose record a trim freed gets no
   grace after a restart. Retention deletes nothing (decided by `laptop.architect`,
