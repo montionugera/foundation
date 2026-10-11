@@ -1024,8 +1024,7 @@ fn a_client_sends_hel_and_its_disconnect_ends_the_stream() {
             let url = CString::new(format!("opc.tcp://{remote}")).expect("no NUL");
             let url: *const c_char = url.as_ptr();
             // SAFETY: the client lives, and copies the URL.
-            let status =
-                Status(unsafe { ffi::test::UA_Client_connectAsync(client, url) });
+            let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             // SAFETY: the client lives.
@@ -2613,9 +2612,8 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
             assert!(!client.is_null());
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
-            let status = Status(unsafe {
-                ffi::test::UA_Client_connectAsync(client, url.as_ptr())
-            });
+            let status =
+                Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             server.close(&side.manager).await;
@@ -3025,9 +3023,8 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             assert!(!client.is_null());
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
-            let status = Status(unsafe {
-                ffi::test::UA_Client_connectAsync(client, url.as_ptr())
-            });
+            let status =
+                Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             // SAFETY: the client lives.

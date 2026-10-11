@@ -188,7 +188,7 @@ impl Manager {
                 let client = NonNull::new(client).expect("open62541 refused a client");
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
-                    ffi::test::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())
+                    ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())
                 });
                 assert_eq!(status, Status::GOOD, "open62541 refused a connect");
                 client
@@ -252,7 +252,7 @@ impl Manager {
         let data = ptr::from_ref::<Answers>(&self.answers).cast_mut().cast();
         // SAFETY: the client lives, and `answers` outlives it.
         let status = Status(unsafe {
-            ffi::test::shim_client_read(self.clients[0].as_ptr(), node, answer, data)
+            ffi::shim_client_read(self.clients[0].as_ptr(), 0, node, answer, data)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the read");
     }
@@ -289,7 +289,7 @@ impl Manager {
             assert_eq!(
                 // SAFETY: the client lives.
                 unsafe { state(client) }.channel,
-                ffi::test::Channel::CLOSED,
+                ffi::Channel::CLOSED,
                 "invariant: the drive of the server close closes each channel"
             );
             // SAFETY: nothing uses the client after it.
@@ -332,7 +332,7 @@ impl Manager {
 
 /// The state of the channel and the connect of a client of a [`Manager`].
 struct State {
-    channel: ffi::test::Channel,
+    channel: ffi::Channel,
     /// The status of the connect.
     status: Status,
 }
@@ -346,7 +346,7 @@ unsafe fn state(client: NonNull<ffi::Client>) -> State {
     let (mut channel, mut status) = (MaybeUninit::uninit(), MaybeUninit::uninit());
     // SAFETY: the client lives.
     unsafe {
-        ffi::test::UA_Client_getState(
+        ffi::UA_Client_getState(
             client.as_ptr(),
             channel.as_mut_ptr(),
             ptr::null_mut(),

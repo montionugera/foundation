@@ -51,6 +51,25 @@ impl Server {
         Self { raw, events }
     }
 
+    /// Adds the variable `node` with the Double `value`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    #[cfg(test)]
+    pub(crate) fn add_double(&self, node: crate::client::Node, value: f64) {
+        // SAFETY: the server lives.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_double(
+                self.raw(),
+                node.namespace,
+                node.key,
+                value,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
     /// Gives the server, for a call that reads or changes it.
     pub(crate) fn raw(&self) -> *mut ffi::test::Server {
         self.raw.as_ptr()

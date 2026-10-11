@@ -102,6 +102,7 @@ _Static_assert(sizeof(UA_LifecycleState) == sizeof(int), "UA_LifecycleState chan
 _Static_assert(UA_NODEIDTYPE_NUMERIC == 0, "UA_NODEIDTYPE_NUMERIC moved");
 _Static_assert(sizeof(enum UA_NodeIdType) == sizeof(int), "UA_NodeIdType changed");
 _Static_assert(sizeof(UA_SessionState) == sizeof(int), "UA_SessionState changed");
+_Static_assert(UA_SESSIONSTATE_ACTIVATED == 4, "UA_SESSIONSTATE_ACTIVATED moved");
 _Static_assert(sizeof(UA_EventSourceType) == sizeof(int), "UA_EventSourceType changed");
 _Static_assert(sizeof(UA_EventSourceState) == sizeof(int),
                "UA_EventSourceState changed");
@@ -622,6 +623,13 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
     return UA_Client_newWithConfig(&config);
 }
 
+/* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
+ * `client`. A later run of the loop fails. */
+void shim_client_free(UA_Client *client) {
+    set_state(UA_Client_getConfig(client)->eventLoop, UA_EVENTLOOPSTATE_STOPPED);
+    UA_Client_delete(client);
+}
+
 /* Sets `key` of `map` to an array of the `size` strings at `strings`, at most 4. */
 UA_StatusCode shim_map_set_strings(UA_KeyValueMap *map, const char *key,
                                    const char *const *strings, size_t size) {
@@ -642,13 +650,13 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Asks `client` for the Value of node `node` of namespace 0, and has `callback` called
+/* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
  * with `data` and the answer. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_UInt32 node,
+UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data) {
-    return UA_Client_readValueAttribute_async(client, UA_NODEID_NUMERIC(0, node),
-                                              callback, data, NULL);
+    return UA_Client_readValueAttribute_async(
+        client, UA_NODEID_NUMERIC(namespace, node), callback, data, NULL);
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
@@ -658,6 +666,19 @@ UA_StatusCode shim_value_status(const void *value) {
     if(answer->hasStatus && answer->status != UA_STATUSCODE_GOOD)
         return answer->status;
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
+}
+
+/* Writes the scalar Double of `value`, an answer of a read, to `out`, or gives the
+ * status of `shim_value_status`, or `BadTypeMismatch` for another value. */
+UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    const UA_Variant *variant = &((const UA_DataValue *)value)->value;
+    if(!UA_Variant_hasScalarType(variant, &UA_TYPES[UA_TYPES_DOUBLE]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    *out = *(const UA_Double *)variant->data;
+    return UA_STATUSCODE_GOOD;
 }
 
 /* Gives whether `client` has the URI of namespace 1 from its server, which it reads
