@@ -4447,9 +4447,9 @@ mod port {
             assert_eq!(after, vec![first, second]);
         }
 
-        /// A member dials first and takes no place, so 256 programs fill the bound
-        /// after it, and the next program closes the oldest program. The member's
-        /// session stays.
+        /// 256 programs fill the bound, then a member dials: it takes no place, so no
+        /// session closes. The next program closes the oldest program, and the
+        /// member's session stays.
         #[test]
         fn the_bound_closes_no_session_of_a_member() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -4460,17 +4460,22 @@ mod port {
             let seen = Arc::clone(&out);
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
-                let (node, node_pool) = transport(&own, tasks.clone(), OTHER.1);
-                let member = node.dial(KEY.public(), &at).await.expect("a session");
-                let of_member = closings(std::slice::from_ref(&member), &tasks);
                 let (program, pool) = program(&own, tasks.clone());
                 let held = create_sessions(&program, &at, 256).await;
                 let closed = closings(&held, &tasks);
+                let (node, node_pool) = transport(&own, tasks.clone(), OTHER.1);
+                let member = node.dial(KEY.public(), &at).await.expect("a session");
+                let of_member = closings(std::slice::from_ref(&member), &tasks);
+                let sent_member = sent_clock(&member, &node_pool, &own).await;
+                let at_member = closed.borrow().clone();
                 let new = program.dial(KEY.public(), &at).await.expect("a session");
                 let sent = sent_clock(&new, &pool, &own).await;
                 own.clock().sleep(Span::SECOND).await;
-                let sent_member = sent_clock(&member, &node_pool, &own).await;
-                let closed = (of_member.borrow().clone(), closed.borrow().clone());
+                let closed = (
+                    at_member,
+                    of_member.borrow().clone(),
+                    closed.borrow().clone(),
+                );
                 *seen.lock().unwrap() = Some((sent, sent_member, closed));
                 drop((held, new, member, node, program));
             });
@@ -4480,7 +4485,7 @@ mod port {
                 out.lock().unwrap().take().expect("the peer ran");
             assert_eq!(sent, admitted());
             assert_eq!(sent_member, admitted());
-            assert_eq!(closed, (vec![], vec![(0, refused())]));
+            assert_eq!(closed, (vec![], vec![], vec![(0, refused())]));
         }
 
         /// A program that closes its session frees its place, so at the bound the
