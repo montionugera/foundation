@@ -49,8 +49,13 @@ pub(crate) fn configure(
 /// Gives the builds of the open62541 copy at `copy` and of our C ([`Builds::shim`]).
 /// `flags` is the text of the copy's `flags.txt`, whose include paths are relative to
 /// the copy. `sources` is the text of `sources.txt`, one file of the copy on each line.
-/// The shim build holds the test server `src/server.c` only when `sim` holds.
-pub(crate) fn builds(copy: &Path, flags: &str, sources: &str, sim: bool) -> Builds {
+/// The shim build holds the test server `src/server.c` only when `simulated` holds.
+pub(crate) fn builds(
+    copy: &Path,
+    flags: &str,
+    sources: &str,
+    simulated: bool,
+) -> Builds {
     let mut library = Build::new();
     library.warnings(false);
     let mut shim = Build::new();
@@ -75,7 +80,7 @@ pub(crate) fn builds(copy: &Path, flags: &str, sources: &str, sim: bool) -> Buil
         library.file(copy.join(source));
     }
     shim.file(root.join("src/shim.c"));
-    if sim {
+    if simulated {
         shim.file(root.join("src/server.c"));
     }
     Builds {
