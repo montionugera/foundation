@@ -373,7 +373,7 @@ pub enum Error {
     /// close with 0 or with a code outside the set.
     Transport(transport::Error),
     /// The node sent a message that `wire` refuses, or a body that ended early.
-    Message(wire::hub::Error),
+    Message(wire::hub::client::Error),
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
@@ -419,8 +419,8 @@ impl From<transport::Error> for Error {
     }
 }
 
-impl From<wire::hub::Error> for Error {
-    fn from(error: wire::hub::Error) -> Self {
+impl From<wire::hub::client::Error> for Error {
+    fn from(error: wire::hub::client::Error) -> Self {
         Self::Message(error)
     }
 }
