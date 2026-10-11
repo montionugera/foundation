@@ -406,12 +406,12 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
     times_out_and_closes(&[Span::from_nanos(2_500_000)]);
 }
 
-/// The close after a connect that times out can take two more request timeouts: one
-/// for the answer to the `CreateSession`, then one for the `CloseSession`. The server
-/// gets the `CreateSession` just before the deadline, or just after the check of
-/// timeouts at 4 s, answers it just before its timeout, and then stops. open62541
-/// checks the timeouts of requests once a second from the start of the connect, so
-/// the close ends at most 10 s after the deadline.
+/// The close after a connect that times out can take two more request timeouts: one for
+/// the answer to the `CreateSession`, then one for the `CloseSession`. The server gets
+/// the `CreateSession` just before the deadline and answers it at 9 s, or gets it just
+/// after the check of timeouts at 4 s and answers it just before its timeout, and then
+/// stops. open62541 checks the timeouts of requests once a second from the start of the
+/// connect, so the close ends at most 10 s after the deadline.
 #[test]
 fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later() {
     let before_the_deadline = times_out_and_closes(&[
