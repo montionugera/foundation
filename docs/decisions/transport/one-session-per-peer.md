@@ -43,7 +43,8 @@
   https://github.com/synnaxlabs/foundation/issues/1363#issuecomment-6037453233.
   Rule 1 changed by `laptop.architect-2`, 2026-10-09T00:28:02Z,
   https://github.com/synnaxlabs/foundation/pull/2042#issuecomment-6071747436. The
-  last sentence of rule 4 changed by `laptop.architect-2`, 2026-10-09T00:38:32Z,
+  sentence of rule 4 on keys that are equal added by `laptop.architect-2`,
+  2026-10-09T00:38:32Z,
   https://github.com/synnaxlabs/foundation/pull/2042#issuecomment-6071862349. The
   sentence of rule 4 on a session that has already ended as it arrives added by
   `laptop.architect-2`, 2026-10-11T07:28:01Z,

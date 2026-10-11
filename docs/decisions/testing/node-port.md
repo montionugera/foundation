@@ -221,9 +221,11 @@
   and is one of the 256 later peers of the guarantee (`laptop.architect-2`, 07:28 UTC:
   https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A place
   holds each session of its peer that runs: the transport keeps the older session of a
-  node key when the newer one has already ended, so the bound closes both. A peer that
-  proves a right leaves the bound: its place frees and its sessions stay. Membership is
-  the one proof today, which shard 0 reads again for each held place as each new session
+  node key when the newer one has already ended, so the bound closes both
+  (`laptop.architect-2`, 07:28 UTC, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A peer
+  that proves a right leaves the bound: its place frees and its sessions stay.
+  Membership is the one proof today, which shard 0 reads again for each held place as each new session
   of a peer outside the region arrives. The client hello of #1744 and the ticket join of
   #1157 must each free the place when its proof holds. Guarantee: a peer outside the
   region keeps its session until 256 later peers took a place, so the bound never closes

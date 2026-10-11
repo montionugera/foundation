@@ -4899,12 +4899,12 @@ mod port {
         }
 
         /// A node outside the region holds the oldest place, 255 programs fill the
-        /// bound, and the node dials again from a new transport. The node's transport
-        /// closes the old session as the new one arrives. When the old session still
-        /// holds the place at `accept`, the new one keeps its age, and the next program
-        /// closes it; else the new one takes a new place, and the next program closes
-        /// the oldest program. No other session closes, and each outcome occurs at some
-        /// seed.
+        /// bound, and the node dials again from a new transport. The transport of the
+        /// started node closes the old session as the new one arrives. When the old
+        /// session still holds the place at `accept`, the new one keeps its age, and
+        /// the next program closes it; else the new one takes a new place, and the next
+        /// program closes the oldest program. No other session closes, and each
+        /// outcome occurs at some seed.
         #[test]
         fn a_node_that_dials_again_keeps_its_age_or_takes_a_new_place() {
             let kept = (vec![(0, refused())], vec![]);
