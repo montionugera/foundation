@@ -15,7 +15,7 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use std::path::Path;
 use std::pin::Pin;
 
-use env::files::{File, Files};
+use env::files::{File, Files, Mode};
 use types::ed25519::PublicKey;
 
 use crate::{Error, sector};
@@ -55,47 +55,60 @@ pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
 /// Holds the file `address` of `files` with `address` while `serve` runs: writes it in
 /// place, awaits `serve`, and writes it empty. The first hold on a data directory
 /// makes the file, and a later one writes in its room, so it needs no free bytes.
-/// Writes over a file of another length after it removes it. When the write fails,
-/// does not poll `serve`, and writes the file empty. Does not drop `serve`: the caller
-/// drops it after it has read the error. Call it under the lock of the data directory.
+/// Writes over a file of another length after it removes it. Does not read the file.
+/// When the open or the write fails, does not poll `serve`, and writes the file empty.
+/// Does not drop `serve`: the caller drops it after it has read the error. Call it
+/// under the lock of the data directory.
 ///
 /// # Errors
 ///
-/// [`Error::Directory`] for a file call that fails: one of the write, else the empty
-/// write.
+/// [`Error::Directory`] for a file call that fails: one of the open or the write,
+/// else the empty write.
 pub(crate) async fn hold(
     files: &Files,
     address: &Address,
     serve: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), Error> {
-    let file = open(files).await.map_err(Error::Directory)?;
-    let written = sector::write(files, &file, &encode(address)).await;
-    let emptied = if written.is_ok() {
-        serve.await;
-        sector::clear::<LEN>(&file).await
-    } else {
-        // The write can leave the address, and a failed sync poisons `file`.
-        file.close().await;
-        match files.open(Path::new(FILE), env::files::Mode::Write).await {
-            Ok(file) => sector::clear::<LEN>(&file).await,
-            Err(error) => Err(error),
+    let written = write(files, address).await;
+    let emptied = match &written {
+        Ok(file) => {
+            serve.await;
+            sector::clear::<LEN>(file).await
         }
+        Err(_) => empty(files).await,
     };
     written.and(emptied).map_err(Error::Directory)
 }
 
-/// Opens the file to write, made of zero bytes when it is not there, and made again
-/// when it has another length.
-async fn open(files: &Files) -> Result<File, env::files::Error> {
+/// Writes `address` in the file, made of zero bytes when it is not there, and made
+/// again when it has another length. Closes the file when the write fails.
+async fn write(files: &Files, address: &Address) -> Result<File, env::files::Error> {
     let path = Path::new(FILE);
-    let opened = match sector::open::<LEN>(files, path, TAG).await {
+    let mode = Mode::Create { len: LEN as u64 };
+    let file = match files.open(path, mode).await {
         Err(env::files::Error::Length { .. }) => {
             files.remove(path).await?;
-            sector::open(files, path, TAG).await
+            files.open(path, mode).await?
         }
-        opened => opened,
+        opened => opened?,
     };
-    Ok(opened?.0)
+    match sector::write(files, &file, &encode(address)).await {
+        Ok(()) => Ok(file),
+        Err(error) => {
+            file.close().await;
+            Err(error)
+        }
+    }
+}
+
+/// Writes the file empty after a failed open or write, which can leave the address
+/// of a crash or of this write. A file of another length or with no bytes holds no
+/// address. Opens it again, since a failed sync poisons the handle.
+async fn empty(files: &Files) -> Result<(), env::files::Error> {
+    match files.open(Path::new(FILE), Mode::Write).await? {
+        file if file.len() == LEN as u64 => sector::clear::<LEN>(&file).await,
+        _ => Ok(()),
+    }
 }
 
 /// The bytes of the file that holds `address`.

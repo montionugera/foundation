@@ -355,10 +355,9 @@ fn a_power_cut_during_a_start_leaves_no_address_or_the_whole_address() {
 /// writes.
 #[test]
 fn a_failed_file_call_of_the_write_stops_the_node() {
-    use env::files::Operation::{Open, ReadAt, Sync, WriteAt};
+    use env::files::Operation::{Open, Sync, WriteAt};
     for (operation, text) in [
         (Open, "open of address failed with OS error 5"),
-        (ReadAt, "read_at of address failed with OS error 5"),
         (WriteAt, "write_at of address failed with OS error 5"),
         (Sync, "sync of address failed with OS error 5"),
     ] {
@@ -386,6 +385,47 @@ fn a_failed_file_call_of_the_write_stops_the_node() {
             "{operation:?}"
         );
         assert_eq!(stop(&mut sim, node), Ok(()), "{operation:?}");
+    }
+}
+
+/// The start does not read `address`: a read of it that fails stops no node.
+#[test]
+fn a_start_does_not_read_the_address() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    host.fail_file(Path::new(FILE), env::files::Operation::ReadAt);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(stop(&mut sim, node), Ok(()));
+}
+
+/// After a crash left `address`, a start whose open or write of it fails writes it
+/// empty, so no address stays once the lock drops.
+#[test]
+fn a_failed_write_after_a_crash_writes_the_address_empty() {
+    use env::files::Operation::{Open, Sync, WriteAt};
+    for operation in [Open, WriteAt, Sync] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = start(&host, PORT);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        sim.crash(&host, sim::Crash::Process);
+        drop(node);
+        assert_eq!(
+            held(&mut sim, &host),
+            Some(of(&host, PORT)),
+            "{operation:?}"
+        );
+        host.fail_file(Path::new(FILE), operation);
+        let node = start(&host, PORT + 1);
+        assert_eq!(sim.run(), Ok(()), "{operation:?}");
+        let error = Error::Directory(env::files::Error::Io {
+            path: PathBuf::from(FILE),
+            operation,
+            code: 5,
+        });
+        assert_eq!(node.join(), Err(error), "{operation:?}");
+        assert_eq!(bytes(&mut sim, &host), Some([0; LEN]), "{operation:?}");
     }
 }
 
