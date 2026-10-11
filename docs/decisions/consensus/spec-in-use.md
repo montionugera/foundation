@@ -55,5 +55,7 @@
   (https://github.com/synnaxlabs/foundation/pull/1897#issuecomment-6063561498).
   Supersedes: the base tree from the spec in use in item 2 of
   https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6058455178, the wait
-  of `Mesh::spec` in item 4 of the same comment, and the text of `Behind::pointer` in
-  https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6061345871.
+  of `Mesh::spec` in item 4 of the same comment, the text of `Behind::pointer` in
+  https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6061345871, and the
+  chunks of the spec in use from `spec::region::tree` in
+  https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6058621907.
