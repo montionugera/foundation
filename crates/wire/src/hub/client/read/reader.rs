@@ -19,7 +19,7 @@ pub struct Reader {
 enum Next {
     Places,
     Run { places: Places, remain: u32 },
-    Home,
+    Given,
 }
 
 /// One message of the start of a read stream from the node.
@@ -97,11 +97,11 @@ impl Reader {
                 let home =
                     (rest == 0).then(|| hub::Reader::of(places.count, self.latest));
                 if home.is_some() {
-                    self.next = Next::Home;
+                    self.next = Next::Given;
                 }
                 Ok(FromNode::Run { places: run, home })
             }
-            Next::Home => {
+            Next::Given => {
                 panic!("a read stream is decoded after the decoder gave its home")
             }
         }
