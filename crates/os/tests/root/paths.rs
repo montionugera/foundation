@@ -66,7 +66,7 @@ fn a_write_past_the_size_limit_gives_the_error_of_a_remove_that_fails() {
             .unwrap()
             .map(|entry| entry.unwrap().path());
         let hidden: Vec<_> = entries.filter(|entry| *entry != path).collect();
-        // Only this user reads the part of the bytes that stays.
+        // The mode gives the part of the bytes that stays to this user only.
         let modes: Vec<_> = hidden.iter().map(|part| mode(part)).collect();
         assert_eq!(modes, [0o600]);
     });
