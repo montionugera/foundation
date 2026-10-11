@@ -2,6 +2,7 @@
 
 mod files;
 mod net;
+mod paths;
 mod serial;
 
 use std::cell::RefCell;

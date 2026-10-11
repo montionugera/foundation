@@ -35,6 +35,7 @@ mod files;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
+mod paths;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -153,6 +154,14 @@ pub fn threads() -> Result<env::threads::Threads, Error> {
 #[must_use]
 pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
+}
+
+/// The real files of the host by path. A write makes `<path>.new` beside `path`,
+/// syncs it, and renames it over `path`, so a reader or a crash sees the old file or
+/// the new one. A write that fails removes `<path>.new`.
+#[must_use]
+pub fn paths() -> env::paths::Paths {
+    env::paths::Paths::new(paths::Driver)
 }
 
 /// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir`

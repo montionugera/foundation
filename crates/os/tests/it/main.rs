@@ -3,6 +3,8 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
+#[path = "../common/paths.rs"]
+mod cases;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod clock;
 mod common;
@@ -20,6 +22,8 @@ mod kept;
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paths;
 #[cfg(target_os = "linux")]
 #[path = "../common/seccomp.rs"]
 mod seccomp;

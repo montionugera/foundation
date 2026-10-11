@@ -252,6 +252,25 @@ impl Node {
             .fail(self.0.node, path, operation);
     }
 
+    /// The files of the node's host by path: a tree in memory, apart from the node's
+    /// disk, with no file at first. A directory is there while a file is under it, so
+    /// a write makes each directory above its file. A relative path is under `/`, the
+    /// working directory. `.` and `..` act on the path as text. A call takes no time,
+    /// may come from any thread, and acts at once. A crash of the node keeps the tree.
+    /// A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path through a
+    /// file, and 21 (`EISDIR`) for a write on a directory.
+    #[must_use]
+    pub fn paths(&self) -> env::paths::Paths {
+        env::paths::Paths::new(self.0.clone())
+    }
+
+    /// Makes the next read or write of `path` on the node's host fail with
+    /// `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one per
+    /// call, and a failed call changes no file.
+    pub fn fail_path(&self, path: &Path, code: i32) {
+        lock(&self.0.shared).paths().fail(self.0.node, path, code);
+    }
+
     /// The node's IPv4 and IPv6 addresses, in that order: node `k`, from 0 in the
     /// order of [`Sim::node`](crate::Sim::node), has `10.0.0.0` and `fd00::`, each
     /// plus `k + 1`.
