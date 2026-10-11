@@ -65,11 +65,12 @@ async fn commit(
 }
 
 /// Settles the change from `base` to the tree of `definitions`, after a put of each
-/// chunk of that tree. The change lists the root of `base`, whose get fails.
-async fn settle_listing_base(
+/// chunk of that tree. The change lists the chunk `listed`, whose get fails.
+async fn settle_listing(
     node: &sim::node::Node,
     mesh: &Mesh,
     base: Pointer,
+    listed: Digest,
     definitions: &BTreeMap<Name, Definition>,
 ) -> Pointer {
     let mut chunks = Chunks::default();
@@ -77,12 +78,9 @@ async fn settle_listing_base(
     put(&mesh.store, &mesh.pool, &chunks, &update.chunks)
         .await
         .unwrap();
-    node.fail_file(
-        &Path::new(BLOB).join(base.root.to_string()),
-        Operation::Open,
-    );
+    node.fail_file(&Path::new(BLOB).join(listed.to_string()), Operation::Open);
     let holders = [key(1)].into();
-    let listed = [base.root].into();
+    let listed = [listed].into();
     mesh.settle_spec(base, update.root, listed, holders, BTreeMap::new())
         .await
         .unwrap()
@@ -377,7 +375,7 @@ fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
             create_subjects(&["plant.b"], 1),
         );
         let first = mesh.apply(base(), a, BTreeMap::new()).await.unwrap();
-        let moved = settle_listing_base(&node, &mesh, first, &b).await;
+        let moved = settle_listing(&node, &mesh, first, first.root, &b).await;
         assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
     });
 }
@@ -403,7 +401,7 @@ fn a_read_after_an_open_gets_no_listed_chunk_of_the_tree_in_use() {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
         reach(&mesh, &node.clock(), first).await;
         let b = create_subjects(&["plant.b"], 1);
-        let moved = settle_listing_base(&node, &mesh, first, &b).await;
+        let moved = settle_listing(&node, &mesh, first, first.root, &b).await;
         assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
     })
     .unwrap();
@@ -418,7 +416,34 @@ fn a_read_gets_no_listed_chunk_of_the_founding_tree() {
         let mesh = Mesh::start(config).await.unwrap();
         let b = create_subjects(&["plant.b"], 1);
         let founded = pointer(0, &founding);
-        let moved = settle_listing_base(&node, &mesh, founded, &b).await;
+        let moved = settle_listing(&node, &mesh, founded, founded.root, &b).await;
+        assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
+    });
+}
+
+// A read with a problem keeps the chunks of the tree in use.
+#[test]
+fn a_read_after_a_problem_gets_no_listed_chunk_that_the_tree_in_use_holds() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let (a, b) = (
+            create_subjects(&["plant.a"], 1),
+            create_subjects(&["plant.b"], 1),
+        );
+        let first = mesh
+            .apply(base(), a.clone(), BTreeMap::new())
+            .await
+            .unwrap();
+        let second = commit(&mesh, first, &create_admin()).await;
+        let behind = Spec {
+            behind: Some(Behind {
+                pointer: second,
+                cause: admin(),
+            }),
+            ..in_use(first, &a)
+        };
+        assert_eq!(mesh.spec().await, Ok(behind));
+        let moved = settle_listing(&node, &mesh, second, first.root, &b).await;
         assert_eq!(mesh.spec().await, Ok(in_use(moved, &b)));
     });
 }
