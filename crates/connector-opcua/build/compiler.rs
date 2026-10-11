@@ -15,6 +15,9 @@ pub(crate) fn check(tool: &Tool) -> Result<(), String> {
     ))
 }
 
+/// The directory of our C.
+const SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+
 /// The two builds of `build.rs`, and whether they build with the address sanitizer.
 pub(crate) struct Builds {
     /// The open62541 copy, with its warnings off.
@@ -41,8 +44,7 @@ pub(crate) fn configure(
 ) -> Result<Builds, String> {
     let mut builds = builds(copy, flags, sources);
     if env("CARGO_FEATURE_SIM").is_some() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        builds.shim.file(root.join("src/server.c"));
+        builds.shim.file(Path::new(SRC).join("server.c"));
     }
     builds.sanitize(env)?;
     // After `sanitize`, which can replace the compiler with clang.
@@ -53,13 +55,13 @@ pub(crate) fn configure(
 /// Gives the builds of the open62541 copy at `copy` and of our C ([`Builds::shim`]).
 /// `flags` is the text of the copy's `flags.txt`, whose include paths are relative to
 /// the copy. `sources` is the text of `sources.txt`, one file of the copy on each line.
+/// The shim build holds `src/shim.c` alone: [`configure`] adds `src/server.c`.
 pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     let mut library = Build::new();
     library.warnings(false);
     let mut shim = Build::new();
     shim.warnings(true).warnings_into_errors(true);
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let header = format!("\"{}\"", root.join("src/alloc.h").display());
+    let header = format!("\"{}\"", Path::new(SRC).join("alloc.h").display());
     library.define("UA_ARCH_HEADER", header.as_str());
     shim.define("UA_ARCH_HEADER", header.as_str());
     for flag in flags.lines() {
@@ -77,7 +79,7 @@ pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     for source in sources.lines() {
         library.file(copy.join(source));
     }
-    shim.file(root.join("src/shim.c"));
+    shim.file(Path::new(SRC).join("shim.c"));
     Builds {
         library,
         shim,
