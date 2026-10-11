@@ -2323,9 +2323,9 @@ mod tests {
         Stopped::Write(log::Error::Files(cause))
     }
 
-    // For a test in which no message shows the term: a refused message gets no
-    // reply, a node with no voters sends nothing, and a served stream or a test
-    // peer takes the messages of `Mesh::outgoing`.
+    /// The term of `mesh`, for a test in which no message shows it: a refused
+    /// message gets no reply, a node with no voters sends nothing, and a served
+    /// stream or a test peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
     }
