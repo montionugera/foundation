@@ -1208,6 +1208,29 @@ fn takes_a_count_of_zero_as_no_findings() {
 }
 
 #[test]
+fn reads_no_invisible_character_in_a_code_span() {
+    for c in ['\u{200B}', '\u{FFF8}'] {
+        let head = format!("{NAME}\nQuality: 8/10\n`{c}`");
+        assert_eq!(
+            check(&record(vec![headed(&head)])),
+            unrated("has no summary line after its `Quality:` line"),
+            "summary {:X}",
+            u32::from(c)
+        );
+        let comment = ROUND.replace(
+            "Hot path: none",
+            &format!("`{c}Hot path:` `send`\nHot path: none"),
+        );
+        assert_eq!(
+            check(&record(vec![bot(&comment)])),
+            vec!["review round 3 has a second `Hot path:` line in its end lines."],
+            "end line {:X}",
+            u32::from(c)
+        );
+    }
+}
+
+#[test]
 fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
     let round = ROUND.replace("Findings: none", "Findings: 2![](x)");
     assert_eq!(
