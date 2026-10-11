@@ -11,9 +11,10 @@
 
 #include <string.h>
 
-/* Gives a server on `el` with the minimal config for `port`, the one server URL `url`,
- * and room for `sessions` sessions and secure channels, or NULL on a failure. */
-UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *url,
+/* Gives a server on `el` with the minimal config, the one server URL
+ * `opc.tcp://{host}:{port}`, and room for `sessions` sessions and secure channels, or
+ * NULL on a failure. */
+UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
                            UA_UInt16 sessions) {
     UA_ServerConfig config;
     memset(&config, 0, sizeof(config));
@@ -27,17 +28,14 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *url,
     }
     config.maxSessions = sessions;
     config.maxSecureChannels = sessions;
-    UA_Array_delete(config.serverUrls, config.serverUrlsSize,
-                    &UA_TYPES[UA_TYPES_STRING]);
-    config.serverUrlsSize = 0;
-    UA_String text = UA_STRING((char *)(uintptr_t)url);
-    if(UA_Array_copy(&text, 1, (void **)&config.serverUrls,
-                     &UA_TYPES[UA_TYPES_STRING]) != UA_STATUSCODE_GOOD) {
-        config.serverUrls = NULL;
+    /* The minimal config has the one server URL `opc.tcp://:{port}`. */
+    UA_String *url = &config.serverUrls[0];
+    UA_String_clear(url);
+    if(UA_String_format(url, "opc.tcp://%s:%u", host, (unsigned)port) !=
+       UA_STATUSCODE_GOOD) {
         UA_ServerConfig_clear(&config);
         return NULL;
     }
-    config.serverUrlsSize = 1;
     return UA_Server_newWithConfig(&config);
 }
 

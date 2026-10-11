@@ -26,7 +26,8 @@ pub(crate) fn blob(error: &blob::Error) -> Option<&files::Error> {
         blob::Error::Files(error) => Some(error),
         blob::Error::Pool(_)
         | blob::Error::Mismatch { .. }
-        | blob::Error::Stray { .. } => None,
+        | blob::Error::Stray { .. }
+        | blob::Error::Floor { .. } => None,
     }
 }
 
@@ -123,8 +124,14 @@ mod tests {
             path: PathBuf::from("mesh/log/log-0"),
             offset: 64,
         };
+        let floor = blob::Error::Floor {
+            len: 68,
+            free_bytes: (1 << 30) - 1,
+            floor_bytes: 1 << 30,
+        };
         for error in [
             Error::Mesh(mesh::Error::Log(corrupt)),
+            Error::Mesh(mesh::Error::Blob(floor)),
             Error::Group(Stopped::Dropped),
             Error::Key,
         ] {

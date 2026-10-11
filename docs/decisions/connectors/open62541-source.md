@@ -497,18 +497,31 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093544897,
   2026-10-10 04:00 UTC). Supersedes the drive until `STOPPED` of
   https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998.
-  `connection::Manager::close_server` calls `UA_Server_run_shutdown`, does that drive,
-  and deletes the server, with no call between: decided by `laptop.architect-2`
+  The one function that calls `UA_Server_run_shutdown`, does that drive, and
+  deletes the server, with no call between: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
-  2026-10-10 15:28 UTC). Supersedes the `delete_server` sentence approved at `3b508e494`
-  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338). It is
-  behind `cfg(any(test, feature = "sim"))` until a server that serves users calls it:
-  decided by `laptop.architect-2`
+  2026-10-10 15:28 UTC), as `connection::Manager::close_server`. Supersedes the
+  `delete_server` sentence approved at `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338). That
+  function is `server::Server::close`, on a `server::Server` that owns the server:
+  approved by `laptop.architect-2` as a later step of 6c on #435
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
+  2026-10-10 03:15 UTC). It is behind `cfg(any(test, feature = "sim"))` until a
+  server that serves users calls it: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
-  2026-10-10 15:28 UTC), which moves to `close_server` the cfg on `delete_server`
+  2026-10-10 15:28 UTC), which moves to that function the cfg on `delete_server`
   approved at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
-  2026-10-10 03:05 UTC). The one function: asked by `laptop.architect-2`
+  2026-10-10 03:05 UTC). `server::Server` holds the started test server.
+  `Server::start` is an `unsafe fn` whose caller deletes the server before its manager
+  drops, and it takes the port of the server from the listener of the manager.
+  `Server::close` panics before the stop when its manager does not hold the loop of
+  the server: approved by `laptop.architect-2` at `d6d834286`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
+  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it
+  makes the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
+  2026-10-11 10:14 UTC). The one function: asked by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
   2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
   code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
@@ -519,8 +532,12 @@
   exception: approved by `laptop.architect-2` at `c04ad0db3`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
   2026-10-10 16:03 UTC). The test of the panic at the bound deletes its server itself
-  after that panic, because `close_server` panics before its delete, and the delayed
+  after that panic, because `Server::close` panics before its delete, and the delayed
   callbacks that still wait are those of the test, which do not read the server. That
   exception: approved by `laptop.architect-2` at `08c753cbe`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6103350388,
-  2026-10-10 23:32 UTC).
+  2026-10-10 23:32 UTC). The test of a close through another manager stops and
+  deletes its server itself, because `Server::close` panics before its stop and takes
+  the server. That exception: approved by `laptop.architect-2` at `c9a61bcaf`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
+  2026-10-11 10:14 UTC).

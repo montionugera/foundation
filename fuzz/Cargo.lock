@@ -132,7 +132,9 @@ version = "0.0.0"
 dependencies = [
  "block",
  "env",
+ "transport",
  "types",
+ "wire",
 ]
 
 [[package]]

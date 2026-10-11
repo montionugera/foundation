@@ -1,6 +1,7 @@
 //! Shard 0's sessions: each stream goes to the server of the protocol its header names.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::{Rc, Weak};
@@ -10,7 +11,6 @@ use hub::{Hub, Link};
 use mesh::Mesh;
 use transport::stream::Incoming;
 use transport::{Code, Error, Peer, Session, Transport};
-use types::ed25519::PublicKey;
 use types::time::Span;
 use wire::Protocol;
 
@@ -25,9 +25,9 @@ const PLACES: usize = 256;
 
 /// Serves each session of `transport` in its own future on `tasks`, until the transport
 /// stops, and gives the error that stopped it. Admits each session of a member of
-/// `mesh`'s region, and of another peer while it gets a place, of at most [`PLACES`];
-/// closes each other session with `wire::session::REFUSED`. `route` decides each
-/// stream.
+/// `mesh`'s region. Gives each session of another peer a place, of at most
+/// [`PLACES`]; at the bound, the oldest place frees for it ([`Places::take`]).
+/// `route` decides each stream.
 pub(crate) async fn accept(
     transport: Rc<Transport>,
     mesh: Option<Mesh>,
@@ -42,15 +42,7 @@ pub(crate) async fn accept(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let peer = session.peer();
-        let held = if member(peer, mesh.as_ref()) {
-            None
-        } else if let Some(place) = places.take(peer) {
-            Some(place)
-        } else {
-            session.close(Code(wire::session::REFUSED));
-            continue;
-        };
+        let held = places.take(&session, |peer| member(peer, mesh.as_ref()));
         let link = hub.link(session.clone());
         let serve = serve(session, mesh.clone(), link, clock.clone(), tasks.clone());
         sessions.spawn(Box::pin(async move {
@@ -60,40 +52,76 @@ pub(crate) async fn accept(
     }
 }
 
-/// The places that the peers outside the region hold. A place is a token: it is held
-/// while a session's future holds it, and free once the last holder drops it.
+/// A place that a peer outside the region took, held while a session of it runs.
+struct Place {
+    peer: Peer,
+    /// Each session of the peer that runs, by serial. A node key can have two open:
+    /// the transport keeps the older session when the newer one has already ended.
+    sessions: RefCell<Vec<(u64, Session)>>,
+}
+
+/// A session's hold on its place. The place frees when its last hold drops.
+pub(crate) struct Hold {
+    place: Rc<Place>,
+    serial: u64,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut sessions = self.place.sessions.borrow_mut();
+        sessions.retain(|(serial, _)| *serial != self.serial);
+    }
+}
+
+/// The places that the peers outside the region hold, oldest first.
 #[derive(Default)]
-struct Places {
-    /// One token for all programs, one clone for each open session.
-    programs: Rc<()>,
-    /// The token of each node's key, shared by that key's open sessions.
-    nodes: BTreeMap<PublicKey, Weak<()>>,
+pub(crate) struct Places {
+    held: VecDeque<Weak<Place>>,
+    serial: u64,
 }
 
 impl Places {
-    /// The place of a new session of `peer`: the place that the key of a node still
-    /// holds, else a new place while fewer than [`PLACES`] are held. `None` when the
-    /// bound is full.
-    fn take(&mut self, peer: Peer) -> Option<Rc<()>> {
-        self.nodes.retain(|_, place| place.strong_count() > 0);
-        // `Places` itself holds one count of `programs`.
-        let taken = Rc::strong_count(&self.programs) - 1 + self.nodes.len();
-        let full = taken >= PLACES;
-        match peer {
-            Peer::Client if full => None,
-            Peer::Client => Some(Rc::clone(&self.programs)),
-            Peer::Node(key) => {
-                if let Some(place) = self.nodes.get(&key).and_then(Weak::upgrade) {
-                    return Some(place);
-                }
-                if full {
-                    return None;
-                }
-                let place = Rc::new(());
-                self.nodes.insert(key, Rc::downgrade(&place));
-                Some(place)
-            }
+    /// The hold of `session` on its place: the place that its node key still holds,
+    /// which keeps its age, else a new place. `None` when `member` holds for the peer.
+    /// Each place whose peer `member` now holds frees, and its sessions stay. At
+    /// [`PLACES`], the oldest place frees first, and each session that holds it closes
+    /// with `wire::session::REFUSED`.
+    pub(crate) fn take(
+        &mut self,
+        session: &Session,
+        member: impl Fn(Peer) -> bool,
+    ) -> Option<Hold> {
+        let peer = session.peer();
+        if member(peer) {
+            return None;
         }
+        self.held
+            .retain(|place| place.upgrade().is_some_and(|place| !member(place.peer)));
+        let kept = match peer {
+            Peer::Node(_) => (self.held.iter().filter_map(Weak::upgrade))
+                .find(|place| place.peer == peer),
+            Peer::Client => None,
+        };
+        let place = kept.unwrap_or_else(|| {
+            if self.held.len() >= PLACES
+                && let Some(oldest) =
+                    self.held.pop_front().and_then(|old| old.upgrade())
+            {
+                for (_, open) in oldest.sessions.borrow().iter() {
+                    open.close(Code(wire::session::REFUSED));
+                }
+            }
+            let place = Rc::new(Place {
+                peer,
+                sessions: RefCell::default(),
+            });
+            self.held.push_back(Rc::downgrade(&place));
+            place
+        });
+        let serial = self.serial;
+        self.serial += 1;
+        place.sessions.borrow_mut().push((serial, session.clone()));
+        Some(Hold { place, serial })
     }
 }
 

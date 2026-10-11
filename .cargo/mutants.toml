@@ -80,11 +80,14 @@ exclude_re = [
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
   # The oracle of `node.key` in the `node_identity` fuzz target and the property
-  # tests. It panics only when `decode` is wrong, and the mutants of `decode` show that
-  # it does.
+  # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
+  # and the mutants of `written` show that it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
   'crates/node/src/admin\.rs:.*replace check with \(\)',
+  # The check that `identity::check` and `admin::check` call, for the same reason. The
+  # unit tests `panics_when_a_decode_*` in `sector.rs` show that it panics.
+  'crates/node/src/sector\.rs:.*replace check with \(\)',
   # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
@@ -155,4 +158,9 @@ exclude_re = [
   # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
   # `a_connector_on_another_node_starts_no_run` kills it.
   'crates/node/src/connectors\.rs:.*\*connector\.node\(\) == self\.node with true',
+  # A kept clone of an ended session holds only memory of shard 0 (its carrier slot)
+  # while its place lives, and a close of an ended session does nothing. No counting
+  # test of `node` opens sessions yet (#2370). The unit test
+  # `a_session_whose_hold_drops_leaves_its_place` kills it through `Places::take`.
+  'crates/node/src/route\.rs:.*replace <impl Drop for Hold>::drop with \(\)',
 ]

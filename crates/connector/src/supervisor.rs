@@ -1595,7 +1595,9 @@ mod tests {
             scene.node.clock().sleep(ms(500)).await;
             let held = fill(&hog);
             scene.remove("samples");
-            scene.node.clock().sleep(ms(20_000)).await;
+            // Off the status writes at 1.5 s plus each whole second, where the order of
+            // the two tasks is random.
+            scene.node.clock().sleep(ms(20_100)).await;
             drop(held);
         });
         assert_eq!(returned, ms(21_500), "state 3 waits until the pool frees");

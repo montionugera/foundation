@@ -25,3 +25,10 @@
   (https://github.com/synnaxlabs/foundation/issues/1870#issuecomment-6059089435) at
   2026-10-08T12:02:17Z
   (https://github.com/synnaxlabs/foundation/pull/1874#issuecomment-6059414350).
+  Amended (2026-10-10, #2307): `Reader::sleep_until(at: Monotonic) ->
+  env::clock::Sleep` waits on the monotonic clock that `Reader::now` reads, so a
+  deadline from `now().monotonic` and its sleep read one clock. It gives `Sleep`, so a
+  task that sleeps again can keep it and `reset` it. Lost: `impl Future + use<>`; an
+  accessor of the monotonic clock on `Reader`. By `laptop.architect-2`
+  (2026-10-10T23:25:22Z:
+  https://github.com/synnaxlabs/foundation/issues/2307#issuecomment-6103294500).
