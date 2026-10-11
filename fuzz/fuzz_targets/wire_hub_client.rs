@@ -290,12 +290,12 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
         assert_eq!(Open::decode(&out), Ok(open), "the open changed");
     }
 
-    let sample = input.arbitrary::<&str>()?.parse();
+    let data_type = input.arbitrary::<&str>()?.parse();
     let name = input.arbitrary::<&str>()?.parse();
-    if let (Ok(sample), Ok(name)) = (sample, name) {
+    if let (Ok(data_type), Ok(name)) = (data_type, name) {
         let run = [Place {
             key: channel::Key::from_u128(input.arbitrary()?),
-            sample,
+            data_type,
             name,
         }];
         let out = encode_run(&run);

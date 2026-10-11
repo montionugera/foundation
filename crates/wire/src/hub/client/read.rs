@@ -223,7 +223,7 @@ pub struct Place {
     /// The channel's key.
     pub key: channel::Key,
     /// The channel's sample type.
-    pub sample: Type,
+    pub data_type: Type,
     /// The channel's name.
     pub name: Name,
 }
@@ -231,7 +231,7 @@ pub struct Place {
 impl Place {
     /// The bytes of the encoded place.
     fn encoded_len(&self) -> usize {
-        self.sample
+        self.data_type
             .to_string()
             .len()
             .saturating_add(self.name.as_str().len())
@@ -272,12 +272,12 @@ pub mod place {
         pub fn encode(&self, out: &mut [u8]) {
             let mut out = Writer::new(out, self.encoded_len());
             for place in self.places {
-                let sample = place.sample.to_string();
+                let data_type = place.data_type.to_string();
                 out.put(&place.key.as_u128().to_le_bytes());
-                out.put(&[u8::try_from(sample.len()).expect(
+                out.put(&[u8::try_from(data_type.len()).expect(
                     "invariant: the text of a sample type is under 256 bytes",
                 )]);
-                out.put(sample.as_bytes());
+                out.put(data_type.as_bytes());
                 out.put(&[u8::try_from(place.name.as_str().len())
                     .expect("invariant: a name is at most 255 bytes")]);
                 out.put(place.name.as_str().as_bytes());
@@ -333,14 +333,14 @@ pub mod place {
         while !fields.is_empty() {
             let key = u128::from_le_bytes(*fields.take()?);
             let [len] = *fields.take()?;
-            let sample = text::read(fields.take_slice(usize::from(len))?)
+            let data_type = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Sample)?;
             let [len] = *fields.take()?;
             let name = text::read(fields.take_slice(usize::from(len))?)
                 .map_err(Error::Name)?;
             places.push(Place {
                 key: channel::Key::from_u128(key),
-                sample,
+                data_type,
                 name,
             });
         }

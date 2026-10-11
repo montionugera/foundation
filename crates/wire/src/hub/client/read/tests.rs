@@ -21,10 +21,10 @@ fn open(mode: Mode, patterns: &[&str]) -> Open {
     }
 }
 
-fn pt(key: u128, sample: &str, name: &str) -> Place {
+fn pt(key: u128, data_type: &str, name: &str) -> Place {
     Place {
         key: channel::Key::from_u128(key),
-        sample: sample.parse().unwrap(),
+        data_type: data_type.parse().unwrap(),
         name: name.parse().unwrap(),
     }
 }
@@ -489,16 +489,16 @@ fn fits_the_largest_place_in_300_bytes() {
     let name: Name = "a".repeat(Name::MAX_BYTES).parse().unwrap();
     let places: Vec<_> = largest_types()
         .into_iter()
-        .map(|sample| Place {
+        .map(|data_type| Place {
             key: channel::Key::from_u128(1),
-            sample,
+            data_type,
             name: name.clone(),
         })
         .collect();
     for place in &places {
         let one = std::slice::from_ref(place);
         let runs: Vec<_> = place::messages(one, 300).map(|run| run.places).collect();
-        assert_eq!(runs, [one], "{}", place.sample);
+        assert_eq!(runs, [one], "{}", place.data_type);
     }
     assert_eq!(places.iter().map(Place::encoded_len).max(), Some(300));
 }
@@ -562,9 +562,9 @@ fn places() -> impl Strategy<Value = Vec<Place>> {
         sample(),
         "[a-z_]{1,8}(\\.[a-z0-9_]{1,8}){0,3}",
     )
-        .prop_map(|(key, sample, name)| Place {
+        .prop_map(|(key, data_type, name)| Place {
             key: channel::Key::from_u128(key),
-            sample,
+            data_type,
             name: name.parse().unwrap(),
         });
     proptest::collection::vec(place, 1..8)
