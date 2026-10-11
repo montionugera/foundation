@@ -31,7 +31,7 @@ use crate::applied::Applied;
 use crate::bytes::block;
 use crate::change::{Change, Join, Malformed};
 use crate::claim::{self, Known, Signer};
-use crate::error::{Error, Stopped};
+use crate::error::{self, Error, Stopped};
 use crate::log::{self, Log};
 use crate::member::Member;
 use crate::message::Message;
@@ -491,15 +491,19 @@ impl Mesh {
     }
 
     /// The `Join` of `request` at the later edge of the mesh time of `time`, with a new
-    /// UUIDv7 key for each status name. The caller proposes it, or forwards it to the
-    /// leader. Each node checks the join when it applies it.
+    /// UUIDv7 key for each status name, when the applied state of this node admits
+    /// it. The caller proposes it, or forwards it to the leader. Each node checks the
+    /// join again when it applies it.
     ///
     /// # Errors
     ///
+    /// - [`Unstamped::Stopped`] when the group stopped.
     /// - [`Unstamped::Unsynced`] when `time` has no mesh time, when its error is
     ///   unknown, or when the later edge is before the Unix epoch, where a UUIDv7
     ///   key has no time.
     /// - [`Unstamped::Status`] when `request` names more than 64 status channels.
+    /// - [`Unstamped::Refused`] when the applied state of this node refuses the
+    ///   join. A node whose state lags can refuse a join that the region admits.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the join answer of #336 is the first user")
@@ -509,6 +513,9 @@ impl Mesh {
         time: &clock::Reader,
         request: Request,
     ) -> Result<Change, Unstamped> {
+        if let Some(stopped) = self.group.borrow().stopped.get() {
+            return Err(Unstamped::Stopped(stopped.clone()));
+        }
         let measurement = match time.status() {
             clock::Status::Synced(measurement)
             | clock::Status::Holdover(measurement, _) => measurement,
@@ -524,13 +531,16 @@ impl Mesh {
             (name, channel::Key::v7(at, u128::from_le_bytes(random)))
         };
         let keys = request.status.into_iter().map(key).collect();
-        Ok(Change::Join(Box::new(Join {
+        let join = Join {
             ticket: request.ticket,
             at,
             card: request.card,
             admission: request.admission,
             status: Status::new(keys).map_err(Unstamped::Status)?,
-        })))
+        };
+        let group = self.group.borrow();
+        group.state.check(&join).map_err(Unstamped::Refused)?;
+        Ok(Change::Join(Box::new(join)))
     }
 
     /// Waits for the next message for the member `to`. Each message is signed, and
@@ -564,6 +574,10 @@ pub(crate) enum Unstamped {
     Unsynced,
     /// The join request names more than 64 status channels.
     Status(status::Many),
+    /// The group stopped.
+    Stopped(Stopped),
+    /// The applied state of this node refuses the join, as apply would.
+    Refused(region::Refused),
 }
 
 impl fmt::Display for Unstamped {
@@ -574,6 +588,8 @@ impl fmt::Display for Unstamped {
                  epoch, so it stamps no join",
             ),
             Self::Status(many) => many.fmt(f),
+            Self::Stopped(stopped) => error::write_stopped(f, stopped),
+            Self::Refused(refused) => refused.fmt(f),
         }
     }
 }
@@ -1262,7 +1278,7 @@ mod tests {
     use crate::file::Blocks;
     use crate::region::Unfit;
     use crate::status::Many;
-    use crate::ticket::Options;
+    use crate::ticket::{self, Options};
     use crate::used::{Behind, Spec};
 
     const IDS: [u8; 3] = [1, 2, 3];
@@ -1408,6 +1424,7 @@ mod tests {
             files: node.files(),
             dir: BLOB.into(),
             pool: Rc::clone(&pool),
+            floor_bytes: 0,
         })
         .await
         .unwrap();
@@ -2323,8 +2340,34 @@ mod tests {
         Stopped::Write(log::Error::Files(cause))
     }
 
+    /// The term of `mesh`, for a test in which no message shows it: a node with no
+    /// voters sends nothing, and a test peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
+    }
+
+    /// The term of `mesh`, from its reply to a heartbeat in `term` of `leader`, the
+    /// leader that `mesh` follows. Skips each earlier message to `leader` that is not a
+    /// heartbeat reply.
+    async fn probe_term(mesh: &Mesh, leader: u8, term: Term) -> Term {
+        let heartbeat = raft::Message {
+            term,
+            ..message(leader, 1, Body::Heartbeat { commit: 0 })
+        };
+        assert_eq!(mesh.receive(public(leader), heartbeat), Ok(()));
+        loop {
+            let reply = mesh.outgoing(key(leader)).await.unwrap();
+            if reply.body == Body::HeartbeatReply {
+                return reply.term;
+            }
+        }
+    }
+
+    /// The term of the next message of `mesh` to node `to`, which is a heartbeat reply.
+    async fn reply_term(mesh: &Mesh, to: u8) -> Term {
+        let reply = mesh.outgoing(key(to)).await.unwrap();
+        assert_eq!(reply.body, Body::HeartbeatReply);
+        reply.term
     }
 
     /// The term for which `mesh` asks node `to` for a pre-vote: the term after its
@@ -2508,13 +2551,17 @@ mod tests {
         });
     }
 
-    #[test]
-    fn names_gives_the_name_of_each_founding_member() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
-            assert_eq!(mesh.names(), BTreeSet::from(names));
-        });
+    mod names {
+        use super::*;
+
+        #[test]
+        fn gives_the_name_of_each_founding_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let names = IDS.map(|id| format!("plant.node{id}").parse().unwrap());
+                assert_eq!(mesh.names(), BTreeSet::from(names));
+            });
+        }
     }
 
     // One `Ready` holds the entry of the second proposal and commits the first home.
@@ -2611,17 +2658,6 @@ mod tests {
             assert_eq!(format!("{mesh:?}"), "Mesh { .. }");
             let watch = mesh.watch(INDEX);
             assert_eq!(format!("{watch:?}"), "Watch { index: Key(7), .. }");
-        });
-    }
-
-    #[test]
-    fn the_debug_text_of_ended_holds_nothing() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut ended = mesh.ended();
-            let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
-            assert_eq!(polled, Poll::Pending);
-            assert_eq!(format!("{ended:?}"), "Ended { .. }");
         });
     }
 
@@ -3149,7 +3185,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(2), heartbeat), Err(refused));
                 node.clock().sleep(TICK).await;
                 assert!(quiet(&mesh, 2).await);
-                // No public call shows the term of a node with no voters.
                 assert_eq!(term(&mesh), Term(0));
             });
         }
@@ -3394,7 +3429,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(4), lie), Err(refused));
                 node.clock().sleep(TICK).await;
                 assert!(quiet(&mesh, 4).await);
-                // No public call shows the term of a node with no voters.
                 assert_eq!(term(&mesh), Term(0));
             });
         }
@@ -3519,7 +3553,7 @@ mod tests {
                 write(&mesh, data).await;
                 let proven = heartbeat(4, later(), &[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(4), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 4).await, later());
             });
         }
 
@@ -3548,7 +3582,7 @@ mod tests {
                 assert_eq!(mesh.receive(public(2), unproven), Err(Error::Raft(error)));
                 let proven = heartbeat(2, later(), &[(2, 2), (3, 3), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 2).await, later());
             });
         }
 
@@ -3561,11 +3595,9 @@ mod tests {
                 write(&mesh, changes(&[stale_join()])).await;
                 let proven = heartbeat(2, later(), &[(2, 2), (3, 3), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), proven), Ok(()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(reply_term(&mesh, 2).await, later());
                 let stale = message(2, 1, Body::Heartbeat { commit: 0 });
                 assert_eq!(mesh.receive(public(2), stale), Ok(()));
-                let reply = mesh.outgoing(key(2)).await.unwrap();
-                assert_eq!((reply.body, reply.term), (Body::HeartbeatReply, later()));
                 let answer = mesh.outgoing(key(2)).await.unwrap();
                 let voters = answer.proof.map(|proof| proof.voters.into_keys());
                 let voters: Option<Vec<_>> = voters.map(Iterator::collect);
@@ -3579,7 +3611,6 @@ mod tests {
                 let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
                 let heartbeat = proven(2, 1, Body::Heartbeat { commit: 0 });
                 assert_eq!(mesh.receive(public(2), heartbeat), Ok(()));
-                assert_eq!(term(&mesh), common::TERM);
                 let mut stale = message(2, 1, Body::Heartbeat { commit: 0 });
                 stale.term = Term(common::TERM.0 - 1);
                 assert_eq!(mesh.receive(public(2), stale), Ok(()));
@@ -3684,7 +3715,7 @@ mod tests {
                     from: key(2),
                 };
                 assert_eq!(mesh.receive(public(2), forged), Err(Error::Raft(unproven)));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3727,7 +3758,7 @@ mod tests {
                     from: key(2),
                 };
                 assert_eq!(mesh.receive(public(2), forged), Err(Error::Raft(unproven)));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3761,7 +3792,7 @@ mod tests {
                 let next = Term(later().0.checked_add(1).unwrap());
                 let forged = heartbeat(3, next, &[(3, 3), (4, 5)]);
                 assert_eq!(mesh.receive(public(3), forged), Err(forged_unproven()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(probe_term(&mesh, 3, later()).await, later());
                 let reply = message(4, 1, Body::HeartbeatReply);
                 let spoofed = Error::Spoofed { from: key(4) };
                 assert_eq!(mesh.receive(public(5), reply), Err(spoofed));
@@ -3923,8 +3954,9 @@ mod tests {
         }
 
         // The forged join of 4 is below the change that names it too, so the node
-        // has no key for 4, and a leader that 2 and 4 elected is unproven here. A
-        // defect until #336 builds the voter that checks a join before it stamps it.
+        // has no key for 4, and a leader that 2 and 4 elected is unproven here. Under
+        // a leader that does not lie, #2345 keeps the second join out of the log. A
+        // leader that lies can still write both (MESH DRIVER).
         #[test]
         fn a_leader_elected_under_a_change_above_two_written_joins_is_unproven() {
             solo(|node, tasks| async move {
@@ -3941,7 +3973,7 @@ mod tests {
                     from: key(2),
                 });
                 assert_eq!(mesh.receive(public(2), elected), Err(unproven));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3992,7 +4024,7 @@ mod tests {
                 write(&mesh, changes(&[join(4), stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), elected), Err(chain_unproven()));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -4005,7 +4037,7 @@ mod tests {
                 write(&mesh, changes(&[join(4), stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 5)]);
                 assert_eq!(mesh.receive(public(2), elected), Err(chain_unproven()));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -4019,7 +4051,7 @@ mod tests {
                 write(&mesh, changes(&[stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 5)]);
                 assert_eq!(mesh.receive(public(2), elected), Ok(()));
-                assert_eq!(term(&mesh), Term(later().0 + 1));
+                assert_eq!(reply_term(&mesh, 2).await, Term(later().0 + 1));
             });
         }
 
@@ -4031,7 +4063,7 @@ mod tests {
                 write(&mesh, changes(&[join(4)])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), elected), Ok(()));
-                assert_eq!(term(&mesh), Term(later().0 + 1));
+                assert_eq!(reply_term(&mesh, 2).await, Term(later().0 + 1));
             });
         }
 
@@ -4056,7 +4088,7 @@ mod tests {
                     from: key(2),
                 });
                 assert_eq!(mesh.receive(public(2), forged), Err(unproven));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -4377,35 +4409,6 @@ mod tests {
                 assert!(started(&mesh, join(4)).await.is_pending());
                 let reply = message(4, 1, Body::HeartbeatReply);
                 assert_eq!(mesh.receive(public(4), reply), Ok(()));
-            });
-        }
-
-        #[test]
-        fn propose_voters_refuses_a_node_that_is_not_a_member() {
-            solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-                let at = lead(&mesh, &node.clock(), home(1)).await;
-                let refused = mesh.propose_voters([key(1), key(3)].into()).await;
-                assert_eq!(refused, Err(Error::NotMember(key(3))));
-                let text = format!("node {} is not a member of the region", key(3));
-                assert_eq!(refused.unwrap_err().to_string(), text);
-                let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
-                assert_eq!(proposed, Ok(after(at, 1)));
-            });
-        }
-
-        #[test]
-        fn propose_voters_refuses_a_node_whose_join_is_not_applied() {
-            solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
-                write(&mesh, changes(&[join(3)])).await;
-                let refused = mesh.propose_voters([key(2), key(3)].into()).await;
-                assert_eq!(refused, Err(Error::NotMember(key(3))));
-                let follower = raft::Error::NotLeader {
-                    leader: Some(key(2)),
-                };
-                let proposed = mesh.propose_voters([key(2)].into()).await;
-                assert_eq!(proposed, Err(Error::Raft(follower)));
             });
         }
     }
@@ -4948,33 +4951,69 @@ mod tests {
         });
     }
 
+    /// Stops the group of `mesh` with a committed change of zero bytes at index 1 of
+    /// term 5, and gives the cause.
+    async fn stop_by_an_empty_change(mesh: &Mesh) -> Stopped {
+        let mut watch = mesh.watch(INDEX);
+        assert_eq!(watch.next().await, Ok(None));
+        let at = Position {
+            term: Term(5),
+            index: 1,
+        };
+        let data = Data::Bytes(Vec::new());
+        let append = Body::Append {
+            prev: Position::default(),
+            entries: vec![Entry { at, data }],
+            commit: 1,
+        };
+        assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
+        let cause = Stopped::Change {
+            at,
+            cause: Unknown::Empty,
+        };
+        assert_eq!(watch.next().await, Err(cause.clone()));
+        cause
+    }
+
+    const EMPTY_CHANGE: &str = "the group stopped: the committed entry at index 1 \
+                                of term 5 is not a change: a change of 0 bytes has no \
+                                kind";
+
     #[test]
     fn a_committed_change_of_zero_bytes_stops_the_group() {
         solo(|node, tasks| async move {
             let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            let at = Position {
-                term: Term(5),
-                index: 1,
-            };
-            let data = Data::Bytes(Vec::new());
-            let append = Body::Append {
-                prev: Position::default(),
-                entries: vec![Entry { at, data }],
-                commit: 1,
-            };
-            assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
-            let cause = Stopped::Change {
-                at,
-                cause: Unknown::Empty,
-            };
-            assert_eq!(watch.next().await, Err(cause.clone()));
-            let stopped = Error::Stopped(cause);
-            let text = "the group stopped: the committed entry at index 1 of term 5 is \
-                        not a change: a change of 0 bytes has no kind";
-            assert_eq!(stopped.to_string(), text);
+            let stopped = Error::Stopped(stop_by_an_empty_change(&mesh).await);
+            assert_eq!(stopped.to_string(), EMPTY_CHANGE);
         });
+    }
+
+    // A stamp after a stop has no use, so it draws no entropy for keys that no
+    // change uses.
+    #[test]
+    fn a_stamp_after_a_stop_gives_the_cause_and_draws_no_entropy() {
+        let draws = [false, true].map(|stamped| {
+            let drawn = Arc::new(Mutex::new([0; 16]));
+            let next = Arc::clone(&drawn);
+            solo(move |node, tasks| async move {
+                let unsynced = clock::Clock::new(node.clock()).1;
+                let time = synced(&node);
+                node.set_wall_error(None);
+                let unknown = synced(&node);
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let cause = stop_by_an_empty_change(&mesh).await;
+                if stamped {
+                    for reader in [&time, &unsynced, &unknown] {
+                        let refused = mesh.stamp(reader, request(4, 7, &["disk"]));
+                        assert_eq!(refused, Err(Unstamped::Stopped(cause.clone())));
+                    }
+                    assert_eq!(Unstamped::Stopped(cause).to_string(), EMPTY_CHANGE);
+                }
+                node.entropy().fill(&mut *next.lock().unwrap());
+            });
+            *drawn.lock().unwrap()
+        });
+        assert_eq!(draws[0], draws[1]);
     }
 
     /// Ticket `id`, which admits `plant.*` until `expiry`, any number of times when
@@ -4996,6 +5035,29 @@ mod tests {
     fn ticket() -> Change {
         ticket_of(7, "plant", true, Stamp::from_nanos(1))
     }
+
+    /// A mesh of lone voter 1, which leads and applied each of `tickets`.
+    async fn recorded(
+        node: &sim::node::Node,
+        tasks: &Tasks,
+        tickets: &[Change],
+    ) -> Mesh {
+        let config = config(node, tasks, 1, &[1], &[1]).await;
+        let mesh = Mesh::open(config).await.unwrap();
+        let mut watch = mesh.watch(INDEX);
+        assert_eq!(watch.next().await, Ok(None));
+        lead(&mesh, &node.clock(), home(1)).await;
+        assert_eq!(watch.next().await, Ok(Some(key(1))));
+        for ticket in tickets {
+            mesh.propose(ticket.clone()).await.unwrap();
+        }
+        mesh.propose(home(2)).await.unwrap();
+        assert_eq!(watch.next().await, Ok(Some(key(2))));
+        mesh
+    }
+
+    /// No ticket expires before this.
+    const LAST: Stamp = Stamp::from_nanos(i64::MAX);
 
     fn unchecked(card: &card::Signed) -> card::Unchecked {
         card::Unchecked {
@@ -5157,7 +5219,8 @@ mod tests {
             assert_eq!(records.get(&4), Some(&admitted), "node {id}");
         }
         for (id, mut state) in board.states {
-            let uses = state.ticket(public(8)).map(|record| record.uses);
+            // No call gives the use count of a reusable ticket.
+            let uses = state.ticket(public(8)).map(ticket::Record::uses);
             assert_eq!(uses, Some(1), "node {id}");
             let again = state.apply(repeat.clone()).unwrap_err();
             let duplicate = Refused::from(Unfit::Duplicate { key: key(4) });
@@ -5230,41 +5293,42 @@ mod tests {
     #[test]
     fn a_join_is_stamped_at_the_later_edge_of_mesh_time() {
         solo(|node, tasks| async move {
+            node.set_wall_error(Some(Span::HOUR));
             let time = synced(&node);
-            let config = config(&node, &tasks, 1, &[1], &[1]).await;
-            let mesh = Mesh::open(config).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
+            let start = time.now().mesh.unwrap();
+            let inside = start.latest - Span::from_nanos(30 * Span::MINUTE.nanos());
+            let tickets = [
+                ticket_of(8, "plant", true, inside),
+                ticket_of(9, "plant", true, start.latest + Span::HOUR),
+            ];
+            let mesh = recorded(&node, &tasks, &tickets).await;
             let interval = time.now().mesh.unwrap();
+            assert!(interval.earliest < inside);
             let names = ["clock.error", "clock.offset"];
-            let late = mesh.stamp(&time, request(4, 8, &names)).unwrap();
-            let early = mesh.stamp(&time, request(5, 9, &[])).unwrap();
-            let Change::Join(join) = &late else {
-                panic!("{late:?} is not a join")
+            let stamped = mesh.stamp(&time, request(5, 9, &names)).unwrap();
+            let Change::Join(join) = &stamped else {
+                panic!("{stamped:?} is not a join")
             };
             let at = join.at;
             assert_eq!(at, interval.latest);
-            assert!(interval.earliest < at - Span::from_nanos(1));
             let millis = u128::try_from(at.nanos() / 1_000_000).unwrap();
             for key in join.status.as_map().values() {
                 assert_eq!(key.as_u128() >> 80, millis, "{key:?}");
             }
             let keys: BTreeSet<_> = join.status.as_map().values().collect();
             assert_eq!(keys.len(), names.len());
-            let inside = at - Span::from_nanos(1);
-            let after = at + Span::from_nanos(1);
-            mesh.propose(ticket_of(8, "plant", true, inside))
-                .await
-                .unwrap();
-            mesh.propose(ticket_of(9, "plant", true, after))
-                .await
-                .unwrap();
-            mesh.propose(late).await.unwrap();
-            mesh.propose(early).await.unwrap();
-            mesh.propose(home(2)).await.unwrap();
+            let expired = ticket::Refused::Expired {
+                public_key: public(8),
+                expiry: inside,
+                at,
+            };
+            let refused = Unstamped::Refused(region::Refused::Ticket(expired));
+            assert_eq!(mesh.stamp(&time, request(4, 8, &[])), Err(refused));
+            let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(Some(key(2))));
+            mesh.propose(stamped).await.unwrap();
+            mesh.propose(home(1)).await.unwrap();
+            assert_eq!(watch.next().await, Ok(Some(key(1))));
             assert_eq!(mesh.member(key(4)), None);
             assert!(mesh.member(key(5)).is_some());
         });
@@ -5276,27 +5340,77 @@ mod tests {
     fn a_join_that_commits_after_the_expiry_admits_its_node() {
         solo(|node, tasks| async move {
             let time = synced(&node);
-            let config = config(&node, &tasks, 1, &[1], &[1]).await;
-            let mesh = Mesh::open(config).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
+            let expiry = time.now().mesh.unwrap().latest + Span::HOUR;
+            let tickets = [ticket_of(8, "plant", false, expiry)];
+            let mesh = recorded(&node, &tasks, &tickets).await;
             let stamped = mesh.stamp(&time, request(4, 8, &[])).unwrap();
-            let Change::Join(join) = &stamped else {
-                panic!("{stamped:?} is not a join")
-            };
-            let expiry = join.at + seconds(1);
-            mesh.propose(ticket_of(8, "plant", false, expiry))
-                .await
-                .unwrap();
-            node.clock().sleep(seconds(3600)).await;
+            node.clock().sleep(seconds(7200)).await;
             assert!(time.now().mesh.unwrap().earliest > expiry);
-            mesh.propose(stamped).await.unwrap();
-            mesh.propose(home(2)).await.unwrap();
+            let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(Some(key(2))));
+            mesh.propose(stamped).await.unwrap();
+            mesh.propose(home(1)).await.unwrap();
+            assert_eq!(watch.next().await, Ok(Some(key(1))));
             let admitted = mesh.member(key(4)).map(|member| member.card);
             assert_eq!(admitted, Some(common::member(4).card));
+        });
+    }
+
+    // The voter runs the check of apply on its applied state, so a join that every
+    // node refuses never gets into the log.
+    #[test]
+    fn a_join_that_the_applied_state_refuses_is_not_stamped() {
+        solo(|node, tasks| async move {
+            let time = synced(&node);
+            let tickets = [
+                ticket_of(7, "plant", true, LAST),
+                ticket_of(8, "plant", false, LAST),
+            ];
+            let mesh = recorded(&node, &tasks, &tickets).await;
+            let mut watch = mesh.watch(INDEX);
+            assert_eq!(watch.next().await, Ok(Some(key(2))));
+            mesh.propose(mesh.stamp(&time, request(4, 8, &[])).unwrap())
+                .await
+                .unwrap();
+            mesh.propose(home(1)).await.unwrap();
+            assert_eq!(watch.next().await, Ok(Some(key(1))));
+            let mut forged = request(5, 7, &[]);
+            forged.admission = common::ticket(8).admission(&common::member(5).card);
+            let cases = [
+                (
+                    request(5, 9, &[]),
+                    region::Refused::Unknown {
+                        public_key: public(9),
+                    },
+                ),
+                (
+                    request(5, 8, &[]),
+                    region::Refused::Ticket(ticket::Refused::Used {
+                        public_key: public(8),
+                    }),
+                ),
+                (
+                    forged,
+                    region::Refused::Ticket(ticket::Refused::Forged {
+                        node: key(5),
+                        public_key: public(7),
+                    }),
+                ),
+                (
+                    request(4, 7, &[]),
+                    region::Refused::Unfit(Unfit::Duplicate { key: key(4) }),
+                ),
+            ];
+            for (request, refused) in cases {
+                let stamped = mesh.stamp(&time, request);
+                assert_eq!(stamped, Err(Unstamped::Refused(refused)));
+            }
+            let unknown = Unstamped::Refused(region::Refused::Unknown {
+                public_key: public(9),
+            });
+            let text = format!("no ticket {} is recorded", public(9));
+            assert_eq!(unknown.to_string(), text);
+            assert_eq!(mesh.member(key(5)), None);
         });
     }
 
@@ -5332,14 +5446,14 @@ mod tests {
     fn a_node_at_the_unix_epoch_stamps_a_join() {
         solo(|node, tasks| async move {
             let (mut clock, time) = clock::Clock::new(node.clock());
-            let config = config(&node, &tasks, 1, &[1], &[1]).await;
-            let mesh = Mesh::open(config).await.unwrap();
+            let mesh =
+                recorded(&node, &tasks, &[ticket_of(7, "plant", true, LAST)]).await;
             node.step_wall(Span::from_nanos(-node.wall().now().time.nanos()));
             node.set_wall_error(Some(Span::from_nanos(0)));
             let source = clock.add();
             let wall = clock::source::Wall::new(node.wall(), node.clock());
             clock.push(source, wall.measure());
-            let stamped = mesh.stamp(&time, request(4, 8, &[])).unwrap();
+            let stamped = mesh.stamp(&time, request(4, 7, &[])).unwrap();
             let Change::Join(join) = stamped else {
                 panic!("{stamped:?} is not a join")
             };
@@ -5352,14 +5466,14 @@ mod tests {
     fn a_node_in_holdover_stamps_a_join_at_the_later_edge() {
         solo(|node, tasks| async move {
             let (mut clock, time) = clock::Clock::new(node.clock());
-            let config = config(&node, &tasks, 1, &[1], &[1]).await;
-            let mesh = Mesh::open(config).await.unwrap();
+            let mesh =
+                recorded(&node, &tasks, &[ticket_of(7, "plant", true, LAST)]).await;
             let source = clock.add();
             let wall = clock::source::Wall::new(node.wall(), node.clock());
             clock.push(source, wall.measure());
             clock.remove(source);
             assert!(matches!(time.status(), clock::Status::Holdover(..)));
-            let stamped = mesh.stamp(&time, request(4, 8, &[])).unwrap();
+            let stamped = mesh.stamp(&time, request(4, 7, &[])).unwrap();
             let Change::Join(join) = stamped else {
                 panic!("{stamped:?} is not a join")
             };
@@ -5370,7 +5484,8 @@ mod tests {
     #[test]
     fn a_join_request_with_65_status_names_is_refused() {
         solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            let mesh =
+                recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
             let time = synced(&node);
             let names: Vec<_> = (0..65).map(|i| format!("s{i:02}")).collect();
             let names: Vec<_> = names.iter().map(String::as_str).collect();
@@ -5869,6 +5984,35 @@ mod tests {
         }
 
         #[test]
+        fn keeps_a_directory_of_two_parts_in_its_parent_through_a_power_cut() {
+            for seed in 0..32 {
+                let mut sim = Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let node = sim.node(sim::node::Config::default());
+                sim.run_on(&node, |node, tasks| async move {
+                    let files = node.files();
+                    files.create_dir(Path::new("regions")).await.unwrap();
+                    files.sync_dir(Path::new("")).await.unwrap();
+                    let config = Config {
+                        dir: "regions/a".into(),
+                        ..config(&node, &tasks, 1, &[1], &[1]).await
+                    };
+                    Mesh::start(config).await.unwrap();
+                })
+                .unwrap();
+                sim.crash(&node, Crash::Power);
+                let listed = sim
+                    .run_on(&node, |node, _| async move {
+                        node.files().list(Path::new("regions")).await
+                    })
+                    .unwrap();
+                assert_eq!(listed, Ok(vec![PathBuf::from("a")]), "seed {seed}");
+            }
+        }
+
+        #[test]
         fn puts_the_log_in_the_directory_of_the_config() {
             solo(|node, tasks| async move {
                 let dir = Path::new("region");
@@ -5904,50 +6048,88 @@ mod tests {
         }
     }
 
-    #[test]
-    fn member_gives_the_record_of_a_member_and_none_for_another_node() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            assert_eq!(mesh.member(key(2)), Some(common::member(2)));
-            assert_eq!(mesh.member(key(1)), Some(common::member(1)));
-            assert_eq!(mesh.member(key(9)), None);
-        });
-    }
+    mod propose_voters {
+        use super::unapplied::{changes, write};
+        use super::*;
 
-    #[test]
-    fn member_gives_the_record_after_the_group_stops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped));
-            assert_eq!(watch.next().await, Err(cause));
-            assert_eq!(mesh.member(key(1)), Some(common::member(1)));
-            assert_eq!(mesh.member(key(2)), None);
-        });
-    }
-
-    #[test]
-    fn member_gives_the_record_that_its_card_names_for_each_order_of_the_records() {
-        let orders = [
-            [1, 2, 3],
-            [1, 3, 2],
-            [2, 1, 3],
-            [2, 3, 1],
-            [3, 1, 2],
-            [3, 2, 1],
-        ];
-        for order in orders {
-            solo(move |node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &order, &[1]).await.unwrap();
-                for id in IDS {
-                    let member = Some(common::member(id));
-                    assert_eq!(mesh.member(key(id)), member, "{order:?}");
-                }
+        #[test]
+        fn refuses_a_node_that_is_not_a_member() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let at = lead(&mesh, &node.clock(), home(1)).await;
+                let refused = mesh.propose_voters([key(1), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let text = format!("node {} is not a member of the region", key(3));
+                assert_eq!(refused.unwrap_err().to_string(), text);
+                let proposed = mesh.propose_voters([key(1), key(2)].into()).await;
+                assert_eq!(proposed, Ok(after(at, 1)));
             });
+        }
+
+        #[test]
+        fn refuses_a_node_whose_join_is_not_applied() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[2]).await.unwrap();
+                write(&mesh, changes(&[join(3)])).await;
+                let refused = mesh.propose_voters([key(2), key(3)].into()).await;
+                assert_eq!(refused, Err(Error::NotMember(key(3))));
+                let follower = raft::Error::NotLeader {
+                    leader: Some(key(2)),
+                };
+                let proposed = mesh.propose_voters([key(2)].into()).await;
+                assert_eq!(proposed, Err(Error::Raft(follower)));
+            });
+        }
+    }
+
+    mod member {
+        use super::*;
+
+        #[test]
+        fn gives_the_record_of_a_member_and_none_for_another_node() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                assert_eq!(mesh.member(key(2)), Some(common::member(2)));
+                assert_eq!(mesh.member(key(1)), Some(common::member(1)));
+                assert_eq!(mesh.member(key(9)), None);
+            });
+        }
+
+        #[test]
+        fn gives_the_record_after_the_group_stops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut watch = mesh.watch(INDEX);
+                lead(&mesh, &node.clock(), home(1)).await;
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped));
+                assert_eq!(watch.next().await, Err(cause));
+                assert_eq!(mesh.member(key(1)), Some(common::member(1)));
+                assert_eq!(mesh.member(key(2)), None);
+            });
+        }
+
+        #[test]
+        fn gives_the_record_that_its_card_names_for_each_order_of_the_records() {
+            let orders = [
+                [1, 2, 3],
+                [1, 3, 2],
+                [2, 1, 3],
+                [2, 3, 1],
+                [3, 1, 2],
+                [3, 2, 1],
+            ];
+            for order in orders {
+                solo(move |node, tasks| async move {
+                    let mesh = open(&node, &tasks, 1, &order, &[1]).await.unwrap();
+                    for id in IDS {
+                        let member = Some(common::member(id));
+                        assert_eq!(mesh.member(key(id)), member, "{order:?}");
+                    }
+                });
+            }
         }
     }
 
@@ -5978,75 +6160,126 @@ mod tests {
         dialed_at(node, tasks, 1, 0, &IDS, &IDS).await
     }
 
-    #[test]
-    fn ended_waits_for_the_last_mesh_and_the_log() {
-        solo(|node, tasks| async move {
-            let mesh = Mesh::open(dialing(&node, &tasks).await).await.unwrap();
-            let (mut first, second) = (mesh.ended(), mesh.ended());
-            node.clock().sleep(Span::SECOND).await;
-            let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut first).poll(cx))).await;
-            assert_eq!(polled, Poll::Pending);
-            drop(mesh);
-            first.await;
-            second.await;
-            assert_eq!(Mesh::open(dialing(&node, &tasks).await).await.err(), None);
-        });
-    }
+    mod ended {
+        use super::*;
 
-    #[test]
-    fn ended_wakes_each_task_that_waits() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let woken = Rc::new(Cell::new(0));
-            for _ in 0..2 {
-                let (ended, woken) = (mesh.ended(), Rc::clone(&woken));
-                tasks.spawn(async move {
-                    ended.await;
-                    woken.set(woken.get() + 1);
-                });
-            }
-            node.clock().sleep(Span::MILLISECOND).await;
-            drop(mesh);
-            node.clock().sleep(Span::MILLISECOND).await;
-            assert_eq!(woken.get(), 2);
-        });
-    }
-
-    /// The drop of the last mesh stops each wait for a dial, and `ended` does not wait
-    /// for the dial.
-    #[test]
-    fn ended_waits_for_each_task_that_sends_but_not_for_its_dial() {
-        for seed in 0..32 {
-            solo_at(seed, move |node, tasks| async move {
-                let config = dialing(&node, &tasks).await;
-                let transport = Rc::clone(&config.transport);
-                let mesh = Mesh::open(config).await.unwrap();
-                let clock = node.clock();
-                clock.sleep(seconds(5)).await;
-                assert!(Rc::strong_count(&transport) > 2);
-                let ended = mesh.ended();
-                let dropped = clock.now();
+        #[test]
+        fn waits_for_the_last_mesh_and_the_log() {
+            solo(|node, tasks| async move {
+                let mesh = Mesh::open(dialing(&node, &tasks).await).await.unwrap();
+                let (mut first, second) = (mesh.ended(), mesh.ended());
+                node.clock().sleep(Span::SECOND).await;
+                let polled =
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut first).poll(cx))).await;
+                assert_eq!(polled, Poll::Pending);
                 drop(mesh);
-                ended.await;
-                let waited = clock.now() - dropped;
-                assert!(waited <= TICK, "it ended after {waited}");
-                assert_eq!(Rc::strong_count(&transport), 1, "seed {seed}");
+                first.await;
+                second.await;
+                assert_eq!(Mesh::open(dialing(&node, &tasks).await).await.err(), None);
             });
         }
-    }
 
-    #[test]
-    fn ended_resolves_when_the_group_stops() {
-        solo(|node, tasks| async move {
-            let mut config = dialing(&node, &tasks).await;
-            config.founding.voters = [key(1)].into_iter().collect();
-            let mesh = Mesh::open(config).await.unwrap();
-            let cause = fail_sync(&node);
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            assert_eq!(watch.next().await, Err(cause));
-            mesh.ended().await;
-        });
+        #[test]
+        fn wakes_each_task_that_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let woken = Rc::new(Cell::new(0));
+                for _ in 0..2 {
+                    let (ended, woken) = (mesh.ended(), Rc::clone(&woken));
+                    tasks.spawn(async move {
+                        ended.await;
+                        woken.set(woken.get() + 1);
+                    });
+                }
+                node.clock().sleep(Span::MILLISECOND).await;
+                drop(mesh);
+                node.clock().sleep(Span::MILLISECOND).await;
+                assert_eq!(woken.get(), 2);
+            });
+        }
+
+        /// The drop of the last mesh stops each wait for a dial, and `ended` does not
+        /// wait for the dial.
+        #[test]
+        fn waits_for_each_task_that_sends_but_not_for_its_dial() {
+            for seed in 0..32 {
+                solo_at(seed, move |node, tasks| async move {
+                    let config = dialing(&node, &tasks).await;
+                    let transport = Rc::clone(&config.transport);
+                    let mesh = Mesh::open(config).await.unwrap();
+                    let clock = node.clock();
+                    clock.sleep(seconds(5)).await;
+                    assert!(Rc::strong_count(&transport) > 2);
+                    let ended = mesh.ended();
+                    let dropped = clock.now();
+                    drop(mesh);
+                    ended.await;
+                    let waited = clock.now() - dropped;
+                    assert!(waited <= TICK, "it ended after {waited}");
+                    assert_eq!(Rc::strong_count(&transport), 1, "seed {seed}");
+                });
+            }
+        }
+
+        #[test]
+        fn resolves_when_the_group_stops() {
+            solo(|node, tasks| async move {
+                let mut config = dialing(&node, &tasks).await;
+                config.founding.voters = [key(1)].into_iter().collect();
+                let mesh = Mesh::open(config).await.unwrap();
+                let cause = fail_sync(&node);
+                let mut watch = mesh.watch(INDEX);
+                assert_eq!(watch.next().await, Ok(None));
+                assert_eq!(watch.next().await, Err(cause));
+                mesh.ended().await;
+            });
+        }
+
+        #[test]
+        fn polled_twice_holds_one_waker() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let held = Arc::new(Idle);
+                let waker = Waker::from(Arc::clone(&held));
+                let mut cx = Context::from_waker(&waker);
+                let mut ended = mesh.ended();
+                for _ in 0..2 {
+                    assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
+                }
+                drop(waker);
+                assert_eq!(Arc::strong_count(&held), 2);
+                drop(mesh);
+            });
+        }
+
+        #[test]
+        fn leaves_no_waker_when_dropped() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let held = Arc::new(Idle);
+                let waker = Waker::from(Arc::clone(&held));
+                let mut cx = Context::from_waker(&waker);
+                let mut ended = mesh.ended();
+                assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
+                drop(ended);
+                drop(waker);
+                assert_eq!(Arc::strong_count(&held), 1);
+                drop(mesh);
+            });
+        }
+
+        // The `Debug` text is the behavior under test: no other call shows it.
+        #[test]
+        fn debug_text_holds_nothing() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut ended = mesh.ended();
+                let polled =
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut ended).poll(cx))).await;
+                assert_eq!(polled, Poll::Pending);
+                assert_eq!(format!("{ended:?}"), "Ended { .. }");
+            });
+        }
     }
 
     /// A waker that a test counts the clones of, which `Waker::noop` does not allow.
@@ -6057,127 +6290,98 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
-    #[test]
-    fn an_ended_polled_twice_holds_one_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let held = Arc::new(Idle);
-            let waker = Waker::from(Arc::clone(&held));
-            let mut cx = Context::from_waker(&waker);
-            let mut ended = mesh.ended();
-            for _ in 0..2 {
-                assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
-            }
-            drop(waker);
-            assert_eq!(Arc::strong_count(&held), 2);
-            drop(mesh);
-        });
-    }
+    mod watch {
+        use super::*;
 
-    #[test]
-    fn a_dropped_ended_leaves_no_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let held = Arc::new(Idle);
-            let waker = Waker::from(Arc::clone(&held));
-            let mut cx = Context::from_waker(&waker);
-            let mut ended = mesh.ended();
-            assert!(Pin::new(&mut ended).poll(&mut cx).is_pending());
-            drop(ended);
-            drop(waker);
-            assert_eq!(Arc::strong_count(&held), 1);
-            drop(mesh);
-        });
-    }
+        #[test]
+        fn leaves_no_waker_when_dropped() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+                let (kept, dropped) = (Arc::new(Idle), Arc::new(Idle));
+                let count = || (Arc::strong_count(&kept), Arc::strong_count(&dropped));
+                let mut watches = Vec::new();
+                for held in [&dropped, &dropped, &kept, &dropped] {
+                    let waker = Waker::from(Arc::clone(held));
+                    let mut cx = Context::from_waker(&waker);
+                    let mut watch = mesh.watch(INDEX);
+                    assert_eq!(watch.next().await, Ok(None));
+                    assert!(pin!(watch.next()).poll(&mut cx).is_pending());
+                    watches.push(watch);
+                }
+                // Each `Arc` here, and the waker that the group holds for each watch.
+                assert_eq!(count(), (2, 4));
+                let stays = watches.remove(2);
+                drop(watches);
+                assert_eq!(count(), (2, 1));
+                drop(stays);
+                assert_eq!(count(), (1, 1));
+            });
+        }
 
-    #[test]
-    fn a_dropped_watch_leaves_no_waker() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let (kept, dropped) = (Arc::new(Idle), Arc::new(Idle));
-            let count = || (Arc::strong_count(&kept), Arc::strong_count(&dropped));
-            let mut watches = Vec::new();
-            for held in [&dropped, &dropped, &kept, &dropped] {
-                let waker = Waker::from(Arc::clone(held));
-                let mut cx = Context::from_waker(&waker);
+        #[test]
+        fn gives_the_cause_when_each_mesh_drops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let mut watch = mesh.watch(INDEX);
                 assert_eq!(watch.next().await, Ok(None));
-                assert!(pin!(watch.next()).poll(&mut cx).is_pending());
-                watches.push(watch);
-            }
-            // Each `Arc` here, and the waker that the group holds for each watch.
-            assert_eq!(count(), (2, 4));
-            let stays = watches.remove(2);
-            drop(watches);
-            assert_eq!(count(), (2, 1));
-            drop(stays);
-            assert_eq!(count(), (1, 1));
-        });
-    }
-
-    #[test]
-    fn a_watch_gives_the_cause_when_each_mesh_drops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(None));
-            let given = Rc::new(RefCell::new(None));
-            let slot = Rc::clone(&given);
-            tasks.spawn(async move {
-                let waited = watch.next().await;
-                *slot.borrow_mut() = Some((waited, watch.next().await));
+                let given = Rc::new(RefCell::new(None));
+                let slot = Rc::clone(&given);
+                tasks.spawn(async move {
+                    let waited = watch.next().await;
+                    *slot.borrow_mut() = Some((waited, watch.next().await));
+                });
+                node.clock().sleep(TICK).await;
+                assert_eq!(*given.borrow(), None);
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let dropped = Stopped::Dropped;
+                assert_eq!(
+                    given.take(),
+                    Some((Err(dropped.clone()), Err(dropped.clone())))
+                );
+                assert_eq!(dropped.to_string(), "each mesh of the group dropped");
             });
-            node.clock().sleep(TICK).await;
-            assert_eq!(*given.borrow(), None);
-            drop(mesh);
-            node.clock().sleep(TICK).await;
-            let dropped = Stopped::Dropped;
-            assert_eq!(
-                given.take(),
-                Some((Err(dropped.clone()), Err(dropped.clone())))
-            );
-            assert_eq!(dropped.to_string(), "each mesh of the group dropped");
-        });
-    }
+        }
 
-    #[test]
-    fn a_watch_keeps_the_cause_of_a_stop_after_each_mesh_drops() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            let mut watch = mesh.watch(INDEX);
-            lead(&mesh, &node.clock(), home(1)).await;
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped));
-            assert_eq!(watch.next().await, Err(cause.clone()));
-            drop(mesh);
-            assert_eq!(watch.next().await, Err(cause));
-        });
-    }
-
-    #[test]
-    fn a_watch_that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
-        solo(|node, tasks| async move {
-            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-            lead(&mesh, &node.clock(), home(1)).await;
-            node.clock().sleep(TICK).await;
-            let mut watch = mesh.watch(INDEX);
-            assert_eq!(watch.next().await, Ok(Some(key(1))));
-            let given = Rc::new(RefCell::new(None));
-            let slot = Rc::clone(&given);
-            tasks.spawn(async move {
-                *slot.borrow_mut() = Some(watch.next().await);
+        #[test]
+        fn keeps_the_cause_of_a_stop_after_each_mesh_drops() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                let mut watch = mesh.watch(INDEX);
+                lead(&mesh, &node.clock(), home(1)).await;
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped));
+                assert_eq!(watch.next().await, Err(cause.clone()));
+                drop(mesh);
+                assert_eq!(watch.next().await, Err(cause));
             });
-            node.clock().sleep(TICK).await;
-            let cause = fail_sync(&node);
-            let stopped = Error::Stopped(cause.clone());
-            assert_eq!(mesh.propose(home(2)).await, Err(stopped.clone()));
-            assert_eq!(mesh.outgoing(key(2)).await, Err(stopped));
-            drop(mesh);
-            node.clock().sleep(TICK).await;
-            assert_eq!(given.take(), Some(Err(cause)));
-        });
+        }
+
+        #[test]
+        fn that_waits_gets_the_cause_of_a_stop_when_its_mesh_drops_first() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+                lead(&mesh, &node.clock(), home(1)).await;
+                node.clock().sleep(TICK).await;
+                let mut watch = mesh.watch(INDEX);
+                assert_eq!(watch.next().await, Ok(Some(key(1))));
+                let given = Rc::new(RefCell::new(None));
+                let slot = Rc::clone(&given);
+                tasks.spawn(async move {
+                    *slot.borrow_mut() = Some(watch.next().await);
+                });
+                node.clock().sleep(TICK).await;
+                let cause = fail_sync(&node);
+                let stopped = Error::Stopped(cause.clone());
+                assert_eq!(mesh.propose(home(2)).await, Err(stopped.clone()));
+                assert_eq!(mesh.outgoing(key(2)).await, Err(stopped));
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                assert_eq!(given.take(), Some(Err(cause)));
+            });
+        }
     }
 
     #[test]
@@ -6694,8 +6898,9 @@ mod tests {
         }
 
         // Node 1, a founder in term 0 with an empty log and the keys of `members`,
-        // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies.
-        // On an error it stays in term 0 and sends nothing.
+        // takes `heartbeat` with `expected`. On `Ok` it is in term 6 and replies. On an
+        // error it stays in term 0: it sends nothing, then asks for a pre-vote for term
+        // 1.
         fn takes(
             members: &'static [u8],
             heartbeat: raft::Message,
@@ -6705,14 +6910,13 @@ mod tests {
                 let mesh = open(&node, &tasks, 1, members, &FOUNDERS).await.unwrap();
                 assert_eq!(mesh.receive(public(3), heartbeat), expected);
                 if expected.is_ok() {
-                    assert_eq!(term(&mesh), Term(6));
                     let reply = mesh.outgoing(key(3)).await.unwrap();
                     let mut expected = message(1, 3, Body::HeartbeatReply);
                     expected.term = Term(6);
                     assert_eq!(reply, expected);
                 } else {
-                    assert_eq!(term(&mesh), Term(0));
                     assert!(quiet(&mesh, 3).await);
+                    assert_eq!(pre_vote_term(&mesh, 3).await, Term(1));
                 }
             });
         }
@@ -6908,7 +7112,7 @@ mod tests {
                 let refused = Error::Claim(claim::Error::Forged { signer: key(2) });
                 assert_eq!(mesh.receive(public(3), append), Err(refused));
                 assert!(quiet(&mesh, 3).await);
-                assert_eq!(term(&mesh), Term(0));
+                assert_eq!(pre_vote_term(&mesh, 3).await, Term(1));
                 assert_eq!(mesh.member(key(4)), None);
                 let reply = take(&mesh, at(4, 3), Vec::new(), 0).await;
                 assert_eq!(reply, Body::AppendReject { hint: 0 });

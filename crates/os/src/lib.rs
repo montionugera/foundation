@@ -167,7 +167,9 @@ pub fn net() -> env::net::Net {
 /// # Errors
 ///
 /// - [`Error::Dir`] when the OS cannot open or make `dir` or `dir/data`, or cannot open
-///   or sync the directory that holds each.
+///   or sync the directory that holds each. It does not sync the holder of a
+///   directory on another device than that holder, such as a mount point of another
+///   file system: that entry is the mount's to keep.
 /// - [`Error::Thread`] when the I/O thread cannot start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn files(
@@ -179,30 +181,22 @@ pub fn files(
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
-/// future completes at it, also when it came before the first poll. A second one
-/// ends the process as it does with no hold, so a stop that hangs can still be
-/// ended. Call it once, on the main thread, before the process starts any other
-/// thread: a thread that was there before still takes them, and ends the process
-/// on one. It takes a signal sent to the process, as Ctrl-C and `kill` send it, not
-/// one sent to a single thread.
+/// future completes at it, also when it came before the first poll. A second one ends
+/// the process as it does with no hold, so a stop that hangs can still be ended. It
+/// changes only what a signal that reaches the process does, never which signals reach
+/// it: it leaves out each of them that the calling thread blocks or whose action is
+/// `SIG_IGN`, and that signal keeps its block or its ignore. When it leaves out both,
+/// it starts no thread, and the future never completes. Call it once, on the main
+/// thread, before the process starts any other thread: a thread that was there before
+/// still takes them, and ends the process on one. It takes a signal sent to the
+/// process, as Ctrl-C and `kill` send it, not one sent to a single thread.
 ///
 /// # Errors
 ///
 /// [`Error::Thread`] when the thread that waits for them cannot start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn interrupt() -> Result<impl Future<Output = ()> + Send + 'static, Error> {
-    let (fire, fired) = tokio::sync::oneshot::channel();
-    // The future may be gone, as when the process stops on its own.
-    signal::hold(move || fire.send(()).unwrap_or(())).map_err(Error::Thread)?;
-    Ok(wait(fired))
-}
-
-/// Completes when the signal thread fires `fired`.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn wait(fired: tokio::sync::oneshot::Receiver<()>) {
-    fired
-        .await
-        .expect("invariant: the signal thread fires before it ends");
+    signal::hold().map_err(Error::Thread)
 }
 
 /// Why `os` could not build a seam or hold the signals.

@@ -4,9 +4,19 @@
   builds the transport with the node's private key once the last shard has opened its
   buffer (X42), so the node takes no session before that. Its limits are patches until
   #1662 makes them settings, as LIMITS of SHARD HOMES is: window 1 MiB, 64 streams of
-  each kind, idle 30 s, and messages of the smaller of 64 KiB and the pool's largest
-  block. Each session runs in its own future, and each stream of it reads its header in
-  its own future, so a late header delays no other stream. One exhaustive `match` on
+  each kind, idle 30 s, messages of the smaller of 64 KiB and the pool's largest
+  block, and the free floor of the blob store, 1 GiB (`blob::Config::floor_bytes`;
+  `laptop.architect-2`, 2026-10-09T03:49:41Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). The
+  floor holds for each put, also a local one, so a start that founds a region stops
+  with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
+  than 1 GiB free (`laptop.architect-2`, 2026-10-11T05:31:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). A start
+  whose store holds each founding chunk does not stop: those puts take no new room (BLOB
+  PEER; `laptop.architect`, 2026-10-11T06:01:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106056805). Each
+  session runs in its own future, and each stream of it reads its header in its own
+  future, so a late header delays no other stream. One exhaustive `match` on
   `wire::Protocol` in `node` routes each stream; until a protocol has a server, its arm
   stops the stream with `Code(wire::header::REJECTED)` and resets the reply half with
   the same code, as for a header that does not decode, or for a first message with bytes
@@ -183,10 +193,12 @@
   gives peers outside the region (`Peer::Client`, and a `Peer::Node` whose key no member
   holds in this node's view) at most 256 places, one for each session of a program and
   one for the key of a node. It closes each session that gets no place at once with
-  `Code(wire::session::REFUSED)`. A node's new session takes the place of its old one
-  when the old one still holds it at `accept`. The transport closes the old session as
-  the new one arrives (ONE SESSION PER PEER), so at the bound another peer can take the
-  place first (`laptop.architect-2`, 15:18 UTC:
+  `Code(wire::session::REFUSED)` (superseded by #2325, below). A node's new session
+  takes the place of its old one when the old one still holds it at `accept`. The
+  transport closes the old session as the new one arrives (ONE SESSION PER PEER), so at
+  the bound another peer can take the place first (this sentence superseded by #2325,
+  below)
+  (`laptop.architect-2`, 15:18 UTC:
   https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
   refuses a member, so a flood of peers outside the region cannot lock a member out
   (`laptop.architect`, 2026-10-11 01:03 UTC:
@@ -196,7 +208,8 @@
   so ends its `Hub` and `Mesh` streams. The node then admits it again as any other peer.
   The bound can lock out each peer outside the region, also a node that joins and the
   admin's program, until #2325 (`laptop.architect-2`, 2026-10-10 23:40 UTC:
-  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280).
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280;
+  superseded by #2325, below).
   Supersedes the deferrals of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669 (item 5,
   2026-10-07 21:09 UTC) and
@@ -204,3 +217,42 @@
   UTC), and the sentence on the wait for a header of
   https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6051519122
   (2026-10-08 03:23 UTC).
+  Amended (2026-10-11, #2325, by `laptop.architect-2`, 05:11 UTC):
+  https://github.com/synnaxlabs/foundation/issues/2325#issuecomment-6105724327, on the
+  plan https://github.com/synnaxlabs/foundation/issues/2325#issuecomment-6105095546. At
+  the bound, a new peer outside the region gets a place: shard 0 frees the oldest place
+  for it. When the peer of that place is now a member (`member`, read again), its
+  sessions stay; else shard 0 closes each session that holds the place with
+  `Code(wire::session::REFUSED)`. So `accept` refuses no session for the bound. A place
+  is as old as the session that took it. A new session of a node key takes the key's
+  place while a session of the key still holds it at `accept`, and the place keeps its
+  age. When none holds it (the transport closes the old session as the new one arrives,
+  and shard 0 can drop it first), the new session takes a new place, as a new peer does,
+  and is one of the 256 later peers of the guarantee (`laptop.architect-2`, 07:28 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A place
+  holds each session of its peer that runs: the transport keeps the older session of a
+  node key when the newer one has already ended, so the bound closes both
+  (`laptop.architect-2`, 07:28 UTC, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A peer
+  that proves a right leaves the bound: its place frees and its sessions stay.
+  Membership is the one proof today, which shard 0 reads again for each held place as
+  each new session of a peer outside the region arrives. The client hello of #1744
+  and the ticket join of
+  #1157 must each free the place when its proof holds. Guarantee: a peer outside the
+  region keeps its session until 256 later peers took a place, so the bound never closes
+  a peer that proves its right before that. Limit: a flood that takes 256 places in the
+  time that a peer needs to prove closes that peer's session. Only a limit on handshakes
+  before admission bounds that rate (#563). The stop rule holds: no clone of a session
+  lives outside a future that shard 0 drops. Supersedes the close of each session that
+  gets no place of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
+  first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
+  (2026-10-09 15:18 UTC), and the lockout until #2325 of
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280 (2026-10-10
+  23:40 UTC). Lost: a time bound on an unproven place with a share of places by source,
+  since one IPv6 /56 holds 256 /64s, a count by source after the handshake is in the
+  wrong crate (#563), and the programs behind one NAT address would share one share; the
+  proof in the handshake, since the client hello answers a challenge of the node that a
+  1-RTT handshake cannot carry without a new replay defense, and it moves `access`
+  checks into `transport`; a reserved place for a join, by the ruling on #2153.
