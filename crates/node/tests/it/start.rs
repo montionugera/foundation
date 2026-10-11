@@ -647,6 +647,23 @@ fn a_start_on_a_port_that_another_socket_holds_fails() {
 }
 
 #[test]
+fn a_start_at_a_multicast_ip_fails() {
+    let rig = Rig::new();
+    let listen = ["start", "--name", "edge", "--listen", "224.0.0.1:0"];
+    assert_eq!(
+        ended(&rig.run(&listen, b"")),
+        (
+            Some(1),
+            "",
+            "error[node.port]: cannot bind the node's port at 224.0.0.1:0: a \
+             multicast or broadcast IP is not an address of a host\n\
+             fix: Give `--listen` an address of this host with a port that is free \
+             and that this user can bind\n"
+        )
+    );
+}
+
+#[test]
 fn a_chunk_store_that_the_user_cannot_list_fails() {
     use std::os::unix::fs::PermissionsExt;
 
