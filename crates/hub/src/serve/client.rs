@@ -20,7 +20,7 @@ use super::{BODIES_BYTES_MAX, Error, alloc, halves, stop};
 use crate::State;
 use crate::link::{Served, Session};
 
-pub(crate) mod read;
+pub(super) mod read;
 
 /// A request of a client, which `access` verified.
 #[derive(Debug)]

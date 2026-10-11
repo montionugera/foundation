@@ -135,8 +135,8 @@ impl Error {
                 Some(Code(BUSY))
             }
             Self::Stream(_) => None,
-            Self::Reader(error) => Some(Code(client::read::refusal(error).code())),
-            Self::Ended(ended) => Some(Code(client::read::end(ended).code())),
+            Self::Reader(error) => Some(Code(client::read::refused(error).code())),
+            Self::Ended(ended) => Some(Code(client::read::ended(ended).code())),
         }
     }
 }
@@ -415,7 +415,11 @@ async fn open(
         return Ok(None);
     };
     let keys = opening.into_keys();
-    let slots = state.borrow_mut().slots(keys[at], &keys);
+    let slots = {
+        let mut state = state.borrow_mut();
+        state.carry(keys[at]);
+        state.assigned(keys[at], &keys)
+    };
     let index = slots[at];
     let channels = Channels {
         keys: keys.into(),
@@ -760,7 +764,7 @@ mod tests {
     }
 
     /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
-    /// its code. A home's `MALFORMED` stops it as `FAILED`.
+    /// its code.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn each_error_of_the_reader_of_a_read_has_its_code() {

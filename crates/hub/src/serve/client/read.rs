@@ -147,7 +147,7 @@ async fn relay(
 /// # Panics
 ///
 /// For an error that only a named reader gives.
-pub(crate) fn refusal(error: &reader::Error) -> Refusal {
+pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
     match error {
         reader::Error::Empty => Refusal::Unknown,
         reader::Error::ManyIndexes { .. } => Refusal::Malformed,
@@ -168,7 +168,7 @@ pub(crate) fn refusal(error: &reader::Error) -> Refusal {
 ///
 /// For `Behind`, which a read sends as a reply, and `Replaced`, which only a named
 /// reader gives.
-pub(crate) fn end(ended: &reader::Ended) -> Refusal {
+pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
     match ended {
         reader::Ended::Removed(_) => Refusal::Unknown,
         reader::Ended::Pool(_) => Refusal::Busy,
