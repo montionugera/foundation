@@ -59,12 +59,6 @@ fn encode(private_key: &PrivateKey) -> [u8; LEN] {
     bytes
 }
 
-/// The private key in `bytes`, or `None` for another tag or checksum.
-#[cfg(test)]
-fn decode(bytes: &[u8; LEN]) -> Option<PrivateKey> {
-    sector::written(bytes, TAG).map(|bytes| field(&bytes))
-}
-
 /// The private key in `bytes`, whatever its tag and checksum.
 fn field(bytes: &[u8; LEN]) -> PrivateKey {
     PrivateKey(
@@ -74,7 +68,8 @@ fn field(bytes: &[u8; LEN]) -> PrivateKey {
     )
 }
 
-/// Checks that a decode gives a private key exactly for the bytes that `encode` writes.
+/// Checks that `sector::written` takes `bytes` exactly when `encode` of their fields
+/// gives them back.
 ///
 /// # Panics
 ///
@@ -104,14 +99,15 @@ mod tests {
 
     #[test]
     fn refuses_zero_bytes() {
-        assert!(decode(&[0; LEN]).is_none());
+        assert_eq!(sector::written(&[0; LEN], TAG), None);
     }
 
     proptest! {
         #[test]
         fn decodes_what_it_encodes(private_key in any::<[u8; 32]>()) {
             let bytes = encode(&PrivateKey(private_key));
-            prop_assert_eq!(decode(&bytes).expect("decodes").0, private_key);
+            let written = sector::written(&bytes, TAG).expect("takes");
+            prop_assert_eq!(field(&written).0, private_key);
         }
 
         #[test]
@@ -121,7 +117,7 @@ mod tests {
         ) {
             let mut bytes = encode(&PrivateKey(private_key));
             bytes[bit / 8] ^= 1 << (bit % 8);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert_eq!(sector::written(&bytes, TAG), None);
         }
 
         #[test]
@@ -133,7 +129,7 @@ mod tests {
             check(&bytes);
             bytes[bit / 8] ^= 1 << (bit % 8);
             sector::checksum(&mut bytes);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert_eq!(sector::written(&bytes, TAG), None);
         }
 
         #[test]

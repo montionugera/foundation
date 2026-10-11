@@ -36,7 +36,7 @@ pub(crate) struct Identity {
 /// The identity in `node.key` of `files`. When the file is not there, makes a new one
 /// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
 /// it. Call it under the lock of the data directory, after the claim has made the
-/// directory durable, so that a key that it reads is durable.
+/// directory durable, so that a key that `publish` made is durable when it reads it.
 ///
 /// # Errors
 ///
@@ -127,12 +127,6 @@ pub(crate) fn encode(identity: &Identity) -> [u8; LEN] {
     bytes
 }
 
-/// The identity in `bytes`, or `None` for another tag or checksum.
-#[cfg(test)]
-fn decode(bytes: &[u8; LEN]) -> Option<Identity> {
-    sector::written(bytes, TAG).map(|bytes| fields(&bytes))
-}
-
 /// The keys in `bytes`, whatever its tag and checksum.
 fn fields(bytes: &[u8; LEN]) -> Identity {
     Identity {
@@ -146,7 +140,8 @@ fn fields(bytes: &[u8; LEN]) -> Identity {
     }
 }
 
-/// Checks that a decode gives an identity exactly for the bytes that `encode` writes.
+/// Checks that `sector::written` takes `bytes` exactly when `encode` of their fields
+/// gives them back.
 ///
 /// # Panics
 ///
@@ -189,7 +184,7 @@ mod tests {
 
     #[test]
     fn refuses_zero_bytes() {
-        assert!(decode(&[0; LEN]).is_none());
+        assert_eq!(sector::written(&[0; LEN], TAG), None);
     }
 
     proptest! {
@@ -200,7 +195,7 @@ mod tests {
             opener in any::<[u8; 32]>(),
         ) {
             let bytes = encode(&identity(key, private_key, opener));
-            let decoded = decode(&bytes).expect("decodes");
+            let decoded = fields(&sector::written(&bytes, TAG).expect("takes"));
             prop_assert_eq!(decoded.key.as_u128(), key);
             prop_assert_eq!(decoded.private_key.0, private_key);
             prop_assert_eq!(decoded.opener.expose(), &opener);
@@ -215,7 +210,7 @@ mod tests {
         ) {
             let mut bytes = encode(&identity(key, private_key, opener));
             bytes[bit / 8] ^= 1 << (bit % 8);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert_eq!(sector::written(&bytes, TAG), None);
         }
 
         #[test]
@@ -229,7 +224,7 @@ mod tests {
             check(&bytes);
             bytes[bit / 8] ^= 1 << (bit % 8);
             sector::checksum(&mut bytes);
-            prop_assert!(decode(&bytes).is_none());
+            prop_assert_eq!(sector::written(&bytes, TAG), None);
         }
 
         #[test]

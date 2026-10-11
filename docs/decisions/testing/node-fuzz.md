@@ -3,11 +3,16 @@
   `node::fuzz::identity`, a function in a `#[doc(hidden)]` public module behind the
   feature `sim`, as `bench` is, and `fuzz/Cargo.toml` turns `sim` on. The target takes
   100 bytes as they are, or 96 bytes with their CRC32C appended, since a random input
-  almost never has the right CRC32C. The oracle is `sector::check`, which the property
-  tests share: `sector::written` gives the bytes exactly when `encode` of their fields
-  gives them back. The inputs of the form `foundation/key/1` stay, and reach only the
-  length check after the form `foundation/key/2` (NODE PORT). By `laptop.architect-2`
-  (#1744, plan revision 3, item 6, 2026-10-10 03:30 UTC):
+  almost never has the right CRC32C. The oracle is `identity::check`, which the
+  property tests share. It gives `sector::check` its tag and the `encode` of its
+  fields: `sector::written` takes the bytes exactly when that `encode` gives them back
+  (#2305, asked in
+  https://github.com/synnaxlabs/foundation/issues/2305#issuecomment-6103137619,
+  approved by `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). The
+  inputs of the form `foundation/key/1` stay, and reach only the length check after the
+  form `foundation/key/2` (NODE PORT). By `laptop.architect-2` (#1744, plan revision 3,
+  item 6, 2026-10-10 03:30 UTC):
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Each
   input of the form `foundation/key/1` that decoded has a copy in the new form that a
   test decodes (`docs/claude/testing.md`, "Oracles", from item 33 of #1839 by

@@ -122,11 +122,16 @@
   syncs it, and renames it with no replace, so a reader sees no file or a whole one. A
   start that finds a whole key writes nothing: the claim of the data directory syncs the
   directory first, so a key that a crash left visible is durable before the transport
-  proves it. A node that joins by ticket (#336) makes its key the same way at its first
-  start. A file of another length (also no bytes), tag, or checksum (also 100 zero
-  bytes) gives `Error::Key`, which `Node::join` ranks above `Error::Blob`,
-  `Error::Mesh`, `Error::Transport`, and `Error::Group`; the node never writes over it,
-  because a new key is a new node to its region. Amended (2026-10-11, #2305, by
+  proves it. The bytes of a `node.key` that a restore copied in are the restore's to
+  sync: the claim syncs only the name. When a power cut loses them, the next start
+  gives `Error::Key`, and the same restore brings the key back (decided by
+  `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). A node
+  that joins by ticket (#336) makes its key the same way at its first start. A file of
+  another length (also no bytes), tag, or checksum (also 100 zero bytes) gives
+  `Error::Key`, which `Node::join` ranks above `Error::Blob`, `Error::Mesh`,
+  `Error::Transport`, and `Error::Group`; the node never writes over it, because a new
+  key is a new node to its region. Amended (2026-10-11, #2305, by
   `laptop.architect-2`, 2026-10-10 22:20 UTC):
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. This
   supersedes `Mode::Create` and the file with no bytes or with 100 zero bytes as a key

@@ -104,8 +104,10 @@
   writes with the code of `identity`, so the file has one owner. It reads `node.key`
   first: any file that is there, also one with no bytes or with 100 zero bytes, gives
   `Error::Directory` with `Exists`, and it writes nothing, also no `node.key.new` with
-  the keys. Else it makes the file with `sector::publish` (amended, #2305, by
-  `laptop.architect-2`, 2026-10-10 22:20 UTC:
+  the keys (decided by `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). Else it
+  makes the file with `sector::publish` (amended, #2305, by `laptop.architect-2`,
+  2026-10-10 22:20 UTC:
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702). This
   supersedes the `Length` error and the file with no bytes or with 68 zero bytes (100
   since `foundation/key/2`) as no key, of

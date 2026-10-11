@@ -3699,7 +3699,10 @@ mod port {
                 let host = host(&mut sim, 2);
                 write(&mut sim, &host, FILE, own());
                 let created = create(&mut sim, &host, PrivateKey([9; 32]));
-                assert!(created.is_err(), "seed {seed}");
+                let exists = env::files::Error::Exists {
+                    path: PathBuf::from("node.key"),
+                };
+                assert_eq!(created, Err(Error::Directory(exists)), "seed {seed}");
                 sim.crash(&host, sim::Crash::Power);
                 assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "seed {seed}");
                 assert_eq!(bytes(&mut sim, &host, NEW), None, "seed {seed}");
