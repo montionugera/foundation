@@ -1084,6 +1084,18 @@ fn an_addition_again_after_the_first_run_takes_no_share() {
     );
 }
 
+/// A connector of no kind runs alone at 0, so its first run starts. At 1 s, it becomes
+/// a `source`, and the apply adds a `sink`. The `source` does not wait for the first
+/// open of the `sink`, so on some seeds the `sink` misses the frame.
+#[test]
+fn a_change_after_the_first_run_waits_for_no_first_open() {
+    let first = vec![("plant.a", "none", NODE, 0)];
+    let second = vec![("plant.a", "source", NODE, 0), ("plant.b", "sink", NODE, 0)];
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_ne!(missed, Vec::<u64>::new());
+}
+
 /// On `seed`, the sinks `plant.a` and `plant.c` and the source `plant.b` at 0, and at
 /// 5 s, the instant of the mesh time, after `yields` polls of other tasks, an apply that
 /// changes `plant.a`. Gives `None` when a run of `plant.a` or `plant.b` started before
