@@ -655,6 +655,16 @@ fn the_card_name_is_the_one_of_the_key_in_node_key() {
     }
 }
 
+/// With no file `name` and no founding, a file `node.key` that a node did not write
+/// gives [`Error::Key`], not [`Error::Unnamed`].
+#[test]
+fn a_node_key_that_is_not_a_key_with_no_founding_gives_its_error() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    write_key(&mut sim, &host, Vec::new());
+    assert_eq!(named(&mut sim, &host), Err(Error::Key));
+}
+
 /// A start with no file `name`, whose file `node.key` does not read, stops the node
 /// and writes no name.
 #[test]
