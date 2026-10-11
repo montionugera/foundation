@@ -118,4 +118,5 @@ impl Runs {
 }
 
 #[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
