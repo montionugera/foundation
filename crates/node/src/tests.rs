@@ -571,7 +571,18 @@ async fn take_lock(host: &sim::node::Node) -> (env::files::File, bool) {
 /// A host of `sim` with `cores` cores, whose data directory holds the key [`OWN`]
 /// and the private key [`KEY`].
 fn keyed(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
-    let host = host(sim, cores);
+    keyed_on(
+        sim,
+        sim::node::Config {
+            cores: NonZeroUsize::new(cores).unwrap(),
+            ..sim::node::Config::default()
+        },
+    )
+}
+
+/// As [`keyed`], on a host of `config`.
+fn keyed_on(sim: &mut sim::Sim, config: sim::node::Config) -> sim::node::Node {
+    let host = sim.node(config);
     let identity = Identity {
         key: OWN,
         private_key: KEY,
@@ -5019,6 +5030,78 @@ mod port {
             );
         }
 
+        /// The chunk store of a node leaves 1 GiB free: on a disk of 1 GiB, the put of
+        /// the first founding chunk stops the node, and `join` gives the floor.
+        #[test]
+        fn a_founding_chunk_under_the_free_floor_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed_on(
+                &mut sim,
+                sim::node::Config {
+                    cores: NonZeroUsize::new(2).unwrap(),
+                    disk_bytes: 1 << 30,
+                    ..sim::node::Config::default()
+                },
+            );
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let node = start(&host, region);
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 1 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
+        /// A node whose chunk store holds each founding chunk starts again after
+        /// another writer took the disk under 1 GiB free: the puts of its founding
+        /// chunks take no new room.
+        #[test]
+        fn a_restart_on_a_disk_under_the_free_floor_opens_the_mesh() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let node = start(&host, region.clone());
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move {
+                    let files = host.files();
+                    let free_bytes = files.free().await.expect("the free bytes");
+                    let len = free_bytes - (1 << 30) + 1;
+                    let mode = env::files::Mode::Create { len };
+                    let file = files.open(Path::new("other"), mode).await;
+                    let file = file.expect("the file of the other writer opens");
+                    file.sync().await.expect("syncs");
+                    file.close().await;
+                    files.sync_dir(Path::new("")).await.expect("syncs");
+                    files.free().await.expect("the free bytes")
+                })
+                .expect("the run ends");
+            assert_eq!(free_bytes, (1 << 30) - 1);
+            let node = start(&host, region);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
         /// Takes the lock of `host` as soon as it is free, then binds the node's port
         /// and opens the mesh's log to write. Gives whether the lock was held, the
         /// bind, the open of the log, and the file closes of `host` before the
@@ -5190,6 +5273,7 @@ mod port {
                     files: own.files(),
                     dir: crate::directory::blob(),
                     pool,
+                    floor_bytes: 0,
                 })
                 .await
                 .expect("the store opens");

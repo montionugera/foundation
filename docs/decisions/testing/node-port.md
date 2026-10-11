@@ -4,9 +4,19 @@
   builds the transport with the node's private key once the last shard has opened its
   buffer (X42), so the node takes no session before that. Its limits are patches until
   #1662 makes them settings, as LIMITS of SHARD HOMES is: window 1 MiB, 64 streams of
-  each kind, idle 30 s, and messages of the smaller of 64 KiB and the pool's largest
-  block. Each session runs in its own future, and each stream of it reads its header in
-  its own future, so a late header delays no other stream. One exhaustive `match` on
+  each kind, idle 30 s, messages of the smaller of 64 KiB and the pool's largest
+  block, and the free floor of the blob store, 1 GiB (`blob::Config::floor_bytes`;
+  `laptop.architect-2`, 2026-10-09T03:49:41Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). The
+  floor holds for each put, also a local one, so a start that founds a region stops
+  with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
+  than 1 GiB free (`laptop.architect-2`, 2026-10-11T05:31:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). A start
+  whose store holds each founding chunk does not stop: those puts take no new room (BLOB
+  PEER; `laptop.architect`, 2026-10-11T06:01:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106056805). Each
+  session runs in its own future, and each stream of it reads its header in its own
+  future, so a late header delays no other stream. One exhaustive `match` on
   `wire::Protocol` in `node` routes each stream; until a protocol has a server, its arm
   stops the stream with `Code(wire::header::REJECTED)` and resets the reply half with
   the same code, as for a header that does not decode, or for a first message with bytes

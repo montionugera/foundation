@@ -40,3 +40,4 @@
   used until `sync_dir` on its directory ends. A second `Full` is the error of the put.
   Decided by `laptop.architect` (2026-10-07T20:47:57Z):
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177.
+  `Store::put` also keeps a free floor on the disk (BLOB PEER).

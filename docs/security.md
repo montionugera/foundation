@@ -247,9 +247,23 @@ state on `main`.
   (`env::files`, RAFT DURABILITY, #352 item 3). The node gets `Error::IndexPastLog`
   only once the leader's commit passes its last entry. Not built (#648): the node
   shows the error in its status.
-- The `clock`, `replica`, and `blob` protocols are not built. To attack when they
-  land: who may be a time source, and a binary that a peer serves under a hash it
-  does not match (C9d).
+- The `clock` and `replica` protocols are not built. To attack when they land: who may
+  be a time source.
+- `blob::peer::serve` gives any chunk whose digest the peer names, and stores any chunk
+  that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
+  block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
+  head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
+  peer can fill the disk only to the free floor of the store, plus at most one chunk for
+  each put in flight; then each put of a chunk that the disk does not hold stops with
+  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
+  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
+  memory for each stream. `transport` also holds each chunk whole until the peer
+  acknowledged each byte of it and each byte before it on the stream, so a get can hold
+  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
+  get hold each chunk that its stream sends after it). Who may open a blob stream is not
+  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  The requester is not built (#1229). To attack when it lands: a binary that a peer
+  serves under a hash it does not match (C9d).
 
 ### Time source to `estimate`
 
