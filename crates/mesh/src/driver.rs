@@ -1351,7 +1351,7 @@ mod tests {
         /// The newest committed pointer that the task did not use. No public call
         /// shows it.
         newest: Option<Pointer>,
-        /// The chunks of the tree in use. No public call shows them.
+        /// The chunks of the tree in use. Only the heap of the node shows them.
         chunks: Chunks,
     }
 
