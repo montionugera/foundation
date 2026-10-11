@@ -369,3 +369,165 @@ fn a_founding_that_does_not_read_stops_the_node() {
     assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Mesh(error)));
     assert_eq!(bytes(&mut sim, &host, FILE), None);
 }
+
+/// Removes the file `name` on `host` and makes the removal durable.
+fn remove_name(sim: &mut sim::Sim, host: &sim::node::Node) {
+    sim.run_on(host, |host, _| async move {
+        let files = host.files();
+        files
+            .remove(Path::new(crate::name::FILE))
+            .await
+            .expect("removes");
+        files.sync_dir(Path::new("")).await.expect("syncs");
+    })
+    .expect("the run ends");
+}
+
+/// The name in the file `name` on `host`.
+fn kept(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<types::name::Name> {
+    let kept = sim.run_on(host, |host, _| async move {
+        crate::name::read(&host.files()).await
+    });
+    kept.expect("the run ends").expect("reads")
+}
+
+#[test]
+fn a_start_with_another_name_after_the_name_file_is_gone() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    sim.run_on(&host, |host, _| async move {
+        let files = host.files();
+        files.remove(Path::new("name")).await.expect("removes");
+        files.sync_dir(Path::new("")).await.expect("syncs");
+    })
+    .expect("the run ends");
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: "other".parse().unwrap(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    let renamed = Error::Renamed {
+        stored: "edge".parse().unwrap(),
+        given: "other".parse().unwrap(),
+    };
+    assert_eq!(node.join(), Err(renamed));
+    let listed = listed(&mut sim, &host, "");
+    let named = [crate::name::FILE, "name.new"].map(PathBuf::from);
+    assert!(
+        !listed.iter().any(|path| named.contains(path)),
+        "{listed:?}"
+    );
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    assert_eq!(kept(&mut sim, &host), Some("edge".parse().unwrap()));
+}
+
+/// A start with no region and another name, on a data directory that stores a
+/// founding and no file `name`, stops and writes no name.
+#[test]
+fn a_start_with_no_region_and_another_name_after_the_name_file_is_gone_stops() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let node = Node::start(Config {
+        name: "other".parse().unwrap(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run(), Ok(()));
+    let renamed = Error::Renamed {
+        stored: "edge".parse().unwrap(),
+        given: "other".parse().unwrap(),
+    };
+    assert_eq!(node.join(), Err(renamed));
+    assert_eq!(kept(&mut sim, &host), None);
+}
+
+/// With no file `name`, [`crate::name`] gives the name in the node's card in the
+/// stored founding, and a start with it runs.
+#[test]
+fn the_name_after_the_name_file_is_gone_is_the_card_name() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let named = sim.run_on(&host, |host, _| async move {
+        crate::name(&host.files(), None).await
+    });
+    let named = named.expect("the run ends").expect("names the node");
+    assert_eq!(named, "edge".parse::<types::name::Name>().unwrap());
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: named.clone(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(kept(&mut sim, &host), Some(named));
+}
+
+/// A crash at each time of a start with no file `name` leaves a data directory that
+/// a start with the card name runs and a start with another name refuses.
+#[test]
+fn a_crash_while_the_name_file_is_gone_leaves_a_directory_that_the_card_name_runs() {
+    let other: types::name::Name = "other".parse().unwrap();
+    for crash in [sim::Crash::Process, sim::Crash::Power] {
+        let mut unkept = 0;
+        for after in (0..).step_by(25_000).map(Span::from_nanos) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+            remove_name(&mut sim, &host);
+            let node = start(&host);
+            assert_eq!(sim.run_for(after), Ok(()), "{crash:?} at {after:?}");
+            sim.crash(&host, crash);
+            drop(node);
+            let written = kept(&mut sim, &host);
+            unkept += usize::from(written.is_none());
+            let node = Node::start(Config {
+                region: Region::Stored,
+                name: other.clone(),
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()), "{crash:?} at {after:?}");
+            let renamed = Error::Renamed {
+                stored: "edge".parse().unwrap(),
+                given: other.clone(),
+            };
+            assert_eq!(node.join(), Err(renamed), "{crash:?} at {after:?}");
+            assert_eq!(
+                start_and_stop(&mut sim, &host),
+                Ok(()),
+                "{crash:?} at {after:?}"
+            );
+            if written.is_some() {
+                break;
+            }
+        }
+        assert!(unkept > 0, "{crash:?}: no crash came before the write");
+    }
+}
+
+/// A start with no file `name`, whose founding does not read, stops the node and
+/// writes no name.
+#[test]
+fn a_founding_that_does_not_read_after_the_name_file_is_gone_stops_the_node() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(FOUNDING), operation);
+    let error = ::mesh::Error::Files(env::files::Error::Io {
+        path: PathBuf::from(FOUNDING),
+        operation,
+        code: 5,
+    });
+    assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Mesh(error)));
+    assert_eq!(kept(&mut sim, &host), None);
+}

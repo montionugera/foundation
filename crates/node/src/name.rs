@@ -5,12 +5,13 @@
 //! (little-endian), in one sector ([`crate::sector`]).
 
 use std::path::Path;
+use std::rc::Rc;
 
 use env::files::Files;
 use types::name::Name;
 
-use crate::Error;
 use crate::sector::{self, Held};
+use crate::{Error, directory, identity};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";
@@ -24,6 +25,12 @@ const _: () = assert!(
     Name::MAX_BYTES <= u8::MAX as usize,
     "one byte holds the length"
 );
+/// The pool of the read of the founding. The claim reads it before the shard's buffer
+/// opens, and [`stored`] on no shard.
+const POOL: block::Config = match block::Config::new(64 << 10) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
 
 /// The name in the file `name` of `files`, or `None` when no node wrote one. Opens
 /// the file to read only, so it makes nothing and waits for no lock.
@@ -37,6 +44,22 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
     decode(&held.map_err(Error::Directory)?)
 }
 
+/// The stored name of the node of `files`: the one in the file `name`, else the one in
+/// the node's card in the founding that the data directory stores, else `None`. Opens
+/// each file to read only, so it makes nothing and waits for no lock.
+///
+/// # Errors
+///
+/// [`Error::Name`] for a file `name` that a node did not write, [`Error::Mesh`] for a
+/// founding that does not read, [`Error::Key`] for a file `node.key` that a node did
+/// not write, and [`Error::Directory`] for a file call that fails.
+pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
+    match read(files).await? {
+        Some(stored) => Ok(Some(stored)),
+        None => card(files).await,
+    }
+}
+
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is
 /// not there. Call it under the lock of the data directory, after the sync of the
 /// directory that the claim makes: a failed sync of an earlier start can leave a name
@@ -44,19 +67,44 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
 ///
 /// # Errors
 ///
-/// [`Error::Renamed`] when the file holds another name, [`Error::Name`] for a file
-/// that a node did not write, and [`Error::Directory`] for a file call that fails.
+/// [`Error::Renamed`] when the stored name ([`stored`]) is another name, and each
+/// error of [`stored`].
 pub(crate) async fn keep(files: &Files, name: &Name) -> Result<(), Error> {
-    match read(files).await? {
-        None => sector::publish(files, Path::new(FILE), &encode(name))
-            .await
-            .map_err(Error::Directory),
-        Some(stored) if stored == *name => Ok(()),
-        Some(stored) => Err(Error::Renamed {
-            stored,
-            given: name.clone(),
-        }),
+    if let Some(stored) = read(files).await? {
+        return same(stored, name);
     }
+    if let Some(stored) = card(files).await? {
+        same(stored, name)?;
+    }
+    sector::publish(files, Path::new(FILE), &encode(name))
+        .await
+        .map_err(Error::Directory)
+}
+
+/// [`Error::Renamed`] when `stored` is not `given`.
+fn same(stored: Name, given: &Name) -> Result<(), Error> {
+    if stored == *given {
+        return Ok(());
+    }
+    let given = given.clone();
+    Err(Error::Renamed { stored, given })
+}
+
+/// The name in the node's card in the founding that the data directory of `files`
+/// stores, or `None` with no founding, no file `node.key`, or no card of the node in
+/// the founding.
+async fn card(files: &Files) -> Result<Option<Name>, Error> {
+    let pool = Rc::new(block::Pool::heap(POOL));
+    let founding = mesh::founding(files, &directory::mesh(), pool).await;
+    let Some(founding) = founding.map_err(Error::Mesh)? else {
+        return Ok(None);
+    };
+    let Some(key) = identity::key(files).await? else {
+        return Ok(None);
+    };
+    let mut members = founding.members.into_iter();
+    let member = members.find(|member| member.card.key() == key);
+    Ok(member.map(|member| member.card.card().name.clone()))
 }
 
 /// The bytes of the file that holds `name`.

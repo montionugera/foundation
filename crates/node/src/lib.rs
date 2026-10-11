@@ -86,8 +86,11 @@ pub struct Config<M> {
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
     /// `name`. Get it with [`name`] before the start. A later start with another name
-    /// fails with [`Error::Renamed`], and a name with a reserved segment starts no
-    /// shard ([`Error::Reserved`]). [`Node::join`] gives the first failure.
+    /// than the stored one fails with [`Error::Renamed`], and a name with a reserved
+    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores
+    /// a founding, the node's card in it holds the name too, and a start whose file
+    /// `name` is gone writes it again from the card. [`Node::join`] gives the first
+    /// failure.
     pub name: types::name::Name,
 }
 
@@ -420,16 +423,16 @@ impl Node {
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
     /// a data directory that shard 0 could not claim, else [`Error::Name`],
-    /// [`Error::Renamed`], or [`Error::Directory`] for a file `name` that it could not
-    /// read or keep, else [`Error::Buffer`] for the first shard by core whose
-    /// buffer, or the home over it, did not open, [`Error::Budget`] or
-    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
-    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
-    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
-    /// [`Error::Mesh`] for a stored region or a mesh that did not open, or
-    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
-    /// else [`Error::Panicked`] for the first shard by core that panicked. Any failed
-    /// shard stops the node.
+    /// [`Error::Renamed`], [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`]
+    /// for a stored name that it could not read or a name it could not keep, else
+    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
+    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
+    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
+    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
+    /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
+    /// mesh that did not open, or [`Error::Transport`] or [`Error::Group`], whichever
+    /// the node sees stop first, else [`Error::Panicked`] for the first shard by core
+    /// that panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -482,22 +485,24 @@ pub async fn create_key(
 }
 
 /// The name of the node of the data directory `files`: `given`, else the one that the
-/// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
-/// reads also while another node runs on `files`. It does not check `given`: the
-/// start does ([`Config::name`]).
+/// file `name` holds, else the one in the node's card in the founding that the data
+/// directory stores. Reads only when `given` is `None`, writes nothing, and reads
+/// also while another node runs on `files`. It does not check `given`: the start
+/// does ([`Config::name`]).
 ///
 /// # Errors
 ///
-/// When `given` is `None`: [`Error::Unnamed`] when the file holds no name,
-/// [`Error::Name`] for a file `name` that a node did not write, and
-/// [`Error::Directory`] for a file call that fails.
+/// When `given` is `None`: [`Error::Unnamed`] when the data directory holds no name,
+/// [`Error::Name`] for a file `name` that a node did not write, [`Error::Mesh`] for a
+/// founding that does not read, [`Error::Key`] for a file `node.key` that a node did
+/// not write, and [`Error::Directory`] for a file call that fails.
 pub async fn name(
     files: &env::files::Files,
     given: Option<types::name::Name>,
 ) -> Result<types::name::Name, Error> {
     match given {
         Some(given) => Ok(given),
-        None => name::read(files).await?.ok_or(Error::Unnamed),
+        None => name::stored(files).await?.ok_or(Error::Unnamed),
     }
 }
 
@@ -1216,7 +1221,9 @@ pub enum Error {
     /// The file `name` in the data directory is not a name that a node wrote. The node
     /// does not write over it.
     Name,
-    /// The data directory holds the node `stored`, and the start gave `given`.
+    /// The data directory holds the node `stored`, and the start gave `given`. The
+    /// stored name is the one in the file `name`, else the one in the node's card in
+    /// the founding that the data directory stores.
     Renamed {
         /// The name in the data directory.
         stored: types::name::Name,

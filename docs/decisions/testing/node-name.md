@@ -40,19 +40,34 @@
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104716716); approved
   by `laptop.architect` at `1fc0193fe` (2026-10-11T02:45:55Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104734826).
-  The file is the only copy of the name on the node, and the source of the name that
-  the node puts in its card when it founds a region (#1744) or joins one by ticket
-  (#1157). In the region, `card.name` is the one copy (MEMBER RECORD). Trigger: the
+  Until the node stores a founding, the file is the only copy of the name on the node,
+  and the source of the name that the node puts in its card when it founds a region
+  (#1744) or joins one by ticket (#1157). Once a founding is stored, the card of the
+  node in it holds the name too. Then the card is the stored name: a start with another
+  name gives `Error::Renamed` and writes no file, and a start whose file `name` is gone
+  writes it again from the card. `name::keep` reads the founding under the lock, after
+  the file `name` and before the write, through `mesh::founding` with a pool of its own
+  (the shard's buffer is not open yet), and takes the card of the key in `node.key`. A
+  founding with no card of that key gives no stored name. Lost: a check of the name
+  after `Mesh::open`, through `Mesh::member`, which a node that joins by ticket can
+  also use; it is a second source beside the founding that `node::name` reads, and it
+  adds a mesh that opens and closes at once. A file `name` that holds a whole name
+  other than the card name comes only from a write by hand; the start gives
+  `Error::Renamed` with the file name. Decided by `laptop.architect-2`, #2355
+  (2026-10-11T07:44:40Z,
+  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760). In
+  the region, `card.name` is the one copy (MEMBER RECORD). Trigger: the
   first operation that renames a node in the region also writes this file, or
   refuses the rename.
   The file is one sector: the tag `foundation/name/1`, the length of the name in one
   byte, the name with zeros after it up to 255 bytes, and the CRC32C of those 273 bytes
   (little-endian).
   `node::name(files, given)` gives the name before the start: the given one, else the
-  stored name, else `Error::Unnamed`. It does not check `given`: the start does (above;
-  approved by `laptop.architect` at `9deea732c`, 2026-10-11T03:18:10Z,
+  stored name (the file, else the card above, #2355), else `Error::Unnamed`. It does
+  not check `given`: the start does (above; approved by `laptop.architect` at
+  `9deea732c`, 2026-10-11T03:18:10Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104953177). It reads
-  the file only when no name is given, and opens it to read only, so it makes nothing
+  only when no name is given, and opens each file to read only, so it makes nothing
   and waits for no lock. So the first start needs a name, and a later one does not
   (`laptop.architect-2`, 2026-10-08T05:00:46Z,
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6052649826).
