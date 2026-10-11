@@ -10,4 +10,5 @@
   Amended (2026-10-11, REVIEW CHECK): a later round whose range changes a file under
   `docs/decisions/` also runs `architecture`, and the `review` check fails one that does
   not name it (the director,
-  https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591).
+  https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591 and
+  https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6106884396).
