@@ -429,6 +429,19 @@ fn a_failed_write_after_a_crash_writes_the_address_empty() {
     }
 }
 
+/// The empty write at the stop makes no sync: a sync of `address` that would fail does
+/// not fail the stop.
+#[test]
+fn the_empty_write_at_the_stop_does_not_sync() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, PORT);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    host.fail_file(Path::new(FILE), env::files::Operation::Sync);
+    assert_eq!(stop(&mut sim, node), Ok(()));
+    assert_eq!(bytes(&mut sim, &host), Some([0; LEN]));
+}
+
 /// A hold whose write fails at its sync gives the error, does not poll `serve`, and
 /// writes the file empty.
 #[test]

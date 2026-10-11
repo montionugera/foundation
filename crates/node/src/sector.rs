@@ -115,8 +115,7 @@ pub(crate) async fn write<const N: usize>(
     files.sync_dir(Path::new("")).await
 }
 
-/// Writes `N` zero bytes, which [`open`] reads as [`Held::Nothing`], to `file`, which
-/// [`open`] gave, with no sync.
+/// Writes `N` zero bytes to `file`, a file of `N` bytes open to write, with no sync.
 ///
 /// # Errors
 ///
