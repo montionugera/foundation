@@ -70,7 +70,7 @@ async fn bench(node: sim::node::Node, idle: usize) -> [Vec<u64>; 4] {
         }
         nanos
     };
-    let rng = node.entropy().rng();
+    let rng = &mut node.entropy().rng();
     Manager::scope(node.clock(), node.net(), address, idle, rng, body).await
 }
 

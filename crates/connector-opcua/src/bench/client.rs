@@ -151,10 +151,6 @@ mod tests {
 
     use super::Server;
 
-    unsafe extern "C" {
-        fn UA_UInt32_random() -> u32;
-    }
-
     #[test]
     fn a_client_reads_the_double_of_its_server() {
         let mut sim = Sim::new(sim::Config::default());
@@ -192,7 +188,7 @@ mod tests {
                     for _ in 0..2 {
                         let client = server.connect().await;
                         // SAFETY: it draws from the generator of this thread.
-                        drawn.push(unsafe { UA_UInt32_random() });
+                        drawn.push(unsafe { crate::ffi::test::UA_UInt32_random() });
                         client.close().await;
                     }
                     drawn

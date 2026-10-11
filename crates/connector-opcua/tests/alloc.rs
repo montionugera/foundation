@@ -5,6 +5,7 @@
 //! thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
+#![expect(unsafe_code, reason = "the test draws from the C library")]
 
 use std::future::{Future as _, poll_fn};
 use std::pin::pin;
@@ -33,12 +34,22 @@ fn sim() -> (Sim, env::clock::Clock, Rng) {
     (sim, node.clock(), node.entropy().rng())
 }
 
-/// The positive control: the copy allocates one entry for each timer.
+unsafe extern "C" {
+    fn UA_UInt32_random() -> u32;
+}
+
+/// The positive control: the copy allocates one entry for each timer. The two loops
+/// live at once on this thread, so they take one `Rng`.
 fn the_count_holds_the_allocations_of_c() {
-    let ((_sim, none, mut rng), (_other, timers, mut other)) = (sim(), sim());
+    let ((_sim, none, mut rng), (_other, timers, _)) = (sim(), sim());
     let (none, base) = ALLOCATOR.count(|| Client::new(none, &mut rng, 0));
-    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, &mut other, 100));
+    // SAFETY: it draws from the generator of this thread.
+    let first = unsafe { UA_UInt32_random() };
+    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, &mut rng, 100));
     assert_eq!(count - base, 100, "the timers of 100 against 0 allocated");
+    // SAFETY: as above.
+    let second = unsafe { UA_UInt32_random() };
+    assert_ne!(first, second, "the two loops drew the same value");
     drop((none, timers));
 }
 
@@ -119,7 +130,7 @@ fn reads(idle: usize) -> Vec<[u64; 4]> {
             }
             counts
         };
-        let rng = node.entropy().rng();
+        let rng = &mut node.entropy().rng();
         Manager::scope(node.clock(), node.net(), address, idle, rng, body).await
     };
     sim.run_on(&node, run).expect("the run ends")

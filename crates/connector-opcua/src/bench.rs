@@ -154,10 +154,10 @@ impl Manager {
         net: Net,
         address: IpAddr,
         idle: usize,
-        mut rng: Rng,
+        rng: &mut Rng,
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
-        let this = Self::new(Clock::clone(&clock), net, address, idle, &mut rng);
+        let this = Self::new(Clock::clone(&clock), net, address, idle, rng);
         let value = caught(async {
             this.connect(&clock).await;
             body(&this).await
@@ -445,7 +445,7 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let (clock, address) = (node.clock(), node.addresses()[0]);
             let body = async |manager: &Manager| body(manager, clock).await;
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             Manager::scope(node.clock(), node.net(), address, idle, rng, body).await;
         })
         .expect("the run ends");
@@ -459,12 +459,11 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
             let body = async |_: &Manager| panic!("the body panics");
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             let panic = caught(scope).await.expect_err("the body panics");
             assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
             let body = async |manager: &Manager| manager.answers();
-            let rng = node.entropy().rng();
             let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             assert_eq!(scope.await, 0);
         })
@@ -498,7 +497,7 @@ mod tests {
                 panic!("the body panics");
             };
             let address = node.addresses()[0];
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             let scope = Manager::scope(node.clock(), node.net(), address, 0, rng, body);
             let panic = caught(scope).await.expect_err("the close panics");
             let message = panic.downcast_ref::<String>().map(String::as_str);
@@ -560,9 +559,9 @@ mod tests {
         let node = sim.node(node::Config::default());
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
+            let rng = &mut node.entropy().rng();
             for _ in 0..2 {
                 let body = async |manager: &Manager| manager.answers();
-                let rng = node.entropy().rng();
                 let answers =
                     Manager::scope(node.clock(), node.net(), address, 3, rng, body)
                         .await;
@@ -613,7 +612,7 @@ mod tests {
         let node = sim.node(node::Config::default());
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             Manager::scope(node.clock(), node.net(), address, idle, rng, body).await;
         })
         .expect("the run ends");
@@ -674,7 +673,7 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let (clock, address) = (node.clock(), node.addresses()[0]);
             let start = clock.now();
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             let scope =
                 Manager::scope(node.clock(), node.net(), address, 0, rng, async |_| ());
             let panic = caught(scope).await.expect_err("the connect does not end");
@@ -729,7 +728,7 @@ mod tests {
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             Manager::scope(node.clock(), node.net(), address, 0, rng, body).await;
         })
         .expect("the run ends");
@@ -752,7 +751,7 @@ mod tests {
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
-            let rng = node.entropy().rng();
+            let rng = &mut node.entropy().rng();
             let scope =
                 Manager::scope(node.clock(), node.net(), address, idle, rng, body);
             let panic = caught(scope).await.expect_err("the connect panics");
