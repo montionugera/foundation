@@ -16,6 +16,7 @@ use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
 mod address;
+mod breaker;
 mod region;
 
 struct Run {
