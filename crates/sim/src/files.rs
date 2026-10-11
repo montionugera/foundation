@@ -284,10 +284,11 @@ impl Files {
     }
 
     /// The time that a call of `node` in `scope` ends no earlier than: the end of the
-    /// last call in `scope` that a dropped future or handle left to run, or zero. A
-    /// call without a handle is on its path. A call through a handle is on each path
-    /// that has named its file, and on the path of each dropped rename of the file, so
-    /// it stays on them after a rename or a remove.
+    /// last call in `scope` that a dropped future or handle left to run, or of a
+    /// remove through a handle, live or not, when the scope covers live removes, or
+    /// zero. A call without a handle is on its path. A call through a handle is on each
+    /// path that has named its file, and on the path of each dropped rename of the
+    /// file, so it stays on them after a rename or a remove.
     fn wait_end(&self, node: usize, scope: &Scope) -> Monotonic {
         let disk = &self.disks[node];
         let pending: Vec<_> = (self.queue.iter().rev())
