@@ -82,8 +82,8 @@ const SAMPLES: usize = 256;
 const AREA: u64 = 1 << 28;
 /// A pool of 4 times the budget of `home::testing::shard`. A size class keeps its
 /// range while one of its blocks is in use, so the lines before `two sets 1472` hold
-/// most of 8 MiB, and in some orders of the tasks its frames need more before a group
-/// commit frees a block.
+/// most of 8 MiB. In some orders of the tasks, 8 MiB then has no room for a frame of
+/// `two sets 1472` or of `wide 64k`.
 const BUDGET: u64 = 1 << 25;
 /// How long the bench waits between two checks of what the peer read.
 const STEP: Span = Span::MILLISECOND;
