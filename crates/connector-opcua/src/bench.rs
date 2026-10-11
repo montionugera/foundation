@@ -452,32 +452,22 @@ mod tests {
         .expect("the run ends");
     }
 
-    /// A `Manager` gives no nonce or session token of its clients, and `Sim::digest`
-    /// hashes no bytes, so only the generator of open62541 on this thread shows that a
-    /// scope takes its `rng`.
+    /// A scope seeds its loop from the next value of `rng`, so `rng` moves on by one.
     #[test]
-    fn each_scope_draws_from_its_rng() {
+    fn a_scope_draws_one_value_of_its_rng() {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
-        let drawn = sim
+        let next = sim
             .run_on(&node, move |node, _| async move {
-                let address = node.addresses()[0];
-                let mut drawn = Vec::new();
-                for start in [1, 2] {
-                    let body = async |_: &Manager| {
-                        // SAFETY: it draws from the generator of this thread.
-                        unsafe { ffi::test::UA_UInt32_random() }
-                    };
-                    let rng = &mut Rng::from_seed(start);
-                    drawn.push(
-                        Manager::scope(node.clock(), node.net(), address, 0, rng, body)
-                            .await,
-                    );
-                }
-                drawn
+                let (address, rng) = (node.addresses()[0], &mut Rng::from_seed(1));
+                Manager::scope(node.clock(), node.net(), address, 0, rng, async |_| ())
+                    .await;
+                rng.next_u64()
             })
             .expect("the run ends");
-        assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
+        let fresh = &mut Rng::from_seed(1);
+        fresh.next_u64();
+        assert_eq!(next, fresh.next_u64(), "the scope drew no value");
     }
 
     /// A scope closes after a panic in its body, so the next scope takes its port.
@@ -822,21 +812,21 @@ mod tests {
         });
     }
 
-    /// A `Client` never connects, and no call of it gives the values of its loop, so
-    /// only the generator of open62541 on this thread shows that `new` takes its `rng`.
+    /// Each client seeds its loop from the next value of `rng`, so two clients of one
+    /// `rng` take two values.
     #[test]
-    fn each_client_of_one_rng_draws_other_values() {
+    fn each_client_draws_one_value_of_its_rng() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
-        let mut rng = node.entropy().rng();
-        let first = Client::new(node.clock(), &mut rng, 0);
-        // SAFETY: it draws from the generator of this thread.
-        let a = unsafe { ffi::test::UA_UInt32_random() };
-        let second = Client::new(node.clock(), &mut rng, 0);
-        // SAFETY: as above.
-        let b = unsafe { ffi::test::UA_UInt32_random() };
-        drop((first, second));
-        assert_ne!(a, b, "two clients drew the same value");
+        let rng = &mut Rng::from_seed(1);
+        drop((
+            Client::new(node.clock(), rng, 0),
+            Client::new(node.clock(), rng, 0),
+        ));
+        let fresh = &mut Rng::from_seed(1);
+        fresh.next_u64();
+        fresh.next_u64();
+        assert_eq!(rng.next_u64(), fresh.next_u64(), "a client drew no value");
     }
 
     #[test]
