@@ -437,8 +437,8 @@ pub(super) async fn keep(
 
 // The definitions of the spec of `pointer`, and the chunks of its tree, when it reads
 // and has no problem. `chunks` holds the tree in use. The read gets each chunk of
-// `listed` that `chunks` lacks from `store`, then each other chunk that the tree needs,
-// and adds only the second kind to `got`.
+// `listed` that `chunks` lacks and each chunk that the tree needs from `store`, and
+// adds each to `got`.
 async fn read(
     store: &blob::Store,
     prefix: &Prefix,
@@ -453,6 +453,7 @@ async fn read(
         }
         if let Some(chunk) = store.get(digest).await.map_err(Cause::Blob)? {
             chunks.insert(chunk.to_vec());
+            got.push(chunk.to_vec());
         }
     }
     let (definitions, kept) = loop {
