@@ -18,11 +18,13 @@
   counts of `blob::Status` after the open of the node's chunk store (BLOB STORE). The
   names and the type are in the body of #2362. The collector holds the store and reads
   it on the shard of the store, shard 0, because `blob` gives no reader for other
-  threads (BLOB STORE). A node with no region has no member record (MEMBER RECORD), so
-  it has no status channel and no collector. Lost: an optional store, with no sample for
-  the two (no node collects with no store); the caller of `collect` pulls the status and
-  passes it (the collector is the one place that pulls). Proposed in the plan of #2362
-  (2026-10-11T08:21:23Z,
+  threads (BLOB STORE). Supersedes "pulls each value from a reader that its crate gives"
+  for the chunk store (decided in #728,
+  https://github.com/synnaxlabs/foundation/issues/728). A node with no region has no
+  member record (MEMBER RECORD), so it has no status channel and no collector. Lost: an
+  optional store, with no sample for the two (no node collects with no store); the
+  caller of `collect` pulls the status and passes it (the collector is the one place
+  that pulls). Proposed in the plan of #2362 (2026-10-11T08:21:23Z,
   https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6107079376); ruled
   by `laptop.architect-2` (2026-10-11T10:39:06Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810); the

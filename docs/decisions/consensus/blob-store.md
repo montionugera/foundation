@@ -69,7 +69,8 @@
   earlier open left adds one, as a torn write does: the open lists names and cannot tell
   the two. Lost: each get that read bytes that do not hash counts (the count then rises
   on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
-  that ruling) and its doc of the field.
+  https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288) and its
+  doc of the field.
   `Store::get` and `Store::put` are not a hot path. Each runs one time for each chunk
   call of `blob::peer` and of `mesh`. A chunk holds bytes of a spec tree or of an
   upgrade binary (BQ1). So a chunk message is a control message, and its rate does not
