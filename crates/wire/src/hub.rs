@@ -499,8 +499,8 @@ pub mod ends {
 }
 
 // A variant holds a `Box`, so `Error` has drop glue. A decoder on the frame path
-// makes one only on a defect, never with an eager `ok_or`: the drop costs about 10 ns
-// a frame.
+// makes one only on a defect, never with an eager `ok_or`, which builds and drops one
+// on each message.
 /// A hub message that is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
