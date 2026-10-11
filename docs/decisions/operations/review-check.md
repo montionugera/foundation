@@ -79,7 +79,10 @@
   2026-10-09T03:40:52Z
   (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6073795680), approved
   by the director at 2026-10-09T05:20:36Z
-  (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6074829060).
+  (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6074829060). The
+  words on the spaces and tabs at the end of a line: approved by the director at
+  2026-10-11T10:51:12Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108250288).
   Supersedes the footnote label rule of
   https://github.com/synnaxlabs/foundation/issues/2037#issuecomment-6071274522
   (2026-10-08T23:46:02Z), since `comrak` reads footnote labels as GitHub does.
