@@ -452,7 +452,6 @@ mod tests {
         .expect("the run ends");
     }
 
-    /// A scope closes after a panic in its body, so the next scope takes its port.
     #[test]
     fn each_scope_draws_from_its_rng() {
         let mut sim = Sim::new(sim::Config::default());
@@ -478,6 +477,7 @@ mod tests {
         assert_ne!(drawn[0], drawn[1], "two scopes drew the same value");
     }
 
+    /// A scope closes after a panic in its body, so the next scope takes its port.
     #[test]
     fn a_scope_whose_body_panics_frees_its_port() {
         let mut sim = Sim::new(sim::Config::default());
@@ -817,6 +817,21 @@ mod tests {
                 "Manager { clients: 3, answers: 0, .. }"
             );
         });
+    }
+
+    #[test]
+    fn each_client_of_one_rng_draws_other_values() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let mut rng = node.entropy().rng();
+        let first = Client::new(node.clock(), &mut rng, 0);
+        // SAFETY: it draws from the generator of this thread.
+        let a = unsafe { ffi::test::UA_UInt32_random() };
+        let second = Client::new(node.clock(), &mut rng, 0);
+        // SAFETY: as above.
+        let b = unsafe { ffi::test::UA_UInt32_random() };
+        drop((first, second));
+        assert_ne!(a, b, "two clients drew the same value");
     }
 
     #[test]
