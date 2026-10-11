@@ -374,11 +374,13 @@ fn performer(text: &[Vec<String>]) -> bool {
         .any(|r| listed(r).contains("performance"))
 }
 
-/// Whether a top-level paragraph of `shown` after its fields, and before its end lines
-/// unless it is `old`, has a line `Text fixes:` with a value ([`stated`]).
+/// Whether a top-level paragraph of `shown` after its round heading, other than its end
+/// lines unless it is `old`, has a line `Text fixes:` with a value ([`stated`]).
 fn fixed(shown: &Shown<'_>, old: bool) -> bool {
-    let blocks = shown.blocks.get(1..).unwrap_or_default();
-    let blocks = if old { blocks } else { shown.middle() };
+    let blocks = match shown.blocks.split_last() {
+        Some((_, before)) if !old => before,
+        _ => &shown.blocks,
+    };
     blocks
         .iter()
         .flat_map(|block| shown.paragraph(Some(block)))
@@ -645,13 +647,6 @@ impl<'a> Shown<'a> {
     /// paragraph or the fields are the only block.
     fn end(&self) -> &[String] {
         self.paragraph(self.blocks.get(1..).and_then(<[_]>::last))
-    }
-
-    /// The blocks between the fields and the end lines.
-    fn middle(&self) -> &[Option<usize>] {
-        self.blocks
-            .get(1..self.blocks.len().saturating_sub(1))
-            .unwrap_or_default()
     }
 
     /// The lines of `block`, one of [`Shown::blocks`], or none when it is not a

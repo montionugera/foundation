@@ -938,6 +938,11 @@ fn passes_a_range_that_ends_before_commits_that_change_no_code() {
         "Text fixes:\n\n1. In the PR body, write `x`.\n\nNo bug,",
     );
     assert_eq!(check(&record(vec![bot(&round)])), Vec::<String>::new());
+    let fields = ROUND.replace("..c77c67d7", &format!("..{TEXT}")).replace(
+        "Findings: none",
+        "Findings: none\nText fixes:\n- In the PR body, write `x`.",
+    );
+    assert_eq!(check(&record(vec![bot(&fields)])), Vec::<String>::new());
 }
 
 #[test]
@@ -951,7 +956,6 @@ fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
         fixes("Text fixes: none needed"),
         fixes("- Text fixes: x"),
         fixes("> Text fixes: x"),
-        ended.replace("Findings: none", "Findings: none\nText fixes: x"),
         ended.replace("Deferred: none", "Deferred: none\nText fixes: x"),
     ] {
         assert_eq!(
