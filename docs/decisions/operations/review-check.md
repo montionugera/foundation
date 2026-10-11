@@ -167,8 +167,10 @@
   messages on #1193. A later round that does not name `architecture` fails when its
   range changes a file under `docs/decisions/`: one that the range adds, changes, or
   removes. The check reads `docs/decisions/` in any case of its letters, since a file
-  system that folds case shows such a path as a decision. Stated by the director at
-  2026-10-08T22:50:06Z
+  system that folds case shows such a path as a decision. It folds only ASCII: a
+  character such as U+017F, which APFS reads as `s`, is not a letter of the path to the
+  check. Lost: a fold table in the check, since each file system has its own. Stated by
+  the director at 2026-10-08T22:50:06Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6070608950), and
   ruled at 2026-10-11T07:44:23Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591),
@@ -177,9 +179,11 @@
   08:19:09Z
   (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6107062843),
   11:19:09Z
-  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108468045), and
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108468045),
   11:24:26Z
-  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108509702).
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108509702), and
+  12:05:01Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108831770).
   Supersedes the reviewers of a later round in ruling 2 of
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
   (2026-10-07T06:32:32Z). For this rule, a round comment after the first is a later

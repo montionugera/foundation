@@ -2326,6 +2326,18 @@ fn a_decision_path_in_another_case_is_a_decision_change() {
 }
 
 #[test]
+fn a_path_with_a_letter_that_only_a_file_system_folds_is_no_decision_change() {
+    // U+017F, the long s, which APFS reads as `s`.
+    let paths = ["docs/deci\u{17f}ions/x.md", "doc\u{17f}/decisions/x.md"];
+    for (n, path) in paths.into_iter().enumerate() {
+        let (repo, start) = Repo::with_pr(&format!("decision-fold-{n}"));
+        let end = repo.commit(path, "a rule\n");
+        assert_eq!(repo.decision_change(&start, &end), Ok(None), "{path}");
+        repo.remove();
+    }
+}
+
+#[test]
 fn a_range_that_changes_no_decision_is_no_decision_change() {
     let (repo, start) = Repo::with_pr("decision-none");
     repo.commit("docs/decisions.md", "a list\n");
