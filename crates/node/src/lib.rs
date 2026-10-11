@@ -1233,7 +1233,8 @@ pub enum Error {
     /// The data directory holds no node name, and the start gave none.
     Unnamed,
     /// The start gave `name`, which has a segment that starts with `@`. A region
-    /// refuses it, so no shard started and the data directory keeps no name.
+    /// refuses it, so no shard started and the data directory keeps no name that its
+    /// founding refuses.
     Reserved {
         /// The name the start gave.
         name: types::name::Name,
