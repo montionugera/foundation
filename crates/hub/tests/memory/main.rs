@@ -1,5 +1,6 @@
-//! A request that the hub refuses for its length allocates no body, and the heap of a
-//! hub does not grow over many opens and closes of a named complete reader. This
+//! A request that the hub refuses for its length allocates no body, the heap of a hub
+//! does not grow over many opens and closes of a named complete reader, and a read
+//! that waits for its home holds no places. This
 //! binary has no test harness: the count covers each thread, and a harness allocates
 //! on its own thread at any time.
 
@@ -15,21 +16,25 @@ mod common;
 mod net;
 #[path = "../common/node.rs"]
 mod node;
+#[path = "../common/region.rs"]
+mod region;
 #[path = "../common/sessions.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
 mod sessions;
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use agent::{SUBJECT, name, reset_with};
+use agent::{Agent, SUBJECT, name, reset_with};
 use hub::reader::{self, Mode};
 use hub::serve;
-use sessions::{closed_after, sessions};
+use sessions::{closed_after, rules, serve_each, sessions};
 use transport::{Class, Code};
 use types::channel;
 use types::name::Selector;
 use types::time::Span;
-use wire::hub::client::BODY_BYTES_MAX;
+use wire::hub::client::{self, BODY_BYTES_MAX, Place};
 use wire::hub::{BUSY, Open, keys};
 
 #[global_allocator]
@@ -44,6 +49,7 @@ fn main() {
     refuses_a_request_over_the_share_before_it_allocates_the_body();
     holds_the_same_bytes_over_many_opens_of_a_named_reader();
     holds_no_more_bytes_for_an_open_that_names_one_channel_many_times();
+    holds_no_places_while_a_read_waits_for_its_home();
 }
 
 /// Keys of `value` that the peer sends in each message.
@@ -198,4 +204,65 @@ fn holds_the_same_bytes_over_many_opens_of_a_named_reader() {
         assert_eq!(ALLOCATOR.held(), few, "bytes held after {MANY} opens");
     })
     .expect("the run ends");
+}
+
+/// The channels that the wide read of
+/// [`holds_no_places_while_a_read_waits_for_its_home`] matches.
+const WIDE: usize = 10_000;
+
+/// The mesh names no home of `time`, so each read waits for it. A read of [`WIDE`]
+/// channels with long names holds about as many bytes while it waits as a read of one
+/// channel: at most a tenth of the bytes of its places more.
+fn holds_no_places_while_a_read_waits_for_its_home() {
+    let long = "x".repeat(240);
+    let wide: Vec<_> = (0..WIDE).map(|n| name(&format!("w.{long}.{n}"))).collect();
+    let places: usize = wide
+        .iter()
+        .map(|name| size_of::<Place>() + name.as_str().len())
+        .sum();
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let transport = Rc::new(transport);
+        let region =
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let hub = common::hub_in(&node, tasks.clone(), region, &wide).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        agent.sleep(common::SETTLE).await;
+        let before = ALLOCATOR.held();
+        let _one = agent.read(client::Mode::Complete, &["value"]).await;
+        agent.sleep(common::SETTLE).await;
+        let one = ALLOCATOR.held();
+        let _wide = agent.read(client::Mode::Complete, &["w.**"]).await;
+        agent.sleep(common::SETTLE).await;
+        let wide = ALLOCATOR.held();
+        *kept.lock().expect("not poisoned") = Some((one - before, wide - one));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(2, home, program);
+    let (one, wide) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        wide < one + places / 10,
+        "a read of one channel holds {one} bytes, and one of {WIDE} holds {wide}: its \
+         places are {places} bytes"
+    );
 }

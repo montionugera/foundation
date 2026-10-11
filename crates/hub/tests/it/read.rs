@@ -264,9 +264,8 @@ fn stops_a_read_on_a_stream_of_the_other_class_as_malformed() {
 }
 
 /// A read reserves its open under the share of its subject, not the request turn of
-/// its link, until it is verified, and then its places until they are sent. The open
-/// of `time` and `value` is 14 bytes, that of `value` 8, and the places of `value`
-/// are those of `value` and `time`.
+/// its link, until it is verified. The open of `time` and `value` is 14 bytes, and
+/// that of `value` 8, which fills the share.
 #[test]
 fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     let home = read_session(
@@ -276,32 +275,75 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
             agent.admit().await;
             let held = agent.unfinished(BODY_BYTES_MAX - 8, &[]).await;
             agent.sleep(Span::MILLISECOND).await;
-            for select in [&["time", "value"][..], &["value"]] {
-                let mut busy = agent.read(Mode::Complete, select).await;
-                assert_eq!(busy.recv().await, reset_with(BUSY));
-            }
+            let mut busy = agent.read(Mode::Complete, &["time", "value"]).await;
+            assert_eq!(busy.recv().await, reset_with(BUSY));
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+            assert_eq!(places, Places { count: 2, index: 1 });
             drop(held);
             agent.sleep(Span::MILLISECOND).await;
             for _ in 0..2 {
-                let mut stream = agent.read(Mode::Complete, &["value"]).await;
+                let mut stream = agent.read(Mode::Complete, &["time", "value"]).await;
                 let (places, _, _) = opened(&mut stream, Mode::Complete).await;
-                assert_eq!(places, Places { count: 2, index: 1 });
+                assert_eq!(places, Places { count: 2, index: 0 });
             }
         },
     );
-    let share = |length| serve::Error::Share {
+    let share = serve::Error::Share {
         subject: name(SUBJECT),
-        length,
+        length: 14,
         held: BODY_BYTES_MAX - 8,
     };
-    let places = 2 * size_of::<Place>() + "value".len() + "time".len();
-    let places = u64::try_from(places).expect("fits");
-    assert_eq!(home.served[..2], [Err(share(14)), Err(share(places))]);
+    assert_eq!(home.served[0], Err(share.clone()));
     assert_eq!(
-        share(14).to_string(),
+        share.to_string(),
         "a body of 14 bytes does not fit under the share of 16777216 bytes of subject \
          ops.agent: its open requests and reads hold 16777208 bytes"
     );
+}
+
+/// The places of a read hold no reservation, so a read whose places pass the share of
+/// its subject opens and gets its frames.
+#[test]
+fn opens_a_read_whose_places_pass_the_share() {
+    const MANY: usize = 60_000;
+    let ready = async |test: &Test| {
+        let long = "x".repeat(240);
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{long}.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }));
+        writes(test, &[10]).await;
+    };
+    let home = read_session(313, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["w.**", "value"]).await;
+        let (places, run, mut reader) = opened(&mut stream, Mode::Complete).await;
+        let time = u32::try_from(MANY + 1).expect("fits");
+        assert_eq!(
+            places,
+            Places {
+                count: time + 1,
+                index: time
+            }
+        );
+        let bytes: usize = run
+            .iter()
+            .map(|place| size_of::<Place>() + place.name.as_str().len())
+            .sum();
+        let share = usize::try_from(BODY_BYTES_MAX).expect("fits");
+        assert!(bytes > share, "the places hold {bytes} bytes");
+        let got = got(&mut stream.receiver, &mut reader)
+            .await
+            .expect("a frame");
+        assert_eq!(placed(&got), [0, time]);
+        assert_eq!(decoded(&got, &[I64, STAMP])[0], [10]);
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
 #[test]

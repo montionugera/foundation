@@ -9,6 +9,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../common/node.rs"]

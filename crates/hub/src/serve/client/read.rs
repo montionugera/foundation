@@ -10,7 +10,7 @@ use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::Name;
 use types::time::Span;
-use wire::hub::client::{Mode, Open, Place, Places, Read, Refusal, place};
+use wire::hub::client::{Mode, Open, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
 use crate::State;
@@ -29,13 +29,8 @@ pub(super) async fn serve(
     receiver: &mut Receiver,
     sender: &mut Sender,
 ) -> Result<(), Error> {
-    let (reader, matched) =
-        open(session, class, subject.clone(), read, receiver).await?;
-    let layout = {
-        // The places wait for room in the program's window, so they hold their bytes.
-        let _places = Reserved::new(&session.state, subject, held(&matched))?;
-        start(&session.state, sender, matched).await?
-    };
+    let (reader, matched) = open(session, class, subject, read, receiver).await?;
+    let layout = start(&session.state, sender, matched).await?;
     relay(&session.state, reader, layout, receiver, sender).await
 }
 
@@ -72,17 +67,6 @@ async fn open(
     Reader::open(state, config)
         .await
         .map_err(|error| Error::Reader(Box::new(error)))
-}
-
-/// The heap bytes that the places of `matched` hold.
-fn held(matched: &Matched) -> u64 {
-    let names: usize = matched
-        .places
-        .iter()
-        .map(|place| place.name.as_str().len())
-        .sum();
-    let bytes = names.strict_add(matched.places.len().strict_mul(size_of::<Place>()));
-    u64::try_from(bytes).expect("invariant: a usize fits a u64")
 }
 
 /// Sends the places of `matched`, their run, and `Opened`, and gives the layout of

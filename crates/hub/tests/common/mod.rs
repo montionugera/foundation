@@ -23,6 +23,45 @@ pub(crate) const SETTLE: Span = Span::from_nanos(20_000_000);
 /// A hub on a new shard, with `time` and `value` defined, and the node's mesh time now.
 pub(crate) async fn hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
     let (hub, now) = hub::testing::open(env(node, tasks)).await;
+    hub.set_definitions(
+        definitions(&[])
+            .iter()
+            .map(|(name, channel)| (name, channel)),
+    );
+    (hub, now.nanos())
+}
+
+/// A hub on a new shard of node 1 in `region`, with mesh time, and with `time`,
+/// `value`, and each of `more`, an `i64` channel on `time`, defined.
+pub(crate) async fn hub_in(
+    node: &sim::node::Node,
+    tasks: Tasks,
+    region: hub::Region,
+    more: &[Name],
+) -> Hub {
+    let env = env(node, tasks);
+    let (tasks, entropy) = (env.tasks.clone(), env.entropy.clone());
+    let (home, interner, _, time) = home::testing::shard(env).await;
+    let hub = Hub::new(hub::Config {
+        home,
+        interner,
+        tasks,
+        node: types::node::Key::from_u128(1),
+        time,
+        entropy,
+        region: Some(region),
+    });
+    hub.set_definitions(
+        definitions(more)
+            .iter()
+            .map(|(name, channel)| (name, channel)),
+    );
+    hub
+}
+
+/// `time` with key 1, `value` with key 2, and each of `more`, from key 100 on, each
+/// an `i64` channel on `time`.
+fn definitions(more: &[Name]) -> Vec<(Name, Definition)> {
     let time = Channel {
         key: channel::Key::from_u128(1),
         kind: Kind::Index {
@@ -30,15 +69,21 @@ pub(crate) async fn hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
             control: None,
         },
     };
-    let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
-    let data = Data::new(time.key, None, i64, None).expect("no unit");
-    let value = Channel {
-        key: channel::Key::from_u128(2),
-        kind: Kind::Data(data),
+    let data = |key| {
+        let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
+        Definition::Channel(Channel {
+            key: channel::Key::from_u128(key),
+            kind: Kind::Data(Data::new(time.key, None, i64, None).expect("no unit")),
+        })
     };
-    let (time, value) = (Definition::Channel(time), Definition::Channel(value));
-    hub.set_definitions([(&name("time"), &time), (&name("value"), &value)]);
-    (hub, now.nanos())
+    let mut definitions = vec![(name("value"), data(2))];
+    definitions.extend(
+        (100..)
+            .zip(more)
+            .map(|(key, name)| (name.clone(), data(key))),
+    );
+    definitions.push((name("time"), Definition::Channel(time)));
+    definitions
 }
 
 pub(crate) fn name(name: &str) -> Name {

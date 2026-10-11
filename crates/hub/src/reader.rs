@@ -589,23 +589,22 @@ pub(crate) struct Matched {
 }
 
 /// What `select` matches once the home of its index is known, and that home when it
-/// is another node.
+/// is another node. While it waits for the home, it holds only the key of the index.
 async fn matched(
     state: &Rc<RefCell<State>>,
     select: &Selector,
 ) -> Result<(Matched, Option<types::node::Key>), Error> {
     let (places, index, away) = loop {
-        let (places, at) = resolve(&state.borrow(), select)?;
-        let index = places[at].key;
+        let index = matching(&state.borrow(), select)?[0].1.index();
         let away = match crate::homes(state, &[index]).await {
             Ok(()) => None,
             Err(Away::Remote(home)) => Some(home),
             Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
         };
         // A call of `set_definitions` while the open waits can change a channel.
-        let (places, again) = resolve(&state.borrow(), select)?;
-        if places[again].key == index {
-            break (places, again, away);
+        let (places, at) = resolve(&state.borrow(), select)?;
+        if places[at].key == index {
+            break (places, at, away);
         }
     };
     let keys: Vec<_> = places.iter().map(|place| place.key).collect();
@@ -621,9 +620,11 @@ async fn matched(
     ))
 }
 
-/// The channels that `select` matches, in name order, then their one index when
-/// `select` does not match it, and the position of the index.
-fn resolve(state: &State, select: &Selector) -> Result<(Vec<Place>, usize), Error> {
+/// The channels that `select` matches, in name order, each on one index.
+fn matching<'a>(
+    state: &'a State,
+    select: &Selector,
+) -> Result<Vec<(&'a Name, &'a Channel)>, Error> {
     let mut matched: Vec<(&Name, &Channel)> = state
         .channels
         .iter()
@@ -639,6 +640,14 @@ fn resolve(state: &State, select: &Selector) -> Result<(Vec<Place>, usize), Erro
             other: other.clone(),
         });
     }
+    Ok(matched)
+}
+
+/// The channels that `select` matches, in name order, then their one index when
+/// `select` does not match it, and the position of the index.
+fn resolve(state: &State, select: &Selector) -> Result<(Vec<Place>, usize), Error> {
+    let matched = matching(state, select)?;
+    let index = matched[0].1.index();
     let place = |name: &Name, channel: &Channel| Place {
         key: channel.key(),
         data_type: channel.sample(),
