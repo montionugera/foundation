@@ -23,10 +23,12 @@
   from the chunks of the spec in use. The pointer in use is one empty file
   `<version>-<root>` in `<Config::dir>/spec`. A spec takes effect after the create and
   the sync of the directory of its file. After a stop, a spec whose file became durable
-  takes no effect in that run, and the next open uses it (MESH SURFACE). The node then
-  removes each other file in the directory, as `Mesh::open` does, which keeps only the
-  highest version. A failed removal is not a cause: the next change or open removes the
-  file. At an open, the task skips each replayed pointer at or below the one that it
+  takes no effect in that run, and the next open uses it (MESH SURFACE;
+  `laptop.architect`, 2026-10-11T16:47:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111328950). The node
+  then removes each other file in the directory, as `Mesh::open` does, which keeps only
+  the highest version. A failed removal is not a cause: the next change or open removes
+  the file. At an open, the task skips each replayed pointer at or below the one that it
   knows. This is correct while the replay passes through the pointer of the file, and
   Raft never drops a committed entry. Trigger: before a forced takeover (K5) can drop a
   committed entry, its issue decides how the task meets the new history. `Mesh::open`
