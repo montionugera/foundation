@@ -169,6 +169,36 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
     assert_eq!(os::paths().write(&long, b"x"), Err(Error::Io { code }));
 }
 
+/// The hidden file has a longer name than `f`, so its path passes the longest path of
+/// the OS where the path of `f` does not.
+#[test]
+fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
+    let most = if cfg!(target_os = "macos") {
+        1023
+    } else {
+        4095
+    };
+    let scratch = Scratch::new();
+    // The OS counts the path behind each symbolic link.
+    let mut dir = fs::canonicalize(&scratch.0).unwrap();
+    while dir.as_os_str().len() + 204 < most {
+        dir.push("d".repeat(200));
+        fs::create_dir(&dir).unwrap();
+    }
+    dir.push("e".repeat(most - dir.as_os_str().len() - 3));
+    fs::create_dir(&dir).unwrap();
+    let file = dir.join("f");
+    assert_eq!(file.as_os_str().len(), most);
+    let paths = os::paths();
+    let code = Errno::NAMETOOLONG.raw_os_error();
+    assert_eq!(paths.write(&file, b"new"), Err(Error::Io { code }));
+    assert_eq!(paths.read(&file, 3), Err(Error::NotFound));
+    fs::write(&file, b"old").unwrap();
+    assert_eq!(paths.write(&file, b"new"), Err(Error::Io { code }));
+    assert_eq!(paths.read(&file, 3), Ok(Found::File(b"old".to_vec())));
+    assert_eq!(paths.read(&dir, most), Ok(Found::Directory(vec![file])));
+}
+
 #[test]
 fn a_write_leaves_the_old_bytes_at_another_hard_link_of_the_file() {
     let scratch = Scratch::new();
@@ -239,6 +269,17 @@ fn a_write_on_a_link_writes_the_file_it_names() {
     assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
     let entries = Ok(Found::Directory(vec![link, file]));
     assert_eq!(paths.read(&scratch.0, 1 << 12), entries);
+}
+
+#[test]
+fn a_write_on_a_link_leaves_the_mode_of_the_file_it_names() {
+    let scratch = Scratch::new();
+    let (file, link) = (scratch.0.join("plant.hcl"), scratch.0.join("link"));
+    fs::write(&file, b"old").unwrap();
+    fs::set_permissions(&file, Permissions::from_mode(0o644)).unwrap();
+    symlink(&file, &link).unwrap();
+    os::paths().write(&link, b"new").unwrap();
+    assert_eq!(mode(&file), 0o644);
 }
 
 #[test]
