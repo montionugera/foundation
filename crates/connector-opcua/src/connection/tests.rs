@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use env::clock::{Clock, Driver, Sleep, Timer};
 use env::net::{self, Tcp, tcp};
-use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::{Monotonic, Span};
 
@@ -153,14 +152,14 @@ impl Side {
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
         let manager =
-            Manager::new(Clock::clone(&clock), node.net(), &mut Rng::from_seed(0));
+            Manager::new(Clock::clone(&clock), node.net(), &mut node.entropy().rng());
         Self::of(clock, manager)
     }
 
     /// A side whose manager accepts on a listener at `local`.
     fn listening(node: &node::Node, local: SocketAddr) -> Self {
         let clock = node.clock();
-        let rng = &mut Rng::from_seed(0);
+        let rng = &mut node.entropy().rng();
         let manager =
             Manager::listening(Clock::clone(&clock), node.net(), local, 512, rng)
                 .expect("the port is free");
@@ -2702,7 +2701,7 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
         inner: node.clock(),
         extra: Arc::clone(&extra),
     });
-    let rng = &mut Rng::from_seed(0);
+    let rng = &mut node.entropy().rng();
     let manager =
         Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
             .expect("the port is free");
@@ -3121,7 +3120,7 @@ fn a_manager_that_listens_at_a_taken_address_fails() {
         .run_on(&network.local.clone(), |node, _| async move {
             let local = local(&node);
             let _side = Side::listening(&node, local);
-            let rng = &mut Rng::from_seed(0);
+            let rng = &mut node.entropy().rng();
             let second = Manager::listening(node.clock(), node.net(), local, 4, rng);
             (second.err(), local)
         })
