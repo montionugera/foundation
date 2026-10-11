@@ -43,11 +43,12 @@ pub(crate) struct Rig {
 impl Rig {
     /// Makes a temporary directory for the test on this thread, with a name that no
     /// directory has: a run that was killed keeps its directory, and a later run can
-    /// get the same PID. On Unix, first removes the directory of each test process of this user
-    /// that is gone, also when a node that it started still runs there. Its data
-    /// directory keeps a pool budget of 1 GiB and a disk budget of 8 MiB for each core
-    /// ([`Rig::keep`]), so a first start does not take a quarter of the host's free
-    /// disk, and each shard's ring fits.
+    /// get the same PID. On Unix, first removes the directory of each test process of
+    /// this user that is gone, also when a node that it started still runs there. A
+    /// directory in which such a node makes a file during the removal stays until a
+    /// later rig. Its data directory keeps a pool budget of 1 GiB and a disk budget of
+    /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter
+    /// of the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
         Rig::with_cores(os::shards().expect("read the cores").cores().get())
     }
@@ -775,22 +776,24 @@ fn a_rig_keeps_a_file_with_the_name_of_a_directory() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_start_on_a_data_directory_keeps_the_budget_that_it_holds() {
-    let rig = Rig::new();
-    rig.keep(1024, rig.disk);
-    rig.starting(&["start", "--data", "foundation-data"]);
+    let mut rig = Rig::new();
+    rig.keep(POOL / 2, rig.disk);
+    rig.start_with(&["--name", "edge", "--data", "foundation-data"]);
+    rig.stop();
     #[expect(
         clippy::disallowed_methods,
         reason = "the test reads what the rig wrote to the disk"
     )]
     let kept = std::fs::read(rig.budget()).expect("read the budget file");
-    assert_eq!(kept, budget(1024, rig.disk));
+    assert_eq!(kept, budget(POOL / 2, rig.disk));
 }
 
 #[test]
 fn a_start_with_a_joined_data_path_panics() {
-    let rig = Rig::new();
-    let start = std::panic::AssertUnwindSafe(|| rig.starting(&["start", "--data=x"]));
+    let mut rig = Rig::new();
+    let start = std::panic::AssertUnwindSafe(|| rig.start_with(&["--data=x"]));
     let panic = std::panic::catch_unwind(start).expect_err("the start panics");
     assert_eq!(
         panic.downcast_ref::<String>().map(String::as_str),
@@ -1186,7 +1189,7 @@ fn a_left_directory_is_whole_when_other_rigs_sweep() {
             let stop = Arc::clone(&stop);
             #[expect(
                 clippy::disallowed_methods,
-                reason = "rigs on other test threads sweep while a test leaves a directory"
+                reason = "other test threads sweep while a test leaves a directory"
             )]
             let spawn = std::thread::Builder::new()
                 .name(format!("sweeper-{sweeper}"))
