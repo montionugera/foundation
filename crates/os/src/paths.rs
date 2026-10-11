@@ -42,13 +42,14 @@ impl env::paths::Driver for Driver {
     }
 }
 
-/// Whether `path` is empty or ends in `/` or `.`. `Path` drops such an end, so the
-/// hidden file would go beside the directory that `path` names. A path that ends in
-/// `..` needs no check: the stat finds a directory or fails.
+/// Whether `path` is empty or ends in `/`, `.`, or `..`, so that it names a directory.
+/// `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
+/// hidden file would go beside that directory or in it. The stat does not stop this:
+/// the directory can come after it.
 fn names_directory(path: &Path) -> bool {
     let bytes = path.as_os_str().as_encoded_bytes();
     let name = bytes.rsplit(|&byte| byte == b'/').next();
-    matches!(name, Some(b"" | b"."))
+    matches!(name, Some(b"" | b"." | b".."))
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {

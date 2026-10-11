@@ -6,6 +6,8 @@ use std::os::unix::fs::{
     FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, chown, symlink,
 };
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use env::paths::{Error, Found};
 use rustix::io::Errno;
@@ -154,6 +156,38 @@ fn a_write_on_a_path_that_names_a_directory_makes_no_file_beside_it() {
         let written = os::paths().write(&none, b"x");
         assert_eq!(written, Err(Error::NotFound), "{}", none.display());
     }
+}
+
+/// Another thread makes and removes `config`, so a stat that finds nothing does not
+/// show that the open of a hidden file under `config/..` fails.
+#[test]
+fn a_write_on_a_path_that_ends_in_two_dots_makes_no_file_beside_the_directory() {
+    let scratch = Scratch::new();
+    let config = scratch.0.join("config");
+    let dots = config.join("..");
+    let stopped = AtomicBool::new(false);
+    let named = [
+        Err(Error::NotFound),
+        Err(Error::Io {
+            code: Errno::ISDIR.raw_os_error(),
+        }),
+    ];
+    let other = thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the write")]
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                fs::create_dir(&config).unwrap();
+                fs::remove_dir(&config).unwrap();
+            }
+        });
+        let paths = os::paths();
+        let mut written = (0..20_000).map(|_| paths.write(&dots, b"x"));
+        let other = written.find(|written| !named.contains(written));
+        stopped.store(true, Ordering::Relaxed);
+        other
+    });
+    let left = fs::read_dir(&scratch.0).unwrap().count();
+    assert_eq!((other, left), (None, 0));
 }
 
 #[test]
