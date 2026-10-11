@@ -374,13 +374,15 @@ fn performer(text: &[Vec<String>]) -> bool {
         .any(|r| listed(r).contains("performance"))
 }
 
-/// Whether `text` ([`Shown::text`]) has a line `Text fixes:` that is not
-/// `Text fixes: none`.
-fn fixed(text: &[Vec<String>]) -> bool {
-    text.iter()
-        .flatten()
+/// Whether a top-level paragraph of `shown` between its fields and its end lines has a
+/// line `Text fixes:` whose value is not `none` ([`none`]).
+fn fixed(shown: &Shown<'_>) -> bool {
+    shown
+        .middle()
+        .iter()
+        .flat_map(|block| shown.paragraph(Some(block)))
         .filter_map(|l| l.strip_prefix("Text fixes:"))
-        .any(|items| items.trim() != "none")
+        .any(|items| !none(items))
 }
 
 /// The reviewers that the value of a `Reviewers:` line lists.
@@ -458,7 +460,7 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
-            fixed: fixed(text),
+            fixed: fixed(&shown),
             hot,
         })
     };
@@ -473,7 +475,8 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
 }
 
-/// Whether the end lines `paragraph` of round `number` name a hot path ([`function`]).
+/// Whether the end lines `paragraph` of round `number` name a hot path: the first word
+/// of its `Hot path:` value is not `none` ([`none`]).
 /// The paragraph must be the [`END`] lines in order and nothing else.
 fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
     let (values, read) = entries(paragraph);
@@ -493,16 +496,16 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
             "review round {number} has a second `{name}:` line in its end lines."
         ));
     }
-    Ok(function(&values[2].1))
+    Ok(!none(&values[2].1))
 }
 
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
-/// `text` ([`Shown::text`]) names a function ([`function`]).
+/// `text` ([`Shown::text`]) has a value that is not `none` ([`none`]).
 fn named(text: &[Vec<String>]) -> bool {
     let start = format!("{}:", END[2]);
     text.iter().any(|p| {
         (0..p.len())
-            .any(|i| p[i].starts_with(&start) && function(&entries(&p[i..]).0[0].1))
+            .any(|i| p[i].starts_with(&start) && !none(&entries(&p[i..]).0[0].1))
     })
 }
 
@@ -641,6 +644,13 @@ impl<'a> Shown<'a> {
     /// paragraph or the fields are the only block.
     fn end(&self) -> &[String] {
         self.paragraph(self.blocks.get(1..).and_then(<[_]>::last))
+    }
+
+    /// The blocks between the fields and the end lines.
+    fn middle(&self) -> &[Option<usize>] {
+        self.blocks
+            .get(1..self.blocks.len().saturating_sub(1))
+            .unwrap_or_default()
     }
 
     /// The lines of `block`, one of [`Shown::blocks`], or none when it is not a
@@ -948,12 +958,12 @@ fn line_end(text: &str, start: usize) -> usize {
     text[start..].find('\n').map_or(text.len(), |i| start + i)
 }
 
-/// Whether the `Hot path:` value `value` names a function: its first word, with
-/// its backticks and one final `,`, `.`, or `;` removed, is not `none`.
-fn function(value: &str) -> bool {
+/// Whether the first word of `value`, with its backticks and one final `,`, `.`, or
+/// `;` removed, is `none`.
+fn none(value: &str) -> bool {
     let first = value.split_whitespace().next().unwrap_or_default();
     let first = first.replace('`', "");
-    first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"
+    first.strip_suffix([',', '.', ';']).unwrap_or(&first) == "none"
 }
 
 /// Reads the record of PR `pr` with `gh`, in the repository that `gh` resolves.

@@ -941,12 +941,17 @@ fn passes_a_range_that_ends_before_commits_that_change_no_code() {
 
 #[test]
 fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
-    let none = "Text fixes: none\n\nNo bug,";
+    let ended = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
+    let fixes = |line| ended.replace("No bug,", &format!("{line}\n\nNo bug,"));
     for round in [
-        ROUND.replace("..c77c67d7", &format!("..{TEXT}")),
-        ROUND
-            .replace("..c77c67d7", &format!("..{TEXT}"))
-            .replace("No bug,", none),
+        ended.clone(),
+        fixes("Text fixes: none"),
+        fixes("Text fixes: `none`."),
+        fixes("Text fixes: none needed"),
+        fixes("- Text fixes: x"),
+        fixes("> Text fixes: x"),
+        ended.replace("Findings: none", "Findings: none\nText fixes: x"),
+        ended.replace("Deferred: none", "Deferred: none\nText fixes: x"),
     ] {
         assert_eq!(
             check(&record(vec![bot(&round)])),
