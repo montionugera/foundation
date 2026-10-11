@@ -200,7 +200,8 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// written. `code_change` gives the first code change in a range, with a merge of the
 /// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
 /// later round posted at or after `SURFACE_CUTOFF` must name `architecture` when
-/// `surface_change` gives a phrase for its range (`History::surface_change`).
+/// `surface_change` gives a phrase for its range (`History::surface_change`). A round
+/// comment after the first is a later round, whatever its number.
 fn problems(
     record: &Record,
     head: &str,
@@ -215,7 +216,8 @@ fn problems(
         .filter(|c| c.author == BOT)
         .filter_map(|c| {
             let old = c.created.as_str() < CUTOFF;
-            round(&c.body, old).map(|round| (c, old, round))
+            let surfaced = c.created.as_str() >= SURFACE_CUTOFF;
+            round(&c.body, old).map(|round| (old, surfaced, round))
         })
         .collect();
     if rounds.is_empty() {
@@ -224,25 +226,17 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (comment, old, parsed)) in rounds.iter().enumerate() {
+    for (i, (old, surfaced, parsed)) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
-                let surface = if round.number > 1
-                    && comment.created.as_str() >= SURFACE_CUTOFF
-                    && !round.reviewers.contains("architecture")
-                {
-                    surface_change(&round.from, &round.end)?
-                } else {
-                    None
-                };
-                let surface = surface.as_deref();
+                let later = i > 0 || round.number > 1;
                 problems.extend(unnamed(
                     round,
                     &record.files,
                     last,
                     code_change,
-                    surface,
+                    (later && *surfaced).then_some(surface_change),
                 )?);
             }
             Err(e) => {
@@ -312,18 +306,18 @@ fn unended(
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must be on the head's chain.
-/// `surface` is the phrase of the public surface change of its range, for which the
-/// round requires `architecture`, and the problem gives it as the cause.
+/// round from the clone, but the last round's end must be on the head's chain. A
+/// round with a `surface_change` requires `architecture` too when that gives a phrase
+/// for its range, and its problem ends with the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     last: bool,
     code_change: Change<'_>,
-    surface: Option<&str>,
+    surface_change: Option<Change<'_>>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
-    let mut missing: Vec<&str> = required(round, files, surface.is_some())
+    let mut missing: Vec<&str> = required(round, files)
         .into_iter()
         .filter(|name| !round.reviewers.contains(*name))
         .collect();
@@ -337,12 +331,21 @@ fn unnamed(
         }
     }
     if !missing.is_empty() {
-        let cause = surface.map(|change| format!(" Its range {change}."));
         problems.push(format!(
-            "review round {} names no {}, which this round requires.{}",
+            "review round {} names no {}, which this round requires.",
             round.number,
-            missing.join(", "),
-            cause.unwrap_or_default()
+            missing.join(", ")
+        ));
+    }
+    if !round.reviewers.contains("architecture")
+        && !missing.contains(&"architecture")
+        && let Some(surface_change) = surface_change
+        && let Some(change) = surface_change(&round.from, &round.end)?
+    {
+        problems.push(format!(
+            "review round {} names no architecture, which this round requires. Its \
+             range {change}.",
+            round.number
         ));
     }
     Ok(problems)
@@ -351,13 +354,11 @@ fn unnamed(
 /// The reviewers that `round` must name for a PR that changes `files`, by REVIEW
 /// TIERS in `docs/decisions/operations/review-tiers.md`: on round 1, `reviewer`, plus
 /// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
-/// `breaker` for a code PR; and `performance` when the round names a hot path. By
-/// REVIEW CHECK in `docs/decisions/operations/review-check.md`, a round whose range
-/// changes a public surface (`surface`) requires `architecture` too.
-fn required(round: &Round, files: &[String], surface: bool) -> Vec<&'static str> {
+/// `breaker` for a code PR; and `performance` when the round names a hot path.
+fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     let code = files.iter().any(|f| tiered(f));
     let mut required = vec!["reviewer"];
-    if surface || code && round.number <= 1 {
+    if code && round.number <= 1 {
         required.push("architecture");
     }
     if code {

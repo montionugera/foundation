@@ -2446,8 +2446,8 @@ fn a_later_round_whose_range_changes_a_decision_requires_architecture() {
     assert_eq!(
         check_at(&repo, &rounds("performance")),
         vec![
-            "review round 2 names no reviewer, architecture, breaker, which this \
-             round requires. Its range changes the decision `docs/decisions/x.md`."
+            "review round 2 names no reviewer, breaker, which this round requires.",
+            DECISION
         ]
     );
     assert_eq!(
@@ -2470,6 +2470,28 @@ fn a_later_round_of_a_text_pr_whose_range_changes_a_decision_requires_architectu
         ])
     };
     assert_eq!(check_at(&repo, &rounds("reviewer")), vec![DECISION]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_requires_architecture_too() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let rounds = |reviewers| Record {
+        files: vec!["docs/decisions/x.md".to_string()],
+        ..record(vec![
+            surfaced(&clean(1, "reviewer", &format!("a..{start}"))),
+            surfaced(&clean(1, reviewers, &format!("{start}..{end}"))),
+        ])
+    };
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer")),
+        vec![DECISION.replace("round 2", "round 1")]
+    );
     assert_eq!(
         check_at(&repo, &rounds("reviewer, architecture")),
         Vec::<String>::new()
