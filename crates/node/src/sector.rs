@@ -1,8 +1,6 @@
 //! A file of the data directory that fits one sector. It starts with a tag, and its
 //! last 4 bytes are the CRC32C of the bytes before them (little-endian). A file that
-//! [`write`] changes in place is whole or old after a crash, since a crash keeps a
-//! sector whole or old. A file that [`publish`] makes is whole or not there, also to
-//! a read while the write runs.
+//! [`publish`] makes is whole or not there, also to a read while the write runs.
 
 use std::path::{Path, PathBuf};
 
@@ -18,37 +16,12 @@ const POOL: block::Config = match block::Config::new(4096) {
 /// What a file of `N` bytes holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Held<const N: usize> {
-    /// No file. For [`open`], also no bytes or `N` zero bytes: a crash kept a write
-    /// in place from its end.
+    /// No file.
     Nothing,
     /// The bytes that a node wrote, with the tag and a checksum that matches.
     Written([u8; N]),
-    /// A file that no node wrote: another tag or checksum. For [`read`], also another
-    /// length.
+    /// A file that no node wrote: another length, tag, or checksum.
     Foreign,
-}
-
-/// Opens `path` in `files` to write, made of `N` zero bytes when it is not there or
-/// has no bytes, and reads what it holds. Call it under the lock of the data
-/// directory.
-///
-/// # Errors
-///
-/// The error of each file call that fails: [`env::files::Error::Length`] for a file
-/// of another length that is not 0.
-pub(crate) async fn open<const N: usize>(
-    files: &Files,
-    path: &Path,
-    tag: &[u8],
-) -> Result<(File, Held<N>), env::files::Error> {
-    let file = files.open(path, Mode::Create { len: N as u64 }).await?;
-    let bytes = bytes(&file).await?;
-    let held = if bytes == [0; N] {
-        Held::Nothing
-    } else {
-        written(&bytes, tag).map_or(Held::Foreign, Held::Written)
-    };
-    Ok((file, held))
 }
 
 /// What `path` in `files`, which [`publish`] makes, holds. Opens it to read only, so
@@ -72,18 +45,22 @@ pub(crate) async fn read<const N: usize>(
         return Ok(Held::Foreign);
     }
     let bytes = bytes(&file).await?;
-    Ok(written(&bytes, tag).map_or(Held::Foreign, Held::Written))
+    Ok(if written(&bytes, tag) {
+        Held::Written(bytes)
+    } else {
+        Held::Foreign
+    })
 }
 
 /// Makes `path` in `files` with `bytes`, which [`checksum`] completed, and makes it
 /// durable: removes the file `<path>.new` that a crash left, writes `bytes` to a new
-/// one, and renames it to `path`. Call it under the lock of the data directory, when
-/// `path` is not there.
+/// one, and renames it to `path`. Call it when `path` is not there and no other call
+/// writes `path` or `<path>.new`: under the lock of the data directory, or on one that
+/// no node runs on. A failed call can leave `<path>.new`, which the next call removes.
 ///
 /// # Errors
 ///
-/// The error of the first file call that fails. [`env::files::Error::Exists`] when
-/// `path` is there.
+/// The error of the first file call that fails.
 pub(crate) async fn publish<const N: usize>(
     files: &Files,
     path: &Path,
@@ -126,18 +103,38 @@ pub(crate) async fn clear<const N: usize>(
     file.write_at(0, &[block(&[0; N])]).await
 }
 
-/// `bytes`, when a node wrote them to a file whose tag is `tag`: they start with the
-/// tag, and their checksum matches.
-pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> Option<[u8; N]> {
+/// Whether a node wrote `bytes` to a file whose tag is `tag`: they start with the tag,
+/// and their checksum matches.
+pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> bool {
     let (body, sum) = bytes.split_at(N - 4);
-    (body.starts_with(tag) && crc32c::crc32c(body).to_le_bytes() == *sum)
-        .then_some(*bytes)
+    body.starts_with(tag) && crc32c::crc32c(body).to_le_bytes() == *sum
 }
 
 /// Writes the CRC32C of the bytes of `bytes` before its last 4 into those 4.
 pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
     let (body, sum) = bytes.split_at_mut(N - 4);
     sum.copy_from_slice(&crc32c::crc32c(body).to_le_bytes());
+}
+
+/// Checks that `bytes` start with `tag` and match their checksum exactly when
+/// `encode` gives them back: `encode` makes the file again from the fields of
+/// `bytes`, whatever their tag and checksum.
+///
+/// # Panics
+///
+/// When the check fails.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn check<const N: usize>(
+    bytes: &[u8; N],
+    tag: &[u8],
+    encode: impl Fn(&[u8; N]) -> [u8; N],
+) {
+    let valid = encode(bytes) == *bytes;
+    if written(bytes, tag) {
+        assert!(valid, "decodes {bytes:02x?}");
+    } else {
+        assert!(!valid, "refuses {bytes:02x?}");
+    }
 }
 
 /// `body` with its CRC32C appended, or `None` when `body` is not `N - 4` bytes.
@@ -178,6 +175,40 @@ mod tests {
         let bytes: [u8; 8] = summed(&[1, 2, 3, 4]).expect("a body");
         assert_eq!(bytes[..4], [1, 2, 3, 4]);
         assert_eq!(bytes[4..], crc32c::crc32c(&[1, 2, 3, 4]).to_le_bytes());
+    }
+
+    /// The bytes of a file of 12 bytes with the tag `t` and the field in `bytes[1..4]`.
+    fn encode(bytes: &[u8; 12]) -> [u8; 12] {
+        let mut file = [0; 12];
+        file[0] = b't';
+        file[1..4].copy_from_slice(&bytes[1..4]);
+        checksum(&mut file);
+        file
+    }
+
+    /// A file that [`encode`] gives, with the field `[1, 2, 3]`.
+    fn file() -> [u8; 12] {
+        encode(&[0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0])
+    }
+
+    #[test]
+    fn checks_a_file_that_encode_gives_back() {
+        check(&file(), b"t", encode);
+        let mut other = file();
+        other[1] ^= 1;
+        check(&other, b"t", encode);
+    }
+
+    #[test]
+    #[should_panic(expected = "decodes [74, 01, 02, 03,")]
+    fn panics_when_a_decode_gives_bytes_that_encode_does_not() {
+        check(&file(), b"t", |_| [0; 12]);
+    }
+
+    #[test]
+    #[should_panic(expected = "refuses [74, 01, 02, 03,")]
+    fn panics_when_a_decode_refuses_bytes_that_encode_gives() {
+        check(&file(), b"u", encode);
     }
 
     #[test]

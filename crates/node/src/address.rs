@@ -132,7 +132,11 @@ fn encode(address: &Address) -> [u8; LEN] {
 /// The address in `bytes`, or `None` for bytes that [`encode`] does not write.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn decode(bytes: &[u8; LEN]) -> Option<Address> {
-    fields(&sector::written(bytes, TAG)?)
+    if sector::written(bytes, TAG) {
+        fields(bytes)
+    } else {
+        None
+    }
 }
 
 /// The address in `bytes`, whatever its tag and checksum, or `None` for a public key

@@ -101,12 +101,19 @@
   https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453). This
   supersedes the signature and the 68-byte file of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6071015421. It
-  writes with the code of `identity`, so the file has one owner, and a file with no
-  bytes or with 100 zero bytes counts as no key. A 100-byte file that holds other bytes
-  gives `Error::Directory` with `Exists`, and a file
-  of another length that is not 0 gives it with `Length`; nothing is written over
-  either. There is no new `Error` variant, as the advice of `Error::Key` is wrong for
-  this case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
+  writes with the code of `identity`, so the file has one owner. It reads `node.key`
+  first: any file that is there, also one with no bytes or with 100 zero bytes, gives
+  `Error::Directory` with `Exists`, and it writes nothing, also no `node.key.new` with
+  the keys (decided by `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). Else it
+  makes the file with `sector::publish` (amended, #2305, by `laptop.architect-2`,
+  2026-10-10 22:20 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702). This
+  supersedes the `Length` error and the file with no bytes or with 68 zero bytes (100
+  since `foundation/key/2`) as no key, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986.
+  There is no new `Error` variant, as the advice of `Error::Key` is wrong for this
+  case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
   runs the simulation to its end: a node that runs never ends, and a task of a test runs
   before its time. So a `Lab::start` after the first `Lab::run` or a task of a test
   panics. No scenario adds a node after a run. Trigger: a scenario that does needs a new
