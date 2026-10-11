@@ -70,24 +70,34 @@
   In a region of one node, the node leads and applies its log with its own vote
   (`laptop.architect`, 2026-10-11T12:28:57Z:
   https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109025201). So
-  `node` holds one count of the first opens of the connectors that each apply
-  adds, pending from that apply until `Supervisor::open` resolves, and starts the first
-  run of such a connector only once the count is 0. A changed connector, and one that
-  runs again after `Config`, has no share and does not wait (`laptop.architect-2`,
+  `node` holds one count of the first opens of the connectors that each apply adds,
+  pending from that apply until `Supervisor::open` resolves, and starts the first run of
+  such a connector only once the count is 0. A changed connector, and one that runs
+  again after `Config`, has no share and does not wait (`laptop.architect-2`,
   2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 4).
-  `node` keeps one loop for each name, until the loop reads the removal of its connector
-  after its last run returned. An addition of a name that has a loop is a change. So the
-  first open of an out connector that an apply adds resolves before the first run of an
-  in connector that this apply or a later one adds starts. A changed out connector opens
+  A connector that changes before the first run of its loop started is still an added
+  connector: its next open is a first open, pending from the apply of the change until
+  `Supervisor::open` resolves, and its first run waits for a count of 0. The change
+  starts no run, so no old run holds that open. The first run of a loop starts at its
+  first `Opened::run` that no change cancelled, also when that call gives `Config`
+  (`laptop.architect-2`, 2026-10-11T13:01:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109296962). `node`
+  keeps one loop for each name, until the loop reads the removal of its connector after
+  its last run returned. An addition of a name that has a loop is a change. So the first
+  open of an out connector that an apply adds resolves before the first run of an in
+  connector that this apply or a later one adds starts. A changed out connector opens
   its reader again only after its old run returned, so an in connector that its apply
   adds can write before that open, and those frames do not come again before #274
   (`laptop.architect-2`, 2026-10-11T12:26:28Z:
   https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109004938). Lost: a
-  share from the apply for a changed connector, or for a name added again. Its open
-  starts only after its old run returned, so a task that does not end at the cancel then
-  holds each first run on the node (`laptop.architect-2`, 2026-10-11T12:32:32Z:
-  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109054993). After a
+  share from the apply for a changed connector, or for a name added again, after the
+  first run of its loop started. Its open starts only after its old run returned, so a
+  task that does not end at the cancel then holds each first run on the node
+  (`laptop.architect-2`, 2026-10-11T12:32:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109054993;
+  2026-10-11T13:01:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2398#issuecomment-6109296962). After a
   run returns, the supervisor waits, with no timeout, until each task that the run
   spawned through `Context::tasks` ended, and only then starts its backoff. A task that
   does not end at the cancel is a defect of its kind (`laptop.architect-2`,
