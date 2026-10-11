@@ -841,6 +841,40 @@ fn a_crash_in_a_create_that_makes_no_file_draws_no_state() {
     }
 }
 
+/// Starts a write open of `a` on `node`, and drops it in flight.
+async fn drop_an_open(node: &node::Node) {
+    pend(pin!(node.files().open(Path::new("a"), Mode::Write))).await;
+}
+
+#[test]
+fn a_crash_ends_a_create_after_a_dropped_open_of_its_file_as_a_drop_does() {
+    let mode = Mode::Create { len: 1_024 };
+    let (mut sim, node) = disk(0);
+    let len = sim.run_on(&node, move |node, _| async move {
+        drop(create(&node, "a", 0).await);
+        drop_an_open(&node).await;
+        node.files().open(Path::new("a"), mode).await.unwrap().len()
+    });
+    assert_eq!(len.unwrap(), 1_024);
+    let lens: BTreeSet<_> = (0..32)
+        .map(|seed| {
+            let (mut sim, node) = disk(seed);
+            crash_after(&mut sim, &node, Crash::Process, move |node| async move {
+                drop(create(&node, "a", 0).await);
+                until_crash(&node).await;
+                drop_an_open(&node).await;
+                hang(node.files().open(Path::new("a"), mode)).await;
+            });
+            sim.run_on(&node, |node, _| async move {
+                let opened = node.files().open(Path::new("a"), Mode::Read).await;
+                opened.unwrap().len()
+            })
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(lens, BTreeSet::from([0, 1_024]));
+}
+
 #[test]
 fn a_create_over_a_held_file_with_no_bytes_is_busy() {
     let (mut sim, node) = disk(0);

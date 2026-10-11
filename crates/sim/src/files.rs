@@ -473,7 +473,7 @@ impl Files {
                 (false, flight.held)
             } else {
                 let ended = self.apply(key, flight);
-                (ended.result.is_ok(), ended.held)
+                (ended.result.is_ok(), self.discard(node, ended))
             };
             (at, key, kind, drawn, ok).hash(&mut self.digest);
             orphans.extend(held);
