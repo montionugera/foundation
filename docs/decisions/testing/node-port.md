@@ -1,14 +1,12 @@
 - **NODE PORT (2026-10-07)** `Node::start` binds the node's one port at `Config::listen`
-  on `Config::net` once shard 0 has claimed the data directory, before any buffer opens;
-  a failed bind opens no buffer, and `Node::join` gives `Error::Port` (NODE START;
-  `laptop.architect-2`, 2026-10-11T15:33:00Z,
-  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). The
-  port's one part (#77) moves to shard 0, which builds the transport with the node's
-  private key once the last shard has opened its buffer (X42), so the node takes no
-  session before that. Its limits are patches until #1662 makes them settings, as LIMITS
-  of SHARD HOMES is: window 1 MiB, 64 streams of each kind, idle 30 s, messages of the
-  smaller of 64 KiB and the pool's largest block, and the free floor of the blob store,
-  1 GiB (`blob::Config::floor_bytes`; `laptop.architect-2`, 2026-10-09T03:49:41Z,
+  on `Config::net` before any shard starts; a failed bind starts no shard, and
+  `Node::join` gives `Error::Port`. The port's one part (#77) moves to shard 0, which
+  builds the transport with the node's private key once the last shard has opened its
+  buffer (X42), so the node takes no session before that. Its limits are patches until
+  #1662 makes them settings, as LIMITS of SHARD HOMES is: window 1 MiB, 64 streams of
+  each kind, idle 30 s, messages of the smaller of 64 KiB and the pool's largest
+  block, and the free floor of the blob store, 1 GiB (`blob::Config::floor_bytes`;
+  `laptop.architect-2`, 2026-10-09T03:49:41Z,
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). The
   floor holds for each put, also a local one, so a start that founds a region stops
   with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
@@ -27,6 +25,12 @@
   handshake, within the bound on sessions of #1628 (below); the mesh checks each message
   of a mesh stream (NODE MESH). With no mesh, at the stop, each session and stream
   future drops, then the transport. A header has 10 s (#1628, below).
+  Amended (2026-10-11, #2420, by `laptop.architect-2`): `Node::start` binds the port
+  once shard 0 has claimed the data directory, before any buffer opens; a failed bind
+  opens no buffer (NODE START;
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
+  supersedes the bind before any shard starts of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
   Decided by `laptop.architect-2` (2026-10-07 21:09 UTC):
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669, on the
   plan https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046861267;
