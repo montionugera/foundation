@@ -476,11 +476,11 @@ impl Kind for Select {
     }
 }
 
-/// The count of the runs of a connector of [`Select`] until 10 s. Its first run gets
-/// `Config`, since no channel matches. At 1 s, a spec change adds the channels that it
-/// selects, with the connector unchanged. At 5 s, an apply keeps the connector and its
-/// run.
-fn starts_of_select(flush: Span) -> Result<usize, ::sim::Error> {
+/// The counts of the runs of a connector of [`Select`] at 4 s and 10 s. Its first run
+/// gets `Config`, since no channel matches. At 1 s, a spec change adds the channels
+/// that it selects, with the connector unchanged. At 5 s, an apply keeps the connector
+/// and its run.
+fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
     sim.run_on(&node, move |node, tasks| async move {
@@ -536,12 +536,14 @@ fn starts_of_select(flush: Span) -> Result<usize, ::sim::Error> {
         );
         hub.set_definitions(&second);
         runs.apply(&second);
+        clock.sleep_until(start + ms(4_000)).await;
+        let early = starts.lock().expect("no panic").len();
         clock.sleep_until(start + ms(5_000)).await;
         runs.apply(&second);
         clock.sleep_until(start + ms(10_000)).await;
         let started = starts.lock().expect("no panic").len();
         drop(runs);
-        started
+        (early, started)
     })
 }
 
@@ -549,14 +551,14 @@ fn starts_of_select(flush: Span) -> Result<usize, ::sim::Error> {
 /// the connector runs again.
 #[test]
 fn a_spec_change_that_adds_the_selected_channels_runs_the_connector_again() {
-    assert_eq!(starts_of_select(Span::ZERO), Ok(2));
+    assert_eq!(starts_of_select(Span::ZERO), Ok((2, 2)));
 }
 
 /// The task of the refused run ends at 2 s, so the spec change at 1 s comes before
 /// `run` returned `Config`. It still runs the connector again.
 #[test]
 fn a_spec_change_while_a_refused_run_ends_runs_the_connector_again() {
-    assert_eq!(starts_of_select(ms(2_000)), Ok(2));
+    assert_eq!(starts_of_select(ms(2_000)), Ok((2, 2)));
 }
 
 /// A node gets its first mesh time 1 s after its hub opened, and the spec that the
