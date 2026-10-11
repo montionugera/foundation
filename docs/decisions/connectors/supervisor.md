@@ -113,8 +113,8 @@
   | `error` | `String` | the text of the error that ended the last run, empty when `class` is 0 |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
-  `backoff` and `error` follow the #1735 ruling (`laptop.architect-2`,
-  2026-10-08T06:29:21Z:
+  `error`, and `backoff` but for the end of its wait (below), follow the #1735 ruling
+  (`laptop.architect-2`, 2026-10-08T06:29:21Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
   `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
@@ -143,7 +143,9 @@
   wait has ended. That `backoff` ends at a try is proposed by the `connector` builder
   in https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106914434, with
   no ruling yet. It supersedes "the wait from this sample to the next run" of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186.
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186, and "the
+  time of the next run" of the plan on #420
+  (https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074).
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or
