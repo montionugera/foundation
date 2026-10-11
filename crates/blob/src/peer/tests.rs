@@ -419,6 +419,39 @@ fn a_stop_in_the_body_of_a_get_ends_the_stream() {
 }
 
 #[test]
+fn a_stop_in_the_body_of_a_get_reads_no_later_chunk() {
+    // Longer than the window, so `serve` waits in the body when the stop comes.
+    const LEN: usize = 2 * WINDOW;
+    let (a, a_bytes) = chunk(7, LEN);
+    let (b, b_bytes) = chunk(8, 100);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_pool_of(16 << 20), 0).await;
+            put(&store, a, &a_bytes).await;
+            put(&store, b, &b_bytes).await;
+            node.fail_file(&path(b), Operation::Open);
+            let stopped = transport::Error::Stopped { code: Code(5) };
+            assert_eq!(serve(&store, incoming).await, Err(Error::Stream(stopped)));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[a, b]).await;
+            let len = u32::try_from(LEN).unwrap();
+            assert_eq!(stream.reply().await, Reply::Chunk { digest: a, len });
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            let Stream {
+                sender, receiver, ..
+            } = stream;
+            receiver.stop(Code(5));
+            peer.clock.sleep(Span::SECOND).await;
+            drop(sender);
+        },
+    );
+}
+
+#[test]
 fn a_put_gives_stored_once_the_chunk_is_durable() {
     let (digest, bytes) = chunk(7, 3000);
     let sent = bytes.clone();

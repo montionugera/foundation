@@ -826,6 +826,57 @@ mod tests {
         }
 
         #[test]
+        fn over_a_longer_file_under_the_floor_gives_floor_and_keeps_it() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                let (_, other) = chunk(9, 4096);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(digest), &other).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let floor_bytes = free_bytes + 1;
+                let store = open_leaving(&node, floor_bytes).await;
+                let error = store.put(digest, &block).await.unwrap_err();
+                let expected = Error::Floor {
+                    len: 3000,
+                    free_bytes,
+                    floor_bytes,
+                };
+                assert_eq!(error, expected);
+                assert_eq!(node.files().free().await.unwrap(), free_bytes);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn after_a_remove_with_no_sync_the_floor_counts_the_removed_file() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (a, a_block) = chunk(7, 3000);
+                let (b, b_block) = chunk(8, 1000);
+                let (_, other) = chunk(9, 4096);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(a), &other).await;
+                let before = node.files().free().await.unwrap();
+                let floor_bytes = before - 3999;
+                let store = open_leaving(&node, floor_bytes).await;
+                node.fail_file(&path(a), Operation::Sync);
+                let error = store.put(a, &a_block).await.unwrap_err();
+                assert_eq!(error, io(&path(a), Operation::Sync));
+                let free_bytes = node.files().free().await.unwrap();
+                assert_eq!(free_bytes, before - 3000);
+                let error = store.put(b, &b_block).await.unwrap_err();
+                let expected = Error::Floor {
+                    len: 1000,
+                    free_bytes,
+                    floor_bytes,
+                };
+                assert_eq!(error, expected);
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn over_a_file_under_the_floor_whose_open_fails_gives_io() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
