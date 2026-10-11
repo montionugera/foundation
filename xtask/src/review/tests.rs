@@ -3057,27 +3057,28 @@ const OK: &str =
     "https://github.com/synnaxlabs/foundation/issues/12#issuecomment-6105098668";
 
 /// The end of each problem that asks for a comment link.
-const LINK: &str = "A link is the URL of a GitHub comment in the text of the line: a \
-                    `[text](url)` link shows no URL.";
+const LINK_HELP: &str = "A link is the URL of a GitHub comment in the text of the \
+                         line: a `[text](url)` link shows no URL.";
 
 /// The problem of a round 3 that defers to `issue` with no OK.
-fn unlinked(issue: &str) -> Vec<String> {
+fn no_ok(issue: &str) -> Vec<String> {
     vec![format!(
         "review round 3 defers to {issue} with no link to the OK of the architect \
          after it on its `Deferred:` line. Add the link, or the words `not in a risk \
-         crate` after the issue when its work is in no risk crate. {LINK}"
+         crate` after the issue when its work is in no risk crate. {LINK_HELP}"
     )]
 }
 
 /// The problem of a round 3 whose `Public surface:` line holds `approval owed`.
-const OWED: &str = "review round 3 has `approval owed` on its `Public surface:` line. \
-                    Get each approval, then put its link in the line.";
+const OWED_PROBLEM: &str = "review round 3 has `approval owed` on its `Public \
+                            surface:` line. Get each approval, then put its link in \
+                            the line.";
 
 /// The problem of a round 3 whose `Public surface:` line names items with no link.
-fn unapproved() -> Vec<String> {
+fn no_link() -> Vec<String> {
     vec![format!(
         "review round 3 names items on its `Public surface:` line with no link to an \
-         approval. {LINK}"
+         approval. {LINK_HELP}"
     )]
 }
 
@@ -3119,7 +3120,7 @@ fn risk(comments: Vec<Comment>) -> Vec<String> {
 
 #[test]
 fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
-    assert_eq!(risk(vec![deferred("#12")]), unlinked("#12"));
+    assert_eq!(risk(vec![deferred("#12")]), no_ok("#12"));
     assert_eq!(risk(vec![deferred("none")]), Vec::<String>::new());
     for linked in [
         format!("#12 ({OK})"),
@@ -3148,7 +3149,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         ("#12,https://github.com/a/b/pull/1".to_string(), "#12"),
         (format!("{OK},#12 #13"), "#13"),
     ] {
-        assert_eq!(risk(vec![deferred(&line)]), unlinked(issue), "{line}");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok(issue), "{line}");
     }
 }
 
@@ -3174,7 +3175,7 @@ fn a_deferred_issue_passes_with_the_mark_that_its_work_is_in_no_risk_crate() {
         ("not in a risk crate: #12", "#12"),
         ("#12 (not in a risk-crate)", "#12"),
     ] {
-        assert_eq!(risk(vec![deferred(line)]), unlinked(issue), "{line}");
+        assert_eq!(risk(vec![deferred(line)]), no_ok(issue), "{line}");
     }
 }
 
@@ -3194,7 +3195,7 @@ fn only_a_file_of_a_risk_crate_asks_a_deferred_issue_for_an_ok() {
         "transport",
     ] {
         let file = format!("crates/{name}/Cargo.toml");
-        assert_eq!(check(&file), unlinked("#12"), "{file}");
+        assert_eq!(check(&file), no_ok("#12"), "{file}");
     }
     for file in [
         "crates/hub/src/lib.rs",
@@ -3261,7 +3262,7 @@ fn a_comment_link_is_the_url_of_a_comment_in_the_text_of_the_line() {
         "#issuecomment-2".to_string(),
     ] {
         let line = format!("#12 {link}");
-        assert_eq!(risk(vec![deferred(&line)]), unlinked("#12"), "{link}");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok("#12"), "{link}");
     }
 }
 
@@ -3279,8 +3280,8 @@ fn a_later_steps_line_is_no_part_of_the_deferred_or_the_public_surface_value() {
         Vec::<String>::new()
     );
     let linked = format!("the rename,\n#99 ({OK})");
-    assert_eq!(later("#12", &linked, "none"), unlinked("#12"));
-    assert_eq!(later("none", &linked, "`hub::Route`"), unapproved());
+    assert_eq!(later("#12", &linked, "none"), no_ok("#12"));
+    assert_eq!(later("none", &linked, "`hub::Route`"), no_link());
     assert_eq!(
         later(
             "#12 (not in a risk crate)",
@@ -3292,7 +3293,7 @@ fn a_later_steps_line_is_no_part_of_the_deferred_or_the_public_surface_value() {
     let after = format!(
         "Deferred: none\nPublic surface: `hub::Route`\nLater steps: #99 ({OK})"
     );
-    assert_eq!(risk(vec![ended_at(&after, LINK_CUTOFF)]), unapproved());
+    assert_eq!(risk(vec![ended_at(&after, LINK_CUTOFF)]), no_link());
 }
 
 #[test]
@@ -3339,7 +3340,7 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Send`, approval\nowed; `hub::Route` ({OK})"),
         "`hub::Route`. Approval owed.".to_string(),
     ] {
-        assert_eq!(check(&surface), vec![OWED], "{surface}");
+        assert_eq!(check(&surface), vec![OWED_PROBLEM], "{surface}");
     }
     for surface in [
         "`hub::Route`",
@@ -3348,7 +3349,7 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         "`hub::Route`, approval is owed",
         "",
     ] {
-        assert_eq!(check(surface), unapproved(), "{surface}");
+        assert_eq!(check(surface), no_link(), "{surface}");
     }
 }
 
@@ -3364,7 +3365,7 @@ fn a_last_round_gives_the_problem_of_each_end_line_after_its_other_problems() {
         "review round 3 has findings (1). Fix or answer them, then run another round."
             .to_string(),
     ];
-    expected.extend(unlinked("#12"));
-    expected.extend(unapproved());
+    expected.extend(no_ok("#12"));
+    expected.extend(no_link());
     assert_eq!(risk(vec![round]), expected);
 }

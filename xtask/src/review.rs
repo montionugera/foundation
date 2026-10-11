@@ -160,7 +160,7 @@ struct Round {
     /// that apply its items may follow the round.
     fixed: bool,
     /// `None` for an old round, which has no end lines: [`Parsed`] checks its hot path.
-    lines: Option<End>,
+    ends: Option<Ends>,
     /// When the comment was posted ([`Comment::created`]). A rule that starts at a
     /// cutoff compares it with its own.
     posted: String,
@@ -168,7 +168,7 @@ struct Round {
 
 /// The end lines of a round comment.
 #[derive(Debug, PartialEq, Eq)]
-struct End {
+struct Ends {
     /// The value of the `Deferred:` line.
     deferred: String,
     /// The value of the `Public surface:` line.
@@ -356,12 +356,12 @@ fn unended(
 
 /// The problems with the links on the end lines of `round`, the last round of a PR
 /// that changes `files`: the first issue of its `Deferred:` line with no OK
-/// ([`deferral`]) when a file is in a risk crate ([`RISK`]), and what its
+/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what its
 /// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
 /// [`LINK_CUTOFF`].
 fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
     let bound = round.posted.as_str() >= LINK_CUTOFF;
-    let Some(lines) = round.lines.as_ref().filter(|_| bound) else {
+    let Some(ends) = round.ends.as_ref().filter(|_| bound) else {
         return Vec::new();
     };
     let number = round.number;
@@ -369,16 +369,16 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let deferral = deferral(&lines.deferred).filter(|_| risky).map(|issue| {
+    let problem = unokayed(&ends.deferred).filter(|_| risky).map(|issue| {
         format!(
             "review round {number} defers to {issue} with no link to the OK of the \
              architect after it on its `Deferred:` line. Add the link, or the words \
              `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
         )
     });
-    deferral
+    problem
         .into_iter()
-        .chain(unapproved(number, &lines.surface))
+        .chain(unapproved(number, &ends.surface))
         .collect()
 }
 
@@ -446,7 +446,7 @@ fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     if code {
         required.push("breaker");
     }
-    if round.lines.as_ref().is_some_and(|lines| lines.hot) {
+    if round.ends.as_ref().is_some_and(|ends| ends.hot) {
         required.push("performance");
     }
     required
@@ -570,7 +570,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             )
         })?;
         let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
-        let lines = shown.end().map(|end| ends(end, number)).transpose()?;
+        let tail = shown.end().map(|end| ends(end, number)).transpose()?;
         Ok(Round {
             number,
             reviewers: listed(reviewers.ok_or_else(|| missing("Reviewers"))?),
@@ -579,7 +579,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             end: end.to_string(),
             findings,
             fixed: fixed(&shown),
-            lines,
+            ends: tail,
             posted: comment.created.clone(),
         })
     };
@@ -659,7 +659,7 @@ fn quoted(line: &str) -> String {
 /// What the end lines `paragraph` of round `number` state. The paragraph must be the
 /// [`END`] lines in order and nothing else. A [`LATER`] line after the first line is
 /// not read.
-fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
+fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
     let [deferred, surface, hot] = END;
     let (values, read) = entries(paragraph, &[deferred, surface, hot, LATER]);
     let values = values
@@ -685,7 +685,7 @@ fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
                 "review round {number} has a second `{name}:` line in its end lines."
             )
         })?;
-    Ok(End {
+    Ok(Ends {
         deferred,
         surface,
         hot: stated(&hot),
@@ -695,7 +695,7 @@ fn ends(paragraph: &[String], number: u32) -> Result<End, String> {
 /// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line, with
 /// no OK: no comment link ([`linked`]) is after it in the value, and the words
 /// [`UNRISKY`] are not between it and the next issue.
-fn deferral(deferred: &str) -> Option<String> {
+fn unokayed(deferred: &str) -> Option<String> {
     let lower = deferred.to_ascii_lowercase();
     let mut issues = issues(deferred).peekable();
     while let Some(issue) = issues.next() {
