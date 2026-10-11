@@ -1,7 +1,8 @@
 use types::sample::{Scalar, Type};
 
 use super::{Mode, Place, Places, place};
-use crate::hub::{self, Error, rest_of_run};
+use crate::common::rest_of_run;
+use crate::hub::{self, client::Error};
 
 /// A decoder of the start of a read stream at the program: the places and their
 /// run. With the last place it gives the decoder of the replies that follow.

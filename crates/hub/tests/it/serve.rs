@@ -617,7 +617,7 @@ fn stops_a_second_open_as_malformed() {
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
     });
     let reopen = wire::hub::Error::Reopen { kind: 2 };
-    assert_eq!(served, Some(Err(serve::Error::Message(reopen.clone()))));
+    assert_eq!(served, Some(Err(serve::Error::Message(reopen))));
     assert_eq!(
         serve::Error::Message(reopen).to_string(),
         "a hub message is not valid: the hub message has kind 2, which opens the \

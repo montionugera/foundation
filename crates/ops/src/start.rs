@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use document::diagnostic::Code;
@@ -18,6 +19,8 @@ pub struct Start {
     /// `--name`: the first start on a data directory needs it, and a later start reads
     /// it from there.
     pub name: Option<Name>,
+    /// `--listen`: the address of the node's one port, else port 0 of `127.0.0.1`.
+    pub listen: SocketAddr,
 }
 
 /// Why a node did not start, or stopped with an error.

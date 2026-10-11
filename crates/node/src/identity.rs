@@ -148,7 +148,7 @@ fn fields(bytes: &[u8; LEN]) -> Identity {
 /// When the check fails.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn check(bytes: &[u8; LEN]) {
-    sector::check(bytes, TAG, |bytes| encode(&fields(bytes)));
+    sector::check(bytes, TAG, |bytes| Some(encode(&fields(bytes))));
 }
 
 #[cfg(test)]

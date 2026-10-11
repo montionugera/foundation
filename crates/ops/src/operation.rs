@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
@@ -74,6 +75,10 @@ struct StartArgs {
     /// start reads it from there.
     #[arg(long)]
     name: Option<Name>,
+    /// The socket address of the node's one port. Port 0 takes a free port. The default
+    /// takes no session from another host.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    listen: SocketAddr,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -133,10 +138,11 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
     let cli = Cli::from_arg_matches(&matches).map_err(|e| from_clap(&e))?;
     match cli.command {
         Command::Run(request) => Ok(Parsed::Run(request)),
-        Command::Start(StartArgs { data, name }) => Ok(Parsed::Start(Start {
+        Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
             data,
             json: cli.json,
             name,
+            listen,
         })),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),

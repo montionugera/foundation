@@ -1,9 +1,10 @@
-//! The decoders of `wire::hub::client` never panic, each but `Open::decode` refuses a
-//! message of another kind with `Error::Kind`, each message that decodes encodes to
-//! its bytes, each body ends at its length and nowhere else, each refusal of a body is
-//! the one that its rest gives, a read stream gives its places, then its run, and with
-//! the last place the decoder of a session of their count and the mode, and each valid
-//! message made from the input reads back.
+//! The decoders of `wire::hub::client` never panic, each but `Open::decode` and
+//! `Reader::decode` refuses a message of another kind with `Error::Kind`,
+//! `Reader::decode` refuses a first message of another kind with it, each message that
+//! decodes encodes to its bytes, each body ends at its length and nowhere else, each
+//! refusal of a body is the one that its rest gives, a read stream gives its places,
+//! then its run, and with the last place the decoder of a session of their count and
+//! the mode, and each valid message made from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
@@ -25,11 +26,11 @@ use types::name::Selector;
 use types::node;
 use types::sample::{Scalar, Type};
 use types::time::{Interval, Stamp};
+use wire::hub;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, First, FromNode, Mode, OPEN_BYTES_MAX, Open,
-    Place, Places, Read, Reader, Request, Response, Signed, place,
+    BODY_BYTES_MAX, Body, Challenge, Error, First, FromNode, Mode, OPEN_BYTES_MAX,
+    Open, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
-use wire::hub::{self, Error};
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
 /// and a refusal is the one that its first byte gives.
