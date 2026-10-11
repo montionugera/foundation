@@ -787,66 +787,74 @@ fn reserved() -> Outcome {
 /// call, so no grace is reserved for it after a power cut.
 #[test]
 fn records_no_holder_when_a_lease_runs_out_with_no_call() {
-    let after = written_after_cut(
-        74,
-        |test| async move {
-            let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
-            assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
-            std::future::pending::<()>().await;
-        },
-        "subject-b",
-    );
-    assert_eq!(after, [applied(1)]);
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                std::future::pending::<()>().await;
+            },
+            "subject-b",
+        );
+        assert_eq!(after, [applied(1)], "seed {seed}");
+    }
 }
 
 #[test]
 fn records_the_handoff_to_a_waiting_writer_when_a_lease_runs_out_with_no_call() {
-    let after = written_after_cut(
-        71,
-        |test| async move {
-            let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
-            assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
-            let _b = test.writer("subject-b", &["value"]).await;
-            std::future::pending::<()>().await;
-        },
-        "subject-a",
-    );
-    assert_eq!(after, [reserved()]);
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let mut a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                let _b = test.writer("subject-b", &["value"]).await;
+                std::future::pending::<()>().await;
+            },
+            "subject-a",
+        );
+        assert_eq!(after, [reserved()], "seed {seed}");
+    }
 }
 
 /// The close of a holder can start a lease, so it wakes the task that waits for the
 /// end of each lease.
 #[test]
 fn records_the_handoff_at_the_end_of_a_lease_that_a_close_starts() {
-    let after = written_after_cut(
-        72,
-        |test| async move {
-            let a = test.writer("subject-a", &["value"]).await;
-            let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
-            let _c = test.writer("subject-c", &["value"]).await;
-            test.clock.sleep(SETTLE).await;
-            drop(a);
-            std::future::pending::<()>().await;
-        },
-        "subject-b",
-    );
-    assert_eq!(after, [reserved()]);
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let a = test.writer("subject-a", &["value"]).await;
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                let _c = test.writer("subject-c", &["value"]).await;
+                test.clock.sleep(SETTLE).await;
+                drop(a);
+                std::future::pending::<()>().await;
+            },
+            "subject-b",
+        );
+        assert_eq!(after, [reserved()], "seed {seed}");
+    }
 }
 
 /// The end of one lease starts the next, with no call between.
 #[test]
 fn records_the_handoff_at_the_end_of_a_lease_that_the_end_of_a_lease_starts() {
-    let after = written_after_cut(
-        73,
-        |test| async move {
-            let _a = test.hub.writer(leased("subject-a")).await.expect("opens");
-            let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
-            let _c = test.writer("subject-c", &["value"]).await;
-            std::future::pending::<()>().await;
-        },
-        "subject-c",
-    );
-    assert_eq!(after, [applied(0)]);
+    for seed in 0..32 {
+        let after = written_after_cut(
+            seed,
+            |test| async move {
+                let _a = test.hub.writer(leased("subject-a")).await.expect("opens");
+                let _b = test.hub.writer(leased("subject-b")).await.expect("opens");
+                let _c = test.writer("subject-c", &["value"]).await;
+                std::future::pending::<()>().await;
+            },
+            "subject-c",
+        );
+        assert_eq!(after, [applied(0)], "seed {seed}");
+    }
 }
 
 #[test]
