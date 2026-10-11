@@ -115,7 +115,18 @@
   parser (`readelf -sW`) for that one name. The symbol name rule: decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
-  2026-10-11 05:48 UTC). A `#line` directive or a line marker in a copy file fails the
+  2026-10-11 05:48 UTC). The copy compiles with `-fno-dollars-in-identifiers`, a line of
+  `flags.txt`, so the connector and the check read the same C and no function has a name
+  that holds `$`: on aarch64, `objdump` gives no function header to a function named
+  `$x` or `$d`, as it gives none to a mapping symbol, and in a section that holds
+  another function, the code of such a function reads as code of the function before it.
+  `cc` reads a macro name only up to its `$`, in the two builds alike. The symbol name
+  rule still admits `$`, because each mapping symbol holds one. Lost: the extent of each
+  function from the symbol table, a second parser for a name that no file of the copy
+  has. Lost: the flag in the check alone, with which the two builds read `#define X$ 1`
+  in two ways. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC). A `#line` directive or a line marker in a copy file fails the
   check, because it moves the file that the include check reads. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,

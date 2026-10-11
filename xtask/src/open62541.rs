@@ -211,6 +211,12 @@ const LEFT_OUT: [&str; 4] = [
     "-fno-fat-lto-objects",
 ];
 
+/// The flag of our own that `flags.txt` holds, so the connector and the check compile
+/// the same C. With it, `cc` takes no `$` in an identifier, so no function has a name
+/// that holds `$`: objdump gives no header to a function named as a mapping symbol of
+/// aarch64 (`$x`, `$d`).
+const NO_DOLLARS: &str = "-fno-dollars-in-identifiers";
+
 /// The symbols outside the copy that any file of it may reference. Each reads no clock,
 /// file, network, randomness, or process state, except the allocator, with its reason.
 /// A new symbol outside the copy also goes in `OUTSIDE` in `connector-opcua`, which
@@ -243,7 +249,7 @@ const SYMBOLS: [&str; 16] = [
 /// replaces `patches/open62541/` with its compiled sources, the headers in the clone
 /// that they include, each file of [`EXTRA`], `LICENSE`, `sources.txt` (each `.c`
 /// file), `flags.txt` (the `-D`, `-I`, and `-std` flags and the [`CODE_FLAGS`] of each
-/// compile), and `VERSION` (tag and commit).
+/// compile, then [`NO_DOLLARS`]), and `VERSION` (tag and commit).
 /// Then it gives what [`check`] gives for the new copy. Needs Linux, `git`, `cmake`,
 /// Python 3, GCC as `cc` for x86-64 or aarch64, and GNU `objdump` and `nm`.
 ///
@@ -275,25 +281,24 @@ pub(crate) fn run(root: &Path, url: &str, tag: &str) -> Result<(), Vec<String>> 
 }
 
 /// Builds each file of `sources.txt` in `patches/open62541/` from the copy alone,
-/// with its `flags.txt` and then `-g -O0 -fno-stack-protector
-/// -fno-dollars-in-identifiers`, so a call stays in the function that holds it in the
-/// source, except in a function that the compiler inlines, the compiler adds no
-/// reference to the canary of the stack, and no C identifier holds `$`.
+/// with its `flags.txt` and then `-g -O0 -fno-stack-protector`, so a call stays in the
+/// function that holds it in the source, except in a function that the compiler
+/// inlines, and the compiler adds no reference to the canary of the stack.
 ///
 /// # Errors
 ///
-/// A line of `flags.txt` other than a `-D`, `-I`, or `-std` flag with its value or one
-/// of [`CODE_FLAGS`], a build that fails, an `#include` or `#import` of a header
-/// outside both the copy and the system directories, a reference to a symbol outside
-/// the copy that neither [`SYMBOLS`] nor [`FUNCTION_SYMBOLS`] admits, a listed key
-/// with no reference, a reference outside a function that [`SYMBOLS`] does not admit,
-/// any reference to a clock function other than a call, such as its address in code or
-/// data, through which any code can call it, each inlined function, an `#include_next`,
-/// a `#line` directive or line marker in a `.c` or `.h` file of the copy, a `cc` that
-/// is not GCC or that builds for neither x86-64 nor aarch64, a C identifier that
-/// holds `$`, a symbol whose name holds a character other than an ASCII letter, a
-/// digit, `_`, `.`, or `$`, and each instruction whose key the list of its
-/// architecture does not admit.
+/// A line of `flags.txt` other than a `-D`, `-I`, or `-std` flag with its value, one of
+/// [`CODE_FLAGS`], or [`NO_DOLLARS`], a `flags.txt` with no line [`NO_DOLLARS`], a
+/// build that fails, an `#include` or `#import` of a header outside both the copy and
+/// the system directories, a reference to a symbol outside the copy that neither
+/// [`SYMBOLS`] nor [`FUNCTION_SYMBOLS`] admits, a listed key with no reference, a
+/// reference outside a function that [`SYMBOLS`] does not admit, any reference to a
+/// clock function other than a call, such as its address in code or data, through which
+/// any code can call it, each inlined function, an `#include_next`, a `#line` directive
+/// or line marker in a `.c` or `.h` file of the copy, a `cc` that is not GCC or that
+/// builds for neither x86-64 nor aarch64, a symbol whose name holds a character other
+/// than an ASCII letter, a digit, `_`, `.`, or `$`, and each instruction whose key the
+/// list of its architecture does not admit.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"))
@@ -448,22 +453,31 @@ impl Trees<'_> {
     }
 }
 
-/// An error for each line of `flags`, the text of `flags.txt`, that [`kept`] refuses.
+/// An error for each line of `flags`, the text of `flags.txt`, that is not
+/// [`NO_DOLLARS`] and that [`kept`] refuses, and one when no line is [`NO_DOLLARS`].
 fn unkept(flags: &str) -> Vec<String> {
+    let absent = (!flags.lines().any(|flag| flag == NO_DOLLARS)).then(|| {
+        format!(
+            "flags.txt: has no line `{NO_DOLLARS}` (NO_DOLLARS), with which no \
+             function has a name that holds `$`. Make the copy again with `cargo \
+             xtask open62541 <tag>`"
+        )
+    });
     flags
         .lines()
-        .filter(|flag| !kept(flag))
+        .filter(|flag| *flag != NO_DOLLARS && !kept(flag))
         .map(|flag| {
             format!(
-                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, or \
-                 one of CODE_FLAGS"
+                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, \
+                 one of CODE_FLAGS, or NO_DOLLARS"
             )
         })
+        .chain(absent)
         .collect()
 }
 
-/// Whether `flags.txt` may hold `flag`: a `-D`, `-I`, or `-std` flag with its value,
-/// or one of [`CODE_FLAGS`].
+/// Whether `flags.txt` keeps the flag `flag` of a compile: a `-D`, `-I`, or `-std`
+/// flag with its value, or one of [`CODE_FLAGS`].
 fn kept(flag: &str) -> bool {
     CODE_FLAGS.contains(&flag)
         // A value that starts with `-` makes a flag such as `-I-`, which changes how
@@ -812,13 +826,10 @@ fn build<'a>(
             // `./` keeps a source such as `-x.c` or `@x.c` from being an option. Else
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
-            // reference to its random canary is one that the C makes. With no `$` in
-            // an identifier, no function has the name of an aarch64 mapping symbol,
-            // to which objdump gives no header.
+            // reference to its random canary is one that the C makes.
             cc.current_dir(copy)
                 .args(flags.lines())
-                .args(["-g", "-O0", "-fno-stack-protector"])
-                .args(["-fno-dollars-in-identifiers", "-dumpbase"])
+                .args(["-g", "-O0", "-fno-stack-protector", "-dumpbase"])
                 .arg(index.to_string())
                 .args(mode);
             spawn(cc.arg(Path::new(".").join(source)))
@@ -1294,7 +1305,7 @@ fn write(stage: &Path, src: &Path, found: &Found, version: &str) -> Result<(), S
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         std::fs::copy(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
-    let flags = found.flags.join("\n") + "\n";
+    let flags = found.flags.join("\n") + "\n" + NO_DOLLARS + "\n";
     std::fs::write(stage.join("sources.txt"), sources)
         .and_then(|()| std::fs::write(stage.join("flags.txt"), flags))
         .and_then(|()| std::fs::write(stage.join("VERSION"), format!("{version}\n")))
@@ -1870,7 +1881,10 @@ Disassembly of section .text.stamp:
         let dir = temp("clang");
         create_files(
             &dir,
-            &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", "")],
+            &[
+                ("copy/sources.txt", "a.c\n"),
+                ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
+            ],
         );
         // GCC's macros on standard error make a check that reads the wrong stream
         // pass.
@@ -1886,6 +1900,38 @@ Disassembly of section .text.stamp:
         remove(&dir).unwrap();
     }
 
+    #[test]
+    fn check_fails_on_a_copy_whose_flags_have_no_line_of_no_dollars() {
+        let dir = temp("no-dollars");
+        let absent = "flags.txt: has no line `-fno-dollars-in-identifiers` \
+                      (NO_DOLLARS), with which no function has a name that holds `$`. \
+                      Make the copy again with `cargo xtask open62541 <tag>`";
+        for (flags, problems) in [
+            ("", vec![absent.to_owned()]),
+            ("-DA\n-std=c99\n", vec![absent.to_owned()]),
+            (
+                "-fno-dollars-in-identifiers=1\n",
+                vec![
+                    "flags.txt: `-fno-dollars-in-identifiers=1` is not a -D, -I, or \
+                     -std flag with its value, one of CODE_FLAGS, or NO_DOLLARS"
+                        .to_owned(),
+                    absent.to_owned(),
+                ],
+            ),
+        ] {
+            create_files(
+                &dir,
+                &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", flags)],
+            );
+            assert_eq!(
+                inspect(&dir.join("copy"), &dir.join("out"), Path::new("/no/cc")),
+                Err(problems),
+                "{flags:?}"
+            );
+        }
+        remove(&dir).unwrap();
+    }
+
     /// The check reads the text of each tool, and the locale changes that text.
     #[test]
     #[cfg(unix)]
@@ -1893,7 +1939,10 @@ Disassembly of section .text.stamp:
         let dir = temp("locale");
         create_files(
             &dir,
-            &[("copy/sources.txt", "a.c\n"), ("copy/flags.txt", "")],
+            &[
+                ("copy/sources.txt", "a.c\n"),
+                ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
+            ],
         );
         let cc = create_cc(&dir, "#!/bin/sh\necho \"LC_ALL=$LC_ALL\" >&2\nexit 1\n");
         assert_eq!(
@@ -2506,7 +2555,7 @@ End of search list.
         assert_eq!(
             read("flags.txt"),
             "-DNAME=\"a b\"\n-Iinclude\n-Isrc_generated\n-DNDEBUG\n-std=gnu99\n\
-             -fno-strict-aliasing\n"
+             -fno-strict-aliasing\n-fno-dollars-in-identifiers\n"
         );
         let mut git = Command::new("git");
         let commit = exec(git.arg("-C").arg(&repo).args(["rev-parse", "v1"])).unwrap();
@@ -2788,8 +2837,8 @@ End of search list.
         );
         let refused = |flag: &str| {
             format!(
-                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, or \
-                 one of CODE_FLAGS"
+                "flags.txt: `{flag}` is not a -D, -I, or -std flag with its value, \
+                 one of CODE_FLAGS, or NO_DOLLARS"
             )
         };
         assert_eq!(
@@ -3267,6 +3316,50 @@ End of search list.
                  17 | void $x(void) { abort(); }\n      |      ^\n"
                     .to_owned()
             ])
+        );
+    }
+
+    /// `cc` reads the macro name `UA_HIDE$` up to its `$` only with
+    /// `-fno-dollars-in-identifiers`, so a build with that flag and a build with no
+    /// such flag compile other C from this input.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives() {
+        let (root, repo, result) = run_after("macro", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let copy = root.join("patches/open62541");
+        let source = "src/util/ua_util.c";
+        let read = |name: &str| std::fs::read_to_string(copy.join(name)).unwrap();
+        let hidden = "#define UA_HIDE$ 1\n#ifndef UA_HIDE\n\
+                      void hide(void) { (void)getpid(); }\n#endif\n";
+        std::fs::write(copy.join(source), read(source) + hidden).unwrap();
+        let found = check(&root);
+        let index = read("sources.txt").lines().position(|s| s == source);
+        let checked = root.join(format!("target/open62541/check/{}.o", index.unwrap()));
+        let flags = read("flags.txt");
+        let built = |name: &str, flags: &mut dyn Iterator<Item = &str>| {
+            let object = root.join(name);
+            let mut cc = Command::new("cc");
+            cc.current_dir(&copy).args(flags).args(["-c", source, "-o"]);
+            exec(cc.arg(&object)).unwrap();
+            symbols([object.as_path()], &[]).unwrap()
+        };
+        let connector = built("connector.o", &mut flags.lines());
+        let other = built(
+            "other.o",
+            &mut flags.lines().filter(|flag| *flag != NO_DOLLARS),
+        );
+        let checked = symbols([checked.as_path()], &[]).unwrap();
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+        assert_eq!(found, Ok(()));
+        assert_eq!(checked, connector);
+        let hide = ["getpid", "hide"].map(str::to_owned);
+        assert_eq!(
+            other.difference(&connector).cloned().collect::<Vec<_>>(),
+            hide
         );
     }
 
