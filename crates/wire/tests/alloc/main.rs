@@ -198,22 +198,28 @@ fn blob_heads() {
     assert_eq!(allocations, 0, "the decode of a blob request allocated");
     assert_eq!(decoded, [true, true], "the put and the get decoded");
 
-    let replies =
-        [Reply::Chunk { digest, len: 64 }, Reply::Stored { digest }].map(|reply| {
-            let mut out = vec![0; reply.encoded_len()];
-            reply.encode(&mut out);
-            out
-        });
+    let replies = [
+        Reply::Chunk { digest, len: 64 },
+        Reply::Absent { digest },
+        Reply::Stored { digest },
+    ]
+    .map(|reply| {
+        let mut out = vec![0; reply.encoded_len()];
+        reply.encode(&mut out);
+        out
+    });
     let requester = Requester::new(1 << 20);
     let (decoded, allocations) = ALLOCATOR.count(|| {
         replies
             .each_ref()
             .map(|message| match requester.decode(message) {
                 Ok(Reply::Chunk { digest: got, len }) => got == digest && len == 64,
-                Ok(Reply::Stored { digest: got }) => got == digest,
+                Ok(Reply::Absent { digest: got } | Reply::Stored { digest: got }) => {
+                    got == digest
+                }
                 other => panic!("a reply: {other:?}"),
             })
     });
     assert_eq!(allocations, 0, "the decode of a blob reply allocated");
-    assert_eq!(decoded, [true, true], "each reply decoded");
+    assert_eq!(decoded, [true, true, true], "each reply decoded");
 }
