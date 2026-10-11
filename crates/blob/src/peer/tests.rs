@@ -1,12 +1,15 @@
 //! `serve` over a real transport between two simulated nodes, driven by raw
 //! `wire::blob` messages.
 
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 
 use block::Pool;
 use env::files::Operation;
@@ -489,6 +492,41 @@ fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
             let served = serve(&store, incoming).await;
             assert_eq!(served, Err(Error::Store(crate::Error::Files(io))));
             assert!(store.get(digest).await.unwrap().is_none());
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
+#[test]
+fn a_serve_dropped_in_a_put_ends_the_stream_with_code_0_and_a_next_put_stores() {
+    let (digest, bytes) = chunk(7, 3000);
+    let chunk = bytes.clone();
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open(&node, 0).await;
+            {
+                let mut served = pin!(serve(&store, incoming));
+                // The file of the chunk exists before its write and its sync end.
+                loop {
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                    let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                    if !listed.is_empty() {
+                        break;
+                    }
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+            }
+            put(&store, digest, &chunk).await;
+            let got = store.get(digest).await.unwrap().unwrap();
+            assert_eq!(&got[..], &chunk[..]);
         },
         move |peer| async move {
             let mut stream = peer.open().await;
