@@ -6183,21 +6183,29 @@ mod name {
     /// A name that fails the claim stops the start before any ring opens.
     #[test]
     fn a_name_that_fails_the_claim_opens_no_ring() {
+        enum Stored {
+            Zeros,
+            Kept(Name),
+        }
         let renamed = Error::Renamed {
             stored: name("edge"),
             given: name("cloud"),
         };
-        for (stored, error) in [(None, Error::Name), (Some(name("edge")), renamed)] {
+        let cases = [
+            (Stored::Zeros, Error::Name),
+            (Stored::Kept(name("edge")), renamed),
+        ];
+        for (stored, error) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
             match stored {
-                Some(stored) => sim
+                Stored::Kept(stored) => sim
                     .run_on(&host, move |host, _| async move {
                         crate::name::keep(&host.files(), &stored).await
                     })
                     .expect("the run ends")
                     .expect("keeps the name"),
-                None => write(&mut sim, &host, FILE, vec![0; LEN]),
+                Stored::Zeros => write(&mut sim, &host, FILE, vec![0; LEN]),
             }
             let started = start_and_stop(&mut sim, &host, "cloud");
             assert_eq!(started, Err(error.clone()));
