@@ -241,29 +241,42 @@
   the whole PR when the clone cannot read the range, and then an edit of its round
   comment that names `architecture` and adds its findings. One run on the whole PR
   serves each such round of the PR, and each edit states the range of the run. The last
-  round fails when its `Public surface:` line names items and holds `approval owed`, or
-  holds no comment link. In a PR that changes a file of a risk crate (`crates/<name>/`,
-  with `<name>` one of `raft`, `buffer`, `delivery`, `block`, `ring`, `codec`, `wire`,
-  `home`, `replica`, `transport`), the last round also fails when its `Deferred:` line
-  names an issue `#<n>` with no comment link after it in the line and without the words
-  `not in a risk crate` between it and the next `#<n>` of the line. The problem names
-  the round and the first such issue. A comment link is a URL in the text of the line as
-  GitHub shows it: `https://github.com/<owner>/<repo>/pull/<n>` or
+  round fails when its `Public surface:` line holds the word `owed`, or when the first
+  word of its value is not `none` and the line holds no comment link. The first comment
+  link after the words `departs from` is no approval and does not count on that line. A
+  word is the text between two spaces, with the punctuation at its ends removed. In a PR
+  that changes a file of a risk crate (`crates/<name>/`, with `<name>` in `RISK` in
+  `xtask/src/review.rs`, which holds the risk crates of ENGINEERS in
+  `docs/decisions/operations/engineers.md`), the last round also fails when its
+  `Deferred:` line names an issue with no comment link after it in the line and without
+  the words `not in a risk crate` between it and the next issue of the line. The first
+  word `none` does not stop this rule. A file that the PR moves counts at its old path
+  and at its new one, in each rule that reads the files of the PR. An issue is each
+  `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
+  `https://github.com/<owner>/<repo>/issues/<n>` or
+  `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. The problem
+  names the round and the first such issue. A comment link is a URL in the text of the
+  line as GitHub shows it: `https://github.com/<owner>/<repo>/pull/<n>` or
   `https://github.com/<owner>/<repo>/issues/<n>`, then `#issuecomment-<id>`,
-  `#pullrequestreview-<id>`, or `#discussion_r<id>`. A `[text](url)` link shows no URL
-  and does not count. The limits: one link serves each issue before it on the
+  `#pullrequestreview-<id>`, or `#discussion_r<id>`. It starts the line or follows a
+  space or `(`. A `[text](url)` link shows no URL and does not count, but its text
+  counts when it is such a URL. The limits: one link serves each issue before it on the
   `Deferred:` line, the words `not in a risk crate` serve only the issue before them,
   one link serves each item of the `Public surface:` line, and the check does not read
-  what a link says. The check reads `approval owed` and `not in a risk crate` in each
-  ASCII case. A `#<n>` in a URL is no issue. A `Later steps:` line after the first of
-  the end lines is not read. A last round posted before the cutoff `LINK_CUTOFF` in
-  `xtask/src/review.rs` (2026-10-12T12:00:00Z) is checked as before, so that the rule
-  does not fail the rounds that came before it. The cutoff is a fixed time: it stays
-  when the rule merges after it. Stated by the director as rule item 24 at
-  2026-10-11T03:39:26Z
+  what a link says. The check reads `owed`, `departs from`, `GH-<n>`,
+  `not in a risk crate`, and the path of a file under `crates/` in each ASCII case.
+  Supersedes the words of goals 3 and 4 of
+  https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
+  item. A `Later steps:` line after the first of the end lines is not read. A last round
+  posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
+  is checked as before, so that the rule does not fail the rounds that came before it.
+  The cutoff is a fixed time: it stays when the rule merges after it. Stated by the
+  director as rule item 24 at 2026-10-11T03:39:26Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6105098668), and
   ruled at 2026-10-11T10:47:32Z
-  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6108222189). The
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6108222189), and
+  approved at 2026-10-11T20:32:18Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113438520). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
