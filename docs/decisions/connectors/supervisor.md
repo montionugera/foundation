@@ -53,8 +53,9 @@
   `Ok` from `run` ends the connector.
   `Config` returns to the caller, which calls `run` again at the next spec change
   (R12-4) (`laptop.architect-2`, 2026-10-11T03:35:05Z:
-  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6105068890;
-  before it, "when the spec changes the connector",
+  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6105068890).
+  Supersedes "when the spec changes the connector" (`laptop.architect-2`,
+  2026-10-09T05:10:43Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
   A spec change that the caller applied after that run started counts, so one that
   comes while the run ends is not lost (`laptop.architect-2`, 2026-10-11T05:17:07Z:
