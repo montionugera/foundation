@@ -2239,8 +2239,8 @@ fn a_start_with_an_early_commit_time_reads() {
 /// The phrase of a change to the decision `x.md`.
 const DECISION: &str = "changes the decision `docs/decisions/x.md`";
 
-/// The start of the phrase of a conflict in the decision `x.md`.
-const CONFLICT: &str = "has a conflict in the decision `docs/decisions/x.md`";
+/// The part of each conflict phrase that names the decision `x.md`.
+const CONFLICT: &str = "conflict in the decision `docs/decisions/x.md`";
 
 #[test]
 fn a_range_that_adds_changes_or_removes_a_decision_changes_the_surface() {
@@ -2314,7 +2314,7 @@ fn a_merge_that_resolves_a_conflict_in_a_decision_changes_the_surface() {
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
         repo.surface_change(&start, &end),
-        Ok(Some(format!("{CONFLICT} between its start and the base")))
+        Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
@@ -2340,7 +2340,7 @@ fn a_decision_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
     let end = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
     assert_eq!(
         repo.surface_change(&start, &end),
-        Ok(Some(format!("{CONFLICT} between its start and the base")))
+        Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
@@ -2364,7 +2364,7 @@ fn a_decision_that_the_range_removes_and_the_base_changes_changes_the_surface() 
     let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
     assert_eq!(
         repo.surface_change(&start, &end),
-        Ok(Some(format!("{CONFLICT} between its start and the base")))
+        Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
     repo.remove();
 }
@@ -2391,8 +2391,67 @@ fn a_file_of_the_range_that_the_base_moves_into_the_decisions_changes_the_surfac
     let end = repo.commit("docs/decisions/x.md", "a rule of the PR\n");
     assert_eq!(
         repo.surface_change(&start, &end),
-        Ok(Some(format!("{CONFLICT} between its start and the base")))
+        Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
     );
+    repo.remove();
+}
+
+#[test]
+fn a_merge_that_drops_the_decision_change_of_the_range_changes_the_surface() {
+    let repo = Repo::new("surface-dropped");
+    let base = repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("b.txt", "pr\n");
+    repo.commit("docs/decisions/x.md", "the rule of the PR\n");
+    repo.advance_main("docs/decisions/x.md", "the rule of the base\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/decisions/x.md", "the rule of the base\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("resolves a {CONFLICT} in `{end}`")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_decision_conflict_of_the_start_and_the_base_changes_the_surface() {
+    let (repo, _) = Repo::with_pr("surface-closed");
+    repo.advance_main("docs/decisions/x.md", "a rule\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let start = repo.commit("docs/decisions/x.md", "the rule of the PR\n");
+    repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.advance_main("docs/decisions/x.md", "the rule of the base\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    assert_eq!(
+        repo.surface_change(&start, &repo.head()),
+        Ok(Some(format!(
+            "has a {CONFLICT} between its start and the base"
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
+fn an_empty_range_at_two_newest_base_commits_changes_no_surface() {
+    let (repo, _) = Repo::with_pr("surface-empty-two-newest");
+    repo.git(&["switch", "--quiet", "-c", "q", "main"]);
+    let q = repo.commit("q.txt", "q\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let older = repo.commit("c.txt", "c\n");
+    repo.git(&["merge", "--quiet", "--no-ff", "--no-edit", &q]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &older]);
+    repo.git(&["merge", "--quiet", "--no-edit", &q]);
+    let end = repo.head();
+    assert_eq!(repo.surface_change(&end, &end), Ok(None));
+    assert_eq!(repo.code_change(&end, &end), Ok(None));
     repo.remove();
 }
 

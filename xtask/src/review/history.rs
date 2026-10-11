@@ -116,27 +116,13 @@ impl<'a> History<'a> {
                 merged,
             } => (from, end, base, newest, merged),
         };
-        let commits = format!("{from}..{end}");
-        let chain = self.git(&[
-            "rev-list",
-            "--reverse",
-            "--first-parent",
-            "--parents",
-            &commits,
-        ])?;
-        for line in chain.lines() {
-            let Some((first, second)) = self.base_merge(line, &base)? else {
-                continue;
-            };
-            let merge = line.split(' ').next().unwrap_or_default();
-            let resolved = self.merged(first, second)?;
-            if let Some(path) = resolved.conflict(|path| !text_path(path)) {
-                return Ok(Some(format!(
-                    "resolves a conflict in `{path}` in `{merge}`"
-                )));
-            }
+        let code = |path: &str| !text_path(path);
+        if let Some((path, merge)) = self.resolved(&from, &end, &base, code)? {
+            return Ok(Some(format!(
+                "resolves a conflict in `{path}` in `{merge}`"
+            )));
         }
-        if let Some(path) = merged.conflict(|path| !text_path(path)) {
+        if let Some(path) = merged.conflict(code) {
             return Ok(Some(format!(
                 "has a conflict in `{path}` between its start and the base"
             )));
@@ -153,9 +139,12 @@ impl<'a> History<'a> {
     ///
     /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
     /// and the newest base commit that `end` holds, as `code_change` reads it: a
-    /// change of the base does not count. A file under `docs/decisions/` that this
-    /// tree has a conflict in gives "has a conflict in the decision `<path>` between
-    /// its start and the base", also when the conflict leaves no markers. `from` and
+    /// change of the base does not count. A file under `docs/decisions/` that a merge
+    /// of the base in the range resolves a conflict in gives "resolves a conflict in
+    /// the decision `<path>` in `<merge>`", and one that this tree has a conflict in
+    /// gives "has a conflict in the decision `<path>` between its start and the base",
+    /// each also when the conflict leaves no markers or the range ends with the text of
+    /// the base. `from` and
     /// `end` are as in `code_change`, with its two phrases: "has `<text>`, which names
     /// no commit", and "holds the base at more than one newest commit: `<commit>`,
     /// `<commit>`".
@@ -168,12 +157,24 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (end, merged) = match self.range(from, end)? {
+        let (from, end, base, merged) = match self.range(from, end)? {
             Range::Empty => return Ok(None),
             Range::Unread(phrase) => return Ok(Some(phrase)),
-            Range::Read { end, merged, .. } => (end, merged),
+            Range::Read {
+                from,
+                end,
+                base,
+                merged,
+                ..
+            } => (from, end, base, merged),
         };
-        if let Some(path) = merged.conflict(|path| path.starts_with(DECISIONS)) {
+        let decision = |path: &str| path.starts_with(DECISIONS);
+        if let Some((path, merge)) = self.resolved(&from, &end, &base, decision)? {
+            return Ok(Some(format!(
+                "resolves a conflict in the decision `{path}` in `{merge}`"
+            )));
+        }
+        if let Some(path) = merged.conflict(decision) {
             return Ok(Some(format!(
                 "has a conflict in the decision `{path}` between its start and the base"
             )));
@@ -224,6 +225,40 @@ impl<'a> History<'a> {
             newest,
             merged,
         })
+    }
+
+    /// The first conflicted path for which `counts` holds in a merge of the base on
+    /// the first-parent chain of `<from>..<end>`, and that merge. `base` is the SHA of
+    /// the base.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn resolved(
+        &self,
+        from: &str,
+        end: &str,
+        base: &str,
+        counts: impl Fn(&str) -> bool,
+    ) -> Result<Option<(String, String)>, String> {
+        let commits = format!("{from}..{end}");
+        let chain = self.git(&[
+            "rev-list",
+            "--reverse",
+            "--first-parent",
+            "--parents",
+            &commits,
+        ])?;
+        for line in chain.lines() {
+            let Some((first, second)) = self.base_merge(line, base)? else {
+                continue;
+            };
+            if let Some(path) = self.merged(first, second)?.conflict(&counts) {
+                let merge = line.split(' ').next().unwrap_or_default();
+                return Ok(Some((path.to_string(), merge.to_string())));
+            }
+        }
+        Ok(None)
     }
 
     /// The first code change from the tree-ish `old` to `new`, as `code_change`
