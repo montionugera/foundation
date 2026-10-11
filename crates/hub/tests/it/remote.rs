@@ -1480,7 +1480,7 @@ fn a_reader_whose_home_replies_with_a_head_before_opened_stops_the_stream_as_mal
                 .await
                 .expect_err("the home did not open the session");
             let expected = wire::hub::Error::Unopened { kind: 2 };
-            assert_eq!(error, reader::Error::Message(expected));
+            assert_eq!(error, reader::Error::Message(expected.clone()));
             assert_eq!(
                 error.to_string(),
                 format!("the reply of the home broke the hub protocol: {expected}")

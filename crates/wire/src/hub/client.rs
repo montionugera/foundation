@@ -6,14 +6,20 @@
 //!   then to renew.
 //! - A request stream carries one request. The program sends a [`Request`] and then
 //!   its body, and the node sends a [`Response`] and then its body.
+//! - A read stream carries one reader session. The program sends a [`Read`] and then
+//!   its [`Open`] as a body. The node sends [`Places`] and the run of its [`place`]s,
+//!   and then the replies of a reader session as [`super::Reader`] decodes them, from
+//!   `Opened`. The program sends no credit.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
-//! request or response, so the receiver counts it to find where it ends. No message
-//! follows a body.
+//! request, response, or read, so the receiver counts it to find where it ends. No
+//! message follows a body.
 //!
-//! Each side knows the kind of each stream, so it calls the `decode` of the message
-//! that it expects, and counts a body with the [`Body`] of its request or response.
+//! The program knows the kind of each stream, so it calls the `decode` of the message
+//! that it expects. The node knows the kind of the hello stream only: it decodes the
+//! first message of each later stream with [`First::decode`]. Each side counts a body
+//! with the [`Body`] of its request, response, or read.
 //!
 //! Fields are little-endian.
 //!
@@ -25,6 +31,13 @@
 //!   signed bytes of the hello with no tag.
 //! - [`Request`]: kind 5, the body's length (`u64`), and the signature (64).
 //! - [`Response`]: kind 5 and the body's length (`u64`).
+//! - [`Read`]: kind 6, the open's length (`u64`), and the signature (64).
+//! - [`Open`]: the mode (`u8`, latest 1, complete 2), then each pattern of the selector
+//!   as written, an exclusion with its leading `!`: its length (`u16`) and its text.
+//! - [`Places`]: kind 6, the count of places (`u32`), and the place of the index
+//!   (`u32`).
+//! - [`place`]: each place's key (`u128`), its sample type as text (length `u8`, then
+//!   the text), and its name (length `u8`, then the name).
 
 use std::fmt;
 
@@ -35,14 +48,19 @@ use types::name::Name;
 use types::node;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error};
+use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN, text};
 use crate::common::{Fields, Writer, body};
 use crate::header::MALFORMED;
 
+mod read;
+
+pub use read::{Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, place};
+
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
+const READ: u8 = 6;
 
-/// Stop code: the hello or request failed the access check. The spec has no such
+/// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
 /// log names which.
 pub const REFUSED: u32 = 20;
@@ -70,7 +88,14 @@ pub enum Refusal {
     /// [`MALFORMED`]: a message of the program does not decode, or breaks a rule of
     /// the client wire.
     Malformed,
-    /// [`BUSY`]: the node had no memory for a response or a request body.
+    /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
+    /// read was removed.
+    Unknown,
+    /// [`NOT_HOME`]: the home of the index of a read moved.
+    NotHome,
+    /// [`FAILED`]: the reader of a read failed.
+    Failed,
+    /// [`BUSY`]: the node had no memory for a response, a request body, or a read.
     Busy,
     /// [`REFUSED`].
     Refused,
@@ -87,8 +112,11 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::Malformed,
+        Self::Unknown,
+        Self::NotHome,
+        Self::Failed,
         Self::Busy,
         Self::Refused,
         Self::Unsynced,
@@ -109,6 +137,9 @@ impl Refusal {
     pub const fn code(self) -> u32 {
         match self {
             Self::Malformed => MALFORMED,
+            Self::Unknown => UNKNOWN,
+            Self::NotHome => NOT_HOME,
+            Self::Failed => FAILED,
             Self::Busy => BUSY,
             Self::Refused => REFUSED,
             Self::Unsynced => UNSYNCED,
@@ -124,7 +155,17 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Malformed => "a message of the program broke the client wire",
-            Self::Busy => "the node had no memory for a response or a request body",
+            Self::Unknown => {
+                "the selector matches no channel, or a channel of the read was removed"
+            }
+            Self::NotHome => "the home of the index of the read moved",
+            Self::Failed => {
+                "the reader failed: the buffer or the mesh of the home of the index \
+                 stopped, or the path from the node to that home failed"
+            }
+            Self::Busy => {
+                "the node had no memory for a response, a request body, or a read"
+            }
             Self::Refused => {
                 "the spec has no such subject, does not list the key for it, or the \
                  signature is not valid"
@@ -183,9 +224,9 @@ impl Challenge {
     /// [`Error::Length`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let nonce = fields.take()?;
-        let earliest = stamp(fields.take()?);
-        let latest = stamp(fields.take()?);
+        let nonce = *fields.take()?;
+        let earliest = stamp(*fields.take()?);
+        let latest = stamp(*fields.take()?);
         fields.end()?;
         Ok(Self {
             nonce,
@@ -230,19 +271,16 @@ impl Signed {
     /// [`Error::Length`], [`Error::Subject`], and then [`Error::SmallOrder`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let [len] = fields.take()?;
+        let [len] = *fields.take()?;
         let subject = fields.take_slice(usize::from(len))?;
-        let key = fields.take()?;
-        let via = u128::from_le_bytes(fields.take()?);
-        let connection = fields.take()?;
-        let nonce = fields.take()?;
-        let expires = stamp(fields.take()?);
-        let signature = fields.take()?;
+        let key = *fields.take()?;
+        let via = u128::from_le_bytes(*fields.take()?);
+        let connection = *fields.take()?;
+        let nonce = *fields.take()?;
+        let expires = stamp(*fields.take()?);
+        let signature = *fields.take()?;
         fields.end()?;
-        let subject = std::str::from_utf8(subject)
-            .ok()
-            .and_then(|subject| subject.parse::<Name>().ok())
-            .ok_or(Error::Subject)?;
+        let subject: Name = text::read(subject).map_err(Error::Subject)?;
         let key = PublicKey::new(key).map_err(|_small| Error::SmallOrder)?;
         Ok(Self {
             hello: Hello {
@@ -294,8 +332,8 @@ impl Request {
     /// [`Error::Length`], and [`Error::Oversize`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
-        let signature = fields.take()?;
+        let length = *fields.take()?;
+        let signature = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,
@@ -311,6 +349,31 @@ impl Request {
     #[must_use]
     pub fn body(&self) -> Body {
         Body::new(self.length)
+    }
+}
+
+/// The first message of a stream after the hello stream, which gives the stream's
+/// kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum First {
+    /// A request stream.
+    Request(Request),
+    /// A read stream.
+    Read(Read),
+}
+
+impl First {
+    /// Decodes the first message of a stream after the hello stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Empty`], [`Error::Kind`] for a message that is neither kind 5 nor 6,
+    /// and the errors of [`Request::decode`] and [`Read::decode`].
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        match message.first() {
+            Some(&READ) => Read::decode(message).map(Self::Read),
+            _ => Request::decode(message).map(Self::Request),
+        }
     }
 }
 
@@ -345,7 +408,7 @@ impl Response {
     /// As [`Request::decode`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
+        let length = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,
@@ -363,7 +426,7 @@ impl Response {
     }
 }
 
-/// The rest of the body of one request or response.
+/// The rest of the body of one request, response, or read.
 #[derive(Debug)]
 pub struct Body(body::Count);
 
@@ -406,13 +469,12 @@ impl Body {
 }
 
 /// The fields of `message` after its kind byte, which must be `kind`.
-fn fields(message: &[u8], kind: u8) -> Result<Fields<'_, Error>, Error> {
-    match message.split_first() {
+fn fields(message: &[u8], kind: u8) -> Result<Fields<'_>, Error> {
+    let mut fields = Fields::new(message);
+    match fields.kind() {
         None => Err(Error::Empty),
-        Some((&first, rest)) if first == kind => {
-            Ok(Fields::new(rest, Error::Length { len: message.len() }))
-        }
-        Some((&kind, _rest)) => Err(Error::Kind { kind }),
+        Some(first) if first == kind => Ok(fields),
+        Some(kind) => Err(Error::Kind { kind }),
     }
 }
 
@@ -424,7 +486,10 @@ fn stamp(word: [u8; 8]) -> Stamp {
 fn body(word: [u8; 8]) -> Result<u64, Error> {
     let length = u64::from_le_bytes(word);
     if length > BODY_BYTES_MAX {
-        return Err(Error::Oversize { length });
+        return Err(Error::Oversize {
+            length,
+            cap: BODY_BYTES_MAX,
+        });
     }
     Ok(length)
 }

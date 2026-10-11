@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use spec::access::Action;
-use spec::definition::{Definition, Kind};
+use spec::definition::{self, Definition};
 use spec::subject::Subject;
 use types::ed25519::{Pair, PrivateKey};
 use types::time::Interval;
@@ -48,7 +48,7 @@ fn rules(subjects: &[(&str, &[PublicKey])]) -> Rules {
     let tree: BTreeMap<Name, Definition> = subjects
         .iter()
         .map(|(subject, keys)| {
-            let key = Kind::Subject.key(subject).unwrap();
+            let key = definition::Kind::Subject.key(subject).unwrap();
             (
                 key,
                 Definition::Subject(Subject::new(keys.to_vec()).unwrap()),
@@ -103,8 +103,11 @@ fn admitted() -> Admitted {
 }
 
 /// Signs a request of `body` on the connection of the golden hello.
-fn signed(body: &[u8]) -> [u8; 64] {
-    sign(&pair(TEST_1), &request(create_hello().connection, body))
+fn request_signature(body: &[u8]) -> [u8; 64] {
+    sign(
+        &pair(TEST_1),
+        &signed(Kind::Request, create_hello().connection, body),
+    )
 }
 
 mod golden {
@@ -136,7 +139,11 @@ mod golden {
 
     #[test]
     fn gives_the_exact_bytes_of_a_request_and_its_signature_verifies() {
-        let bytes = request(create_hello().connection, b"open site_a.pt_1");
+        let bytes = signed(
+            Kind::Request,
+            create_hello().connection,
+            b"open site_a.pt_1",
+        );
 
         assert_eq!(
             bytes,
@@ -149,6 +156,25 @@ mod golden {
         let signature = hex(concat!(
             "60bfa85a16ec42321352a9ab26ad64056eee4bb51f63e07e0e43ab310cfa4634",
             "1bc146b32998921f446113a0d563e5ccd5232654cc8ba4da49d4c499e062ed03",
+        ));
+        assert_eq!(create_hello().key.verify(&bytes, &signature), Ok(()));
+    }
+
+    #[test]
+    fn gives_the_exact_bytes_of_a_read_open_and_its_signature_verifies() {
+        let bytes = signed(Kind::Read, create_hello().connection, b"open site_a.pt_1");
+
+        assert_eq!(
+            bytes,
+            hex::<49>(concat!(
+                "666f756e646174696f6e2f726561642f31",
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+                "6f70656e20736974655f612e70745f31",
+            ))
+        );
+        let signature = hex(concat!(
+            "0e2b8d71d8e803ddd98fb1134b2de7414e1f115be1b93b3f1d1c76f4fbe47c8f",
+            "6ae2a3667630594137660047fccaa5a538c50514dcee0fe4c144ade192b2a807",
         ));
         assert_eq!(create_hello().key.verify(&bytes, &signature), Ok(()));
     }
@@ -198,7 +224,20 @@ mod golden {
         ) {
             let hello = create_hello();
 
-            prop_assert_ne!(request(hello.connection, &body), super::hello(&hello));
+            prop_assert_ne!(signed(Kind::Request, hello.connection, &body), super::hello(&hello));
+        }
+
+        #[test]
+        fn never_gives_the_bytes_of_one_kind_for_another(
+            request in proptest::collection::vec(any::<u8>(), 0..128),
+            read in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let connection = create_hello().connection;
+
+            prop_assert_ne!(
+                signed(Kind::Request, connection, &request),
+                signed(Kind::Read, connection, &read)
+            );
         }
     }
 }
@@ -361,11 +400,23 @@ mod admit {
         assert_eq!(admitted.ends(), ends);
         let before = Some(at(ends - Span::NANOSECOND));
         assert_eq!(
-            listed().verify(&admitted, before, body, &signed(body)),
+            listed().verify(
+                &admitted,
+                before,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
             Ok(())
         );
         assert_eq!(
-            listed().verify(&admitted, Some(at(ends)), body, &signed(body)),
+            listed().verify(
+                &admitted,
+                Some(at(ends)),
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
             Err(Error::Expired {
                 expires: ends,
                 now: ends
@@ -441,8 +492,11 @@ mod admit {
     fn keeps_each_subject_of_each_region_tree_by_its_label() {
         let key = public(&pair(TEST_1));
         let subject = Definition::Subject(Subject::new(vec![key]).unwrap());
-        let region: BTreeMap<Name, Definition> =
-            [(Kind::Subject.key("site_a.ana").unwrap(), subject)].into();
+        let region: BTreeMap<Name, Definition> = [(
+            definition::Kind::Subject.key("site_a.ana").unwrap(),
+            subject,
+        )]
+        .into();
         let rules = Rules::new([
             (types::name::Prefix::ROOT, &BTreeMap::new()),
             ("site_a".parse().unwrap(), &region),
@@ -677,17 +731,70 @@ mod verify {
     fn verifies_a_request_signed_with_the_key_of_the_hello() {
         let body = b"open site_a.pt_1";
 
-        let verified = listed().verify(&admitted(), NOW, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         assert_eq!(verified, Ok(()));
     }
 
     #[test]
-    fn refuses_a_request_whose_body_changed_after_its_signature() {
-        let signature = signed(b"open site_a.pt_1");
+    fn verifies_a_read_open_signed_with_the_key_of_the_hello() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Read, create_hello().connection, open),
+        );
+
+        let verified = listed().verify(&admitted(), NOW, Kind::Read, open, &signature);
+
+        assert_eq!(verified, Ok(()));
+    }
+
+    #[test]
+    fn refuses_the_signature_of_a_request_as_a_read_open() {
+        let body = b"open site_a.pt_1";
+
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Read,
+            body,
+            &request_signature(body),
+        );
+
+        assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn refuses_the_signature_of_a_read_open_as_a_request() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Read, create_hello().connection, open),
+        );
 
         let verified =
-            listed().verify(&admitted(), NOW, b"open site_a.pt_2", &signature);
+            listed().verify(&admitted(), NOW, Kind::Request, open, &signature);
+
+        assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn refuses_a_request_whose_body_changed_after_its_signature() {
+        let signature = request_signature(b"open site_a.pt_1");
+
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            b"open site_a.pt_2",
+            &signature,
+        );
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -696,9 +803,10 @@ mod verify {
     fn refuses_a_request_signed_for_another_connection() {
         let body = b"open site_a.pt_1";
         let other = connection::Key([0; 16]);
-        let signature = sign(&pair(TEST_1), &request(other, body));
+        let signature = sign(&pair(TEST_1), &signed(Kind::Request, other, body));
 
-        let verified = listed().verify(&admitted(), NOW, body, &signature);
+        let verified =
+            listed().verify(&admitted(), NOW, Kind::Request, body, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -709,9 +817,12 @@ mod verify {
         let both =
             rules(&[("ops.ana", &[public(&pair(TEST_1)), public(&pair(TEST_2))])]);
         let admitted = admit(&both, NOW, create_hello()).unwrap();
-        let signature = sign(&pair(TEST_2), &request(create_hello().connection, body));
+        let signature = sign(
+            &pair(TEST_2),
+            &signed(Kind::Request, create_hello().connection, body),
+        );
 
-        let verified = both.verify(&admitted, NOW, body, &signature);
+        let verified = both.verify(&admitted, NOW, Kind::Request, body, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -721,7 +832,8 @@ mod verify {
         let bytes = hello(&create_hello());
         let signature = sign(&pair(TEST_1), &bytes);
 
-        let verified = listed().verify(&admitted(), NOW, &bytes, &signature);
+        let verified =
+            listed().verify(&admitted(), NOW, Kind::Request, &bytes, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -731,12 +843,24 @@ mod verify {
         let body = b"open site_a.pt_1";
         let before = Some(at(EXPIRES - Span::NANOSECOND));
         assert_eq!(
-            listed().verify(&admitted(), before, body, &signed(body)),
+            listed().verify(
+                &admitted(),
+                before,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
             Ok(())
         );
 
         let late = Some(at(EXPIRES));
-        let verified = listed().verify(&admitted(), late, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            late,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let now = EXPIRES;
         assert_eq!(
@@ -752,7 +876,13 @@ mod verify {
     fn refuses_a_request_at_a_node_with_no_mesh_time() {
         let body = b"open site_a.pt_1";
 
-        let verified = listed().verify(&admitted(), None, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            None,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         assert_eq!(verified, Err(Error::Unsynced));
     }
@@ -762,7 +892,13 @@ mod verify {
         let body = b"open site_a.pt_1";
         let rules = rules(&[("ops.ana", &[public(&pair(TEST_2))])]);
 
-        let verified = rules.verify(&admitted(), NOW, body, &signed(body));
+        let verified = rules.verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let key = public(&pair(TEST_1));
         let subject = name("ops.ana");
@@ -773,7 +909,13 @@ mod verify {
     fn refuses_a_request_once_the_spec_no_longer_has_the_subject() {
         let body = b"open site_a.pt_1";
 
-        let verified = rules(&[]).verify(&admitted(), NOW, body, &signed(body));
+        let verified = rules(&[]).verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let subject = name("ops.ana");
         assert_eq!(verified, Err(Error::Unknown { subject }));
@@ -786,7 +928,9 @@ mod verify {
         let unlisted = rules(&[("ops.ana", &[public(&pair(TEST_2))])]);
         let late = Some(at(EXPIRES));
         let refuse = |rules: &Rules, now, signature| {
-            rules.verify(&admitted(), now, body, signature).unwrap_err()
+            rules
+                .verify(&admitted(), now, Kind::Request, body, signature)
+                .unwrap_err()
         };
 
         let subject = name("ops.ana");
@@ -804,7 +948,7 @@ mod verify {
         );
         assert_eq!(refuse(&listed(), late, &unsigned), Error::Signature);
         assert_eq!(
-            refuse(&listed(), late, &signed(body)),
+            refuse(&listed(), late, &request_signature(body)),
             Error::Expired {
                 expires: EXPIRES,
                 now: EXPIRES
@@ -918,13 +1062,28 @@ mod clamp {
         prop_assert_eq!(admitted.ends(), ends);
         prop_assert!(admitted.ends() > latest);
         let body = b"x";
-        prop_assert_eq!(listed().verify(&admitted, now, body, &signed(body)), Ok(()));
+        prop_assert_eq!(
+            listed().verify(
+                &admitted,
+                now,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
+            Ok(())
+        );
         let at_end = Some(Interval {
             earliest: ends,
             latest: ends,
         });
         prop_assert_eq!(
-            listed().verify(&admitted, at_end, body, &signed(body)),
+            listed().verify(
+                &admitted,
+                at_end,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
             Err(Error::Expired {
                 expires: ends,
                 now: ends
