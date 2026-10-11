@@ -153,7 +153,7 @@ impl Open {
             patterns.push(pattern);
         }
         let select = Selector::new(patterns)
-            .map_err(|error| Error::Selector(text::Error::Parse(Box::new(error))))?;
+            .map_err(|error| Error::Selector(text::Error::Parse(error.into())))?;
         Ok(Self { mode, select })
     }
 }

@@ -4,7 +4,7 @@ use std::fmt;
 use std::str::{FromStr, Utf8Error};
 
 /// Why a text field of a message does not read: `E` is the error of its parse.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error<E> {
     /// The bytes are not UTF-8.
     Utf8(Utf8Error),

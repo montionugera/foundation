@@ -501,8 +501,26 @@ pub mod ends {
 // A variant holds a `Box`, so `Error` has drop glue. A decoder on the frame path
 // makes one only on a defect, never with an eager `ok_or`, which builds and drops one
 // on each message.
+/// A `Copy` stand-in for the boxed cause of a name, for the measure of #2377.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cause;
+
+impl From<name::Error> for Cause {
+    fn from(_: name::Error) -> Self {
+        Self
+    }
+}
+
+impl std::fmt::Display for Cause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a name does not read")
+    }
+}
+
+impl std::error::Error for Cause {}
+
 /// A hub message that is not valid.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
     Empty,
@@ -583,7 +601,7 @@ pub enum Error {
         kind: u8,
     },
     /// The subject of a hello is not a name.
-    Subject(text::Error<Box<name::Error>>),
+    Subject(text::Error<Cause>),
     /// The key of a hello is a point of small order.
     SmallOrder,
     /// A request or a response has a body over
@@ -602,7 +620,7 @@ pub enum Error {
     },
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
-    Selector(text::Error<Box<name::Error>>),
+    Selector(text::Error<Cause>),
     /// The places of a read name an index place that is not below their count.
     Index {
         /// The place of the index.
@@ -613,7 +631,7 @@ pub enum Error {
     /// The sample type of a place of a read does not read.
     Sample(text::Error<sample::Error>),
     /// The name of a place of a read does not read.
-    Name(text::Error<Box<name::Error>>),
+    Name(text::Error<Cause>),
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
     /// The stream ended before its body.
