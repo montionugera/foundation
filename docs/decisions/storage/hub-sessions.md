@@ -44,8 +44,8 @@
   supersedes the hub test of
   https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
   Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
-  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183; the
-  source of each part and Q21, 2026-10-11T11:41:19Z:
+  https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183; the source
+  of each part and Q21, 2026-10-11T11:41:19Z:
   https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108643775):
   https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119 said that
   no hub test reaches that wake, and the ruling of #1170 gave the two hub `sim` tests as
