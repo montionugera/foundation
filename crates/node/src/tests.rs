@@ -6076,9 +6076,10 @@ mod port {
         }
 
         /// A node that starts on a spec that places a connector on it applies that
-        /// spec to its runs: a later apply that keeps the connector starts no run, and
-        /// one that changes it starts one. The reader opens after the run of the start,
-        /// because a status written before the open is lost to it.
+        /// spec to its runs: it runs the connector at the start, before any apply.
+        /// `influx` ends with a config error, so each later apply runs it again, also
+        /// one that keeps it. The reader opens before the node has mesh time, so it
+        /// sees the run of the start.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -6091,7 +6092,6 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             let node = start(&host, founding);
-            assert_eq!(sim.run_for(TEN), Ok(()));
             let read = read_status(&node, &definitions);
             assert_eq!(sim.run_for(TEN), Ok(()));
             let other = text("other", &[]);
@@ -6106,7 +6106,8 @@ mod port {
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
-            assert_eq!(*read.lock().unwrap(), [(0, 0), (3, 1), (2, 1)]);
+            let run = [(0, 0), (3, 1), (2, 1)];
+            assert_eq!(*read.lock().unwrap(), [run, run, run].concat());
         }
 
         /// A connector that an apply moves from another member to this node keeps its

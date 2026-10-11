@@ -3104,23 +3104,43 @@ mod tests {
         }
     }
 
+    /// The diagnostics of `error` when it is [`Error::Config`], else its text.
+    fn diagnostics(error: Error) -> Result<Vec<Diagnostic>, String> {
+        match error {
+            Error::Config(diagnostics) => Ok(diagnostics),
+            error => Err(error.to_string()),
+        }
+    }
+
+    /// One diagnostic with no span.
+    fn unplaced(code: &'static str, message: &str, fix: &str) -> Vec<Diagnostic> {
+        vec![Diagnostic::new(
+            Code::new(code),
+            None,
+            message.into(),
+            fix.into(),
+        )]
+    }
+
     #[test]
-    fn gives_a_kind_the_errors_of_the_hub_as_they_are() {
-        let many = hub::reader::Error::ManyIndexes {
-            first: name("plant.time"),
-            other: name("plant.write.status.backoff"),
-        };
-        for (select, message, want) in [
+    fn gives_a_config_error_for_a_reader_that_only_a_spec_change_fixes() {
+        for (select, want) in [
             (
                 "plant.missing",
-                "the selector matches no channel",
-                hub::reader::Error::Empty,
+                unplaced(
+                    "connector.no-channel",
+                    "the selector matches no channel",
+                    "Select a channel that the spec defines",
+                ),
             ),
             (
                 "plant.**",
-                "the channels plant.time and plant.write.status.backoff are on \
-                 different indexes: open a reader per index",
-                many,
+                unplaced(
+                    "connector.many-indexes",
+                    "the channels plant.time and plant.write.status.backoff are on \
+                     different indexes: open a reader per index",
+                    "Select channels of one index",
+                ),
             ),
         ] {
             let got = read_through(
@@ -3130,14 +3150,61 @@ mod tests {
                         ..settings(Span::ZERO)
                     };
                     let error = ctx.reader(&settings).await.expect_err("an error");
-                    got.lock()
-                        .expect("no panic")
-                        .push((error.to_string(), error));
+                    got.lock().expect("no panic").push(diagnostics(error));
                     Ok(())
                 },
                 |_, _| async {},
             );
-            assert_eq!(got, [(message.to_owned(), want)], "select {select}");
+            assert_eq!(got, [Ok(want)], "select {select}");
+        }
+    }
+
+    #[test]
+    fn gives_a_config_error_for_a_writer_that_only_a_spec_change_fixes() {
+        for (channels, lease, want) in [
+            (
+                vec!["plant.missing"],
+                None,
+                unplaced(
+                    "connector.unknown-channel",
+                    "no channel is named plant.missing",
+                    "Define the channel in the spec",
+                ),
+            ),
+            (
+                Vec::new(),
+                None,
+                unplaced(
+                    "connector.no-channel",
+                    "a writer names at least one channel",
+                    "Give the connector a channel to write",
+                ),
+            ),
+            (
+                vec!["plant.value"],
+                Some(Span::ZERO),
+                unplaced(
+                    "connector.lease",
+                    "control lease must be longer than zero, got 0s",
+                    "Give a lease longer than zero, or none",
+                ),
+            ),
+        ] {
+            let channels: Vec<Name> = channels.into_iter().map(name).collect();
+            let open = channels.clone();
+            let got = read_through(
+                move |ctx, got| {
+                    let open = open.clone();
+                    async move {
+                        let writer = ctx.writer(open, Authority(1), lease).await;
+                        let error = writer.expect_err("an error");
+                        got.lock().expect("no panic").push(diagnostics(error));
+                        Ok(())
+                    }
+                },
+                |_, _| async {},
+            );
+            assert_eq!(got, [Ok(want)], "channels {channels:?}");
         }
     }
 
