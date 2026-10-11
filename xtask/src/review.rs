@@ -440,7 +440,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
         if let Some(&(line, cause)) = hiding {
             return Err(cause.problem(number, line));
         }
-        if let Some(lack) = lack(&shown).filter(|_| rated) {
+        if let Some(lack) = lack(&shown.start).filter(|_| rated) {
             return Err(format!(
                 "review round {number} {lack}. Write the round {FORMAT}"
             ));
@@ -488,13 +488,13 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
 }
 
-/// What the comment `shown` lacks at its start, as the words of a problem, or `None`.
-/// Its first three lines of text ([`Shown::start`]) are its name line (a bold session
-/// name, ` · `, and a role), `Quality: <n>/10` with `n` from 1 to 10, and a summary
-/// line. A name, a role, or a summary line that is [`blank`] is not one.
-fn lack(shown: &Shown<'_>) -> Option<&'static str> {
-    let mut lines = shown.start.iter().map(String::as_str);
-    let role = shown
+/// What `start`, the start of a comment, lacks, as the words of a problem, or `None`.
+/// Its first three lines are the name line (a bold session name, ` · `, and a role),
+/// `Quality: <n>/10` with `n` from 1 to 10, and a summary line. A name, a role, or a
+/// summary line that is [`blank`] is not one.
+fn lack(start: &Start) -> Option<&'static str> {
+    let mut lines = start.lines.iter().map(String::as_str);
+    let role = start
         .session
         .as_deref()
         .zip(lines.next())
@@ -604,6 +604,27 @@ fn options() -> Options<'static> {
     options
 }
 
+/// The start of a comment: the top-level paragraphs with which it starts.
+#[derive(Debug, Default)]
+struct Start {
+    /// The text of the bold span that starts the comment, when its first block is a
+    /// paragraph that starts with one.
+    session: Option<String>,
+    /// The lines of the paragraphs, as GitHub shows them ([`texts`]). A paragraph that
+    /// comrak places in the wrong lines ([`misplaced`]) gives no line.
+    lines: Vec<String>,
+}
+
+impl Start {
+    /// Adds the top-level paragraph `paragraph`, with the lines `lines`.
+    fn push<'n>(&mut self, paragraph: &'n AstNode<'n>, lines: &[String]) {
+        if paragraph.previous_sibling().is_none() {
+            self.session = session(paragraph);
+        }
+        self.lines.extend_from_slice(lines);
+    }
+}
+
 /// A comment read as GitHub reads Markdown: its start before its round heading, its
 /// text from the heading on, and the lines that can hide text or that the check cannot
 /// read.
@@ -614,13 +635,8 @@ struct Shown<'a> {
     /// it, since GitHub starts HTML blocks at other lines than comrak, and can show a
     /// heading that comrak hides.
     number: Option<String>,
-    /// The text of the bold span that starts the comment, when its first block is a
-    /// paragraph that starts with one.
-    session: Option<String>,
-    /// The lines of the top-level paragraphs with which the comment starts, as GitHub
-    /// shows them ([`texts`]): those before the first block that is not a paragraph. A
-    /// paragraph that comrak places in the wrong lines ([`misplaced`]) gives no line.
-    start: Vec<String>,
+    /// The top-level paragraphs before the first block that is not a paragraph.
+    start: Start,
     /// Each top-level block after the heading: the index in `text` of a paragraph, or
     /// `None` for any other block. The footnotes come last, as GitHub shows them.
     blocks: Vec<Option<usize>>,
@@ -689,7 +705,7 @@ impl<'a> Shown<'a> {
                     hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
                     let lines = texts(node);
                     if top && unbroken {
-                        shown.lead(node, &lines);
+                        shown.start.push(node, &lines);
                     }
                     shown.text.push(lines);
                 }
@@ -711,15 +727,6 @@ impl<'a> Shown<'a> {
             })
             .collect();
         shown
-    }
-
-    /// Adds `lines`, those of the top-level paragraph `paragraph`, to the start, and
-    /// reads the session when `paragraph` is the first block of the comment.
-    fn lead<'n>(&mut self, paragraph: &'n AstNode<'n>, lines: &[String]) {
-        if paragraph.previous_sibling().is_none() {
-            self.session = session(paragraph);
-        }
-        self.start.extend_from_slice(lines);
     }
 
     /// The lines of the fields: the first block after the round heading, or none when
