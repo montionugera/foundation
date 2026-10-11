@@ -3161,7 +3161,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(2), heartbeat), Err(refused));
                 node.clock().sleep(TICK).await;
                 assert!(quiet(&mesh, 2).await);
-                // No public call shows the term of a node with no voters.
                 assert_eq!(term(&mesh), Term(0));
             });
         }
@@ -3406,7 +3405,6 @@ mod tests {
                 assert_eq!(mesh.receive(public(4), lie), Err(refused));
                 node.clock().sleep(TICK).await;
                 assert!(quiet(&mesh, 4).await);
-                // No public call shows the term of a node with no voters.
                 assert_eq!(term(&mesh), Term(0));
             });
         }
