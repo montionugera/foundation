@@ -23,21 +23,20 @@ const PAUSE: Span = Span::from_nanos(100_000_000);
 /// When the server stops the stream or closes the session, after it reads the first
 /// message: after the client cuts its send, and before the client looks again.
 const ACT: Span = Span::from_nanos(200_000_000);
-/// Long enough for noq-proto to free its pieces of a stream that ended while its
-/// connection lives.
-const SETTLE: Span = Span::from_nanos(200_000_000);
 /// The parts of the message that the window cuts.
 const PARTS: usize = 150;
-/// More than the parts that the window takes before it cuts the message: its room
-/// after the fill holds 8 runs.
-const TAKEN: usize = 16;
+/// Fewer than the parts that the stream keeps of the cut message, over the list of 4
+/// that a send keeps: the window takes less than one part.
+const KEPT: usize = PARTS - 8;
 /// The bytes of each part: one over the longest chunk that noq-proto copies, so that
 /// each part stays apart in the list.
 const RUN: usize = 1453;
 /// The distance from the start of a part to the start of the next.
 const STRIDE: usize = 1500;
-/// The bytes of the last message that fills the window, after three of 256 KiB.
-const FILL: usize = 250_000;
+/// The bytes of the last message that fills the window, after three of 256 KiB: the
+/// room it leaves is less than one run, so noq-proto holds the same piece of the cut
+/// message in each run.
+const FILL: usize = 261_624;
 
 /// How the stream ends.
 #[derive(Clone, Copy, Debug)]
@@ -52,31 +51,23 @@ pub(crate) fn main() {
     for end in [End::Stop, End::Cancel, End::Close, End::PeerClose] {
         let [sent, sent_ended] = run(end, false);
         let [parted, parted_ended] = run(end, true);
-        let list = (PARTS - TAKEN) * mem::size_of::<Part>();
+        let list = KEPT * mem::size_of::<Part>();
         assert!(
             parted >= sent + list,
             "{end:?}: the stream keeps the parts list of the cut message: {parted} \
              bytes after the cut of a message of {PARTS} parts, {sent} after a send"
         );
-        let ended = format!(
-            "{end:?}: the heap after the end is {parted_ended} bytes for a message of \
-             {PARTS} parts, {sent_ended} for a send"
+        assert_eq!(
+            parted_ended, sent_ended,
+            "{end:?}: the heap after the end of a message of {PARTS} parts and of a \
+             send"
         );
-        match end {
-            End::Stop | End::Cancel => assert_eq!(parted_ended, sent_ended, "{ended}"),
-            // noq-proto keeps its pieces of the message until the connection drains,
-            // and the drain frees the whole connection.
-            End::Close | End::PeerClose => {
-                assert!(parted_ended < sent_ended + list, "{ended}");
-            }
-        }
     }
 }
 
 /// The heap bytes that the client holds while the window cuts a message of [`PARTS`]
 /// parts when `parted`, else of one block of the same bytes, and after its stream
-/// ends in the way of `end` and the cut send is dropped: after [`SETTLE`] when the
-/// connection lives, else at once.
+/// ends in the way of `end` and the cut send is dropped.
 fn run(end: End, parted: bool) -> [usize; 2] {
     let mut sim = Sim::new(sim::Config::default());
     let client = sim.node(sim::node::Config::default());
@@ -137,9 +128,6 @@ fn run(end: End, parted: bool) -> [usize; 2] {
             let polled = send.as_mut().poll(&mut cx);
             assert_eq!(polled, Poll::Ready(Err(expected)), "{end:?}: the cut send");
             drop(send);
-        }
-        if let End::Stop | End::Cancel = end {
-            clock.sleep(SETTLE).await;
         }
         let ended = ALLOCATOR.held();
         session.close(Code(0));
