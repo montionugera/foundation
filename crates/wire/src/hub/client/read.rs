@@ -4,10 +4,11 @@ use types::channel;
 use types::name::{Name, Selector, Written};
 use types::sample::Type;
 
+use super::Error;
 use super::text;
 use super::{Body, READ, fields};
 use crate::common::{Fields, Writer};
-use crate::hub::{COMPLETE, Error, LATEST};
+use crate::hub::{COMPLETE, LATEST};
 
 mod reader;
 
@@ -251,7 +252,7 @@ pub mod place {
 
     use super::Place;
     use crate::common::{Fields, Writer};
-    use crate::hub::Error;
+    use crate::hub::client::Error;
     use crate::hub::client::text;
 
     /// One message of the run: whole places that fit in the `max` of [`messages`].

@@ -36,9 +36,6 @@ use std::fmt;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
-use types::{name, sample};
-
-use client::text;
 
 use crate::common::{Fields, Length, Writer, body};
 
@@ -499,11 +496,8 @@ pub mod ends {
     }
 }
 
-// A variant holds a `Box`, so `Error` has drop glue. A decoder on the frame path
-// makes one only on a defect, never with an eager `ok_or`, which builds and drops one
-// on each message.
 /// A hub message that is not valid.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
     Empty,
@@ -562,11 +556,11 @@ pub enum Error {
         /// The seq plus the count of the head before it.
         end: u64,
     },
-    /// A message of a run has more keys, ends, or places than remain in the run.
+    /// A message of a run has more keys or ends than remain in the run.
     Run {
-        /// The keys, ends, or places of the message.
+        /// The keys or ends of the message.
         items: usize,
-        /// The keys, ends, or places that remain in the run.
+        /// The keys or ends that remain in the run.
         remain: u32,
     },
     /// A message of a body has more bytes than remain in the body.
@@ -583,57 +577,21 @@ pub enum Error {
         /// The kind byte of the message.
         kind: u8,
     },
-    /// The subject of a hello is not a name.
-    Subject(text::Error<Box<name::Error>>),
-    /// The key of a hello is a point of small order.
-    SmallOrder,
-    /// A request or a response has a body over
-    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX), or a read has an open over
-    /// [`OPEN_BYTES_MAX`](client::OPEN_BYTES_MAX).
-    Oversize {
-        /// The bytes of the body.
-        length: u64,
-        /// The cap of the body.
-        cap: u64,
-    },
-    /// The open of a read names no mode.
-    Mode {
-        /// The mode byte.
-        byte: u8,
-    },
-    /// The open of a read has a pattern that does not read, or none that includes
-    /// names.
-    Selector(text::Error<Box<name::Error>>),
-    /// The places of a read name an index place that is not below their count.
-    Index {
-        /// The place of the index.
-        index: u32,
-        /// The count of places.
-        count: u32,
-    },
-    /// The sample type of a place of a read does not read.
-    Sample(text::Error<sample::Error>),
-    /// The name of a place of a read does not read.
-    Name(text::Error<Box<name::Error>>),
-    /// The index place of a read has a sample type that is not `Stamp`.
-    Unstamped {
-        /// The sample type of the index place.
-        sample: sample::Type,
-    },
-    /// A message comes after the body of a request, a response, or a read.
-    Trailing,
     /// The stream ended before its body.
     Unfinished {
         /// The bytes of the body that did not come.
         remain: usize,
     },
-    /// The home finished the stream outside a body, before it ended the session, or
-    /// the node finished a read stream before its last place.
+    /// The home finished the stream outside a body, before it ended the session.
     Finished,
 }
 
+const _: fn() = || {
+    fn copy<T: Copy>() {}
+    copy::<Error>();
+};
+
 impl fmt::Display for Error {
-    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -693,42 +651,6 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject(cause) => {
-                write!(f, "the subject of the hello is not a name: {cause}")
-            }
-            Self::SmallOrder => {
-                f.write_str("the key of the hello is a point of small order")
-            }
-            Self::Oversize { length, cap } => {
-                write!(f, "the body has {length} bytes, over the cap of {cap}")
-            }
-            Self::Mode { byte } => {
-                write!(
-                    f,
-                    "the open of the read names mode {byte}, which no read has"
-                )
-            }
-            Self::Selector(cause) => {
-                write!(f, "the selector of the read does not read: {cause}")
-            }
-            Self::Index { index, count } => write!(
-                f,
-                "the places of the read put the index at place {index} of {count}"
-            ),
-            Self::Sample(cause) => write!(
-                f,
-                "the sample type of a place of the read does not read: {cause}"
-            ),
-            Self::Name(cause) => {
-                write!(f, "the name of a place of the read does not read: {cause}")
-            }
-            Self::Unstamped { sample } => write!(
-                f,
-                "the index place of the read has sample type {sample}, not timestamp"
-            ),
-            Self::Trailing => {
-                f.write_str("a hub message came after the body of the stream")
-            }
             Self::Unfinished { remain } => write!(
                 f,
                 "the stream ended with {remain} bytes of its body to come"
@@ -740,17 +662,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
-                Some(cause)
-            }
-            Self::Sample(cause) => Some(cause),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<Length> for Error {
     fn from(Length { len }: Length) -> Self {
@@ -1364,6 +1276,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn names_each_error() {
         let cases = [
             (Error::Empty, "the hub message is empty"),
@@ -1431,85 +1344,18 @@ mod tests {
                 Error::Latest { kind: 3 },
                 "the hub message has kind 3, which a latest session does not have",
             ),
-        ];
-        for (error, text) in cases {
-            assert_eq!(error.to_string(), text);
-        }
-    }
-
-    #[test]
-    fn names_each_error_of_a_client_stream() {
-        let not_utf8 = vec![0xff];
-        let cases = [
-            (
-                Error::Subject(text::Error::Parse(Box::new(name::Error::Empty))),
-                "the subject of the hello is not a name: a name or pattern is empty",
-            ),
-            (
-                Error::SmallOrder,
-                "the key of the hello is a point of small order",
-            ),
-            (
-                Error::Oversize {
-                    length: 16_777_217,
-                    cap: 16_777_216,
-                },
-                "the body has 16777217 bytes, over the cap of 16777216",
-            ),
-            (
-                Error::Mode { byte: 3 },
-                "the open of the read names mode 3, which no read has",
-            ),
-            (
-                Error::Selector(text::Error::Parse(Box::new(name::Error::NoInclude))),
-                "the selector of the read does not read: a selector includes no names",
-            ),
-            (
-                Error::Index { index: 3, count: 3 },
-                "the places of the read put the index at place 3 of 3",
-            ),
-            (
-                Error::Sample(text::Error::Parse(sample::Error::Syntax)),
-                "the sample type of a place of the read does not read: expected a \
-                 sample type such as f64, f32[3], list<u8, 16>, string, or bytes",
-            ),
-            (
-                Error::Name(text::Error::Utf8(
-                    std::str::from_utf8(&not_utf8).unwrap_err(),
-                )),
-                "the name of a place of the read does not read: invalid utf-8 sequence \
-                 of 1 bytes from index 0",
-            ),
-            (
-                Error::Trailing,
-                "a hub message came after the body of the stream",
-            ),
             (
                 Error::Unfinished { remain: 3 },
                 "the stream ended with 3 bytes of its body to come",
             ),
+            (
+                Error::Finished,
+                "the home finished the stream before it ended the session",
+            ),
         ];
         for (error, text) in cases {
             assert_eq!(error.to_string(), text);
         }
-    }
-
-    #[test]
-    fn gives_the_cause_of_a_text_that_does_not_read() {
-        use std::error::Error as _;
-        let name = text::Error::Parse(Box::new(name::Error::NoInclude));
-        let sample = text::Error::Parse(sample::Error::Syntax);
-        let errors = [
-            (Error::Subject(name.clone()), name.to_string()),
-            (Error::Selector(name.clone()), name.to_string()),
-            (Error::Name(name.clone()), name.to_string()),
-            (Error::Sample(sample.clone()), sample.to_string()),
-        ];
-        for (error, cause) in errors {
-            let source = error.source().map(ToString::to_string);
-            assert_eq!(source, Some(cause), "{error:?}");
-        }
-        assert!(Error::Empty.source().is_none());
     }
 
     fn open() -> impl Strategy<Value = Open> {

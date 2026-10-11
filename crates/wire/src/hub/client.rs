@@ -46,12 +46,13 @@ use std::fmt;
 use types::connection;
 use types::ed25519::PublicKey;
 use types::hello::Hello;
-use types::name::Name;
+use types::name::{self, Name};
 use types::node;
+use types::sample;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error, FAILED, NOT_HOME, UNKNOWN};
-use crate::common::{Fields, Writer, body};
+use super::{BUSY, FAILED, NOT_HOME, UNKNOWN};
+use crate::common::{Fields, Length, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
@@ -187,6 +188,178 @@ impl fmt::Display for Refusal {
                  the hello it renews"
             }
         })
+    }
+}
+
+/// A message of the client wire that is not valid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// The message has no bytes.
+    Empty,
+    /// The first byte names no message of this stream.
+    Kind {
+        /// The first byte.
+        kind: u8,
+    },
+    /// No message of its kind has this length.
+    Length {
+        /// The bytes of the message.
+        len: usize,
+    },
+    /// The subject of a hello is not a name.
+    Subject(text::Error<Box<name::Error>>),
+    /// The key of a hello is a point of small order.
+    SmallOrder,
+    /// A message comes after the body of a request, a response, or a read.
+    Trailing,
+    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read has an
+    /// open over [`OPEN_BYTES_MAX`].
+    Oversize {
+        /// The bytes of the body.
+        length: u64,
+        /// The cap of the body.
+        cap: u64,
+    },
+    /// A message of a body has more bytes than remain in the body.
+    Body {
+        /// The bytes of the message.
+        len: usize,
+        /// The bytes that remain in the body.
+        remain: usize,
+    },
+    /// The stream ended before its body.
+    Unfinished {
+        /// The bytes of the body that did not come.
+        remain: usize,
+    },
+    /// The open of a read names no mode.
+    Mode {
+        /// The mode byte.
+        byte: u8,
+    },
+    /// The open of a read has a pattern that does not read, or none that includes
+    /// names.
+    Selector(text::Error<Box<name::Error>>),
+    /// The places of a read name an index place that is not below their count.
+    Index {
+        /// The place of the index.
+        index: u32,
+        /// The count of places.
+        count: u32,
+    },
+    /// The sample type of a place of a read does not read.
+    Sample(text::Error<sample::Error>),
+    /// The name of a place of a read does not read.
+    Name(text::Error<Box<name::Error>>),
+    /// A message of the run of places has more places than remain in the run.
+    Run {
+        /// The places of the message.
+        items: usize,
+        /// The places that remain in the run.
+        remain: u32,
+    },
+    /// The index place of a read has a sample type that is not `Stamp`.
+    Unstamped {
+        /// The sample type of the index place.
+        sample: sample::Type,
+    },
+    /// The node finished a read stream before its last place. The caller of
+    /// [`Reader`] gives it.
+    Finished,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("the hub message is empty"),
+            Self::Kind { kind } => write!(
+                f,
+                "the hub message has kind {kind}, which this stream does not carry"
+            ),
+            Self::Length { len } => write!(
+                f,
+                "the hub message has {len} bytes, which no message of its kind has"
+            ),
+            Self::Subject(cause) => {
+                write!(f, "the subject of the hello is not a name: {cause}")
+            }
+            Self::SmallOrder => {
+                f.write_str("the key of the hello is a point of small order")
+            }
+            Self::Trailing => {
+                f.write_str("a hub message came after the body of the stream")
+            }
+            Self::Oversize { length, cap } => {
+                write!(f, "the body has {length} bytes, over the cap of {cap}")
+            }
+            Self::Body { len, remain } => write!(
+                f,
+                "the body message has {len} bytes, and {remain} remain in the body"
+            ),
+            Self::Unfinished { remain } => write!(
+                f,
+                "the stream ended with {remain} bytes of its body to come"
+            ),
+            Self::Mode { byte } => {
+                write!(
+                    f,
+                    "the open of the read names mode {byte}, which no read has"
+                )
+            }
+            Self::Selector(cause) => {
+                write!(f, "the selector of the read does not read: {cause}")
+            }
+            Self::Index { index, count } => write!(
+                f,
+                "the places of the read put the index at place {index} of {count}"
+            ),
+            Self::Sample(cause) => write!(
+                f,
+                "the sample type of a place of the read does not read: {cause}"
+            ),
+            Self::Name(cause) => {
+                write!(f, "the name of a place of the read does not read: {cause}")
+            }
+            Self::Run { items, remain } => write!(
+                f,
+                "the run message holds {items} items, and {remain} remain in the run"
+            ),
+            Self::Unstamped { sample } => write!(
+                f,
+                "the index place of the read has sample type {sample}, not timestamp"
+            ),
+            Self::Finished => {
+                f.write_str("the node finished the read stream before its last place")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
+                Some(cause)
+            }
+            Self::Sample(cause) => Some(cause),
+            _ => None,
+        }
+    }
+}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
+
+impl From<body::Error> for Error {
+    fn from(error: body::Error) -> Self {
+        match error {
+            body::Error::Empty => Self::Empty,
+            body::Error::Over { len, remain } => Self::Body { len, remain },
+            body::Error::Unfinished { remain } => Self::Unfinished { remain },
+        }
     }
 }
 

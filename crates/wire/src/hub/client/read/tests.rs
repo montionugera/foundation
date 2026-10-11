@@ -545,7 +545,7 @@ mod reader {
         Behind,
     }
 
-    fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, Error> {
+    fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, hub::Error> {
         home.decode(message).map(|event| match event {
             FromHome::Opened => Home::Opened,
             FromHome::Head(head) => Home::Head(head.series),
@@ -703,11 +703,11 @@ mod reader {
         let mut home = after_run(Mode::Complete, places, &[stamp(1)]);
         assert_eq!(
             home.decode(&encode_places(places)).err(),
-            Some(Error::Kind { kind: 6 })
+            Some(hub::Error::Kind { kind: 6 })
         );
         assert_eq!(
             home.decode(&encode_run(&[stamp(7)])).err(),
-            Some(Error::Kind { kind: 7 })
+            Some(hub::Error::Kind { kind: 7 })
         );
         assert_eq!(reply(&mut home, &[OPENED]), Ok(Home::Opened));
     }
@@ -770,7 +770,7 @@ mod reader {
         home.decode(&[OPENED]).expect("the session opens");
         assert_eq!(
             home.decode(&head(3)).err(),
-            Some(Error::Places {
+            Some(hub::Error::Places {
                 series: 3,
                 places: 2
             })
@@ -785,7 +785,7 @@ mod reader {
         latest.decode(&[OPENED]).expect("the session opens");
         assert_eq!(
             latest.decode(&[BEHIND]).err(),
-            Some(Error::Latest { kind: BEHIND })
+            Some(hub::Error::Latest { kind: BEHIND })
         );
         let mut complete = after_run(Mode::Complete, places, &[stamp(1)]);
         complete.decode(&[OPENED]).expect("the session opens");

@@ -1,7 +1,7 @@
 use types::sample::{Scalar, Type};
 
 use super::{Mode, Place, Places, place};
-use crate::hub::{self, Error, rest_of_run};
+use crate::hub::{self, client::Error};
 
 /// A decoder of the start of a read stream at the program: the places and their
 /// run. With the last place it gives the decoder of the replies that follow.
@@ -105,5 +105,16 @@ impl Reader {
                 panic!("a read stream is decoded after the decoder gave its home")
             }
         }
+    }
+}
+
+/// The places that remain in a run of `remain` after a message of `items` places.
+fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
+    match u32::try_from(items)
+        .ok()
+        .and_then(|count| remain.checked_sub(count))
+    {
+        Some(rest) => Ok(rest),
+        None => Err(Error::Run { items, remain }),
     }
 }

@@ -26,11 +26,11 @@ use types::name::Selector;
 use types::node;
 use types::sample::{Scalar, Type};
 use types::time::{Interval, Stamp};
+use wire::hub;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, First, FromNode, Mode, OPEN_BYTES_MAX, Open,
-    Place, Places, Read, Reader, Request, Response, Signed, place,
+    BODY_BYTES_MAX, Body, Challenge, Error, First, FromNode, Mode, OPEN_BYTES_MAX,
+    Open, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
-use wire::hub::{self, Error};
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
 /// and a refusal is the one that its first byte gives.
