@@ -456,9 +456,9 @@ async fn read(
             got.push(chunk.to_vec());
         }
     }
-    let definitions = loop {
+    let (definitions, kept) = loop {
         let digest = match spec::region::definitions(&chunks, pointer.root) {
-            Ok(definitions) => break definitions,
+            Ok(read) => break read,
             Err(spec::region::Error::Tree(tree::Error::Missing(digest))) => digest,
             Err(error) => return Err(Cause::Read(error)),
         };
@@ -472,8 +472,6 @@ async fn read(
     if !problems.is_empty() {
         return Err(Cause::Problems(problems));
     }
-    let mut kept = Chunks::default();
-    spec::region::tree(&mut kept, &definitions);
     Ok((definitions, kept))
 }
 
