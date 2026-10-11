@@ -1,4 +1,6 @@
-//! The node's name, in the file `name` of the data directory.
+//! The node's name, in the file `name` of the data directory. The stored name is the
+//! one in the file, else the one in the node's card in the founding that the data
+//! directory stores.
 //!
 //! The file is 277 bytes: the tag, the length of the name in one byte, the name with
 //! zero bytes after it up to [`Name::MAX_BYTES`], and the CRC32C of those 273 bytes
@@ -54,10 +56,25 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
 /// founding that does not read, [`Error::Key`] for a file `node.key` that a node did
 /// not write, and [`Error::Directory`] for a file call that fails.
 pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
-    match read(files).await? {
-        Some(stored) => Ok(Some(stored)),
-        None => card(files).await,
+    match source(files).await? {
+        Source::File(stored) | Source::Card(stored) => Ok(Some(stored)),
+        Source::Nothing => Ok(None),
     }
+}
+
+/// Where the stored name is.
+enum Source {
+    File(Name),
+    Card(Name),
+    Nothing,
+}
+
+/// The source of the stored name of the node of `files`, as [`stored`] gives it.
+async fn source(files: &Files) -> Result<Source, Error> {
+    if let Some(stored) = read(files).await? {
+        return Ok(Source::File(stored));
+    }
+    Ok(card(files).await?.map_or(Source::Nothing, Source::Card))
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is
@@ -70,11 +87,10 @@ pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
 /// [`Error::Renamed`] when the stored name ([`stored`]) is another name, and each
 /// error of [`stored`].
 pub(crate) async fn keep(files: &Files, name: &Name) -> Result<(), Error> {
-    if let Some(stored) = read(files).await? {
-        return same(stored, name);
-    }
-    if let Some(stored) = card(files).await? {
-        same(stored, name)?;
+    match source(files).await? {
+        Source::File(stored) => return same(stored, name),
+        Source::Card(stored) => same(stored, name)?,
+        Source::Nothing => {}
     }
     sector::publish(files, Path::new(FILE), &encode(name))
         .await
