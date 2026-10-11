@@ -350,8 +350,13 @@ impl SendBuffer {
     /// offset of a reset.
     pub(super) fn clear(&mut self) -> u64 {
         let held = self.held();
-        self.data.pop_front(self.data.len());
-        self.unsent = self.offset();
+        let offset = self.offset();
+        // Not `pop_front`: a second caller stops its inline in `ack`.
+        self.data = SendBufferData {
+            offset,
+            ..SendBufferData::default()
+        };
+        self.unsent = offset;
         self.acks = ArrayRangeSet::new();
         self.retransmits = ArrayRangeSet::new();
         held
