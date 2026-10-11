@@ -370,8 +370,7 @@ mod tests {
         assert_eq!(admitted, Ok(()));
     }
 
-    // No caller sees a count above 1: check reads only whether a single-use ticket was
-    // used. So only this read of the count kills a wrap in place of the saturation.
+    // No caller reads the count yet; `check` reads only whether it is above 0.
     #[test]
     fn the_use_count_saturates() {
         let mut record = record(7, true);
