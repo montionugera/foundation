@@ -343,8 +343,8 @@ state on `main`.
 - Node key material is on the node's local disk. A local user who can read it (Who
   attacks) is that node. The node that founds the root region keeps the first admin's
   private key in `admin.key` in its data directory (NODE MESH), at mode 0600 when `os`
-  makes it, so only the user that runs the node can read it. A local user who can read
-  that file is the first admin.
+  makes it, so no other local user can read it unless the operator opens it (Who
+  attacks). A local user who can read that file is the first admin.
 - `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
   use it (BQ16, S8). The other adapters (an environment variable or a file, and the
