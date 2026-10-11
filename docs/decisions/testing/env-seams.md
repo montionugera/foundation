@@ -347,7 +347,7 @@
   check read the free bytes before the create of a dropped put took its room. Lost: a
   wait only for the dropped calls that change the free bytes, which is a longer rule
   for a shorter wait that no caller needs; a count in `blob` of the room of each
-  dropped put, which cannot go down, since no result reaches a dropped future; a
+  dropped put, which cannot go down, because no result reaches a dropped future; a
   create that takes a floor, which moves the rule of one caller into each driver.
   Decided by `laptop.architect-2`, #1229, 2026-10-11T17:05:00Z
   (https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387).
