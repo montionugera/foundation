@@ -47,6 +47,25 @@ fn a_data_directory_with_a_newline_prints_one_line() {
             ""
         )
     );
+    let data = rig.dir.join("a\nb");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test reads what the rig wrote to the disk"
+    )]
+    let budget = std::fs::read(data.join("data/budget")).expect("read the budget file");
+    let disk = u64::from_le_bytes(budget[27..35].try_into().expect("8 bytes"));
+    assert_eq!(disk, rig.disk);
+    // The disk budget bounds the length of each ring, not the other files of the node.
+    let entries =
+        std::fs::read_dir(data.join("data")).expect("read the data directory");
+    let rings = (entries.map(|entry| entry.expect("read an entry").file_name()))
+        .filter(|name| name.to_str().is_some_and(|name| name.starts_with("shard-")))
+        .map(|shard| {
+            let path = data.join("data").join(shard).join("ring");
+            std::fs::metadata(path).expect("read the ring").len()
+        })
+        .sum::<u64>();
+    assert!((1..=rig.disk).contains(&rings), "{rings} bytes of rings");
 }
 
 #[test]

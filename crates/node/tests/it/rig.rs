@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -21,8 +21,12 @@ const PATIENCE: Span = Span::from_nanos(90_000_000_000);
 /// The time between two checks of a wait.
 const POLL: Duration = Duration::from_millis(100);
 
+/// The pool budget that [`Rig::new`] keeps.
+const POOL: u64 = 1 << 30;
+
 /// One `foundation` node in a temporary directory of its own. Drop kills the node and
-/// removes the directory, except while the thread panics: a failed test keeps it.
+/// removes the directory. A failed test keeps its directory until the next run:
+/// [`Rig::new`] removes each directory of a test process that is gone.
 #[derive(Debug)]
 pub(crate) struct Rig {
     /// The working directory of each command. It holds `plant.hcl`.
@@ -36,9 +40,11 @@ pub(crate) struct Rig {
 impl Rig {
     /// Makes a temporary directory for the test on this thread, with a name that no
     /// directory has: a run that was killed keeps its directory, and a later run can
-    /// get the same PID. Its data directory keeps a pool budget of 1 GiB and a disk
-    /// budget of 8 MiB for each core ([`Rig::keep`]), so a first start does not take
-    /// a quarter of the host's free disk, and each shard's ring fits.
+    /// get the same PID. First removes the directory of each test process of this user
+    /// that is gone, also when a node that it started still runs there. Its data
+    /// directory keeps a pool budget of 1 GiB and a disk budget of 8 MiB for each core
+    /// ([`Rig::keep`]), so a first start does not take a quarter of the host's free
+    /// disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
         Rig::with_cores(os::shards().expect("read the cores").cores().get())
     }
@@ -58,6 +64,8 @@ impl Rig {
                 Err(error) => panic!("make {}: {error}", dir.display()),
             }
         };
+        #[cfg(unix)]
+        sweep(&dir);
         let rig = Self {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
@@ -65,7 +73,7 @@ impl Rig {
             clock: os::clock(),
             node: None,
         };
-        rig.keep(1 << 30, rig.disk);
+        rig.keep(POOL, rig.disk);
         rig
     }
 
@@ -74,17 +82,9 @@ impl Rig {
         self.dir.join("foundation-data/data/budget")
     }
 
-    /// Writes the file [`Rig::budget`] as a node keeps its budgets: the tag, `pool`
-    /// and `disk` (little-endian), and the CRC32C of those 35 bytes.
+    /// Writes the file [`Rig::budget`] with `pool` and `disk`, as [`keep`] does.
     pub(crate) fn keep(&self, pool: u64, disk: u64) {
-        let mut bytes = b"foundation/budget/1".to_vec();
-        bytes.extend(pool.to_le_bytes());
-        bytes.extend(disk.to_le_bytes());
-        bytes.extend(crc32c::crc32c(&bytes).to_le_bytes());
-        let path = self.budget();
-        let data = path.parent().expect("invariant: a file of a directory");
-        std::fs::create_dir_all(data).expect("make the data directory");
-        std::fs::write(path, bytes).expect("write the budget file");
+        keep(&self.budget(), pool, disk);
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -102,8 +102,7 @@ impl Rig {
     /// when the node exits before it prints a line, or when 90 s pass first.
     pub(crate) fn start_with(&mut self, args: &[&str]) {
         assert!(self.node.is_none(), "a node runs");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
-        command.arg("start").args(args).current_dir(&self.dir);
+        let command = self.node(&[&["start"], args].concat());
         // The node reads no input.
         let (mut node, _) = Running::new(command);
         let started = poll(&self.clock, PATIENCE, || match node.ended() {
@@ -146,14 +145,28 @@ impl Rig {
     /// [`Process::errors`] reads. Waits for nothing.
     #[cfg(target_os = "linux")]
     pub(crate) fn spawn(&self, args: &[&str], stdout: Stdio) -> Process {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
+        let mut command = self.node(args);
         command
-            .args(args)
-            .current_dir(&self.dir)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(Stdio::piped());
         Process(command.spawn().expect("start the command"))
+    }
+
+    /// `foundation` with `args` in [`Rig::dir`], for a command that starts a node that
+    /// runs. When `args` hold `--data` and a path after it, first writes the budget
+    /// file of that data directory as [`Rig::new`] does.
+    fn node(&self, args: &[&str]) -> Command {
+        let data = (args.windows(2)).find_map(|pair| match pair {
+            ["--data", data] => Some(*data),
+            _ => None,
+        });
+        if let Some(data) = data {
+            keep(&self.dir.join(data).join("data/budget"), POOL, self.disk);
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
+        command.args(args).current_dir(&self.dir);
+        command
     }
 
     /// Runs `foundation` with `args` in [`Rig::dir`], with `input` on its standard
@@ -240,6 +253,71 @@ impl Rig {
     pub(crate) fn status(&self) -> BTreeMap<String, Connector> {
         todo!("waits on #1735")
     }
+}
+
+/// Writes the budget file at `path` as a node keeps its budgets: the tag, `pool` and
+/// `disk` (little-endian), and the CRC32C of those 35 bytes.
+fn keep(path: &Path, pool: u64, disk: u64) {
+    let mut bytes = b"foundation/budget/1".to_vec();
+    bytes.extend(pool.to_le_bytes());
+    bytes.extend(disk.to_le_bytes());
+    bytes.extend(crc32c::crc32c(&bytes).to_le_bytes());
+    let data = path.parent().expect("invariant: a file of a directory");
+    std::fs::create_dir_all(data).expect("make the data directory");
+    std::fs::write(path, bytes).expect("write the budget file");
+}
+
+/// Removes each directory `foundation-node-<pid>-*` beside `made` that the owner of
+/// `made` owns and whose PID names no process. The files of a node that still runs in
+/// one stay on the disk until that node ends.
+#[cfg(unix)]
+fn sweep(made: &Path) {
+    use std::os::unix::fs::MetadataExt;
+
+    let temp = made
+        .parent()
+        .expect("invariant: in the temporary directory");
+    let owner = std::fs::metadata(made)
+        .expect("read the new directory")
+        .uid();
+    let mut alive = BTreeMap::new();
+    for entry in std::fs::read_dir(temp).expect("read the temporary directory") {
+        let entry = entry.expect("read the temporary directory");
+        let name = entry.file_name();
+        let pid = (name.to_str())
+            .and_then(|name| name.strip_prefix("foundation-node-"))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok());
+        let Some(pid) = pid.filter(|&pid| pid != std::process::id()) else {
+            continue;
+        };
+        // A test thread of this run or of another run can remove it first.
+        let gone = |error: &std::io::Error| error.kind() == ErrorKind::NotFound;
+        let path = entry.path();
+        let mine = match entry.metadata() {
+            Ok(metadata) => metadata.uid() == owner,
+            Err(error) if gone(&error) => continue,
+            Err(error) => panic!("read {}: {error}", path.display()),
+        };
+        if !mine || *alive.entry(pid).or_insert_with(|| runs(pid)) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Err(error) if !gone(&error) => panic!("remove {}: {error}", path.display()),
+            _ => {}
+        }
+    }
+}
+
+/// Whether a process with `pid` runs, by `kill -0`.
+#[cfg(unix)]
+fn runs(pid: u32) -> bool {
+    let status = (Command::new("kill"))
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .expect("run kill");
+    status.success()
 }
 
 /// [`Rig::wait`], with `limit` in place of 90 s.
@@ -542,6 +620,24 @@ fn a_rig_takes_a_new_directory_when_its_name_is_in_use() {
     let kept = Rig::new();
     let rig = Rig::new();
     assert_ne!(rig.dir, kept.dir);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_rig_removes_the_directory_of_a_test_process_that_is_gone() {
+    let mut gone = Command::new("true").spawn().expect("start true");
+    gone.wait().expect("wait for true");
+    let dir = |pid: u32| {
+        let dir = std::env::temp_dir().join(format!("foundation-node-{pid}-sweep-0"));
+        std::fs::create_dir_all(dir.join("foundation-data/data"))
+            .expect("make the directory");
+        dir
+    };
+    let (dead, live) = (dir(gone.id()), dir(std::process::id()));
+    let _rig = Rig::new();
+    assert!(!dead.exists(), "{} is still there", dead.display());
+    assert!(live.exists(), "{} is gone", live.display());
+    std::fs::remove_dir_all(live).expect("remove the directory");
 }
 
 #[test]
