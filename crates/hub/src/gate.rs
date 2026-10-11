@@ -9,9 +9,8 @@ use std::task::Poll;
 
 use types::time::Monotonic;
 
-/// Sleeps until the home's deadline, advances the home, and notes the append for the
-/// commit task. It holds `state` only during a poll, so the first poll after the state
-/// drops ends it.
+/// Sleeps until the home's deadline, then advances the home. It holds `state` only
+/// during a poll, so the first poll after the state drops ends it.
 pub(crate) async fn run(state: Weak<RefCell<super::State>>, time: clock::Reader) {
     let mut sleep = time.sleep_until(Monotonic::default());
     poll_fn(|cx| {
@@ -30,7 +29,6 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>, time: clock::Reader)
             }
             // Each deadline after the advance is later than now.
             state.home.advance();
-            state.commit.appended();
         }
     })
     .await;

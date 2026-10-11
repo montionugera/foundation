@@ -1,7 +1,8 @@
-//! The allocator of the open62541 copy and `shim.c`. `src/alloc.h` defines
-//! `UA_malloc`, `UA_calloc`, `UA_realloc`, and `UA_free` as these functions, so each C
-//! allocation goes through the global allocator of the binary. Each keeps the C
-//! contract: a failure gives NULL and never panics, and each pointer is aligned to 16.
+//! The allocator of the open62541 copy, `shim.c`, and `server.c`. `src/alloc.h`
+//! defines `UA_malloc`, `UA_calloc`, `UA_realloc`, and `UA_free` as these functions,
+//! so each C allocation goes through the global allocator of the binary. Each keeps
+//! the C contract: a failure gives NULL and never panics, and each pointer is aligned
+//! to 16.
 
 #![expect(unsafe_code, reason = "C allocates through these functions")]
 

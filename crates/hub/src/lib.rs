@@ -109,7 +109,7 @@ struct State {
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
-    commit: commit::Signal,
+    commit: commit::Task,
     /// The gate task, woken at each writer open and close.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
@@ -146,6 +146,7 @@ impl Hub {
             entropy,
             region,
         } = config;
+        let next = home.next_commit();
         let state = Rc::new(RefCell::new(State {
             home,
             interner,
@@ -158,7 +159,7 @@ impl Hub {
             waiting: hash::Map::default(),
             opened: 0,
             woken: Vec::new(),
-            commit: commit::Signal::default(),
+            commit: commit::Task::new(next),
             gate: task::Waiter::default(),
             failed: None,
             node,
@@ -450,7 +451,6 @@ impl State {
     fn close_writer(&mut self, key: ::home::writer::Key) {
         if self.writers.remove(key) {
             self.home.close_writer(key);
-            self.commit.appended();
             self.gate.wake();
         }
     }

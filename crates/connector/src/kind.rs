@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{cancel, status, supervisor};
+use crate::{cancel, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -71,7 +71,7 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The supervisor stops; a spec change starts it again.
+    /// The config cannot work. The connector stops until a spec change changes it.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -202,6 +202,34 @@ impl<C> Context<C> {
             channels,
         };
         self.inputs.hub.writer(config).await
+    }
+
+    /// Opens a reader session with `settings`, as this connector: its subject and its
+    /// name are the connector's name. An open takes over the last session of the
+    /// connector's reader on its index, and starts as [`hub::reader::Config::name`]
+    /// says.
+    ///
+    /// # Errors
+    ///
+    /// As [`hub::Hub::reader`] for a named reader, never `Unsynced`: a run starts
+    /// only once the node has mesh time.
+    ///
+    /// # Panics
+    ///
+    /// As [`hub::Hub::reader`]: when `settings.hold` is negative, or is not zero in
+    /// `Latest` mode. [`reader::read`] gives neither.
+    pub async fn reader(
+        &self,
+        settings: &reader::Settings,
+    ) -> Result<hub::reader::Reader, hub::reader::Error> {
+        let config = hub::reader::Config {
+            select: settings.select.clone(),
+            mode: settings.mode,
+            subject: self.name.clone(),
+            name: Some(self.name.clone()),
+            hold: settings.hold,
+        };
+        self.inputs.hub.reader(config).await
     }
 
     /// The count `name` of the connector's status, `<connector>.status.<name>`, to

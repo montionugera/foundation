@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use std::fmt;
 use std::future::poll_fn;
 use std::io::{IoSlice, Write as _};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::ptr::{self, NonNull};
@@ -25,6 +25,7 @@ use types::time::Span;
 use crate::event::Loop;
 use crate::ffi::{self, Bytes, Status};
 
+/// The options of each stream.
 const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
@@ -32,13 +33,8 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 
-/// The size of the read buffer of each connection.
+/// The size of the read buffer of a manager.
 const READ_BYTES: usize = 1 << 16;
-
-/// Gives a buffer for one read.
-fn read_buffer() -> Box<[u8]> {
-    vec![0; READ_BYTES].into_boxed_slice()
-}
 
 /// The most sends that wait on one connection. A send past it closes the connection.
 /// open62541 allocates each at most at the send buffer size of its channel. Sends wait
@@ -48,6 +44,9 @@ const SENDS: usize = 256;
 
 /// The most sends that one write takes.
 const PARTS: usize = 16;
+
+/// The most streams that close at once. Past it, the oldest is dropped.
+const CLOSES: usize = 100;
 
 /// How long a closed connection may write what waits before it drops its stream.
 const LINGER: Span = Span::from_nanos(10_000_000_000);
@@ -78,8 +77,12 @@ impl Manager {
         Self::make(clock, net, None, rng)
     }
 
-    /// As [`Manager::new`], and the manager also accepts on `listener`, where a server
-    /// finds it.
+    /// As [`Manager::new`], and the manager also accepts on a listener that it binds on
+    /// `local`, with a queue of `backlog` streams, where a server finds it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Net::listen`].
     ///
     /// # Panics
     ///
@@ -87,10 +90,16 @@ impl Manager {
     pub(crate) fn listening(
         clock: Clock,
         net: Net,
-        listener: Listener,
+        local: SocketAddr,
+        backlog: u32,
         rng: &mut Rng,
-    ) -> Self {
-        Self::make(clock, net, Some(listener), rng)
+    ) -> Result<Self, net::Error> {
+        let listener = net.listen(&tcp::Listen {
+            local,
+            backlog,
+            options: OPTIONS,
+        })?;
+        Ok(Self::make(clock, net, Some(listener), rng))
     }
 
     fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
@@ -102,6 +111,7 @@ impl Manager {
             raw: Cell::new(ptr::null_mut()),
             events: events.raw(),
             table: RefCell::new(BTreeMap::new()),
+            read: RefCell::new(vec![0; READ_BYTES].into_boxed_slice()),
             next: Cell::new(1),
             waker: RefCell::new(None),
             driving: Cell::new(false),
@@ -112,6 +122,7 @@ impl Manager {
             #[cfg(feature = "sim")]
             moves: Cell::new(0),
             ends: RefCell::new(VecDeque::new()),
+            next_order: Cell::new(0),
             closed: UnsafeCell::new(ffi::DelayedCallback {
                 next: ptr::null_mut(),
                 callback: closed,
@@ -168,8 +179,9 @@ impl Manager {
         let mut sleep: Option<Sleep> = None;
         poll_fn(|cx| {
             state.driving.set(true);
+            let _driving = Held(&state.driving);
             self.pass(cx);
-            let poll = loop {
+            loop {
                 let poll = run(cx);
                 // Before `again`: an accept puts its new connection there.
                 state.resume(cx);
@@ -192,9 +204,7 @@ impl Manager {
                 if Pin::new(timer).poll(cx).is_pending() {
                     break Poll::Pending;
                 }
-            };
-            state.driving.set(false);
-            poll
+            }
         })
         .await
     }
@@ -245,8 +255,8 @@ impl Drop for Manager {
     }
 }
 
-/// What the manager and its hooks share. No borrow of a `RefCell` spans a call into C,
-/// since C may call a hook again.
+/// What the manager and its hooks share. No borrow of a `RefCell` but `read` spans a
+/// call into C, since C may call a hook again.
 struct State {
     net: Net,
     /// The listener until a listen open takes it.
@@ -255,6 +265,10 @@ struct State {
     raw: Cell<*mut ffi::ConnectionManager>,
     events: *mut ffi::EventLoop,
     table: RefCell<BTreeMap<usize, Connection>>,
+    /// The buffer of each read. open62541 copies what it keeps of the bytes it gets.
+    /// `move_on` holds this borrow across its calls into C, and no hook calls
+    /// `move_on` or touches it.
+    read: RefCell<Box<[u8]>>,
     /// The key of the next connection. open62541 reads 0 as no connection.
     next: Cell<usize>,
     /// The waker of the last pass.
@@ -279,6 +293,8 @@ struct State {
     moves: Cell<usize>,
     /// The connections whose `CLOSING` the next run of the loop gives.
     ends: RefCell<VecDeque<usize>>,
+    /// The order of the next stream to start to close.
+    next_order: Cell<u64>,
     /// The delayed callback that gives each `CLOSING`. C writes its `next`.
     closed: UnsafeCell<ffi::DelayedCallback>,
     queued: Cell<bool>,
@@ -358,6 +374,7 @@ impl State {
                         linger: self.clock.sleep_until(self.clock.now() + LINGER),
                         shut: false,
                         drained: false,
+                        order: self.next_order.replace(self.next_order.get() + 1),
                     },
                     stream @ (Stream::Closing { .. } | Stream::Closed) => {
                         connection.stream = stream;
@@ -366,6 +383,25 @@ impl State {
                 };
         }
         self.queue_closing(id);
+        self.bound_closes();
+    }
+
+    /// Drops the stream that started to close first when more than [`CLOSES`] close.
+    fn bound_closes(&self) {
+        let mut count = 0;
+        let mut oldest: Option<(u64, usize)> = None;
+        for (id, connection) in self.table.borrow().iter() {
+            if let Stream::Closing { order, .. } = &connection.stream {
+                count += 1;
+                let close = (*order, *id);
+                oldest = Some(oldest.map_or(close, |o| o.min(close)));
+            }
+        }
+        let Some((_, oldest)) = oldest.filter(|_| count > CLOSES) else {
+            return;
+        };
+        self.fail(oldest, &Failure::Displaced);
+        self.wake(oldest);
     }
 
     /// Warns of `failure` on `id`, drops its stream and sends, and queues its
@@ -396,14 +432,14 @@ impl State {
         self.wake(id);
     }
 
-    /// Moves connection `id` on until it waits or accepts a stream, and calls C with no
-    /// borrow held.
+    /// Moves connection `id` on until it waits or accepts a stream.
     fn move_on(&self, id: usize, cx: &mut Context<'_>) {
         #[cfg(feature = "sim")]
         self.moves.set(self.moves.get() + 1);
+        let mut read = self.read.borrow_mut();
         loop {
             let step = match self.table.borrow_mut().get_mut(&id) {
-                Some(connection) => connection.step(cx),
+                Some(connection) => connection.step(cx, &mut read),
                 None => return,
             };
             let step = match step {
@@ -426,14 +462,7 @@ impl State {
                     self.accepted.set(Some(id));
                     return;
                 }
-                Step::Read(mut buffer, n) => {
-                    self.call(id, ffi::ESTABLISHED, &mut buffer[..n]);
-                    self.table
-                        .borrow_mut()
-                        .get_mut(&id)
-                        .expect("invariant: only `Step::Gone` of this id removes it")
-                        .buffer = buffer;
-                }
+                Step::Read(n) => self.call(id, ffi::ESTABLISHED, &mut read[..n]),
             }
         }
     }
@@ -442,16 +471,11 @@ impl State {
     fn insert(&self, callback: Callback, stream: Stream) -> usize {
         let id = self.next.get();
         self.next.set(id + 1);
-        let buffer = match stream {
-            Stream::Open(_) => read_buffer(),
-            _ => Box::default(),
-        };
         let connection = Connection {
             callback: Some(callback),
             stream,
             sends: VecDeque::new(),
             sent: 0,
-            buffer,
         };
         self.table.borrow_mut().insert(id, connection);
         id
@@ -501,7 +525,7 @@ impl State {
     }
 }
 
-/// Clears the flag of a drive when the drive drops.
+/// Clears a flag of a drive when it drops, also in a panic.
 struct Held<'a>(&'a Cell<bool>);
 
 impl Drop for Held<'_> {
@@ -632,6 +656,8 @@ enum Stream {
         shut: bool,
         /// The peer closed its side.
         drained: bool,
+        /// The count of closes before this one.
+        order: u64,
     },
     Closed,
 }
@@ -645,8 +671,6 @@ struct Connection {
     sends: VecDeque<Buffer>,
     /// The bytes of the first send already written.
     sent: usize,
-    /// Empty until the connect ends, and while a read callback holds it.
-    buffer: Box<[u8]>,
 }
 
 /// What the poll of one connection asks the manager to do.
@@ -654,7 +678,7 @@ enum Step {
     Waiting,
     Established,
     Accepted(Tcp),
-    Read(Box<[u8]>, usize),
+    Read(usize),
     Ended,
     Gone,
 }
@@ -665,6 +689,8 @@ enum Failure {
     Net(&'static str, net::Error),
     /// The close took [`LINGER`].
     Lingered,
+    /// More than [`CLOSES`] streams close, and this one started to close first.
+    Displaced,
 }
 
 impl fmt::Display for Failure {
@@ -673,6 +699,12 @@ impl fmt::Display for Failure {
             Self::Net(during, e) => write!(f, "the {during} failed: {e}"),
             Self::Lingered => {
                 write!(f, "the close took {LINGER}, so it drops the stream")
+            }
+            Self::Displaced => {
+                write!(
+                    f,
+                    "more than {CLOSES} streams close, so it drops the oldest"
+                )
             }
         }
     }
@@ -687,14 +719,14 @@ impl Connection {
         }
     }
 
-    /// Moves the connection on, or gives why it fails.
-    fn step(&mut self, cx: &mut Context<'_>) -> Result<Step, Failure> {
+    /// Moves the connection on with `read` as the buffer of its reads, or gives why it
+    /// fails. [`Step::Read`] gives the count of bytes read into `read`.
+    fn step(&mut self, cx: &mut Context<'_>, read: &mut [u8]) -> Result<Step, Failure> {
         match &mut self.stream {
             Stream::Connecting(connect) => match connect.as_mut().poll(cx) {
                 Poll::Pending => Ok(Step::Waiting),
                 Poll::Ready(Ok(tcp)) => {
                     self.stream = Stream::Open(tcp);
-                    self.buffer = read_buffer();
                     Ok(Step::Established)
                 }
                 Poll::Ready(Err(e)) => Err(Failure::Net("connect", e)),
@@ -709,15 +741,11 @@ impl Connection {
                 Poll::Ready(Err(e)) => Err(Failure::Net("accept", e)),
             },
             Stream::Open(tcp) => {
-                if !self.buffer.is_empty() {
-                    match tcp.poll_read(cx, &mut self.buffer) {
-                        Poll::Ready(Ok(0)) => return Ok(Step::Ended),
-                        Poll::Ready(Ok(n)) => {
-                            return Ok(Step::Read(std::mem::take(&mut self.buffer), n));
-                        }
-                        Poll::Ready(Err(e)) => return Err(Failure::Net("read", e)),
-                        Poll::Pending => {}
-                    }
+                match tcp.poll_read(cx, read) {
+                    Poll::Ready(Ok(0)) => return Ok(Step::Ended),
+                    Poll::Ready(Ok(n)) => return Ok(Step::Read(n)),
+                    Poll::Ready(Err(e)) => return Err(Failure::Net("read", e)),
+                    Poll::Pending => {}
                 }
                 write(tcp, &mut self.sends, &mut self.sent, cx)?;
                 Ok(Step::Waiting)
@@ -727,12 +755,13 @@ impl Connection {
                 linger,
                 shut,
                 drained,
+                ..
             } => {
                 if Pin::new(linger).poll(cx).is_ready() {
                     return Err(Failure::Lingered);
                 }
                 while !*drained {
-                    match tcp.poll_read(cx, &mut self.buffer) {
+                    match tcp.poll_read(cx, read) {
                         Poll::Ready(Ok(0)) => *drained = true,
                         Poll::Ready(Ok(_)) => {}
                         Poll::Ready(Err(e)) => return Err(Failure::Net("read", e)),
@@ -1031,5 +1060,7 @@ unsafe extern "C" fn closed(application: *mut c_void, _: *mut c_void) {
     }
 }
 
+#[cfg(any(test, feature = "sim"))]
+mod server;
 #[cfg(test)]
 mod tests;
