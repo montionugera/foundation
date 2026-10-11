@@ -121,5 +121,6 @@
   `wire::hub::client::Error` was lost because a read stream also gave the errors of its
   inner reader. That reason is void: the program decodes the replies with the
   `hub::Reader` that `client::Reader` gives, and gets their errors from it. The ruling
-  on #2377 adds the type after #2368 merges (`laptop.architect`, 2026-10-11T08:26:42Z,
+  on #2377 adds the type, and makes `wire::hub::Error` `Copy`, after #2368 merges
+  (`laptop.architect`, 2026-10-11T08:26:42Z,
   https://github.com/synnaxlabs/foundation/issues/2377#issuecomment-6107119794).
