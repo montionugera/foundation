@@ -52,7 +52,7 @@ use types::sample;
 use types::time::{Interval, Stamp};
 
 use super::{BUSY, FAILED, NOT_HOME, UNKNOWN};
-use crate::common::{Fields, Length, Writer, body};
+use crate::common::{Fields, Length, Run, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
@@ -350,6 +350,12 @@ impl std::error::Error for Error {
 impl From<Length> for Error {
     fn from(Length { len }: Length) -> Self {
         Self::Length { len }
+    }
+}
+
+impl From<Run> for Error {
+    fn from(Run { items, remain }: Run) -> Self {
+        Self::Run { items, remain }
     }
 }
 

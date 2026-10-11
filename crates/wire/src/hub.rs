@@ -37,7 +37,7 @@ pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
 
-use crate::common::{Fields, Length, Writer, body};
+use crate::common::{Fields, Length, Run, Writer, body};
 
 const LATEST: u8 = 1;
 const COMPLETE: u8 = 2;
@@ -586,6 +586,7 @@ pub enum Error {
     Finished,
 }
 
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue.
 const _: fn() = || {
     fn copy<T: Copy>() {}
     copy::<Error>();
@@ -670,6 +671,12 @@ impl From<Length> for Error {
     }
 }
 
+impl From<Run> for Error {
+    fn from(Run { items, remain }: Run) -> Self {
+        Self::Run { items, remain }
+    }
+}
+
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
         match error {
@@ -677,17 +684,6 @@ impl From<body::Error> for Error {
             body::Error::Over { len, remain } => Self::Body { len, remain },
             body::Error::Unfinished { remain } => Self::Unfinished { remain },
         }
-    }
-}
-
-/// The items that remain in a run of `remain` after a message of `items` items.
-fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
-    match u32::try_from(items)
-        .ok()
-        .and_then(|count| remain.checked_sub(count))
-    {
-        Some(rest) => Ok(rest),
-        None => Err(Error::Run { items, remain }),
     }
 }
 
