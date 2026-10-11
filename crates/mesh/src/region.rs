@@ -640,7 +640,7 @@ mod tests {
     use crate::common::{
         EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
         member, name, options, private, public, signed, spec, status, ticket,
-        ticket_change, with_status,
+        ticket_change, unchecked, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -1052,11 +1052,7 @@ mod tests {
         let card = holding(3, 1, "plant.edge.a");
         let mut join = join(7, 3, "plant.edge.a");
         join.admission = ticket(7).admission(&card);
-        join.card = card::Unchecked {
-            key: node(3),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        };
+        join.card = unchecked(&card);
         let held = Unfit::Held { key: node(1) };
         assert_eq!(
             held.to_string(),

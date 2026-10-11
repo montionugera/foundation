@@ -435,7 +435,7 @@ fn a_message_for_a_node_with_no_member_record_drops_and_its_task_goes_on() {
         let addresses = vec![Address::Udp(address(2))];
         card.addresses = card::addresses::Addresses::new(addresses).unwrap();
         let card = card::Signed::sign(key(4), card, &private(4));
-        let join = join_with(&card, 7, Stamp::EPOCH);
+        let join = join_change_with(&card, 7, Stamp::EPOCH);
         let entry = |index, data| Entry {
             at: at(index),
             data,

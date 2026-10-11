@@ -269,17 +269,33 @@ pub(crate) fn ticket_change(id: u8, options: Options) -> Change {
 
 /// The join of node `id` with the name `name_text`, which ticket `ticket_id` admits.
 pub(crate) fn join(ticket_id: u8, id: u8, name_text: &str) -> Join {
-    let card = signed(id, name_text);
+    let status = status([(name("disk"), index(9))]);
+    join_with(&signed(id, name_text), ticket_id, BEFORE_EXPIRY, status)
+}
+
+/// The join at `at` of the node of `card` with `status`, which ticket `ticket_id`
+/// admits.
+pub(crate) fn join_with(
+    card: &card::Signed,
+    ticket_id: u8,
+    at: Stamp,
+    status: Status,
+) -> Join {
     Join {
         ticket: public(ticket_id),
-        at: BEFORE_EXPIRY,
-        card: card::Unchecked {
-            key: key(id),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        },
-        admission: ticket(ticket_id).admission(&card),
-        status: status([(name("disk"), index(9))]),
+        at,
+        card: unchecked(card),
+        admission: ticket(ticket_id).admission(card),
+        status,
+    }
+}
+
+/// `card` in the form a request or a join carries.
+pub(crate) fn unchecked(card: &card::Signed) -> card::Unchecked {
+    card::Unchecked {
+        key: card.key(),
+        card: card.card().clone(),
+        signature: *card.signature(),
     }
 }
 

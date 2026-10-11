@@ -1274,7 +1274,9 @@ mod tests {
     use super::*;
     use crate::card;
     use crate::change::{CHUNKS_MAX, Unknown};
-    use crate::common::{self, create_pool, key, message, private, proven, public};
+    use crate::common::{
+        self, create_pool, key, message, private, proven, public, unchecked,
+    };
     use crate::file::Blocks;
     use crate::region::Unfit;
     use crate::status::Many;
@@ -3482,8 +3484,11 @@ mod tests {
                     ..common::member(4).card.card().clone()
                 };
                 let twin = card::Signed::sign(key(4), card, &common::private(2));
-                let joins =
-                    [ticket(), join_with(&twin, 7, Stamp::EPOCH), join_change(5)];
+                let joins = [
+                    ticket(),
+                    join_change_with(&twin, 7, Stamp::EPOCH),
+                    join_change(5),
+                ];
                 write(&mesh, changes(&joins)).await;
                 let request = message(4, 1, Body::Heartbeat { commit: 0 });
                 let refused = Err(Error::NotVoter { from: key(4) });
@@ -5074,28 +5079,16 @@ mod tests {
     /// No ticket expires before this.
     const LAST: Stamp = Stamp::from_nanos(i64::MAX);
 
-    fn unchecked(card: &card::Signed) -> card::Unchecked {
-        card::Unchecked {
-            key: card.key(),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        }
-    }
-
-    /// The join at `at` of the node of `card`, which ticket `ticket` admits.
-    fn join_with(card: &card::Signed, ticket: u8, at: Stamp) -> Change {
-        Change::Join(Box::new(Join {
-            ticket: public(ticket),
-            at,
-            card: unchecked(card),
-            admission: common::ticket(ticket).admission(card),
-            status: common::status([]),
-        }))
+    /// The join at `at` of the node of `card` with no status, which ticket `ticket`
+    /// admits.
+    fn join_change_with(card: &card::Signed, ticket: u8, at: Stamp) -> Change {
+        let join = common::join_with(card, ticket, at, common::status([]));
+        Change::Join(Box::new(join))
     }
 
     /// The join of node `id` as `plant.node<id>`, which ticket 7 admits.
     fn join_change(id: u8) -> Change {
-        join_with(&common::member(id).card, 7, Stamp::EPOCH)
+        join_change_with(&common::member(id).card, 7, Stamp::EPOCH)
     }
 
     /// The request of node `id` as `plant.node<id>`, which ticket `ticket` admits, with
@@ -5251,7 +5244,7 @@ mod tests {
     fn each_refused_join_changes_nothing_on_every_member() {
         let hour = NOW + Span::HOUR;
         let card = |id| common::member(id).card;
-        let mut forged = join_with(&card(4), 7, NOW);
+        let mut forged = join_change_with(&card(4), 7, NOW);
         if let Change::Join(join) = &mut forged {
             join.admission = common::ticket(6).admission(&card(4));
         }
@@ -5260,12 +5253,12 @@ mod tests {
             ticket_of(8, "plant", false, hour),
             ticket_of(9, "plant", true, NOW),
             ticket_of(10, "plant.line", true, hour),
-            join_with(&card(4), 6, NOW),
+            join_change_with(&card(4), 6, NOW),
             forged,
-            join_with(&card(4), 9, NOW),
-            join_with(&card(4), 10, NOW),
-            join_with(&card(5), 8, NOW),
-            join_with(&card(6), 8, NOW),
+            join_change_with(&card(4), 9, NOW),
+            join_change_with(&card(4), 10, NOW),
+            join_change_with(&card(5), 8, NOW),
+            join_change_with(&card(6), 8, NOW),
             home_to(1),
         ];
         let mut cluster = Cluster::new(4);
@@ -5284,7 +5277,7 @@ mod tests {
         let other = common::signed(2, "plant.other");
         let changes = [
             encoded(&ticket()),
-            encoded(&join_with(&other, 7, Stamp::EPOCH)),
+            encoded(&join_change_with(&other, 7, Stamp::EPOCH)),
             encoded(&home_to(1)),
         ];
         let mut cluster = Cluster::new(5);
