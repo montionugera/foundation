@@ -60,8 +60,9 @@ impl Paths {
 
     /// Writes `bytes` as the file at `path`, and replaces a file that is there. The
     /// write is whole or not at all when a file or nothing is at `path`. A symbolic
-    /// link, a device, or a pipe at `path` takes the bytes in place, and a crash or a
-    /// failed write can leave a part of them.
+    /// link, a device, or a pipe at `path` takes the bytes in place: a reader, a crash,
+    /// or a failed write can see or leave a part of them, and two writes at one time
+    /// can leave a mix of the two.
     ///
     /// # Errors
     ///

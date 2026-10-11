@@ -485,3 +485,17 @@
   https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110806235; the
   docs, 2026-10-11T16:24:16Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111115118).
+  In place, a reader can also see a part of the bytes, and two writes at one time can
+  leave a mix of the two. On `os`, a file that a write replaces keeps its permission
+  bits, and its owner and its group where the OS lets the user set them. Where the group
+  is not kept, the file gives its group no access. A write keeps no set-user-ID,
+  set-group-ID, or sticky bit and no access control list. Lost: a failed write when the
+  OS refuses the group, which refuses a file that the user can write in place; group
+  bits cleared with no `fchown`, which closes a file to a group that the user is in; a
+  write in place when the owner or the group cannot be kept, which gives up the whole
+  write where more than one user reads the file; the set-user-ID and set-group-ID bits
+  kept on new bytes, which the kernel clears on a write by a user that is not root
+  (`laptop.architect-2`, 2026-10-11T16:37:30Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111239158).
+  Supersedes "keeps its mode" of
+  https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058.

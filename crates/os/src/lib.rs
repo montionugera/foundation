@@ -157,15 +157,22 @@ pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
 }
 
-/// The real files of the host by path. A write makes a hidden file with a random
-/// name beside `path`, syncs it, and renames it over `path`, so a reader or a crash
-/// sees the old file or the new one, and of two writes one wins whole. A write that
-/// fails removes its file, and gives the error of the remove when that fails. A crash
-/// during a write leaves the file. A symbolic link, a device, or a pipe at `path`
-/// takes the bytes in place, with no hidden file and no rename, so a crash or a
-/// failed write can leave a part of them. A write on a symbolic link to nothing gives
-/// `NotFound` and makes no file. A new file gives the group and other users no
-/// access, and a file that a write replaces keeps its mode.
+/// The real files of the host by path. A write on a file or on nothing makes a hidden
+/// file with a random name beside `path`, syncs it, and renames it over `path`, so a
+/// reader or a crash sees the old file or the new one, and of two writes one wins
+/// whole. A write that fails removes its file, and gives the error of the remove when
+/// that fails. A crash during a write leaves the file.
+///
+/// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
+/// hidden file and no rename: a reader, a crash, or a failed write can see or leave a
+/// part of them, and two writes at one time can leave a mix of the two. A write on a
+/// symbolic link to nothing gives `NotFound` and makes no file.
+///
+/// A new file gives the group and other users no access. A file that a write replaces
+/// keeps its permission bits, and its owner and its group where the OS lets this user
+/// set them. Where the group is not kept, the file gives its group no access. A write
+/// keeps no set-user-ID, set-group-ID, or sticky bit and no access control list, and
+/// each other hard link of the old file keeps the old bytes.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {
