@@ -20,7 +20,7 @@ use super::{BODIES_BYTES_MAX, Error, alloc, halves, stop};
 use crate::State;
 use crate::link::{Served, Session};
 
-mod read;
+pub(crate) mod read;
 
 /// A request of a client, which `access` verified.
 #[derive(Debug)]
@@ -97,7 +97,7 @@ impl Gate {
 pub(crate) struct Bodies {
     held: Cell<u64>,
     /// Only the subjects that hold bytes, so the map has at most one entry for each
-    /// open request.
+    /// open request or read.
     subjects: RefCell<hash::Map<Name, u64>>,
 }
 

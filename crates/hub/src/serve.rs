@@ -136,44 +136,9 @@ impl Error {
                 Some(Code(BUSY))
             }
             Self::Stream(_) => None,
-            Self::Reader(error) => Some(Code(match error {
-                reader::Error::Empty => UNKNOWN,
-                reader::Error::ManyIndexes { .. } => MALFORMED,
-                reader::Error::Pool(_) => BUSY,
-                reader::Error::Refused(refusal) => from_home(*refusal),
-                reader::Error::Mesh(_)
-                | reader::Error::Transport(_)
-                | reader::Error::Message(_) => FAILED,
-                reader::Error::Unsynced | reader::Error::Remote { .. } => {
-                    panic!("invariant: an unnamed reader does not give {error:?}")
-                }
-            })),
-            Self::Ended(ended) => Some(Code(match ended {
-                reader::Ended::Removed(_) => UNKNOWN,
-                reader::Ended::Pool(_) => BUSY,
-                reader::Ended::Refused(refusal) => from_home(*refusal),
-                reader::Ended::Buffer(_)
-                | reader::Ended::Stream(_)
-                | reader::Ended::Message(_)
-                | reader::Ended::Frame(_)
-                | reader::Ended::Credit { .. } => FAILED,
-                reader::Ended::Behind | reader::Ended::Replaced => {
-                    panic!("invariant: a read does not end as {ended:?}")
-                }
-            })),
+            Self::Reader(error) => Some(Code(client::read::refusal(error).code())),
+            Self::Ended(ended) => Some(Code(client::read::end(ended).code())),
         }
-    }
-}
-
-/// The code of a read whose remote home refused it with `refusal`. A `MALFORMED`
-/// tells of a fault between the nodes, not of the program's read.
-fn from_home(refusal: wire::hub::Refusal) -> u32 {
-    match refusal {
-        wire::hub::Refusal::Malformed => FAILED,
-        wire::hub::Refusal::Unknown
-        | wire::hub::Refusal::NotHome
-        | wire::hub::Refusal::Failed
-        | wire::hub::Refusal::Busy => refusal.code(),
     }
 }
 

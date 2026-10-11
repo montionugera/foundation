@@ -10,7 +10,7 @@ use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::Name;
 use types::time::Span;
-use wire::hub::client::{Mode, Open, Places, Read, place};
+use wire::hub::client::{Mode, Open, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
 use crate::State;
@@ -136,5 +136,58 @@ async fn relay(
             }
             Ok(Err(ended)) => return Err(Error::Ended(ended)),
         }
+    }
+}
+
+/// The refusal that stops a read whose reader did not open with `error`.
+///
+/// # Panics
+///
+/// For an error that only a named reader gives.
+pub(crate) fn refusal(error: &reader::Error) -> Refusal {
+    match error {
+        reader::Error::Empty => Refusal::Unknown,
+        reader::Error::ManyIndexes { .. } => Refusal::Malformed,
+        reader::Error::Pool(_) => Refusal::Busy,
+        reader::Error::Refused(refusal) => from_home(*refusal),
+        reader::Error::Mesh(_)
+        | reader::Error::Transport(_)
+        | reader::Error::Message(_) => Refusal::Failed,
+        reader::Error::Unsynced | reader::Error::Remote { .. } => {
+            panic!("invariant: an unnamed reader does not give {error:?}")
+        }
+    }
+}
+
+/// The refusal that stops a read whose reader ended as `ended`.
+///
+/// # Panics
+///
+/// For `Behind`, which a read sends as a reply, and `Replaced`, which only a named
+/// reader gives.
+pub(crate) fn end(ended: &reader::Ended) -> Refusal {
+    match ended {
+        reader::Ended::Removed(_) => Refusal::Unknown,
+        reader::Ended::Pool(_) => Refusal::Busy,
+        reader::Ended::Refused(refusal) => from_home(*refusal),
+        reader::Ended::Buffer(_)
+        | reader::Ended::Stream(_)
+        | reader::Ended::Message(_)
+        | reader::Ended::Frame(_)
+        | reader::Ended::Credit { .. } => Refusal::Failed,
+        reader::Ended::Behind | reader::Ended::Replaced => {
+            panic!("invariant: a read does not end as {ended:?}")
+        }
+    }
+}
+
+/// The refusal of a read whose remote home refused it with `refusal`. A `MALFORMED`
+/// tells of a fault between the nodes, not of the program's read.
+fn from_home(refusal: wire::hub::Refusal) -> Refusal {
+    match refusal {
+        wire::hub::Refusal::Malformed | wire::hub::Refusal::Failed => Refusal::Failed,
+        wire::hub::Refusal::Unknown => Refusal::Unknown,
+        wire::hub::Refusal::NotHome => Refusal::NotHome,
+        wire::hub::Refusal::Busy => Refusal::Busy,
     }
 }
