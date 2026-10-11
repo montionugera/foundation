@@ -15,8 +15,9 @@ use crate::scope::Scope;
 /// The runs of the connectors that the spec in use places on one node, on one
 /// supervisor. Dropped, it drops each run. Each name has one loop, a future that runs
 /// its connector, and after each change the connector of that change, until a change
-/// removes it. So no two runs of one name overlap, also across a removal and an
-/// addition.
+/// removes it. After a run that gave `Config`, the next apply runs the connector again,
+/// also one that came before `run` returned. So no two runs of one name overlap, also
+/// across a removal and an addition.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     /// The name of the node in the region.
@@ -33,10 +34,11 @@ struct Loop {
     connector: Option<Connector>,
     /// Cancelled when `connector` changes. It cancels the run in progress.
     changed: cancel::Token,
+    /// Cancelled at each apply. A run that gave `Config` runs again once the token of
+    /// its start is cancelled, also by an apply before `run` returned.
+    applied: cancel::Token,
     /// The loop read `None` and ended.
     ended: bool,
-    /// The last run gave `Config`, so the next apply runs it again.
-    refused: bool,
 }
 
 impl Runs {
@@ -70,8 +72,10 @@ impl Runs {
             if state.ended {
                 return false;
             }
+            state.applied.cancel();
+            state.applied = cancel::Token::new();
             let wanted = wanted.get(name).copied();
-            if state.connector.as_ref() != wanted || state.refused {
+            if state.connector.as_ref() != wanted {
                 state.connector = wanted.cloned();
                 state.changed.cancel();
                 state.changed = cancel::Token::new();
@@ -85,40 +89,36 @@ impl Runs {
             let state = Rc::new(RefCell::new(Loop {
                 connector: Some(connector.clone()),
                 changed: cancel::Token::new(),
+                applied: cancel::Token::new(),
                 ended: false,
-                refused: false,
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
             let supervisor = self.supervisor.clone();
             let name = name.clone();
             self.scope.spawn(Box::pin(async move {
                 loop {
-                    let (connector, changed) = {
+                    let (connector, changed, applied) = {
                         let mut state = state.borrow_mut();
-                        state.refused = false;
                         let Some(connector) = state.connector.clone() else {
                             state.ended = true;
                             return;
                         };
-                        (connector, state.changed.clone())
+                        (connector, state.changed.clone(), state.applied.clone())
                     };
                     let kind = connector.kind().as_str();
                     let config = connector.config().document();
                     match supervisor.run(kind, name.clone(), config, &changed).await {
                         // The next change of the connector runs it again.
-                        Ok(()) => {}
+                        Ok(()) => changed.wait().await,
                         // The status holds its class. The fix can be in another
                         // definition, so the next spec change runs it again.
-                        Err(connector::kind::Error::Config(_)) => {
-                            state.borrow_mut().refused = true;
-                        }
+                        Err(connector::kind::Error::Config(_)) => applied.wait().await,
                         Err(error) => {
                             unreachable!(
                                 "invariant: `run` gives only `Config`: {error}"
                             )
                         }
                     }
-                    changed.wait().await;
                 }
             }));
         }
