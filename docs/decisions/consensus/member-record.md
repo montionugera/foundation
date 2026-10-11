@@ -10,9 +10,11 @@
   https://github.com/synnaxlabs/foundation/issues/242#issuecomment-6031533205
   (`laptop.architect`, 2026-10-09T19:53:33Z,
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088190305).
-  The founding that a node stores holds the card of each founding member, and no
-  change gives a member another name. So `node` reads the name of a founding member
-  there when its file `name` is gone (NODE NAME, which holds the trigger; #2355). The
+  The founding that a node stores holds the card of each founding member, and no change
+  gives a member another name. So `node` reads the name of a founding member there when
+  its file `name` is gone (NODE NAME, which holds the trigger; `laptop.architect-2`,
+  #2355, 2026-10-11T07:44:40Z,
+  https://github.com/synnaxlabs/foundation/issues/2355#issuecomment-6106801760). The
   founding holds no card of a node that joined (`laptop.architect`,
   2026-10-11T10:58:48Z,
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108309120).
