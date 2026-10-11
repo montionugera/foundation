@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(admitted, Ok(()));
     }
 
-    // No caller reads the count yet; `check` reads only whether it is above 0.
+    // No caller reads the count; `check` reads only whether it is above 0.
     #[test]
     fn the_use_count_saturates() {
         let mut record = record(7, true);

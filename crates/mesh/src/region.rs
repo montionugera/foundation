@@ -978,9 +978,9 @@ mod tests {
     #[test]
     fn a_join_admits_the_node_with_the_ticket_options() {
         let mut state = state();
-        let join = join(7, 3, "plant.edge.a");
-        let admission = join.admission;
-        assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
+        let first = join(7, 3, "plant.edge.a");
+        let admission = first.admission;
+        assert_eq!(apply_join(&mut state, first), Ok(false));
         let expected = Member {
             card: signed(3, "plant.edge.a"),
             admission,
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!(
             apply_join(
                 &mut state,
-                with_status(crate::common::join(7, 4, "plant.edge.b"), &[("disk", 10)])
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)])
             ),
             Err(Refused::Ticket(ticket::Refused::Used {
                 public_key: public(7)
