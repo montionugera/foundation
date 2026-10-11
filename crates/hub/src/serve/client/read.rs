@@ -114,8 +114,7 @@ async fn relay(
     loop {
         let event = {
             let mut next = pin!(reader.next());
-            // The program polls first, so a message after the open stops the read
-            // while frames still come.
+            // The program polls first, so the node takes no frame after its message.
             poll_fn(|cx| match program.as_mut().poll(cx) {
                 Poll::Ready(finished) => Poll::Ready(Err(finished)),
                 Poll::Pending => next.as_mut().poll(cx).map(Ok),

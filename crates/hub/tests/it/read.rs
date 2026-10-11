@@ -60,6 +60,22 @@ async fn writes(test: &Test, values: &'static [i64]) {
     });
 }
 
+/// Writes `frames` wide frames to `value` from [`START`] on, in runs of ten that are
+/// 2 × [`COMMIT`] apart.
+async fn writes_wide(test: &Test, frames: i64) {
+    let mut writer = test.writer("a", &["value"]).await;
+    let (clock, now) = (test.clock.clone(), test.now());
+    test.tasks.spawn(async move {
+        clock.sleep(START).await;
+        for n in 0..frames {
+            write_wide(&mut writer, now, n);
+            if n % 10 == 9 {
+                clock.sleep(Span::from_nanos(2 * COMMIT.nanos())).await;
+            }
+        }
+    });
+}
+
 fn open(mode: Mode, select: &[&str]) -> Open {
     Open {
         mode,
@@ -317,6 +333,36 @@ fn stops_a_read_that_gets_a_message_after_its_open_as_malformed() {
     assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
 }
 
+/// A message after the open stops a read while its frames still come.
+#[test]
+fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
+    const FRAMES: i64 = 400;
+    let ready = async |test: &Test| writes_wide(test, FRAMES).await;
+    let home = read_session(310, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
+        agent.sleep(Span::SECOND).await;
+        stream.send(b"x").await;
+        let mut frames = 0;
+        let end = loop {
+            match stream.recv().await {
+                Ok(Some(message)) => {
+                    if let Ok(FromHome::Head(_)) = reader.decode(&message) {
+                        frames += 1;
+                    }
+                }
+                end => break end,
+            }
+        };
+        assert_eq!(end, reset_with(MALFORMED));
+        assert!(frames > 0, "frames came before the stop");
+        finish(&mut agent).await;
+    });
+    let trailing = serve::Error::Client(client::Error::Trailing);
+    assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
+}
+
 /// The channels of a read are removed while its run of places waits for room in the
 /// program's window.
 #[test]
@@ -360,19 +406,7 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
 #[test]
 fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
     const FRAMES: i64 = 400;
-    let ready = async |test: &Test| {
-        let mut writer = test.writer("a", &["value"]).await;
-        let (clock, now) = (test.clock.clone(), test.now());
-        test.tasks.spawn(async move {
-            clock.sleep(START).await;
-            for n in 0..FRAMES {
-                write_wide(&mut writer, now, n);
-                if n % 10 == 9 {
-                    clock.sleep(Span::from_nanos(2 * COMMIT.nanos())).await;
-                }
-            }
-        });
-    };
+    let ready = async |test: &Test| writes_wide(test, FRAMES).await;
     let home = read_session(308, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
