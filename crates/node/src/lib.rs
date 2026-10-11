@@ -84,9 +84,9 @@ pub struct Config<M> {
     /// The region whose mesh the node opens.
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
-    /// `name`. A name with a reserved segment starts no shard ([`Error::Reserved`]).
-    /// Else a later start with another name stops at the claim with
-    /// [`Error::Renamed`]. Get it with [`name`] before the start.
+    /// `name`. Get it with [`name`] before the start. A later start with another name
+    /// fails with [`Error::Renamed`], and a name with a reserved segment starts no
+    /// shard ([`Error::Reserved`]). [`Node::join`] gives the first failure.
     pub name: types::name::Name,
 }
 
@@ -416,9 +416,10 @@ impl Node {
     /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
     /// pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
-    /// for a shard with no memory, else [`Error::Shards`], [`Error::Name`],
-    /// [`Error::Renamed`], or [`Error::Directory`] for a data directory that shard 0
-    /// could not claim, else [`Error::Buffer`] for the first shard by core whose
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
+    /// a data directory that shard 0 could not claim, else [`Error::Name`],
+    /// [`Error::Renamed`], or [`Error::Directory`] for a file `name` that it could not
+    /// read or keep, else [`Error::Buffer`] for the first shard by core whose
     /// buffer, or the home over it, did not open, [`Error::Budget`] or
     /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
     /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that

@@ -6180,6 +6180,25 @@ mod name {
         assert_eq!(read(&mut sim, &host), kept, "keeps the file");
     }
 
+    /// The claim checks the shard count before the name.
+    #[test]
+    fn another_shard_count_comes_before_another_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        write(&mut sim, &host, "shards-3", Vec::new());
+        let started = start_and_stop(&mut sim, &host, "cloud");
+        assert_eq!(
+            started,
+            Err(Error::Shards {
+                stored: 3,
+                cores: 2
+            })
+        );
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
     /// A name that fails the claim stops the start before any ring opens.
     #[test]
     fn a_name_that_fails_the_claim_opens_no_ring() {
