@@ -283,6 +283,42 @@ fn a_create_takes_the_room_of_a_removed_file_that_no_sync_dir_covers() {
     assert_eq!(found, (Ok(MIB - 4 * KIB), vec!["b".into()]));
 }
 
+/// The digest after a create that finds no room for `b` in a directory with a removed
+/// file and no `sync_dir`, made as one create or as its calls one by one.
+fn create_with_no_room(seed: u64, one_by_one: bool) -> (bool, u64) {
+    let mut sim = sim(seed);
+    let node = sim.node(node::Config {
+        disk_bytes: MIB,
+        ..node::Config::default()
+    });
+    let failed = sim
+        .run_on(&node, move |node, _| async move {
+            let (files, b) = (node.files(), Path::new("b"));
+            drop(create(&node, "a", MIB).await);
+            files.sync_dir(Path::new("")).await.unwrap();
+            files.remove(Path::new("a")).await.unwrap();
+            if one_by_one {
+                drop(files.open(b, Mode::Write).await);
+                files.sync_dir(Path::new("")).await.unwrap();
+                files.open(b, Mode::Write).await.is_err()
+            } else {
+                let mode = Mode::Create { len: MIB + 4 * KIB };
+                files.open(b, mode).await.is_err()
+            }
+        })
+        .unwrap();
+    (failed, sim.digest())
+}
+
+#[test]
+fn a_create_that_finds_no_room_syncs_the_directory_once() {
+    for seed in 0..16 {
+        let one = create_with_no_room(seed, false);
+        assert_eq!(one, create_with_no_room(seed, true), "seed {seed}");
+        assert!(one.0, "seed {seed}");
+    }
+}
+
 #[test]
 fn create_allocates_an_empty_file_that_is_there_once_no_writer_holds_it() {
     let found = run(0, MIB, |node, _| async move {
