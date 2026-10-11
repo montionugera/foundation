@@ -415,7 +415,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `codec_shape_encoder` | `codec::Encoder` on an array, matrix, list, `String`, or `Bytes` series | Gives the refusal that a second reader of the raw form gives, or a valid series that decodes unchanged with zeros for the padding; an array or a matrix encodes as the series of its elements |
 | `document_encoding` | `document::encoding::decode` | Encodes to the same bytes |
 | `spec_definition` | `spec::definition::Definition::decode` | Encodes to the same bytes |
-| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries, with each chunk of the tree, only when `spec::region::tree` of them has the same root |
+| `spec_tree` | `spec::tree::get`, `apply`, `diff`, and `spec::region::definitions` on chunks from a peer | `get` agrees with a whole `diff`; `apply` gives the entries with the changes; `definitions` gives the decode of the entries, with the chunks of the tree and no other, only when `spec::region::tree` of them has the same root |
 | `spec_data_type` | `spec::data_type::DataType` | Prints as the text it was read from |
 | `config_hcl_read` | `config_hcl::read` | The encoding decodes to an equal document |
 | `config_hcl_update` | `config_hcl::update` | Its text reads as the document; an update to its own document keeps each byte; an unread text gives the problems of `read` |
