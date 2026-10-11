@@ -2523,6 +2523,12 @@ fn fails_a_round_with_no_summary_line_after_its_rating() {
 }
 
 #[test]
+fn reads_an_emoji_name_in_a_summary_line_as_text() {
+    let head = format!("{NAME}\nQuality: 8/10\n:octocat:");
+    assert_eq!(check(&record(vec![headed(&head)])), Vec::<String>::new());
+}
+
+#[test]
 fn a_round_posted_before_the_cutoff_of_the_rating_needs_no_name_line() {
     let rating = format!("Quality: 8/10\n{SUMMARY}");
     let before = headed_at(&rating, "2026-10-11T15:59:59Z");

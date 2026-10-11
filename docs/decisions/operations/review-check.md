@@ -179,12 +179,17 @@
   lines fails the round. The first block of the comment is a paragraph that starts with
   the session name in bold, then ` · `, then a role. The second line is the rating, with
   nothing after it. The third line is not empty. A blank line between two of them
-  changes nothing. A session name, a role, or a summary line that is only an image is
-  empty. The check reads neither the session name nor the role against a list. A round
-  posted before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs`
-  (2026-10-11T16:00:00Z) is checked as before, so that the new rule does not fail the
-  rounds that came before it. The cutoff is a fixed time: it stays when the rule merges
-  after it. A round that fails by this rule gets an edit of its round comment that adds
-  the lines, with the rating and the summary of its `reviewer` report as given. When
-  that report is lost, a new run of `reviewer` on the range of the round gives them, and
-  the edit says so.
+  changes nothing. A session name, a role, or a summary line that holds only images and
+  the spaces between them is empty. An emoji name such as `:octocat:` is text to the
+  check, also one that GitHub shows as an image. Lost: a list of those names in the
+  check, since GitHub can change it. Ruled by the director at 2026-10-11T11:24:24Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108509497) and
+  11:25:49Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108520648). The
+  check reads neither the session name nor the role against a list. A round posted
+  before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs` (2026-10-11T16:00:00Z) is
+  checked as before, so that the new rule does not fail the rounds that came before it.
+  The cutoff is a fixed time: it stays when the rule merges after it. A round that fails
+  by this rule gets an edit of its round comment that adds the lines, with the rating
+  and the summary of its `reviewer` report as given. When that report is lost, a new run
+  of `reviewer` on the range of the round gives them, and the edit says so.
