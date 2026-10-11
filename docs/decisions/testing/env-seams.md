@@ -351,6 +351,19 @@
   create that takes a floor, which moves the rule of one caller into each driver.
   Decided by `laptop.architect-2`, #1229, 2026-10-11T17:05:00Z
   (https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387).
+  Amended (2026-10-11T22:42:41Z, #1186): each wait for the calls that a dropped future
+  or a dropped handle left to run (a write open, `Files::remove`, `File::rename`,
+  `Files::list`, `Files::free`) is for a future or a handle that dropped before the call
+  started. A drop while the call is in flight adds no wait. A caller awaits a call, or
+  drops its future, before it starts a call that must see its result. `sim` shows the
+  order without the wait, and its tests are on `sim` only, as `os` runs the calls of a
+  `Files` in queue order. Lost: a wait for a future that drops while the call is in
+  flight. A caller cannot build on it: it cannot know that the future will drop, and the
+  same result comes by rule when the future lives. `os` gives it only for a call that
+  started first. A driver that runs two calls at one time gives it for a write open only
+  by a wait for each live call on the path. Decided by `laptop.architect-2`, #1186,
+  2026-10-11T22:42:41Z
+  (https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6114719100).
   Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
   driver gives `Full` syncs the directory of the path one time and opens again. It
   gives `Full` only when the second open does, and a `sync_dir` error as it is. It does
