@@ -377,9 +377,8 @@ const LEASE: Code = Code::new("connector.lease");
 ///
 /// # Panics
 ///
-/// For `Unsynced`, since the supervisor opens a reader only after the status channels,
-/// which wait for mesh time, and for an error of a reader away from its home, since a
-/// named reader opens only at its home.
+/// For `Unsynced`, which the supervisor's open never gives, and for an error of a
+/// reader away from its home, since a named reader opens only at its home.
 pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     use hub::reader::Error as Hub;
     let (code, fix) = match error {

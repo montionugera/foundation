@@ -143,8 +143,18 @@ impl Opened<'_> {
     pub async fn run(self) -> Result<(), Error> {
         let Self { call, start } = self;
         match start {
-            Start::Ended(end) => end,
-            Start::Ready(ready) => call.runs(*ready).await,
+            Start::Done(end) => end,
+            Start::Ready(ready) => {
+                let Ready {
+                    writer,
+                    status,
+                    settings,
+                    reader,
+                } = *ready;
+                let restarts =
+                    call.restarts(&writer, &status, settings.as_ref(), reader);
+                writer.during(restarts).await
+            }
         }
     }
 }
@@ -162,7 +172,7 @@ struct Call<'a> {
 /// What [`Supervisor::open`] gives [`Opened::run`].
 enum Start {
     /// No run starts, and the call ends with this.
-    Ended(Result<(), Error>),
+    Done(Result<(), Error>),
     Ready(Box<Ready>),
 }
 
@@ -194,7 +204,7 @@ impl Call<'_> {
         } = &*supervisor.0;
         let channels = match kinds.check(kind, None, config) {
             Ok(channels) => channels,
-            Err(diagnostics) => return Start::Ended(Err(Error::Config(diagnostics))),
+            Err(diagnostics) => return Start::Done(Err(Error::Config(diagnostics))),
         };
         let mut open = pin!(status::Writer::open(
             hub,
@@ -212,11 +222,11 @@ impl Call<'_> {
         });
         let (writer, status) = match opened.await {
             None | Some(Err(hub::writer::Error::Mesh(_))) => {
-                return Start::Ended(Ok(()));
+                return Start::Done(Ok(()));
             }
             // A cancelled call may find its status channels removed.
             Some(Err(hub::writer::Error::Unknown(_))) if cancel.cancelled() => {
-                return Start::Ended(Ok(()));
+                return Start::Done(Ok(()));
             }
             Some(Ok(opened)) => opened,
             Some(Err(error)) => {
@@ -226,6 +236,8 @@ impl Call<'_> {
             }
         };
         let settings = channels.reader;
+        // After the status channels, which wait for mesh time, so the open never gives
+        // `Unsynced`.
         let reader = self.reader(settings.as_ref()).await;
         Start::Ready(Box::new(Ready {
             writer,
@@ -254,19 +266,6 @@ impl Call<'_> {
         Some(opened.map(Some).map_err(kind::reader_error))
     }
 
-    /// Runs the connector and restarts it, as [`Opened::run`] says.
-    async fn runs(&self, ready: Ready) -> Result<(), Error> {
-        let Ready {
-            writer,
-            status,
-            settings,
-            reader,
-        } = ready;
-        writer
-            .during(self.restarts(&writer, &status, settings.as_ref(), reader))
-            .await
-    }
-
     /// Runs the connector and restarts it, and writes its status through `writer`
     /// at each change of state. `first` is the reader of the first run.
     async fn restarts(
@@ -292,6 +291,11 @@ impl Call<'_> {
         let mut backoff = retry::Backoff::new(clock, entropy.rng(), RESTART);
         let mut first = Some(first);
         loop {
+            if !writer.start().await {
+                break;
+            }
+            // After the start status, so the status shows a run, not a past backoff,
+            // while the open of a restart waits for a home.
             let opening = match first.take() {
                 Some(opening) => opening,
                 None => self.reader(settings).await,
@@ -299,9 +303,6 @@ impl Call<'_> {
             let Some(reader) = opening else {
                 break;
             };
-            if !writer.start().await {
-                break;
-            }
             let token = Ended(cancel.child());
             let live = Rc::new(Live::default());
             let start = clock.now();
