@@ -110,7 +110,8 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Signal,
-    gate: gate::Signal,
+    /// The gate task, woken at each writer open and close.
+    gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
     node: types::node::Key,
@@ -158,7 +159,7 @@ impl Hub {
             opened: 0,
             woken: Vec::new(),
             commit: commit::Signal::default(),
-            gate: gate::Signal::default(),
+            gate: task::Waiter::default(),
             failed: None,
             node,
             time: time.clone(),
@@ -450,7 +451,7 @@ impl State {
         if self.writers.remove(key) {
             self.home.close_writer(key);
             self.commit.appended();
-            self.gate.changed();
+            self.gate.wake();
         }
     }
 

@@ -9,22 +9,6 @@ use std::task::Poll;
 
 use types::time::Monotonic;
 
-use crate::task;
-
-/// The gate task's part of the state: its waker.
-#[derive(Debug, Default)]
-pub(crate) struct Signal {
-    task: task::Waiter,
-}
-
-impl Signal {
-    /// Notes a home call that may make the home's deadline earlier: a writer open or
-    /// close. Wakes the task.
-    pub(crate) fn changed(&self) {
-        self.task.wake();
-    }
-}
-
 /// Sleeps until the home's deadline, advances the home, and notes the append for the
 /// commit task. It holds `state` only during a poll, so the first poll after the state
 /// drops ends it.
@@ -36,7 +20,7 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>, time: clock::Reader)
                 return Poll::Ready(());
             };
             let mut state = state.borrow_mut();
-            state.gate.task.polled(cx);
+            state.gate.polled(cx);
             let Some(deadline) = state.home.deadline() else {
                 return Poll::Pending;
             };

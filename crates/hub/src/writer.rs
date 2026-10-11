@@ -218,7 +218,7 @@ impl Writer {
         };
         let key = borrowed.home.open_writer(writer).map_err(Error::Home)?;
         borrowed.commit.appended();
-        borrowed.gate.changed();
+        borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
         let ending = borrowed.writers.add(key, keys.into());
         Ok(Self {
