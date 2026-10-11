@@ -30,11 +30,18 @@
   and holds up to 29 and 136 blocks: it got its speed from bytes that it did not count.
   With 100 µs of jitter the two differ by under 1% (`laptop.architect-2`,
   2026-10-11T20:30:16Z,
-  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6113419278). A
-  message that QUIC does not take in full waits its turn, by class, then oldest first.
-  Only the first sender in turn writes, and only it wakes when QUIC has room. A write
-  of a class ahead of every waiter goes first; any other write waits, and a `try_send`
-  gives the message back.
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6113419278). The
+  same value is the receive window, half of the stream credit, and the send budget that
+  the peer gets, so a larger window for such a path also raises what the node takes in.
+  Lost: a send window apart from the receive window. The size comes from the path, which
+  the two directions share, a lost packet holds the bytes after it at the receiver too,
+  and each caller gives one constant. Look again when the window is a setting of a node
+  (`laptop.architect-2`, 2026-10-11T21:18:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6113874516). A message
+  that QUIC does not take in full waits its turn, by class, then oldest first. Only the
+  first sender in turn writes, and only it wakes when QUIC has room. A write of a class
+  ahead of every waiter goes first; any other write waits, and a `try_send` gives the
+  message back.
   Stream credit is twice the connection window, so a stream never waits on its own
   credit while the connection has room. This relies on reader-granted credits (B3): a
   node takes every byte it granted credit for. A peer that gives less stalls only its
