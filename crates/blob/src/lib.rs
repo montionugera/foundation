@@ -843,6 +843,8 @@ mod tests {
                     floor_bytes,
                 };
                 assert_eq!(error, expected);
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, [PathBuf::from(digest.to_string())]);
                 assert_eq!(node.files().free().await.unwrap(), free_bytes);
             })
             .unwrap();
