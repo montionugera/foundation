@@ -27,7 +27,8 @@ pub(crate) struct Builds {
 }
 
 /// Gives the builds of [`builds`] under the sanitizers of the Rust build, as
-/// [`Builds::sanitize`] does. `env` gives the variables of a build script.
+/// [`Builds::sanitize`] does. `env` gives the variables of a build script, and the
+/// shim build holds `src/server.c` when it sets `CARGO_FEATURE_SIM`.
 ///
 /// # Errors
 ///
@@ -38,7 +39,7 @@ pub(crate) fn configure(
     sources: &str,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Builds, String> {
-    let mut builds = builds(copy, flags, sources);
+    let mut builds = builds(copy, flags, sources, env("CARGO_FEATURE_SIM").is_some());
     builds.sanitize(env)?;
     // After `sanitize`, which can replace the compiler with clang.
     check(&builds.library.get_compiler())?;
@@ -48,7 +49,8 @@ pub(crate) fn configure(
 /// Gives the builds of the open62541 copy at `copy` and of our C ([`Builds::shim`]).
 /// `flags` is the text of the copy's `flags.txt`, whose include paths are relative to
 /// the copy. `sources` is the text of `sources.txt`, one file of the copy on each line.
-pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
+/// The shim build holds the test server `src/server.c` only when `sim` holds.
+pub(crate) fn builds(copy: &Path, flags: &str, sources: &str, sim: bool) -> Builds {
     let mut library = Build::new();
     library.warnings(false);
     let mut shim = Build::new();
@@ -73,7 +75,7 @@ pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
         library.file(copy.join(source));
     }
     shim.file(root.join("src/shim.c"));
-    if cfg!(feature = "sim") {
+    if sim {
         shim.file(root.join("src/server.c"));
     }
     Builds {

@@ -86,7 +86,7 @@ mod tests {
 
     /// The builds of `compiler::builds`, for `TARGET` and with the compiler `path`.
     fn builds(path: &str) -> compiler::Builds {
-        let mut builds = compiler::builds(Path::new("/copy"), "-std=c99", "a.c");
+        let mut builds = compiler::builds(Path::new("/copy"), "-std=c99", "a.c", false);
         for build in [&mut builds.library, &mut builds.shim] {
             child::tool(build.compiler(path), TARGET);
         }
@@ -263,6 +263,13 @@ mod tests {
         assert_eq!(configure(&[(SANITIZE, "address")]), Ok(true));
         assert_eq!(configure(&[FUZZING]), Ok(false));
         assert_eq!(configure(&[(SANITIZE, "thread")]), Err(refusal("thread")));
+        let server = |vars| {
+            let builds = compiler::configure(Path::new("/copy"), "", "a.c", env(vars));
+            let shim = builds.unwrap().shim;
+            shim.get_files().any(|file| file.ends_with("src/server.c"))
+        };
+        assert!(!server(&[FUZZING]));
+        assert!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]));
     }
 
     /// `configure` checks the compiler that `sanitize` picks, so a sanitizer moves a
@@ -298,17 +305,21 @@ mod tests {
             return;
         }
         let copy = Path::new("/copy");
+        let flags = "-Ideps\n-Iinclude\n-std=c99";
+        let sources = "a.c\nsrc/b.c";
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for (sim, files) in [
+            (false, vec![src.join("shim.c")]),
+            (true, vec![src.join("shim.c"), src.join("server.c")]),
+        ] {
+            let shim = compiler::builds(copy, flags, sources, sim).shim;
+            assert_eq!(shim.get_files().collect::<Vec<_>>(), files, "sim: {sim}");
+        }
         let compiler::Builds { library, shim, .. } =
-            compiler::builds(copy, "-Ideps\n-Iinclude\n-std=c99", "a.c\nsrc/b.c");
+            compiler::builds(copy, flags, sources, false);
         assert_eq!(
             library.get_files().collect::<Vec<_>>(),
             [copy.join("a.c"), copy.join("src/b.c")]
-        );
-        // The tests build with `sim`, so the shim build holds the test server.
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        assert_eq!(
-            shim.get_files().collect::<Vec<_>>(),
-            [src.join("shim.c"), src.join("server.c")]
         );
         let dirs = ["/copy/deps", "/copy/include"];
         let header = format!(
