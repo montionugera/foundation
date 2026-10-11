@@ -7,6 +7,7 @@ mod admin;
 #[doc(hidden)]
 pub mod bench;
 mod budget;
+mod cause;
 mod connectors;
 mod directory;
 #[cfg(feature = "sim")]
@@ -84,8 +85,9 @@ pub struct Config<M> {
     /// The region whose mesh the node opens.
     pub region: Region,
     /// The node's name. The first start on a data directory keeps it in the file
-    /// `name`; a later start with another name stops with [`Error::Renamed`]. Get it
-    /// with [`name`] before the start.
+    /// `name`. Get it with [`name`] before the start. A later start with another name
+    /// fails with [`Error::Renamed`], and a name with a reserved segment starts no
+    /// shard ([`Error::Reserved`]). [`Node::join`] gives the first failure.
     pub name: types::name::Name,
 }
 
@@ -172,8 +174,7 @@ const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
 
 impl Node {
     /// Binds the node's port at [`Config::listen`], then starts one shard per core,
-    /// named `shard-<i>`. A port that does not bind starts no shard, and [`Node::join`]
-    /// gives [`Error::Port`]. Each shard is pinned to core `i` when the host can pin
+    /// named `shard-<i>`. Each shard is pinned to core `i` when the host can pin
     /// ([`env::shards::Shards::pinnable`]); else the OS places it. Each shard owns a
     /// `block::Pool` with an even part of the budget, and a ring with an even part of
     /// the disk budget; shard 0 also takes each remainder. Unless the node stops first,
@@ -187,19 +188,16 @@ impl Node {
     /// file `node.key` in the data directory, and makes the file at the first start
     /// once it has mesh time, unless `create_key` made it, then opens the mesh of
     /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
-    /// founds the root region and reads or makes `admin.key`), then serves the port,
-    /// admits each member of the region and at most 256 sessions of other peers at
-    /// once, until its transport or the mesh's group stops, which stops the node.
-    /// Returns once each shard runs or one has failed to start. When the disk budget
-    /// holds no ring on each shard, no shard starts, and [`Node::join`] gives
-    /// [`Error::Disk`] with the budget, the shard count, and the least budget. When a
-    /// shard's part of the pool budget gives a reservation of more than `usize::MAX`
-    /// bytes, no shard starts either, and [`Node::join`] gives [`Error::Pool`]. A
-    /// failed start, a shard with no memory, a data directory that another node holds
-    /// or that was made for another shard count, a key file that is not valid, a file
-    /// `name` that holds another name or that no node wrote, or a buffer or a mesh that
-    /// does not open stops the node, and [`Node::join`] returns its error. The
-    /// `# Errors` of [`Node::join`] gives which error comes first.
+    /// founds the root region and reads or makes `admin.key`), then serves the port
+    /// until its transport or the mesh's group stops, which stops the node. It admits
+    /// each member of the region, and gives other peers at most 256 places at once: one
+    /// for each session of a program, and one for the key of a node. Returns once each
+    /// shard runs or one has failed to start. No shard starts when the disk budget
+    /// holds no ring on each shard ([`Error::Disk`]), when a shard's part of the pool
+    /// budget gives a reservation of more than `usize::MAX` bytes ([`Error::Pool`]),
+    /// when the port does not bind ([`Error::Port`]), or when [`Config::name`] has a
+    /// reserved segment ([`Error::Reserved`]). Any failure stops the node, and
+    /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -208,6 +206,10 @@ impl Node {
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
         let cores = config.shards.cores().get();
         let regional = !matches!(config.region, Region::Absent);
+        if config.name.reserved() {
+            let name = config.name;
+            return Self::failed(Error::Reserved { name }, regional);
+        }
         let parts = match parts(config.budget.pool, config.budget.disk, cores) {
             Ok(parts) => parts,
             Err(small) => {
@@ -411,17 +413,20 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// The first failure: [`Error::Disk`] for a disk budget that holds no ring on each
-    /// shard, [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part
-    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
+    /// [`Error::Disk`] for a disk budget that holds no ring on each shard,
+    /// [`Error::Port`] for a port that did not bind, [`Error::Pool`] for a part of the
+    /// pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
-    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
-    /// data directory that shard 0 could not claim, else [`Error::Buffer`] for the
-    /// first shard by core whose buffer, or the home over it, did not open,
-    /// [`Error::Budget`] or [`Error::Directory`] for a file `budget` that shard 0 could
-    /// not read or write, [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for
-    /// a key file that shard 0 could not read or write, [`Error::Blob`] for a chunk
-    /// store or [`Error::Mesh`] for a stored region or a mesh that did not open, or
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for
+    /// a data directory that shard 0 could not claim, else [`Error::Name`],
+    /// [`Error::Renamed`], or [`Error::Directory`] for a file `name` that it could not
+    /// read or keep, else [`Error::Buffer`] for the first shard by core whose
+    /// buffer, or the home over it, did not open, [`Error::Budget`] or
+    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
+    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
+    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
+    /// [`Error::Mesh`] for a stored region or a mesh that did not open, or
     /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
     /// else [`Error::Panicked`] for the first shard by core that panicked. Any failed
     /// shard stops the node.
@@ -478,8 +483,8 @@ pub async fn create_key(
 
 /// The name of the node of the data directory `files`: `given`, else the one that the
 /// file `name` holds. Reads the file only when `given` is `None`, writes nothing, and
-/// reads also while another node runs on `files`. A `given` that is not the stored
-/// name stops the start with [`Error::Renamed`].
+/// reads also while another node runs on `files`. It does not check `given`: the
+/// start does ([`Config::name`]).
 ///
 /// # Errors
 ///
@@ -1220,9 +1225,45 @@ pub enum Error {
     },
     /// The data directory holds no node name, and the start gave none.
     Unnamed,
+    /// The start gave `name`, which has a segment that starts with `@`. A region
+    /// refuses it, so no shard started and the data directory keeps no name.
+    Reserved {
+        /// The name the start gave.
+        name: types::name::Name,
+    },
     /// The file `budget` in the data directory does not hold budgets that a node
     /// wrote. The node does not write over it.
     Budget,
+}
+
+impl Error {
+    /// The failed file call that caused this error, or `None` when no file call
+    /// caused it.
+    #[must_use]
+    pub fn files(&self) -> Option<&env::files::Error> {
+        match self {
+            Self::Directory(error) => Some(error),
+            Self::Buffer { error, .. } => cause::buffer(error),
+            Self::Blob(error) => cause::blob(error),
+            Self::Mesh(error) => cause::mesh(error),
+            Self::Group(stopped) => cause::stopped(stopped),
+            Self::Start(_)
+            | Self::Panicked(_)
+            | Self::Memory { .. }
+            | Self::Pool { .. }
+            | Self::Shards { .. }
+            | Self::Disk { .. }
+            | Self::Transport(_)
+            | Self::Key
+            | Self::Admin
+            | Self::Port { .. }
+            | Self::Name
+            | Self::Renamed { .. }
+            | Self::Unnamed
+            | Self::Reserved { .. }
+            | Self::Budget => None,
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -1286,6 +1327,11 @@ impl fmt::Display for Error {
             ),
             Self::Unnamed => f.write_str(
                 "the data directory holds no node name; give the node a name",
+            ),
+            Self::Reserved { name } => write!(
+                f,
+                "the name {name} has a segment that starts with `@`, which is reserved \
+                 for Foundation; give another name"
             ),
             Self::Budget => f.write_str(
                 "the file `budget` in the data directory does not hold budgets that a \
