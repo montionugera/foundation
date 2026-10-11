@@ -102,8 +102,8 @@ struct Test {
     tasks: Tasks,
     /// How many tasks of the hub have ended.
     ended: Rc<Cell<usize>>,
-    /// While set, the hub's tasks are not polled. Counts their polls.
-    paused: Rc<Pause>,
+    /// Holds the hub's tasks while paused, and counts their polls.
+    pause: Rc<Pause>,
     /// The node's mesh clock until [`Test::sync`] runs it.
     unsynced: Option<clock::Clock>,
     /// A commit of the home, taken before the hub had it. It holds the ring open.
@@ -151,14 +151,14 @@ impl Test {
         .expect("opens");
         let commit = home.committed();
         let ended = Rc::new(Cell::new(0));
-        let paused = Rc::new(Pause::default());
+        let pause = Rc::new(Pause::default());
         let hub = Hub::new(hub::Config {
             home,
             interner,
             tasks: Tasks::new(Counted {
                 tasks: tasks.clone(),
                 ended: Rc::clone(&ended),
-                paused: Rc::clone(&paused),
+                pause: Rc::clone(&pause),
             }),
             node: NODE,
             time: mesh.clone(),
@@ -176,7 +176,7 @@ impl Test {
             mesh,
             tasks,
             ended,
-            paused,
+            pause,
             unsynced: Some(unsynced),
             commit,
             region,
@@ -248,11 +248,11 @@ fn fill(pool: &Pool) -> Vec<Unique> {
 }
 
 /// Spawns on `tasks`, and counts each task that completes in `ended`. Polls no task
-/// while `paused` is set, and counts each poll in `paused`.
+/// while `pause` holds them, and counts each poll in `pause`.
 struct Counted {
     tasks: Tasks,
     ended: Rc<Cell<usize>>,
-    paused: Rc<Pause>,
+    pause: Rc<Pause>,
 }
 
 /// Holds back the polls of the hub's tasks, as an executor that runs other tasks
@@ -316,13 +316,13 @@ fn assert_both(firsts: &[bool]) {
 
 impl env::tasks::Driver for Counted {
     fn spawn(&self, mut task: env::tasks::Task) {
-        let (ended, paused) = (Rc::clone(&self.ended), Rc::clone(&self.paused));
+        let (ended, pause) = (Rc::clone(&self.ended), Rc::clone(&self.pause));
         self.tasks.spawn(async move {
             std::future::poll_fn(|cx| {
-                if paused.holds(cx) {
+                if pause.holds(cx) {
                     return Poll::Pending;
                 }
-                paused.polls.set(paused.polls.get() + 1);
+                pause.polls.set(pause.polls.get() + 1);
                 task.as_mut().poll(cx)
             })
             .await;
@@ -838,15 +838,15 @@ fn does_not_wake_the_commit_task_for_the_writes_during_a_commit() {
         let _reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         test.clock.sleep(SETTLE).await;
-        let before = test.paused.polls.get();
+        let before = test.pause.polls.get();
         for value in 0..20 {
             write(&mut writer, &[test.now()], &[value]);
             test.clock.sleep(Span::from_nanos(1)).await;
         }
-        assert_eq!(test.paused.polls.get() - before, 0, "no wake for a write");
+        assert_eq!(test.pause.polls.get() - before, 0, "no wake for a write");
         test.clock.sleep(SETTLE).await;
         assert_eq!(
-            test.paused.polls.get() - before,
+            test.pause.polls.get() - before,
             1,
             "one wake, for the commit"
         );
@@ -858,13 +858,13 @@ fn does_not_wake_the_commit_task_for_the_writes_during_a_commit() {
 #[test]
 fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
     unsynced(23, |mut test| async move {
-        test.paused.pause();
+        test.pause.pause();
         test.sync().await;
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         write(&mut writer, &[test.now()], &[5]);
         test.clock.sleep(SETTLE).await;
-        test.paused.resume();
+        test.pause.resume();
         test.clock.sleep(Span::from_nanos(1)).await;
         let Poll::Ready(received) = poll_once(reader.next()) else {
             panic!("the commit before the first poll woke no reader");
@@ -884,13 +884,13 @@ fn does_not_wake_the_commit_task_for_writes_with_no_samples() {
             slot: Slot::new(0),
             range: Range { seq: 1, count: 0 },
         };
-        let before = test.paused.polls.get();
+        let before = test.pause.polls.get();
         for _ in 0..1000 {
             assert_eq!(write(&mut writer, &[], &[]), std::slice::from_ref(&empty));
             test.clock.sleep(Span::from_nanos(1)).await;
         }
         test.clock.sleep(SETTLE).await;
-        assert_eq!(test.paused.polls.get() - before, 0);
+        assert_eq!(test.pause.polls.get() - before, 0);
     });
 }
 
@@ -931,10 +931,10 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
                 let reader = test.reader(&["value"], Mode::Complete).await;
                 let mut writer = test.writer("a", &["value"]).await;
                 test.clock.sleep(SETTLE).await;
-                test.paused.pause();
+                test.pause.pause();
                 write(&mut writer, &[test.now()], &[1]);
                 test.clock.sleep(SETTLE).await;
-                let first = test.paused.race().await;
+                let first = test.pause.race().await;
                 let Test {
                     node,
                     clock,
@@ -1579,10 +1579,10 @@ fn ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit(
                 let mut reader = test.reader(&["value"], Mode::Complete).await;
                 let mut writer = test.writer("a", &["value"]).await;
                 let now = test.now();
-                test.paused.pause();
+                test.pause.pause();
                 write_samples(&mut writer, now, PAST_WINDOW);
                 test.clock.sleep(SETTLE).await;
-                let first = test.paused.race().await;
+                let first = test.pause.race().await;
                 let charge = charge(&reader.next().await.expect("a frame").view());
                 assert!(charge > WINDOW, "{charge} bytes spend the window");
                 // The reader holds the frame, so the next waits for credit.
@@ -1613,12 +1613,12 @@ fn gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window() {
                 let mut reader = test.reader(&["value"], Mode::Complete).await;
                 let mut writer = test.writer("a", &["value"]).await;
                 let now = test.now();
-                test.paused.pause();
+                test.pause.pause();
                 for n in 0..200 {
                     write_wide(&mut writer, now, n);
                 }
                 test.clock.sleep(SETTLE).await;
-                let first = test.paused.race().await;
+                let first = test.pause.race().await;
                 let mut spent = 0;
                 for n in 0..200 {
                     let received = reader.next().await.expect("a frame");
@@ -1650,12 +1650,12 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
                 let mut reader = test.reader(&["value"], Mode::Complete).await;
                 let mut writer = test.writer("a", &["value"]).await;
                 let now = test.now();
-                test.paused.pause();
+                test.pause.pause();
                 for n in 0..20 {
                     write_wide(&mut writer, now, n);
                 }
                 test.clock.sleep(SETTLE).await;
-                let first = test.paused.race().await;
+                let first = test.pause.race().await;
                 let frame = reader.next().await.expect("a frame");
                 let range = frame.view().range(0).expect("the index is present");
                 assert_eq!(
