@@ -696,7 +696,7 @@ fn draft(name: &str) -> PathBuf {
 /// Makes the directory `foundation-node-<pid>-<test>-0` with the data directory that
 /// `fill` fills. A sweep on another test thread sees it only when it is complete.
 #[cfg(unix)]
-fn left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
+fn create_left(pid: u32, test: &str, fill: impl FnOnce(&Path)) -> PathBuf {
     let temp = std::env::temp_dir();
     let draft = draft(&format!("left-{pid}-{test}"));
     let data = draft.join("foundation-data/data");
@@ -716,9 +716,9 @@ fn a_rig_removes_the_directory_of_a_test_process_that_is_gone() {
         .spawn()
         .expect("start sleep");
     let sleep = Process(sleep);
-    let dead = left(gone(), "sweep", |_| {});
-    let own = left(std::process::id(), "sweep", |_| {});
-    let other = left(sleep.0.id(), "sweep", |_| {});
+    let dead = create_left(gone(), "sweep", |_| {});
+    let own = create_left(std::process::id(), "sweep", |_| {});
+    let other = create_left(sleep.0.id(), "sweep", |_| {});
     let _rig = Rig::new();
     assert!(!dead.exists(), "{} is still there", dead.display());
     for live in [own, other] {
@@ -732,7 +732,7 @@ fn a_rig_removes_the_directory_of_a_test_process_that_is_gone() {
 fn a_rig_removes_a_directory_that_a_test_left_read_only() {
     use std::os::unix::fs::PermissionsExt;
 
-    let dead = left(gone(), "read-only", |data| {
+    let dead = create_left(gone(), "read-only", |data| {
         keep(&data.join("budget"), POOL, 1);
         std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o555))
             .expect("make it read-only");
@@ -1178,7 +1178,7 @@ fn a_rig_keeps_8_mib_of_disk_for_each_core() {
 #[test]
 #[cfg(unix)]
 fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
-    left(gone(), "draft", |data| {
+    create_left(gone(), "draft", |data| {
         drop(Rig::new());
         assert!(data.exists(), "{} is gone", data.display());
     });
@@ -1188,8 +1188,8 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`create_tree`] and while [`left`] fills its
-/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
+/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills
+/// its draft, as a killed run does. Does nothing when [`DIES`] is not set.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1199,7 +1199,7 @@ fn a_run_dies_while_it_leaves_a_directory() {
     )]
     if std::env::var_os(DIES).is_some() {
         create_tree(0);
-        left(gone(), "died", |_| std::process::abort());
+        create_left(gone(), "died", |_| std::process::abort());
     }
 }
 
@@ -1217,7 +1217,11 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
         .spawn()
         .expect("run the test binary");
     let status = child.wait().expect("wait for the test binary");
-    assert_eq!(status.signal(), Some(6), "the run does not abort in `left`");
+    assert_eq!(
+        status.signal(),
+        Some(6),
+        "the run does not abort in `create_left`"
+    );
     drop(Rig::new());
     // Any draft of the child, whatever its name.
     let pid = format!("{}-", child.id());
