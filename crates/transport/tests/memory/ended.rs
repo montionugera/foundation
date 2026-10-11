@@ -23,10 +23,13 @@ const PAUSE: Span = Span::from_nanos(100_000_000);
 /// When the server stops the stream or closes the session, after it reads the first
 /// message: after the client cuts its send, and before the client looks again.
 const ACT: Span = Span::from_nanos(200_000_000);
+/// Long enough for noq-proto to free its pieces of a stream that ended while its
+/// connection lives.
+const SETTLE: Span = Span::from_nanos(200_000_000);
 /// The parts of the message that the window cuts.
 const PARTS: usize = 150;
 /// More than the parts that the window takes before it cuts the message: its room
-/// after the fill holds 8 runs, and the margin covers the other heap changes.
+/// after the fill holds 8 runs.
 const TAKEN: usize = 16;
 /// The bytes of each part: one over the longest chunk that noq-proto copies, so that
 /// each part stays apart in the list.
@@ -47,22 +50,33 @@ enum End {
 
 pub(crate) fn main() {
     for end in [End::Stop, End::Cancel, End::Close, End::PeerClose] {
-        let [sent, sent_after] = run(end, false);
-        let [parted, parted_after] = run(end, true);
-        // The heap also changes for other causes in the end, by about the same in
-        // each run.
+        let [sent, sent_ended] = run(end, false);
+        let [parted, parted_ended] = run(end, true);
         let list = (PARTS - TAKEN) * mem::size_of::<Part>();
         assert!(
-            parted + sent_after >= sent + parted_after + list,
-            "{end:?}: the heap goes from {parted} to {parted_after} bytes after a \
-             message of {PARTS} parts, and from {sent} to {sent_after} after a send"
+            parted >= sent + list,
+            "{end:?}: the stream keeps the parts list of the cut message: {parted} \
+             bytes after the cut of a message of {PARTS} parts, {sent} after a send"
         );
+        let ended = format!(
+            "{end:?}: the heap after the end is {parted_ended} bytes for a message of \
+             {PARTS} parts, {sent_ended} for a send"
+        );
+        match end {
+            End::Stop | End::Cancel => assert_eq!(parted_ended, sent_ended, "{ended}"),
+            // noq-proto keeps its pieces of the message until the connection drains,
+            // and the drain frees the whole connection.
+            End::Close | End::PeerClose => {
+                assert!(parted_ended < sent_ended + list, "{ended}");
+            }
+        }
     }
 }
 
-/// The heap bytes that the client holds just before and just after its stream ends
-/// in the way of `end`, while the window cuts a message of [`PARTS`] parts when
-/// `parted`, else of one block of the same bytes.
+/// The heap bytes that the client holds while the window cuts a message of [`PARTS`]
+/// parts when `parted`, else of one block of the same bytes, and after its stream
+/// ends in the way of `end` and the cut send is dropped: after [`SETTLE`] when the
+/// connection lives, else at once.
 fn run(end: End, parted: bool) -> [usize; 2] {
     let mut sim = Sim::new(sim::Config::default());
     let client = sim.node(sim::node::Config::default());
@@ -98,8 +112,7 @@ fn run(end: End, parted: bool) -> [usize; 2] {
             send.as_mut().poll(&mut cx).is_pending(),
             "the window cuts the send"
         );
-        let before = ALLOCATOR.held();
-        let mut sending = Some(send);
+        let cut = ALLOCATOR.held();
         let expected = match end {
             End::Stop => {
                 clock.sleep(ACT).await;
@@ -114,21 +127,24 @@ fn run(end: End, parted: bool) -> [usize; 2] {
                 session.close(Code(9));
                 Error::Closed { code: Code(9) }
             }
-            End::Cancel => {
-                sending = None;
-                Error::Reset { code: Code(0) }
-            }
+            End::Cancel => Error::Reset { code: Code(0) },
         };
-        let after = ALLOCATOR.held();
-        if let Some(sent) = sending.map(|mut send| send.as_mut().poll(&mut cx)) {
-            assert_eq!(sent, Poll::Ready(Err(expected)), "{end:?}: the cut send");
-        } else {
+        if let End::Cancel = end {
+            drop(send);
             let written = sender.try_send(filled(&pool, 1)).map(|_| ());
             assert_eq!(written, Err(expected), "{end:?}: a send after the cancel");
+        } else {
+            let polled = send.as_mut().poll(&mut cx);
+            assert_eq!(polled, Poll::Ready(Err(expected)), "{end:?}: the cut send");
+            drop(send);
         }
+        if let End::Stop | End::Cancel = end {
+            clock.sleep(SETTLE).await;
+        }
+        let ended = ALLOCATOR.held();
         session.close(Code(0));
         clock.sleep(Span::MILLISECOND).await;
-        [before, after]
+        [cut, ended]
     })
     .expect("the run ends")
 }
