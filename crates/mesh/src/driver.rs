@@ -1352,6 +1352,7 @@ mod tests {
         /// shows it.
         newest: Option<Pointer>,
         /// The chunks of the tree in use, as `Debug` gives them: `Chunks` has no `Eq`.
+        /// No public call shows them.
         chunks: String,
     }
 
