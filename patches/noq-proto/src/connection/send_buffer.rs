@@ -346,12 +346,15 @@ impl SendBuffer {
         self.unsent != self.offset() || !self.retransmits.is_empty()
     }
 
-    /// Frees each byte. The offset stays, as the final offset of a reset.
-    pub(super) fn clear(&mut self) {
+    /// Frees each byte, and returns how many it freed. The offset stays, as the final
+    /// offset of a reset.
+    pub(super) fn clear(&mut self) -> u64 {
+        let held = self.held();
         self.data.pop_front(self.data.len());
         self.unsent = self.offset();
         self.acks = ArrayRangeSet::new();
         self.retransmits = ArrayRangeSet::new();
+        held
     }
 
     /// The bytes that the buffer holds, also those acknowledged after a gap
