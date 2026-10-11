@@ -95,7 +95,16 @@ fn definitions_give_the_chunks_of_their_tree_and_no_other() {
     for digest in &update.chunks {
         assert_eq!(kept.get(*digest), chunks.get(*digest));
     }
-    for digest in other.chunks.iter().filter(|d| !update.chunks.contains(d)) {
+    let only_other: Vec<_> = other
+        .chunks
+        .iter()
+        .filter(|digest| !update.chunks.contains(digest))
+        .collect();
+    assert!(
+        !only_other.is_empty(),
+        "the second tree has no chunk of its own"
+    );
+    for digest in only_other {
         assert_eq!(kept.get(*digest), None);
     }
 }
