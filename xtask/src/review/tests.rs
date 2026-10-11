@@ -2547,6 +2547,63 @@ fn a_later_round_whose_range_names_no_commit_requires_architecture() {
 }
 
 #[test]
+fn a_last_round_that_ends_before_a_code_commit_fails_at_the_head() {
+    let (repo, start) = Repo::with_pr("review-end-code");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = surfaced(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    let record = record(vec![first(END), round]);
+    assert_eq!(check_at(&repo, &record), Vec::<String>::new());
+    let head = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 2 ends at `{end}`, and the range from it to the head \
+             `{head}` changes code at `a.rs:1`. A commit that changes code needs a \
+             new round."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_ends_off_the_chain_of_the_head_fails() {
+    let (repo, start) = Repo::with_pr("review-end-off");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = surfaced(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    repo.git(&["reset", "--quiet", "--hard", &start]);
+    let head = repo.commit("docs/y.md", "another doc\n");
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![format!(
+            "review round 2 ends at {end}, not at the head {head}. A commit after \
+             the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_skips_the_breaker_on_a_range_that_changes_code_fails() {
+    let (repo, start) = Repo::with_pr("review-skip-code");
+    let skip =
+        "reviewer\nBreaker: skipped, the check counts no code change in the range";
+    let text = repo.commit("docs/x.md", "a doc\n");
+    let round = |end: &str| {
+        let round = surfaced(&clean(2, skip, &format!("{start}..{end}")));
+        record(vec![first(END), round])
+    };
+    assert_eq!(check_at(&repo, &round(&text)), Vec::<String>::new());
+    let code = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &round(&code)),
+        vec!["review round 2 skips `breaker`, but its range changes code at `a.rs:1`."]
+    );
+    repo.remove();
+}
+
+#[test]
 fn reads_the_surface_only_of_a_later_round_with_no_architecture() {
     let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
     let check = |comments| {

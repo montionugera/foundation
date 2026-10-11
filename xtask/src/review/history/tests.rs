@@ -33,7 +33,7 @@ impl Repo {
         command
     }
 
-    fn git(&self, args: &[&str]) -> String {
+    pub(in crate::review) fn git(&self, args: &[&str]) -> String {
         let output = self.command().args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_string()
