@@ -368,15 +368,9 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        digest, home, index, join, key, name, options, public, spec, status_bytes,
-        ticket_change, with_status,
+        digest, encoded, home, index, join, key, name, options, public, spec,
+        status_bytes, ticket_change, with_status,
     };
-
-    fn encoded(change: &Change) -> Vec<u8> {
-        let mut out = Vec::new();
-        change.encode(&mut out);
-        out
-    }
 
     #[test]
     fn a_home_change_has_a_fixed_byte_form() {

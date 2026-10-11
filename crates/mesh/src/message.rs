@@ -273,16 +273,10 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
+    use crate::common::at;
 
     fn node(bits: u128) -> node::Key {
         node::Key::from_u128(bits)
-    }
-
-    fn at(term: u64, index: u64) -> Position {
-        Position {
-            term: Term(term),
-            index,
-        }
     }
 
     fn a_position() -> impl Strategy<Value = Position> {

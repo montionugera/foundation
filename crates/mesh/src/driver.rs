@@ -1273,7 +1273,7 @@ mod tests {
     use crate::card;
     use crate::change::{CHUNKS_MAX, Unknown};
     use crate::common::{
-        self, create_pool, key, message, private, proven, public, unchecked,
+        self, create_pool, encoded, key, message, private, proven, public, unchecked,
     };
     use crate::file::Blocks;
     use crate::region::Unfit;
@@ -5097,12 +5097,6 @@ mod tests {
         }
     }
 
-    fn encoded(change: &Change) -> Vec<u8> {
-        let mut data = Vec::new();
-        change.encode(&mut data);
-        data
-    }
-
     // A body that does not decode is a refusal on every node of this build, not a
     // stop, so one voter that proposes bad bytes cannot halt the region.
     #[test]
@@ -6974,14 +6968,7 @@ mod tests {
         use transport::stream::Incoming;
 
         use super::*;
-        use crate::common::proven_at;
-
-        fn at(term: u64, index: u64) -> Position {
-            Position {
-                term: Term(term),
-                index,
-            }
-        }
+        use crate::common::{at, proven_at};
 
         fn voters(incoming: &[u8], outgoing: &[u8]) -> Voters {
             Voters {

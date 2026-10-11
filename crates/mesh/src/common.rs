@@ -299,6 +299,21 @@ pub(crate) fn unchecked(card: &card::Signed) -> card::Unchecked {
     }
 }
 
+/// The byte form of `change`.
+pub(crate) fn encoded(change: &Change) -> Vec<u8> {
+    let mut out = Vec::new();
+    change.encode(&mut out);
+    out
+}
+
+/// The position `index` of `term`.
+pub(crate) fn at(term: u64, index: u64) -> Position {
+    Position {
+        term: Term(term),
+        index,
+    }
+}
+
 pub(crate) fn home(i: u128, h: u128) -> Change {
     Change::Home {
         index: index(i),

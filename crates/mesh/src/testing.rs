@@ -162,9 +162,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
 
-    use raft::{
-        Answer, Body, Data, Grant, Link, Position, Proof, Signature, Term, Voters,
-    };
+    use raft::{Answer, Body, Data, Grant, Link, Proof, Signature, Term, Voters};
     use spec::Pointer;
 
     use super::*;
@@ -173,7 +171,7 @@ mod tests {
 
     use crate::bytes::{put_change, put_position};
     use crate::change::{CHUNKS_MAX, Malformed, Undecoded};
-    use crate::common::key;
+    use crate::common::{at, key};
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -469,13 +467,6 @@ mod tests {
     // The byte form `unhomed` gave, with a count of 0 homes.
     fn homed(unhomed: &[u8]) -> Vec<u8> {
         [unhomed, &[0, 0]].concat()
-    }
-
-    fn at(term: u64, index: u64) -> Position {
-        Position {
-            term: Term(term),
-            index,
-        }
     }
 
     fn proof() -> Proof {
