@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::poll_fn;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::rc::{Rc, Weak};
@@ -45,7 +46,7 @@ pub(super) struct Used {
 /// effect or a newer pointer replaces it.
 pub(super) struct Newest {
     pub(super) pointer: Pointer,
-    // The chunks that its change listed. Each read gets them again.
+    // The chunks that its change listed, until a read takes them.
     listed: BTreeSet<Digest>,
     // Each chunk of its tree that a read got from the store.
     pub(super) got: Vec<Vec<u8>>,
@@ -174,7 +175,7 @@ impl Used {
                 for chunk in &newest.got {
                     chunks.insert(chunk.clone());
                 }
-                let listed = newest.listed.clone();
+                let listed = mem::take(&mut newest.listed);
                 Job::Read { listed, chunks }
             }
         };
