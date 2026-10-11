@@ -2009,50 +2009,70 @@ mod lock {
         assert_eq!(seen, [true; 2]);
     }
 
+    /// Which of the stop of a node that serves and the start of a second node at its
+    /// port comes first.
+    #[derive(Clone, Copy)]
+    enum Order {
+        Stop,
+        Start,
+    }
+
+    /// Runs a node that serves and a second node at its port, with the second of
+    /// `order` 5 µs times `step` after the first. Returns whether the second node
+    /// served, and asserts that it gave `Err(busy())` when it did not.
+    fn second_served(order: Order, step: i64) -> bool {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        let delay = Span::from_nanos(step * 5_000);
+        let (second, probe) = match order {
+            Order::Stop => {
+                first.stop();
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                (second, probe)
+            }
+            Order::Start => {
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                first.stop();
+                (second, probe)
+            }
+        };
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        second.stop();
+        assert_eq!(sim.run(), Ok(()), "at {step}");
+        assert_eq!(first.join(), Ok(()), "at {step}");
+        let served = fate(&probe) == Fate::Ran;
+        let expected = if served { Ok(()) } else { Err(busy()) };
+        assert_eq!(second.join(), expected, "at {step}");
+        served
+    }
+
     /// A node that serves stops, and a second node at its port starts at a step of
-    /// that stop, or the stop comes at a step of the second start: the second node
-    /// finds the lock held or serves, and never fails on the port.
+    /// that stop: the second node finds the lock held or serves, and never fails on
+    /// the port.
     #[test]
     fn a_start_at_each_step_of_the_stop_of_a_node_at_its_port_never_fails_on_the_port()
     {
         let mut seen = [false; 2];
         for step in 0..400 {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            let first = start_on(&host, 0);
-            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
-            first.stop();
-            let delay = Span::from_nanos(step * 5_000);
-            assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
-            let second = start_on(&host, 0);
-            let probe = probe(&second);
-            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
-            second.stop();
-            assert_eq!(sim.run(), Ok(()), "at {step}");
-            assert_eq!(first.join(), Ok(()), "at {step}");
-            let served = fate(&probe) == Fate::Ran;
-            let expected = if served { Ok(()) } else { Err(busy()) };
-            assert_eq!(second.join(), expected, "at {step}");
-            seen[usize::from(served)] = true;
+            seen[usize::from(second_served(Order::Stop, step))] = true;
         }
+        assert_eq!(seen, [true; 2]);
+    }
+
+    /// A second node starts at the port of a node that serves, and the first node
+    /// stops at a step of that start: the second node finds the lock held or serves,
+    /// and never fails on the port.
+    #[test]
+    fn a_stop_at_each_step_of_a_start_at_the_port_of_a_node_never_fails_on_the_port() {
+        let mut seen = [false; 2];
         for step in 0..400 {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            let first = start_on(&host, 0);
-            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
-            let second = start_on(&host, 0);
-            let probe = probe(&second);
-            let delay = Span::from_nanos(step * 5_000);
-            assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
-            first.stop();
-            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
-            second.stop();
-            assert_eq!(sim.run(), Ok(()), "at {step}");
-            assert_eq!(first.join(), Ok(()), "at {step}");
-            let served = fate(&probe) == Fate::Ran;
-            let expected = if served { Ok(()) } else { Err(busy()) };
-            assert_eq!(second.join(), expected, "at {step}");
-            seen[usize::from(served)] = true;
+            seen[usize::from(second_served(Order::Start, step))] = true;
         }
         assert_eq!(seen, [true; 2]);
     }
