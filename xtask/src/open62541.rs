@@ -1183,12 +1183,11 @@ fn key(instruction: &str) -> Option<String> {
     Some(key.join(" "))
 }
 
-/// Each line of `disassembly`, the output of `objdump -d`, that is not the header of a
-/// section or a function, with the section that holds it and the function symbol that
-/// labels it, or `None` when no function symbol does.
+/// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
+/// it and the function symbol that labels it, or `None` when no function symbol does.
 fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
     let (mut section, mut function) = ("", None);
-    disassembly.lines().filter_map(move |line| {
+    disassembly.lines().map(move |line| {
         if let Some(name) = line.strip_prefix("Disassembly of section ") {
             section = name.trim_end_matches(':');
             function = None;
@@ -1197,10 +1196,8 @@ fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)>
         {
             // A section with no symbol at its start shows as `<.text>`.
             function = Some(name.1).filter(|name| !name.starts_with('.'));
-        } else {
-            return Some((section, function, line));
         }
-        None
+        (section, function, line)
     })
 }
 
@@ -1412,23 +1409,6 @@ Disassembly of section .text:
         assert_eq!(
             Vec::from_iter(found.iter().map(|found| found.symbol.as_str())),
             ["UA_DateTime_now", "strtod"]
-        );
-    }
-
-    /// No caller sees a header line: `key` of its empty text is `None`, and
-    /// `relocation` finds no `R_` word in it. So only this test kills a `places` that
-    /// gives one.
-    #[test]
-    fn places_gives_each_line_but_the_headers() {
-        let disassembly = "\
-Disassembly of section .text:
-
-0000000000000000 <f>:
-   0:\tc3\tret
-";
-        assert_eq!(
-            Vec::from_iter(places(disassembly)),
-            [(".text", None, ""), (".text", Some("f"), "   0:\tc3\tret")]
         );
     }
 
