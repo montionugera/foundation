@@ -391,6 +391,7 @@ unsafe extern "C" {
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);
+    pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,

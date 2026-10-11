@@ -42,9 +42,6 @@ pub(crate) struct Client {
     connections: Manager,
 }
 
-/// The time a connect waits for an active session.
-const TIMEOUT: Span = Span::from_nanos(5_000_000_000);
-
 /// The answer of the read in flight.
 #[derive(Default)]
 struct Answer {
@@ -62,8 +59,8 @@ impl Client {
     /// # Errors
     ///
     /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
-    /// is not active after 5 s, else the status of open62541 when it refuses `url` or
-    /// the connect fails.
+    /// is not active after the request timeout of the client (5 s), else the status of
+    /// open62541 when it refuses `url` or the connect fails.
     ///
     /// # Panics
     ///
@@ -76,8 +73,7 @@ impl Client {
     ) -> Result<Self, Status> {
         let url =
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
-        let mut deadline = pin!(clock.sleep(TIMEOUT));
-        let connections = Manager::new(clock, net, rng);
+        let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
@@ -86,6 +82,10 @@ impl Client {
             answer: Box::default(),
             connections,
         };
+        // SAFETY: the client lives.
+        let timeout = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
+        let mut deadline =
+            pin!(clock.sleep(Span::from_nanos(i64::from(timeout) * 1_000_000)));
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };

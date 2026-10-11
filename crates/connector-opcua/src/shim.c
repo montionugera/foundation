@@ -623,6 +623,11 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
     return UA_Client_newWithConfig(&config);
 }
 
+/* Gives the timeout of the requests of `client`, in ms. */
+UA_UInt32 shim_client_timeout(UA_Client *client) {
+    return UA_Client_getConfig(client)->timeout;
+}
+
 /* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
  * `client`. The loop must hold no other client or server. A later run of the loop
  * fails. The delete sends no CloseSession, so an active session stays on the server
