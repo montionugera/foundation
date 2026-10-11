@@ -15,7 +15,8 @@
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
   Supersedes "The supervisor stops; a spec change starts it again" of the plan on #338
   (https://github.com/synnaxlabs/foundation/issues/338#issuecomment-5994872059).
-  The class of a hub error that `kind::Context::reader` or `writer` gives: `Config`,
+  The class of a hub error that the supervisor's open of a reader or
+  `kind::Context::writer` gives: `Config`,
   with one diagnostic with no span and the hub error's text, for an error that only a
   spec change fixes: reader `Empty` (`connector.no-channel`) and `ManyIndexes`
   (`connector.many-indexes`); writer `Unknown` (`connector.unknown-channel`), `Empty`

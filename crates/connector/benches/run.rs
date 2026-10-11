@@ -199,7 +199,9 @@ fn run(step: Step) -> Line {
         let mut state = open_state(&config.hub, &connector).await;
         let (token, document) = (Token::new(), Document::default());
         let result = Supervisor::new(config)
-            .run("steps", connector, &document, &token)
+            .open("steps", connector, &document, &token)
+            .await
+            .run()
             .await;
         node.clock().sleep(Span::SECOND).await;
         let last = last_state(&mut state).await;

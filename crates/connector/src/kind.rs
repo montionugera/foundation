@@ -118,6 +118,7 @@ pub struct Context<C> {
     cancel: cancel::Token,
     tasks: Tasks,
     status: status::Status,
+    reader: Option<hub::reader::Reader>,
     // Its `tasks` field is the shard's, which no run counts: spawn only through
     // `self.tasks`.
     inputs: Rc<supervisor::Config>,
@@ -131,6 +132,7 @@ impl<C> Context<C> {
         cancel: cancel::Token,
         tasks: Tasks,
         status: status::Status,
+        reader: Option<hub::reader::Reader>,
         inputs: Rc<supervisor::Config>,
     ) -> Self {
         Self {
@@ -139,6 +141,7 @@ impl<C> Context<C> {
             cancel,
             tasks,
             status,
+            reader,
             inputs,
         }
     }
@@ -151,6 +154,7 @@ impl<C> Context<C> {
             cancel: self.cancel,
             tasks: self.tasks,
             status: self.status,
+            reader: self.reader,
             inputs: self.inputs,
         }
     }
@@ -214,35 +218,13 @@ impl<C> Context<C> {
         self.inputs.hub.writer(config).await.map_err(writer_error)
     }
 
-    /// Opens a reader session with `settings`, as this connector: its subject and its
-    /// name are the connector's name. An open takes over the last session of the
-    /// connector's reader on its index, and starts as [`hub::reader::Config::name`]
-    /// says.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Config`] with one diagnostic and no span: `connector.no-channel` when
-    /// the selector matches no channel, and `connector.many-indexes` when the channels
-    /// are on more than one index. [`Error::Retry`] with the hub's error when the home
-    /// of the index is another node, or the mesh stopped.
-    ///
-    /// # Panics
-    ///
-    /// As [`hub::Hub::reader`]: when `settings.hold` is negative, or is not zero in
-    /// `Latest` mode. [`reader::read`] gives neither. When the hub gives an error that
-    /// this open cannot get.
-    pub async fn reader(
-        &self,
-        settings: &reader::Settings,
-    ) -> Result<hub::reader::Reader, Error> {
-        let config = hub::reader::Config {
-            select: settings.select.clone(),
-            mode: settings.mode,
-            subject: self.name.clone(),
-            name: Some(self.name.clone()),
-            hold: settings.hold,
-        };
-        self.inputs.hub.reader(config).await.map_err(reader_error)
+    /// Takes the reader that the supervisor opened for this run, under the
+    /// connector's name, from the settings that `check` gave. `None` when `check`
+    /// gave none, or after the first call. When the reader ends with
+    /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
+    /// new reader before the next run.
+    pub fn reader(&mut self) -> Option<hub::reader::Reader> {
+        self.reader.take()
     }
 
     /// The count `name` of the connector's status, `<connector>.status.<name>`, to
@@ -395,7 +377,7 @@ const LEASE: Code = Code::new("connector.lease");
 ///
 /// For `Unsynced`, since a run starts only once the node has mesh time, and for an
 /// error of a reader away from its home, since a named reader opens only at its home.
-fn reader_error(error: hub::reader::Error) -> Error {
+pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     use hub::reader::Error as Hub;
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
@@ -812,6 +794,7 @@ mod tests {
                 token.clone(),
                 tasks.clone(),
                 status::Status::new(Vec::new()),
+                None,
                 inputs,
             );
             let clock = node.clock();
@@ -840,7 +823,8 @@ mod tests {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
             let status = status::Status::new(Vec::new());
-            let ctx = Context::new(name("a"), (), Token::new(), tasks, status, inputs);
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
         });
         assert_ne!(a, b);
