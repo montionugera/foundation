@@ -215,19 +215,23 @@
   sessions stay; else shard 0 closes each session that holds the place with
   `Code(wire::session::REFUSED)`. So `accept` refuses no session for the bound. A place
   is as old as the session that took it. A new session of a node key takes the key's
-  place while a session still holds it, and the place keeps its age, so a redial does
-  not make it newer. A place holds each session of its peer that runs: the transport
-  keeps the older session of a node key when the newer one has already ended, so the
-  bound closes both. A peer that proves a right leaves the bound: its place frees and
-  its sessions stay. Membership is the one proof today, which shard 0 reads again for
-  each held place as each new session of a peer outside the region arrives. The client
-  hello of #1744 and the ticket join of #1157 must each free the place when its proof
-  holds. Guarantee: a peer outside the region keeps its session until 256 later peers
-  took a place, so the bound never closes a peer that proves its right before that.
-  Limit: a flood that takes 256 places in the time that a peer needs to prove closes
-  that peer's session. Only a limit on handshakes before admission bounds that rate
-  (#563). The stop rule holds: no clone of a session lives outside a future that shard 0
-  drops. Supersedes the close of each session that gets no place of
+  place while a session of the key still holds it at `accept`, and the place keeps its
+  age. When none holds it (the transport closes the old session as the new one arrives,
+  and shard 0 can drop it first), the new session takes a new place, as a new peer does,
+  and is one of the 256 later peers of the guarantee (`laptop.architect-2`, 07:28 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A place
+  holds each session of its peer that runs: the transport keeps the older session of a
+  node key when the newer one has already ended, so the bound closes both. A peer that
+  proves a right leaves the bound: its place frees and its sessions stay. Membership is
+  the one proof today, which shard 0 reads again for each held place as each new session
+  of a peer outside the region arrives. The client hello of #1744 and the ticket join of
+  #1157 must each free the place when its proof holds. Guarantee: a peer outside the
+  region keeps its session until 256 later peers took a place, so the bound never closes
+  a peer that proves its right before that. Limit: a flood that takes 256 places in the
+  time that a peer needs to prove closes that peer's session. Only a limit on handshakes
+  before admission bounds that rate (#563). The stop rule holds: no clone of a session
+  lives outside a future that shard 0 drops. Supersedes the close of each session that
+  gets no place of
   https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
   (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
   first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
