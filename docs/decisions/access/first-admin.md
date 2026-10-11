@@ -67,8 +67,12 @@
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6070697149) and
   `laptop.architect-2` (2026-10-08T19:20:33Z,
   https://github.com/synnaxlabs/foundation/pull/1970#issuecomment-6067332179).
-  Amended: `os` makes `admin.key` at mode 0600, which an ACL of the data directory can
-  open to another user (Who attacks in `docs/security.md`). A start that fails before
-  its founding is durable leaves `admin.key`, and the next start founds with it (NODE
-  MESH). Decided by `laptop.architect` for `docs/security.md` (2026-10-11T01:03:52Z,
-  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194).
+  Scope, with the decision unchanged: this states where "only the user who started the
+  node can read the key" and "the first `foundation start`" hold. `os` makes `admin.key`
+  at mode 0600 and does not change the mode of one that is there, so a wider mode or an
+  ACL of the data directory can open it to another user (Who attacks in
+  `docs/security.md`). The start that founds the root region reads a valid `admin.key`
+  in the data directory and founds with it, also one that a start left when it failed
+  after `admin.key` was durable and before its founding was durable; else it makes one
+  (NODE MESH). Approved by `laptop.architect` (2026-10-11T01:18:38Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104126249).
