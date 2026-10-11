@@ -990,6 +990,8 @@ mod tests {
                         assert_eq!(poll_once(&mut first).await, Poll::Pending);
                         node.clock().sleep(Span::from_nanos(100_000)).await;
                         assert_eq!(poll_once(&mut first).await, Poll::Pending);
+                        node.clock().sleep(Span::from_nanos(100_000)).await;
+                        assert_eq!(poll_once(&mut first).await, Poll::Pending);
                     }
                     assert_eq!(store.put(digest, &block).await, Ok(()), "seed {seed}");
                 })
@@ -1057,12 +1059,14 @@ mod tests {
         // The next put must not find the file busy.
         #[test]
         fn after_a_dropped_put_and_a_dropped_get_is_not_busy() {
-            let (mut sim, node) = create_default_node(0);
+            let (mut sim, node) = create_default_node(5);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
                 {
                     let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
                     assert_eq!(poll_once(&mut put).await, Poll::Pending);
                     node.clock().sleep(Span::from_nanos(100_000)).await;
                     assert_eq!(poll_once(&mut put).await, Poll::Pending);
@@ -1082,7 +1086,7 @@ mod tests {
         // flight. The remove still ends, and must not unlink the next put's file.
         #[test]
         fn after_a_put_dropped_in_its_remove_keeps_the_chunk() {
-            for seed in 0..64 {
+            for seed in 0..128 {
                 let (mut sim, node) = create_default_node(seed);
                 let (digest, block) = chunk(7, 3000);
                 let put = block.clone();
@@ -1093,6 +1097,8 @@ mod tests {
                     let store = open(&node).await.unwrap();
                     {
                         let mut first = pin!(store.put(digest, &put));
+                        assert_eq!(poll_once(&mut first).await, Poll::Pending);
+                        node.clock().sleep(Span::from_nanos(100_000)).await;
                         assert_eq!(poll_once(&mut first).await, Poll::Pending);
                         node.clock().sleep(Span::from_nanos(100_000)).await;
                         assert_eq!(poll_once(&mut first).await, Poll::Pending);
@@ -1362,13 +1368,13 @@ mod tests {
             .unwrap();
         }
 
-        // Each poll starts one call (the create, the write, the sync) and the sleep
-        // after it ends that call, so the put drops with the call of `polls` in
-        // flight. A get and a second put wait for it from their own tasks.
+        // Each poll starts one call (the free, the create, the write, the sync) and
+        // the sleep after it ends that call, so the put drops with the call of
+        // `polls` in flight. A get and a second put wait for it from their own tasks.
         #[test]
         fn dropped_in_flight_leaves_the_chunk_whole_or_absent() {
-            for polls in 1..=3 {
-                let (mut sim, node) = create_default_node(polls);
+            for polls in 1..=4 {
+                let (mut sim, node) = create_default_node(5);
                 sim.run_on(&node, move |node, tasks| async move {
                     let store = Rc::new(open(&node).await.unwrap());
                     let (digest, block) = chunk(7, 3000);
@@ -1922,6 +1928,8 @@ mod tests {
                 for index in 0..200 {
                     let (digest, block) = chunk(7, 3000 + index);
                     let mut put = pin!(store.put(digest, &block));
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
                     assert_eq!(poll_once(&mut put).await, Poll::Pending);
                     node.clock().sleep(Span::from_nanos(100_000)).await;
                     assert_eq!(poll_once(&mut put).await, Poll::Pending);
