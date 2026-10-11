@@ -89,10 +89,9 @@
   no handle left, the create of the larger file gets the room of the removed one,
   because `Files::open` syncs the directory and opens again on `Full` (ENV SEAMS,
   #1622; #1350). The next write puts zeros over the bytes of the stopped write and
-  syncs, and only then
-  writes its record: with one sync, a power cut can keep the record and not the zeros
-  (SIM CRASH), and an open then reads the old bytes as a header (PR 1 of #1091, approved
-  by the architect, 2026-10-07T05:29:41Z:
+  syncs, and only then writes its record: with one sync, a power cut can keep the record
+  and not the zeros (SIM CRASH), and an open then reads the old bytes as a header (PR 1
+  of #1091, approved by the architect, 2026-10-07T05:29:41Z:
   https://github.com/synnaxlabs/foundation/issues/1091#issuecomment-6031627973, and the
   text of this rule, 2026-10-07T08:42:04Z:
   https://github.com/synnaxlabs/foundation/pull/1284#issuecomment-6034282653). A header

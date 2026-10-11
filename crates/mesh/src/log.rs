@@ -330,7 +330,7 @@ impl Log {
         let record = encode(self.next, hard, entries);
         let len = wide(record.len());
         let mut start = wide(start(narrow(self.offset)));
-        if start.saturating_add(len) > current.len() {
+        let file = if start.saturating_add(len) > current.len() {
             // A file with no record is made again, larger: a scan refuses a file
             // with no record before another file.
             let empty = self.offset == 0;
@@ -342,11 +342,13 @@ impl Log {
             let mode = Mode::Create {
                 len: len.max(SEGMENT),
             };
-            *file = Some(self.files.open(&path, mode).await?);
+            let opened = self.files.open(&path, mode).await?;
             self.files.sync_dir(&self.dir).await?;
             (self.number, self.offset, start) = (number, 0, 0);
-        }
-        let file = file.as_ref().expect(held);
+            &*file.insert(opened)
+        } else {
+            current
+        };
         let end = start.saturating_add(len);
         let mut rest = &record[..];
         let written = self.blocks.write(file, start, &mut rest).await;
@@ -3074,7 +3076,10 @@ mod tests {
             let ended = sim
                 .run_on(&node, move |node, _| async move {
                     let ended = match cut(open(&node), waits).await {
-                        Some(opened) => opened.map(|_| true).unwrap(),
+                        Some(opened) => {
+                            opened.unwrap();
+                            true
+                        }
                         None => false,
                     };
                     let (mut log, _) = open(&node).await.unwrap();
@@ -3197,7 +3202,10 @@ mod tests {
                     let (mut log, _) = open(&node).await.unwrap();
                     let large = [bytes(1, LARGE)];
                     match cut(log.write(None, &large), waits).await {
-                        Some(written) => written.map(|()| true).unwrap(),
+                        Some(written) => {
+                            written.unwrap();
+                            true
+                        }
                         None => false,
                     }
                 })
