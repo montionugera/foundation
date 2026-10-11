@@ -440,15 +440,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
                 "review round {number} has the range `{range}`, not `<from>..<head>`"
             )
         })?;
-        let findings = match findings.ok_or_else(|| missing("Findings"))? {
-            "none" => 0,
-            count => count.parse().map_err(|e| {
-                format!(
-                    "review round {number} has `Findings: {count}`, not a count or \
-                     `none`: {e}"
-                )
-            })?,
-        };
+        let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
         let hot = shown.end().map_or(Ok(false), |end| hot(end, number))?;
         Ok(Round {
             number,
@@ -464,6 +456,19 @@ fn round(comment: &Comment) -> Option<Parsed> {
     let round = fields().map_err(|problem| Malformed { binding, problem });
     let performance = performance(round.as_ref().ok().map(|r| &r.reviewers));
     Some(Parsed { round, performance })
+}
+
+/// The count of the `Findings:` value `findings` of round `number`: `none` is 0.
+fn count(number: u32, findings: &str) -> Result<u32, String> {
+    if findings == "none" {
+        return Ok(0);
+    }
+    findings.parse().map_err(|e| {
+        format!(
+            "review round {number} has `Findings: {findings}`, not a count or `none`: \
+             {e}"
+        )
+    })
 }
 
 /// The lines of `text`, each ended by `\n`, `\r\n`, or a lone `\r`, as on GitHub.
