@@ -29,7 +29,7 @@ fn seen(pointer: Pointer, definitions: &BTreeMap<Name, Definition>) -> Seen {
         definitions: definitions.clone(),
         behind: None,
         newest: None,
-        chunks: format!("{chunks:?}"),
+        chunks,
     }
 }
 
