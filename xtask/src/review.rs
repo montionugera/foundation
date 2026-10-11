@@ -131,9 +131,9 @@ struct Round {
 /// A round comment that does not parse.
 #[derive(Debug)]
 struct Malformed {
-    /// Its problem counts also in an old round that is not the last: it has a
-    /// `Reviewers:`, `Range:`, or `Findings:` line, so it is not free-form, or the
-    /// check cannot read it ([`Shown::hiding`]).
+    /// Its problem counts also when the round is not the last: the round is not old,
+    /// or it has a `Reviewers:`, `Range:`, or `Findings:` line, so it is not
+    /// free-form, or the check cannot read it ([`Shown::hiding`]).
     binding: bool,
     problem: String,
 }
@@ -207,7 +207,7 @@ fn problems(
         .comments
         .iter()
         .filter(|c| c.author == BOT)
-        .filter_map(|c| round(c).map(|round| (c.created.as_str(), round)))
+        .filter_map(round)
         .collect();
     if rounds.is_empty() {
         problems.push(format!(
@@ -215,26 +215,23 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, &(created, ref parsed)) in rounds.iter().enumerate() {
+    for (i, parsed) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
                 problems.extend(unnamed(round, &record.files, last, code_change)?);
             }
             Err(e) => {
-                if created >= CUTOFF || last || e.binding {
+                if last || e.binding {
                     problems.push(e.problem.clone());
                 }
             }
         }
         problems.extend(parsed.performance.clone());
     }
-    if let Some((
-        _,
-        Parsed {
-            round: Ok(round), ..
-        },
-    )) = rounds.last()
+    if let Some(Parsed {
+        round: Ok(round), ..
+    }) = rounds.last()
     {
         if round.findings > 0 {
             problems.push(format!(
@@ -417,8 +414,9 @@ fn round(comment: &Comment) -> Option<Parsed> {
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
     let breakerless = lines.clone().any(|l| l.starts_with("Breaker: skipped"));
-    let binding =
-        [reviewers, range, findings].iter().any(Option::is_some) || hiding.is_some();
+    let binding = !old
+        || [reviewers, range, findings].iter().any(Option::is_some)
+        || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
         let performer =
             reviewers.map_or_else(|| performer(text), |r| r.contains("performance"));
