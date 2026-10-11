@@ -821,17 +821,6 @@ fn a_crash_in_a_create_with_no_room_over_a_durable_file_with_no_bytes_can_remove
     }
 }
 
-/// The digest of `sim` after a file call on `node`. The delay of the call draws from
-/// the files stream, and the digest holds its end, so the digest shows each earlier
-/// draw.
-fn digest_after_a_call(sim: &mut Sim, node: &node::Node) -> u64 {
-    sim.run_on(node, |node, _| async move {
-        node.files().free().await.unwrap();
-    })
-    .unwrap();
-    sim.digest()
-}
-
 /// The delay of a file call on `node`. It draws from the files stream, so it shows
 /// how many draws came before it. Unlike the digest, it holds no result of a call.
 fn delay_of_a_call(sim: &mut Sim, node: &node::Node) -> Span {
@@ -1757,39 +1746,38 @@ fn a_power_cut_can_keep_or_drop_a_create_dir_in_flight() {
 #[test]
 fn a_power_cut_with_each_change_durable_draws_nothing() {
     for seed in 0..8 {
-        let digests = [Crash::Power, Crash::Process].map(|crash| {
+        let delays = [Crash::Power, Crash::Process].map(|crash| {
             let (mut sim, node) = disk(seed);
             crash_after(&mut sim, &node, crash, |node| async move {
                 drop(create_synced(&node).await);
             });
-            digest_after_a_call(&mut sim, &node)
+            delay_of_a_call(&mut sim, &node)
         });
-        assert_eq!(digests[0], digests[1], "{seed}");
+        assert_eq!(delays[0], delays[1], "{seed}");
     }
 }
 
-/// The delay of a file call after a crash by `crash` with an open of `a` by `mode`
-/// in flight, over a log of one change.
-fn delay_after(seed: u64, crash: Crash, mode: Mode) -> Span {
+/// The delays of two file calls after a crash by `crash` with a write open of `a` in
+/// flight, over a log of one change.
+fn delays_after(seed: u64, crash: Crash) -> [Span; 2] {
     let (mut sim, node) = disk(seed);
     crash_after(&mut sim, &node, crash, move |node| async move {
         drop(create_durable_empty(&node).await);
         let files = node.files();
         files.create_dir(Path::new("d")).await.unwrap();
         until_crash(&node).await;
-        hang(files.open(Path::new("a"), mode)).await;
+        hang(files.open(Path::new("a"), Mode::Write)).await;
     });
-    delay_of_a_call(&mut sim, &node)
+    [(); 2].map(|()| delay_of_a_call(&mut sim, &node))
 }
 
-// A `Process` crash in a create that makes a file draws once, so it is the reference
-// for one draw through public calls.
+// A `Process` crash draws nothing, so its second call is one draw after the crash.
 #[test]
 fn a_power_cut_over_a_log_that_is_not_empty_draws_once() {
     for seed in 0..8 {
-        let cut = delay_after(seed, Crash::Power, Mode::Write);
-        let create = Mode::Create { len: KIB };
-        assert_eq!(cut, delay_after(seed, Crash::Process, create), "{seed}");
+        let [cut, _] = delays_after(seed, Crash::Power);
+        let [_, once] = delays_after(seed, Crash::Process);
+        assert_eq!(cut, once, "{seed}");
     }
 }
 
