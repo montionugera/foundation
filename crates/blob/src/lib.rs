@@ -411,8 +411,9 @@ impl<'a> Flight<'a> {
         let len =
             u64::try_from(chunk.len()).expect("invariant: a length fits in 64 bits");
         let free_bytes = store.files.free().await?;
+        // A write over a file of the chunk's length takes no new room.
         if free_bytes.saturating_sub(len) < store.floor_bytes
-            && !self.sized(&path, len).await?
+            && self.len(&path).await? != Some(len)
         {
             return Err(Error::Floor {
                 len: chunk.len(),
@@ -449,16 +450,15 @@ impl<'a> Flight<'a> {
         Ok(())
     }
 
-    /// Whether the file at `path` has `len` bytes, so that a write of the chunk takes
-    /// no new room.
-    async fn sized(&self, path: &Path, len: u64) -> Result<bool, Error> {
+    /// The length of the file at `path`, or `None` when no file is there.
+    async fn len(&self, path: &Path) -> Result<Option<u64>, Error> {
         match self.store.files.open(path, Mode::Write).await {
             Ok(file) => {
-                let sized = file.len() == len;
+                let len = file.len();
                 file.close().await;
-                Ok(sized)
+                Ok(Some(len))
             }
-            Err(files::Error::NotFound { .. }) => Ok(false),
+            Err(files::Error::NotFound { .. }) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
