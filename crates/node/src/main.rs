@@ -1,5 +1,5 @@
 //! The `foundation` binary. It runs the command line, and `foundation start` runs a
-//! node until SIGINT or SIGTERM.
+//! node until a SIGINT or SIGTERM that reaches it.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -46,7 +46,8 @@ fn main() -> ExitCode {
     })
 }
 
-/// Runs a node on the data directory of `start` until SIGINT or SIGTERM stops it.
+/// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
+/// the process stops it.
 fn node(start: &Start) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;
