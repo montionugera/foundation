@@ -313,7 +313,7 @@ impl State {
         let member = Member {
             card,
             admission: join.admission,
-            ephemeral: record.options.ephemeral,
+            ephemeral: record.ephemeral(),
             status: join.status,
         };
         self.insert(member, names);

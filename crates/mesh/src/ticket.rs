@@ -127,10 +127,8 @@ impl fmt::Debug for Ticket {
 /// The region's record of a ticket. Its key is `public_key`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
-    /// The public half of the ticket's key pair.
-    pub(crate) public_key: PublicKey,
-    /// What the ticket admits.
-    pub(crate) options: Options,
+    public_key: PublicKey,
+    options: Options,
     uses: u64,
 }
 
@@ -142,6 +140,12 @@ impl Record {
             options,
             uses: 0,
         }
+    }
+
+    /// For a member that the ticket admits, the time offline after which the region
+    /// removes it, or `None` when it is not ephemeral.
+    pub(crate) const fn ephemeral(&self) -> Option<Span> {
+        self.options.ephemeral
     }
 
     /// How many nodes the ticket admitted.
@@ -366,6 +370,8 @@ mod tests {
         assert_eq!(admitted, Ok(()));
     }
 
+    // No caller sees a count above 1: check reads only whether a single-use ticket was
+    // used. So only this read of the count kills a wrap in place of the saturation.
     #[test]
     fn the_use_count_saturates() {
         let mut record = record(7, true);
