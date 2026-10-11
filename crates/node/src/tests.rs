@@ -3864,7 +3864,7 @@ mod port {
     }
 
     mod mesh {
-        use std::cell::RefCell;
+        use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -4513,10 +4513,10 @@ mod port {
             assert_eq!(closed, vec![]);
         }
 
-        /// A node outside the region that holds the oldest place, and that is a member
-        /// now, keeps its session at the bound, and no session closes.
+        /// A node outside the region that holds a place, and that is a member now, frees
+        /// its place and keeps its session: at the bound, no session closes.
         #[test]
-        fn a_peer_that_is_a_member_now_keeps_its_session_at_the_bound() {
+        fn a_peer_that_is_a_member_now_frees_its_place() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [
                 sim.node(sim::node::Config::default()),
@@ -4528,11 +4528,16 @@ mod port {
             shard(&hosts[0], move |own, tasks| async move {
                 let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
                 let now = Peer::Node(CLIENT.public());
+                let joined = Cell::new(false);
                 let mut places = route::Places::default();
                 let (mut sessions, mut holds) = (Vec::new(), Vec::new());
                 for _ in 0..257 {
                     let session = transport.accept().await.expect("a session");
-                    holds.push(places.take(&session, |peer| peer == now));
+                    let hold =
+                        places.take(&session, |peer| joined.get() && peer == now);
+                    assert!(hold.is_some());
+                    joined.set(joined.get() || session.peer() == now);
+                    holds.push(hold);
                     sessions.push(session);
                 }
                 let closed = closings(&sessions, &tasks);
@@ -4542,12 +4547,13 @@ mod port {
             });
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
-                let (node, _) = transport(&own, tasks.clone(), CLIENT);
+                let (program, _) = program(&own, tasks.clone());
+                let first = fill(&program, &at, 1).await;
+                let (node, _) = transport(&own, tasks, CLIENT);
                 let member = node.dial(KEY.public(), &at).await.expect("a session");
-                let (program, _) = program(&own, tasks);
-                let held = fill(&program, &at, 256).await;
+                let held = fill(&program, &at, 255).await;
                 own.clock().sleep(Span::MINUTE).await;
-                drop((member, held, program, node));
+                drop((first, member, held, program, node));
             });
             assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
             assert_eq!(out.lock().unwrap().take(), Some(vec![]));

@@ -42,11 +42,7 @@ pub(crate) async fn accept(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let held = if member(session.peer(), mesh.as_ref()) {
-            None
-        } else {
-            Some(places.take(&session, |peer| member(peer, mesh.as_ref())))
-        };
+        let held = places.take(&session, |peer| member(peer, mesh.as_ref()));
         let link = hub.link(session.clone());
         let serve = serve(session, mesh.clone(), link, clock.clone(), tasks.clone());
         sessions.spawn(Box::pin(async move {
@@ -85,17 +81,22 @@ pub(crate) struct Places {
 }
 
 impl Places {
-    /// The hold of `session`, whose peer is not a member, on its place: the place that
-    /// its node key still holds, which keeps its age, else a new place. At [`PLACES`],
-    /// the oldest place frees first. When `member` holds for the peer of that place
-    /// now, its sessions stay; else each closes with `wire::session::REFUSED`.
+    /// The hold of `session` on its place, or `None` when `member` holds for its peer:
+    /// the place that its node key still holds, which keeps its age, else a new place.
+    /// A place whose peer `member` holds for now frees. At [`PLACES`], the oldest
+    /// place frees first, and each session that holds it closes with
+    /// `wire::session::REFUSED`.
     pub(crate) fn take(
         &mut self,
         session: &Session,
         member: impl Fn(Peer) -> bool,
-    ) -> Hold {
-        self.held.retain(|place| place.strong_count() > 0);
+    ) -> Option<Hold> {
         let peer = session.peer();
+        if member(peer) {
+            return None;
+        }
+        self.held
+            .retain(|place| place.upgrade().is_some_and(|place| !member(place.peer)));
         let kept = match peer {
             Peer::Node(_) => (self.held.iter().filter_map(Weak::upgrade))
                 .find(|place| place.peer == peer),
@@ -105,7 +106,6 @@ impl Places {
             if self.held.len() >= PLACES
                 && let Some(oldest) =
                     self.held.pop_front().and_then(|old| old.upgrade())
-                && !member(oldest.peer)
             {
                 for (_, open) in oldest.sessions.borrow().iter() {
                     open.close(Code(wire::session::REFUSED));
@@ -121,7 +121,7 @@ impl Places {
         let serial = self.serial;
         self.serial += 1;
         place.sessions.borrow_mut().push((serial, session.clone()));
-        Hold { place, serial }
+        Some(Hold { place, serial })
     }
 }
 
