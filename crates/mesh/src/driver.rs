@@ -2323,11 +2323,28 @@ mod tests {
         Stopped::Write(log::Error::Files(cause))
     }
 
-    /// The term of `mesh`, for a test in which no message shows it: a refused
-    /// message gets no reply, a node with no voters sends nothing, and a served
-    /// stream or a test peer takes the messages of `Mesh::outgoing`.
+    /// The term of `mesh`, for a test in which no message shows it: a node with
+    /// no voters sends nothing, a node in term 0 follows no leader to probe, and
+    /// a test peer takes the messages of `Mesh::outgoing`.
     fn term(mesh: &Mesh) -> Term {
         mesh.group.borrow().raft.term()
+    }
+
+    /// The term of `mesh`, from its reply to a heartbeat in `term` of `leader`,
+    /// the leader that `mesh` follows. Skips each earlier message to `leader`
+    /// that is not a heartbeat reply.
+    async fn probe_term(mesh: &Mesh, leader: u8, term: Term) -> Term {
+        let heartbeat = raft::Message {
+            term,
+            ..message(leader, 1, Body::Heartbeat { commit: 0 })
+        };
+        assert_eq!(mesh.receive(public(leader), heartbeat), Ok(()));
+        loop {
+            let reply = mesh.outgoing(key(leader)).await.unwrap();
+            if reply.body == Body::HeartbeatReply {
+                return reply.term;
+            }
+        }
     }
 
     /// The term of the next message of `mesh` to node `to`, which is a heartbeat
@@ -3691,7 +3708,7 @@ mod tests {
                     from: key(2),
                 };
                 assert_eq!(mesh.receive(public(2), forged), Err(Error::Raft(unproven)));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3734,7 +3751,7 @@ mod tests {
                     from: key(2),
                 };
                 assert_eq!(mesh.receive(public(2), forged), Err(Error::Raft(unproven)));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3768,7 +3785,7 @@ mod tests {
                 let next = Term(later().0.checked_add(1).unwrap());
                 let forged = heartbeat(3, next, &[(3, 3), (4, 5)]);
                 assert_eq!(mesh.receive(public(3), forged), Err(forged_unproven()));
-                assert_eq!(term(&mesh), later());
+                assert_eq!(probe_term(&mesh, 3, later()).await, later());
                 let reply = message(4, 1, Body::HeartbeatReply);
                 let spoofed = Error::Spoofed { from: key(4) };
                 assert_eq!(mesh.receive(public(5), reply), Err(spoofed));
@@ -3948,7 +3965,7 @@ mod tests {
                     from: key(2),
                 });
                 assert_eq!(mesh.receive(public(2), elected), Err(unproven));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -3999,7 +4016,7 @@ mod tests {
                 write(&mesh, changes(&[join(4), stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 4)]);
                 assert_eq!(mesh.receive(public(2), elected), Err(chain_unproven()));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -4012,7 +4029,7 @@ mod tests {
                 write(&mesh, changes(&[join(4), stale_join()])).await;
                 let elected = elected_through_chain(&[(2, 2), (4, 5)]);
                 assert_eq!(mesh.receive(public(2), elected), Err(chain_unproven()));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
@@ -4063,7 +4080,7 @@ mod tests {
                     from: key(2),
                 });
                 assert_eq!(mesh.receive(public(2), forged), Err(unproven));
-                assert_eq!(term(&mesh), common::TERM);
+                assert_eq!(probe_term(&mesh, 2, common::TERM).await, common::TERM);
             });
         }
 
