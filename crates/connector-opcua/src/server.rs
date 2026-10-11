@@ -20,8 +20,9 @@ pub(crate) struct Server {
 impl Server {
     /// Makes the test server on the loop of `manager`, with the minimal config, the one
     /// server URL `opc.tcp://{host}:{port}` on the port of the listener of `manager`,
-    /// and room for `sessions` sessions and secure channels, and starts it. An empty
-    /// `host` gives the address of the listener as the host of the URL.
+    /// and room for `sessions` sessions and secure channels, and starts it. With an
+    /// empty `host`, the discovery URL of the server has the address of the listener as
+    /// its host.
     ///
     /// # Safety
     ///
