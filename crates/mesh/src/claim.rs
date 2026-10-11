@@ -384,10 +384,7 @@ mod tests {
     // term after that.
     fn two_links() -> Message {
         let mut message = chained_in(Term(TERM.0 + 2));
-        let next = Position {
-            term: Term(TERM.0 + 1),
-            index: 3,
-        };
+        let next = common::at(TERM.0 + 1, 3);
         let pair = Voters {
             incoming: [key(1), key(2)].into(),
             outgoing: BTreeSet::new(),
@@ -527,10 +524,7 @@ mod tests {
         };
         let claim = Claim::Change {
             leader: key(3),
-            at: Position {
-                term: Term(7),
-                index: 5,
-            },
+            at: common::at(7, 5),
             voters: &voters,
         };
         assert_eq!(statement(&claim), expected);
@@ -545,10 +539,7 @@ mod tests {
     }
 
     fn written() -> Position {
-        Position {
-            term: TERM,
-            index: 2,
-        }
+        common::at(TERM.0, 2)
     }
 
     fn signed_change() -> Change {
@@ -926,10 +917,7 @@ mod tests {
         let Body::Append { entries, .. } = &mut message.body else {
             unreachable!()
         };
-        let at = Position {
-            term: TERM,
-            index: 3,
-        };
+        let at = common::at(TERM.0, 3);
         entries[2] = three_voters_entry(4, at, &[1, 2, 3]);
         assert_eq!(checked(&mut message, members(&[1, 2, 3])), Ok(()));
         assert_eq!(run_entries(&message), &run_entries(&run())[..2]);

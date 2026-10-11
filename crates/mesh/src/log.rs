@@ -841,7 +841,7 @@ mod tests {
     use super::*;
     use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
-    use crate::common::{create_pool, key};
+    use crate::common::{at, create_pool, key};
 
     const DIR: &str = "mesh";
 
@@ -895,23 +895,19 @@ mod tests {
         }
     }
 
-    // Each voter signs with its key's low byte, 64 times.
-    fn proof(grant: Grant, candidate: u128, voters: &[u128]) -> Proof {
-        let signed = |&voter: &u128| {
-            let signature = Signature([voter.to_le_bytes()[0]; 64]);
-            (node::Key::from_u128(voter), Some(signature))
-        };
+    // Each voter signs with its id, 64 times.
+    fn proof(grant: Grant, candidate: u8, voters: &[u8]) -> Proof {
+        let signed = |&voter: &u8| (key(voter), Some(Signature([voter; 64])));
         Proof {
             grant,
-            candidate: node::Key::from_u128(candidate),
+            candidate: key(candidate),
             voters: voters.iter().map(signed).collect(),
         }
     }
 
     fn entry(term: u64, index: u64, data: Data) -> Entry {
-        let term = Term(term);
         Entry {
-            at: raft::Position { term, index },
+            at: at(term, index),
             data,
         }
     }
@@ -935,9 +931,8 @@ mod tests {
         })
     }
 
-    fn voters(incoming: &[u128], outgoing: &[u128]) -> Data {
-        let set =
-            |ids: &[u128]| ids.iter().copied().map(node::Key::from_u128).collect();
+    fn voters(incoming: &[u8], outgoing: &[u8]) -> Data {
+        let set = |ids: &[u8]| ids.iter().copied().map(key).collect();
         let voters = Voters {
             incoming: set(incoming),
             outgoing: set(outgoing),

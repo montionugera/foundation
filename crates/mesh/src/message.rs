@@ -404,14 +404,14 @@ mod tests {
     }
 
     // An append of one change to the incoming voters `keys`, with no outgoing voter.
-    fn change_append(keys: [u128; 2]) -> Vec<u8> {
+    fn change_append(keys: [u8; 2]) -> Vec<u8> {
         raft(Body::Append {
             prev: at(0, 0),
             entries: vec![Entry {
                 at: at(3, 1),
                 data: Data::Voters(raft::Change {
                     voters: Voters {
-                        incoming: keys.map(node::Key::from_u128).into(),
+                        incoming: keys.map(key).into(),
                         outgoing: BTreeSet::new(),
                     },
                     votes: Proof {

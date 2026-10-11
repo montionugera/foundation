@@ -344,10 +344,7 @@ fn serve_stops_at_a_vote_under_the_key_of_a_join_that_a_step_replaced() {
 
 #[test]
 fn serve_stops_a_one_way_stream_at_a_message_that_it_does_not_carry() {
-    let at = Position {
-        term: Term(1),
-        index: 1,
-    };
+    let at = common::at(1, 1);
     let cases = [
         vec![0xff],
         Vec::new(),
@@ -800,10 +797,7 @@ fn serve_gives_no_code_of_the_mesh_when_the_group_stops() {
 // `serve` does not tell a stop before the proposal from a stop in its write.
 #[test]
 fn serve_gives_no_code_of_the_mesh_when_the_group_stopped_before_the_proposal() {
-    let at = Position {
-        term: Term(5),
-        index: 1,
-    };
+    let at = common::at(5, 1);
     let (served, seen) = run(
         move |node, tasks, incoming| async move {
             let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();

@@ -570,10 +570,7 @@ fn each_task_that_sends_ends_when_a_committed_entry_stops_the_group() {
         let mut watch = mesh.watch(INDEX);
         assert_eq!(watch.next().await, Ok(None));
         node.clock().sleep(seconds(3)).await;
-        let at = Position {
-            term: Term(5),
-            index: 1,
-        };
+        let at = common::at(5, 1);
         let entry = Entry {
             at,
             data: Data::Bytes(vec![9]),

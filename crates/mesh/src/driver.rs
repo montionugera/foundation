@@ -1550,10 +1550,7 @@ mod tests {
     fn changes(leader: u8, sets: &[(&[u8], &[u8])]) -> Vec<Entry> {
         let keys = |ids: &[u8]| ids.iter().map(|&id| key(id)).collect();
         let change = |(index, &(incoming, outgoing))| {
-            let at = Position {
-                term: common::TERM,
-                index,
-            };
+            let at = at(index);
             let voters = Voters {
                 incoming: keys(incoming),
                 outgoing: keys(outgoing),
@@ -2522,10 +2519,7 @@ mod tests {
     fn a_proposal_gives_its_position_when_the_ready_of_its_write_stops_the_group() {
         solo(|node, tasks| async move {
             let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-            let bad = Position {
-                term: common::TERM,
-                index: 1,
-            };
+            let bad = at(1);
             let append = Body::Append {
                 prev: Position::default(),
                 entries: vec![Entry {
@@ -2628,10 +2622,7 @@ mod tests {
             let first = elect(&mesh).await;
             let mut proposal = pin!(mesh.propose(home_to(1)));
             assert!(now(proposal.as_mut()).await.is_pending());
-            let bad = Position {
-                term: common::TERM,
-                index: 2,
-            };
+            let bad = at(2);
             let append = Body::Append {
                 prev: first,
                 entries: vec![Entry {
@@ -2757,10 +2748,7 @@ mod tests {
                     incoming: [key(1), key(2), key(4)].into(),
                     outgoing: [key(1), key(2), key(3)].into(),
                 };
-                let at = Position {
-                    term: common::TERM,
-                    index: 1,
-                };
+                let at = at(1);
                 let append = Body::Append {
                     prev: Position::default(),
                     entries: vec![common::voters_entry(2, at, joint)],
@@ -2803,10 +2791,7 @@ mod tests {
                     assert_eq!(first.index, 1);
                     let mut answer = pin!(mesh.answer(public(3), home_to(3)));
                     assert!(now(answer.as_mut()).await.is_pending(), "{case}");
-                    let at = Position {
-                        term: common::TERM,
-                        index,
-                    };
+                    let at = at(index);
                     let append = Body::Append {
                         prev: if index == 2 {
                             first
@@ -2948,10 +2933,7 @@ mod tests {
         // The link at `index` of the term before `TERM`, by leader 2: the voters
         // move from `outgoing` to 1, 2 and 3.
         fn link(index: u64, outgoing: &[u8]) -> raft::Link {
-            let at = Position {
-                term: Term(common::TERM.0 - 1),
-                index,
-            };
+            let at = common::at(common::TERM.0 - 1, index);
             let voters = Voters {
                 incoming: [1, 2, 3].map(key).into(),
                 outgoing: outgoing.iter().map(|&id| key(id)).collect(),
@@ -3274,10 +3256,7 @@ mod tests {
         fn takes_a_request_from_a_voter_that_leaves() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-                let at = Position {
-                    term: common::TERM,
-                    index: 1,
-                };
+                let at = at(1);
                 let joint = Voters {
                     incoming: [key(1), key(2)].into(),
                     outgoing: [key(1), key(2), key(3)].into(),
@@ -3375,10 +3354,7 @@ mod tests {
         fn refuses_an_append_whose_change_is_forged_before_it_steps() {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-                let at = Position {
-                    term: common::TERM,
-                    index: 1,
-                };
+                let at = at(1);
                 let joint = Voters {
                     incoming: [key(1), key(2)].into(),
                     outgoing: [key(1), key(2), key(3)].into(),
@@ -3454,12 +3430,17 @@ mod tests {
             Term(common::TERM.0 + 1)
         }
 
+        /// The position `index` of `later()`.
+        fn later_at(index: u64) -> Position {
+            common::at(later().0, index)
+        }
+
         /// An append of `data` from index 1 in `term`, which commits nothing. Node 2
         /// signs each change in it as its leader.
         fn append(term: Term, data: Vec<Data>) -> Body {
             let entries = iter::zip(1.., data)
                 .map(|(index, data)| Entry {
-                    at: Position { term, index },
+                    at: common::at(term.0, index),
                     data,
                 })
                 .collect();
@@ -3819,18 +3800,18 @@ mod tests {
             };
             vec![
                 Entry {
-                    at: common::at(later().0, 1),
+                    at: later_at(1),
                     data: changes(&[join_change(4)]).remove(0),
                 },
                 common::voters_entry_voted(
                     3,
-                    common::at(later().0, 2),
+                    later_at(2),
                     set(&[2, 3, 4], &[2, 3]),
                     &[2, 3],
                 ),
                 common::voters_entry_voted(
                     3,
-                    common::at(later().0, 3),
+                    later_at(3),
                     set(&[2, 3, 4], &[]),
                     &[2, 3],
                 ),
@@ -3927,10 +3908,7 @@ mod tests {
                 })
                 .collect();
             let empty = Entry {
-                at: Position {
-                    term: later(),
-                    index: 4,
-                },
+                at: later_at(4),
                 data: Data::Empty,
             };
             let body = Body::Append {
@@ -3989,13 +3967,13 @@ mod tests {
         // its election and the chain of leader 3 of `later` that makes 4 a voter
         // from index 2.
         fn elected_through_chain(votes: &[(u8, u8)]) -> raft::Message {
-            let at = |index| common::at(later().0, index);
             let set = |outgoing: &[u8]| Voters {
                 incoming: [2, 3, 4].map(key).into(),
                 outgoing: outgoing.iter().map(|&id| key(id)).collect(),
             };
             let link = |(index, voters)| {
-                let entry = common::voters_entry_voted(3, at(index), voters, &[2, 3]);
+                let entry =
+                    common::voters_entry_voted(3, later_at(index), voters, &[2, 3]);
                 let Data::Voters(change) = entry.data else {
                     unreachable!()
                 };
@@ -4217,14 +4195,10 @@ mod tests {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &IDS, &[2, 3]).await.unwrap();
                 write(&mesh, changes(&[join_change(4), join_change(6)])).await;
-                let at = |index| common::at(later().0, index);
                 let replace = Body::Append {
-                    prev: Position {
-                        term: common::TERM,
-                        index: 1,
-                    },
+                    prev: at(1),
                     entries: vec![Entry {
-                        at: at(2),
+                        at: later_at(2),
                         data: changes(&[home_to(1)]).remove(0),
                     }],
                     commit: 0,
@@ -4374,15 +4348,9 @@ mod tests {
                     append(common::TERM, changes(&[home_to(1), join_change(4)]));
                 assert_eq!(mesh.receive(public(2), proven(2, 1, joined)), Ok(()));
                 let replace = Body::Append {
-                    prev: Position {
-                        term: common::TERM,
-                        index: 1,
-                    },
+                    prev: at(1),
                     entries: vec![Entry {
-                        at: Position {
-                            term: later(),
-                            index: 2,
-                        },
+                        at: later_at(2),
                         data: changes(&[home_to(1)]).remove(0),
                     }],
                     commit: 0,
@@ -4919,10 +4887,7 @@ mod tests {
             let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
             let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(None));
-            let at = Position {
-                term: Term(5),
-                index: 1,
-            };
+            let at = common::at(5, 1);
             let data = Data::Bytes(vec![9]);
             let append = Body::Append {
                 prev: Position::default(),
@@ -4950,10 +4915,7 @@ mod tests {
     async fn stop_by_an_empty_change(mesh: &Mesh) -> Stopped {
         let mut watch = mesh.watch(INDEX);
         assert_eq!(watch.next().await, Ok(None));
-        let at = Position {
-            term: Term(5),
-            index: 1,
-        };
+        let at = common::at(5, 1);
         let data = Data::Bytes(Vec::new());
         let append = Body::Append {
             prev: Position::default(),
@@ -5679,10 +5641,7 @@ mod tests {
             let (mut log, _) = opened.unwrap();
             let entries: Vec<Entry> = (1..=20_000)
                 .map(|index| Entry {
-                    at: Position {
-                        term: Term(1),
-                        index,
-                    },
+                    at: common::at(1, index),
                     data: Data::Bytes(encoded(&home_to(1))),
                 })
                 .collect();
@@ -5801,10 +5760,7 @@ mod tests {
                 let (mut log, _) = Log::open(node.files(), LOG.into(), create_pool())
                     .await
                     .unwrap();
-                let at = Position {
-                    term: Term(1),
-                    index: 1,
-                };
+                let at = common::at(1, 1);
                 let entries = [common::voters_entry(1, at, Voters::default())];
                 let proof = Proof {
                     grant: Grant::Vote,
@@ -6830,10 +6786,7 @@ mod tests {
             voters: Voters,
             voted: &[u8],
         ) -> raft::Link {
-            let at = Position {
-                term: Term(term),
-                index,
-            };
+            let at = common::at(term, index);
             let entry = common::voters_entry_voted(leader, at, voters, voted);
             let Data::Voters(change) = entry.data else {
                 unreachable!("a change is a voters entry");
