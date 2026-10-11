@@ -557,6 +557,7 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
             .and_then(wait)
             .map_err(|e| vec![e])?;
     gcc(&macros).map_err(|e| vec![e])?;
+    let architecture = Architecture::read(&macros).map_err(|e| vec![e])?;
     let dirs = system_dirs(&verbose);
     let objects = build(copy, &sources, &flags, out, cc).map_err(|e| vec![e])?;
     let exported = symbols(
@@ -567,8 +568,14 @@ fn inspect(copy: &Path, out: &Path, cc: &Path) -> Result<(), Vec<String>> {
     let mut uses = Uses::default();
     let mut problems = line_directives(copy, Path::new("")).map_err(|e| vec![e])?;
     for (source, object, preprocessed) in objects {
-        let disassembly = exec(Command::new("objdump").arg("-dr").arg(&object))
-            .map_err(|e| vec![e])?;
+        let mut objdump = Command::new("objdump");
+        objdump.arg("-dr").args(architecture.options).arg(&object);
+        let disassembly = exec(&mut objdump).map_err(|e| vec![e])?;
+        problems.extend(
+            instructions(&disassembly)
+                .into_iter()
+                .filter_map(|found| architecture.refuses(source, found)),
+        );
         let relocations = exec(Command::new("objdump").arg("-r").arg(&object));
         let outside = symbols([object.as_path()], &["--undefined-only"])
             .map_err(|e| vec![e])?
@@ -871,8 +878,6 @@ fn references(
 ) -> BTreeSet<Reference> {
     let mut found = BTreeSet::new();
     let mut code = BTreeSet::new();
-    let mut section = "";
-    let mut function = None;
     let mut add = |section: &str, function: Option<&str>, line: &str| {
         if let Some((kind, symbol)) = relocation(line)
             && (outside.contains(symbol) || CLOCKS.contains(&symbol))
@@ -889,20 +894,11 @@ fn references(
             });
         }
     };
-    for line in disassembly.lines() {
-        if let Some(name) = line.strip_prefix("Disassembly of section ") {
-            section = name.trim_end_matches(':');
-            function = None;
-            code.insert(section);
-        } else if let Some(name) =
-            line.strip_suffix(">:").and_then(|l| l.split_once(" <"))
-        {
-            // A section with no symbol at its start shows as `<.text>`.
-            function = Some(name.1).filter(|name| !name.starts_with('.'));
-        } else {
-            add(section, function, line);
-        }
+    for (section, function, line) in places(disassembly) {
+        code.insert(section);
+        add(section, function, line);
     }
+    let mut section = "";
     for line in relocations.lines() {
         if let Some(name) = line.strip_prefix("RELOCATION RECORDS FOR [") {
             section = name.trim_end_matches("]:");
@@ -1006,6 +1002,187 @@ fn relocation(line: &str) -> Option<(&str, &str)> {
     let mut words = line.split_whitespace();
     let kind = words.find(|word| word.starts_with("R_"))?;
     Some((kind, words.next_back()?.split(['+', '-']).next()?))
+}
+
+/// An architecture that the check builds for.
+struct Architecture {
+    /// The macro that GCC defines for it.
+    macro_name: &'static str,
+    /// The name of [`Architecture::instructions`] in errors.
+    list: &'static str,
+    /// The options of `objdump -d` for it.
+    options: &'static [&'static str],
+    /// Each key of [`instructions`] that the copy may run.
+    instructions: &'static [&'static str],
+}
+
+/// The architectures that the check builds for.
+const ARCHITECTURES: [Architecture; 2] = [
+    Architecture {
+        macro_name: "__x86_64__",
+        list: "X86_64",
+        // Intel syntax gives a mnemonic with no size suffix.
+        options: &["-M", "intel"],
+        instructions: &X86_64,
+    },
+    Architecture {
+        macro_name: "__aarch64__",
+        list: "AARCH64",
+        options: &[],
+        instructions: &AARCH64,
+    },
+];
+
+/// The keys of [`instructions`] that the copy may run on x86-64. Each reads no clock,
+/// file, network, randomness, or process state: only registers, flags, and memory.
+#[rustfmt::skip]
+const X86_64: [&str; 109] = [
+    "adc", "add", "addsd", "addss", "and", "call", "cdq", "cdqe", "cmp", "comisd",
+    "comiss", "cqo", "cvtsi2sd", "cvtsi2ss", "cvtss2sd", "cvttsd2si", "cwde", "div",
+    "divsd", "divss", "idiv", "imul", "lea", "leave", "mov", "movabs", "movapd",
+    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movzx", "mul",
+    "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret", "ror", "sar",
+    "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss", "xor",
+    // A copy of memory, and a fill of it.
+    "rep movs", "rep stos",
+    // Marks of control-flow enforcement, for the targets of indirect jumps.
+    "endbr64", "notrack jmp",
+    "jmp", "ja", "jae", "jb", "jbe", "je", "jg", "jge", "jl", "jle", "jne", "jno", "jnp",
+    "jns", "jo", "jp", "js",
+    "seta", "setae", "setb", "setbe", "sete", "setg", "setge", "setl", "setle", "setne",
+    "setno", "setnp", "setns", "seto", "setp", "sets",
+    "cmova", "cmovae", "cmovb", "cmovbe", "cmove", "cmovg", "cmovge", "cmovl", "cmovle",
+    "cmovne", "cmovno", "cmovnp", "cmovns", "cmovo", "cmovp", "cmovs",
+];
+
+/// The keys of [`instructions`] that the copy may run on aarch64. Each reads no clock,
+/// file, network, randomness, or process state: only registers, flags, and memory.
+#[rustfmt::skip]
+const AARCH64: [&str; 85] = [
+    "adc", "add", "adds", "adr", "adrp", "and", "asr", "b", "bfi", "bfxil", "bl", "blr",
+    "br", "cmn", "cmp", "cneg", "csel", "cset", "csneg", "eor", "fadd", "fcmp", "fcmpe",
+    "fcvt", "fcvtzs", "fcvtzu", "fdiv", "fmov", "fmul", "fsub", "ldp", "ldr", "ldrb",
+    "ldrh", "ldrsb", "ldrsh", "ldrsw", "ldur", "lsl", "lsr", "mov", "movi", "movk",
+    "mul", "mvn", "neg", "negs", "nop", "orr", "ret", "ror", "scvtf", "sdiv", "smulh",
+    "smull", "stp", "str", "strb", "strh", "stur", "sub", "sxtb", "sxth", "sxtw",
+    "ubfiz", "ubfx", "ucvtf", "udiv", "umulh", "umull",
+    "b.cc", "b.cs", "b.eq", "b.ge", "b.gt", "b.hi", "b.le", "b.ls", "b.lt", "b.mi",
+    "b.ne", "b.pl", "b.vc", "b.vs",
+    // The thread pointer, which locates thread-local storage.
+    "mrs tpidr_el0",
+];
+
+/// The x86 prefixes that `objdump -d` shows as a word before the mnemonic.
+const PREFIXES: [&str; 16] = [
+    "addr32", "bnd", "cs", "data16", "ds", "es", "fs", "gs", "lock", "notrack", "rep",
+    "repnz", "repz", "ss", "xacquire", "xrelease",
+];
+
+impl Architecture {
+    /// The architecture of `macros`, the output of `cc -dM -E`.
+    fn read(macros: &str) -> Result<&'static Self, String> {
+        ARCHITECTURES
+            .iter()
+            .find(|architecture| {
+                let prefix = format!("#define {} ", architecture.macro_name);
+                macros.lines().any(|line| line.starts_with(&prefix))
+            })
+            .ok_or_else(|| {
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            })
+    }
+
+    /// The error of `found`, an instruction of `file`, when this architecture does not
+    /// admit its key.
+    fn refuses(&self, file: &str, found: Instruction) -> Option<String> {
+        if self.instructions.contains(&found.key.as_str()) {
+            return None;
+        }
+        let site = found
+            .function
+            .map_or(format!("the section `{}`", found.section), |function| {
+                format!("`{function}`")
+            });
+        Some(format!(
+            "{file}: {site} runs `{}`, which {} does not admit. Add it only when it \
+             reads no clock, file, network, randomness, or process state",
+            found.key, self.list
+        ))
+    }
+}
+
+/// An instruction of a function or a section, as [`instructions`] keys it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Instruction {
+    /// The section that holds it.
+    section: String,
+    /// The function symbol that labels it, as in [`Reference`].
+    function: Option<String>,
+    /// Its mnemonic in lowercase, after each prefix of [`PREFIXES`] before it, and
+    /// with the system register of `mrs` and `msr`, which reads a counter or the
+    /// thread pointer.
+    key: String,
+}
+
+/// Each instruction of `disassembly`, the output of `objdump -d`, once for each
+/// section, function, and key.
+fn instructions(disassembly: &str) -> BTreeSet<Instruction> {
+    places(disassembly)
+        .filter_map(|(section, function, line)| {
+            // `address:\tbytes\tinstruction`. A relocation has no address, and the
+            // continuation of the bytes of a long instruction has no instruction.
+            let mut fields = line.split('\t');
+            let address = fields.next()?.trim();
+            fields.next()?;
+            if address.is_empty() || !address.ends_with(':') {
+                return None;
+            }
+            Some(Instruction {
+                section: section.to_owned(),
+                function: function.map(str::to_owned),
+                key: key(&fields.collect::<Vec<_>>().join(" "))?,
+            })
+        })
+        .collect()
+}
+
+/// The key of `instruction`, the text of an instruction in `objdump -d`, as
+/// [`Instruction::key`] gives it, or `None` when it is empty.
+fn key(instruction: &str) -> Option<String> {
+    let instruction = instruction.to_lowercase();
+    let mut words = instruction.split_whitespace();
+    let mut key = Vec::new();
+    for word in words.by_ref() {
+        key.push(word);
+        if !PREFIXES.contains(&word) {
+            break;
+        }
+    }
+    match *key.last()? {
+        "mrs" => key.extend(words.nth(1)),
+        "msr" => key.extend(words.next().map(|word| word.trim_end_matches(','))),
+        _ => {}
+    }
+    Some(key.join(" "))
+}
+
+/// Each line of `disassembly`, the output of `objdump -d`, with the section that holds
+/// it and the function symbol that labels it, or `None` when no function symbol does.
+fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
+    let (mut section, mut function) = ("", None);
+    disassembly.lines().map(move |line| {
+        if let Some(name) = line.strip_prefix("Disassembly of section ") {
+            section = name.trim_end_matches(':');
+            function = None;
+        } else if let Some(name) =
+            line.strip_suffix(">:").and_then(|l| l.split_once(" <"))
+        {
+            // A section with no symbol at its start shows as `<.text>`.
+            function = Some(name.1).filter(|name| !name.starts_with('.'));
+        }
+        (section, function, line)
+    })
 }
 
 /// Each header that a Make depfile names, with its escapes read: `\ ` for a space,
@@ -1217,6 +1394,118 @@ Disassembly of section .text:
         assert_eq!(
             Vec::from_iter(found.iter().map(|found| found.symbol.as_str())),
             ["UA_DateTime_now", "strtod"]
+        );
+    }
+
+    #[test]
+    fn instructions_keys_each_instruction_by_its_section_and_function() {
+        let disassembly = "\
+0.o:     file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <.text>:
+   0:\tf3 0f 1e fa          \tendbr64
+   4:\t0f 31                \trdtsc
+
+Disassembly of section .text.stamp:
+
+0000000000000000 <stamp>:
+   0:\t0f 31                \trdtsc
+   2:\t0f 31                \trdtsc
+   4:\te8 00 00 00 00       \tcall   9 <stamp+0x9>
+\t\t\t5: R_X86_64_PLT32\tUA_DateTime_now-0x4
+   9:\t48 c7 05 00 00 00 00 \tmov    QWORD PTR [rip+0x0],0x0
+  10:\t00 00 00 00 
+  14:\tf3 48 ab             \trep stos QWORD PTR es:[rdi],rax
+  17:\t3e ff e0             \tnotrack jmp rax
+  1a:\tf3 c3                \trepz ret
+  1c:\tf0 0f c7 f0          \tLOCK RDRAND eax
+0000000000000040 <count>:
+  40:\td53be040 \tmrs\tx0, cntvct_el0
+  44:\td51bd040 \tmsr\ttpidr_el0, x0
+  48:\t54000040 \tb.eq\t50 <count+0x10>  // b.none
+";
+        let found = |section: &str, function: Option<&str>, key: &str| Instruction {
+            section: section.to_owned(),
+            function: function.map(str::to_owned),
+            key: key.to_owned(),
+        };
+        let stamp = |key| found(".text.stamp", Some("stamp"), key);
+        let count = |key| found(".text.stamp", Some("count"), key);
+        assert_eq!(
+            Vec::from_iter(instructions(disassembly)),
+            [
+                found(".text", None, "endbr64"),
+                found(".text", None, "rdtsc"),
+                count("b.eq"),
+                count("mrs cntvct_el0"),
+                count("msr tpidr_el0"),
+                stamp("call"),
+                stamp("lock rdrand"),
+                stamp("mov"),
+                stamp("notrack jmp"),
+                stamp("rdtsc"),
+                stamp("rep stos"),
+                stamp("repz ret"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_architecture_refuses_each_key_outside_its_list() {
+        let [x86, arm] = &ARCHITECTURES;
+        let found = |function: Option<&str>, key: &str| Instruction {
+            section: ".text.stamp".to_owned(),
+            function: function.map(str::to_owned),
+            key: key.to_owned(),
+        };
+        assert_eq!(x86.refuses("a.c", found(Some("stamp"), "rep stos")), None);
+        assert_eq!(
+            arm.refuses("a.c", found(Some("stamp"), "mrs tpidr_el0")),
+            None
+        );
+        assert_eq!(
+            x86.refuses("a.c", found(Some("stamp"), "rdtsc")),
+            Some(
+                "a.c: `stamp` runs `rdtsc`, which X86_64 does not admit. Add it only \
+                 when it reads no clock, file, network, randomness, or process state"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            arm.refuses("a.c", found(None, "mrs cntvct_el0")),
+            Some(
+                "a.c: the section `.text.stamp` runs `mrs cntvct_el0`, which AARCH64 \
+                 does not admit. Add it only when it reads no clock, file, network, \
+                 randomness, or process state"
+                    .to_owned()
+            )
+        );
+        assert!(x86.refuses("a.c", found(None, "mrs tpidr_el0")).is_some());
+        assert!(arm.refuses("a.c", found(None, "rep stos")).is_some());
+    }
+
+    #[test]
+    fn architecture_read_gives_the_architecture_of_the_macros() {
+        let read = |name| {
+            Architecture::read(&format!("#define __GNUC__ 13\n#define {name} 1\n"))
+        };
+        assert_eq!(read("__x86_64__").map(|found| found.list), Ok("X86_64"));
+        assert_eq!(read("__aarch64__").map(|found| found.list), Ok("AARCH64"));
+        assert_eq!(
+            read("__riscv").map(|found| found.list),
+            Err(
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            read("__x86_64").map(|found| found.list),
+            Err(
+                "the check admits the instructions of x86-64 and aarch64 only"
+                    .to_owned()
+            )
         );
     }
 
@@ -2322,6 +2611,81 @@ End of search list.
             check(&root),
             Err(vec![unlisted_clock("src/util/ua_util.c", "hidden")])
         );
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// C that reads a clock and randomness through a builtin and an `asm` statement,
+    /// with the errors that it gives in `src/util/ua_util.c`.
+    #[cfg(target_arch = "x86_64")]
+    const READS: (&str, &[&str]) = (
+        "#include <x86intrin.h>\n\
+         unsigned long long stamp(void) { return __rdtsc(); }\n\
+         __attribute__((target(\"rdrnd\"))) int draw(unsigned *n) {\n\
+             return __builtin_ia32_rdrand32_step(n);\n\
+         }\n\
+         unsigned stamped(void) {\n\
+             unsigned low, high;\n\
+             __asm__ volatile(\"rdtsc\" : \"=a\"(low), \"=d\"(high));\n\
+             return low ^ high;\n\
+         }\n",
+        &[
+            "`draw` runs `rdrand`, which X86_64",
+            "`stamp` runs `rdtsc`, which X86_64",
+            "`stamped` runs `rdtsc`, which X86_64",
+            "inlines `__rdtsc`",
+        ],
+    );
+
+    /// C that reads a clock and randomness through a builtin and an `asm` statement,
+    /// with the errors that it gives in `src/util/ua_util.c`.
+    #[cfg(target_arch = "aarch64")]
+    const READS: (&str, &[&str]) = (
+        "#include <arm_acle.h>\n\
+         __attribute__((target(\"+rng\"))) int draw(unsigned long *n) {\n\
+             return __rndr(n);\n\
+         }\n\
+         unsigned long stamped(void) {\n\
+             unsigned long n;\n\
+             __asm__ volatile(\"mrs %0, cntvct_el0\" : \"=r\"(n));\n\
+             return n;\n\
+         }\n",
+        &[
+            "`draw` runs `mrs rndr`, which AARCH64",
+            "`stamped` runs `mrs cntvct_el0`, which AARCH64",
+            "inlines `__rndr`",
+        ],
+    );
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_builtin_and_an_asm_statement_that_read_a_clock() {
+        let (root, repo, result) = run_after("instructions", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, old + READS.0).unwrap();
+        let file = "src/util/ua_util.c";
+        let errors = READS
+            .1
+            .iter()
+            .filter(|error| !error.is_empty())
+            .map(|error| {
+                if error.starts_with("inlines") {
+                    format!(
+                        "{file}: {error}, so a clock call in it hides in its caller"
+                    )
+                } else {
+                    format!(
+                        "{file}: {error} does not admit. Add it only when it reads no \
+                     clock, file, network, randomness, or process state"
+                    )
+                }
+            });
+        assert_eq!(check(&root), Err(errors.collect()));
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
