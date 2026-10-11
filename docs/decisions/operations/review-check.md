@@ -119,9 +119,9 @@
   Supersedes ruling 1 of
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989
   (2026-10-07T06:15:46Z). The line counts when it starts a line of a top-level paragraph
-  after the round heading, other than the end lines, and when the first word of its
-  value, read as that of an end line, is not `none`. Decided by the director at
-  2026-10-11T00:54:34Z
+  after the round heading, other than the end lines (a round posted before the cutoff
+  has none), and when the first word of its value, read as that of an end line, is not
+  `none`. Decided by the director at 2026-10-11T00:54:34Z
   (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358). A merge
   of the base is not clean when the base moves a path that the PR changed since their
   merge base, and that is not code, to a code path, by the rename detection of the
@@ -139,17 +139,19 @@
   in https://github.com/synnaxlabs/foundation/issues/2315). The conflict sentence above
   supersedes that of
   https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6044222273
-  (2026-10-07T18:27:30Z), and the code definition supersedes that of the first
-  REVIEW CHECK record, decided by the director on #1169 and in messages on #1193. The
-  rest of the range is read from the tree that `git merge-tree` makes of its start and
-  the newest base commit that its end holds, not from its start: the base's code does
-  not count, and text that the range changes and the base moves into a code file does.
-  So does a path that is not code, that the start changes since its merge base with that
-  base commit, as the merge reads it, and that this merge moves into a code file, by the
-  merge's own rename detection. A conflict in this tree in a code file is a code change,
-  also one that leaves no markers, and so is an end that holds more than one newest base
-  commit. In the range, a base move counts only through this tree. Decided by the
-  director at 2026-10-07T18:27:30Z
+  (2026-10-07T18:27:30Z), and the code definition supersedes that of
+  https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385 and of
+  the first REVIEW CHECK record
+  (https://github.com/synnaxlabs/foundation/commit/34cc4124d), decided by the director
+  on #1169 and in messages on #1193. The rest of the range is read from the tree that
+  `git merge-tree` makes of its start and the newest base commit that its end holds, not
+  from its start: the base's code does not count, and text that the range changes and
+  the base moves into a code file does. So does a path that is not code, that the start
+  changes since its merge base with that base commit, as the merge reads it, and that
+  this merge moves into a code file, by the merge's own rename detection. A conflict in
+  this tree in a code file is a code change, also one that leaves no markers, and so is
+  an end that holds more than one newest base commit. In the range, a base move counts
+  only through this tree. Decided by the director at 2026-10-07T18:27:30Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6044222273).
   Supersedes the range sentence of
   https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385. Found by
