@@ -4362,7 +4362,7 @@ mod port {
         }
 
         /// `count` sessions that `program` dials to the node [`OWN`] at `at`, in order.
-        async fn fill(
+        async fn create_sessions(
             program: &transport::Client,
             at: &[Address],
             count: usize,
@@ -4425,7 +4425,7 @@ mod port {
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (program, pool) = program(&own, tasks.clone());
-                let mut held = fill(&program, &at, 256).await;
+                let mut held = create_sessions(&program, &at, 256).await;
                 let closed = closings(&held, &tasks);
                 let (mut sent, mut after) = (Vec::new(), Vec::new());
                 for _ in 0..2 {
@@ -4464,7 +4464,7 @@ mod port {
                 let member = node.dial(KEY.public(), &at).await.expect("a session");
                 let of_member = closings(std::slice::from_ref(&member), &tasks);
                 let (program, pool) = program(&own, tasks.clone());
-                let held = fill(&program, &at, 256).await;
+                let held = create_sessions(&program, &at, 256).await;
                 let closed = closings(&held, &tasks);
                 let new = program.dial(KEY.public(), &at).await.expect("a session");
                 let sent = sent_clock(&new, &pool, &own).await;
@@ -4496,7 +4496,7 @@ mod port {
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (program, pool) = program(&own, tasks.clone());
-                let mut held = fill(&program, &at, 256).await;
+                let mut held = create_sessions(&program, &at, 256).await;
                 held.remove(100).close(Code(0));
                 let closed = closings(&held, &tasks);
                 own.clock().sleep(Span::SECOND).await;
@@ -4548,10 +4548,10 @@ mod port {
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (program, _) = program(&own, tasks.clone());
-                let first = fill(&program, &at, 1).await;
+                let first = create_sessions(&program, &at, 1).await;
                 let (node, _) = transport(&own, tasks, CLIENT);
                 let member = node.dial(KEY.public(), &at).await.expect("a session");
-                let held = fill(&program, &at, 255).await;
+                let held = create_sessions(&program, &at, 255).await;
                 own.clock().sleep(Span::MINUTE).await;
                 drop((first, member, held, program, node));
             });
@@ -4599,7 +4599,7 @@ mod port {
                 ended.close(Code(0));
                 own.clock().sleep(Span::SECOND).await;
                 let (program, _) = program(&own, tasks);
-                let held = fill(&program, &at, 256).await;
+                let held = create_sessions(&program, &at, 256).await;
                 own.clock().sleep(Span::MINUTE).await;
                 drop((open, ended, held, program, first, second));
             });
@@ -4622,7 +4622,7 @@ mod port {
             shard(&hosts[1], move |own, tasks| async move {
                 let at = [Address::Udp(listen)];
                 let (program, pool) = program(&own, tasks.clone());
-                let held = fill(&program, &at, 255).await;
+                let held = create_sessions(&program, &at, 255).await;
                 let closed = closings(&held, &tasks);
                 let (first, _) = transport(&own, tasks.clone(), CLIENT);
                 let placed = first.dial(KEY.public(), &at).await.expect("a session");
@@ -4668,7 +4668,7 @@ mod port {
                 own.clock().sleep(Span::SECOND).await;
                 let (program, _) = program(&own, tasks.clone());
                 let (outsider, _) = transport(&own, tasks, CLIENT);
-                let mut held = fill(&program, &at, 254).await;
+                let mut held = create_sessions(&program, &at, 254).await;
                 held.push(outsider.dial(KEY.public(), &at).await.expect("a session"));
                 done.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
@@ -4723,7 +4723,7 @@ mod port {
                 let old = first.dial(KEY.public(), &at).await.expect("a session");
                 own.clock().sleep(Span::SECOND).await;
                 let (program, pool) = program(&own, tasks.clone());
-                let held = fill(&program, &at, 255).await;
+                let held = create_sessions(&program, &at, 255).await;
                 let closed = closings(&held, &tasks);
                 let (second, second_pool) = transport(&own, tasks, CLIENT);
                 let new = second.dial(KEY.public(), &at).await.expect("a session");
@@ -4806,7 +4806,7 @@ mod port {
                 let at = [Address::Udp(listen)];
                 let (programs, _) = program(&own, tasks.clone());
                 let (late, late_pool) = program(&own, tasks.clone());
-                let held = fill(&programs, &at, 255).await;
+                let held = create_sessions(&programs, &at, 255).await;
                 let closed = closings(&held, &tasks);
                 let (first, _) = transport(&own, tasks.clone(), CLIENT);
                 let old = first.dial(KEY.public(), &at).await.expect("a session");
@@ -4863,7 +4863,7 @@ mod port {
                 own.clock().sleep(Span::SECOND).await;
                 let after_redial = of_old.borrow().clone();
                 let (program, _) = program(&own, tasks.clone());
-                let held = fill(&program, &at, 256).await;
+                let held = create_sessions(&program, &at, 256).await;
                 let closed = closings(&held, &tasks);
                 own.clock().sleep(Span::SECOND).await;
                 let old_closed = of_old.borrow().clone();
@@ -4916,7 +4916,7 @@ mod port {
                 own.clock().sleep(Span::SECOND).await;
                 let of_olds = closings(&olds, &tasks);
                 let (program, _) = program(&own, tasks.clone());
-                let held = fill(&program, &at, 512).await;
+                let held = create_sessions(&program, &at, 512).await;
                 let closed = closings(&held, &tasks);
                 own.clock().sleep(Span::SECOND).await;
                 let open_programs = held.len() - closed.borrow().len();
