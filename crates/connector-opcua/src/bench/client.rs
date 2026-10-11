@@ -147,44 +147,13 @@ impl std::fmt::Debug for Client {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use env::rng::Rng;
     use sim::{Sim, node};
 
-    use super::Server;
-
-    #[test]
-    fn each_scope_draws_from_its_rng() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        let drawn = sim
-            .run_on(&node, move |node, _| async move {
-                let address = node.addresses()[0];
-                let mut drawn = Vec::new();
-                for start in [1, 2] {
-                    let body = async |server: &Server| {
-                        // SAFETY: it draws from the generator of this thread.
-                        let before = unsafe { crate::ffi::test::UA_UInt32_random() };
-                        let client = server.connect().await;
-                        // SAFETY: as above.
-                        let after = unsafe { crate::ffi::test::UA_UInt32_random() };
-                        client.close().await;
-                        (before, after)
-                    };
-                    let rng = Rng::from_seed(start);
-                    drawn.push(
-                        Server::scope(node.clock(), node.net(), address, rng, body)
-                            .await,
-                    );
-                }
-                drawn
-            })
-            .expect("the run ends");
-        assert_ne!(drawn[0].0, drawn[1].0, "two scopes drew the same value");
-        assert_ne!(
-            drawn[0].1, drawn[1].1,
-            "the clients of two scopes drew the same"
-        );
-    }
+    use super::{PORT, Server};
+    use crate::connection::tests::session;
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {
@@ -211,27 +180,51 @@ mod tests {
         .expect("the run ends");
     }
 
-    #[test]
-    fn each_client_draws_other_values() {
+    /// Gives the ids of a session of a peer in a scope of each start value: before
+    /// the first connect, and after each of two connects. The server draws them from
+    /// the random numbers that the last loop on this thread set.
+    fn sessions(starts: [u64; 2]) -> Vec<[[[u8; 16]; 2]; 3]> {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
-        let drawn = sim
-            .run_on(&node, move |node, _| async move {
-                let address = node.addresses()[0];
+        sim.run_on(&node, move |node, _| async move {
+            let address = node.addresses()[0];
+            let (net, remote) = (node.net(), SocketAddr::new(address, PORT));
+            let mut ids = Vec::new();
+            for start in starts {
                 let body = async |server: &Server| {
-                    let mut drawn = Vec::new();
-                    for _ in 0..2 {
+                    let mut ids = [session(&net, remote).await; 3];
+                    for id in &mut ids[1..] {
                         let client = server.connect().await;
-                        // SAFETY: it draws from the generator of this thread.
-                        drawn.push(unsafe { crate::ffi::test::UA_UInt32_random() });
+                        *id = session(&net, remote).await;
                         client.close().await;
                     }
-                    drawn
+                    ids
                 };
-                let rng = node.entropy().rng();
-                Server::scope(node.clock(), node.net(), address, rng, body).await
-            })
-            .expect("the run ends");
-        assert_ne!(drawn[0], drawn[1], "two connects drew the same value");
+                let rng = Rng::from_seed(start);
+                ids.push(
+                    Server::scope(node.clock(), node.net(), address, rng, body).await,
+                );
+            }
+            ids
+        })
+        .expect("the run ends")
+    }
+
+    #[test]
+    fn each_scope_starts_from_its_rng() {
+        let ids = sessions([1, 2]);
+        assert_ne!(ids[0][0], ids[1][0], "two scopes took the same value");
+    }
+
+    #[test]
+    fn each_connect_takes_another_value_of_the_rng_of_its_scope() {
+        let ids = sessions([1, 2]);
+        assert_ne!(ids[0][1], ids[0][2], "two connects took the same value");
+    }
+
+    #[test]
+    fn scopes_of_one_start_value_give_a_peer_the_same_sessions() {
+        let ids = sessions([1, 1]);
+        assert_eq!(ids[0], ids[1]);
     }
 }
