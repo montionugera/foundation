@@ -86,8 +86,8 @@ struct Half {
 enum Rest {
     /// The caller, at its next write.
     Caller,
-    /// The stream, with no call from the caller: the message came from a write that
-    /// does not wait.
+    /// The stream, with no call from the caller: no write comes back for the message.
+    /// It came from a write that does not wait, or from a write that never ended.
     Pump,
     /// The stream, which then finishes: the caller finished it.
     Finish,
@@ -1611,9 +1611,9 @@ impl Streams {
     }
 
     /// Gives each stream that got room or the turn [`Event::Writable`] in `events`,
-    /// so that its caller writes the rest. A stream whose message came from a write
-    /// that does not wait, or that the caller finished, writes the rest to `inner`
-    /// itself, and gets the event once noq-proto took it all. A finished stream then
+    /// so that its caller writes the rest. A stream whose rest no write comes back
+    /// for, or that the caller finished, writes the rest to `inner` itself, and gets
+    /// the event once noq-proto took it all. A finished stream then
     /// finishes, with no event.
     pub(super) fn pump(
         &mut self,
