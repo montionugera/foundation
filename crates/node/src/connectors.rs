@@ -21,8 +21,9 @@ use crate::scope::Scope;
 /// whose name has no loop, starts only once no first open of such a connector is
 /// pending on the node. So the first open of such an out connector resolves before the
 /// first run of such an in connector of its apply, or of a later one, starts. A change
-/// before that first run keeps the wait. A later change, also an addition of a name
-/// that has a loop, opens in the loop of the name and does not wait.
+/// before that first run is still such a first open, counted from its apply. A later
+/// change, also an addition of a name that has a loop, opens in the loop of the name
+/// and does not wait.
 pub(crate) struct Runs {
     supervisor: Supervisor,
     opens: Rc<Opens>,
@@ -48,9 +49,9 @@ impl Opens {
         Pending(Rc::clone(self))
     }
 
-    /// Resolves once no open is pending.
+    /// Resolves once no open is pending. An open counted after the last 0 holds it.
     async fn settled(&self) {
-        if self.pending.get() > 0 {
+        while self.pending.get() > 0 {
             let settled = self.settled.borrow().clone();
             settled.wait().await;
         }
@@ -81,6 +82,12 @@ struct Loop {
     applied: cancel::Token,
     /// The loop read `None` and ended.
     ended: bool,
+    /// The first run started: a call of `Opened::run` that no change cancelled.
+    started: bool,
+    /// The count of the pending first open, from the apply that added the connector,
+    /// or changed it before the first run, until that open resolves. Counted in the
+    /// apply, so before any loop polls.
+    share: Option<Pending>,
 }
 
 impl Runs {
@@ -127,6 +134,11 @@ impl Runs {
                 state.connector = wanted.cloned();
                 state.changed.cancel();
                 state.changed = cancel::Token::new();
+                if state.connector.is_none() {
+                    state.share = None;
+                } else if !state.started && state.share.is_none() {
+                    state.share = Some(self.opens.begin());
+                }
             }
             true
         });
@@ -139,29 +151,26 @@ impl Runs {
                 changed: cancel::Token::new(),
                 applied: cancel::Token::new(),
                 ended: false,
+                started: false,
+                share: Some(self.opens.begin()),
             }));
             self.loops.insert(name.clone(), Rc::clone(&state));
-            // Counted before any loop of this apply polls. A connector changed after its
-            // first run, and one that runs again after `Config`, has no share.
-            let first = self.opens.begin();
             let (supervisor, opens) = (self.supervisor.clone(), Rc::clone(&self.opens));
             let name = name.clone();
             self.scope
-                .spawn(Box::pin(run(supervisor, opens, name, state, first)));
+                .spawn(Box::pin(run(supervisor, opens, name, state)));
         }
     }
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its
-/// first run starts once `opens` settled, with `first` dropped.
+/// first run starts once `opens` settled, with its own share dropped.
 async fn run(
     supervisor: Supervisor,
     opens: Rc<Opens>,
     name: Name,
     state: Rc<RefCell<Loop>>,
-    first: Pending,
 ) {
-    let mut first = Some(first);
     loop {
         let (connector, changed, applied) = {
             let mut state = state.borrow_mut();
@@ -175,13 +184,11 @@ async fn run(
         let config = connector.config().document();
         let opened = supervisor.open(kind, name.clone(), config, &changed);
         let opened = opened.await;
-        // A change before the first run starts no run, so the next open keeps a share.
-        if first.is_some() && !changed.cancelled() {
-            first = None;
+        // A change before the open resolved keeps the share for the next open.
+        if !state.borrow().started && !changed.cancelled() {
+            drop(state.borrow_mut().share.take());
             changed.race(opens.settled()).await;
-            if changed.cancelled() {
-                first = Some(opens.begin());
-            }
+            state.borrow_mut().started = !changed.cancelled();
         }
         match opened.run().await {
             // The next change of the connector runs it again.

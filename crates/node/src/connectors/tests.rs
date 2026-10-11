@@ -142,10 +142,11 @@ impl Kind for Source {
     }
 }
 
-/// A kind that reads with `settings` and records each frame that its run gets, with
-/// the time.
+/// A kind that reads with `settings`, and records its start and each frame that its run
+/// gets, with the time.
 struct Sink {
     settings: connector::reader::Settings,
+    starts: Starts,
     got: Starts,
 }
 
@@ -171,6 +172,8 @@ impl Kind for Sink {
     }
 
     async fn run(&self, mut ctx: Context<()>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), 0);
+        self.starts.lock().expect("no panic").push(start);
         let mut reader = ctx.reader().expect("the reader of `check`");
         let cancel = ctx.cancel().clone();
         while let Some(Ok(_)) = cancel.race(reader.next()).await {
@@ -331,6 +334,7 @@ fn kinds(
     };
     let sink = |select| Sink {
         settings: settings(select),
+        starts: Arc::clone(starts),
         got: Arc::clone(got),
     };
     let source = Source {
@@ -921,39 +925,44 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
     assert_eq!(run, Ok((2, 1)));
 }
 
-/// The seeds of 0 to 31 on which no `sink` got a frame, with the kinds of [`record`]
-/// on a hub whose first mesh time comes at 5 s, at each step.
-fn missed_unsynced(steps: impl Fn() -> Vec<Step>) -> Vec<u64> {
-    let got = |seed| {
-        let config = ::sim::Config {
-            seed,
-            ..::sim::Config::default()
-        };
-        let mut sim = ::sim::Sim::new(config);
-        let node = sim.node(::sim::node::Config::default());
-        let steps = steps();
-        let run = sim.run_on(&node, move |node, tasks| async move {
-            let got = Starts::default();
-            let kinds = kinds(None, &Starts::default(), &Starts::default(), &got);
-            let clock = node.clock();
-            let start = clock.now();
-            let (config, _) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
-            let hub = config.hub.clone();
-            let mut runs = Runs::new(config, name(NODE));
-            for (at, spec) in steps {
-                clock.sleep_until(start + at).await;
-                let mut definitions = definitions(&spec);
-                definitions.extend(data());
-                hub.set_definitions(&definitions);
-                runs.apply(&definitions);
-            }
-            clock.sleep_until(start + ms(10_000)).await;
-            drop(runs);
-            got.lock().expect("no panic").len()
-        });
-        run.expect("the run ends")
+/// The counts of the starts of runs and of the frames that a `sink` got until 10 s, on
+/// `seed`, with the kinds of [`record`] on a hub whose first mesh time comes at 5 s, at
+/// each step.
+fn record_unsynced(seed: u64, steps: Vec<Step>) -> (usize, usize) {
+    let config = ::sim::Config {
+        seed,
+        ..::sim::Config::default()
     };
-    (0..32).filter(|&seed| got(seed) == 0).collect()
+    let mut sim = ::sim::Sim::new(config);
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let (starts, got) = (Starts::default(), Starts::default());
+        let kinds = kinds(None, &starts, &Starts::default(), &got);
+        let clock = node.clock();
+        let start = clock.now();
+        let (config, _) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+        let hub = config.hub.clone();
+        let mut runs = Runs::new(config, name(NODE));
+        for (at, spec) in steps {
+            clock.sleep_until(start + at).await;
+            let mut definitions = definitions(&spec);
+            definitions.extend(data());
+            hub.set_definitions(&definitions);
+            runs.apply(&definitions);
+        }
+        clock.sleep_until(start + ms(10_000)).await;
+        drop(runs);
+        let started = starts.lock().expect("no panic").len();
+        (started, got.lock().expect("no panic").len())
+    });
+    run.expect("the run ends")
+}
+
+/// The seeds of 0 to 31 on which no `sink` got a frame, with [`record_unsynced`].
+fn missed_unsynced(steps: impl Fn() -> Vec<Step>) -> Vec<u64> {
+    (0..32)
+        .filter(|&seed| record_unsynced(seed, steps()).1 == 0)
+        .collect()
 }
 
 /// Both first opens wait for the mesh time at 5 s. At 1 s, a change of the in
@@ -969,4 +978,123 @@ fn a_change_before_the_first_run_keeps_its_share() {
     let missed =
         missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
     assert_eq!(missed, Vec::<u64>::new());
+}
+
+/// As above, with a change of the out connector while its first open waits: the next
+/// open keeps the share, and holds the first run of the in connector.
+#[test]
+fn a_change_while_the_first_open_waits_keeps_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.a", "sink", NODE, 1), ("plant.b", "source", NODE, 0)];
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_eq!(missed, Vec::<u64>::new());
+}
+
+/// At 1 s, a removal of the out connector, whose first open waits for the mesh time at
+/// 5 s, frees its share, so the in connector runs.
+#[test]
+fn a_removal_before_the_first_run_frees_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.b", "source", NODE, 0)];
+    let starts: Vec<usize> = (0..32)
+        .map(|seed| {
+            let steps = vec![on(0, first.clone()), on(1_000, second.clone())];
+            record_unsynced(seed, steps).0
+        })
+        .collect();
+    assert_eq!(starts, vec![1; 32]);
+}
+
+/// At 0, a connector of no kind, whose open resolves at once, and a `sink`, whose first
+/// open waits for the mesh time at 5 s. At 1 s, the first becomes `to`, and `with`
+/// stays.
+fn missed_after_kind(to: &'static str, with: &'static str) -> Vec<u64> {
+    let first = vec![("plant.a", "none", NODE, 0), ("plant.b", with, NODE, 0)];
+    let second = vec![("plant.a", to, NODE, 0), ("plant.b", with, NODE, 0)];
+    missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())])
+}
+
+/// The first open of the connector of no kind resolved before the change, and its loop
+/// waits for the open of the `sink`. The `source` that the change gives still waits.
+#[test]
+fn a_change_after_the_first_open_resolved_keeps_the_wait() {
+    assert_eq!(missed_after_kind("source", "sink"), Vec::<u64>::new());
+}
+
+/// The `sink` that the change gives holds the first run of the `source`.
+#[test]
+fn a_change_after_the_first_open_resolved_holds_the_other_first_runs() {
+    assert_eq!(missed_after_kind("sink", "source"), Vec::<u64>::new());
+}
+
+/// On `seed`, the sinks `plant.a` and `plant.c` and the source `plant.b` at 0, and at
+/// 5 s, the instant of the mesh time, after `yields` polls of other tasks, an apply that
+/// changes `plant.a`. Gives `None` when a run of `plant.a` or `plant.b` started before
+/// that apply returned, else whether `plant.a` got the frame of `plant.b`.
+fn change_at_the_mesh_time(seed: u64, yields: usize) -> Option<bool> {
+    let config = ::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    };
+    let mut sim = ::sim::Sim::new(config);
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let (starts, got) = (Starts::default(), Starts::default());
+        let kinds = kinds(None, &starts, &Starts::default(), &got);
+        let (config, _) = create_unsynced(&node, &tasks, kinds, ms(5_000)).await;
+        let clock = node.clock();
+        let start = clock.now();
+        let hub = config.hub.clone();
+        let mut runs = Runs::new(config, name(NODE));
+        let mut apply = |version| {
+            let spec = [
+                ("plant.a", "sink", NODE, version),
+                ("plant.b", "source", NODE, 0),
+                ("plant.c", "sink", NODE, 0),
+            ];
+            let mut definitions = definitions(&spec);
+            definitions.extend(data());
+            hub.set_definitions(&definitions);
+            runs.apply(&definitions);
+        };
+        apply(0);
+        clock.sleep_until(start + ms(5_000)).await;
+        for _ in 0..yields {
+            let mut yielded = false;
+            std::future::poll_fn(|cx| {
+                if yielded {
+                    return std::task::Poll::Ready(());
+                }
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            })
+            .await;
+        }
+        apply(1);
+        let early = (starts.lock().expect("no panic").iter())
+            .any(|(name, _, _)| name != "plant.c");
+        clock.sleep_until(start + ms(10_000)).await;
+        drop(runs);
+        let got = got.lock().expect("no panic");
+        let got = got.iter().any(|(name, _, _)| name == "plant.a");
+        (!early).then_some(got)
+    });
+    run.expect("the run ends")
+}
+
+/// Out `plant.a` and in `plant.b` can wait for the first open of `plant.c` when an
+/// apply changes `plant.a`. The share of the change counts from that apply.
+#[test]
+fn a_change_before_the_first_run_counts_from_its_apply() {
+    let mut runs = Vec::new();
+    for seed in 0..32 {
+        for yields in 0..8 {
+            runs.push(((seed, yields), change_at_the_mesh_time(seed, yields)));
+        }
+    }
+    let missed: Vec<_> = runs.iter().filter(|run| run.1 == Some(false)).collect();
+    assert_eq!(missed, Vec::<&_>::new());
+    assert!(runs.iter().any(|run| run.1 == Some(true)), "{runs:?}");
 }
