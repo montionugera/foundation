@@ -1,7 +1,7 @@
 //! The files of the host by the paths that a user gave.
 
 use std::fmt::Debug;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, is_separator};
 use std::rc::Rc;
 
 /// The files of the host by the paths that a user gave, as on a command line. A
@@ -131,13 +131,14 @@ pub trait Driver: Debug {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error>;
 }
 
-/// Whether `path` is empty or ends in `/`, `.`, or `..`. By its text, such a path names
-/// a directory or nothing, never a file. It reads no file. The methods of `Path` do not
-/// give this: they drop an end in `/` or `.`.
+/// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
+/// path names a directory or nothing, never a file. It reads no file. A separator is a
+/// `/`, and on Windows also a `\` (`std::path::is_separator`). The methods of `Path` do
+/// not give this: they drop an end in a separator or `.`.
 #[must_use]
 pub fn names_directory(path: &Path) -> bool {
     let bytes = path.as_os_str().as_encoded_bytes();
-    let name = bytes.rsplit(|&byte| byte == b'/').next();
+    let name = bytes.rsplit(|&byte| is_separator(char::from(byte))).next();
     matches!(name, Some(b"" | b"." | b".."))
 }
 
@@ -196,6 +197,9 @@ mod tests {
         }
         for path in ["a", "/a", "a/b", ".a", "a.", "..a", "a/..."] {
             assert!(!names_directory(Path::new(path)), "{path:?}");
+        }
+        for path in ["a\\", "a\\.."] {
+            assert_eq!(names_directory(Path::new(path)), cfg!(windows), "{path:?}");
         }
     }
 }

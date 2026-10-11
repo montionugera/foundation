@@ -473,12 +473,18 @@
   directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty path
   names nothing. `env::paths::names_directory` holds the rule for the text of a path,
   and each driver asks it. Lost: a copy in each driver. The copy of `os` lost its `..`
-  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424). On
-  `os`, the permission bits of a file that a write makes give the group and other users
-  no access, also when it replaces a file, and a symbolic link, a device, or a pipe at
-  the path takes the bytes in place, with no rename. Lost: a second bound for the count
-  of entries; a rename over each thing at the path, which replaces `/dev/null` with a
-  file for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
+  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424). It
+  splits the text where `std::path::is_separator` says, as `Path` does, so on Windows it
+  also splits at `\`. Each other form of a Windows path that names no file, as a drive
+  or a device name, is for the Windows driver of `os::paths`, which is not there yet.
+  Lost: a split at `/` only, which on Windows takes `a\` as the name of a file
+  (`laptop.architect-2`, 2026-10-11T20:49:35Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113601546). On `os`,
+  the permission bits of a file that a write makes give the group and other users no
+  access, also when it replaces a file, and a symbolic link, a device, or a pipe at the
+  path takes the bytes in place, with no rename. Lost: a second bound for the count of
+  entries; a rename over each thing at the path, which replaces `/dev/null` with a file
+  for a root user (`laptop.architect-2`, 2026-10-11T15:18:50Z:
   https://github.com/synnaxlabs/foundation/pull/2411#issuecomment-6110509058). A write
   is whole or not at all only when a file or nothing is at the path. In place, a crash
   or a failed write can leave a part of the bytes, and a write on a symbolic link to
