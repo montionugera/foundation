@@ -1188,8 +1188,8 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills
-/// its draft, as a killed run does. Does nothing when [`DIES`] is not set.
+/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills its
+/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
