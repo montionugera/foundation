@@ -308,8 +308,8 @@ async fn serve(
     // gives up a frame only in the poll that returns it.
     let mut peer = pin!(peer(receiver, home, complete.as_ref()));
     loop {
-        // A grant wakes no session, so a frame that waits for credit goes out only at
-        // the take after its grant (CREDIT RULES).
+        // `unless` polls `peer` first, and a grant wakes no session, so a frame that
+        // waits for credit goes out at the take after its grant (CREDIT RULES).
         let Some(taken) = unless(peer.as_mut(), session.take()).await? else {
             sender.finish()?;
             return Ok(());
@@ -333,8 +333,8 @@ async fn serve(
 }
 
 /// Runs `work` until it ends, unless `peer` ends first: `None` when the peer finished,
-/// or its error when it broke the stream or HUB WIRE. `peer` polls first in each poll,
-/// so the node does no work after the peer's finish or message.
+/// or the error of the peer. `peer` polls first in each poll, so the node does no work
+/// in a poll in which the peer ends.
 async fn unless<P, W>(
     mut peer: Pin<&mut P>,
     work: W,

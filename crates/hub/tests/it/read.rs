@@ -485,7 +485,9 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
-/// A message after the open stops a read while its frames still come.
+/// A message after the open stops a read while its frames still come. No test pins that
+/// the read polls the program first: the program cannot tell a frame that the node took
+/// in the poll of the message from one that it took before.
 #[test]
 fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
     const FRAMES: i64 = 400;
