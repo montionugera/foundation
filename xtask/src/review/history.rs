@@ -83,10 +83,10 @@ impl<'a> History<'a> {
     /// conflict in `<file>` between its start and the base", so a conflict that leaves
     /// no markers fails closed too. A `.md` file that `from` changes since its merge
     /// base with that base commit, as the merge reads it, and that the merge that makes
-    /// this tree moves into a code file by its own rename detection gives "the base
-    /// moves `<old>`, which the PR changes, into the code file `<new>`". An `end` that
-    /// holds more than one newest base commit gives "holds the base at more than one
-    /// newest commit: `<commit>`, `<commit>`".
+    /// this tree moves into a code file by its own rename detection gives "has `<old>`,
+    /// which the PR changes and the base moves into the code file `<new>`". An `end`
+    /// that holds more than one newest base commit gives "holds the base at more than
+    /// one newest commit: `<commit>`, `<commit>`", also when the range has a conflict.
     ///
     /// The line number is in `end` for an added line, and in `from` or that tree for
     /// a removed one.
@@ -105,56 +105,131 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let unnamed = |text: &str| format!("has `{text}`, which names no commit");
-        let Some(from_sha) = self.named(from)? else {
-            return Ok(Some(unnamed(from)));
+        match self.range(from, end, &CODE)? {
+            Range::Empty => Ok(None),
+            Range::Counted(phrase) => Ok(Some(phrase)),
+            Range::Diff { tree, end } => self.first_change(&tree, &end),
+        }
+    }
+
+    /// The first change of a decision in the range `<from>..<end>`, as a phrase, or
+    /// `None`, also when the range is empty. A file under `docs/decisions/` that the
+    /// range adds, changes, or removes gives "changes the decision `<path>`".
+    ///
+    /// The change is read to `end` from the tree that `git merge-tree` makes of `from`
+    /// and the newest base commit that `end` holds, as `code_change` reads it: a change
+    /// of the base does not count. A file under `docs/decisions/` that a merge of the
+    /// base in the range resolves a conflict in gives "resolves a conflict in `<path>`
+    /// in `<merge>`", and one that this tree has a conflict in gives "has a conflict in
+    /// `<path>` between its start and the base", each also when the conflict leaves no
+    /// markers or the range ends with the text of the base. A path outside
+    /// `docs/decisions/` that `from` changes since its merge base with that base
+    /// commit, and that this tree moves into `docs/decisions/`, gives "has `<old>`,
+    /// which the PR changes and the base moves into the decision `<new>`", as
+    /// `code_change` reads a move into a code file. `from` and `end` are as in
+    /// `code_change`, with its two phrases: "has `<text>`, which names no commit", and
+    /// "holds the base at more than one newest commit: `<commit>`, `<commit>`".
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command, also when the base ref does not exist.
+    pub(crate) fn decision_change(
+        &self,
+        from: &str,
+        end: &str,
+    ) -> Result<Option<String>, String> {
+        let (tree, end) = match self.range(from, end, &DECISION)? {
+            Range::Empty => return Ok(None),
+            Range::Counted(phrase) => return Ok(Some(phrase)),
+            Range::Diff { tree, end } => (tree, end),
         };
-        let Some(end_sha) = self.sha(end)? else {
-            return Ok(Some(unnamed(end)));
+        let changed = self
+            .diff(&tree, &end)?
+            .into_iter()
+            .map(|entry| String::from_utf8_lossy(&entry.path).into_owned())
+            .find(|path| (DECISION.counts)(path));
+        Ok(changed.map(|path| format!("changes the decision `{path}`")))
+    }
+
+    /// The range `<from>..<end>`, as a rule that counts the paths of `kind` reads it.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command, also when the base ref does not exist.
+    fn range(&self, from: &str, end: &str, kind: &Kind) -> Result<Range, String> {
+        let unnamed =
+            |text: &str| Range::Counted(format!("has `{text}`, which names no commit"));
+        let Some(from) = self.named(from)? else {
+            return Ok(unnamed(from));
         };
-        if from_sha == end_sha {
-            return Ok(None);
+        let Some(end) = self.sha(end)? else {
+            return Ok(unnamed(end));
+        };
+        if from == end {
+            return Ok(Range::Empty);
         }
         let base = self.base()?;
-        let range = format!("{from_sha}..{end_sha}");
+        let bases = self.git(&["merge-base", "--all", &end, &base])?;
+        let mut bases: Vec<_> = bases.lines().collect();
+        bases.sort_unstable();
+        let [newest] = bases[..] else {
+            return Ok(Range::Counted(format!(
+                "holds the base at more than one newest commit: `{}`",
+                bases.join("`, `")
+            )));
+        };
+        if let Some((path, merge)) = self.resolved(&from, &end, &base, kind.counts)? {
+            return Ok(Range::Counted(format!(
+                "resolves a conflict in `{path}` in `{merge}`"
+            )));
+        }
+        let merged = self.merged(&from, newest)?;
+        if let Some(path) = merged.conflict(kind.counts) {
+            return Ok(Range::Counted(format!(
+                "has a conflict in `{path}` between its start and the base"
+            )));
+        }
+        Ok(match self.moved(&from, newest, &merged.tree, kind)? {
+            Some(moved) => Range::Counted(moved),
+            None => Range::Diff {
+                tree: merged.tree,
+                end,
+            },
+        })
+    }
+
+    /// The first conflicted path for which `counts` holds in a merge of the base on
+    /// the first-parent chain of `<from>..<end>`, and that merge. `base` is the SHA of
+    /// the base.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn resolved(
+        &self,
+        from: &str,
+        end: &str,
+        base: &str,
+        counts: impl Fn(&str) -> bool,
+    ) -> Result<Option<(String, String)>, String> {
+        let commits = format!("{from}..{end}");
         let chain = self.git(&[
             "rev-list",
             "--reverse",
             "--first-parent",
             "--parents",
-            &range,
+            &commits,
         ])?;
         for line in chain.lines() {
-            let Some((first, second)) = self.base_merge(line, &base)? else {
+            let Some((first, second)) = self.base_merge(line, base)? else {
                 continue;
             };
-            let merge = line.split(' ').next().unwrap_or_default();
-            let merged = self.merged(first, second)?;
-            if let Some(path) = merged.code_conflict() {
-                return Ok(Some(format!(
-                    "resolves a conflict in `{path}` in `{merge}`"
-                )));
+            if let Some(path) = self.merged(first, second)?.conflict(&counts) {
+                let merge = line.split(' ').next().unwrap_or_default();
+                return Ok(Some((path.to_string(), merge.to_string())));
             }
         }
-        let bases = self.git(&["merge-base", "--all", &end_sha, &base])?;
-        let mut bases: Vec<_> = bases.lines().collect();
-        bases.sort_unstable();
-        let [newest] = bases[..] else {
-            return Ok(Some(format!(
-                "holds the base at more than one newest commit: `{}`",
-                bases.join("`, `")
-            )));
-        };
-        let merged = self.merged(&from_sha, newest)?;
-        if let Some(path) = merged.code_conflict() {
-            return Ok(Some(format!(
-                "has a conflict in `{path}` between its start and the base"
-            )));
-        }
-        if let Some(moved) = self.moved_into_code(&from_sha, newest, &merged.tree)? {
-            return Ok(Some(moved));
-        }
-        self.first_change(&merged.tree, &end_sha)
+        Ok(None)
     }
 
     /// The first code change from the tree-ish `old` to `new`, as `code_change`
@@ -316,42 +391,46 @@ impl<'a> History<'a> {
 
     /// Reports whether `merge` has the tree that a merge of `first` and `second`
     /// makes with no conflict, and the merge moves no text of `first` into a code
-    /// file (`moved_into_code`).
+    /// file (`moved`).
     fn clean(&self, merge: &str, first: &str, second: &str) -> Result<bool, String> {
         let merged = self.merged(first, second)?;
         let tree = self.git(&["rev-parse", &format!("{merge}^{{tree}}")])?;
         Ok(merged.clean
             && merged.tree == tree
-            && self.moved_into_code(first, second, &merged.tree)?.is_none())
+            && self.moved(first, second, &merged.tree, &CODE)?.is_none())
     }
 
-    /// The phrase "the base moves `<old>`, which the PR changes, into the code file
-    /// `<new>`" for the first path `<old>` of `changed(first, second)` that their
-    /// merge, with the tree `tree`, moves into the code file `<new>`. The moves are the
-    /// merge's own: `second` is merged again with a copy of `first` that gives each
-    /// such path a probe text of its own, and the probe text is read in the code files
-    /// that the two merges make differently.
+    /// The phrase "has `<old>`, which the PR changes and the base moves into
+    /// <noun>`<new>`" for the first path `<old>` that `kind` does not count, that
+    /// `first` changes (`changed`), and that the merge of `first` and `second`, with
+    /// the tree `tree`, moves into a path `<new>` that `kind` counts, where `<noun>` is
+    /// `kind.noun`. The moves are the merge's own: `second` is merged again with
+    /// a copy of `first` that gives each such path a probe text of its own, and the
+    /// probe text is read in the files at such a `<new>` that the two merges make
+    /// differently.
     ///
     /// # Errors
     ///
     /// A failed `git` command.
-    fn moved_into_code(
+    fn moved(
         &self,
         first: &str,
         second: &str,
         tree: &str,
+        kind: &Kind,
     ) -> Result<Option<String>, String> {
         // The merge is `first`, and moves nothing.
         if self.ancestor(second, first)? {
             return Ok(None);
         }
-        let Some(probe) = self.probe(first, second)? else {
+        let Some(probe) = self.probe(first, second, |path| !(kind.counts)(path))?
+        else {
             return Ok(None);
         };
         let probed = self.merged(&probe.commit, second)?.tree;
         for entry in self.diff(tree, &probed)? {
             let new = String::from_utf8_lossy(&entry.path);
-            if text_path(&new) {
+            if !(kind.counts)(&new) {
                 continue;
             }
             let text = self.output(&["cat-file", "blob", &entry.new])?;
@@ -365,23 +444,29 @@ impl<'a> History<'a> {
             });
             if let Some(old) = old {
                 return Ok(Some(format!(
-                    "the base moves `{old}`, which the PR changes, into the code file \
-                     `{new}`"
+                    "has `{old}`, which the PR changes and the base moves into \
+                     {}`{new}`",
+                    kind.noun
                 )));
             }
         }
         Ok(None)
     }
 
-    /// A copy of `first` in which each path of `changed(first, second)` holds the
-    /// probe text `<PROBE> <n>`, where `paths[n]` is that path. `None` when no such
+    /// A copy of `first` in which each path of `changed(first, second, counts)` holds
+    /// the probe text `<PROBE> <n>`, where `paths[n]` is that path. `None` when no such
     /// path exists.
     ///
     /// # Errors
     ///
     /// A failed `git` command.
-    fn probe(&self, first: &str, second: &str) -> Result<Option<Probe>, String> {
-        let changed = self.changed(first, second)?;
+    fn probe(
+        &self,
+        first: &str,
+        second: &str,
+        counts: impl Fn(&str) -> bool,
+    ) -> Result<Option<Probe>, String> {
+        let changed = self.changed(first, second, counts)?;
         if changed.is_empty() {
             return Ok(None);
         }
@@ -400,10 +485,10 @@ impl<'a> History<'a> {
         }))
     }
 
-    /// The mode and path of each `.md` file that `first` changes since its merge base
-    /// with `second`, as a merge of the two reads that base. A file that `first` moves
-    /// since that base is in too, which changes no result: no file of the base has its
-    /// path, so the base cannot move it into a code file.
+    /// The mode and path of each file for which `counts` holds that `first` changes
+    /// since its merge base with `second`, as a merge of the two reads that base. A
+    /// file that `first` moves since that base is in too, which changes no result: no
+    /// file of the base has its path, so the base cannot move it.
     ///
     /// # Errors
     ///
@@ -412,6 +497,7 @@ impl<'a> History<'a> {
         &self,
         first: &str,
         second: &str,
+        counts: impl Fn(&str) -> bool,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         // A merge of `first` with a copy of `second` that has no files builds the same
         // base. It gives a conflict with `first` as stage 2 for each file that the base
@@ -431,7 +517,7 @@ impl<'a> History<'a> {
             let stage = String::from_utf8_lossy(parts.next().unwrap_or_default());
             let path = parts.next().unwrap_or_default();
             if let [mode, _, "2"] = stage.split(' ').collect::<Vec<_>>()[..]
-                && text_path(&String::from_utf8_lossy(path))
+                && counts(&String::from_utf8_lossy(path))
             {
                 changed.push((mode.to_string(), path.to_vec()));
             }
@@ -637,7 +723,7 @@ impl<'a> History<'a> {
     }
 }
 
-/// The first word of each line of probe text that `History::moved_into_code` writes.
+/// The first word of each line of probe text that `History::probe` writes.
 const PROBE: &str = "xtask-review-probe";
 
 /// Where the end of a round is on the first-parent chain of a head
@@ -687,6 +773,26 @@ fn absent(field: &str) -> bool {
     field.bytes().all(|b| b == b'0')
 }
 
+/// The paths that a rule of the check counts.
+struct Kind {
+    /// Whether the rule counts this path, as `git` gives it.
+    counts: fn(&str) -> bool,
+    /// What a phrase calls a counted path that a move makes, with the space after it.
+    noun: &'static str,
+}
+
+/// The code files: each path that is not a `.md` file.
+const CODE: Kind = Kind {
+    counts: |path| !text_path(path),
+    noun: "the code file ",
+};
+
+/// The files under `docs/decisions/`.
+const DECISION: Kind = Kind {
+    counts: |path| path.starts_with("docs/decisions/"),
+    noun: "the decision ",
+};
+
 /// A file to write in a tree.
 struct File<'a> {
     mode: &'a str,
@@ -694,7 +800,8 @@ struct File<'a> {
     text: String,
 }
 
-/// A copy of a commit, with a probe text in each `.md` file that the commit changes.
+/// A copy of a commit, with a probe text in each file that the commit changes and that
+/// a kind of move counts from.
 struct Probe {
     commit: String,
     /// The probed paths, by the number in their probe text.
@@ -714,13 +821,26 @@ struct Merged {
 }
 
 impl Merged {
-    /// The first conflicted path that is not a `.md` file.
-    fn code_conflict(&self) -> Option<&str> {
+    /// The first conflicted path for which `counts` holds.
+    fn conflict(&self, counts: impl Fn(&str) -> bool) -> Option<&str> {
         self.conflicts
             .iter()
-            .find(|p| !text_path(p))
             .map(String::as_str)
+            .find(|path| counts(path))
     }
+}
+
+/// A range `<from>..<end>` of a round, as a rule reads it.
+enum Range {
+    /// `from` and `end` name the same commit.
+    Empty,
+    /// A range that counts for the rule whatever its diff holds, as a phrase: one
+    /// that the check cannot read, one with a conflict in a path that the rule counts,
+    /// or one in which the base moves a path of the PR into such a path.
+    Counted(String),
+    /// A range whose diff decides: from the tree of `from` and the newest base commit
+    /// that `end` holds, to the commit `end`.
+    Diff { tree: String, end: String },
 }
 
 /// Whether `path`, a path as `git` gives it, is a `.md` file, the one kind of file
@@ -789,4 +909,4 @@ fn failure(command: &str, stderr: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

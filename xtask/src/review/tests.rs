@@ -1,3 +1,4 @@
+use super::history::tests::Repo;
 use super::*;
 
 /// The head of #1089 when it merged.
@@ -93,6 +94,7 @@ fn check(record: &Record) -> Vec<String> {
             let text = head(from) || [COMMENTS, MERGED, TEXT].contains(&from);
             Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
         },
+        &|_, _| Ok(None),
     )
     .unwrap()
 }
@@ -1283,7 +1285,8 @@ fn a_breaker_skip_on_a_range_that_changes_only_a_script_fails() {
             &record(vec![bot(ROUND)]),
             HEAD,
             &|_| Ok(Place::Head),
-            &script
+            &script,
+            &|_, _| Ok(None)
         ),
         Ok(vec![
             "review round 3 skips `breaker`, but its range changes code at `a.sh:1`."
@@ -1303,7 +1306,13 @@ fn a_red_team_pr_with_no_oracle_label_needs_no_approval() {
 fn returns_a_failure_to_read_history() {
     let failed = |_: &str| Err("git rev-parse: bad".to_string());
     assert_eq!(
-        problems(&record(vec![bot(ROUND)]), HEAD, &failed, &|_, _| Ok(None)),
+        problems(
+            &record(vec![bot(ROUND)]),
+            HEAD,
+            &failed,
+            &|_, _| Ok(None),
+            &|_, _| Ok(None)
+        ),
         Err("git rev-parse: bad".to_string())
     );
     let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
@@ -1312,7 +1321,8 @@ fn returns_a_failure_to_read_history() {
             &record(vec![bot(ROUND)]),
             HEAD,
             &|_| Ok(Place::Head),
-            &failed
+            &failed,
+            &|_, _| Ok(None)
         ),
         Err("git diff: bad".to_string())
     );
@@ -2620,4 +2630,282 @@ fn fails_a_rating_that_github_shows_with_a_backslash_after_it() {
 fn fails_a_round_that_github_ends_with_a_code_block_after_a_footnote() {
     let tail = ROUND.to_string() + "\n\n[^1]: x\n \n    Hot path: `send`";
     assert_eq!(check(&record(vec![bot(&tail)])), vec![unended("Deferred")]);
+}
+
+/// `body` after a name line, a rating, and a summary.
+fn rated(body: &str) -> String {
+    format!("{NAME}\nQuality: 8/10\n{SUMMARY}\n\n{body}")
+}
+
+/// A rated comment by the bot, posted at the decision cutoff.
+fn bound(body: &str) -> Comment {
+    Comment {
+        created: DECISION_CUTOFF.to_string(),
+        ..bot(&rated(body))
+    }
+}
+
+/// A round comment with no finding.
+fn clean(number: u32, reviewers: &str, range: &str) -> String {
+    format!(
+        "## Review round {number}\n\nReviewers: {reviewers}\nRange: `{range}`\n\
+         Findings: none{END}"
+    )
+}
+
+/// The problem of round 2 with no `architecture`, whose range changes the decision
+/// `x.md`.
+const DECISION: &str = "review round 2 names no architecture, which this round \
+                        requires. Run `architecture` on its range, or on the whole PR \
+                        when the clone cannot read the range, then edit the round \
+                        comment: add `architecture` to `Reviewers:` and add its \
+                        findings. Its range changes the decision \
+                        `docs/decisions/x.md`.";
+
+/// The phrase of `DECISION` for what its range does.
+const CHANGE: &str = "changes the decision `docs/decisions/x.md`";
+
+/// What the check gives for `record` at the head of `repo`.
+fn check_at(repo: &Repo, record: &Record) -> Vec<String> {
+    problems_in(&repo.dir, record, &repo.head()).unwrap()
+}
+
+#[test]
+fn a_later_round_whose_range_changes_a_decision_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let range = format!("{start}..{end}");
+    let rounds =
+        |reviewers| record(vec![first(END), bound(&clean(2, reviewers, &range))]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, breaker")),
+        vec![DECISION]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("performance")),
+        vec![
+            "review round 2 names no reviewer, breaker, which this round requires.",
+            DECISION
+        ]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture, breaker")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_of_a_text_pr_whose_range_changes_a_decision_requires_architecture() {
+    let (repo, start) = Repo::with_pr("review-decision-text");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let range = format!("{start}..{end}");
+    let rounds = |reviewers| Record {
+        files: vec!["docs/decisions/x.md".to_string()],
+        ..record(vec![
+            bound(&clean(1, "reviewer", &range)),
+            bound(&clean(2, reviewers, &range)),
+        ])
+    };
+    assert_eq!(check_at(&repo, &rounds("reviewer")), vec![DECISION]);
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_requires_architecture_too() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let rounds = |reviewers| Record {
+        files: vec!["docs/decisions/x.md".to_string()],
+        ..record(vec![
+            bound(&clean(1, "reviewer", &format!("a..{start}"))),
+            bound(&clean(1, reviewers, &format!("{start}..{end}"))),
+        ])
+    };
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer")),
+        vec![DECISION.replace("round 2", "round 1")]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_that_is_not_the_last_requires_architecture_too() {
+    let (repo, start) = Repo::with_pr("review-decision-earlier");
+    let middle = repo.commit("docs/decisions/x.md", "a rule\n");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let record = record(vec![
+        first(END),
+        bound(&clean(
+            2,
+            "reviewer, breaker",
+            &format!("{start}..{middle}"),
+        )),
+        bound(&clean(3, "reviewer, breaker", &format!("{middle}..{end}"))),
+    ]);
+    assert_eq!(check_at(&repo, &record), vec![DECISION]);
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_posted_before_the_decision_cutoff_keeps_its_reviewers() {
+    let (repo, start) = Repo::with_pr("review-decision-cutoff");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let round = |created: &str| Comment {
+        created: created.to_string(),
+        ..bot(&rated(&clean(
+            2,
+            "reviewer, breaker",
+            &format!("{start}..{end}"),
+        )))
+    };
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T15:59:59Z")])
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-11T16:00:01Z")])
+        ),
+        vec![DECISION]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_second_round_comment_numbered_1_of_a_code_pr_gets_one_problem() {
+    let (repo, start) = Repo::with_pr("review-decision-renumbered-code");
+    let end = repo.commit("docs/decisions/x.md", "a rule\n");
+    let record = record(vec![
+        bound(&clean(
+            1,
+            "reviewer, architecture, breaker",
+            &format!("a..{start}"),
+        )),
+        bound(&clean(1, "reviewer, breaker", &format!("{start}..{end}"))),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec!["review round 1 names no architecture, which this round requires."]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_merge_moves_pr_text_into_a_decision_requires_architecture() {
+    let (repo, _) = Repo::with_pr("review-decision-move");
+    let (_, start, end) = repo.move_on_main("docs/drafts/x.md", "docs/decisions/x.md");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace(
+            CHANGE,
+            "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
+             decision `docs/decisions/x.md`"
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_range_names_no_commit_requires_architecture() {
+    let (repo, end) = Repo::with_pr("review-decision-unnamed");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("abc1234..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION.replace(CHANGE, "has `abc1234`, which names no commit")]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_ends_before_a_code_commit_fails_at_the_head() {
+    let (repo, start) = Repo::with_pr("review-end-code");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    let record = record(vec![first(END), round]);
+    assert_eq!(check_at(&repo, &record), Vec::<String>::new());
+    let head = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 2 ends at `{end}`, and the range from it to the head \
+             `{head}` changes code at `a.rs:1`. A commit that changes code needs a \
+             new round."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_ends_off_the_chain_of_the_head_fails() {
+    let (repo, start) = Repo::with_pr("review-end-off");
+    let end = repo.commit("docs/x.md", "a doc\n");
+    let round = bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    repo.git(&["reset", "--quiet", "--hard", &start]);
+    let head = repo.commit("docs/y.md", "another doc\n");
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![format!(
+            "review round 2 ends at {end}, not at the head {head}. A commit after \
+             the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_last_round_that_skips_the_breaker_on_a_range_that_changes_code_fails() {
+    let (repo, start) = Repo::with_pr("review-skip-code");
+    let skip =
+        "reviewer\nBreaker: skipped, the check counts no code change in the range";
+    let text = repo.commit("docs/x.md", "a doc\n");
+    let round = |end: &str| {
+        let round = bound(&clean(2, skip, &format!("{start}..{end}")));
+        record(vec![first(END), round])
+    };
+    assert_eq!(check_at(&repo, &round(&text)), Vec::<String>::new());
+    let code = repo.commit("a.rs", "fn a() {}\n");
+    assert_eq!(
+        check_at(&repo, &round(&code)),
+        vec!["review round 2 skips `breaker`, but its range changes code at `a.rs:1`."]
+    );
+    repo.remove();
+}
+
+#[test]
+fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
+    let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
+    let check = |comments| {
+        problems(
+            &record(comments),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|_, _| Ok(None),
+            &failed,
+        )
+    };
+    let range = format!("a..{HEAD}");
+    let one = bound(&clean(1, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![one]), Ok(Vec::new()));
+    let named = bound(&clean(2, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![named]), Ok(Vec::new()));
+    let earlier = bot(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![earlier]), Ok(Vec::new()));
+    let later = bound(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
 }

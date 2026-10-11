@@ -159,10 +159,10 @@
   https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385. Found by
   the director at 2026-10-07T14:50:33Z
   (https://github.com/synnaxlabs/foundation/pull/1193#issuecomment-6040535575), fixed by
-  #1451. An earlier round's skip is taken as written, since a rebase can drop its range
-  from the clone. An earlier round in the fixed format that does not parse fails. A
-  red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the head. The
-  status is `success` on `merge_group`. Decided by the director on #1169
+  #1451. An earlier round's `Breaker:` skip is taken as written, since a rebase can drop
+  its range from the clone. An earlier round in the fixed format that does not parse
+  fails. A red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the
+  head. The status is `success` on `merge_group`. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
   messages on #1193. A round comment fails when it does not start with its name line
   `**<session>** · <role>`, then `Quality: <n>/10` with `n` from 1 to 10, then a summary
@@ -185,3 +185,39 @@
   the lines, with the rating and the summary of its `reviewer` report as given. When
   that report is lost, a new run of `reviewer` on the range of the round gives them, and
   the edit says so.
+  A later round that does not name `architecture` fails when its range changes a file
+  under `docs/decisions/`: one that the range adds, changes, or removes. Stated by the
+  director at 2026-10-08T22:50:06Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6070608950), and
+  ruled at 2026-10-11T07:44:23Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591),
+  07:55:36Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6106884396), and
+  08:19:09Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6107062843).
+  Supersedes the reviewers of a later round in ruling 2 of
+  https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
+  (2026-10-07T06:32:32Z). For this rule, a round comment after the first is a later
+  round, whatever its number, and so is a first round comment whose number is above 1.
+  Each later round is read, not only the last. The range is read as that of a round with
+  `Breaker: skipped` is read, so a change of the base does not count. A decision in
+  which a merge of the base in the range resolves a conflict counts, and so does one in
+  which the tree of the start and the base has a conflict, each also when the conflict
+  leaves no markers or the range ends with the text of the base. So does a path outside
+  `docs/decisions/` that the start changes since its merge base with the base, and that
+  the tree of the start and the base moves into `docs/decisions/`, by the rename
+  detection of the merge. A range with a start or an end that names no commit of the
+  clone fails too, and so does an end that holds more than one newest base commit: the
+  `review` skill asks for a merge of the base after round 1, never a rebase. The problem
+  states the remedy and ends with the cause, such as "Its range changes the decision
+  `docs/decisions/x.md`." A round posted before the cutoff `DECISION_CUTOFF` in
+  `xtask/src/review.rs` (2026-10-11T16:00:00Z) is checked as before, so that the new
+  rule does not fail the rounds that came before it. The cutoff is a fixed time: it
+  stays when the rule merges after it, and the rule for `.rs` files gets a cutoff of its
+  own. A round that fails by this rule gets a run of `architecture` on its range, or on
+  the whole PR when the clone cannot read the range, and then an edit of its round
+  comment that names `architecture` and adds its findings. One run on the whole PR
+  serves each such round of the PR, and each edit states the range of the run. The
+  director approves the text of this record. A PR that changes it, and no public item of
+  a crate and no dependency, needs no approval of an architect: `xtask` is on no
+  architect's list, and the review rule is the director's.
