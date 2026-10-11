@@ -195,9 +195,9 @@ impl Node {
     /// shard runs or one has failed to start. No shard starts when the disk budget
     /// holds no ring on each shard ([`Error::Disk`]), when a shard's part of the pool
     /// budget gives a reservation of more than `usize::MAX` bytes ([`Error::Pool`]),
-    /// or when [`Config::name`] has a reserved segment ([`Error::Reserved`]). Any
-    /// failure stops the node, and [`Node::join`] gives the first one (its
-    /// `# Errors`).
+    /// when the port does not bind ([`Error::Port`]), or when [`Config::name`] has a
+    /// reserved segment ([`Error::Reserved`]). Any failure stops the node, and
+    /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
