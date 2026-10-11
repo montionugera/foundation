@@ -8,7 +8,7 @@ use home::Outcome;
 use home::reader::complete::Charge;
 use types::authority::Authority;
 use types::channel;
-use types::frame::key_set::{Group, KeySet};
+use types::frame::key_set::{Entry, Group, KeySet};
 use types::frame::{Draft, Form, Label, Path};
 use types::sample::{Scalar, Type};
 
@@ -57,8 +57,8 @@ impl Woken {
         let set = interner.intern(&groups);
         let mut readers = Vec::with_capacity(indexes);
         for &entry in set.groups() {
-            let slot = set.entries()[entry].slot;
-            shard.carry(slot);
+            let Entry { slot, key, .. } = set.entries()[entry];
+            shard.carry(slot, key);
             readers.push(shard.open_complete(slot, u64::MAX, Charge::Whole).into());
         }
         let writer = shard

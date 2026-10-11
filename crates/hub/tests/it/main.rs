@@ -736,31 +736,60 @@ fn written_after_cut<F>(
 where
     F: Future<Output = ()> + 'static,
 {
+    let (mut sim, node) = create_sim(seed);
+    cut_after(&mut sim, &node, Span::from_nanos(2_000_000_000), before);
+    written_on(&mut sim, &node, subject)
+}
+
+/// A simulation with one node.
+fn create_sim(seed: u64) -> (sim::Sim, sim::node::Node) {
     let mut sim = sim::Sim::new(sim::Config {
         seed,
         ..sim::Config::default()
     });
     let node = sim.node(sim::node::Config::default());
-    let start = |node, tasks| async move {
-        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
-        let mut test = Test::new(node, tasks, layout, POOL, None).await;
-        test.sync().await;
-        test
-    };
+    (sim, node)
+}
+
+/// A test on a hub of `node`, once the node has mesh time.
+async fn started(node: sim::node::Node, tasks: Tasks) -> Test {
+    let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+    let mut test = Test::new(node, tasks, layout, POOL, None).await;
+    test.sync().await;
+    test
+}
+
+/// Runs `before` on a hub of `node` for `span`, then cuts the power. `before` must not
+/// end, so that its sessions stay open until the cut.
+fn cut_after<F>(
+    sim: &mut sim::Sim,
+    node: &sim::node::Node,
+    span: Span,
+    before: impl FnOnce(Test) -> F + Send + 'static,
+) where
+    F: Future<Output = ()> + 'static,
+{
     let config = env::shards::Config {
         name: "shard-0".into(),
         core: None,
     };
     let started = node.shards().start(config, {
         let node = node.clone();
-        move |tasks| async move { before(start(node, tasks).await).await }
+        move |tasks| async move { before(started(node, tasks).await).await }
     });
     let _shard = started.expect("the shard starts");
-    sim.run_for(Span::from_nanos(2_000_000_000))
-        .expect("the run goes on");
-    sim.crash(&node, sim::Crash::Power);
-    sim.run_on(&node, move |node, tasks| async move {
-        let test = start(node, tasks).await;
+    sim.run_for(span).expect("the run goes on");
+    sim.crash(node, sim::Crash::Power);
+}
+
+/// The outcome of a write of `subject` on `value` in a new run of `node`.
+fn written_on(
+    sim: &mut sim::Sim,
+    node: &sim::node::Node,
+    subject: &'static str,
+) -> Vec<Outcome> {
+    sim.run_on(node, move |node, tasks| async move {
+        let test = started(node, tasks).await;
         let mut writer = test.writer(subject, &["value"]).await;
         write(&mut writer, &[test.now()], &[2])
     })
@@ -854,6 +883,37 @@ fn records_the_handoff_at_the_end_of_a_lease_that_the_end_of_a_lease_starts() {
             "subject-c",
         );
         assert_eq!(after, [applied(0)], "seed {seed}");
+    }
+}
+
+/// A restored holder with no writer on its index loses control at the end of its
+/// grace, which only the wake at the carry of the reader's open lets the gate task
+/// see.
+#[test]
+fn records_the_drop_of_a_restored_holder_with_a_reader_and_no_writer() {
+    for seed in 0..32 {
+        let (mut sim, node) = create_sim(seed);
+        cut_after(
+            &mut sim,
+            &node,
+            Span::from_nanos(2_000_000_000),
+            |test| async move {
+                let mut a = test.writer("subject-a", &["value"]).await;
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                std::future::pending::<()>().await;
+            },
+        );
+        // Past the grace of 10 s from the open.
+        let span = Span::from_nanos(12_000_000_000);
+        cut_after(&mut sim, &node, span, |test| async move {
+            let _reader = test.reader(&["value"], Mode::Complete).await;
+            std::future::pending::<()>().await;
+        });
+        assert_eq!(
+            written_on(&mut sim, &node, "subject-b"),
+            [applied(1)],
+            "seed {seed}"
+        );
     }
 }
 
