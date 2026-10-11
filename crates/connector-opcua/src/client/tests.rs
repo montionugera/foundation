@@ -301,7 +301,7 @@ async fn connect_to_listener(
         while let Poll::Ready(stream) = listener.poll_accept(cx) {
             accepted(stream.expect("the accept works"));
         }
-        connect.as_mut().poll(cx).map(|connect| connect.err())
+        connect.as_mut().poll(cx).map(Result::err)
     })
     .await;
     (status.expect("the connect fails"), clock.now() - start)
