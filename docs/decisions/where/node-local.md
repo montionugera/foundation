@@ -15,5 +15,6 @@
 | Operation table | Binary | The build | CLI, MCP, embedded docs | `ops` |
 | Node key material | `node.key` on node-local disk | `node` (makes it at its first start or, in tests, with `node::create_key` under `sim`, writes it back at each start) | `transport`, `node` | `node` |
 | Node name | `name` on node-local disk | `node` (writes it at its first start, under `lock`) | `node`, `node::name` (the CLI) | `node` |
+| Node address | `address` on node-local disk | `node` (shard 0, while it serves; NODE START) | `node::client::reach` (#1744 PR 2d) | `node` |
 | Per-node settings (disk budget, pool budget, data directory) | Budgets: a policy in the spec; data directory: a start argument (NODE SETTINGS) | `apply`; whoever starts the node | `buffer`, `block` | `node` |
 | SDK guide, JSON schemas for editors | Generated from kinds and the operation table | `ops`, `init` | Agents, editors | `ops` |

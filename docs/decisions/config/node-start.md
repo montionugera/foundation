@@ -120,4 +120,6 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913;
   2026-10-11T08:01:23Z, the remove before the lock drops but not before the port
   frees,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106927243).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106927243;
+  2026-10-11T10:21:07Z, the remove contract of #1744 PR 2a,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
