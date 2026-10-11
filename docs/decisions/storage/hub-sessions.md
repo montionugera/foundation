@@ -41,15 +41,16 @@
   `Ended::Behind`. Decided by `laptop.architect` (2026-10-08T07:23:30Z:
   https://github.com/synnaxlabs/foundation/issues/1170#issuecomment-6054827276).
   Supersedes https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
-  Four hub `sim` tests of the commit and reader wakes,
-  `drops_the_commit_it_waits_for_with_the_hub`,
+  The hub `sim` tests `drops_the_commit_it_waits_for_with_the_hub` (64 values),
   `ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit`,
   `gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window`, and
-  `ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame`, hold the hub
-  tasks through a commit, then let the value of `sim::Config::seed` pick whether main or
-  the commit task runs first, and check that both orders ran (#2388). Decided by
-  `laptop.director` (2026-10-11T08:25:43Z:
-  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6107112491).
+  `ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame` (32 values
+  each) hold the hub tasks through a commit, then let the `sim` value pick whether
+  main or the commit task runs first, and check that both orders ran. Decided by
+  `laptop.director` (2026-10-11T10:05:33Z:
+  https://github.com/synnaxlabs/foundation/issues/2388#issuecomment-6107876336), by
+  the rule of https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6107110442
+  (#2388).
   After a warmup, a write and `next` make no heap allocation, while frames wait, while a
   reader waits, and in the write that wakes a latest reader, which a counting allocator
   test binary checks (COUNTING ALLOCATOR); it does not count the commit task. `next`
