@@ -169,8 +169,8 @@ fn fields(bytes: &[u8; LEN]) -> Option<Address> {
     })
 }
 
-/// Checks that `decode` takes `bytes` exactly when `encode` of their fields gives them
-/// back.
+/// Checks that `sector::written` takes `bytes` and `fields` gives an address exactly
+/// when `encode` of that address gives them back.
 ///
 /// # Panics
 ///
