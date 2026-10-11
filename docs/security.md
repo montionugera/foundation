@@ -130,10 +130,13 @@ state on `main`.
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
   a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. Until #2325, a flood of peers outside the
-  region, programs or new node keys, can hold each place and lock out a node that joins
-  and the admin's program. It rejects a stream whose header has not arrived within
-  10 s.
+  of a program, and one for the key of a node. At the bound, the oldest place frees for
+  the new peer, and its sessions close unless its peer is now a member. So a peer
+  outside the region keeps its session until 256 later peers took a place. A flood that
+  takes 256 places in the time that a peer needs to prove its right (a member, the
+  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
+  limit on handshakes before admission bounds that rate (#563). It rejects a stream
+  whose header has not arrived within 10 s.
 
 ### Subject to owner
 
