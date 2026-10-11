@@ -460,7 +460,10 @@ proptest! {
     }
 
     #[test]
-    fn round_trips_a_read(length in 0..=OPEN_BYTES_MAX, signature in any::<[u8; 32]>()) {
+    fn round_trips_a_read(
+        length in 0..=OPEN_BYTES_MAX,
+        signature in any::<[u8; 32]>(),
+    ) {
         let mut read = read(length);
         read.signature[32..].copy_from_slice(&signature);
         prop_assert_eq!(Read::decode(&encode_read(read)), Ok(read));
@@ -468,7 +471,10 @@ proptest! {
     }
 
     #[test]
-    fn round_trips_places((count, index) in (1..=u32::MAX).prop_flat_map(|count| (Just(count), 0..count))) {
+    fn round_trips_places(
+        (count, index) in (1..=u32::MAX)
+            .prop_flat_map(|count| (Just(count), 0..count)),
+    ) {
         let places = Places { count, index };
         prop_assert_eq!(Places::decode(&encode_places(places)), Ok(places));
     }
@@ -492,7 +498,10 @@ proptest! {
     }
 
     #[test]
-    fn cuts_a_run_into_full_messages_under_the_max(places in places(), max in 100..300_usize) {
+    fn cuts_a_run_into_full_messages_under_the_max(
+        places in places(),
+        max in 100..300_usize,
+    ) {
         let messages: Vec<_> = place::messages(&places, max).collect();
         for message in &messages {
             prop_assert!(place::encoded_len(message) <= max);
