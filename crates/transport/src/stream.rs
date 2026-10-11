@@ -2768,6 +2768,38 @@ mod tests {
         assert_eq!(sim.run(), Ok(()));
     }
 
+    #[test]
+    fn a_message_over_the_peers_largest_is_too_large_after_the_peer_stopped() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 100)).await;
+                let over = vec![1; MESSAGE_BYTES_MAX + 1];
+                let large = Err(Error::TooLarge {
+                    bytes: MESSAGE_BYTES_MAX + 1,
+                    bytes_max: MESSAGE_BYTES_MAX,
+                });
+                assert_eq!(sender.send(side.block(&over)).await, large);
+                let tried = sender.try_send(side.block(&over)).map(|_| ());
+                assert_eq!(tried, large);
+                let stopped = Err(Error::Stopped { code: Code(3) });
+                assert_eq!(sender.send(side.block(b"b")).await, stopped);
+                side.session.close(Code(5));
+            },
+            |side| async move {
+                let incoming = side.session.accept().await.expect("a stream");
+                incoming.receiver.stop(Code(3));
+                let closed = Error::PeerClosed { code: Code(5) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
     /// The bytes of each message in the tests of reads that wait for a block. The
     /// pool of [`scarce`] holds one.
     const LARGE: usize = 40_000;
