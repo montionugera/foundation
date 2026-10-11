@@ -259,12 +259,11 @@ state on `main`.
   puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
   memory for each stream. `transport` also holds each chunk whole until the peer
   acknowledged each byte of it and each byte before it on the stream, so a get can hold
-  more than one chunk. The bound is `transport`'s, and it is open (#2361). To attack
-  when `node` routes blob streams (#1229): a get whose peer holds back one
-  acknowledgment (#2361). Who may open a blob stream is not built: `node` rejects each
-  one until it routes them from member nodes only (#1229). The requester is not built
-  (#1229). To attack when it lands: a binary that a peer serves under a hash it does not
-  match (C9d).
+  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
+  get hold each chunk that its stream sends after it). Who may open a blob stream is not
+  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  The requester is not built (#1229). To attack when it lands: a binary that a peer
+  serves under a hash it does not match (C9d).
 
 ### Time source to `estimate`
 
