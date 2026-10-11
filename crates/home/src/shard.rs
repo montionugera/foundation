@@ -435,7 +435,7 @@ impl Shard {
             let Some(mesh) = mesh else {
                 continue;
             };
-            self.record_waiting(iter::once(place), mesh);
+            record(&self.buffer, &mut self.indexes, iter::once(place), mesh);
         }
     }
 
@@ -488,7 +488,8 @@ impl Shard {
             claims.push(Claim { place, key });
         }
         let session = Session { set, claims };
-        self.record_waiting(session.claims.iter().map(|claim| claim.place), mesh);
+        let places = session.claims.iter().map(|claim| claim.place);
+        record(&self.buffer, &mut self.indexes, places, mesh);
         let key = writer::Key {
             shard: self.number,
             number: self.next,
@@ -513,7 +514,8 @@ impl Shard {
         for claim in &session.claims {
             self.indexes[claim.place].gate.close(claim.key, now);
         }
-        self.record_waiting(session.claims.iter().map(|claim| claim.place), mesh);
+        let places = session.claims.iter().map(|claim| claim.place);
+        record(&self.buffer, &mut self.indexes, places, mesh);
     }
 
     /// Applies `frame` to each index it holds, whole or not at all per index. The
@@ -560,8 +562,7 @@ impl Shard {
             .checks
             .iter()
             .map(|&(group, ..)| session.claim(group).place);
-        let recorded =
-            record(&self.buffer, &mut self.indexes, places, mesh).map_err(Error::Disk);
+        let recorded = record(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
             entries,
@@ -574,18 +575,16 @@ impl Shard {
         drop(split);
         // Made also when a handoff found no room: freezing gives a lost live frame to
         // latest readers.
-        let ready = made.is_ok() && recorded == Ok(true);
+        let ready = made.is_ok() && recorded;
         if !ready {
             entries.clear();
         }
         // An empty append still reports a failed commit.
         let appended = room(self.buffer.append(entries.drain(..)));
         let room = match (recorded, appended, made, path) {
-            (Err(error), ..) | (Ok(_), Err(error), ..) => Err(error),
-            (Ok(true), Ok(_), Err(block::Error::TooLarge { .. }), _) => {
-                Err(Error::Large)
-            }
-            (Ok(true), Ok(true), Ok(()), _) => Ok(true),
+            (_, Err(error), ..) => Err(error),
+            (true, Ok(_), Err(block::Error::TooLarge { .. }), _) => Err(Error::Large),
+            (true, Ok(true), Ok(()), _) => Ok(true),
             (.., Path::Backfill) => Err(Error::Full),
             (.., Path::Live) => Ok(false),
         };
@@ -854,15 +853,6 @@ impl Shard {
         };
         place
     }
-
-    /// Appends the unrecorded handoff of the index at each of `places`. A handoff with
-    /// no room waits, and a failed commit fails the next write.
-    fn record_waiting(&mut self, places: impl Iterator<Item = usize>, mesh: Stamp) {
-        match record(&self.buffer, &mut self.indexes, places, mesh) {
-            Ok(_) => {}
-            Err(_failed) => {}
-        }
-    }
 }
 
 impl Session {
@@ -907,18 +897,14 @@ fn freeze(
 
 /// Appends the unrecorded handoff of the index at each of `places`, each alone, on the
 /// live path at mesh time `mesh`, and marks it recorded. A handoff that finds no room
-/// in the ring or the pool stays unrecorded. Returns whether every handoff was
-/// recorded.
-///
-/// # Errors
-///
-/// The error of a failed commit.
+/// in the ring or the pool stays unrecorded, and so does each after a failed commit,
+/// which the next append reports. Returns whether every handoff was recorded.
 fn record(
     buffer: &Buffer,
     indexes: &mut [Index],
     places: impl Iterator<Item = usize>,
     mesh: Stamp,
-) -> Result<bool, env::files::Error> {
+) -> bool {
     let pool = buffer.pool();
     let mut all = true;
     for place in places {
@@ -939,16 +925,17 @@ fn record(
         };
         match buffer.append([handoff]) {
             Ok(()) => index.gate.recorded(),
-            Err(buffer::Rejected::Full { .. } | buffer::Rejected::Pool(_)) => {
-                all = false;
-            }
+            Err(
+                buffer::Rejected::Full { .. }
+                | buffer::Rejected::Pool(_)
+                | buffer::Rejected::Files(_),
+            ) => all = false,
             Err(buffer::Rejected::Large(limit)) => {
                 panic!("invariant: a record holds one handoff: {limit}")
             }
-            Err(buffer::Rejected::Files(error)) => return Err(error),
         }
     }
-    Ok(all)
+    all
 }
 
 /// Spends the seq of each accepted group of `checks`, and makes the outcome of each
