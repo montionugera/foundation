@@ -32,9 +32,9 @@ pub use client::{Reply, Request};
 
 /// The most bytes of client bodies that one hub holds at once, over each of its links:
 /// the body of a request from its decode until the caller sends or drops its
-/// [`Reply`], and the open of a read from its decode until the hub verified it. A body
-/// that does not fit stops with `BUSY` before the hub reads a byte of it. The bodies of
-/// one subject hold at most [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
+/// [`Reply`], and the open of a read until it decodes. A body that does not fit stops
+/// with `BUSY` before the hub reads a byte of it. The bodies of one subject hold at
+/// most [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
 pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
@@ -82,19 +82,19 @@ pub enum Error {
     /// A request stream while another request of the link waits for its reply. Code
     /// `MALFORMED`.
     Pending,
-    /// The open requests and reads of the hub hold so many body bytes that a body of
-    /// `length` more is over [`BODIES_BYTES_MAX`]. Code `BUSY`. The same request or
-    /// read can succeed once enough of them end.
+    /// The request bodies and read opens of the hub hold so many body bytes that a
+    /// body of `length` more is over [`BODIES_BYTES_MAX`]. Code `BUSY`. A retry can
+    /// succeed once enough of them are released.
     Bodies {
         /// The body length of the refused request or read.
         length: u64,
         /// The body bytes that the open requests and reads of the hub held.
         held: u64,
     },
-    /// The open requests and reads of `subject`, over each link of the hub, hold so
-    /// many body bytes that a body of `length` more is over the share of one subject,
-    /// [`BODY_BYTES_MAX`]. Code `BUSY`. The same request or read can succeed once
-    /// enough of those of the subject end.
+    /// The request bodies and read opens of `subject`, over each link of the hub, hold
+    /// so many body bytes that a body of `length` more is over the share of one
+    /// subject, [`BODY_BYTES_MAX`]. Code `BUSY`. A retry can succeed once enough of
+    /// them are released.
     Share {
         /// The subject of the link's admitted hello.
         subject: Name,

@@ -134,7 +134,8 @@
   to that home, and it interns no key set (#2419). Decided by `laptop.architect`
   (2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
-  3). Supersedes "or at the home of another node" of plan item 1.
+  3). Supersedes "runs at the local home or at a remote one" of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402 item 2.
   `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
   and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
   exhaustive `match`: `UNKNOWN` for a selector that matches no channel, `MALFORMED` for
@@ -151,10 +152,12 @@
   of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
   panics too (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
-  1). `Remote` gives `NOT_HOME` (item 3 of that ruling), which supersedes `Remote` in
-  the arms that panic of item 6. A home's `MALFORMED` gives `FAILED`, as the program's open was well
-  formed; `UNKNOWN`, `NOT_HOME`, `BUSY`, and `FAILED` of the home keep their code
-  (`laptop.architect`, 2026-10-11T15:17:29Z,
+  1). Supersedes the `Remote` panic arm of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 6,
+  as https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 3
+  gives `Remote` the code NOT_HOME. A home's `MALFORMED` gives `FAILED`, as the
+  program's open was well formed; `UNKNOWN`, `NOT_HOME`, `BUSY`, and `FAILED` of the
+  home keep their code (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
   2). Supersedes "the code of the home's refusal" of plan item 6 for `MALFORMED`.
   After its open decodes, a read holds no reservation. It holds its places from its last
