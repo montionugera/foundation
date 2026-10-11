@@ -244,7 +244,11 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     let mut out = [0; Response::LEN];
     response.encode(&mut out);
     assert_eq!(Response::decode(&out), Ok(response), "the response changed");
+    write_read(input)
+}
 
+/// Each valid message of a read stream made from `input` must decode to itself.
+fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
     let read = Read {
         length: input.int_in_range(0..=OPEN_BYTES_MAX)?,
         signature: input.arbitrary()?,
