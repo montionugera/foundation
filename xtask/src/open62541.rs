@@ -926,8 +926,11 @@ fn references(
     }
     let mut section = "";
     for line in relocations.lines() {
-        if let Some(name) = line.strip_prefix("RELOCATION RECORDS FOR [") {
-            section = name.trim_end_matches("]:");
+        if let Some(name) = line
+            .strip_prefix("RELOCATION RECORDS FOR [")
+            .and_then(|name| name.strip_suffix("]:"))
+        {
+            section = name;
         } else if !code.contains(section) {
             add(section, None, line);
         }
@@ -1022,11 +1025,21 @@ impl Uses {
     }
 }
 
-/// The type and the symbol of a line of `objdump -r` that holds a relocation.
+/// The type and the symbol of a line of `objdump -r` or `objdump -dr` that holds a
+/// relocation: an offset, a type, and the symbol to the end of the line, with its
+/// addend, if any, after it.
 fn relocation(line: &str) -> Option<(&str, &str)> {
-    let mut words = line.split_whitespace();
-    let kind = words.find(|word| word.starts_with("R_"))?;
-    Some((kind, words.next_back()?.split(['+', '-']).next()?))
+    let (_, rest) = line.trim_start().split_once([' ', '\t'])?;
+    let (kind, symbol) = rest.trim_start().split_once([' ', '\t'])?;
+    if !kind.starts_with("R_") {
+        return None;
+    }
+    let symbol = symbol.trim();
+    let symbol = match symbol.rsplit_once(['+', '-']) {
+        Some((name, addend)) if addend.starts_with("0x") => name,
+        _ => symbol,
+    };
+    Some((kind, symbol))
 }
 
 /// An architecture that the check builds for.
@@ -1190,8 +1203,11 @@ fn key(instruction: &str) -> Option<String> {
 fn places(disassembly: &str) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
     let (mut section, mut function) = ("", None);
     disassembly.lines().map(move |line| {
-        if let Some(name) = line.strip_prefix("Disassembly of section ") {
-            section = name.trim_end_matches(':');
+        if let Some(name) = line
+            .strip_prefix("Disassembly of section ")
+            .and_then(|name| name.strip_suffix(':'))
+        {
+            section = name;
             function = None;
         } else if let Some(name) =
             line.strip_suffix(">:").and_then(|l| l.split_once(" <"))
@@ -1230,17 +1246,14 @@ fn headers(depfile: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The names of the symbols that `nm -P` with `flags` gives for `objects`.
+/// The names of the symbols that `nm` with `flags` gives for `objects`, each whole,
+/// also when it holds a space.
 fn symbols<'a>(
     objects: impl IntoIterator<Item = &'a Path>,
     flags: &[&str],
 ) -> Result<BTreeSet<String>, String> {
-    let text = exec(Command::new("nm").arg("-P").args(flags).args(objects))?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_owned)
-        .collect())
+    let text = exec(Command::new("nm").arg("-j").args(flags).args(objects))?;
+    Ok(text.lines().map(str::to_owned).collect())
 }
 
 /// Writes the copy of `found` to `stage`, with `LICENSE` from `src`.
@@ -1450,6 +1463,60 @@ Disassembly of section R_X86_64_PLT32 UA_DateTime_now+:
         assert_eq!(
             Vec::from_iter(references(disassembly, "", &BTreeSet::new())),
             []
+        );
+    }
+
+    #[test]
+    fn relocation_reads_the_symbol_to_the_end_of_the_line() {
+        let lines = [
+            "0000000000000000 R_AARCH64_CALL26  h i",
+            "\t\t\t4: R_AARCH64_CALL26\th i",
+            "0000000000000001 R_X86_64_PLT32    UA_DateTime_now-0x0000000000000004",
+            "\t\t\t1: R_X86_64_PLT32\tUA_DateTime_now+0x4",
+            "0000000000000008 R_X86_64_64       a-b",
+            "   8:\t94000000 \tbl\t0 <f R_AARCH64_CALL26 UA_DateTime_now>",
+            "OFFSET           TYPE              VALUE",
+        ];
+        assert_eq!(
+            lines.map(relocation),
+            [
+                Some(("R_AARCH64_CALL26", "h i")),
+                Some(("R_AARCH64_CALL26", "h i")),
+                Some(("R_X86_64_PLT32", "UA_DateTime_now")),
+                Some(("R_X86_64_PLT32", "UA_DateTime_now")),
+                Some(("R_X86_64_64", "a-b")),
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn references_reads_each_section_name_to_its_end() {
+        let disassembly = "\
+Disassembly of section .text:
+
+0000000000000000 <f>:
+   0:\tc3                   \tret
+
+Disassembly of section .text::
+
+0000000000000000 <g>:
+   0:\tc3                   \tret
+";
+        let relocations = "\
+RELOCATION RECORDS FOR [.text:]:
+0000000000000000 R_X86_64_64       UA_DateTime_now
+RELOCATION RECORDS FOR [.text]:]:
+0000000000000000 R_X86_64_64       UA_DateTime_now
+";
+        assert_eq!(
+            Vec::from_iter(references(disassembly, relocations, &BTreeSet::new())),
+            [Reference {
+                place: Place::new(".text]:", None),
+                access: Access::Address,
+                symbol: "UA_DateTime_now".to_owned(),
+            }]
         );
     }
 
@@ -2985,6 +3052,48 @@ End of search list.
                 Access::Address,
                 "strtod"
             )])
+        );
+        remove(&root).and_then(|()| remove(&repo)).unwrap();
+    }
+
+    /// Names that only `asm` makes: a symbol with spaces, a function name with a
+    /// relocation type and a clock name, and sections whose names end in `:` and `]:`.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_reads_each_name_to_its_end() {
+        let (root, repo, result) = run_after("names", |_| {}, &[]);
+        assert_eq!(result, Ok(()));
+        let path = root.join("patches/open62541/src/util/ua_util.c");
+        let old = std::fs::read_to_string(&path).unwrap();
+        let call = if cfg!(target_arch = "x86_64") {
+            "call"
+        } else {
+            "bl"
+        };
+        let function = "f R_X86_64_64 UA_DateTime_now+";
+        let asm = format!(
+            r#"__asm__(".pushsection .data\n.quad \"h i\"\n.popsection\n"
+        ".pushsection \".text]:\",\"aw\"\n.quad UA_DateTime_now\n.popsection\n"
+        ".pushsection \".text.g:\",\"ax\"\n\"{function}\":\n"
+        "{call} UA_DateTime_now\nret\n.popsection");
+"#
+        );
+        std::fs::write(&path, old + &asm).unwrap();
+        assert_eq!(
+            check(&root),
+            Err(vec![
+                "src/util/ua_util.c: the section `.data` references `h i` outside a \
+                 function, so a use through it escapes FUNCTION_SYMBOLS"
+                    .to_owned(),
+                "src/util/ua_util.c: the section `.text]:` takes the address of \
+                 `UA_DateTime_now`, so a call through it escapes FUNCTION_SYMBOLS"
+                    .to_owned(),
+                unlisted_clock("src/util/ua_util.c", function),
+            ])
         );
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
