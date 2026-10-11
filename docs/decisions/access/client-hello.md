@@ -78,7 +78,7 @@
   by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
   `client::Reader` decodes a read stream: `Places`, then the run, then the replies of an
   inner `hub::Reader` of their count and the read's mode. Only `wire` builds that inner
-  reader, so no caller makes an `Open` with a grant that a program never sends. It
+  reader, so the program side builds no `Open` with a grant that it never sends. It
   refuses an index place whose sample type is not `Stamp` with `Error::Unstamped`, and
   before the last place its `body` is `None` and its `end` gives `Error::Finished`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
