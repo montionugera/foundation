@@ -160,8 +160,9 @@ state on `main`.
   or a peer that reaches a tool description or a tool result, as an instruction to
   the agent.
 - A change of each definition other than a channel or a connector needs `admin` on
-  its key, because a policy governs its whole region (SERVE ACCESS). So grant `admin`
-  only to a subject that may change the policies of the whole region.
+  its key, because a policy governs its whole region, a subject's keys decide who acts
+  as it, and a region record makes a region (SERVE ACCESS). So grant `admin` only to a
+  subject that may change access and policy for the whole region.
 
 ### Node to node
 
