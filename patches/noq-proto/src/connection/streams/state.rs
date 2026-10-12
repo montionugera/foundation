@@ -2500,4 +2500,28 @@ mod tests {
         assert_eq!((send.pending.held(), send.pending.offset()), (0, 1200));
         assert!(!send.pending.has_unsent_data());
     }
+
+    #[test]
+    fn retry_queues_no_stream_with_each_byte_acknowledged() {
+        let mut client = make(Side::Client);
+        let id = open_with_credit(&mut client);
+        let mut retransmits = Retransmits::default();
+        let conn_state = ConnState::established();
+        let mut stream = SendStream {
+            id,
+            state: &mut client,
+            pending: &mut retransmits,
+            conn_state: &conn_state,
+        };
+        assert_eq!(stream.write(&[0xFF; 1200]), Ok(1200));
+        assert_eq!(client.write_frames_for_test(1_300, true).len(), 1);
+        client.received_ack_of(frame::StreamMeta {
+            id,
+            offsets: 0..1200,
+            fin: false,
+        });
+
+        client.retransmit_all_for_0rtt();
+        assert!(!client.can_send_stream_data());
+    }
 }
