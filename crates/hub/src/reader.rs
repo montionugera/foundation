@@ -17,6 +17,7 @@ use types::name::{Name, Selector};
 use types::time::Span;
 
 use crate::channel::Channel;
+use crate::pending::Pending;
 use crate::{Away, End, Ending, State};
 use remote::Remote;
 
@@ -613,39 +614,52 @@ pub(crate) enum Home {
 
 /// What the selector that `select` gives matches once the home of its index is known,
 /// with an item that `item` makes for each channel, and that home. It first applies
-/// the spec in use. It calls `select` before and after each wait for the home, and
-/// keeps no selector or item across a wait.
+/// the spec in use. A change of a channel that it matched, or of their index, ends a
+/// wait for the home at once, and it matches again. It calls `select` before and after
+/// each wait for the home, and keeps no selector or item across a wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
     mut item: impl FnMut(&Name, &Channel) -> T,
 ) -> Result<(Matched<T>, Home), Error> {
     state.borrow_mut().catch_up();
-    loop {
-        let index = defined(&state.borrow(), select().borrow())?[0].1.index();
-        let away = match crate::homes(state, &[index]).await {
-            Ok(()) => None,
-            Err(Away::Remote(home)) => Some(home),
-            Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
+    let mut pending = Pending::new(state);
+    let (index, homed) = loop {
+        let (index, keys) = {
+            let borrowed = state.borrow();
+            let defined = defined(&borrowed, select().borrow())?;
+            let index = defined[0].1.index();
+            let keys = defined.iter().map(|(_, channel)| channel.key());
+            (index, keys.chain([index]).collect())
         };
-        // A change of the definitions while the open waits can change a channel.
-        let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
-        if keys[found.index] != index {
-            continue;
+        pending.register(keys);
+        if let Ok(homed) = pending.wait(crate::homes(state, &[index])).await {
+            break (index, homed);
         }
-        let home = if let Some(home) = away {
-            Home::Away(home)
-        } else {
-            // With no wait since `matched`, so each of `keys` is defined.
-            let slots = state.borrow_mut().slots(index, &keys);
-            Home::Here(Channels {
-                index: slots[found.index],
-                keys,
-                slots,
-            })
-        };
-        return Ok((found, home));
-    }
+    };
+    let away = match homed {
+        Ok(()) => None,
+        Err(Away::Remote(home)) => Some(home),
+        Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
+    };
+    // A call that only adds a channel ends no wait, and the selector can match it now.
+    let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
+    assert_eq!(
+        keys[found.index], index,
+        "invariant: no registered channel changed, so the index stays"
+    );
+    let home = if let Some(home) = away {
+        Home::Away(home)
+    } else {
+        // With no wait since `matched`, so each of `keys` is defined.
+        let slots = state.borrow_mut().slots(index, &keys);
+        Home::Here(Channels {
+            index: slots[found.index],
+            keys,
+            slots,
+        })
+    };
+    Ok((found, home))
 }
 
 /// The defined channels that `select` matches, in name order, each on one index.

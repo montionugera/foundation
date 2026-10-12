@@ -6,6 +6,7 @@ pub mod client;
 mod commit;
 mod gate;
 mod link;
+mod pending;
 pub mod reader;
 pub mod serve;
 mod task;
@@ -115,11 +116,11 @@ struct State {
     remotes: reader::remote::Sessions,
     /// The waker of each reader that waits for a frame.
     wakers: hash::Map<::home::reader::Key, Waker>,
-    /// Each served open from its first key to its session, by a key from `opened`.
+    /// The channels of each open that waits, by a key from `opened`.
     opens: Sessions<u64>,
     /// The waker of each open in `opens`.
     waiting: hash::Map<u64, Waker>,
-    /// The count of served opens.
+    /// The count of opens ever registered in `opens`.
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,

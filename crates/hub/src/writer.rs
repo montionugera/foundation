@@ -14,6 +14,7 @@ use types::name::Name;
 use types::sample::Type;
 use types::time::{Span, Stamp};
 
+use crate::pending::Pending;
 use crate::{Away, Ending, State};
 
 /// What a writer session opens with.
@@ -185,16 +186,15 @@ impl Writer {
         resolve(&state.borrow(), &channels)?;
         let time = state.borrow().time.reach(Stamp::from_nanos(i64::MIN));
         time.await;
+        let mut pending = Pending::new(state);
         let (mut keys, groups) = loop {
-            let (_, groups) = resolve(&state.borrow(), &channels)?;
+            let (keys, groups) = resolve(&state.borrow(), &channels)?;
             let checked = indexes(&groups);
-            let homed = crate::homes(state, &checked).await;
-            // A change of the definitions while the open waits can change a channel,
-            // and then the home of an index it left does not matter.
-            let (keys, again) = resolve(&state.borrow(), &channels)?;
-            if indexes(&again) == checked {
+            pending.register(keys.iter().chain(&checked).copied().collect());
+            // A change of a channel ends the wait at once, and the names resolve again.
+            if let Ok(homed) = pending.wait(crate::homes(state, &checked)).await {
                 homed?;
-                break (keys, again);
+                break (keys, groups);
             }
         };
         let mut borrowed = state.borrow_mut();

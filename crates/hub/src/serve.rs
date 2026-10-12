@@ -10,7 +10,7 @@ use std::future::poll_fn;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::slice;
-use std::task::{Context, Poll};
+use std::task::Poll;
 
 use block::{Block, Unique};
 use transport::stream::{Incoming, Part, Receiver, Sender};
@@ -25,8 +25,9 @@ use wire::hub::{
     BUSY, FAILED, FromReader, Head, Home, Mode, NOT_HOME, UNKNOWN, ends, keys,
 };
 
+use crate::pending::Pending;
 use crate::reader::{self, Channels, Complete, Session, Stop};
-use crate::{Away, Ending, State};
+use crate::{Away, State};
 
 pub use client::{Reply, Request};
 
@@ -448,8 +449,7 @@ async fn open(
 /// it checked ends.
 struct Opening<'s> {
     state: &'s Rc<RefCell<State>>,
-    key: u64,
-    ending: Ending,
+    pending: Pending<'s>,
     /// The index of the keys checked, which the first key sets.
     index: Option<channel::Key>,
     /// The position of the index in the keys checked.
@@ -460,68 +460,49 @@ struct Opening<'s> {
 
 impl<'s> Opening<'s> {
     fn new(state: &'s Rc<RefCell<State>>) -> Self {
-        let mut borrowed = state.borrow_mut();
-        borrowed.catch_up();
-        let key = borrowed.opened;
-        borrowed.opened += 1;
-        let ending = borrowed.opens.add(key, Box::default());
-        drop(borrowed);
+        state.borrow_mut().catch_up();
         Self {
             state,
-            key,
-            ending,
+            pending: Pending::new(state),
             index: None,
             at: None,
             listed: BTreeSet::new(),
         }
     }
 
-    /// Fails with the first channel of the open that a change of the definitions
-    /// removed. Else sets the waker that such a change wakes.
-    fn watch(&self, cx: &Context<'_>) -> Result<(), Error> {
-        if let Some(key) = self.ending.removed() {
-            return Err(Error::Removed(key));
-        }
-        let mut state = self.state.borrow_mut();
-        state.waiting.insert(self.key, cx.waker().clone());
-        Ok(())
-    }
-
     /// Reads the next message of the peer. Fails at once when a change of the
     /// definitions removes a channel of the open.
     async fn recv(&self, receiver: &mut Receiver) -> Result<Option<Block>, Error> {
-        let mut recv = pin!(receiver.recv());
-        poll_fn(|cx| {
-            self.watch(cx)?;
-            recv.as_mut().poll(cx).map_err(Error::from)
-        })
-        .await
+        let next = self.pending.wait(receiver.recv()).await;
+        Ok(next.map_err(Error::Removed)??)
     }
 
     /// Checks that each of `keys` is known, on the index of the open, and not named
     /// before, and adds it to the channels of the open.
     fn check(&mut self, keys: keys::Iter<'_>) -> Result<(), Error> {
-        let state = &mut *self.state.borrow_mut();
-        let checked = state.opens.keys_mut(self.key);
+        let mut checked = Vec::new();
+        let state = self.state.borrow();
         for key in keys {
             let of = state.channels.get(key).ok_or(Error::Unknown(key))?.index();
             if *self.index.get_or_insert(of) != of {
                 return Err(Error::ManyIndexes);
             }
+            if key == of {
+                self.at = Some(self.listed.len());
+            }
             if !self.listed.insert(key) {
                 return Err(Error::Repeated(key));
             }
-            if key == of {
-                self.at = Some(checked.len());
-            }
             checked.push(key);
         }
+        drop(state);
+        self.pending.extend(&checked);
         Ok(())
     }
 
     /// Ends the open, and gives the keys it checked, in order.
     fn into_keys(self) -> Vec<channel::Key> {
-        self.state.borrow_mut().opens.take(self.key)
+        self.pending.into_keys()
     }
 
     /// Waits until the mesh names this node the home of the index. Fails at once when
@@ -532,20 +513,10 @@ impl<'s> Opening<'s> {
     /// Panics if the open checked no key.
     async fn home(&self) -> Result<(), Error> {
         let index = self.index.expect("invariant: the open checked a key");
-        let mut homed = pin!(crate::homes(self.state, slice::from_ref(&index)));
-        poll_fn(|cx| {
-            self.watch(cx)?;
-            homed.as_mut().poll(cx).map_err(Error::from)
-        })
-        .await
-    }
-}
-
-impl Drop for Opening<'_> {
-    fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.opens.remove(self.key);
-        state.waiting.remove(&self.key);
+        let homed = self
+            .pending
+            .wait(crate::homes(self.state, slice::from_ref(&index)));
+        Ok(homed.await.map_err(Error::Removed)??)
     }
 }
 
@@ -718,7 +689,6 @@ impl Cut {
 mod tests {
     use std::ops::Range;
     use std::sync::Arc;
-    use std::task::Waker;
 
     use types::frame::key_set::{Group, Interner};
     use types::frame::{Draft, Form, Path};
@@ -727,37 +697,6 @@ mod tests {
     use super::*;
 
     const I64: Type = Type::Scalar(Scalar::I64);
-
-    /// An open leaves no entry in the hub once it drops, also when it set its waker.
-    /// It reads private maps, as no public call reads them: a leak is only held
-    /// memory, and a counting allocator needs a binary with no harness that serves
-    /// streams over the sim network.
-    #[test]
-    fn an_open_keeps_no_entry_once_it_drops() {
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let node = sim.node(sim::node::Config::default());
-        let ran = sim.run_on(&node, |node, tasks| async move {
-            let (hub, _) = crate::testing::open(crate::testing::Env {
-                files: node.files(),
-                clock: node.clock(),
-                wall: node.wall(),
-                entropy: node.entropy(),
-                tasks,
-            })
-            .await;
-            let entries = || {
-                let state = hub.0.borrow();
-                (state.opens.0.len(), state.waiting.len())
-            };
-            let opening = Opening::new(&hub.0);
-            let cx = Context::from_waker(Waker::noop());
-            assert_eq!(opening.watch(&cx), Ok(()));
-            assert_eq!(entries(), (1, 1));
-            drop(opening);
-            assert_eq!(entries(), (0, 0));
-        });
-        assert_eq!(ran, Ok(()));
-    }
 
     fn key(key: u128) -> channel::Key {
         channel::Key::from_u128(key)
