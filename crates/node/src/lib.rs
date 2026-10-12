@@ -890,6 +890,7 @@ impl Opening {
         self,
         files: &env::files::Files,
         pool: Rc<block::Pool>,
+        time: &clock::Reader,
         entropy: &env::entropy::Entropy,
         identity: &identity::Identity,
     ) -> Result<Option<mesh::region::Founding>, Error> {
@@ -900,7 +901,8 @@ impl Opening {
                 if let Some(founding) = stored.map_err(Error::Mesh)? {
                     return Ok(Some(founding));
                 }
-                let root = root::founding(files, entropy, identity, name, addresses);
+                let root =
+                    root::founding(files, time, entropy, identity, name, addresses);
                 root.await.map(Some)
             }
             #[cfg(feature = "sim")]
@@ -946,12 +948,14 @@ impl Endpoint {
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
     /// the transport, also with the error of a founding, a store, or a mesh that did
-    /// not open.
+    /// not open. A new root region takes the keys of its status at the mesh time of
+    /// `time`.
     async fn open(
         self,
         identity: identity::Identity,
         files: env::files::Files,
         pool: Rc<block::Pool>,
+        time: &clock::Reader,
         tasks: env::tasks::Tasks,
     ) -> (Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>) {
         let config = transport::Config {
@@ -968,9 +972,13 @@ impl Endpoint {
         let transport = transport::Transport::new(config, self.part)
             .expect("invariant: a buffer's pool holds a block of a whole UDP payload");
         let transport = Rc::new(transport);
-        let founding =
-            self.region
-                .founding(&files, Rc::clone(&pool), &self.entropy, &identity);
+        let founding = self.region.founding(
+            &files,
+            Rc::clone(&pool),
+            time,
+            &self.entropy,
+            &identity,
+        );
         let founding = match founding.await {
             Ok(Some(founding)) => founding,
             Ok(None) => return (transport, Ok(None)),
@@ -1056,7 +1064,8 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let opened = endpoint.open(identity, files.clone(), pool, tasks.clone());
+        let opened =
+            endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let (transport, mesh) = opened.await;
         let (freed, inbox, time) = (transport.ended(), self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block

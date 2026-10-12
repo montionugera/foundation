@@ -4451,7 +4451,8 @@ mod port {
                 let home = opened.expect("the buffer opens");
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
+                let opened =
+                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
                 let (transport, mesh) = opened.await;
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
@@ -5996,7 +5997,8 @@ mod port {
                 let home = opened.expect("the buffer opens");
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
+                let opened =
+                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
                 let (transport, mesh) = opened.await;
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
