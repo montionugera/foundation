@@ -169,9 +169,9 @@
   of plan revision 4, by `laptop.architect-2` (2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913),
   approved for the contracts by `laptop.architect` (2026-10-11T08:10:05Z,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). Its
-  status, its fix, and its use for each operation other than `plan` and `apply` are by
-  `laptop.architect-2` (2026-10-12T18:30:05Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). The
+  status of `ops.bad-request`, its fix, and its use for each operation other than `plan`
+  and `apply` are by `laptop.architect-2` (2026-10-12T18:30:05Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6130219053), which
   supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. Lost:
   one JSON value with the plan file as a list of numbers, which is four times the bytes.

@@ -20,7 +20,7 @@
   rules are those of the base spec, so a plan that removes the subject's own policy
   passes. The check runs before each other check that reads the spec in use
   (`ops.behind`, `ops.stale-plan`), so a subject with no grant does not learn from
-  another error what the spec holds. An error of the files alone (`Files::read`, the
+  another error what the spec holds. An error of the files alone (`Documents::read`, the
   names of `config::check`) comes before the check. A refusal is `ops.denied`, status 1,
   with the fix `Ask an admin of the region for an access policy that allows it`. It
   names a name only when the request holds it. For `plan`, it names the first name of
