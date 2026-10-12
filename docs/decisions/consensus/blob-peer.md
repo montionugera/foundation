@@ -8,10 +8,12 @@
   of the block, so no byte is copied, or `Reply::Absent`. A put copies its body into one
   block of the chunk's length and calls `Store::put`, so a put holds one chunk in
   memory, and `Reply::Stored` goes only once the chunk is durable. A get holds the chunk
-  that it sends. `transport` also holds each chunk whole until the peer acknowledged
-  each byte of it and each byte before it on the stream, or the stream resets, so a get
-  can hold more than one chunk. The bound is `transport`'s (#2361; `laptop.architect-2`,
-  2026-10-11T06:02:25Z,
+  that it sends. `transport` also holds each chunk whole until the peer acknowledges
+  each byte of it and each byte before it on the stream, or the stream resets
+  (`laptop.architect-2`, 2026-10-11T17:39:39Z, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297), so a
+  get can hold more than one chunk. The bound is `transport`'s (#2361;
+  `laptop.architect-2`, 2026-10-11T06:02:25Z,
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): a session
   holds at most `window_bytes` of sent bytes, and `transport` copies a part of at most
   1452 bytes and holds no block for it. So the chunks that `transport` holds for a

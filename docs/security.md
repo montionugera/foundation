@@ -267,7 +267,7 @@ state on `main`.
   `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
   puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
   memory for each stream. `transport` also holds each chunk whole until the peer
-  acknowledged each byte of it and each byte before it on the stream, or the stream
+  acknowledges each byte of it and each byte before it on the stream, or the stream
   resets, so a get can hold more than one chunk. The chunks that `transport` holds for a
   session have at most `window_bytes` bytes together, plus two chunks for each stream
   (#2361). Who may open a blob stream is not built: `node` rejects each one until it
