@@ -279,15 +279,18 @@
   a `_` follows, such as `#13abc`, the `#8203` of `&#8203;`, and a `GH-<n>` after `@`,
   which GitHub shows as the mention of a user. GitHub shows no issue for each. It does
   not read a path with no host, such as `synnaxlabs/foundation/issues/13`, for which
-  GitHub shows an issue. The check reads `owed`, `departs from`, `GH-<n>`, `not in a
-  risk crate`, and the path of a file under `crates/` in each ASCII case. Supersedes the
-  words of goals 3 and 4 of https://github.com/synnaxlabs/foundation/issues/1211 that
-  ask for a link for each item. A `Later steps:` line after the first of the end lines
-  is not read. A last round posted before the cutoff `LINK_CUTOFF` in
-  `xtask/src/review.rs` (2026-10-12T12:00:00Z) is checked as before, so that the rule
-  does not fail the rounds that came before it. The cutoff is a fixed time: it stays
-  when the rule merges after it. Stated by the director as rule item 24 at
-  2026-10-11T03:39:26Z
+  GitHub shows an issue. GitHub links text that starts with `www.` also when no domain
+  with a dot follows it, and the check, as comrak does, links it only before such a
+  domain. So in such text the check reads each entity and mark that GitHub shows as
+  written, such as the `&#40;` of `#12 www.~&#40;<comment link>)`, which it reads as
+  `(`. The check reads `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the
+  path of a file under `crates/` in each ASCII case. Supersedes the words of goals 3 and
+  4 of https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
+  item. A `Later steps:` line after the first of the end lines is not read. A last round
+  posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
+  is checked as before, so that the rule does not fail the rounds that came before it.
+  The cutoff is a fixed time: it stays when the rule merges after it. Stated by the
+  director as rule item 24 at 2026-10-11T03:39:26Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6105098668), and
   ruled at 2026-10-11T10:47:32Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6108222189), and
@@ -308,7 +311,9 @@
   ruled for the start of a `GH-<n>` and for three limits at 2026-10-12T18:22:54Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6130107518), and
   ruled for a `GH-<n>` after a mark and after `@` at 2026-10-12T20:54:03Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6132434331). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6132434331), and
+  ruled for text after `www.` at 2026-10-12T21:59:23Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133389460). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.

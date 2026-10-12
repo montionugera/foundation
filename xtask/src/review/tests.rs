@@ -3312,6 +3312,20 @@ fn a_comment_link_with_a_gh_name_after_an_ignorable_character_counts() {
     assert_eq!(check(&record(vec![surfaced(&line)])), Vec::<String>::new());
 }
 
+/// A limit of REVIEW CHECK: GitHub links `www.` with no domain with a dot after it, and
+/// shows `&#40;` in it as written, but the check reads it as `(`, so a comment link
+/// follows it. A read of the links from `body_html` (#2473) gives both lines a problem.
+#[test]
+fn a_www_text_with_no_dotted_domain_is_read_with_its_entities() {
+    let text = format!("www.~&#40;{OK})");
+    assert_eq!(
+        risk(vec![deferred(&format!("#12 {text}"))]),
+        Vec::<String>::new()
+    );
+    let line = format!("x {text}");
+    assert_eq!(check(&record(vec![surfaced(&line)])), Vec::<String>::new());
+}
+
 /// GitHub links a bare URL up to the next space, and shows each mark in it as written.
 #[test]
 fn a_bare_url_shows_its_marks_as_written() {
