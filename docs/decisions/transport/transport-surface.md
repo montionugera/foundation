@@ -42,7 +42,9 @@
   `transport` exports no `Ended` of its own. The carrier's task of a `Transport` spawns
   through one `env::tasks::Group` that the `Transport` holds; a `Client` counts no
   task. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
-  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454.
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454. Where
+  the group lives: `laptop.architect-2` (2026-10-12T21:18:22Z):
+  https://github.com/synnaxlabs/foundation/pull/2496#issuecomment-6132781202.
   Supersedes the `pub struct Ended` of
   https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072912165
   (`laptop.architect`, 2026-10-09T02:19:10Z).
