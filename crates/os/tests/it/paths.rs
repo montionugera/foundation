@@ -432,9 +432,9 @@ fn a_read_of_a_removed_directory_lists_no_entries() {
     );
 }
 
-/// Reads `path` until another thread has called `swap` [`CYCLES`] times, and gives
-/// the first read that `expected` refuses. The bound is on the swaps, not the reads,
-/// so a slow or busy host still races each read against many swaps.
+/// Reads `path` until another thread has called `swap` [`CYCLES`] times or ended, and
+/// gives the first read that `expected` refuses. The bound is on the swaps, not the
+/// reads, so a slow or busy host still races each read against many swaps.
 fn race(
     swap: impl Fn() + Sync,
     path: &Path,
@@ -443,7 +443,7 @@ fn race(
     let (cycles, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
     thread::scope(|scope| {
         #[expect(clippy::disallowed_methods, reason = "the test races the read")]
-        scope.spawn(|| {
+        let swapper = scope.spawn(|| {
             while !stopped.load(Ordering::Relaxed) {
                 swap();
                 cycles.fetch_add(1, Ordering::Relaxed);
@@ -451,7 +451,11 @@ fn race(
         });
         let paths = os::paths();
         let mut other = None;
-        while other.is_none() && cycles.load(Ordering::Relaxed) < CYCLES {
+        // A panic in `swap` ends the swapper, and the scope then fails the test.
+        while other.is_none()
+            && cycles.load(Ordering::Relaxed) < CYCLES
+            && !swapper.is_finished()
+        {
             other = Some(paths.read(path, 1 << 12)).filter(|read| !expected(read));
         }
         stopped.store(true, Ordering::Relaxed);
