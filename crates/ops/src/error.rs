@@ -90,6 +90,18 @@ pub(crate) enum On {
     Nothing,
 }
 
+impl fmt::Display for On {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => write!(f, "`{name}`"),
+            Self::Spec => f.write_str(
+                "a definition of the spec in use that the files do not hold",
+            ),
+            Self::Nothing => f.write_str("a request that names no definition"),
+        }
+    }
+}
+
 impl Action {
     /// The word of the action in a config file.
     const fn word(self) -> &'static str {
@@ -386,15 +398,8 @@ impl fmt::Display for Error {
                 let action = action.word();
                 write!(
                     f,
-                    "no access policy gives `{subject}` the action `{action}` "
-                )?;
-                match on {
-                    On::Name(name) => write!(f, "on `{name}`"),
-                    On::Spec => f.write_str(
-                        "on a definition of the spec in use that the files do not hold",
-                    ),
-                    On::Nothing => f.write_str("on a request that names no definition"),
-                }
+                    "no access policy gives `{subject}` the action `{action}` on {on}"
+                )
             }
             Self::LargeReply { bytes } => write!(
                 f,
