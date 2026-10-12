@@ -57,8 +57,9 @@
   with `Spec::behind` set gives `ops.behind`, status 1, after the decode and before the
   base compare: the message names the newest pointer and one line for its `Cause`, and
   the fix is `Fix the cause, then plan again`. One private function of `ops` reads
-  `Mesh::spec` and gives the spec in use, this error, or the stop (`ops.stopped`), for
-  each caller. A plan whose base is not the spec in use, before the proposal or after
+  `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`),
+  and one step of that spec gives this error. A plan whose base is not the spec in
+  use, before the proposal or after
   another change applies first, is `ops.stale-plan`, status 1, fix `Plan again`. Each
   other error of `Mesh::apply`, except a stop, is `ops.apply`, status 1, with its
   `Display` as the message and the fix `Fix the cause in the message, then plan and
@@ -122,8 +123,9 @@
   the contract with `mesh`, by `laptop.architect` (2026-10-09T00:57:47Z,
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6072065332).
   The plan output also has `reserved`: each definition of the spec in use that
-  Foundation made, as `Reserved { name, kind }` with its label and its kind, in the
-  order of its tree key. `plan` leaves these out of its changes, since no file can hold
+  Foundation made, as `Reserved { name, kind, key }` with its label, its kind, and its
+  tree key, in the order of its tree key. `plan` leaves these out of its changes,
+  since no file can hold
   a reserved label (FIRST ADMIN). When the spec holds one, the text ends with one line
   after the counts: `note: <n> definitions that Foundation made are not in the files:`
   and the tree key of each, with `, ` between two, or `note: 1 definition that
@@ -133,5 +135,7 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053458318), which
   revision 3 moves to PR 2 (2026-10-10T03:30:54Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). That
-  item gives an example and no order rule. The order of the tree key is item 2 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6128358513.
+  item gives an example and no order rule. The order of the tree key and the field
+  `key` wait for the ruling of `laptop.architect-2` on item 2 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6128358513 and on
+  round 1 of #2466.

@@ -146,10 +146,10 @@ impl Output {
                 format!("{symbol} {kind} {}\n{lines}", change.name)
             })
             .collect();
-        let made: Vec<String> = self
+        let made: Vec<&str> = self
             .reserved
             .iter()
-            .map(|reserved| format!("{}.@{}", reserved.name, reserved.kind))
+            .map(|reserved| reserved.key.as_str())
             .collect();
         let note = match made.len() {
             0 => String::new(),
@@ -181,16 +181,19 @@ pub(crate) struct Reserved {
     pub(crate) name: String,
     /// The kind of the definition, such as `subject`.
     pub(crate) kind: String,
+    /// The tree key of the definition, such as `@admin.@subject`.
+    pub(crate) key: String,
 }
 
 impl Reserved {
-    /// The output of `definition` at the tree key `name`, when its label is reserved.
-    fn of(name: &Name, definition: &Definition) -> Option<Self> {
+    /// The output of `definition` at the tree key `key`, when its label is reserved.
+    fn of(key: &Name, definition: &Definition) -> Option<Self> {
         let kind = definition.kind();
-        let label = kind.label(name).filter(Name::reserved)?;
+        let label = kind.label(key).filter(Name::reserved)?;
         Some(Self {
             name: label.to_string(),
             kind: kind.as_str().to_owned(),
+            key: key.to_string(),
         })
     }
 }
