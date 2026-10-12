@@ -322,6 +322,46 @@
   (https://github.com/synnaxlabs/foundation/pull/2156#issuecomment-6086107940). `sim`
   gives each `Files` of a node as clones of one. Lost there: the wait in `Files`, which
   cannot see the end of a dropped call without a change to `Driver`.
+  Amended (2026-10-11T17:01:13Z, #1186): `Files::list` of a directory first waits for
+  each call on a path directly in the directory that a dropped future or a dropped
+  handle of the same `Files` and its clones left to run, so the names are as those
+  calls leave them. The rule does not cover a call on the directory itself, a call on
+  a path deeper in it, or a call whose future lives, also a `File::remove`, which the
+  caller can await. `Mode::Read`, `sync_dir`, and `create_dir` do not change. `os`
+  gives the wait by the order of its I/O queue, and `sim` by the end time of the list,
+  as for a write open. The caller is `mesh::log`, whose open listed a file that a
+  dropped remove then removed. Lost: a new call that waits for the dropped calls of a
+  directory, which each caller that opens a directory must know to make; a wait of
+  each call for each dropped call of the `Files`, which makes a write on one file wait
+  for a dropped create of another, and refuses a driver that runs the calls of two
+  files at one time; a second list in the caller on `NotFound`, which is a second
+  guard and misses a dropped create; a wait in a read open, which a read open of a
+  listed name does not need after the list waits. Decided by `laptop.architect-2`,
+  #1186, 2026-10-11T17:01:13Z
+  (https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6111458525).
+  Amended (2026-10-11T17:05:00Z, #1229): `Files::free` first waits for each call that a
+  dropped future or a dropped handle of the same `Files` and its clones left to run, on
+  each path, so the result is as those calls leave the disk. It does not wait for a
+  call whose future lives. `os` gives the wait by the order of its I/O queue, and `sim`
+  by the end time of the `free`, as for a write open. The caller is `blob`, whose floor
+  check read the free bytes before the create of a dropped put took its room. Lost: a
+  wait only for the dropped calls that change the free bytes, which is a longer rule
+  for a shorter wait that no caller needs; a count in `blob` of the room of each
+  dropped put, which cannot go down, because no result reaches a dropped future; a
+  create that takes a floor, which moves the rule of one caller into each driver.
+  Decided by `laptop.architect-2`, #1229, 2026-10-11T17:05:00Z
+  (https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387).
+  Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
+  driver gives `Full` syncs the directory of the path one time and opens again. It
+  gives `Full` only when the second open does, and a `sync_dir` error as it is. It does
+  this on each `Full`, since a remove from before a restart or from another `Files`
+  also holds room. `os` and `sim` do not change. Lost: the retry in each driver, and
+  the rule in each caller (`blob` retried, `buffer` always synced first). Decided by
+  `laptop.architect-2`, 2026-10-08T00:45:04Z
+  (https://github.com/synnaxlabs/foundation/issues/1622#issuecomment-6049807597).
+  `buffer` keeps its sync before the ring create until #2378 (`laptop.architect`,
+  2026-10-11T08:02:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2375#issuecomment-6106938767).
   Amended (2026-10-08T17:19:48Z, #1921): on macOS, an accepted socket does not keep
   the receive buffer of its listener, so `os` sets the options of the listener again
   on each accepted socket, on every OS. The listener still sets them before `listen`:
@@ -425,3 +465,21 @@
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440; the text
   of the thread with no handle: `laptop.architect-2`, 2026-10-09T19:05:37Z:
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087447005).
+  Amended (2026-10-11, #2324): `os::interrupt` changes only what a signal that reaches
+  the process does, never which signals reach it. At the call, it leaves out each of
+  SIGINT and SIGTERM that the mask of the calling thread blocks or whose action is
+  `SIG_IGN`, also for the first signal. With both left out, no thread starts and the
+  future never completes. Lost: owning both signals at each call (unblock each and set
+  the default action), which overrides the choice of the parent, such as the ignored
+  SIGINT of a job that a script starts with `&`. `os::files` syncs no holder of a
+  directory on another device than its holder (a mount point): `mkdirat` makes a
+  directory on its holder's device, so no start made that entry. Each other case keeps
+  the sync at each call. Lost: no sync when `dir` was there, which opens the crash
+  window again, and `EINVAL` from the sync taken as success, which hides a file system
+  that cannot keep the node's entries (`laptop.architect-2`, 2026-10-10T23:40:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164).
+  Supersedes, for a signal that the calling thread blocks or ignores, the hold of SIGINT
+  and SIGTERM of
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545, and, for
+  a directory on another device than its holder, the sync of the holder at each call of
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440.

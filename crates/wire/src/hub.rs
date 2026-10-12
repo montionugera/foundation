@@ -37,7 +37,7 @@ pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
 
-use crate::common::{Fields, Writer, body};
+use crate::common::{Fields, Length, Run, Writer, body};
 
 const LATEST: u8 = 1;
 const COMPLETE: u8 = 2;
@@ -163,16 +163,18 @@ impl Open {
     /// names no open, [`Error::Length`] when the length fits no open of that kind, and
     /// [`Error::Channels`] when the open names no channel.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
-                limit_bytes: u64::from_le_bytes(fields.take()?),
+                limit_bytes: u64::from_le_bytes(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };
-        let channels = u32::from_le_bytes(fields.take()?);
+        let channels = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         if channels == 0 {
             return Err(Error::Channels);
@@ -224,12 +226,14 @@ impl Credit {
     /// names no credit, and [`Error::Length`] when `bytes` is not [`Credit::LEN`]
     /// bytes.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
-        let limit_bytes = u64::from_le_bytes(fields.take()?);
+        let limit_bytes = u64::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
     }
@@ -308,8 +312,10 @@ impl Reply {
     /// [`Error::Path`] when a head names no path, [`Error::Series`] when it names no
     /// series, and [`Error::Range`] when its range ends past `u64::MAX`.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         match kind {
             OPENED => {
                 fields.end()?;
@@ -320,10 +326,10 @@ impl Reply {
                 Ok(Self::Behind)
             }
             HEAD => {
-                let [path] = fields.take()?;
-                let seq = u64::from_le_bytes(fields.take()?);
-                let count = u32::from_le_bytes(fields.take()?);
-                let series = u32::from_le_bytes(fields.take()?);
+                let [path] = *fields.take()?;
+                let seq = u64::from_le_bytes(*fields.take()?);
+                let count = u32::from_le_bytes(*fields.take()?);
+                let series = u32::from_le_bytes(*fields.take()?);
                 fields.end()?;
                 let path = path_of(path)?;
                 if series == 0 {
@@ -490,7 +496,8 @@ pub mod ends {
     }
 }
 
-/// A hub message that is not valid.
+/// A message of a reader session that is not valid. The decoders of [`client`] give
+/// [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
@@ -571,18 +578,6 @@ pub enum Error {
         /// The kind byte of the message.
         kind: u8,
     },
-    /// The subject of a hello is not a name.
-    Subject,
-    /// The key of a hello is a point of small order.
-    SmallOrder,
-    /// A request or a response has a body over
-    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX).
-    Oversize {
-        /// The bytes of the body.
-        length: u64,
-    },
-    /// A message comes after the body of a request or a response.
-    Trailing,
     /// The stream ended before its body.
     Unfinished {
         /// The bytes of the body that did not come.
@@ -592,8 +587,13 @@ pub enum Error {
     Finished,
 }
 
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue.
+const _: fn() = || {
+    fn copy<T: Copy>() {}
+    copy::<Error>();
+};
+
 impl fmt::Display for Error {
-    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -653,18 +653,6 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject => f.write_str("the subject of the hello is not a name"),
-            Self::SmallOrder => {
-                f.write_str("the key of the hello is a point of small order")
-            }
-            Self::Oversize { length } => write!(
-                f,
-                "the body has {length} bytes, over the cap of {}",
-                client::BODY_BYTES_MAX
-            ),
-            Self::Trailing => {
-                f.write_str("a hub message came after the body of the stream")
-            }
             Self::Unfinished { remain } => write!(
                 f,
                 "the stream ended with {remain} bytes of its body to come"
@@ -678,6 +666,18 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
+
+impl From<Run> for Error {
+    fn from(Run { items, remain }: Run) -> Self {
+        Self::Run { items, remain }
+    }
+}
+
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
         match error {
@@ -686,14 +686,6 @@ impl From<body::Error> for Error {
             body::Error::Unfinished { remain } => Self::Unfinished { remain },
         }
     }
-}
-
-/// The items that remain in a run of `remain` after a message of `items` items.
-fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
-    u32::try_from(items)
-        .ok()
-        .and_then(|count| remain.checked_sub(count))
-        .ok_or(Error::Run { items, remain })
 }
 
 /// The slots of one message of a run: `out` as items of `N` bytes, to fill.
@@ -1281,6 +1273,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn names_each_error() {
         let cases = [
             (Error::Empty, "the hub message is empty"),
@@ -1348,31 +1341,13 @@ mod tests {
                 Error::Latest { kind: 3 },
                 "the hub message has kind 3, which a latest session does not have",
             ),
-        ];
-        for (error, text) in cases {
-            assert_eq!(error.to_string(), text);
-        }
-    }
-
-    #[test]
-    fn names_each_error_of_a_client_stream() {
-        let cases = [
-            (Error::Subject, "the subject of the hello is not a name"),
-            (
-                Error::SmallOrder,
-                "the key of the hello is a point of small order",
-            ),
-            (
-                Error::Oversize { length: 16_777_217 },
-                "the body has 16777217 bytes, over the cap of 16777216",
-            ),
-            (
-                Error::Trailing,
-                "a hub message came after the body of the stream",
-            ),
             (
                 Error::Unfinished { remain: 3 },
                 "the stream ended with 3 bytes of its body to come",
+            ),
+            (
+                Error::Finished,
+                "the home finished the stream before it ended the session",
             ),
         ];
         for (error, text) in cases {

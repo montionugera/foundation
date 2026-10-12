@@ -10,10 +10,6 @@ use super::Loop;
 use crate::child;
 use crate::ffi::{self, DelayedCallback, EventLoop, Status};
 
-unsafe extern "C" {
-    fn UA_UInt32_random() -> u32;
-}
-
 /// Ticks of 100 ns from 1601 to 1970, the epoch of `dateTime_now`.
 const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 
@@ -278,7 +274,7 @@ fn draws(seed: u64) -> [u32; 4] {
     let clock = sim.node(sim::node::Config::default()).clock();
     let _events = Loop::new(clock, &mut Rng::from_seed(seed));
     // SAFETY: it draws from the generator of this thread.
-    std::array::from_fn(|_| unsafe { UA_UInt32_random() })
+    std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
 
 #[test]
@@ -665,32 +661,35 @@ fn a_change_to_an_interval_out_of_range_is_refused_and_keeps_the_timer() {
 }
 
 #[test]
-fn a_delayed_callback_is_due_off_the_100_ns_grid() {
-    let mut f = Fixture::new();
+fn a_delayed_callback_waits_until_a_run() {
+    let f = Fixture::new();
     f.start();
-    f.advance(Span::from_nanos(50));
-    assert!(!f.events.due());
+    assert!(!f.events.delayed());
     let mut first = f.delayed(record, number(1));
     f.queue(&mut first);
-    assert!(f.events.due());
+    assert!(f.events.delayed());
     f.run();
     assert_eq!(f.ran(), [1]);
-    assert!(!f.events.due());
+    assert!(!f.events.delayed());
 }
 
 #[test]
-fn a_timer_is_due_from_its_time() {
+fn a_removed_delayed_callback_does_not_wait() {
+    let f = Fixture::new();
+    f.start();
+    let mut first = f.delayed(record, number(1));
+    f.queue(&mut first);
+    f.unqueue(&mut first);
+    assert!(!f.events.delayed());
+}
+
+#[test]
+fn a_due_timer_is_no_delayed_callback() {
     let mut f = Fixture::new();
     f.start();
     f.add(1, 1.0, ffi::ONCE);
-    f.advance(Span::from_nanos(999_999));
-    assert!(!f.events.due());
-    f.advance(Span::from_nanos(1));
-    assert!(f.events.due());
     f.advance(ms(1));
-    assert!(f.events.due(), "a timer stays due until a run");
-    f.run();
-    assert!(!f.events.due());
+    assert!(!f.events.delayed());
 }
 
 #[test]
@@ -921,8 +920,7 @@ fn connect(url: &CStr) {
     let client = unsafe { ffi::shim_client_new(f.events.raw()) };
     assert!(!client.is_null());
     // SAFETY: the client lives, and `url` ends with a NUL.
-    let status =
-        Status(unsafe { ffi::test::UA_Client_connectAsync(client, url.as_ptr()) });
+    let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
     assert_eq!(status.name(), "BadTcpEndpointUrlInvalid");
     // SAFETY: the client lives, and the loop outlives it.
     unsafe { ffi::UA_Client_delete(client) };

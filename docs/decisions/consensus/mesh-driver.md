@@ -71,7 +71,15 @@
   Supersedes the sentence "the node never counts a wrong key" of
   https://github.com/synnaxlabs/foundation/issues/1382#issuecomment-6046807570).
   Two joins below that entry still strand a follower under a leader that the real
-  node elected, until #336 builds the voter that checks a join before it stamps it.
+  node elected. Since the voter checks a join before it stamps it (MEMBER RECORD), a
+  peer with no ticket gets no join into the log of an honest voter. A peer with a
+  valid ticket can still name the key of a node whose join is not applied, because
+  the node key is not bound to the card's public key: a known result. #2345 ends the
+  strand under a leader that does not lie: the leader refuses a second public key for
+  one node key (`Error::Contested`). A leader that lies can still write both joins.
+  After #2345, a ticket holder can take only a key that it learns out of band, and only
+  when its join gets to the leader first (`laptop.architect`, 2026-10-11T03:31:12Z,
+  https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526).
   A hard proof that lost such a claim can be no quorum at a node with a newer
   configuration, which then learns the term from the leader. A follower answers a
   cut run with the last entry it kept, and the leader sends the rest from there.
@@ -115,12 +123,19 @@
   Supersedes the sentence that a repeat of `Change::Home` gives the state of a call
   that took effect last:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6033866025.
-  `Change::Join` is safe to repeat while no
-  change removes a member: a repeat finds its node a member and is refused
-  (`Unfit::Duplicate`) before the ticket counts a use. The change that removes a member
-  must keep a repeat of an older `Join` from admitting the node again, and needs a
-  ruling before it lands (decided by `laptop.architect`, 2026-10-07T12:55:06Z:
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6038355946). A later
+  `Change::Join` is safe to repeat while no change removes a member: a repeat finds its
+  node a member and is refused (`Unfit::Duplicate`) before the ticket counts a use. The
+  change that removes a member must keep a repeat of an older `Join` from admitting the
+  node again, and needs a ruling before it lands (decided by `laptop.architect`,
+  2026-10-07T12:55:06Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6038355946). That
+  change, and the first change that replaces a card, also make `node::runs` read the
+  name of its node again, because today it reads the name once, when the mesh opens
+  (`laptop.architect`, 2026-10-10T14:53:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098763970). So does
+  the change that lets a node join a running mesh (#1157), because a node that joins
+  opens its mesh before it is a member (`laptop.architect`, 2026-10-10T15:07:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098894431). A later
   `Change` kind that is not safe to repeat needs a ruling before a member forwards it
   (decided by the architect, 2026-10-07T08:15:18Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6033866025). The
@@ -167,11 +182,15 @@
   an entry, and a newer build can. An entry with no change (the first entry of a leader)
   is not a change of 0 bytes. A committed entry of a known kind whose body does not
   decode is `Refused::Body` on every node, and the group goes on, so one voter that
-  proposes bad bytes cannot halt the region. From the first stable release (C9d), a
-  change to the body or to a cap of a known kind (the 64 status entries of a `Join`)
-  takes a new kind, which writers use only after the format flag (C9d) allows it; a
-  node of an older build stops at it and never applies it differently. Decided by
-  `laptop.architect` (2026-10-07T10:55:00Z):
+  proposes bad bytes cannot halt the region. One `pub(crate)` type of `change` holds the
+  kind and the length of such a body: `Malformed::Body` and `Refused::Body` each hold
+  it, and the driver moves it from one to the other (decided by `laptop.architect`,
+  2026-10-11T12:05:22Z:
+  https://github.com/synnaxlabs/foundation/issues/1509#issuecomment-6108834570). From
+  the first stable release (C9d), a change to the body or to a cap of a known kind (the
+  64 status entries of a `Join`) takes a new kind, which writers use only after the
+  format flag (C9d) allows it; a node of an older build stops at it and never applies it
+  differently. Decided by `laptop.architect` (2026-10-07T10:55:00Z):
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036422521. The
   start of the rule was changed by `laptop.architect` at 2026-10-08T17:20:54Z
   (https://github.com/synnaxlabs/foundation/pull/1934#issuecomment-6065295958): before
@@ -182,18 +201,19 @@
   also after each `Mesh` drops (MESH SURFACE). `member` has no error (#562): it gives
   the record that the node holds, also after a stop (approved by the architect,
   2026-10-07T08:07:48Z:
-  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). A stopped
-  group does not start again: the node opens the mesh again, and the open makes durable
-  what it gives (MESH LOG). The task ends soon after the last `Mesh` drops, a write in
-  progress ends first, and a write that waits for a block ends at the next tick; until
-  then a new open gives `Error::Log`. Each open applies the log from index 1, until
-  snapshots (#253). A watch does not keep the group running, and a dropped watch leaves
-  no waker. `open` refuses a node or a voter that is not a member (`Error::NotMember`),
-  and a private key that is not the key of this node's member (`Error::WrongKey`).
-  `Config.founding.members` is a list, and the region state holds each record under the
-  key of its card, so the key of a member has one copy. `open` is the one check of a
-  list for two records of one node: a decoder of a join answer passes its records on and
-  does not check them again (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
+  https://github.com/synnaxlabs/foundation/pull/1241#issuecomment-6033747689). `stamp`
+  gives `Unstamped::Stopped` (MEMBER RECORD). A stopped group does not start again: the
+  node opens the mesh again, and the open makes durable what it gives (MESH LOG). The
+  task ends soon after the last `Mesh` drops, a write in progress ends first, and a
+  write that waits for a block ends at the next tick; until then a new open gives
+  `Error::Log`. Each open applies the log from index 1, until snapshots (#253). A watch
+  does not keep the group running, and a dropped watch leaves no waker. `open` refuses a
+  node or a voter that is not a member (`Error::NotMember`), and a private key that is
+  not the key of this node's member (`Error::WrongKey`). `Config.founding.members` is a
+  list, and the region state holds each record under the key of its card, so the key of
+  a member has one copy. `open` is the one check of a list for two records of one node:
+  a decoder of a join answer passes its records on and does not check them again
+  (decided by `laptop.architect`, 2026-10-07T08:07:47Z:
   https://github.com/synnaxlabs/foundation/issues/1259#issuecomment-6033747312, which
   reverses the map of the ruling below). The key of a member is the key that its card's
   signature covers, and `open` refuses a member that the region cannot hold, or two

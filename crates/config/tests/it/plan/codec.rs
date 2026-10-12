@@ -626,15 +626,43 @@ proptest! {
     }
 }
 
+/// Checks the status index of `influx` in `added_status` and `changed_status`, not each
+/// status channel, so a new status channel does not fail this test.
 #[test]
-fn decodes_the_fuzz_inputs_to_the_fixture_plans() {
-    let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added");
-    let changed = include_bytes!("../../../../../oracles/fuzz/config_plan/changed");
+fn decodes_the_fuzz_inputs_with_the_status_channels() {
+    let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added_status");
+    let changed =
+        include_bytes!("../../../../../oracles/fuzz/config_plan/changed_status");
     let empty = include_bytes!("../../../../../oracles/fuzz/config_plan/empty");
-    let found = [added.as_slice(), changed].map(Plan::decode);
-    assert_eq!(found, plans().map(|plan| Ok(spanless(plan))));
+    let status = name("influx.status.time");
+    let [added, changed] = [added.as_slice(), changed].map(|found| {
+        let plan = Plan::decode(found).expect("a plan");
+        assert_eq!(plan.encode().as_slice(), found);
+        plan
+    });
+    let change = |plan: &Plan| {
+        let change = &plan.changes[&status];
+        (change.old.is_some(), change.new.is_some())
+    };
+    assert_eq!(change(&added), (false, true));
+    assert_eq!(added.homes[&status], name("cloud"));
+    assert_eq!(change(&changed), (true, false));
     assert_eq!(
         Plan::decode(empty).map(|plan| plan.encode()),
         Ok(bytes(&[]))
     );
+}
+
+/// The fixture plans from before connectors had status channels still decode.
+#[test]
+fn decodes_the_fuzz_inputs_from_before_the_status_channels() {
+    let added = include_bytes!("../../../../../oracles/fuzz/config_plan/added");
+    let changed = include_bytes!("../../../../../oracles/fuzz/config_plan/changed");
+    let [mut plan, _] = plans();
+    let kept = |name: &types::name::Name| !name.as_str().contains(".status.");
+    plan.changes.retain(|name, _| kept(name));
+    plan.homes.retain(|name, _| kept(name));
+    assert_eq!(Plan::decode(added), Ok(spanless(plan)));
+    let decoded = Plan::decode(changed).map(|plan| plan.encode());
+    assert_eq!(decoded.as_deref(), Ok(changed.as_slice()));
 }

@@ -134,13 +134,7 @@ mod tests {
     use types::digest::Digest;
 
     use super::*;
-
-    fn at(index: u64, term: u64) -> Position {
-        Position {
-            term: Term(term),
-            index,
-        }
-    }
+    use crate::common::at;
 
     /// A refusal that differs for each `index`.
     fn refusal(index: u64) -> Refused {
@@ -158,7 +152,7 @@ mod tests {
     /// try opened after the first `before` of them.
     fn create_applied(terms: &[u64], before: usize) -> (Applied, Floor) {
         let mut applied = Applied::default();
-        let mut entries = (1..).zip(terms).map(|(index, &term)| at(index, term));
+        let mut entries = (1..).zip(terms).map(|(index, &term)| at(term, index));
         for entry in entries.by_ref().take(before) {
             applied.push(entry, Ok(()));
         }
@@ -170,27 +164,27 @@ mod tests {
     #[test]
     fn an_entry_above_the_applied_index_is_pending() {
         let (applied, floor) = create_applied(&[1, 1], 1);
-        assert_eq!(applied.outcome(&floor, at(3, 1)), Outcome::Pending);
-        assert_eq!(applied.outcome(&floor, at(3, 2)), Outcome::Pending);
+        assert_eq!(applied.outcome(&floor, at(1, 3)), Outcome::Pending);
+        assert_eq!(applied.outcome(&floor, at(2, 3)), Outcome::Pending);
     }
 
     #[test]
     fn an_entry_that_the_node_applied_after_the_floor_is_applied() {
         let (applied, floor) = create_applied(&[1, 1, 2, 2], 1);
         let applied_ok = Outcome::Applied(Ok(()));
-        assert_eq!(applied.outcome(&floor, at(2, 1)), applied_ok);
-        assert_eq!(applied.outcome(&floor, at(3, 2)), applied_ok);
-        assert_eq!(applied.outcome(&floor, at(4, 2)), applied_ok);
+        assert_eq!(applied.outcome(&floor, at(1, 2)), applied_ok);
+        assert_eq!(applied.outcome(&floor, at(2, 3)), applied_ok);
+        assert_eq!(applied.outcome(&floor, at(2, 4)), applied_ok);
     }
 
     #[test]
     fn a_refused_entry_that_the_node_applied_after_the_floor_gives_its_refusal() {
         let (mut applied, floor) = create_applied(&[1], 1);
-        applied.push(at(2, 1), Err(refusal(2)));
-        applied.push(at(3, 1), Ok(()));
+        applied.push(at(1, 2), Err(refusal(2)));
+        applied.push(at(1, 3), Ok(()));
         let refused = Outcome::Applied(Err(refusal(2)));
-        assert_eq!(applied.outcome(&floor, at(2, 1)), refused);
-        assert_eq!(applied.outcome(&floor, at(3, 1)), Outcome::Applied(Ok(())));
+        assert_eq!(applied.outcome(&floor, at(1, 2)), refused);
+        assert_eq!(applied.outcome(&floor, at(1, 3)), Outcome::Applied(Ok(())));
         assert_eq!(applied.outcome(&floor, at(2, 2)), Outcome::Replaced);
     }
 
@@ -198,28 +192,28 @@ mod tests {
     fn an_index_with_an_entry_of_a_different_term_is_replaced() {
         let (applied, floor) = create_applied(&[1, 1, 2, 2], 1);
         assert_eq!(applied.outcome(&floor, at(2, 2)), Outcome::Replaced);
-        assert_eq!(applied.outcome(&floor, at(3, 1)), Outcome::Replaced);
-        assert_eq!(applied.outcome(&floor, at(4, 3)), Outcome::Replaced);
+        assert_eq!(applied.outcome(&floor, at(1, 3)), Outcome::Replaced);
+        assert_eq!(applied.outcome(&floor, at(3, 4)), Outcome::Replaced);
     }
 
     #[test]
     fn an_entry_above_an_applied_entry_of_a_higher_term_is_replaced() {
         let (applied, floor) = create_applied(&[1, 3], 1);
-        assert_eq!(applied.outcome(&floor, at(5, 2)), Outcome::Replaced);
-        assert_eq!(applied.outcome(&floor, at(5, 3)), Outcome::Pending);
+        assert_eq!(applied.outcome(&floor, at(2, 5)), Outcome::Replaced);
+        assert_eq!(applied.outcome(&floor, at(3, 5)), Outcome::Pending);
     }
 
     #[test]
     fn an_entry_that_is_not_above_the_floor_is_replaced() {
         let (applied, floor) = create_applied(&[1, 1], 2);
-        assert_eq!(applied.outcome(&floor, at(2, 1)), Outcome::Replaced);
+        assert_eq!(applied.outcome(&floor, at(1, 2)), Outcome::Replaced);
         assert_eq!(applied.outcome(&floor, at(0, 0)), Outcome::Replaced);
     }
 
     #[test]
     fn an_applied_with_no_entry_knows_no_outcome() {
         let (applied, floor) = create_applied(&[], 0);
-        assert_eq!(applied.outcome(&floor, at(1, 0)), Outcome::Pending);
+        assert_eq!(applied.outcome(&floor, at(0, 1)), Outcome::Pending);
     }
 
     // The pairs that stay only take memory, which no call shows, so the tests of the
@@ -233,7 +227,7 @@ mod tests {
         );
         applied.close(&floor);
         assert_eq!(applied.terms, [(Term(4), 5)]);
-        applied.push(at(6, 5), Ok(()));
+        applied.push(at(5, 6), Ok(()));
         assert_eq!(applied.terms, [(Term(5), 6)]);
     }
 
@@ -322,7 +316,7 @@ mod tests {
                         history.push((term, refused));
                         let index = last.checked_add(1).unwrap();
                         let result = if refused { Err(refusal(index)) } else { Ok(()) };
-                        applied.push(at(index, term), result);
+                        applied.push(at(term, index), result);
                     }
                     Step::Open => open.push(applied.open()),
                     Step::Close(place) => {
@@ -336,7 +330,7 @@ mod tests {
                 for floor in &open {
                     for index in 0..=last.saturating_add(2) {
                         for term in 0..=top.saturating_add(1) {
-                            let position = at(index, term);
+                            let position = at(term, index);
                             prop_assert_eq!(
                                 applied.outcome(floor, position),
                                 expected(&history, floor.0, position),

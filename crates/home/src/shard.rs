@@ -2,6 +2,7 @@
 //! append, and their readers.
 
 use std::fmt;
+use std::iter;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use types::channel::Slot;
 use types::frame::key_set::{self, KeySet};
 use types::frame::{self, Draft, Frame, Label, Path};
 use types::hash;
-use types::time::{Monotonic, Span, Stamp};
+use types::time::{Interval, Monotonic, Span, Stamp};
 
 use crate::Refusal;
 use crate::index::{Accepted, Index};
@@ -270,11 +271,10 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Resolves when every group applied and every handoff appended before
-/// [`Shard::committed`] is on disk, or with the error that ended the buffer first. It
-/// does not borrow the shard, and it holds the shard's ring open until it drops. Held
-/// past the drop of the shard, it resolves only once the buffer ended, with an error
-/// or with none. Its result is only for what was appended before the call.
+/// The future of [`Shard::committed`] and [`Shard::next_commit`]. It does not borrow
+/// the shard, and it holds the shard's ring open until it drops. Held past the drop of
+/// the shard, it resolves once the buffer ended: with the error that ended the buffer
+/// when that came before what it waits for was durable, else with `Ok`.
 #[derive(Debug)]
 pub struct Commit(buffer::Commit);
 
@@ -387,6 +387,60 @@ impl Shard {
         }
     }
 
+    /// When the control of a carried index next changes with no call: the earliest end
+    /// of a holder's control lease or of a restored holder's grace, on the monotonic
+    /// clock of the shard. `None` when only a call can change control. Only
+    /// [`carry`](Self::carry), [`open_writer`](Self::open_writer), and
+    /// [`close_writer`](Self::close_writer) can make it earlier. Takes O(n) time for n
+    /// carried indexes.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Monotonic> {
+        self.indexes
+            .iter()
+            .filter_map(|index| index.gate.deadline())
+            .min()
+    }
+
+    /// Applies what came due by now in the gate of each carried index: a holder whose
+    /// control lease ran out loses control, and a restored holder that did not reopen
+    /// in its grace is dropped. Appends a handoff for each index whose holder changed
+    /// and that has an open writer, as [`close_writer`](Self::close_writer) does. Call
+    /// it at [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n)
+    /// time for n carried indexes, plus O(c) for each holder that loses control, for c
+    /// claims of open writers. Until #2314, an index with no open writer records its
+    /// handoff at the next open of a writer on it. After it,
+    /// [`deadline`](Self::deadline) is `None` or later than the shard's monotonic time
+    /// at the call.
+    pub fn advance(&mut self) {
+        let clock::Time { monotonic, mesh } = self.clock.now();
+        let mesh = mesh.map(midpoint);
+        for place in 0..self.indexes.len() {
+            if !self.indexes[place].gate.advance(monotonic) {
+                continue;
+            }
+            // No writer opens before mesh time.
+            let Some(mesh) = mesh else {
+                continue;
+            };
+            let held = self.writers.values().find_map(|session| {
+                let mut groups = (0..).zip(&session.claims);
+                let (group, _) = groups.find(|(_, claim)| claim.place == place)?;
+                Some((session, group))
+            });
+            let Some((session, group)) = held else {
+                continue;
+            };
+            // A handoff with no room waits, and a failed commit fails the next write.
+            drop(record(
+                &self.buffer,
+                &mut self.indexes,
+                session,
+                iter::once(group),
+                mesh,
+            ));
+        }
+    }
+
     /// Mesh time now, as the shard stamps each entry and checks each stamp: the
     /// midpoint of the clock's interval, which never goes back. `None` before the
     /// node first has mesh time.
@@ -403,7 +457,8 @@ impl Shard {
 
     /// Opens `writer` on each index of its key set, and appends a handoff for each
     /// index where it takes control. A handoff that finds no room waits for the next
-    /// append on its index. A failed commit fails the next write.
+    /// write that is not a resend, writer open or close, or end of a lease on its
+    /// index. A failed commit fails the next write.
     ///
     /// # Errors
     ///
@@ -563,6 +618,15 @@ impl Shard {
     /// those groups and handoffs were on disk.
     pub fn committed(&self) -> Commit {
         Commit(self.buffer.committed())
+    }
+
+    /// Resolves at the end of the next group commit after the call, also one in
+    /// flight, or gives the file error that ended the buffer. It does not resolve
+    /// while nothing is appended. [`Commit`] says when one held past the drop of the
+    /// shard resolves.
+    #[must_use]
+    pub fn next_commit(&self) -> Commit {
+        Commit(self.buffer.next_commit())
     }
 
     /// Opens an unnamed complete reader on the index at `slot`, with a credit of
@@ -763,9 +827,7 @@ impl Shard {
     /// the node first has mesh time.
     fn clocks(&self) -> Option<(Monotonic, Stamp)> {
         let clock::Time { monotonic, mesh } = self.clock.now();
-        let mesh = mesh?;
-        let midpoint = mesh.earliest.nanos().midpoint(mesh.latest.nanos());
-        Some((monotonic, Stamp::from_nanos(midpoint)))
+        Some((monotonic, midpoint(mesh?)))
     }
 
     /// Both clocks now, as [`clocks`](Self::clocks) gives them.
@@ -817,6 +879,11 @@ impl Session {
     }
 }
 
+/// The midpoint of `mesh`, the best guess of the true time.
+fn midpoint(mesh: Interval) -> Stamp {
+    Stamp::from_nanos(mesh.earliest.nanos().midpoint(mesh.latest.nanos()))
+}
+
 /// Freezes the index frame from `split` of each accepted group of `checks` with
 /// samples into its check, and pushes its stored entry onto `entries`, in group order,
 /// at mesh time `stored_at`. A group with no samples gets no frame and no entry.
@@ -846,8 +913,8 @@ fn freeze(
 
 /// Appends the unrecorded handoff of the index of each of `groups` of `session`, each
 /// alone, on the live path at mesh time `mesh`, and marks it recorded. A handoff that
-/// finds no room in the ring or the pool waits for the next append on its index.
-/// Returns whether every handoff was recorded.
+/// finds no room in the ring or the pool stays unrecorded. Returns whether every
+/// handoff was recorded.
 ///
 /// # Errors
 ///
@@ -961,7 +1028,6 @@ fn room(appended: Result<(), buffer::Rejected>) -> Result<bool, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::iter;
     use std::path::{Path as FilePath, PathBuf};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2711,6 +2777,361 @@ mod tests {
             shard.carry(Slot::new(0));
             shard.carry(Slot::new(2));
             let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[applied(0, 1, 1), applied(2, 1, 1)][..])
+            );
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn gives_no_deadline_when_no_holder_has_a_lease() {
+        run(230, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            assert_eq!(shard.deadline(), None);
+            shard.open_writer(writer("a", 1, &set)).expect("synced");
+            assert_eq!(shard.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn gives_the_end_of_the_earliest_lease_as_the_deadline() {
+        run(231, |test| async move {
+            let index = |slot| {
+                intern(&[Group {
+                    index: key(Slot::new(slot)),
+                    data: &[],
+                }])
+            };
+            let mut shard = test.shard(AREA).await;
+            let opened = test.reader.now().monotonic;
+            let long = Writer {
+                lease: Some(Span::from_nanos(2_000_000)),
+                ..writer("a", 1, &index(0))
+            };
+            shard.open_writer(long).expect("synced");
+            let short = Writer {
+                lease: Some(LEASE),
+                ..writer("b", 1, &index(2))
+            };
+            shard.open_writer(short).expect("synced");
+            assert_eq!(shard.deadline(), Some(opened + LEASE));
+        });
+    }
+
+    #[test]
+    fn gives_the_end_of_the_grace_as_the_deadline_after_a_power_cut() {
+        let (mut sim, node) = cut_after(232, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.open(AREA, 4).await;
+            let opened = test.reader.now().monotonic;
+            assert_eq!(shard.deadline(), None, "no index is carried");
+            shard.carry(Slot::new(0));
+            assert_eq!(shard.deadline(), Some(opened + GRACE));
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn advances_nothing_before_the_deadline() {
+        run(233, |test| async move {
+            let (mut shard, a, set) = test.leased().await;
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            let deadline = shard.deadline();
+            shard.advance();
+            assert_eq!(shard.deadline(), deadline);
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1]), (2, &[10])]);
+            assert_eq!(
+                shard.write(a, LIVE, write),
+                Ok(&[applied(0, 0, 1), applied(2, 0, 1)][..])
+            );
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+        });
+    }
+
+    /// A handoff that found no room is not recorded at an advance with no deadline.
+    #[test]
+    fn appends_no_waiting_handoff_at_an_advance_with_no_deadline() {
+        run(240, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let blocks = test.fill();
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            drop(blocks);
+            assert_eq!(shard.deadline(), None);
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+        });
+    }
+
+    /// A handoff that found no room is recorded at the next open of a writer on its
+    /// index.
+    #[test]
+    fn records_a_waiting_handoff_at_the_open_of_another_writer() {
+        run(244, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let blocks = test.fill();
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            drop(blocks);
+            shard
+                .open_writer(writer("subject-c", 1, &set))
+                .expect("synced");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 2, "the open of c records each index of b");
+        });
+    }
+
+    /// A handoff that found no room is recorded at the next close of a writer on its
+    /// index.
+    #[test]
+    fn records_a_waiting_handoff_at_the_close_of_another_writer() {
+        run(245, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard
+                .open_writer(writer("subject-c", 1, &set))
+                .expect("synced");
+            let blocks = test.fill();
+            shard
+                .open_writer(writer("subject-b", 2, &set))
+                .expect("synced");
+            drop(blocks);
+            shard.close_writer(c);
+            shard.committed().await.expect("the commit ends");
+            let to_b = [&[2], "subject-b".as_bytes()].concat();
+            let handoffs = find(&test.ring().await, &to_b);
+            assert_eq!(handoffs.len(), 2, "the close of c records each index of b");
+        });
+    }
+
+    /// A handoff that found no room is not recorded at a resend write: the shard does
+    /// not read a resend frame. The next write that is not a resend still records it.
+    #[test]
+    fn keeps_a_waiting_handoff_at_a_resend_write() {
+        run(246, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let blocks = test.fill();
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            drop(blocks);
+            let write = frame(&test.pool, &set, &[(2, &[10])]);
+            assert_eq!(shard.write(b, Label::Resend, write), Err(Error::Resend));
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff_to("subject-b")), []);
+            let write = frame(&test.pool, &set, &[(2, &[11])]);
+            shard.write(b, LIVE, write).expect("written");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "the live write records the handoff");
+        });
+    }
+
+    /// A handoff that found no room waits, also when the end of a lease of its writer
+    /// on another index records a handoff.
+    #[test]
+    fn keeps_a_waiting_handoff_at_the_end_of_a_lease_on_another_index() {
+        run(241, |test| async move {
+            let index = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[],
+            }]);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard.open_writer(writer("c", 1, &index)).expect("synced");
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            shard.open_writer(leased).expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.close_writer(c);
+            drop(blocks);
+            test.clock.sleep(Span::from_nanos(400_000)).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "only the open recorded a handoff to b");
+        });
+    }
+
+    /// The handoff that an end of a lease on another index keeps waiting is recorded at
+    /// the next frame of its index.
+    #[test]
+    fn records_the_kept_handoff_at_the_next_frame_of_its_index() {
+        run(243, |test| async move {
+            let index = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[],
+            }]);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let c = shard.open_writer(writer("c", 1, &index)).expect("synced");
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            let b = shard.open_writer(leased).expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.close_writer(c);
+            drop(blocks);
+            test.clock.sleep(Span::from_nanos(400_000)).await;
+            shard.advance();
+            let write = frame(&test.pool, &set, &[(2, &[10])]);
+            assert_eq!(shard.write(b, LIVE, write), Ok(&[applied(2, 0, 1)][..]));
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(
+                handoffs.len(),
+                2,
+                "the frame on slot 2 records the kept one"
+            );
+        });
+    }
+
+    /// A handoff at the end of a lease that finds no room is recorded at the next frame
+    /// of its index.
+    #[test]
+    fn keeps_the_handoff_of_a_lease_end_with_no_room_for_the_next_frame() {
+        run(242, |test| async move {
+            let (mut shard, _, set) = test.leased().await;
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            test.clock.sleep(WAIT).await;
+            let blocks = test.fill();
+            shard.advance();
+            drop(blocks);
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
+            assert_eq!(shard.write(b, LIVE, write), Ok(&[applied(0, 0, 1)][..]));
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 1, "the frame on slot 0 records its handoff");
+        });
+    }
+
+    /// `advance` drops each restored holder whose grace ended, so it leaves no
+    /// deadline that came due.
+    #[test]
+    fn advances_past_the_end_of_the_grace_before_the_node_has_mesh_time() {
+        let (mut sim, node) = cut_after(237, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.unsynced().await;
+            shard.carry(Slot::new(0));
+            shard.carry(Slot::new(2));
+            test.clock.sleep(GRACE).await;
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn advances_past_the_end_of_each_grace_with_no_open_writer() {
+        let (mut sim, node) = cut_after(237, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            test.clock.sleep(GRACE).await;
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_a_lease_in_index_order() {
+        run(234, |test| async move {
+            let (mut shard, _, set) = test.leased().await;
+            let leased = Writer {
+                lease: Some(LEASE),
+                ..writer("subject-b", 1, &set)
+            };
+            shard.open_writer(leased).expect("synced");
+            test.clock.sleep(WAIT).await;
+            let now = test.reader.now().monotonic;
+            assert!(shard.deadline().is_some_and(|due| due <= now));
+            let marked = test.now();
+            shard.advance();
+            assert!(shard.deadline() > Some(now), "b's lease ends later");
+            shard.committed().await.expect("the commit ends");
+            let ring = test.ring().await;
+            assert_eq!(find(&ring, &handoff_to("subject-b")).len(), 2);
+            let zero = key(Slot::new(0)).as_u128();
+            let two = key(Slot::new(2)).as_u128();
+            assert_eq!(
+                headers(&ring, marked),
+                [(zero, 0, 0, 0, 1), (two, 0, 0, 0, 1)]
+            );
+        });
+    }
+
+    #[test]
+    fn records_the_handoff_to_a_waiting_writer_at_the_end_of_the_grace() {
+        let (mut sim, node) = cut_after(236, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-b"));
+            assert_eq!(handoffs.len(), 2, "b takes both indexes");
+        })
+        .expect("the run after the cut ends");
+    }
+
+    /// With no record of the end of the lease, the open after the cut restores `a`
+    /// and reserves control for it.
+    #[test]
+    fn records_no_holder_at_the_end_of_a_lease_before_a_power_cut() {
+        let (mut sim, node) = create_node(235);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let (mut shard, a, set) = test.leased().await;
+            let write = frame(&test.pool, &set, &[(0, &[10]), (1, &[1]), (2, &[10])]);
+            assert_eq!(
+                shard.write(a, LIVE, write),
+                Ok(&[applied(0, 0, 1), applied(2, 0, 1)][..])
+            );
+            test.clock.sleep(LEASE).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the first run ends");
+        sim.crash(&node, sim::Crash::Power);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            assert_eq!(shard.deadline(), None, "no holder is restored");
+            let b = shard
+                .open_writer(writer("subject-b", 1, &set))
+                .expect("synced");
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
             assert_eq!(
                 shard.write(b, LIVE, next),
@@ -4865,6 +5286,23 @@ mod tests {
             assert_eq!(polled(&mut commit), Poll::Pending);
             assert_eq!(find(&test.ring().await, &handoff).len(), 0);
             commit.await.expect("the commit ends");
+            assert_eq!(find(&test.ring().await, &handoff).len(), 2);
+        });
+    }
+
+    #[test]
+    fn resolves_a_next_commit_once_a_later_handoff_is_on_disk() {
+        run(2323, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let mut next = shard.next_commit();
+            test.clock.sleep(SYNC).await;
+            assert_eq!(polled(&mut next), Poll::Pending);
+            shard
+                .open_writer(writer("subject-a", 1, &set))
+                .expect("synced");
+            next.await.expect("the commit ends");
+            let handoff = handoff_to("subject-a");
             assert_eq!(find(&test.ring().await, &handoff).len(), 2);
         });
     }

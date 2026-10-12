@@ -7,7 +7,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client_config_default.h>
-#include <open62541/server_config_default.h>
+#include <open62541/client_highlevel_async.h>
 #include <open62541/plugin/eventloop.h>
 #include <open62541/types.h>
 #include <open62541/util.h>
@@ -21,7 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The reason of `encryptUserIdentityTokenEcc` in `CLOCK_CALLS` of `cargo xtask
+/* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
  * open62541` needs encryption off. */
 #ifdef UA_ENABLE_ENCRYPTION
 #error "connector-opcua builds open62541 with encryption off"
@@ -79,6 +79,35 @@ _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
+_Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
+               "UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME moved");
+_Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0,
+               "UA_SECURECHANNELSTATE_CLOSED moved");
+_Static_assert(sizeof(UA_SecureChannelState) == sizeof(int),
+               "UA_SecureChannelState changed");
+_Static_assert(UA_TIMERPOLICY_ONCE == 0 && UA_TIMERPOLICY_CURRENTTIME == 1 &&
+                   UA_TIMERPOLICY_BASETIME == 2,
+               "UA_TimerPolicy moved");
+_Static_assert(sizeof(UA_TimerPolicy) == sizeof(int), "UA_TimerPolicy changed");
+_Static_assert(UA_EVENTLOOPSTATE_FRESH == 0 && UA_EVENTLOOPSTATE_STARTED == 2,
+               "UA_EventLoopState moved");
+_Static_assert(sizeof(UA_EventLoopState) == sizeof(int), "UA_EventLoopState changed");
+_Static_assert(UA_CONNECTIONSTATE_OPENING == 1 && UA_CONNECTIONSTATE_ESTABLISHED == 2 &&
+                   UA_CONNECTIONSTATE_CLOSING == 3,
+               "UA_ConnectionState moved");
+_Static_assert(sizeof(UA_ConnectionState) == sizeof(int), "UA_ConnectionState changed");
+_Static_assert(UA_LIFECYCLESTATE_STOPPED == 0 && UA_LIFECYCLESTATE_STOPPING == 2,
+               "UA_LifecycleState moved");
+_Static_assert(sizeof(UA_LifecycleState) == sizeof(int), "UA_LifecycleState changed");
+_Static_assert(UA_NODEIDTYPE_NUMERIC == 0, "UA_NODEIDTYPE_NUMERIC moved");
+_Static_assert(sizeof(enum UA_NodeIdType) == sizeof(int), "UA_NodeIdType changed");
+_Static_assert(sizeof(UA_SessionState) == sizeof(int), "UA_SessionState changed");
+_Static_assert(UA_SESSIONSTATE_CREATE_REQUESTED == 1,
+               "UA_SESSIONSTATE_CREATE_REQUESTED moved");
+_Static_assert(UA_SESSIONSTATE_ACTIVATED == 4, "UA_SESSIONSTATE_ACTIVATED moved");
+_Static_assert(sizeof(UA_EventSourceType) == sizeof(int), "UA_EventSourceType changed");
+_Static_assert(sizeof(UA_EventSourceState) == sizeof(int),
+               "UA_EventSourceState changed");
 
 /* `src/ffi.rs` mirrors the struct, in words of the size of a pointer, and asserts the
  * same offsets. */
@@ -361,9 +390,16 @@ UA_EventLoop *shim_loop_new(shim_now now, void *clock) {
     return el;
 }
 
+/* Whether a delayed callback of `el`, a loop of `shim_loop_new`, waits for the next
+ * run. */
+UA_Boolean shim_loop_delayed(UA_EventLoop *el) { return loop_of(el)->queued != NULL; }
+
 /* The most passes of delayed callbacks that a free runs. A callback that queues
  * itself at each pass is a defect. */
 #define FREE_PASSES 64
+
+/* `FREE_PASSES`, for the close of a server in `src/server.rs`. */
+const int shim_free_passes = FREE_PASSES;
 
 /* Runs the queued delayed callbacks, which free what they hold, and those that they
  * queue, removes each timer, and frees `el`, a loop of `shim_loop_new`. Aborts when
@@ -589,29 +625,18 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
     return UA_Client_newWithConfig(&config);
 }
 
-/* Gives a server on `el` with the minimal config for `port` and the one server URL
- * `url`, or NULL on a failure. */
-UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *url) {
-    UA_ServerConfig config;
-    memset(&config, 0, sizeof(config));
-    config.logging = &loop_of(el)->logger;
-    config.eventLoop = el;
-    config.externalEventLoop = true;
-    if(UA_ServerConfig_setMinimal(&config, port, NULL) != UA_STATUSCODE_GOOD) {
-        UA_ServerConfig_clear(&config);
-        return NULL;
-    }
-    UA_Array_delete(config.serverUrls, config.serverUrlsSize, &UA_TYPES[UA_TYPES_STRING]);
-    config.serverUrlsSize = 0;
-    UA_String text = UA_STRING((char *)(uintptr_t)url);
-    if(UA_Array_copy(&text, 1, (void **)&config.serverUrls, &UA_TYPES[UA_TYPES_STRING]) !=
-       UA_STATUSCODE_GOOD) {
-        config.serverUrls = NULL;
-        UA_ServerConfig_clear(&config);
-        return NULL;
-    }
-    config.serverUrlsSize = 1;
-    return UA_Server_newWithConfig(&config);
+/* Gives the timeout of the requests of `client`, in ms. */
+UA_UInt32 shim_client_timeout(UA_Client *client) {
+    return UA_Client_getConfig(client)->timeout;
+}
+
+/* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
+ * `client`. The loop must hold no other client or server. A later run of the loop
+ * fails. The delete sends no CloseSession, so an active session stays on the server
+ * until it times out. */
+void shim_client_free(UA_Client *client) {
+    set_state(UA_Client_getConfig(client)->eventLoop, UA_EVENTLOOPSTATE_STOPPED);
+    UA_Client_delete(client);
 }
 
 /* Sets `key` of `map` to an array of the `size` strings at `strings`, at most 4. */
@@ -634,11 +659,44 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Gives discovery URL `index` of `server`, or NULL past the last. */
-const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
-    const UA_ApplicationDescription *description =
-        &UA_Server_getConfig(server)->applicationDescription;
-    if(index >= description->discoveryUrlsSize)
-        return NULL;
-    return &description->discoveryUrls[index];
+/* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
+ * with `data` and the answer. Writes the id of the request to `request` when it is not
+ * NULL. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
+                               UA_ClientAsyncReadValueAttributeCallback callback,
+                               void *data, UA_UInt32 *request) {
+    return UA_Client_readValueAttribute_async(
+        client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+}
+
+/* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
+ * value. A read callback gets `Good` whatever the answer holds. */
+UA_StatusCode shim_value_status(const void *value) {
+    const UA_DataValue *answer = (const UA_DataValue *)value;
+    if(answer->hasStatus && answer->status != UA_STATUSCODE_GOOD)
+        return answer->status;
+    return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
+}
+
+/* Writes the scalar Double of `value`, an answer of a read, to `out`, or gives the
+ * status of `shim_value_status`, or `BadTypeMismatch` for another value. */
+UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    const UA_Variant *variant = &((const UA_DataValue *)value)->value;
+    if(!UA_Variant_hasScalarType(variant, &UA_TYPES[UA_TYPES_DOUBLE]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    *out = *(const UA_Double *)variant->data;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Gives whether `client` has the URI of namespace 1 from its server, which it reads
+ * after its session activates. */
+UA_Boolean shim_client_namespaced(UA_Client *client) {
+    UA_String uri = UA_STRING_NULL;
+    UA_StatusCode status = UA_Client_getNamespaceUri(client, 1, &uri);
+    UA_Boolean namespaced = status == UA_STATUSCODE_GOOD && uri.length > 0;
+    UA_String_clear(&uri);
+    return namespaced;
 }

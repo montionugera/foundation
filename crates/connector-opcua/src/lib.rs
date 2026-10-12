@@ -7,7 +7,13 @@ mod alloc;
 #[doc(hidden)]
 pub mod bench;
 #[cfg(feature = "open62541")]
-#[cfg_attr(not(test), expect(dead_code, reason = "the client of #435 uses it"))]
+#[cfg_attr(
+    not(any(test, feature = "sim")),
+    expect(dead_code, reason = "only `bench` uses it until the kind of #435")
+)]
+mod client;
+#[cfg(feature = "open62541")]
+#[cfg_attr(not(test), expect(dead_code, reason = "the kind of #435 uses it"))]
 mod connection;
 #[cfg(feature = "open62541")]
 #[cfg_attr(
@@ -30,9 +36,15 @@ pub mod fuzz;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod link;
+#[cfg(feature = "open62541")]
+#[cfg(any(test, feature = "sim"))]
+mod server;
 
 #[cfg(test)]
 mod child;
+#[cfg(test)]
+#[cfg(feature = "open62541")]
+mod peer;
 
 // `build.rs` calls it, and a build script has no test harness.
 #[cfg(test)]
@@ -263,6 +275,13 @@ mod tests {
         assert_eq!(configure(&[(SANITIZE, "address")]), Ok(true));
         assert_eq!(configure(&[FUZZING]), Ok(false));
         assert_eq!(configure(&[(SANITIZE, "thread")]), Err(refusal("thread")));
+        let server = |vars| {
+            let builds = compiler::configure(Path::new("/copy"), "", "a.c", env(vars));
+            let shim = builds.unwrap().shim;
+            shim.get_files().any(|file| file.ends_with("src/server.c"))
+        };
+        assert!(!server(&[FUZZING]));
+        assert!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]));
     }
 
     /// `configure` checks the compiler that `sanitize` picks, so a sanitizer moves a

@@ -1,7 +1,6 @@
 //! The review check: the review of a PR is done at its head. The round comment format
 //! it parses is in `.claude/skills/review/SKILL.md`, "Round comment".
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
@@ -15,8 +14,10 @@ use crate::field;
 
 mod history;
 
-/// The first change of code in a range `<from>..<end>`, as a phrase, or `None`.
-type CodeChange<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
+use history::Place;
+
+/// The first change of one kind in a range `<from>..<end>`, as a phrase, or `None`.
+type Change<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
 
 /// The account that posts each round comment and each director verdict. Comments by
 /// other accounts never count.
@@ -75,10 +76,22 @@ impl Cause {
 /// The names of the lines that end each round comment, in order.
 const END: [&str; 3] = ["Deferred", "Public surface", "Hot path"];
 
+/// The name of the line that lists the text fixes of a round.
+const FIXES: &str = "Text fixes";
+
 /// A round comment posted before this UTC time keeps the check from before the end
 /// lines: it needs no end lines, and an earlier free-form one passes. It still needs
 /// `performance` when a `Hot path:` line names a function.
 const CUTOFF: &str = "2026-10-08T03:00:00Z";
+
+/// A round comment posted before this UTC time needs no name line, rating, or summary
+/// line before its round heading, so that the rule does not fail the rounds that came
+/// before it.
+const RATING_CUTOFF: &str = "2026-10-11T16:00:00Z";
+
+/// A later round posted before this UTC time needs no `architecture` for a range that
+/// changes a decision, so that the rule does not fail the rounds that came before it.
+const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 
 /// The record of a PR that the check reads.
 #[derive(Debug)]
@@ -101,6 +114,10 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one fact of the comment, and none excludes another"
+)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -110,17 +127,23 @@ struct Round {
     from: String,
     end: String,
     findings: u32,
+    /// The comment has a line `Text fixes:` that is not `Text fixes: none`, so commits
+    /// that apply its items may follow the round.
+    fixed: bool,
     /// The `Hot path:` end line names a function, so the round requires
     /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
     hot: bool,
+    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
+    /// name `architecture` when its range changes a decision.
+    decision_bound: bool,
 }
 
 /// A round comment that does not parse.
 #[derive(Debug)]
 struct Malformed {
-    /// Its problem counts also in an old round that is not the last: it has a
-    /// `Reviewers:`, `Range:`, or `Findings:` line, so it is not free-form, or the
-    /// check cannot read it ([`Shown::hiding`]).
+    /// Its problem counts also when the round is not the last: the round is not old,
+    /// or it has a `Reviewers:`, `Range:`, or `Findings:` line, so it is not
+    /// free-form, or the check cannot read it ([`Shown::hiding`]).
     binding: bool,
     problem: String,
 }
@@ -135,25 +158,34 @@ struct Parsed {
     performance: Option<String>,
 }
 
-/// Checks that the review of PR `pr` is done at commit `head`: its last round
-/// comment ends at `head` or reaches it through clean merges of the base, finds
-/// nothing, and names each required reviewer, and, for a red-team PR, the director
-/// approved `head`. Reads the PR with `gh` and the history of the repository at
-/// `root` with `git`, and prints each problem.
+/// Checks that the review of PR `pr` is done at commit `head`: its last round comment
+/// ends at `head` or at a commit on its first-parent chain after which each merge is
+/// a clean merge of the base and the range to `head` changes no code, finds nothing,
+/// and names each required reviewer, and, for a red-team PR, the director approved
+/// `head`. Reads the PR with `gh` and the history of the repository at `root` with
+/// `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
 pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
-    let found = fetch(pr).and_then(|record| {
-        let history = history::History::new(root, &record.base);
-        problems(
-            &record,
-            head,
-            &|end| history.reaches(end, head),
-            &|from, end| history.code_change(from, end),
-        )
-    });
-    exit(found)
+    exit(fetch(pr).and_then(|record| problems_in(root, &record, head)))
+}
+
+/// The problems with the review in `record` at `head` ([`problems`]), read with the
+/// history of the repository at `root`.
+fn problems_in(
+    root: &Path,
+    record: &Record,
+    head: &str,
+) -> Result<Vec<String>, String> {
+    let history = history::History::new(root, &record.base);
+    problems(
+        record,
+        head,
+        &|end| history.place(end, head),
+        &|from, end| history.code_change(from, end),
+        &|from, end| history.decision_change(from, end),
+    )
 }
 
 /// Prints each problem or the failure in `found`, and gives the exit code of `run`.
@@ -174,27 +206,31 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 }
 
 /// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must find nothing and end at `head`.
-/// `reaches` reports whether a commit (a SHA or its prefix) reaches `head` through
-/// clean merges of the base. A later round may skip `breaker` when the range of the
-/// last round changes no code; an earlier round's skip is taken as written.
-/// `code_change` gives the first code change in a range, with a merge of the base read
-/// by its resolution, as a phrase, or `None` (`History::code_change`).
+/// reviewers it requires, and the last round must find nothing and end at `head`, or
+/// at a commit on its first-parent chain after which each merge is a clean merge of
+/// the base and the range to `head` changes no code, with a `Text fixes:` line when a
+/// commit that is not a merge follows it. `place` gives where a commit (a SHA or its
+/// prefix) is from `head` (`History::place`). A later round may skip `breaker` when
+/// the range of the last round changes no code; an earlier round's skip is taken as
+/// written. `code_change` gives the first code change in a range, with a merge of the
+/// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
+/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
+/// `decision_change` gives a phrase for its range (`History::decision_change`). For
+/// that rule, a round comment after the first is a later round, whatever its number,
+/// and so is a first round comment whose number is above 1.
 fn problems(
     record: &Record,
     head: &str,
-    reaches: &dyn Fn(&str) -> Result<bool, String>,
-    code_change: CodeChange<'_>,
+    place: &dyn Fn(&str) -> Result<Place, String>,
+    code_change: Change<'_>,
+    decision_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let rounds: Vec<_> = record
         .comments
         .iter()
         .filter(|c| c.author == BOT)
-        .filter_map(|c| {
-            let old = c.created.as_str() < CUTOFF;
-            round(&c.body, old).map(|round| (old, round))
-        })
+        .filter_map(round)
         .collect();
     if rounds.is_empty() {
         problems.push(format!(
@@ -202,26 +238,30 @@ fn problems(
              {FORMAT}"
         ));
     }
-    for (i, (old, parsed)) in rounds.iter().enumerate() {
+    for (i, parsed) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
-                problems.extend(unnamed(round, &record.files, last, code_change)?);
+                let later = i > 0 || round.number > 1;
+                problems.extend(unnamed(
+                    round,
+                    &record.files,
+                    last,
+                    code_change,
+                    (later && round.decision_bound).then_some(decision_change),
+                )?);
             }
             Err(e) => {
-                if !*old || last || e.binding {
+                if last || e.binding {
                     problems.push(e.problem.clone());
                 }
             }
         }
         problems.extend(parsed.performance.clone());
     }
-    if let Some((
-        _,
-        Parsed {
-            round: Ok(round), ..
-        },
-    )) = rounds.last()
+    if let Some(Parsed {
+        round: Ok(round), ..
+    }) = rounds.last()
     {
         if round.findings > 0 {
             problems.push(format!(
@@ -230,14 +270,7 @@ fn problems(
                 round.number, round.findings
             ));
         }
-        if !reaches(&round.end)? {
-            problems.push(format!(
-                "review round {} ends at {}, not at the head {head}. A commit after \
-                 the round needs a new round; only a clean merge of the base does \
-                 not.",
-                round.number, round.end
-            ));
-        }
+        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -247,15 +280,50 @@ fn problems(
     Ok(problems)
 }
 
+/// The problem with the end of the last round, `round`, at `head`, where `place` is
+/// where its end is from `head`, or `None`.
+fn unended(
+    round: &Round,
+    head: &str,
+    place: Place,
+    code_change: Change<'_>,
+) -> Result<Option<String>, String> {
+    let (number, end) = (round.number, &round.end);
+    if place == Place::Off {
+        return Ok(Some(format!(
+            "review round {number} ends at {end}, not at the head {head}. A commit \
+             after the round needs a new round; only a clean merge of the base, or a \
+             commit that changes no code after a round with a `Text fixes:` line, \
+             does not."
+        )));
+    }
+    if let Some(change) = code_change(end, head)? {
+        return Ok(Some(format!(
+            "review round {number} ends at `{end}`, and the range from it to the head \
+             `{head}` {change}. A commit that changes code needs a new round."
+        )));
+    }
+    Ok((place == Place::Before && !round.fixed).then(|| {
+        format!(
+            "review round {number} ends at `{end}`, not at the head `{head}`, and has \
+             no `Text fixes:` line."
+        )
+    }))
+}
+
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must reach the head.
+/// round from the clone, but the last round's end must be on the head's chain. A
+/// round with a `decision_change` requires `architecture` too when that gives a phrase
+/// for its range. When `required` does not already ask for `architecture`, its problem
+/// gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     last: bool,
-    code_change: CodeChange<'_>,
+    code_change: Change<'_>,
+    decision_change: Option<Change<'_>>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let mut missing: Vec<&str> = required(round, files)
@@ -278,6 +346,19 @@ fn unnamed(
             missing.join(", ")
         ));
     }
+    if !round.reviewers.contains("architecture")
+        && !missing.contains(&"architecture")
+        && let Some(decision_change) = decision_change
+        && let Some(change) = decision_change(&round.from, &round.end)?
+    {
+        problems.push(format!(
+            "review round {} names no architecture, which this round requires. Run \
+             `architecture` on its range, or on the whole PR when the clone cannot \
+             read the range, then edit the round comment: add `architecture` to \
+             `Reviewers:` and add its findings. Its range {change}.",
+            round.number
+        ));
+    }
     Ok(problems)
 }
 
@@ -286,18 +367,31 @@ fn unnamed(
 /// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
 /// `breaker` for a code PR; and `performance` when the round names a hot path.
 fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
-    let code = files.iter().any(|f| history::code_path(f));
-    let mut required = if code && round.number <= 1 {
-        vec!["reviewer", "architecture", "breaker"]
-    } else if code {
-        vec!["reviewer", "breaker"]
-    } else {
-        vec!["reviewer"]
-    };
+    let code = files.iter().any(|f| tiered(f));
+    let mut required = vec!["reviewer"];
+    if code && round.number <= 1 {
+        required.push("architecture");
+    }
+    if code {
+        required.push("breaker");
+    }
     if round.hot {
         required.push("performance");
     }
     required
+}
+
+/// Whether a change to `path` makes a code PR by REVIEW TIERS: a `.rs` file, a
+/// `Cargo.toml`, or a `Cargo.lock`.
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "git paths match case"
+)]
+fn tiered(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .is_some_and(|n| n == "Cargo.toml" || n == "Cargo.lock")
+        || path.ends_with(".rs")
 }
 
 /// A problem when no director verdict by the bot has the line
@@ -329,6 +423,13 @@ fn performer(text: &[Vec<String>]) -> bool {
         .any(|r| listed(r).contains("performance"))
 }
 
+/// Whether a top-level paragraph of `shown` after its round heading, other than its end
+/// lines, has a line `Text fixes:` with a value ([`stated`]).
+fn fixed(shown: &Shown<'_>) -> bool {
+    let blocks = shown.before_end().iter();
+    states(blocks.map(|block| shown.paragraph(Some(block))), FIXES)
+}
+
 /// The reviewers that the value of a `Reviewers:` line lists.
 fn listed(reviewers: &str) -> BTreeSet<String> {
     reviewers
@@ -337,27 +438,33 @@ fn listed(reviewers: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Parses `body` as a round comment. `None` when it has no round heading
+/// Parses `comment` as a round comment. `None` when it has no round heading
 /// ([`Shown::number`]). The fields are the first block after the heading, so the
 /// findings text cannot set them. The last block is the end lines ([`END`]), unless the
-/// comment is `old`, posted before [`CUTOFF`].
-fn round(body: &str, old: bool) -> Option<Parsed> {
-    let body = normalized(body);
+/// comment is old, posted before [`CUTOFF`]. A comment posted at or after
+/// [`RATING_CUTOFF`] starts with its name line, its rating, and its summary line
+/// ([`lack`]).
+fn round(comment: &Comment) -> Option<Parsed> {
+    let old = comment.created.as_str() < CUTOFF;
+    let rated = comment.created.as_str() >= RATING_CUTOFF;
+    let body = normalized(&comment.body);
     let shown = Shown::read(&body, old);
     // An old round is taken as written, except where the check cannot read it.
     let hiding = shown
         .hiding
         .iter()
         .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
-    let number = shown.number.as_deref()?;
+    let number = &quoted(shown.number.as_deref()?);
     let text = &shown.text;
-    let lines = shown.fields().iter().map(String::as_str);
+    let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
+    let lines = fields.iter().map(String::as_str);
     let field = |name| lines.clone().find_map(|l: &str| l.strip_prefix(name));
     let (reviewers, range) = (field("Reviewers: "), field("Range: "));
     let findings = field("Findings: ");
     let breakerless = lines.clone().any(|l| l.starts_with("Breaker: skipped"));
-    let binding =
-        [reviewers, range, findings].iter().any(Option::is_some) || hiding.is_some();
+    let binding = !old
+        || [reviewers, range, findings].iter().any(Option::is_some)
+        || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
         let performer =
             reviewers.map_or_else(|| performer(text), |r| r.contains("performance"));
@@ -381,22 +488,19 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
         if let Some(&(line, cause)) = hiding {
             return Err(cause.problem(number, line));
         }
+        if let Some(lack) = lack(&shown.start).filter(|_| rated) {
+            return Err(format!(
+                "review round {number} {lack}. Write the round {FORMAT}"
+            ));
+        }
         let range = range.ok_or_else(|| missing("Range"))?.trim_matches('`');
         let (from, end) = range.split_once("..").ok_or_else(|| {
             format!(
                 "review round {number} has the range `{range}`, not `<from>..<head>`"
             )
         })?;
-        let findings = match findings.ok_or_else(|| missing("Findings"))? {
-            "none" => 0,
-            count => count.parse().map_err(|e| {
-                format!(
-                    "review round {number} has `Findings: {count}`, not a count or \
-                     `none`: {e}"
-                )
-            })?,
-        };
-        let hot = !old && hot(shown.end(), number)?;
+        let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
+        let hot = shown.end().map_or(Ok(false), |end| hot(end, number))?;
         Ok(Round {
             number,
             reviewers: listed(reviewers.ok_or_else(|| missing("Reviewers"))?),
@@ -404,12 +508,27 @@ fn round(body: &str, old: bool) -> Option<Parsed> {
             from: from.to_string(),
             end: end.to_string(),
             findings,
+            fixed: fixed(&shown),
             hot,
+            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
     let performance = performance(round.as_ref().ok().map(|r| &r.reviewers));
     Some(Parsed { round, performance })
+}
+
+/// The count of the `Findings:` value `findings` of round `number`: `none` is 0.
+fn count(number: u32, findings: &str) -> Result<u32, String> {
+    if findings == "none" {
+        return Ok(0);
+    }
+    findings.parse().map_err(|e| {
+        format!(
+            "review round {number} has `Findings: {findings}`, not a count or `none`: \
+             {e}"
+        )
+    })
 }
 
 /// The lines of `text`, each ended by `\n`, `\r\n`, or a lone `\r`, as on GitHub.
@@ -418,10 +537,60 @@ fn lines(text: &str) -> impl Iterator<Item = &str> + Clone {
         .flat_map(|l| l.strip_suffix('\r').unwrap_or(l).split('\r'))
 }
 
-/// Whether the end lines `paragraph` of round `number` name a hot path ([`function`]).
-/// The paragraph must be the [`END`] lines in order and nothing else.
+/// What `start`, the start of a comment, lacks, as the words of a problem, or `None`.
+/// Its first three lines are the name line (a bold session name, ` · `, and a role),
+/// `Quality: <n>/10` with `n` from 1 to 10, and a summary line. A name, a role, or a
+/// summary line that is [`blank`] is not one.
+fn lack(start: &Start) -> Option<&'static str> {
+    let mut lines = start.lines.iter().map(String::as_str);
+    let role = start
+        .session
+        .as_deref()
+        .zip(lines.next())
+        .and_then(|(s, line)| {
+            line.strip_prefix(s)
+                .filter(|_| !blank(s))?
+                .strip_prefix(" · ")
+        });
+    if role.is_none_or(blank) {
+        return Some("does not start with a name line `**<session>** · <role>`");
+    }
+    let rating = lines
+        .next()
+        .and_then(|line| line.strip_prefix("Quality: ")?.strip_suffix("/10"));
+    if !rating.is_some_and(|n| (1..=10).any(|rating| rating.to_string() == n)) {
+        return Some(
+            "has no line `Quality: <n>/10` with a rating from 1 to 10 after its \
+             name line",
+        );
+    }
+    if lines.next().is_none_or(blank) {
+        return Some("has no summary line after its `Quality:` line");
+    }
+    None
+}
+
+/// The character that stands for an image in a line of [`texts`]. No text of a line
+/// holds it, since it is [`ignorable`].
+const IMAGE: char = '\u{FFF8}';
+
+/// Whether `line`, a line of [`texts`], shows no text: it is empty, or holds only
+/// images and the spaces between them.
+fn blank(line: &str) -> bool {
+    line.chars().all(|c| c == IMAGE || c == ' ')
+}
+
+/// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
+/// `![]`, since [`IMAGE`] shows as nothing.
+fn quoted(line: &str) -> String {
+    line.replace(IMAGE, "![]")
+}
+
+/// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
+/// line has a value ([`stated`]). The paragraph must be the [`END`] lines in order and
+/// nothing else.
 fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
-    let (values, read) = entries(paragraph);
+    let (values, read) = entries(paragraph, &END);
     let [deferred, surface, hot] = END;
     for (i, name) in END.into_iter().enumerate() {
         let found = values.get(i).map(|(found, _)| *found);
@@ -438,26 +607,32 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
             "review round {number} has a second `{name}:` line in its end lines."
         ));
     }
-    Ok(function(&values[2].1))
+    Ok(stated(&values[2].1))
 }
 
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
-/// `text` ([`Shown::text`]) names a function ([`function`]).
+/// `text` ([`Shown::text`]) has a value ([`stated`]).
 fn named(text: &[Vec<String>]) -> bool {
-    let start = format!("{}:", END[2]);
-    text.iter().any(|p| {
-        (0..p.len())
-            .any(|i| p[i].starts_with(&start) && function(&entries(&p[i..]).0[0].1))
+    states(text.iter().map(Vec::as_slice), END[2])
+}
+
+/// Whether a line of `paragraphs` starts with `name:` and has a value ([`stated`]).
+fn states<'p>(paragraphs: impl IntoIterator<Item = &'p [String]>, name: &str) -> bool {
+    paragraphs.into_iter().any(|p| {
+        (0..p.len()).any(|i| {
+            let (values, _) = entries(&p[i..], &[name]);
+            values.first().is_some_and(|(_, value)| stated(value))
+        })
     })
 }
 
-/// The [`END`] entries at the start of `lines`, each as its name and value, and the
+/// The entries of `names` at the start of `lines`, each as its name and value, and the
 /// number of lines they take. An entry starts at the start of a line with its name,
 /// and may wrap onto the lines after it.
-fn entries(lines: &[String]) -> (Vec<(&'static str, String)>, usize) {
+fn entries<'n>(lines: &[String], names: &[&'n str]) -> (Vec<(&'n str, String)>, usize) {
     let mut values: Vec<(&str, String)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let name = END
+        let name = names
             .iter()
             .find(|name| line.starts_with(&format!("{name}:")));
         match (name, values.last_mut()) {
@@ -485,8 +660,30 @@ fn options() -> Options<'static> {
     options
 }
 
-/// A comment read as GitHub reads Markdown: its text from its round heading on, and the
-/// lines that can hide text or that the check cannot read.
+/// The start of a comment: the top-level paragraphs with which it starts.
+#[derive(Debug, Default)]
+struct Start {
+    /// The text of the bold span that starts the comment, when its first block is a
+    /// paragraph that starts with one.
+    session: Option<String>,
+    /// The lines of the paragraphs, as GitHub shows them ([`texts`]). A paragraph that
+    /// comrak places in the wrong lines ([`misplaced`]) gives no line.
+    lines: Vec<String>,
+}
+
+impl Start {
+    /// Adds the top-level paragraph `paragraph`, with the lines `lines`.
+    fn push<'n>(&mut self, paragraph: &'n AstNode<'n>, lines: &[String]) {
+        if paragraph.previous_sibling().is_none() {
+            self.session = session(paragraph);
+        }
+        self.lines.extend_from_slice(lines);
+    }
+}
+
+/// A comment read as GitHub reads Markdown: its start before its round heading, its
+/// text from the heading on, and the lines that can hide text or that the check cannot
+/// read.
 #[derive(Debug, Default)]
 struct Shown<'a> {
     /// The round number of the first top-level heading that has one ([`number`]). When
@@ -494,6 +691,8 @@ struct Shown<'a> {
     /// it, since GitHub starts HTML blocks at other lines than comrak, and can show a
     /// heading that comrak hides.
     number: Option<String>,
+    /// The top-level paragraphs before the first block that is not a paragraph.
+    start: Start,
     /// Each top-level block after the heading: the index in `text` of a paragraph, or
     /// `None` for any other block. The footnotes come last, as GitHub shows them.
     blocks: Vec<Option<usize>>,
@@ -504,12 +703,18 @@ struct Shown<'a> {
     /// Each line of the comment that can hide text on GitHub or that the check cannot
     /// read, with its cause, in order.
     hiding: Vec<(&'a str, Cause)>,
+    /// Whether the comment was posted before [`CUTOFF`], so the check reads no end
+    /// lines in it.
+    old: bool,
 }
 
 impl<'a> Shown<'a> {
     /// Reads `body` ([`normalized`]), posted before [`CUTOFF`] when `old`.
     fn read(body: &'a str, old: bool) -> Self {
-        let mut shown = Self::default();
+        let mut shown = Self {
+            old,
+            ..Self::default()
+        };
         let starts: Vec<usize> = std::iter::once(0)
             .chain(body.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
@@ -529,6 +734,9 @@ impl<'a> Shown<'a> {
             }
         }
         footnotes(root);
+        // Whether each top-level block so far is a paragraph. So it is false at a
+        // paragraph inside another block.
+        let mut unbroken = true;
         let mut hiding = Vec::new();
         for node in root.descendants() {
             let data = node.data.borrow();
@@ -539,6 +747,7 @@ impl<'a> Shown<'a> {
             if top && shown.number.is_some() {
                 shown.blocks.push(index);
             }
+            unbroken &= !top || index.is_some();
             match &data.value {
                 NodeValue::Heading(_) if top && shown.number.is_none() => {
                     shown.number = number(node);
@@ -549,12 +758,13 @@ impl<'a> Shown<'a> {
                     shown.text.push(Vec::new());
                 }
                 NodeValue::Paragraph => {
-                    let last = data.sourcepos.end.line;
-                    hiding.extend(
-                        bracket(node, last)
-                            .map(|line| (line_start(line), Cause::Bracket)),
-                    );
-                    shown.text.push(texts(node));
+                    let open = bracket(node, data.sourcepos.end.line);
+                    hiding.extend(open.map(|line| (line_start(line), Cause::Bracket)));
+                    let lines = texts(node);
+                    if unbroken {
+                        shown.start.push(node, &lines);
+                    }
+                    shown.text.push(lines);
                 }
                 NodeValue::HtmlBlock(_) | NodeValue::HtmlInline(_) => {
                     hiding.push((start, Cause::Raw));
@@ -582,10 +792,21 @@ impl<'a> Shown<'a> {
         self.paragraph(self.blocks.first())
     }
 
-    /// The end lines: the last block after the fields, or none when it is not a
-    /// paragraph or the fields are the only block.
-    fn end(&self) -> &[String] {
-        self.paragraph(self.blocks.get(1..).and_then(<[_]>::last))
+    /// The end lines: the last block after the fields, or no lines when it is not a
+    /// paragraph or the fields are the only block. `None` when the comment is old.
+    fn end(&self) -> Option<&[String]> {
+        (!self.old).then(|| self.paragraph(self.end_block().map(|i| &self.blocks[i])))
+    }
+
+    /// The blocks after the round heading other than that of the end lines.
+    fn before_end(&self) -> &[Option<usize>] {
+        &self.blocks[..self.end_block().unwrap_or(self.blocks.len())]
+    }
+
+    /// The index in [`Shown::blocks`] of the end lines: the last block after the
+    /// fields, or none when the comment is old or the fields are the only block.
+    fn end_block(&self) -> Option<usize> {
+        (!self.old && self.blocks.len() > 1).then(|| self.blocks.len() - 1)
     }
 
     /// The lines of `block`, one of [`Shown::blocks`], or none when it is not a
@@ -596,6 +817,14 @@ impl<'a> Shown<'a> {
             .flatten()
             .map_or(&[][..], |i| self.text[i].as_slice())
     }
+}
+
+/// The text of the bold span that starts `paragraph`, or `None` when it starts with
+/// none.
+fn session<'n>(paragraph: &'n AstNode<'n>) -> Option<String> {
+    let span = paragraph.first_child()?;
+    let bold = matches!(span.data.borrow().value, NodeValue::Strong);
+    bold.then(|| texts(span).join(" "))
 }
 
 /// The first line of `paragraph` before its last line `last` with a span of text that
@@ -655,16 +884,18 @@ fn same(a: &str, b: &str) -> bool {
         .any(|n| matches!(n.data.borrow().value, NodeValue::FootnoteReference(_)))
 }
 
-/// The lines of text of `paragraph` as GitHub shows them: its text and code spans,
-/// each footnote reference as its number, each image as U+FFFC in place of its text
-/// and line breaks, no invisible character (Unicode default ignorable), and each run of
-/// white space as one space, trimmed. A character that looks like another stays
+/// The lines of text of `paragraph` as GitHub shows them: its text and code spans with
+/// no invisible character (Unicode default ignorable), each footnote reference as its
+/// number, each image as [`IMAGE`] in place of its text and line breaks, and each run
+/// of white space as one space, trimmed. A character that looks like another stays
 /// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut fresh = true;
     let image =
         |node: &'n AstNode<'n>| matches!(node.data.borrow().value, NodeValue::Image(_));
+    let shown =
+        |text: &str| text.chars().filter(|&c| !ignorable(c)).collect::<String>();
     for span in paragraph.descendants().skip(1) {
         if span.ancestors().skip(1).any(image) {
             continue;
@@ -675,20 +906,18 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
                 fresh = true;
                 continue;
             }
-            NodeValue::Text(text) => Cow::Borrowed(text.as_ref()),
-            NodeValue::Code(code) => Cow::Borrowed(code.literal.as_str()),
-            NodeValue::Image(_) => Cow::Borrowed("\u{FFFC}"),
-            NodeValue::FootnoteReference(reference) => {
-                Cow::Owned(reference.ix.to_string())
-            }
-            _ => Cow::Borrowed(""),
+            NodeValue::Text(text) => shown(text),
+            NodeValue::Code(code) => shown(&code.literal),
+            NodeValue::Image(_) => IMAGE.to_string(),
+            NodeValue::FootnoteReference(reference) => reference.ix.to_string(),
+            _ => String::new(),
         };
         if fresh {
             lines.push(String::new());
             fresh = false;
         }
         if let Some(line) = lines.last_mut() {
-            line.extend(text.chars().filter(|&c| !ignorable(c)));
+            line.push_str(&text);
         }
     }
     lines
@@ -721,17 +950,17 @@ fn ignorable(c: char) -> bool {
     )
 }
 
-/// `text` with each line ended by `\n`, with no spaces or tabs at the end of a line,
-/// and with each tab in the spaces, tabs, and `>` at the start of a line, after its
-/// [`mark`], replaced by spaces to the next multiple of 4 columns. None of these
-/// changes what GitHub shows. A line number then gives the offset of its line, and
-/// comrak gives the right column after a tab that a quote or a list item takes in part.
+/// `text` with each line ended by `\n`, and with each tab in the spaces, tabs, and
+/// `>` at the start of a line, after its [`mark`], replaced by spaces to the next
+/// multiple of 4 columns. Neither changes what GitHub shows. A line number then gives
+/// the offset of its line, and comrak gives the right column after a tab that a quote
+/// or a list item takes in part. The spaces and tabs at the end of a line stay: a line
+/// of 1 to 3 spaces ends a footnote, and a backslash before a space is no line break.
 fn normalized(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     let (mark, text) = text.split_at(mark(text));
     normalized.push_str(mark);
     for line in lines(text) {
-        let line = line.trim_end_matches([' ', '\t']);
         let content = line.trim_start_matches([' ', '\t', '>']);
         let start = normalized.len();
         for c in line[..line.len() - content.len()].chars() {
@@ -893,9 +1122,9 @@ fn line_end(text: &str, start: usize) -> usize {
     text[start..].find('\n').map_or(text.len(), |i| start + i)
 }
 
-/// Whether the `Hot path:` value `value` names a function: its first word, with
-/// its backticks and one final `,`, `.`, or `;` removed, is not `none`.
-fn function(value: &str) -> bool {
+/// Whether `value` states something: its first word, with its backticks and one final
+/// `,`, `.`, or `;` removed, is not `none`.
+fn stated(value: &str) -> bool {
     let first = value.split_whitespace().next().unwrap_or_default();
     let first = first.replace('`', "");
     first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"

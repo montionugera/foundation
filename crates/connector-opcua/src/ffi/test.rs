@@ -14,8 +14,13 @@ pub(crate) struct Lifecycle(pub(crate) c_int);
 
 impl Lifecycle {
     pub(crate) const STOPPED: Self = Self(0);
+    pub(crate) const STARTED: Self = Self(1);
     pub(crate) const STOPPING: Self = Self(2);
 }
+
+/// `UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME`, the node of the current time of a
+/// server. `shim.c` asserts it.
+pub(crate) const TIME: u32 = 2258;
 
 /// The members of `UA_ConnectionManager`. `shim.c` asserts the same size and
 /// offsets.
@@ -75,6 +80,9 @@ const _: () = {
     );
 };
 
+/// `UA_NODEIDTYPE_NUMERIC`.
+pub(crate) const NUMERIC: c_int = 0;
+
 /// `UA_NodeId` with a numeric identifier.
 #[repr(C, align(8))]
 pub(crate) struct NodeId {
@@ -106,6 +114,7 @@ const _: () = {
 };
 
 unsafe extern "C" {
+    pub(crate) fn UA_UInt32_random() -> u32;
     pub(crate) fn UA_DateTime_now() -> i64;
     pub(crate) fn UA_DateTime_nowMonotonic() -> i64;
     pub(crate) fn UA_DateTime_localTimeUtcOffset() -> i64;
@@ -116,10 +125,6 @@ unsafe extern "C" {
     pub(crate) fn UA_ConnectionManager_new_POSIX_Ethernet(name: Bytes) -> *mut c_void;
     pub(crate) fn UA_InterruptManager_new_POSIX(name: Bytes) -> *mut c_void;
 
-    pub(crate) fn UA_Client_connectAsync(
-        client: *mut super::Client,
-        url: *const std::ffi::c_char,
-    ) -> u32;
     pub(crate) fn UA_Client_connectSecureChannelAsync(
         client: *mut super::Client,
         url: *const std::ffi::c_char,
@@ -157,17 +162,29 @@ unsafe extern "C" {
     ) -> *const c_void;
     pub(crate) fn UA_Client_disconnect(client: *mut super::Client) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut super::Client) -> u32;
+    pub(crate) fn UA_Client_disconnectSecureChannelAsync(
+        client: *mut super::Client,
+    ) -> u32;
 
     pub(crate) fn shim_server_new(
         el: *mut EventLoop,
         port: u16,
-        url: *const std::ffi::c_char,
+        host: *const std::ffi::c_char,
+        sessions: u16,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
+    pub(crate) fn shim_server_add_double(
+        server: *mut Server,
+        namespace: u16,
+        node: u32,
+        value: f64,
+    ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;
     pub(crate) fn shim_response_result(response: *const c_void) -> u32;
+    pub(crate) fn shim_value_status(value: *const c_void) -> u32;
+    pub(crate) fn shim_client_namespaced(client: *mut super::Client) -> bool;
     pub(crate) fn shim_server_discovery_url(
         server: *mut Server,
         index: usize,

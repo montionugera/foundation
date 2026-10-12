@@ -319,7 +319,7 @@ async fn newest(files: &Files, held: &Path) -> Result<Option<Pointer>, Error> {
     let mut named = Vec::new();
     for name in files.list(held).await.map_err(Error::Files)? {
         let path = held.join(&name);
-        let Some(pointer) = pointer(&name) else {
+        let Some(pointer) = name.to_str().and_then(pointer) else {
             return Err(Error::Stray { path });
         };
         named.push((pointer, path));
@@ -427,6 +427,11 @@ pub(super) async fn keep(
         let done = hold(gave, &files, &held, pointer).await;
         let Some(group) = group.upgrade() else { return };
         let mut group = group.borrow_mut();
+        // After a stop, `used` keeps the view at the stop, also when a taken spec's
+        // file is now durable.
+        if group.running().is_err() {
+            return;
+        }
         let moved = group.used.settle(pointer, done);
         group.wake_calls();
         if moved {
@@ -456,9 +461,9 @@ async fn read(
             got.push(chunk.to_vec());
         }
     }
-    let definitions = loop {
+    let (definitions, kept) = loop {
         let digest = match spec::region::definitions(&chunks, pointer.root) {
-            Ok(definitions) => break definitions,
+            Ok(read) => break read,
             Err(spec::region::Error::Tree(tree::Error::Missing(digest))) => digest,
             Err(error) => return Err(Cause::Read(error)),
         };
@@ -472,8 +477,6 @@ async fn read(
     if !problems.is_empty() {
         return Err(Cause::Problems(problems));
     }
-    let mut kept = Chunks::default();
-    spec::region::tree(&mut kept, &definitions);
     Ok((definitions, kept))
 }
 
@@ -509,8 +512,7 @@ async fn name(files: &Files, held: &Path, pointer: Pointer) -> Result<(), Cause>
 }
 
 // The pointer that the name of a file spells, `<version>-<root>`.
-fn pointer(name: &Path) -> Option<Pointer> {
-    let name = name.to_str()?;
+pub(crate) fn pointer(name: &str) -> Option<Pointer> {
     let (version, root) = name.split_once('-')?;
     let version = version.parse().ok()?;
     let mut bytes = [0; 32];
@@ -521,11 +523,11 @@ fn pointer(name: &Path) -> Option<Pointer> {
         version,
         root: Digest(bytes),
     };
-    (file(pointer) == Path::new(name)).then_some(pointer)
+    (file(pointer).as_os_str() == name).then_some(pointer)
 }
 
 // The name of the file that names `pointer`.
-fn file(pointer: Pointer) -> PathBuf {
+pub(crate) fn file(pointer: Pointer) -> PathBuf {
     PathBuf::from(format!("{}-{}", pointer.version, pointer.root))
 }
 
@@ -553,6 +555,15 @@ impl Mesh {
             Poll::Pending
         })
         .await
+    }
+
+    /// The spec that this node uses now. [`Mesh::spec`] waits for the read of a
+    /// committed pointer, and this call does not. A task that `spec` or a [`Watch`]
+    /// gave a spec finds that spec here, or a later one. It answers also after the
+    /// group stops, from the view at the stop.
+    #[must_use]
+    pub fn used(&self) -> Spec {
+        self.group.borrow().used.spec.clone()
     }
 
     /// A watch of the spec that this node uses.

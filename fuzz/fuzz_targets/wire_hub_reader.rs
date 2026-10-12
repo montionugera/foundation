@@ -112,7 +112,7 @@ fn kind(reply: Reply) -> u8 {
 }
 
 /// Whether `error` says only that the bytes of a message are no reply.
-fn malformed(error: Error) -> bool {
+fn malformed(error: &Error) -> bool {
     matches!(
         error,
         Error::Empty
@@ -132,33 +132,33 @@ fn refused(
     mode: Mode,
     end: u64,
     message: &[u8],
-    error: Error,
+    error: &Error,
 ) -> bool {
     let len = message.len();
     match next {
         Next::Opened => match reply(message) {
             Ok(Reply::Opened) => false,
-            Ok(reply) => error == Error::Unopened { kind: kind(reply) },
-            Err(other) => malformed(other) && error == other,
+            Ok(reply) => *error == Error::Unopened { kind: kind(reply) },
+            Err(other) => malformed(&other) && *error == other,
         },
         Next::Head => match reply(message) {
             Ok(Reply::Opened) => {
                 let kind = kind(Reply::Opened);
-                error == Error::Reopen { kind }
+                *error == Error::Reopen { kind }
             }
-            Ok(Reply::Head(head)) => refusal(head, places, end) == Some(error),
+            Ok(Reply::Head(head)) => refusal(head, places, end).as_ref() == Some(error),
             Ok(Reply::Behind) => {
                 let kind = kind(Reply::Behind);
-                mode == Mode::Latest && error == Error::Latest { kind }
+                mode == Mode::Latest && *error == Error::Latest { kind }
             }
-            Err(other) => malformed(other) && error == other,
+            Err(other) => malformed(&other) && *error == other,
         },
         Next::Ends(run) => run.refused(message, error),
-        Next::Body { .. } if len == 0 => error == Error::Empty,
+        Next::Body { .. } if len == 0 => *error == Error::Empty,
         Next::Body { remain, .. } => {
-            len > remain && error == Error::Body { len, remain }
+            len > remain && *error == Error::Body { len, remain }
         }
-        Next::Ended => error == Error::Ended,
+        Next::Ended => *error == Error::Ended,
     }
 }
 
@@ -235,7 +235,7 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
             }
             (next, Err(error)) => {
                 assert!(
-                    refused(next, places, mode, end, message, error),
+                    refused(next, places, mode, end, message, &error),
                     "{error:?} is not the refusal of {message:?} for {next:?}"
                 );
                 next

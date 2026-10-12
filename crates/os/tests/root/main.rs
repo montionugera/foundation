@@ -15,6 +15,8 @@ use env::files::{Error, Files, Mode};
 mod free;
 #[path = "../it/kept.rs"]
 mod kept;
+#[path = "../common/seccomp.rs"]
+mod seccomp;
 #[path = "../common/sockets.rs"]
 #[expect(dead_code, reason = "this binary only listens")]
 mod sockets;
@@ -110,9 +112,39 @@ fn a_disk_that_drops_while_the_test_panics_stays_mounted() {
     assert!(mounted, "{} is not mounted", mount.display());
 }
 
+/// The holder of a mount point is on another device, and its entry is the mount's.
+#[test]
+fn files_of_a_mount_point_syncs_only_the_mount() {
+    use std::sync::{Arc, Mutex};
+
+    let disk = Small::new();
+    let mount = std::fs::canonicalize(disk.mount()).unwrap();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("synced", move || async move {
+        let synced = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&synced);
+        seccomp::answer_calls(&[libc::SYS_fsync], move |data, _| {
+            let fd = format!("/proc/self/fd/{}", data.args[0]);
+            seen.lock().unwrap().push(std::fs::read_link(fd).unwrap());
+            None
+        });
+        let (files, thread) = os::files(&mount, &os::threads().unwrap(), "files")
+            .expect("the disk opens");
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(*synced.lock().unwrap(), [mount]);
+    });
+    assert_eq!(handle.unwrap().join(), Ok(()));
+}
+
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    run(|files, _| async move { free::check(&files).await });
+    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
 }
 
 #[test]

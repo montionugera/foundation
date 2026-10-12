@@ -52,7 +52,7 @@ impl kind::Kind for Reader {
 
     fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: writes.clone(),
             counts: Vec::new(),
         })
@@ -168,6 +168,7 @@ pub(crate) async fn open(
         files: node.files(),
         dir: "blob".into(),
         pool: Rc::clone(&pool),
+        floor_bytes: 0,
     })
     .await
     .expect("a store");

@@ -121,7 +121,7 @@ fn start_node(
         entropy: os::entropy(),
         net: os::net(),
         listen,
-        region: None,
+        region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
     })
 }

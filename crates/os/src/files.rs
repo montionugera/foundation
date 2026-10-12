@@ -242,9 +242,9 @@ impl Queue {
         Ok((Self(jobs), thread))
     }
 
-    /// Runs `call` after every call that reached the queue before it. The future
-    /// first waits for room in the queue; after that, `call` runs also when the
-    /// future drops. This order makes a write open, a remove, and a rename wait for
+    /// Runs `call` after every call that reached the queue before it. The future first
+    /// waits for room in the queue; after that, `call` runs also when the future drops.
+    /// This order makes a write open, a remove, a rename, a list, and a `free` wait for
     /// each call that a drop left to run, as `env::files` requires.
     ///
     /// # Panics
@@ -320,15 +320,20 @@ fn data(dir: &Path) -> io::Result<OwnedFd> {
 }
 
 /// Opens directory `path` of `at`, first makes it when it is not there, and syncs the
-/// directory that holds it.
+/// directory that holds it, unless `path` is on another device than its holder.
 fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
     match fs::mkdirat(&at, path, DIR) {
         Ok(()) | Err(Errno::EXIST) => {}
         Err(errno) => return Err(errno),
     }
     let made = fs::openat(&at, path, READ_DIR, fs::Mode::empty())?;
+    let holder = fs::openat(&made, "..", READ_DIR, fs::Mode::empty())?;
     // An entry made by this or an earlier call is not durable until its holder syncs.
-    sync_all(&fs::openat(&made, "..", READ_DIR, fs::Mode::empty())?)?;
+    // `mkdirat` makes no entry on another device: that is a mount point, the mount's
+    // to keep.
+    if fs::fstat(&holder)?.st_dev == fs::fstat(&made)?.st_dev {
+        sync_all(&holder)?;
+    }
     Ok(made)
 }
 
@@ -544,6 +549,20 @@ mod tests {
         let pipe = OwnedFd::from(pipe);
         assert_eq!(sync_data(&pipe), Err(PIPE));
         assert_eq!(sync_all(&pipe), Err(PIPE));
+    }
+
+    /// `/sys/fs/cgroup` is a mount point under sysfs, which cannot sync a directory.
+    /// Runs without root, on a holder that cannot sync (`EINVAL`), the case that the
+    /// root test of `os::files` does not reach.
+    #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore = "needs sysfs")]
+    fn make_of_a_mount_point_does_not_sync_its_holder() {
+        let point = Path::new("/sys/fs/cgroup");
+        let device = |path: &str| fs::stat(path).unwrap().st_dev;
+        assert_ne!(device("/sys/fs"), device("/sys/fs/cgroup"), "a mount point");
+        let holder = fs::open("/sys/fs", READ_DIR, fs::Mode::empty()).unwrap();
+        assert_eq!(sync_all(&holder), Err(Errno::INVAL));
+        make(fs::CWD, point).unwrap();
     }
 
     #[test]
