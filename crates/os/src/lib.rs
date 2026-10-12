@@ -164,7 +164,9 @@ pub fn net() -> env::net::Net {
 /// users no access. It does not change the mode of a file or directory that is there.
 /// Each file that it opens is closed on exec. A child of the process holds a copy of
 /// each open file from its fork to its exec, or to its end. The copy does not hold the
-/// file: a write open succeeds after its handle closes. The copy keeps the room of a
+/// file: a write open succeeds after its handle closes. On a filesystem that fails the
+/// unlock, as NFS or a FUSE daemon can, the copy holds the file, and a write open gives
+/// [`env::files::Error::Busy`] until the copy closes. The copy keeps the room of a
 /// removed file, which counts as used until the copy closes.
 ///
 /// # Errors
