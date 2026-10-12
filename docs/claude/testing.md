@@ -202,9 +202,11 @@ again once to prove that the failure replays (r16 59).
   `tests/memory` (`counting::Bytes`). A test that changes or counts state of the whole
   process (the descriptor table, the thread count, a resource limit, a seccomp filter,
   the first-lookup state of the C library) gets a binary of its own with that one test,
-  as a counting allocator does. Its module doc names that state. Helpers that binaries
-  share go in `tests/common/`: `mod.rs`, and a file for a helper that only some binaries
-  use, which each of them mounts with `#[path]`.
+  as a counting allocator does. Its module doc names that state. A child process holds a
+  copy of each descriptor, with its file locks, until its `exec`, so a test that starts
+  one goes in a binary with no test that opens files. Helpers that binaries share go in
+  `tests/common/`: `mod.rs`, and a file for a helper that only some binaries use, which
+  each of them mounts with `#[path]`.
 
 ## Oracles
 
