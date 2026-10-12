@@ -96,8 +96,9 @@ const JOIN: u8 = 2;
 const TICKET: u8 = 3;
 const SPEC: u8 = 4;
 
-/// The most chunk digests that one `Spec` change lists, so that a change at each
-/// bound is [`BYTES_MAX`] bytes.
+/// The most chunk digests that one `Spec` change lists, so that
+/// [`message::BYTES_MIN`](crate::message::BYTES_MIN) stays under 64 KiB, the limit of
+/// a node.
 pub(crate) const CHUNKS_MAX: usize = 1024;
 
 /// The most holders of one `Spec` change, so that a change with [`CHUNKS_MAX`]
