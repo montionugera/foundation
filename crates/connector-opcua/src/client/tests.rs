@@ -12,7 +12,8 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Answer, Client, Node, answer};
+use super::{Client, Node, Reads, answer};
+use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::server::Server;
@@ -26,6 +27,22 @@ const VALUE: Node = Node {
     key: 1000,
 };
 
+/// A `ByteString` whose answer needs 8 chunks, [`CHUNKS`], from [`read_large`].
+const FITS: Node = Node {
+    namespace: 1,
+    key: 1002,
+};
+
+/// A `ByteString` whose answer needs 9 chunks, one past [`CHUNKS`], from
+/// [`read_large`].
+const PAST: Node = Node {
+    namespace: 1,
+    key: 1003,
+};
+
+/// The size of a chunk, the send buffer size of a channel.
+const CHUNK: usize = 1 << 16;
+
 /// The current time of the server, a `DateTime`.
 const TIME: Node = Node {
     namespace: 0,
@@ -33,7 +50,9 @@ const TIME: Node = Node {
 };
 
 /// The side of a client in a run of [`serve`].
-struct Peer {
+struct Peer<'s> {
+    /// The test server.
+    server: &'s Server,
     clock: Clock,
     net: Net,
     rng: Rng,
@@ -46,7 +65,7 @@ struct Peer {
     server: Rc<Server>,
 }
 
-impl Peer {
+impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
         Client::connect(clock, net, &mut self.rng, url).await
@@ -81,7 +100,7 @@ fn run<T: Send + 'static>(
 async fn serve<T>(
     node: &node::Node,
     sessions: u16,
-    body: impl AsyncFnOnce(Peer) -> T,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
@@ -92,6 +111,7 @@ async fn serve<T>(
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
     server.add_double(VALUE, value);
     let peer = Peer {
+        server: &server,
         clock: node.clock(),
         net: node.net(),
         rng,
@@ -245,6 +265,203 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
     );
 }
 
+/// Starts `count` reads of `client`, each polled once and then dropped.
+async fn drop_reads(client: &mut Client, count: u16) {
+    for _ in 0..count {
+        let mut read = pin!(client.read(VALUE));
+        poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
+            Poll::Ready(())
+        })
+        .await;
+    }
+}
+
+/// Without the bound on the reads in flight, the server answers the 257 requests of
+/// the reads and the connect in one pass, and its 257th send closes the channel.
+#[test]
+fn a_read_after_255_dropped_reads_gives_the_value() {
+    let ((read, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            drop_reads(&mut client, 255).await;
+            let read = client.read(VALUE).await;
+            client.close().await;
+            (read, peer.value)
+        })
+        .await
+    });
+    assert_eq!(read, Ok(value));
+}
+
+/// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
+/// Gives its answer and the time it took.
+fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            drop_reads(&mut client, dropped).await;
+            peer.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+            let start = peer.clock.now();
+            let read = client.read(VALUE).await;
+            let took = peer.clock.now() - start;
+            peer.paused.set(false);
+            client.close().await;
+            (read, took)
+        })
+        .await
+    });
+    out
+}
+
+/// Below the bound, a read sends its request and times out. At the bound, the dropped
+/// reads stay in flight, so it fails at the end of its wait and sends nothing.
+#[test]
+fn a_read_at_the_bound_fails_when_no_read_ends() {
+    let (below, below_took) = read_after(15);
+    let (at, at_took) = read_after(16);
+    assert_eq!(
+        (below, at),
+        (
+            Err(Status::BAD_TIMEOUT),
+            Err(Status::BAD_TOO_MANY_OPERATIONS)
+        )
+    );
+    let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(timeout.contains(&below_took), "{below_took:?}");
+    assert!(timeout.contains(&at_took), "{at_took:?}");
+}
+
+/// Reads [`VALUE`] while [`Peer::paused`] is set, except for one pass of the server
+/// `at` after the read starts. Gives its answer and the time it took.
+async fn read_with_pass(
+    client: &mut Client,
+    peer: &Peer<'_>,
+    at: Span,
+) -> (Result<f64, Status>, Span) {
+    let start = peer.clock.now();
+    let mut pass = pin!(peer.clock.sleep(at));
+    let (mut woke, mut passed) = (false, false);
+    let mut read = pin!(client.read(VALUE));
+    let read = poll_fn(|cx| {
+        if !woke && pass.as_mut().poll(cx).is_ready() {
+            woke = true;
+            peer.paused.set(false);
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        if woke && !passed {
+            passed = true;
+            peer.paused.set(true);
+        }
+        read.as_mut().poll(cx)
+    })
+    .await;
+    (read, peer.clock.now() - start)
+}
+
+/// A read at the bound whose wait ends 3 s in still times out 5 s after it starts.
+#[test]
+fn the_timeout_of_a_read_counts_its_wait() {
+    let ((read, took), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            drop_reads(&mut client, 16).await;
+            let out =
+                read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
+                    .await;
+            peer.paused.set(false);
+            client.close().await;
+            out
+        })
+        .await
+    });
+    assert_eq!(read, Err(Status::BAD_TIMEOUT));
+    let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(timeout.contains(&took), "{took:?}");
+}
+
+/// The answers of 16 dropped reads end them all, so a read after one more dropped read
+/// sends its request at once and gets its answer in one pass of the server.
+#[test]
+fn the_answers_of_dropped_reads_end_them() {
+    let ((read, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            drop_reads(&mut client, 16).await;
+            peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
+            peer.paused.set(true);
+            drop_reads(&mut client, 1).await;
+            let (read, _) =
+                read_with_pass(&mut client, &peer, Span::from_nanos(1_000_000_000))
+                    .await;
+            peer.paused.set(false);
+            client.close().await;
+            (read, peer.value)
+        })
+        .await
+    });
+    assert_eq!(read, Ok(value));
+}
+
+/// A stalled server keeps the request of each read that timed out, and answers them
+/// all in one pass when it runs again. Without the bound on its requests, 17 rounds of
+/// 16 dropped reads send 272, and the 257th answer closes the channel.
+#[test]
+fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
+    let ((read, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            for _ in 0..17 {
+                drop_reads(&mut client, 16).await;
+                peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+            }
+            peer.paused.set(false);
+            peer.clock.sleep(Span::from_nanos(10_000_000)).await;
+            let read = client.read(VALUE).await;
+            client.close().await;
+            (read, peer.value)
+        })
+        .await
+    });
+    assert_eq!(read, Ok(value));
+}
+
+/// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
+/// a message.
+fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
+    let (reads, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.add_bytes(FITS, 7 * CHUNK);
+            peer.server.add_bytes(PAST, 8 * CHUNK);
+            peer.server.set_chunks(chunks);
+            let mut client = peer.connected().await;
+            let reads = (client.read(FITS).await, client.read(PAST).await);
+            client.close().await;
+            reads
+        })
+        .await
+    });
+    reads
+}
+
+/// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
+/// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
+/// error that closes the channel. A server that sends it makes the client close the
+/// channel at the chunk past the bound.
+#[test]
+fn an_answer_of_more_chunks_than_the_bound_fails() {
+    let large = (
+        Err(Status::BAD_TYPE_MISMATCH),
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+    );
+    assert_eq!(read_large(CHUNKS), large);
+    assert_eq!(read_large(0), large);
+}
+
 /// A drop of a client with an active session ends, and calls the callback of each
 /// read in flight, so the answer of a client must outlive its delete. The server then
 /// closes. The test reads through C on the private client, since `read` borrows the
@@ -254,7 +471,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
     let (value, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            let outside = Answer::default();
+            let outside = Reads::default();
             let mut request = 0;
             // SAFETY: the client lives, and `outside` outlives it.
             let status = Status(unsafe {
@@ -268,6 +485,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
                 )
             });
             assert_eq!(status, Status::GOOD);
+            outside.pending.set(1);
             outside.request.set(Some(request));
             drop(client);
             outside.value.take()
@@ -349,6 +567,26 @@ fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     let (took, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
+            peer.paused.set(true);
+            let start = peer.clock.now();
+            client.close().await;
+            peer.paused.set(false);
+            peer.clock.now() - start
+        })
+        .await
+    });
+    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(window.contains(&took), "{took:?}");
+}
+
+/// A read restores the request timeout of the client after it sends, so a close after a
+/// read on a server that stops still ends 5 to 6 s after it starts.
+#[test]
+fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+    let (took, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            assert_eq!(client.read(VALUE).await, Ok(peer.value));
             peer.paused.set(true);
             let start = peer.clock.now();
             client.close().await;

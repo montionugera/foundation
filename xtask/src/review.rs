@@ -4,17 +4,19 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use comrak::nodes::{AstNode, LineColumn, NodeHeading, NodeValue, Sourcepos};
 use comrak::{Arena, Options, parse_document};
 use serde_json::Value;
 
-use crate::field;
+use crate::{field, gh};
 
 mod history;
 
 use history::Place;
+#[cfg(test)]
+pub(crate) use history::tests::Repo;
 
 /// The first change of one kind in a range `<from>..<end>`, as a phrase, or `None`.
 type Change<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
@@ -162,13 +164,13 @@ struct Parsed {
 /// ends at `head` or at a commit on its first-parent chain after which each merge is
 /// a clean merge of the base and the range to `head` changes no code, finds nothing,
 /// and names each required reviewer, and, for a red-team PR, the director approved
-/// `head`. Reads the PR with `gh` and the history of the repository at `root` with
+/// `head`. Reads the PR with `api` and the history of the repository at `root` with
 /// `git`, and prints each problem.
 ///
-/// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
+/// Exits 0 when the review is done, 1 when it is not, and 2 when `api` or `git` fails
 /// or the PR record lacks a field.
-pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
-    exit(fetch(pr).and_then(|record| problems_in(root, &record, head)))
+pub(crate) fn run(root: &Path, pr: &str, head: &str, api: gh::Read<'_>) -> ExitCode {
+    exit(fetch(pr, api).and_then(|record| problems_in(root, &record, head)))
 }
 
 /// The problems with the review in `record` at `head` ([`problems`]), read with the
@@ -189,7 +191,7 @@ fn problems_in(
 }
 
 /// Prints each problem or the failure in `found`, and gives the exit code of `run`.
-fn exit(found: Result<Vec<String>, String>) -> ExitCode {
+pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
     match found {
         Ok(problems) if problems.is_empty() => ExitCode::SUCCESS,
         Ok(problems) => {
@@ -1130,12 +1132,12 @@ fn stated(value: &str) -> bool {
     first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"
 }
 
-/// Reads the record of PR `pr` with `gh`, in the repository that `gh` resolves.
-fn fetch(pr: &str) -> Result<Record, String> {
+/// Reads the record of PR `pr` with `api`.
+fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
     let path = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
-    let pull = gh(&path)?;
-    let files = gh(&format!("{path}/files"))?;
-    let comments = gh(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
+    let pull = api(&path)?;
+    let files = api(&format!("{path}/files"))?;
+    let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
     record_of(&pull, &files, &comments).map_err(|e| format!("PR {pr}: {e}"))
 }
 
@@ -1188,34 +1190,6 @@ fn utc(text: &str) -> Result<&str, String> {
             "`created_at` is `{text}`, not a UTC time `YYYY-MM-DDTHH:MM:SSZ`"
         ))
     }
-}
-
-/// Each object that `gh api --paginate` returns for `path`: the items of each page
-/// of a list, or the one object.
-fn gh(path: &str) -> Result<Vec<Value>, String> {
-    let output = Command::new("gh")
-        .args(["api", "--paginate", path])
-        .output()
-        .map_err(|e| format!("gh api {path}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh api {path}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    items(&output.stdout).map_err(|e| format!("gh api {path}: {e}"))
-}
-
-/// The items of each JSON array in `pages`, and each object that is not in an array.
-fn items(pages: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
-    let mut items = Vec::new();
-    for page in serde_json::Deserializer::from_slice(pages).into_iter() {
-        match page? {
-            Value::Array(page) => items.extend(page),
-            object => items.push(object),
-        }
-    }
-    Ok(items)
 }
 
 #[cfg(test)]

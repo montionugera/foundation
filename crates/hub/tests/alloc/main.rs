@@ -4,8 +4,9 @@
 //! The commit task is not counted. The home's `woken` after a commit, which that task
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
-//! a depth it reached before. This binary has no test harness: the count covers each
-//! thread, and a harness allocates on its own thread at any time.
+//! a depth it reached before. An open of a reader of many channels copies no name.
+//! This binary has no test harness: the count covers each thread, and a harness
+//! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -23,9 +24,10 @@ use common::{SETTLE, hub, name, unnamed};
 use home::reader::Next;
 use home::reader::complete::Charge;
 use hub::Hub;
-use hub::reader::{Mode, Reader};
+use hub::reader::{self, Mode, Reader};
 use hub::writer::{self, Writer};
 use types::authority::Authority;
+use types::time::Span;
 use woken::Woken;
 
 #[global_allocator]
@@ -138,6 +140,46 @@ async fn replaced(
     let written = write(writer, now);
     let taken: u64 = latests.iter_mut().map(read).sum();
     assert_eq!((waited, written, taken), (0, 0, 0), "replaced");
+}
+
+/// Opens `config` on `hub`, with the allocations made while the open ran, not those of
+/// the other tasks while it waited.
+async fn open(
+    hub: &Hub,
+    node: &sim::node::Node,
+    config: reader::Config,
+) -> (Reader, u64) {
+    let mut open = pin!(hub.reader(config));
+    let mut context = Context::from_waker(Waker::noop());
+    let mut allocations = 0;
+    loop {
+        let (poll, made) = ALLOCATOR.count(|| open.as_mut().poll(&mut context));
+        allocations += made;
+        if let Poll::Ready(reader) = poll {
+            return (reader.expect("opens"), allocations);
+        }
+        node.clock().sleep(Span::MILLISECOND).await;
+    }
+}
+
+/// An open of a reader of many channels makes fewer allocations than it has channels,
+/// once the first open grew the state of its channels: it copies no name.
+fn open_of_a_reader_of_many_channels() {
+    const MANY: u64 = 1000;
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let more: Vec<_> = (0..MANY).map(|n| name(&format!("w.{n}"))).collect();
+        let hub = common::hub_in(&node, tasks, None, &more).await;
+        let _first = open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        let (_second, allocations) =
+            open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        assert!(
+            allocations < MANY,
+            "an open of {MANY} channels made {allocations} allocations"
+        );
+    })
+    .expect("the run ends");
 }
 
 /// Writes a frame, waits for its commit, and calls `woken`. Returns the number of keys
@@ -257,6 +299,7 @@ fn main() {
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
     woken_of_a_reader_whose_frame_waits_for_credit();
+    open_of_a_reader_of_many_channels();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
