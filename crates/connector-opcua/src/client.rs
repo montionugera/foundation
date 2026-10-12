@@ -135,10 +135,12 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTimeout` when it has no answer after the request timeout of the client
-    /// (5 s), the wait included, the status of open62541 when it refuses the request,
-    /// the status of the answer or of its value, or `BadTypeMismatch` when the value is
-    /// not a scalar Double.
+    /// `BadTooManyOperations` when no read ends in the request timeout of the client
+    /// (5 s), as the server holds the requests of [`READS`] reads: the client sends no
+    /// more reads until the server answers one. `BadTimeout` when it has no answer
+    /// after that timeout, its wait included, the status of open62541 when it refuses
+    /// the request, the status of the answer or of its value, or `BadTypeMismatch` when
+    /// the value is not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
         let deadline = self.clock.now() + self.timeout;
         if self.reads.pending.get() == READS {
@@ -152,7 +154,7 @@ impl Client {
                     }
                 })
                 .await
-                .ok_or(Status::BAD_TIMEOUT)?;
+                .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
         }
         let mut request = 0;
         // SAFETY: the client lives, and `reads` outlives it.

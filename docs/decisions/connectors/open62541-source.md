@@ -692,17 +692,22 @@
   2026-10-11 15:26 UTC).
   A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
   timed out make more than one, and a read past the 16 first waits until one of them
-  ends. open62541 gives a read a timeout of 2^32 ms (49.7 days), so a read stays in
-  flight until the server answers it or the channel closes, as the server holds its
-  request until then. The read itself gives `BadTimeout` at the request timeout of the
-  client, its wait included, through the one timer of the drive of its manager. A client sends and takes at most 8 chunks in a message, and the
+  ends. A read sends the timeout hint 0, so neither open62541 (2^32 ms, 49.7 days) nor
+  the server ends it, and it stays in flight until the server answers it or the
+  channel closes. The read gives `BadTimeout` at the request timeout of the client,
+  its wait included. When no read ends in that wait, it gives `BadTooManyOperations`:
+  the server holds 16 requests, and the client sends no read until it answers one. The
+  kind closes a client that gives it and connects again. The bound is a constant from
+  the sends of a connection, not from the rate of reads, as only a server that holds
+  requests fills it. A client sends and takes at most 8 chunks in a message, and the
   test server sends at most 8, so the reads in flight times the chunks of a message
   stay at 128, half of the 256 sends of a connection. The other half is for the
   requests of open62541 itself. open62541 checks the chunks of a message that it sends
   against its own count, not against the count of the peer (`src/ua_securechannel.c`,
   line 392). Lost: a read whose future drops cancels its request, since open62541 has
   no local remove, and `UA_Client_cancelByRequestId` sends one more request that the
-  server answers with the read; and a read past the bound that fails with
-  `BadTooManyOperations`, an error for each caller where the wait ends in at most one
-  request timeout. Proposed in
+  server answers with the read; a read past the bound that fails at once, which fails
+  reads that the late answer of a dropped read lets go on; and a client that closes its
+  channel when no read ends in the wait, which gives the caller `BadConnectionClosed`
+  and hides the cause. Proposed in
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6127422590.

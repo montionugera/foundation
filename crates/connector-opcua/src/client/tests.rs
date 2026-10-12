@@ -313,14 +313,17 @@ fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
 }
 
 /// Below the bound, a read sends its request and times out. At the bound, the dropped
-/// reads stay in flight, so it times out in its wait and sends nothing.
+/// reads stay in flight, so it fails at the end of its wait and sends nothing.
 #[test]
-fn a_read_at_the_bound_times_out_in_its_wait() {
+fn a_read_at_the_bound_fails_when_no_read_ends() {
     let (below, below_took) = read_after(15);
     let (at, at_took) = read_after(16);
     assert_eq!(
         (below, at),
-        (Err(Status::BAD_TIMEOUT), Err(Status::BAD_TIMEOUT))
+        (
+            Err(Status::BAD_TIMEOUT),
+            Err(Status::BAD_TOO_MANY_OPERATIONS)
+        )
     );
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(timeout.contains(&below_took), "{below_took:?}");
