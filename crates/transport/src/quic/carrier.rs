@@ -16,7 +16,6 @@ use block::Block;
 use env::clock::{Clock, Sleep};
 use env::net::Ecn;
 use env::net::udp::{self, Meta, Transmit};
-use env::tasks::{Ended, Group};
 use noq_proto::StreamId;
 use types::ed25519::PublicKey;
 use types::hash::Map;
@@ -42,12 +41,7 @@ const DRAIN_MAX: Span = Span::from_nanos(3 * Span::SECOND.nanos());
 /// datagrams and runs its timers until the socket breaks, or until the carrier
 /// dropped and each connection drained, for at most [`DRAIN_MAX`] after each one
 /// ended. It stays on the thread that made it.
-pub(crate) struct Carrier {
-    state: Rc<RefCell<State>>,
-    /// Counts the task until it dropped. Not in `State`: the task would then hold the
-    /// `Tasks` of its shard, which holds the task.
-    group: Group,
-}
+pub(crate) struct Carrier(Rc<RefCell<State>>);
 
 impl Carrier {
     /// Starts an endpoint for `setup` on `part`, and spawns its task on
@@ -60,7 +54,6 @@ impl Carrier {
         } = part;
         let endpoint = Endpoint::new(&setup, index, sender.batch_max());
         let Setup { clock, tasks, .. } = setup;
-        let group = Group::new(tasks);
         let state = Rc::new(RefCell::new(State {
             endpoint,
             clock: clock.clone(),
@@ -73,8 +66,8 @@ impl Carrier {
             waits: wait::Queue::default(),
         }));
         let task = Task::new(Rc::clone(&state), &clock, sender, receiver);
-        group.tasks().spawn(task.run());
-        Self { state, group }
+        tasks.spawn(task.run());
+        Self(state)
     }
 
     /// Dials `remote` and waits until it proves `peer`. The session may have ended
@@ -108,22 +101,17 @@ impl Carrier {
 
     /// What the carrier counted.
     pub(crate) fn status(&self) -> Status {
-        let state = self.state.borrow();
+        let state = self.0.borrow();
         Status {
             budget_waits: state.endpoint.budget_waits(),
             ..state.waits.status(state.clock.now())
         }
     }
 
-    /// Resolves once the task dropped, and the socket with it.
-    pub(crate) fn ended(&self) -> Ended {
-        self.group.ended()
-    }
-
     /// A handle that dials and accepts on this carrier, and that does not keep it
     /// from its drop.
     pub(crate) fn handle(&self) -> Handle {
-        Handle(Rc::clone(&self.state))
+        Handle(Rc::clone(&self.0))
     }
 }
 
@@ -221,7 +209,7 @@ impl Drop for Carrier {
     /// code 0 each handshake in flight and each session that no caller accepted, and
     /// wakes each wait in [`Handle::poll_accept`].
     fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.0.borrow_mut();
         let now = state.clock.now();
         state.endpoint.shut(now);
         for key in state.accepted.take().into_iter().flatten() {
