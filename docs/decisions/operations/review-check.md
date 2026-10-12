@@ -19,11 +19,12 @@
   https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6072253988), with
   each tab in the spaces, tabs, and `>` at the start of a line replaced by spaces to the
   next multiple of 4 columns, and with the spaces and tabs at the end of a line kept: as
-  CommonMark with the GitHub extensions tables, footnotes, task lists, and
-  strikethrough. Each field and end line is read in the text that GitHub shows on its
-  line: with its escapes and entities read, without the marks of emphasis and code
-  spans, with each image as one character that is not text, with no invisible character
-  (Unicode default ignorable), and with each run of white space as one space. The check
+  CommonMark with the GitHub extensions tables, footnotes, task lists, strikethrough,
+  and autolinks, so that a bare URL shows each mark in it as written. Each field and end
+  line is read in the text that GitHub shows on its line: with its escapes and entities
+  read, without the marks of emphasis and code spans, with each image as one character
+  that is not text, with no invisible character (Unicode default ignorable), and with
+  each run of white space as one space. The check
   does not read a character as another character that looks the same, such as a Cyrillic
   letter in place of a Latin one. The tag filter acts only on raw HTML, which fails
   (corrected by the director at 2026-10-08T21:55:15Z,

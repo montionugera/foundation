@@ -383,8 +383,9 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
         .map(|issue| {
             format!(
                 "review round {number} defers to {issue} with no link to the OK of the \
-                 architect after it on its `Deferred:` line. Add the link, or the words \
-                 `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
+                 architect after it on its `Deferred:` line. Add the link, or the \
+                 words `{UNRISKY}` after the issue when its work is in no risk crate. \
+                 {LINK}"
             )
         });
     problem
@@ -896,8 +897,8 @@ fn entries<'n>(lines: &[String], names: &[&'n str]) -> (Vec<(&'n str, String)>, 
 }
 
 /// Options for the GitHub extensions that change which lines are text or what they
-/// show: tables, footnotes, task lists, and strikethrough. Each footnote stays in
-/// place ([`Shown::read`] moves it).
+/// show: tables, footnotes, task lists, strikethrough, and autolinks. Each footnote
+/// stays in place ([`Shown::read`] moves it).
 fn options() -> Options<'static> {
     let mut options = Options::default();
     let extension = &mut options.extension;
