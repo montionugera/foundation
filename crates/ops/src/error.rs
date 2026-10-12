@@ -6,7 +6,7 @@ use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
@@ -311,23 +311,11 @@ pub(crate) struct Note {
 pub(crate) struct Place {
     /// The exact path, as the user or a directory listing gave it. A path that is not
     /// UTF-8 gives `ops.path-not-utf8` instead.
-    #[serde(serialize_with = "text", deserialize_with = "shared")]
-    #[schemars(with = "String")]
     pub(crate) file: Arc<str>,
     /// The line, from 1.
     pub(crate) line: u32,
     /// The column, from 1, in Unicode scalar values.
     pub(crate) column: u32,
-}
-
-/// `file` as a JSON string.
-fn text<S: Serializer>(file: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(file)
-}
-
-/// A path from a JSON string.
-fn shared<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<str>, D::Error> {
-    String::deserialize(deserializer).map(Arc::from)
 }
 
 /// The path of each file of a plan, by source. Each place in a file shares its path,
