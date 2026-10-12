@@ -4251,6 +4251,46 @@ pub(crate) mod port {
             }
         }
 
+        /// Opens the endpoint of `identity` at [`listen`] on `host` in the region
+        /// `founding`, and a hub on a new buffer of `host` with its mesh. Gives the
+        /// hub, the mesh, and the transport.
+        pub(crate) async fn hub(
+            host: &sim::node::Node,
+            tasks: &env::tasks::Tasks,
+            identity: Identity,
+            founding: Founding,
+        ) -> (::hub::Hub, ::mesh::Mesh, Rc<transport::Transport>) {
+            let bound =
+                transport::Port::bind(&host.net(), listen(host)).expect("a port");
+            let opening = Opening::Given(founding);
+            let endpoint =
+                Endpoint::new(bound, opening, host.clock(), host.entropy(), host.net());
+            let stop = crate::stop::Stop::default();
+            let (open, buffer, next, time) =
+                super::super::home::create_open(host, tasks, 0, stop);
+            let opened = open.run(host.files(), Rc::new(buffer), tasks.clone()).await;
+            let home = opened.expect("the buffer opens");
+            let interner = next.await.expect("the open gives the interner");
+            let (key, entropy) = (identity.key, endpoint.entropy.clone());
+            let opened =
+                endpoint.open(identity, host.files(), super::pool(), tasks.clone());
+            let (transport, mesh) = opened.await;
+            let mesh = mesh.expect("the mesh opens").expect("a region");
+            let hub = ::hub::Hub::new(::hub::Config {
+                home,
+                interner,
+                tasks: tasks.clone(),
+                node: key,
+                time,
+                entropy,
+                region: Some(::hub::Region {
+                    mesh: mesh.clone(),
+                    transport: Rc::clone(&transport),
+                }),
+            });
+            (hub, mesh, transport)
+        }
+
         /// Starts the node on `host`, which [`keyed`] made, with `region`.
         fn start(host: &sim::node::Node, region: Founding) -> Node {
             Node::start(Config {
@@ -4432,41 +4472,13 @@ pub(crate) mod port {
             };
             let own = host.clone();
             let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
                 let identity = Identity {
                     key: OTHER.0,
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let (opening, clock) = (Opening::Given(region(&members)), own.clock());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time,
-                    entropy,
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
+                let (hub, mesh, transport) =
+                    hub(&own, &tasks, identity, region(&members)).await;
                 let clock = own.clock();
                 let port =
                     route::accept(transport, Some(mesh.clone()), hub, clock, tasks);
@@ -5968,41 +5980,13 @@ pub(crate) mod port {
             };
             let own = host.clone();
             let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
                 let identity = Identity {
                     key: OTHER.0,
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let (opening, clock) = (Opening::Given(founding), own.clock());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time,
-                    entropy,
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
+                let (hub, mesh, transport) =
+                    hub(&own, &tasks, identity, founding).await;
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
