@@ -161,7 +161,8 @@ fn after_cut(idle: Span, cut: Span) -> Option<(transport::Error, Span)> {
 }
 
 /// Under an idle time of 2 s, a program whose links are cut for 3 s finds its session
-/// timed out within 2 s of the cut. One cut for 1 s keeps its session.
+/// timed out within 2 s of the cut. One cut for 1 s keeps its session. The program's
+/// own idle time is 30 s, so the node's setting decides each.
 #[test]
 fn a_session_silent_past_the_idle_setting_closes() {
     let idle = Span::from_nanos(2 * Span::SECOND.nanos());
@@ -173,27 +174,73 @@ fn a_session_silent_past_the_idle_setting_closes() {
     assert_eq!(after_cut(idle, Span::SECOND), None);
 }
 
-/// A window smaller than twice the message limit stops the start, and the node takes
-/// no session.
-#[test]
-fn a_window_under_twice_the_message_limit_stops_the_start() {
+/// The error that `join` gives for a node with `settings`, which the transport
+/// refuses.
+fn refused(settings: Settings) -> Error {
     let mut sim = sim::Sim::new(sim::Config::default());
-    let settings = Settings {
-        window_bytes: (2 << 16) - 1,
-        ..Settings::default()
-    };
     let (_host, node) = start(&mut sim, settings);
     assert_eq!(sim.run(), Ok(()));
+    node.join().expect_err("the transport refuses the settings")
+}
+
+/// An idle time of zero, a message limit under 1472 bytes, and a window smaller than
+/// twice the message limit each stop the start, and the node takes no session.
+#[test]
+fn a_value_that_the_transport_refuses_stops_the_start() {
+    let cases = [
+        (
+            Settings {
+                idle: Span::ZERO,
+                ..Settings::default()
+            },
+            "idle",
+            "must be positive",
+        ),
+        (
+            Settings {
+                message_bytes_max: NonZeroUsize::new(1471).unwrap(),
+                ..Settings::default()
+            },
+            "message_bytes_max",
+            "must be at least 1472",
+        ),
+        (
+            Settings {
+                window_bytes: (2 << 16) - 1,
+                ..Settings::default()
+            },
+            "window_bytes",
+            "must be at least twice the message limit",
+        ),
+    ];
+    for (settings, field, rule) in cases {
+        let error = transport::Error::Config { field, rule };
+        assert_eq!(refused(settings), Error::Transport(error));
+    }
     let error = transport::Error::Config {
         field: "window_bytes",
         rule: "must be at least twice the message limit",
     };
-    assert_eq!(node.join(), Err(Error::Transport(error.clone())));
     assert_eq!(
         Error::Transport(error).to_string(),
         "the node's transport stopped: config window_bytes must be at least twice the \
          message limit"
     );
+}
+
+/// The defaults that `foundation` runs with.
+#[test]
+fn the_defaults_are_the_values_that_foundation_runs_with() {
+    let settings = Settings {
+        window_bytes: 1 << 20,
+        streams_max: NonZeroU32::new(64).unwrap(),
+        idle: Span::from_nanos(30 * Span::SECOND.nanos()),
+        message_bytes_max: NonZeroUsize::new(1 << 16).unwrap(),
+        header_wait: Span::from_nanos(10 * Span::SECOND.nanos()),
+        places_max: NonZeroUsize::new(256).unwrap(),
+        floor_bytes: 1 << 30,
+    };
+    assert_eq!(Settings::default(), settings);
 }
 
 /// The node rejects a stream whose header has not arrived within the header setting
@@ -202,7 +249,7 @@ fn a_window_under_twice_the_message_limit_stops_the_start() {
 fn a_header_late_past_the_setting_is_rejected() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let settings = Settings {
-        header: Span::from_nanos(3 * Span::SECOND.nanos()),
+        header_wait: Span::from_nanos(3 * Span::SECOND.nanos()),
         ..Settings::default()
     };
     let (host, node) = start(&mut sim, settings);

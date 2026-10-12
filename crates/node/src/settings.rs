@@ -4,8 +4,8 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 use types::time::Span;
 
-/// The limits of a node's port, its peers, and its chunk store. `Default` gives each
-/// value the node takes until a `node_settings` policy sets it.
+/// The settings of a node apart from its budgets: the limits of its port, its peers,
+/// and its chunk store. `Default` gives the values that `foundation` runs with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// The transport's flow window of each stream and session, in bytes. It caps a
@@ -18,13 +18,14 @@ pub struct Settings {
     /// How long a silent peer keeps its session. Positive, else the start stops with
     /// [`crate::Error::Transport`]. Default 30 s.
     pub idle: Span,
-    /// The largest message of a stream. Each shard takes the smaller of this and the
-    /// largest block of its pool, which must be at least 1472 bytes, else the start
-    /// stops with [`crate::Error::Transport`]. Default 64 KiB.
+    /// The largest message of a stream. The transport takes the smaller of this and
+    /// the largest block of its pool, which must be at least 1472 bytes, else the
+    /// start stops with [`crate::Error::Transport`]. Default 64 KiB.
     pub message_bytes_max: NonZeroUsize,
-    /// How long a stream may take to give its header before it is rejected. Default
-    /// 10 s.
-    pub header: Span,
+    /// How long a stream may take to give its header before it is rejected. A span of
+    /// zero or less rejects a stream whose header has not arrived when the node first
+    /// reads the stream. Default 10 s.
+    pub header_wait: Span,
     /// The most places the peers outside the region hold at once. A program holds one
     /// for each session, and a node one for its key. Default 256.
     pub places_max: NonZeroUsize,
@@ -39,7 +40,7 @@ impl Default for Settings {
             streams_max: NonZeroU32::new(64).expect("not zero"),
             idle: Span::from_nanos(30 * Span::SECOND.nanos()),
             message_bytes_max: NonZeroUsize::new(1 << 16).expect("not zero"),
-            header: Span::from_nanos(10 * Span::SECOND.nanos()),
+            header_wait: Span::from_nanos(10 * Span::SECOND.nanos()),
             places_max: NonZeroUsize::new(256).expect("not zero"),
             floor_bytes: 1 << 30,
         }

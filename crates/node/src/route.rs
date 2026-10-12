@@ -22,14 +22,14 @@ use crate::scope::Scope;
 /// `mesh`'s region. Gives each session of another peer a place, of at most
 /// `places_max`; at the bound, the oldest place frees for it ([`Places::take`]).
 /// `route` decides each stream, and rejects one whose header takes longer than
-/// `header`.
+/// `header_wait`.
 pub(crate) async fn accept(
     transport: Rc<Transport>,
     mesh: Option<Mesh>,
     hub: Hub,
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
-    header: Span,
+    header_wait: Span,
     places_max: NonZeroUsize,
 ) -> Error {
     let mut sessions = Scope::new(tasks.clone());
@@ -46,7 +46,7 @@ pub(crate) async fn accept(
             mesh.clone(),
             link,
             clock.clone(),
-            header,
+            header_wait,
             tasks.clone(),
         );
         sessions.spawn(Box::pin(async move {
@@ -146,14 +146,21 @@ async fn serve(
     mesh: Option<Mesh>,
     link: Link,
     clock: env::clock::Clock,
-    header: Span,
+    header_wait: Span,
     tasks: env::tasks::Tasks,
 ) {
     let mut streams = Scope::new(tasks);
     while let Ok(incoming) = session.accept().await {
         let peer = session.peer();
         let link = link.clone();
-        let route = route(incoming, peer, mesh.clone(), link, clock.clone(), header);
+        let route = route(
+            incoming,
+            peer,
+            mesh.clone(),
+            link,
+            clock.clone(),
+            header_wait,
+        );
         streams.spawn(Box::pin(route));
     }
 }
@@ -161,18 +168,18 @@ async fn serve(
 /// Reads the header of `incoming`, its first message, and routes the stream that `peer`
 /// opened by its protocol. A `Mesh` stream of a node goes to `mesh`, and a `Hub` stream
 /// of a member of the region to `link`; each other stream, and one whose header does
-/// not arrive within `header` on `clock`, is rejected.
+/// not arrive within `header_wait` on `clock`, is rejected.
 async fn route(
     mut incoming: Incoming,
     peer: Peer,
     mesh: Option<Mesh>,
     link: Link,
     clock: env::clock::Clock,
-    header: Span,
+    header_wait: Span,
 ) {
     let first = {
         let mut recv = pin!(incoming.receiver.recv());
-        let mut late = pin!(clock.sleep(header));
+        let mut late = pin!(clock.sleep(header_wait));
         poll_fn(|cx| match recv.as_mut().poll(cx) {
             Poll::Ready(first) => Poll::Ready(Some(first)),
             Poll::Pending => late.as_mut().poll(cx).map(|()| None),

@@ -96,7 +96,8 @@ pub struct Config<M> {
     /// file `name` is gone writes it again from the card. [`Node::join`] gives the
     /// first failure.
     pub name: types::name::Name,
-    /// The limits of the node's port, its peers, and its chunk store.
+    /// The limits of the node's port, its peers, and its chunk store. A value that the
+    /// transport refuses stops the node with [`Error::Transport`].
     pub settings: Settings,
 }
 
@@ -418,12 +419,13 @@ impl Node {
     /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
     /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
     /// [`Error::Directory`] for a key file that shard 0 could not read or write,
-    /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
-    /// mesh that did not open, [`Error::Directory`] for a file `address` that shard 0
-    /// could not write, or [`Error::Transport`] or [`Error::Group`], whichever the node
-    /// sees stop first, else [`Error::Directory`] for a file `address` that shard 0
-    /// could not write empty, else [`Error::Panicked`] for the first shard by core that
-    /// panicked. Any failed shard stops the node.
+    /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
+    /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
+    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
+    /// that shard 0 could not write, or [`Error::Transport`] or [`Error::Group`],
+    /// whichever the node sees stop first, else [`Error::Directory`] for a file
+    /// `address` that shard 0 could not write empty, else [`Error::Panicked`] for the
+    /// first shard by core that panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -1064,8 +1066,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let (header, places_max) =
-            (endpoint.settings.header, endpoint.settings.places_max);
+        let settings = endpoint.settings;
         let opened = endpoint.open(identity, files.clone(), pool, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
             return;
@@ -1116,8 +1117,8 @@ impl Serve {
                     hub.clone(),
                     clock,
                     tasks.clone(),
-                    header,
-                    places_max,
+                    settings.header_wait,
+                    settings.places_max,
                 );
                 let stop = until(guard, port, group, fail);
                 inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
@@ -1338,8 +1339,8 @@ pub enum Error {
         cores: usize,
     },
     /// The transport of the node's port stopped, as when the OS breaks its socket, or
-    /// refused [`Config::settings`] ([`transport::Error::Config`]), which takes no
-    /// session. The node stops.
+    /// refused a value of [`Config::settings`] ([`transport::Error::Config`]) before
+    /// the node took a session. The node stops.
     Transport(transport::Error),
     /// The mesh did not open, or the founding that the data directory stores did not
     /// read. A node that gives it took no session.

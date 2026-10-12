@@ -4495,7 +4495,7 @@ mod port {
                     hub,
                     clock,
                     tasks,
-                    settings.header,
+                    settings.header_wait,
                     settings.places_max,
                 );
                 let (mut port, mut act) = (pin!(port), pin!(act(mesh, own)));
@@ -6108,7 +6108,7 @@ mod port {
                     hub.clone(),
                     clock,
                     tasks,
-                    settings.header,
+                    settings.header_wait,
                     settings.places_max,
                 );
                 let (mut port, mut act) =
