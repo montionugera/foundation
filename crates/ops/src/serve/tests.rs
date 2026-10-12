@@ -147,8 +147,8 @@ fn plans_applies_and_plans_no_change() {
         let (plan, output) = node.plan(files.clone()).await.expect("a plan");
         assert_eq!(output["added"], 3, "{output}");
         let reserved = json!([
-            { "name": "@admin", "kind": "access" },
-            { "name": "@admin", "kind": "subject" },
+            { "name": "@admin", "kind": "access", "key": "@admin.@access" },
+            { "name": "@admin", "kind": "subject", "key": "@admin.@subject" },
         ]);
         assert_eq!(output["reserved"], reserved);
         let body = plan_body(&[("site.hcl", &site)]);

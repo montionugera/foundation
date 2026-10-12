@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    NODE, PLANT, create_node, create_node_reading, fail_sync, front_ends, kinds,
+    NODE, PLANT, create_kinds, create_node, create_node_reading, fail_sync, front_ends,
     placed_site, solo,
 };
 use crate::error::Error;
@@ -32,7 +32,7 @@ async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> Value {
         &spec.definitions,
         &names,
         &front_ends(),
-        &kinds(),
+        &create_kinds(),
     )
     .expect("a plan")
     .0

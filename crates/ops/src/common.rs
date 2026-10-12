@@ -86,7 +86,7 @@ pub(crate) fn front_ends() -> FrontEnds {
 }
 
 /// The kinds of the connectors of the fixtures.
-pub(crate) fn kinds() -> Table {
+pub(crate) fn create_kinds() -> Table {
     Table::new().with("influx", Reader).with("opcua", Reader)
 }
 
@@ -102,7 +102,7 @@ pub(crate) fn create_node_reading(mesh: Mesh, front_ends: FrontEnds) -> Node {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(mesh, key, front_ends, Arc::new(kinds()))
+    Node::new(mesh, key, front_ends, Arc::new(create_kinds()))
 }
 
 pub(crate) fn name(text: &str) -> Name {

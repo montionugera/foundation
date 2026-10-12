@@ -11,7 +11,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 use crate::error::{Action, Error, Problem};
 use crate::front_end::File;
 use crate::operation::{Empty, TABLE};
-use crate::plan::Files;
+use crate::plan::Documents;
 use crate::{Node, apply, used};
 
 #[cfg(test)]
@@ -166,9 +166,9 @@ struct Check<'a> {
 
 impl<'a> Check<'a> {
     /// The check of `action` for `subject` by the access policies of `spec`.
-    fn new(spec: &mesh::used::Spec, subject: &'a Name, action: Action) -> Self {
+    fn new(spec: &used::Spec, subject: &'a Name, action: Action) -> Self {
         Self {
-            rules: Rules::new([(Prefix::ROOT, spec.definitions.iter())]),
+            rules: Rules::new([(Prefix::ROOT, spec.definitions().iter())]),
             subject,
             action,
         }
@@ -198,15 +198,15 @@ impl<'a> Check<'a> {
 
 /// The reply of `plan` of `files`: its output, then the plan file.
 async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Error> {
-    let files = Files::read(files, &node.front_ends)?;
+    let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(&node.kinds)?;
-    let spec = node.mesh.spec().await.map_err(Error::Stopped)?;
+    let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Plan);
     if let Some(name) = check.refused(&names) {
         return Err(check.denied(Some(name)));
     }
     let compared = spec
-        .definitions
+        .definitions()
         .iter()
         .filter(|(name, definition)| config::plan::planned(name, definition.kind()))
         .map(|(name, _)| name);
@@ -214,7 +214,7 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Er
     if check.refused(compared).is_some() {
         return Err(check.denied(None));
     }
-    let (base, applied) = used::newest(spec)?;
+    let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
     let mut reply = line(&Done { output: &output });
     reply.extend(plan.encode());
@@ -224,14 +224,13 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Er
 /// The reply of `apply` of the plan file `bytes`: its output.
 async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
-    let spec = node.mesh.spec().await.map_err(Error::Stopped)?;
+    let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Apply);
     if let Some(name) = check.refused(plan.changes.keys().chain(plan.homes.keys())) {
         return Err(check.denied(Some(name)));
     }
-    let (pointer, applied) = used::newest(spec)?;
+    let (pointer, applied) = spec.newest()?;
     let (mesh, kinds) = (&node.mesh, &node.kinds);
-    let effect =
-        apply::planned(plan, pointer, &applied, mesh, kinds, &node.key).await?;
+    let effect = apply::apply(plan, pointer, &applied, mesh, kinds, &node.key).await?;
     Ok(line(&Done { output: &effect }))
 }

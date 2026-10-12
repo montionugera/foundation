@@ -749,8 +749,8 @@ fn ends_with_a_note_of_each_definition_that_foundation_made() {
          made are not in the files: @admin.@access, @admin.@subject\n"
     );
     let reserved = serde_json::json!([
-        { "name": "@admin", "kind": "access" },
-        { "name": "@admin", "kind": "subject" },
+        { "name": "@admin", "kind": "access", "key": "@admin.@access" },
+        { "name": "@admin", "kind": "subject", "key": "@admin.@subject" },
     ]);
     assert_eq!(json(&planned)["reserved"], reserved);
 }

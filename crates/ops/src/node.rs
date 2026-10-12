@@ -61,7 +61,8 @@ impl Node {
             .into_iter()
             .map(|(path, text)| File { path, text })
             .collect();
-        let (base, applied) = used::spec(&self.mesh).await.map_err(|e| e.json())?;
+        let used = used::spec(&self.mesh).await.and_then(used::Spec::newest);
+        let (base, applied) = used.map_err(|e| e.json())?;
         let (output, plan) = plan::plan(
             &files,
             base,
@@ -81,7 +82,7 @@ impl Node {
     ///
     /// The JSON error that `apply --json` writes.
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
-        apply::apply(path, bytes, &self.mesh, &self.kinds, &self.key)
+        apply::file(path, bytes, &self.mesh, &self.kinds, &self.key)
             .await
             .map(|applied| applied.json())
             .map_err(|e| e.json())
