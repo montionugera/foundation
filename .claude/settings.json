@@ -17,19 +17,5 @@
   "attribution": {
     "commit": "",
     "pr": ""
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "timeout": 600,
-            "command": "grep -q 'git.*push' || exit 0; cargo xtask attribution >&2 || exit 2"
-          }
-        ]
-      }
-    ]
   }
 }

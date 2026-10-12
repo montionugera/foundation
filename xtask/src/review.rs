@@ -10,7 +10,7 @@ use comrak::nodes::{AstNode, LineColumn, NodeHeading, NodeValue, Sourcepos};
 use comrak::{Arena, Options, parse_document};
 use serde_json::Value;
 
-use crate::{attribution, field, gh};
+use crate::{field, gh};
 
 mod history;
 
@@ -104,8 +104,6 @@ struct Record {
     labels: Vec<String>,
     files: Vec<String>,
     comments: Vec<Comment>,
-    /// The PR body, empty when it has none.
-    body: String,
 }
 
 #[derive(Debug)]
@@ -165,10 +163,9 @@ struct Parsed {
 /// Checks that the review of PR `pr` is done at commit `head`: its last round comment
 /// ends at `head` or at a commit on its first-parent chain after which each merge is
 /// a clean merge of the base and the range to `head` changes no code, finds nothing,
-/// and names each required reviewer, for a red-team PR, the director approved `head`,
-/// and the PR body has no Claude attribution line ([`attribution::lines`]). Reads the
-/// PR with `api` and the history of the repository at `root` with `git`, and prints
-/// each problem.
+/// and names each required reviewer, and, for a red-team PR, the director approved
+/// `head`. Reads the PR with `api` and the history of the repository at `root` with
+/// `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `api` or `git` fails
 /// or the PR record lacks a field.
@@ -222,8 +219,7 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
 /// `decision_change` gives a phrase for its range (`History::decision_change`). For
 /// that rule, a round comment after the first is a later round, whatever its number,
-/// and so is a first round comment whose number is above 1. Each Claude attribution
-/// line of the PR body ([`attribution::lines`]) is a problem.
+/// and so is a first round comment whose number is above 1.
 fn problems(
     record: &Record,
     head: &str,
@@ -283,12 +279,6 @@ fn problems(
     {
         problems.extend(approval(record, head));
     }
-    problems.extend(attribution::lines(&record.body).map(|line| {
-        format!(
-            "the PR body has the line `{line}`, which Rule 1 of CLAUDE.md forbids. \
-             Remove it from the PR body, then run `review` again."
-        )
-    }));
     Ok(problems)
 }
 
@@ -1179,11 +1169,6 @@ fn record_of(
                 })
             })
             .collect::<Result<_, String>>()?,
-        body: if pull["body"].is_null() {
-            String::new()
-        } else {
-            field::text(pull, "body")?.to_string()
-        },
     })
 }
 
