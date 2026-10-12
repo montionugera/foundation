@@ -10,17 +10,17 @@ use types::time::Span;
 pub struct Settings {
     /// The transport's flow window of each stream and session, in bytes. It caps a
     /// session at the window over the round trip. At least twice the message limit,
-    /// else the start stops with [`crate::Error::Transport`]. Default 1 MiB.
+    /// else the node stops with [`crate::Error::Transport`]. Default 1 MiB.
     pub window_bytes: usize,
     /// The most streams of each kind a peer may have open at once, per session. A
     /// peer that opens one more waits for credit. Default 64.
     pub streams_max: NonZeroU32,
-    /// How long a silent peer keeps its session. Positive, else the start stops with
+    /// How long a silent peer keeps its session. Positive, else the node stops with
     /// [`crate::Error::Transport`]. Default 30 s.
     pub idle: Span,
     /// The largest message of a stream. The transport takes the smaller of this and
     /// the largest block of its pool. The smaller must be at least 1472 bytes, else
-    /// the start stops with [`crate::Error::Transport`]. Default 64 KiB.
+    /// the node stops with [`crate::Error::Transport`]. Default 64 KiB.
     pub message_bytes_max: NonZeroUsize,
     /// How long a stream may take to give its header before it is rejected. A span of
     /// zero or less rejects a stream whose header has not arrived when the node first
