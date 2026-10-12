@@ -4,13 +4,13 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use comrak::nodes::{AstNode, LineColumn, NodeHeading, NodeValue, Sourcepos};
 use comrak::{Arena, Options, parse_document};
 use serde_json::Value;
 
-use crate::field;
+use crate::{field, gh};
 
 mod history;
 
@@ -1133,9 +1133,9 @@ fn stated(value: &str) -> bool {
 /// Reads the record of PR `pr` with `gh`, in the repository that `gh` resolves.
 fn fetch(pr: &str) -> Result<Record, String> {
     let path = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
-    let pull = gh(&path)?;
-    let files = gh(&format!("{path}/files"))?;
-    let comments = gh(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
+    let pull = gh::api(&path)?;
+    let files = gh::api(&format!("{path}/files"))?;
+    let comments = gh::api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
     record_of(&pull, &files, &comments).map_err(|e| format!("PR {pr}: {e}"))
 }
 
@@ -1188,34 +1188,6 @@ fn utc(text: &str) -> Result<&str, String> {
             "`created_at` is `{text}`, not a UTC time `YYYY-MM-DDTHH:MM:SSZ`"
         ))
     }
-}
-
-/// Each object that `gh api --paginate` returns for `path`: the items of each page
-/// of a list, or the one object.
-fn gh(path: &str) -> Result<Vec<Value>, String> {
-    let output = Command::new("gh")
-        .args(["api", "--paginate", path])
-        .output()
-        .map_err(|e| format!("gh api {path}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh api {path}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    items(&output.stdout).map_err(|e| format!("gh api {path}: {e}"))
-}
-
-/// The items of each JSON array in `pages`, and each object that is not in an array.
-fn items(pages: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
-    let mut items = Vec::new();
-    for page in serde_json::Deserializer::from_slice(pages).into_iter() {
-        match page? {
-            Value::Array(page) => items.extend(page),
-            object => items.push(object),
-        }
-    }
-    Ok(items)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ mod cfg;
 mod field;
 mod files;
 mod fuzz;
+mod gh;
 mod globals;
 mod libtest;
 mod map;
