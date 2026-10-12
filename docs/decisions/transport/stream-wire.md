@@ -282,8 +282,9 @@
   its length, because the second walk costs more than the second copy (2.31x
   copy-then-send for 1000 ranges of 8 B); a copy into a new `Vec` as the walk goes,
   because the `Vec` grows, or takes the rest of the message and noq holds the extra
-  capacity until the ACK; and a last long run that takes the block, because it gave no
-  time gain on box2 and adds a case. Lost: a copy of a longer stretch into a block of
+  capacity until the peer acknowledges it and each byte before it on its stream, or the
+  stream resets; and a last long run that takes the block, because it gave no time gain
+  on box2 and adds a case. Lost: a copy of a longer stretch into a block of
   the shard's pool, because noq still copies each shorter stretch to the heap, and a
   write would wait for a block in the middle of a message, with no end when each block
   is held by a write that waits (`laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
