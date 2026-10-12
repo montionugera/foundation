@@ -552,7 +552,10 @@
   and sets no access control list. A file that a write makes takes the entries that its
   directory gives to its new files, as each file that a tool makes there does. On macOS
   such an entry is then on the file, also when the file that it replaces had none, and
-  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424).
+  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424). On
+  Linux such an entry is on the file too, but the mode `0o600` of the open sets the mask
+  of the list to no access, so the entry gives its user nothing until the operator
+  widens the mask. A file that a tool makes there with a wider mode gets a wider mask.
   The entry is the operator's (`docs/security.md`, "Other local user"). Lost: an empty
   list on the hidden file on macOS. `rustix` and `libc` give no call for it. A clear
   after the open leaves a time in which a user that the entry names opens the file, and
