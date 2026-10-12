@@ -3619,6 +3619,24 @@ fn an_open_refuses_a_carried_given_that_no_ring_holds() {
     });
 }
 
+/// A carry body over `body_max` makes a record longer than the largest one of the
+/// layout. The walk cannot check such a record, of any kind, so it ends there.
+#[test]
+fn an_open_ends_at_a_carry_record_over_body_max() {
+    run(162, |shard| async move {
+        shard.create_two_records().await;
+        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let body = carry_body(&tails);
+        assert!(body.len() > BODY_MAX, "a body of {} bytes", body.len());
+        shard.put_carry(3 * BLOCK, &body).await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(layout(AREA, BODY_MAX), &mut slots).await;
+        let buffer = buffer.expect("opens");
+        let b = slots.index(key(2));
+        assert_eq!(buffer.durable(b, Path::Live), tail(0, None));
+    });
+}
+
 /// A carry record of the wrong shape: no count, a count over the tails it holds,
 /// bytes after its tails, a wrong path byte, a `given` over the maximum, and a wrong
 /// presence byte.

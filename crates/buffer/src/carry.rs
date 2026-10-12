@@ -27,7 +27,8 @@ use crate::entry::{self, Fields, Invalid};
 const LEN: usize = 16 + 1 + 8 + 8 + 9;
 
 /// The most tails one record holds. The body of a full record fits in the first
-/// window that a walk reads, so the walk holds it whole.
+/// window that a walk reads, so the walk holds it whole. A body also stays within
+/// `body_max`, so a layout with a small one holds fewer.
 pub(crate) const TAILS_MAX: usize = entry::ENTRIES_MAX;
 
 /// The largest carried `given`. A path gets far fewer entries with no samples at
