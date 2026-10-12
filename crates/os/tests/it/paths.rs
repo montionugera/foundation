@@ -414,6 +414,24 @@ fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
     assert_eq!(other, None);
 }
 
+/// A path through `/proc` names a directory that is removed before the read opens it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_read_of_a_removed_directory_lists_no_entries() {
+    use std::os::fd::AsRawFd;
+    let scratch = Scratch::new();
+    let plant = scratch.0.join("plant");
+    fs::create_dir(&plant).unwrap();
+    #[expect(clippy::disallowed_methods, reason = "the test holds the directory")]
+    let held = fs::File::open(&plant).unwrap();
+    fs::remove_dir(&plant).unwrap();
+    let path = PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()));
+    assert_eq!(
+        os::paths().read(&path, 1 << 12),
+        Ok(Found::Directory(Vec::new()))
+    );
+}
+
 /// Reads `path` until another thread has called `swap` [`CYCLES`] times, and gives
 /// the first read that `expected` refuses. The bound is on the swaps, not the reads,
 /// so a slow or busy host still races each read against many swaps.
