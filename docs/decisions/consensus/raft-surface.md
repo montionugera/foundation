@@ -178,3 +178,19 @@
   https://github.com/synnaxlabs/foundation/issues/1105#issuecomment-6050855747 and
   finding 2 of
   https://github.com/synnaxlabs/foundation/pull/1762#issuecomment-6051260164.
+  `Config::fits` says whether the caller can send a message to each peer. An `Append`
+  with no proof drops its last entries until it fits, down to one, and the progress of
+  the peer records the last entry that stays. A message with a proof drops its entries,
+  then the oldest links of its chain, until it fits. `raft` panics when `fits` is false
+  for an `Append` of one entry with no proof, or for a message with no entry and no
+  link: that is a defect of the caller, which must bound each entry it proposes. A
+  shorter chain is safe: the chain is input to a check that does not change, so a sender
+  that sends less cannot make a receiver accept more. A receiver whose commit index is
+  below the oldest link that fits never proves the term (#2471). `Config` is not
+  `PartialEq`: a function pointer has no reliable equality. Lost: the caller sends only
+  the entries that fit, which moves the peer's next index past entries that it lacks; a
+  limit for each peer, which holds a value of the transport that changes with each
+  session; a byte bound and a size function in `Config`, two fields where one predicate
+  says the same. Decided by `laptop.architect`, 2026-10-12T18:29:52Z
+  (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772), with
+  the deferral of #2471.

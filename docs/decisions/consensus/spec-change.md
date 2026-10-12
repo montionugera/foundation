@@ -10,19 +10,22 @@
   is the base root and that holds no home leaves the pointer at the base. The compare
   still checks the base. Lost: a version in the record, which can disagree with the
   base. A record lists at most `CHUNKS_MAX` = 1024 digests, about 32 KiB, so that one
-  record fits in an append of 64 KiB, a node's limit; decode refuses a larger count. An
-  entry over a member's limit is never sent, and `raft` sends it again with no end
-  (#1361). `raft` bounds an `Append` by its count of entries, not by its bytes, so two
-  records at the bound in one `Append` go over 64 KiB. #1361 bounds it by bytes before a
-  milestone applies a spec change to a region of more than one member. Trigger: before a
-  milestone applies a change that lists more than `CHUNKS_MAX` chunks, a `Spec` change
-  can list them. The holders are the voters whose durable put of the listed chunks the
-  proposer counted; until #1231 they are only the proposer. A record lists at most
-  `HOLDERS_MAX` = 64 holders, and decode refuses a larger count, so a record at both
-  bounds is 33 869 bytes. A majority of each half must fit in `HOLDERS_MAX` holders, and
-  a holder in both halves counts in each. So a configuration with one set has at most
-  127 voters. Two halves that share no voter fit when their majorities sum to at most
-  64. This binds only after #1231. Decided by `laptop.architect`, 2026-10-08T12:38:01Z
+  record fits in an append of 64 KiB, a node's limit; decode refuses a larger count.
+  `change::RECORD_MAX` = 50 255 bytes is the largest record of any kind: a `Spec` change
+  at each bound. `raft` drops the last entries of an `Append` until it fits
+  `message::BYTES_MIN` = `RECORD_MAX` + 100, an `Append` of one such record with no
+  proof and no link (RAFT SURFACE, MESH WIRE). So a record at the bound goes alone
+  (#1361; `laptop.architect`, 2026-10-12T18:29:52Z,
+  https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
+  Trigger: before a milestone applies a change that lists more than `CHUNKS_MAX` chunks,
+  a `Spec` change can list them. The holders are the voters whose durable put of the
+  listed chunks the proposer counted; until #1231 they are only the proposer. A record
+  lists at most `HOLDERS_MAX` = 64 holders, and decode refuses a larger count, so a
+  record at both bounds is 33 869 bytes. A majority of each half must fit in
+  `HOLDERS_MAX` holders, and a holder in both halves counts in each. So a configuration
+  with one set has at most 127 voters. Two halves that share no voter fit when their
+  majorities sum to at most 64. This binds only after #1231. Decided by
+  `laptop.architect`, 2026-10-08T12:38:01Z
   (https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6060034191).
   Supersedes the voter bound and the sum of 33 873 bytes of
   https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6059278643, and the
