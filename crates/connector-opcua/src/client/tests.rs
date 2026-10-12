@@ -576,6 +576,26 @@ fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     assert!(window.contains(&took), "{took:?}");
 }
 
+/// A read gives open62541 no timeout of its own, and leaves the request timeout of the
+/// client as it was: a close after a read still ends at 5 s.
+#[test]
+fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+    let (took, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            assert_eq!(client.read(VALUE).await, Ok(peer.value));
+            peer.paused.set(true);
+            let start = peer.clock.now();
+            client.close().await;
+            peer.paused.set(false);
+            peer.clock.now() - start
+        })
+        .await
+    });
+    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(window.contains(&took), "{took:?}");
+}
+
 /// A read that a server that stops never answers ends with `BadTimeout` at the request
 /// timeout, as a close does.
 #[test]
