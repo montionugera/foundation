@@ -435,6 +435,18 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
         assert_eq!(head["output"]["homes"], 1, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
 
+        // A change of a channel needs `apply` alone.
+        let errors = site.replace(
+            "{ kind = \"index\" }",
+            "{\n  kind = \"index\"\n  error = \"site.temp\"\n}",
+        );
+        let files = [("people.hcl", &*people), ("site.hcl", &*errors)];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let (head, _) = split(&reply);
+        assert_eq!(head["output"]["changed"], 1, "{head}");
+        assert_eq!(mesh.pointer().version, version + 2);
+
         // A removal of a channel needs `apply` alone.
         let time = "channel \"site.time\" { kind = \"index\" }\n";
         let files = [
@@ -446,7 +458,7 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
         let (head, _) = split(&reply);
         assert_eq!(head["output"]["removed"], 1, "{head}");
-        assert_eq!(mesh.pointer().version, version + 2);
+        assert_eq!(mesh.pointer().version, version + 3);
     });
 }
 
