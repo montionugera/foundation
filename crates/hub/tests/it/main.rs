@@ -116,7 +116,8 @@ struct Test {
 
 impl Test {
     /// A hub on a new ring of `node` with `layout`, a pool of `pool` bytes, and
-    /// `region`, whose mesh clock does not run yet.
+    /// `region`, whose mesh clock does not run yet. The founding of `region` must hold
+    /// [`channels`].
     async fn new(
         node: sim::node::Node,
         tasks: Tasks,
@@ -169,7 +170,9 @@ impl Test {
                 transport: Rc::clone(&region.transport),
             }),
         });
-        hub.set_definitions(&channels());
+        if region.is_none() {
+            hub.set_definitions(&channels());
+        }
         Self {
             clock: node.clock(),
             node,
@@ -233,8 +236,8 @@ impl Test {
     }
 
     /// Sets [`CHANNELS`] and `more`, each `(key, name, data type, index)`, as the
-    /// definitions.
-    fn define<'a>(
+    /// definitions: in a spec that the mesh puts in use, with a region.
+    async fn define<'a>(
         &self,
         more: impl IntoIterator<Item = (u128, &'a str, DataType, u128)>,
     ) {
@@ -242,7 +245,10 @@ impl Test {
         channels.extend(more.into_iter().map(|(key, channel, data_type, index)| {
             (name(channel), definition(key, data_type, index))
         }));
-        self.hub.set_definitions(&channels);
+        match self.region {
+            Some(_) => self.set_spec(channels).await,
+            None => self.hub.set_definitions(&channels),
+        }
     }
 
     async fn reader(&self, channels: &[&str], mode: Mode) -> reader::Reader {
@@ -1389,7 +1395,8 @@ fn releases_the_lent_frame_of_a_latest_reader_at_the_next_call() {
 #[test]
 fn writes_and_reads_a_channel_of_a_variable_type() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut reader = test.reader(&["text"], Mode::Complete).await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
@@ -1425,7 +1432,8 @@ fn writes_and_reads_a_channel_of_a_variable_type() {
 #[test]
 fn refuses_a_string_sample_that_is_not_utf8() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
         let set = Arc::clone(writer.set());
@@ -1612,7 +1620,8 @@ fn gives_a_writer_the_sample_type_of_each_data_channel() {
         test.define([
             (6, "text", DataType::Sample(Type::String), 1),
             (7, "quality", DataType::Quality, 1),
-        ]);
+        ])
+        .await;
         let writer = test.writer("a", &["text", "quality"]).await;
         let entries: Vec<_> = writer
             .set()
