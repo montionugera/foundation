@@ -118,17 +118,21 @@
   only when the data directory has no directory of a mesh. A first start makes
   `node.key` durable before the mesh makes that directory, so a mesh directory with no
   `node.key` is a lost key: the start gives `Error::NoCard` and writes nothing, also
-  with a file `name` and with `Region::Absent`. One state also writes the file `name`
-  first: a first start that stops after the mesh makes its directory and before it
-  stores the founding, then a removal by hand of `name` and `node.key`. With no
-  founding, `name::keep` writes the given name, and `load` then gives `Error::NoCard`.
-  Lost: the claim reads the founding on each start and gives `Error::NoCard` for each
-  founding with no card of the node. It changes rule 7 for a key with no card, which
-  writes nothing, and reads a founding on each start to stop a write that only `load`
-  makes. Lost: a new variant for a missing key. The state and the way out are those of
-  `Error::NoCard` (`laptop.architect-2`, 2026-10-12T20:02:51Z,
+  with a file `name` and with `Region::Absent`. The claim checks it after the lock and
+  before the start writes a file. Lost: the claim reads the founding on each start and
+  gives `Error::NoCard` for each founding with no card of the node. It changes rule 7
+  for a key with no card, which writes nothing, and reads a founding on each start to
+  stop a write that only `load` makes. Lost: a new variant for a missing key. The state
+  and the way out are those of `Error::NoCard` (`laptop.architect-2`,
+  2026-10-12T20:02:51Z,
   https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955). Lost:
-  the write as before, stated here and in the text of `node.unnamed`. Once the first
+  the check in `identity::load`, after `name::keep` and `budget::keep`. A start then
+  wrote the file `name` (a first start that stopped before it stored the founding, then
+  a removal by hand of `name` and `node.key`) or the file `budget`, and then gave
+  `Error::NoCard`, which the doc of `NoCard` rules out (`laptop.architect-2`,
+  2026-10-12T23:22:20Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134515196). Lost: the
+  write as before, stated here and in the text of `node.unnamed`. Once the first
   `node.key` is back, a start with the card name then gives `Error::Renamed`, and a
   start with the written name runs on a card with another name (#2355). Lost: no write,
   and a start that goes on to the open of the region. A start with `Region::Absent` then
