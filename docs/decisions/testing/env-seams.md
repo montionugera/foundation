@@ -373,7 +373,9 @@
   in flight can add the wait, 2026-10-12T15:52:54Z:
   https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370; a remove
   and a write open, 2026-10-12T16:17:43Z:
-  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6128175603).
+  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6128175603; each
+  wait for the calls that a drop left to run, 2026-10-12T20:21:46Z:
+  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6131966723).
   Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
   driver gives `Full` syncs the directory of the path one time and opens again. It
   gives `Full` only when the second open does, and a `sync_dir` error as it is. It does
