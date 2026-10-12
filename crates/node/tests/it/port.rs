@@ -46,7 +46,8 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
         serves.send(()).unwrap();
         async {}
     });
-    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs());
+    // The claim, the read of the name, and the load each open `node.key`.
+    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs()) * 3;
     if let Err(error) = recv(&serving, PATIENCE + load) {
         node.stop();
         panic!("the node does not serve ({error}): {:?}", node.join());

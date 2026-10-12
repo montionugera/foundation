@@ -810,6 +810,106 @@ fn a_start_with_a_name_file_and_no_node_key_on_a_stored_founding_stops() {
     }
 }
 
+/// A start with a name on a data directory with only an empty directory `mesh` stops
+/// with each region before it writes a file.
+#[test]
+fn a_start_on_a_mesh_directory_with_no_node_key_writes_nothing() {
+    for region in [Region::Stored, Region::Absent] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        sim.run_on(&host, |host, _| async move {
+            let files = host.files();
+            files
+                .create_dir(&crate::directory::mesh())
+                .await
+                .expect("makes");
+            files.sync_dir(Path::new("")).await.expect("syncs");
+        })
+        .expect("the run ends");
+        let found = start_as(&mut sim, &host, region.clone(), "edge");
+        assert_eq!(found, Err(Error::NoCard), "{region:?}");
+        assert_eq!(kept(&mut sim, &host), None, "{region:?}");
+        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{region:?}");
+    }
+}
+
+/// A start with a file `name` and no file `node.key` or `budget`, on a data directory
+/// that stores a founding, stops with each region before it writes `budget`.
+#[test]
+fn a_start_with_no_node_key_and_no_budget_on_a_stored_founding_writes_nothing() {
+    for region in [Region::Stored, Region::Absent] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+        remove(&mut sim, &host, identity::FILE);
+        remove(&mut sim, &host, crate::budget::FILE);
+        let found = start_as(&mut sim, &host, region.clone(), "edge");
+        assert_eq!(found, Err(Error::NoCard), "{region:?}");
+        assert_eq!(
+            bytes(&mut sim, &host, crate::budget::FILE),
+            None,
+            "{region:?}"
+        );
+        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{region:?}");
+    }
+}
+
+/// A power cut of the first start after the mesh's directory and before its founding,
+/// then a loss of `name` and `node.key`: the start gives [`Error::NoCard`] and writes
+/// no file `name`, so the node starts with its name once `node.key` is back.
+#[test]
+fn a_no_card_start_after_a_cut_before_the_founding_writes_no_name() {
+    for after in (0..).step_by(5_000).map(Span::from_nanos) {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = start(&host);
+        assert_eq!(sim.run_for(after), Ok(()));
+        sim.crash(&host, sim::Crash::Power);
+        drop(node);
+        let mesh = listed(&mut sim, &host, "").contains(&PathBuf::from("mesh"));
+        if !mesh || stored(&mut sim, &host).is_some() {
+            assert!(
+                after < Span::SECOND,
+                "no cut between the directory and founding"
+            );
+            continue;
+        }
+        remove(&mut sim, &host, crate::name::FILE);
+        let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+        remove(&mut sim, &host, identity::FILE);
+        let found = start_as(&mut sim, &host, Region::Stored, "other");
+        assert_eq!(found, Err(Error::NoCard), "{after:?}");
+        assert_eq!(kept(&mut sim, &host), None, "{after:?}");
+        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{after:?}");
+        write(&mut sim, &host, identity::FILE, own);
+        let found = start_as(&mut sim, &host, Region::Stored, "edge");
+        assert_eq!(found, Ok(()), "{after:?}");
+        return;
+    }
+}
+
+/// A start with a file `name` and no file `node.key`, whose list of the mesh's
+/// directory fails, gives [`Error::Directory`] and makes no new key.
+#[test]
+fn a_mesh_directory_that_does_not_list_with_no_node_key_stops_the_start() {
+    for region in [Region::Stored, Region::Absent] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+        remove(&mut sim, &host, identity::FILE);
+        let operation = env::files::Operation::List;
+        host.fail_file(Path::new("mesh"), operation);
+        let error = env::files::Error::Io {
+            path: PathBuf::from("mesh"),
+            operation,
+            code: 5,
+        };
+        let found = start_as(&mut sim, &host, region.clone(), "edge");
+        assert_eq!(found, Err(Error::Directory(error)), "{region:?}");
+        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{region:?}");
+    }
+}
+
 /// A start with a file `name` and the key of another node in `node.key`, on a data
 /// directory that stores a founding: the open of the region refuses the key, and a
 /// start with [`Region::Absent`] opens no region.

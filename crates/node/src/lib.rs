@@ -418,20 +418,21 @@ impl Node {
     /// more than `usize::MAX` bytes, [`Error::Start`] for a shard that could not start
     /// or pin, or [`Error::Memory`] for a shard with no memory, else [`Error::Shards`]
     /// or [`Error::Directory`] for a data directory that shard 0 could not claim, else
-    /// [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`],
-    /// [`Error::Key`], or [`Error::Directory`] for a stored name that it could not read
-    /// or a name it could not keep, else [`Error::Port`] for a port that did not bind,
-    /// else [`Error::Buffer`] for the first shard by core whose buffer, or the home
-    /// over it, did not open, [`Error::Budget`] or [`Error::Directory`] for a file
-    /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
-    /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::NoCard`] for a data directory with the directory of a mesh and no file
-    /// `node.key`, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
-    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
-    /// that shard 0 could not write, or [`Error::Transport`] or [`Error::Group`],
-    /// whichever the node sees stop first, else [`Error::Directory`] for a file
-    /// `address` that shard 0 could not write empty, else [`Error::Panicked`] for the
-    /// first shard by core that panicked. Any failed shard stops the node.
+    /// `node.key`, else [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`],
+    /// [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for a stored name that
+    /// it could not read or a name it could not keep, else [`Error::Port`] for a port
+    /// that did not bind, else [`Error::Buffer`] for the first shard by core whose
+    /// buffer, or the home over it, did not open, [`Error::Budget`] or
+    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
+    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
+    /// shard 0 could not read or write, [`Error::Blob`] for a chunk store or
+    /// [`Error::Mesh`] for a stored region or a mesh that did not open,
+    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
+    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
+    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
+    /// failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -721,6 +722,7 @@ impl Open {
         }
         let claimed = async {
             let lock = directory::claim(files, cores).await?;
+            identity::claim(files).await?;
             name::keep(files, name).await?;
             Ok::<_, Error>((lock, bind.bind(name)?))
         };
