@@ -13,7 +13,7 @@ use std::path::Path;
 
 use disk::{Scratch, files};
 use env::files::{Error, Mode, Operation};
-use rustix::process::{Resource, getrlimit, setrlimit};
+use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
 /// Sets the action of `SIGXFSZ` to `SIG_IGN`, so a write past the limit fails with
 /// `EFBIG` and does not end the process.
@@ -24,30 +24,39 @@ fn ignore_sigxfsz() {
     assert_ne!(old, libc::SIG_ERR, "{}", std::io::Error::last_os_error());
 }
 
+/// The test sets the limit only around its calls, and asserts after it restores the
+/// limit, since the limit also caps the writes of libtest to its output.
 #[test]
 fn a_create_past_the_file_size_limit_leaves_no_file() {
     const LIMIT: u64 = 1 << 20;
     ignore_sigxfsz();
-    let mut limit = getrlimit(Resource::Fsize);
-    limit.current = Some(LIMIT);
-    setrlimit(Resource::Fsize, limit).unwrap();
     let scratch = Scratch::new();
     let (files, thread) = files(&scratch.0, "files");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    runtime.block_on(async {
+    let old = getrlimit(Resource::Fsize);
+    let limit = Rlimit {
+        current: Some(LIMIT),
+        ..old
+    };
+    setrlimit(Resource::Fsize, limit).unwrap();
+    let (created, opened) = runtime.block_on(async {
         let mode = Mode::Create { len: 8 * LIMIT };
-        let found = files.open(Path::new("a"), mode).await.unwrap_err();
-        let expected = Error::Io {
-            path: "a".into(),
-            operation: Operation::Open,
-            code: libc::EFBIG,
-        };
-        assert_eq!(found, expected);
-        let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
-        assert_eq!(found, Error::NotFound { path: "a".into() });
+        let created = files.open(Path::new("a"), mode).await.map(drop);
+        let opened = files.open(Path::new("a"), Mode::Write).await.map(drop);
+        (created, opened)
     });
+    setrlimit(Resource::Fsize, old).unwrap();
+    let expected = Error::Io {
+        path: "a".into(),
+        operation: Operation::Open,
+        code: libc::EFBIG,
+    };
+    assert_eq!(created, Err(expected));
+    assert_eq!(opened, Err(Error::NotFound { path: "a".into() }));
+    let past = vec![0; usize::try_from(LIMIT).unwrap() + 1];
+    std::fs::write(scratch.0.join("past"), past).unwrap();
     drop(files);
     thread.join().unwrap();
 }
