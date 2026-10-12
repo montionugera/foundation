@@ -78,9 +78,9 @@
   `config.private-key` for each string of a definition; then, together, what the kind
   table refuses in the kind and config of each connector, `config.long-name` for each
   connector with a status name that is too long, `config.duplicate-name`, and
-  `config.subject-is-connector`; then `config.implied-channel` for each status channel
-  that the kind of a connector writes (STATUS PLACEMENT; #2295; `laptop.architect-2`,
-  2026-10-10T22:35:37Z,
+  `config.subject-is-connector`; then, together, `config.implied-channel` for each
+  status channel that the kind of a connector writes (STATUS PLACEMENT; #2295;
+  `laptop.architect-2`, 2026-10-10T22:35:37Z,
   https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855), then for
   each status channel of a connector that the definitions lack or hold as another
   channel (STATUS PLACEMENT; `laptop.architect-2`, 2026-10-12T21:39:19Z, item 2 of
