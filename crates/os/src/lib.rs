@@ -155,14 +155,17 @@ pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
 }
 
-/// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir`
-/// and `dir/data` when they are not there, but not the parents of `dir`. `os` keeps
-/// its own entries in `dir`, so give it a directory that nothing else uses. `threads`
-/// starts I/O thread `name`, which runs each call of the disk and of its files in the
-/// order they reach it, and ends after the disk and its files drop. Give each shard
-/// a disk of its own. The mode of each file and directory that it makes gives the
-/// group and other users no access. It does not change the mode of a file or
-/// directory that is there.
+/// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir` and
+/// `dir/data` when they are not there, but not the parents of `dir`. `os` keeps its own
+/// entries in `dir`, so give it a directory that nothing else uses. `threads` starts
+/// I/O thread `name`, which runs each call of the disk and of its files in the order
+/// they reach it, and ends after the disk and its files drop. Give each shard a disk of
+/// its own. The mode of each file and directory that it makes gives the group and other
+/// users no access. It does not change the mode of a file or directory that is there.
+/// Each file that it opens is closed on exec. A child of the process holds a copy of
+/// each open file from its fork to its exec, or to its end. The copy does not hold the
+/// file: a write open succeeds after its handle closes. The copy keeps the room of a
+/// removed file, which counts as used until the copy closes.
 ///
 /// # Errors
 ///
