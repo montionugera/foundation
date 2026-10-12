@@ -35,6 +35,8 @@ mod files;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paths;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -153,6 +155,33 @@ pub fn threads() -> Result<env::threads::Threads, Error> {
 #[must_use]
 pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
+}
+
+/// The real files of the host by path. A write on a file or on nothing makes a hidden
+/// file with a random name beside `path`, syncs it, and renames it over `path`, so a
+/// reader or a crash sees the old file or the new one, and of two writes one wins
+/// whole. A write that fails removes its file, and gives the error of the remove when
+/// that fails. A crash during a write leaves the file. The hidden file has a name of 21
+/// bytes: where the OS refuses its path as too long, the write gives `Io` and makes no
+/// file.
+///
+/// The file that a write makes is a new file of this user, with permission bits that
+/// give the group and other users no access, also when it replaces a file that gave
+/// more. It takes nothing from the file that it replaces: not its owner, its group, its
+/// permission bits, or its access control list. `os` sets no access control list, so
+/// the file takes the entries that its directory gives to its new files: on macOS, such
+/// an entry can open the file to another user. Each other hard link of the replaced
+/// file keeps the old bytes.
+///
+/// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
+/// hidden file and no rename: a reader, a crash, or a failed write can see or leave a
+/// part of them, and two writes at one time can leave a mix of the two. `os` sets no
+/// owner, group, or permission bit of the file, device, or pipe that takes them. A
+/// write on a symbolic link to nothing gives `NotFound` and makes no file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[must_use]
+pub fn paths() -> env::paths::Paths {
+    env::paths::Paths::new(paths::Driver)
 }
 
 /// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir`

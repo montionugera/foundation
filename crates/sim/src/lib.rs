@@ -21,6 +21,7 @@ mod disk;
 mod drivers;
 mod files;
 mod net;
+mod paths;
 mod serial;
 mod state;
 #[cfg(test)]

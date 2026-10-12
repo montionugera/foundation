@@ -17,6 +17,7 @@ use types::time::{Monotonic, Span, Stamp};
 
 use crate::files::{Files, Held};
 use crate::net::{self, Network};
+use crate::paths::Paths;
 use crate::serial::Serial;
 use crate::{Crash, node, shard};
 
@@ -52,6 +53,7 @@ pub(crate) struct State {
     net: Network,
     files: Files,
     serial: Serial,
+    paths: Paths,
     /// A hash of every pick, in order, with the network, file, and serial digests at
     /// the pick, so that it holds where their events fall between the picks.
     digest: DefaultHasher,
@@ -162,6 +164,7 @@ impl State {
             net,
             files,
             serial,
+            paths: Paths::default(),
             digest: DefaultHasher::new(),
         }
     }
@@ -355,6 +358,10 @@ impl State {
 
     pub(crate) fn serial(&mut self) -> &mut Serial {
         &mut self.serial
+    }
+
+    pub(crate) fn paths(&mut self) -> &mut Paths {
+        &mut self.paths
     }
 
     /// A hash of the picks, the network, the files, and the serial lines.

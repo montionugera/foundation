@@ -174,34 +174,42 @@ fn create_of_another_length_gives_length() {
     });
 }
 
+/// The file size limit of `a_create_past_the_file_size_limit_leaves_no_file`.
+#[cfg(target_os = "linux")]
+const LIMIT: u64 = 1 << 20;
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_create_past_the_file_size_limit_leaves_no_file() {
-    use rustix::process::{Resource, getrlimit};
-    const LIMIT: u64 = 1 << 20;
-    if getrlimit(Resource::Fsize).current != Some(LIMIT) {
-        let thread = std::thread::current();
-        let test = thread.name().expect("invariant: libtest names the thread");
-        // The limit is on the whole process, so this test runs alone in a child. An
-        // ignored `SIGXFSZ` stays ignored across `exec`, so it does not end the child.
-        let script = r#"trap '' XFSZ && ulimit -f "$0" && exec "$1" --exact "$2""#;
-        let status = std::process::Command::new("sh")
-            .args(["-c", script])
-            .arg((LIMIT / 512).to_string())
-            .arg(std::env::current_exe().unwrap())
-            .arg(test)
-            .status()
-            .unwrap();
-        assert!(status.success(), "{status}");
-        return;
-    }
-    run(|files, _| async move {
-        let mode = Mode::Create { len: 8 * LIMIT };
-        let found = files.open(Path::new("a"), mode).await.unwrap_err();
-        assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
-        let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
-        assert_eq!(found, Error::NotFound { path: "a".into() });
+    crate::fsize::under(LIMIT, || {
+        run(|files, _| async move {
+            let mode = Mode::Create { len: 8 * LIMIT };
+            let found = files.open(Path::new("a"), mode).await.unwrap_err();
+            assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
+            let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
+            assert_eq!(found, Error::NotFound { path: "a".into() });
+        });
     });
+}
+
+/// A limit that the parent of the test binary set, as `ulimit -f` in a shell does,
+/// comes with no ignored `SIGXFSZ`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_file_size_limit_test_passes_under_a_limit_that_its_parent_set() {
+    let script = r#"ulimit -f "$0" && exec "$1" --exact "$2" --nocapture"#;
+    let output = std::process::Command::new("sh")
+        .args(["-c", script])
+        .arg((LIMIT / 512).to_string())
+        .arg(std::env::current_exe().unwrap())
+        .arg("files::a_create_past_the_file_size_limit_leaves_no_file")
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{}: {error}", output.status);
+    // A name that matches no test also ends with success.
+    let ran = String::from_utf8_lossy(&output.stdout);
+    assert!(ran.contains("test result: ok. 1 passed"), "{ran}");
 }
 
 #[test]
@@ -955,7 +963,7 @@ async fn stalled<T>(
 
 /// Makes a FIFO at `path`. A child process, such as `mkfifo`, would hold the files of
 /// the tests on other threads open until it starts, and so keep their locks.
-fn mkfifo(path: &Path) {
+pub(crate) fn mkfifo(path: &Path) {
     #[cfg(target_os = "linux")]
     {
         let mode = rustix::fs::Mode::from_raw_mode(0o600);
