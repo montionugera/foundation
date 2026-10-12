@@ -43,8 +43,8 @@ pub struct Config {
     /// must be there and durable.
     pub dir: PathBuf,
     /// Blocks for record headers, recovery reads, and the entries a read gives. It
-    /// needs a class of 64 KiB. Its largest block bounds an entry, with
-    /// [`Limit::Block`].
+    /// needs a class of 64 KiB. Its budget bounds an entry, with
+    /// [`Buffer::block_max`].
     pub pool: Rc<Pool>,
     /// Deadlines of the group commit.
     pub clock: Clock,
@@ -256,6 +256,7 @@ pub struct Buffer {
 struct Shared {
     file: File,
     pool: Rc<Pool>,
+    block_max: usize,
     layout: Layout,
     state: RefCell<State>,
 }
@@ -412,7 +413,12 @@ impl Buffer {
             layout,
             commit,
         } = config;
-        drop(pool.alloc(META_LEN)?);
+        let empty = [META_LEN, record::HEADER_LEN, 0, 0].map(|len| pool.alloc(len));
+        for block in empty {
+            drop(block?);
+        }
+        let block_max = group::block_max(pool.budget(), pool.largest())
+            .expect("invariant: the pool holds the blocks of an empty entry");
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let chain = random(&entropy);
@@ -422,6 +428,7 @@ impl Buffer {
         let shared = Rc::new(Shared {
             file,
             pool,
+            block_max,
             layout: header.layout,
             state: RefCell::new(State {
                 writer,
@@ -453,11 +460,19 @@ impl Buffer {
         self.shared.layout
     }
 
-    /// The block pool from [`Config::pool`]. Its largest block bounds an entry, with
-    /// [`Limit::Block`].
+    /// The block pool from [`Config::pool`]. Its budget bounds an entry, with
+    /// [`Buffer::block_max`].
     #[must_use]
     pub fn pool(&self) -> &Pool {
         &self.shared.pool
+    }
+
+    /// The most bytes of parts, joined, that one entry may have ([`Limit::Block`]). An
+    /// entry at or under it, in one part or two, appends when no other block holds the
+    /// pool. It is at most the largest block of [`Buffer::pool`].
+    #[must_use]
+    pub fn block_max(&self) -> usize {
+        self.shared.block_max
     }
 
     /// Where `path` of the index at `slot` stands, with every appended entry.
@@ -632,17 +647,21 @@ impl Buffer {
         if let Some(error) = &state.failed {
             return Err(Rejected::Files(error.clone()));
         }
-        let taken = match state.open.push(&shared.pool, &state.writer, batch) {
-            Ok(taken) => taken,
-            Err(group::Rejected::Record) => {
-                state.close_open();
-                state
-                    .open
-                    .push(&shared.pool, &state.writer, batch)
-                    .map_err(rejected)?
-            }
-            Err(other) => return Err(rejected(other)),
-        };
+        let taken =
+            match state
+                .open
+                .push(&shared.pool, shared.block_max, &state.writer, batch)
+            {
+                Ok(taken) => taken,
+                Err(group::Rejected::Record) => {
+                    state.close_open();
+                    state
+                        .open
+                        .push(&shared.pool, shared.block_max, &state.writer, batch)
+                        .map_err(rejected)?
+                }
+                Err(other) => return Err(rejected(other)),
+            };
         for (slot, header) in state.open.entries(taken) {
             state
                 .logs

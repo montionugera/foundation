@@ -18,6 +18,67 @@ use crate::wal::{Ends, Full, Limit, Plan, Writer};
 pub(crate) const META_LEN: usize = record::HEADER_LEN + entry::TABLE_MAX;
 const _: () = assert!(META_LEN <= 1 << 16, "the table fits one 64 KiB block");
 
+/// The most bytes of parts, joined, that one entry may have on a pool of `budget`
+/// whose largest block holds `largest`: the group's two blocks and the entry, in any
+/// split into two parts, fit the budget at once. `None` when an empty entry does not.
+pub(crate) fn block_max(budget: usize, largest: usize) -> Option<usize> {
+    let starts = class_starts(largest);
+    if need(&starts, 0) > budget {
+        return None;
+    }
+    let (mut low, mut high) = (0, largest);
+    while low < high {
+        let mid = low.midpoint(high).saturating_add(1);
+        if need(&starts, mid) <= budget {
+            low = mid;
+        } else {
+            high = mid.saturating_sub(1);
+        }
+    }
+    Some(low)
+}
+
+/// The first length of each size class of the pool, up to `largest`.
+fn class_starts(largest: usize) -> Vec<usize> {
+    let mut starts = vec![0];
+    let mut start = 0;
+    loop {
+        let footprint = block::footprint(start);
+        let (mut low, mut high) = (start, largest);
+        while low < high {
+            let mid = low.midpoint(high).saturating_add(1);
+            if block::footprint(mid) == footprint {
+                low = mid;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+        if low >= largest {
+            return starts;
+        }
+        start = low.saturating_add(1);
+        starts.push(start);
+    }
+}
+
+/// Budget bytes that an entry of `len` bytes needs with the group's two blocks, in
+/// the split into two parts that takes the most. `starts` holds the class starts up
+/// to at least `len`: in a class, the first length leaves the most to the other part.
+fn need(starts: &[usize], len: usize) -> usize {
+    let group =
+        block::footprint(META_LEN).saturating_add(block::footprint(record::HEADER_LEN));
+    let parts = starts
+        .iter()
+        .take_while(|&&first| first <= len)
+        .map(|&first| {
+            block::footprint(first)
+                .saturating_add(block::footprint(len.saturating_sub(first)))
+        })
+        .max()
+        .expect("invariant: the class of 0 starts at 0");
+    group.saturating_add(parts)
+}
+
 /// The entries of one group commit, in append order. The first push takes the block
 /// for the record header and the table and the block for a wrap header, so that
 /// [`close`](Self::close) and [`Closed::seal`] allocate nothing. [`Sealed::clear`]
@@ -69,7 +130,7 @@ impl Group {
     }
 
     /// Takes every entry of `batch`, or none, when the record with them fits the
-    /// layout and the ring of `writer`, and each entry fits a block of `pool`; it
+    /// layout and the ring of `writer`, and each entry is at most `block_max`; it
     /// sets each header's `bytes`, leaves `batch` empty, and gives the positions of
     /// the entries it took, for [`Group::entries`]. The first entry takes the
     /// group's blocks from `pool`.
@@ -81,6 +142,7 @@ impl Group {
     pub(crate) fn push(
         &mut self,
         pool: &Pool,
+        block_max: usize,
         writer: &Writer,
         batch: &mut Vec<Entry>,
     ) -> Result<Range<usize>, Rejected> {
@@ -93,13 +155,15 @@ impl Group {
         let len = batch.iter().map(|entry| entry.parts.bytes()).sum::<usize>();
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
-        let largest = pool.largest();
         let over = batch
             .iter()
             .map(|entry| entry.parts.bytes())
-            .find(|&bytes| bytes > largest);
+            .find(|&bytes| bytes > block_max);
         if let Some(len) = over {
-            return Err(Rejected::Large(Limit::Block { len, max: largest }));
+            return Err(Rejected::Large(Limit::Block {
+                len,
+                max: block_max,
+            }));
         }
         layout
             .check(
@@ -394,6 +458,62 @@ mod tests {
         usize::try_from(value).expect("an offset in the test area fits in usize")
     }
 
+    /// The group's blocks and the costliest split of `len` into two parts, over
+    /// every split.
+    fn need_of_every_split(len: usize) -> usize {
+        let group = block::footprint(META_LEN) + block::footprint(HEADER_LEN);
+        let parts = (0..=len)
+            .map(|first| block::footprint(first) + block::footprint(len - first))
+            .max()
+            .expect("a split at 0");
+        group + parts
+    }
+
+    #[test]
+    fn need_takes_the_costliest_split() {
+        let starts = class_starts(1 << 20);
+        for len in (0..=2_000).chain([4_095, 4_096, 4_097, 61_441, 70_000]) {
+            assert_eq!(need(&starts, len), need_of_every_split(len), "len {len}");
+        }
+    }
+
+    #[test]
+    fn class_starts_are_the_lengths_where_a_footprint_grows() {
+        let largest = 1 << 17;
+        let grows = (1..=largest)
+            .filter(|&len| block::footprint(len) > block::footprint(len - 1));
+        let expected: Vec<usize> = iter::once(0).chain(grows).collect();
+        assert_eq!(class_starts(largest), expected);
+    }
+
+    #[test]
+    fn no_block_max_when_an_empty_entry_does_not_fit() {
+        let fits = need_of_every_split(0);
+        assert_eq!(block_max(fits - 1, 1 << 16), None);
+        assert_eq!(block_max(fits, 1 << 16), Some(64));
+    }
+
+    #[test]
+    fn block_max_is_at_most_the_largest_block() {
+        assert_eq!(block_max(usize::MAX, 4_096), Some(4_096));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `block_max` is the largest length whose need fits the budget.
+        #[test]
+        fn block_max_is_the_most_that_fits(budget in 57_792usize..=1 << 22) {
+            let pool = pool(budget);
+            let largest = pool.largest();
+            let max = block_max(budget, largest).expect("an empty entry fits");
+            let starts = class_starts(largest);
+            prop_assert!(max <= largest);
+            prop_assert!(need(&starts, max) <= budget);
+            prop_assert!(max == largest || need(&starts, max + 1) > budget);
+        }
+    }
+
     /// The smallest body a header can open holds one entry of 4032 bytes.
     #[test]
     fn a_ring_that_a_header_opens_holds_one_entry_of_4032_bytes() {
@@ -412,7 +532,12 @@ mod tests {
         let memory = pool(1 << 20);
         let parts = parts(&memory, &[&[7; 4032]]);
         let entry = entry(header(1, Path::Live, 0), parts);
-        let pushed = Group::default().push(&memory, &writer, &mut vec![entry]);
+        let pushed = Group::default().push(
+            &memory,
+            block_max(memory.budget(), memory.largest()).expect("an empty entry fits"),
+            &writer,
+            &mut vec![entry],
+        );
         assert_eq!(pushed, Ok(0..1));
     }
 
@@ -497,9 +622,19 @@ mod tests {
             }
         }
 
+        fn block_max(&self) -> usize {
+            block_max(self.pool.budget(), self.pool.largest())
+                .expect("an empty entry fits")
+        }
+
         fn push(&mut self, group: &mut Group, header: Header, parts: Parts) {
             group
-                .push(&self.pool, &self.writer, &mut vec![entry(header, parts)])
+                .push(
+                    &self.pool,
+                    self.block_max(),
+                    &self.writer,
+                    &mut vec![entry(header, parts)],
+                )
                 .expect("the ring has room");
         }
 
@@ -788,6 +923,7 @@ mod tests {
         area.push(&mut group, header(1, Path::Live, 0), big.clone().into());
         let rejected = group.push(
             &area.pool,
+            area.block_max(),
             &area.writer,
             &mut vec![entry(header(1, Path::Live, 2), big.into())],
         );
@@ -803,6 +939,7 @@ mod tests {
         let mut push = |first| {
             group.push(
                 &area.pool,
+                area.block_max(),
                 &area.writer,
                 &mut vec![entry(header(1, Path::Live, first), Parts::default())],
             )
@@ -827,6 +964,7 @@ mod tests {
         let rejected = loop {
             let pushed = group.push(
                 &area.pool,
+                area.block_max(),
                 &area.writer,
                 &mut vec![entry(one, part.clone().into())],
             );
@@ -860,6 +998,7 @@ mod tests {
         let mut group = Group::default();
         let rejected = group.push(
             &area.pool,
+            area.block_max(),
             &area.writer,
             &mut vec![entry(header(1, Path::Live, 0), Parts::default())],
         );
@@ -918,13 +1057,23 @@ mod tests {
     /// checks that each refuses it with `limit` and stays as it was.
     fn assert_large(area: &mut Area, batch: &[Entry], limit: Limit) {
         let mut empty = Group::default();
-        let pushed = empty.push(&area.pool, &area.writer, &mut batch.to_vec());
+        let pushed = empty.push(
+            &area.pool,
+            area.block_max(),
+            &area.writer,
+            &mut batch.to_vec(),
+        );
         assert_eq!(pushed, Err(Rejected::Large(limit)));
         assert!(empty.is_empty());
         assert!(empty.meta.is_none(), "a large batch takes no block");
         let mut group = Group::default();
         area.push(&mut group, header(9, Path::Live, 0), Parts::default());
-        let pushed = group.push(&area.pool, &area.writer, &mut batch.to_vec());
+        let pushed = group.push(
+            &area.pool,
+            area.block_max(),
+            &area.writer,
+            &mut batch.to_vec(),
+        );
         assert_eq!(pushed, Err(Rejected::Large(limit)));
         assert_eq!(group.headers.len(), 1);
         assert_eq!(group.writes.len(), 0);
@@ -975,28 +1124,28 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_whose_joined_parts_no_pool_block_holds_is_large() {
+    fn an_entry_over_block_max_is_large() {
         let mut area = Area::with_body_max(60_000);
-        let half = vec![7; 29_000];
-        let fits = parts(&area.pool, &[&half, &half[..28_344]]);
-        let over = parts(&area.pool, &[&half, &half[..28_345]]);
+        let half = vec![7; 3_000];
+        let fits = parts(&area.pool, &[&half, &[7; 3_657]]);
+        let over = parts(&area.pool, &[&half, &[7; 3_658]]);
         let big = vec![7; 31_000];
         let body = parts(&area.pool, &[&big, &big]);
         area.pool = pool(1 << 16);
-        assert_eq!(area.pool.largest(), 57_344);
+        assert_eq!(area.block_max(), 6_657);
         let batch = [
             entry(header(1, Path::Live, 0), Parts::default()),
             entry(header(2, Path::Live, 0), over),
         ];
         let limit = Limit::Block {
-            len: 57_345,
-            max: 57_344,
+            len: 6_658,
+            max: 6_657,
         };
         assert_large(&mut area, &batch, limit);
         assert_eq!(
             limit.to_string(),
-            "an entry has 57345 bytes of parts, and a block of the pool holds at most \
-             57344"
+            "an entry has 6658 bytes of parts, and an entry of this buffer holds at most \
+             6657"
         );
         let both = [entry(header(1, Path::Live, 0), body)];
         let body = Limit::Body {
@@ -1006,8 +1155,8 @@ mod tests {
         assert_large(&mut area, &both, body);
         let mut group = Group::default();
         let mut batch = vec![entry(header(1, Path::Live, 0), fits)];
-        let pushed = group.push(&area.pool, &area.writer, &mut batch);
-        assert_eq!(pushed, Ok(0..1), "an entry at the largest block fits");
+        let pushed = group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
+        assert_eq!(pushed, Ok(0..1), "an entry at block_max fits");
     }
 
     proptest! {
@@ -1046,7 +1195,7 @@ mod tests {
                 Ok(0..count)
             };
             let mut group = Group::default();
-            prop_assert_eq!(group.push(&area.pool, &area.writer, &mut batch), expected.clone());
+            prop_assert_eq!(group.push(&area.pool, area.block_max(), &area.writer, &mut batch), expected.clone());
             prop_assert_eq!(group.is_empty(), expected.is_err());
             let checked = area.layout.check(count, count_of_parts, len);
             prop_assert_eq!(checked.map(|()| 0..count), expected.map_err(|rejected| {
@@ -1069,7 +1218,7 @@ mod tests {
                 let bytes = vec![7; len];
                 let parts = parts(&area.pool, &[&bytes]);
                 let mut batch = vec![entry(header(1, Path::Live, 0), parts)];
-                Group::default().push(&area.pool, &area.writer, &mut batch)
+                Group::default().push(&area.pool, area.block_max(), &area.writer, &mut batch)
             };
             prop_assert_eq!(push(max), Ok(0..1));
             let limit = Limit::Body { len: body_max + 1, max: body_max };
@@ -1084,7 +1233,7 @@ mod tests {
             vec![entry(header(1, Path::Live, 0), Parts::default()); ENTRIES_MAX];
         let mut group = Group::default();
         assert_eq!(
-            group.push(&area.pool, &area.writer, &mut batch),
+            group.push(&area.pool, area.block_max(), &area.writer, &mut batch),
             Ok(0..ENTRIES_MAX)
         );
         assert_eq!(group.headers.len(), ENTRIES_MAX);
@@ -1093,7 +1242,7 @@ mod tests {
         batch.push(entry(header(1, Path::Live, 0), parts(&area.pool, &[b"a"])));
         let mut group = Group::default();
         assert_eq!(
-            group.push(&area.pool, &area.writer, &mut batch),
+            group.push(&area.pool, area.block_max(), &area.writer, &mut batch),
             Ok(0..ENTRIES_MAX / 2 + 1)
         );
         assert_eq!(group.writes.len(), ENTRIES_MAX);
@@ -1132,13 +1281,14 @@ mod tests {
             entry(header(2, Path::Live, 0), part.into()),
             entry(header(3, Path::Live, 0), Parts::default()),
         ];
-        let rejected = group.push(&area.pool, &area.writer, &mut batch);
+        let rejected =
+            group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
         assert_eq!(rejected, Err(Rejected::Record));
         assert_eq!(group.headers.len(), 1);
         assert_eq!(group.bytes, third);
         assert_eq!(batch.len(), 3, "a refused batch keeps its entries");
         batch.remove(0);
-        let pushed = group.push(&area.pool, &area.writer, &mut batch);
+        let pushed = group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
         assert_eq!(pushed, Ok(1..3));
         assert_eq!(group.headers.len(), 3);
         assert_eq!(group.slots, [slot(1), slot(2), slot(3)]);
@@ -1164,12 +1314,16 @@ mod tests {
         area.push(&mut group, header(1, Path::Live, 20), big.into());
         let small = block(&area.pool, &[7; 100]);
         let mut batch = vec![entry(header(1, Path::Live, 22), small.into())];
-        let rejected = group.push(&area.pool, &area.writer, &mut batch);
+        let rejected =
+            group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
         assert_eq!(rejected, Err(Rejected::Record));
         assert_eq!(group.headers.len(), 1);
         let closed = group.close(&mut area.writer);
         group = area.commit(closed).clear();
-        assert_eq!(group.push(&area.pool, &area.writer, &mut batch), Ok(0..1));
+        assert_eq!(
+            group.push(&area.pool, area.block_max(), &area.writer, &mut batch),
+            Ok(0..1)
+        );
         let sealed = group.close(&mut area.writer).seal(area.chain);
         let places: Vec<u64> = sealed.writes().map(|(place, _)| place).collect();
         assert_eq!(places, [0], "the record wraps to the first block");
@@ -1181,7 +1335,7 @@ mod tests {
         let mut group = Group::default();
         let lent = area.pool.committed();
         assert_eq!(
-            group.push(&area.pool, &area.writer, &mut Vec::new()),
+            group.push(&area.pool, area.block_max(), &area.writer, &mut Vec::new()),
             Ok(0..0)
         );
         assert!(group.is_empty());
@@ -1196,6 +1350,7 @@ mod tests {
         let mut group = Group::default();
         let rejected = group.push(
             &area.pool,
+            0,
             &area.writer,
             &mut vec![entry(header(1, Path::Live, 0), Parts::default())],
         );
@@ -1218,16 +1373,19 @@ mod tests {
         let one = header(1, Path::Live, 0);
         let mut most = vec![entry(one, two); (ENTRIES_MAX - 1) / 2];
         let half = (ENTRIES_MAX - 1) / 2;
-        assert_eq!(group.push(&area.pool, &area.writer, &mut most), Ok(0..half));
+        assert_eq!(
+            group.push(&area.pool, area.block_max(), &area.writer, &mut most),
+            Ok(0..half)
+        );
         let mut rest =
             vec![entry(header(1, Path::Live, 2), parts(&area.pool, &[b""])); 2];
         assert_eq!(
-            group.push(&area.pool, &area.writer, &mut rest),
+            group.push(&area.pool, area.block_max(), &area.writer, &mut rest),
             Err(Rejected::Record)
         );
         rest.pop();
         assert_eq!(
-            group.push(&area.pool, &area.writer, &mut rest),
+            group.push(&area.pool, area.block_max(), &area.writer, &mut rest),
             Ok(half..half + 1)
         );
         assert_eq!(group.writes.len(), ENTRIES_MAX);
