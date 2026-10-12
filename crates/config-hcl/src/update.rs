@@ -748,9 +748,9 @@ mod tests {
 
     /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
     /// `out` has a value on one line: the value of the top attribute of `out` with
-    /// the key of the attribute that ends `text`. After the closer's line end, `want`
-    /// holds the rest of `out`. Where that line end is, `out` has `\n`, or none when
-    /// the closer's line is the last.
+    /// the key of the attribute that ends `text`. After the closer, `want` holds the
+    /// rest of `out`, with a line end that `out` lacks when the closer's line is the
+    /// last.
     fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
@@ -791,23 +791,15 @@ mod tests {
         let heredoc = want.get(start..closer).unwrap_or_default();
         let spaces = heredoc.trim_end_matches(lex::space).len();
         let spaces = heredoc.get(spaces..).unwrap_or_default();
-        let after = want.get(closer..).unwrap_or_default();
-        let rest = after
-            .strip_prefix("\r\n")
-            .or_else(|| after.strip_prefix('\n'))
-            .unwrap_or(after);
-        // A text whose first line ends in `\r\n` gets no heredoc, so the line end that
-        // `update` adds to the last line before an added line is `\n` here.
-        let tail = if rest.is_empty() {
-            spaces.to_owned()
-        } else {
-            format!("{spaces}\n{rest}")
+        let rest = match want.get(closer..) {
+            Some("\n") => "",
+            rest => rest.unwrap_or_default(),
         };
         heredoc.starts_with("<<")
             && out
                 .get(start..last)
                 .is_some_and(|value| !value.contains('\n'))
-            && out.get(last..) == Some(&tail)
+            && out.get(last..) == Some(&format!("{spaces}{rest}"))
     }
 
     proptest! {
@@ -891,7 +883,10 @@ mod tests {
             let annotated = annotate(&text_of(&a, attributes_last), &mut picks);
             let text = annotated.trim_end_matches(['\r', '\n']);
             // `update` takes the line end of the first line.
-            let line_end = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let crlf = text
+                .split_once('\n')
+                .is_some_and(|(line, _)| line.ends_with('\r'));
+            let line_end = if crlf { "\r\n" } else { "\n" };
             let ended = format!("{text}{line_end}");
             // A heredoc needs the line end after its closer.
             prop_assume!(read(Source(0), text) == Ok(a.clone()));
@@ -1192,7 +1187,7 @@ mod tests {
     fn quotes_the_last_value_of_an_unended_text_with_a_crlf_line() {
         for text in ["a = 1\nb = 2\r\nc = 3", "a = 1\nb = 2\r\nc = 3  "] {
             let new = "a = 1\nb = 2\nc = \"x\\n\"";
-            let ended = format!("{text}\r\n");
+            let ended = format!("{text}\n");
             let (out, want) = (updated(text, new), updated(&ended, new));
             assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
             let kept = format!("{out}\r\n");
@@ -1204,7 +1199,7 @@ mod tests {
     fn quotes_the_last_value_of_a_crlf_line_before_an_added_line() {
         let text = "a = 1\nb = 2\r\nc = 3";
         let new = "a = 1\nb = 2\nc = \"x\\n\"\nd = 4";
-        let (out, want) = (updated(text, new), updated(&format!("{text}\r\n"), new));
+        let (out, want) = (updated(text, new), updated(&format!("{text}\n"), new));
         assert_eq!(out, "a = 1\nb = 2\r\nc = \"x\\n\"\nd = 4\n");
         assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
         let kept = out.replacen("\"\n", "\"\r\n", 1);
