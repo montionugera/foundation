@@ -11,8 +11,9 @@ use types::channel::Key;
 
 use crate::{Ending, State};
 
-/// An open that waits, registered on its channels: a spec in use that removes or
-/// changes one of them ends its wait at once. Dropping it ends the registration.
+/// An open that waits, registered on its channels: a change of the definitions that
+/// removes or changes one of them ends its wait at once. Dropping it ends the
+/// registration.
 pub(crate) struct Pending<'s> {
     state: &'s Rc<RefCell<State>>,
     key: u64,
