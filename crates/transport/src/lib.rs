@@ -178,8 +178,8 @@ impl Transport {
 
     /// The largest message that this node takes on a stream, and the largest datagram:
     /// the smaller of [`Config::message_bytes_max`] and the largest block of
-    /// [`Config::pool`]. It is at least 1472, since [`Transport::new`] refuses a smaller
-    /// limit. Peers get it in the handshake.
+    /// [`Config::pool`]. It is at least 1472, since [`Transport::new`] refuses a
+    /// smaller limit. Peers get it in the handshake.
     ///
     /// ```
     /// fn limit(transport: &transport::Transport) -> usize {
