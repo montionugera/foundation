@@ -3377,10 +3377,20 @@ fn refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
         );
         let documents = documents(&[COUNTED, &writer]);
         let found = config::check(&documents, &kinds()).expect_err("problems");
-        let found: Vec<_> = (found.iter())
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect();
-        assert_eq!(found, ["config.implied-channel"], "second: {second}");
+        let span = |document: &Document| document.blocks[0].labels[0].span;
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(&documents[1]),
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        assert_eq!(found, [expected], "second: {second}");
     }
 }
 
@@ -3408,12 +3418,14 @@ fn refuses_a_connector_that_writes_its_own_status_channel() {
 
 /// The definitions of `COUNTED`, with a connector `d` of the kind `writer` on `node`
 /// that writes `writes`, and its status channels.
-fn with_writer(node: &str, writes: &str) -> BTreeMap<Name, Stored> {
+fn with_writer(node: &str, writes: &[&str]) -> BTreeMap<Name, Stored> {
     let entries = config::check(&documents(&[COUNTED]), &kinds()).expect("entries");
     let mut definitions = made(&entries);
+    let writes: Vec<String> = writes.iter().map(|name| format!("{name:?}")).collect();
+    let writes = writes.join(", ");
     let text = format!(
         "connector \"d\" {{\n  kind = \"writer\"\n  node = \"{node}\"\n  \
-         writes = [\"{writes}\"]\n}}\n"
+         writes = [{writes}]\n}}\n"
     );
     let alone = config::check(&documents(&[&text]), &kinds()).expect("d alone");
     // `made` gives the same keys to both, so the keys of `d` move apart.
@@ -3433,7 +3445,7 @@ fn with_writer(node: &str, writes: &str) -> BTreeMap<Name, Stored> {
 fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
     let members = BTreeSet::from([name("n"), name("m")]);
     for node in ["m", "n"] {
-        let definitions = with_writer(node, "c.status.state");
+        let definitions = with_writer(node, &["c.status.state"]);
         let found = config::plan::check(&definitions, &members, &kinds());
         let expected = (
             "config.implied-channel",
@@ -3451,7 +3463,7 @@ fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
 #[test]
 fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another() {
     let members = BTreeSet::from([name("n"), name("m")]);
-    let mut definitions = with_writer("m", "c.status.state");
+    let mut definitions = with_writer("m", &["c.status.state"]);
     let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
         panic!("the status index");
     };
@@ -3475,7 +3487,7 @@ fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another()
 #[test]
 fn check_gives_a_write_of_a_status_channel_before_a_missing_one() {
     let members = BTreeSet::from([name("n"), name("m")]);
-    let mut definitions = with_writer("m", "c.status.state");
+    let mut definitions = with_writer("m", &["c.status.state"]);
     definitions
         .remove(&name("d.status.state"))
         .expect("implied");
@@ -3505,7 +3517,7 @@ fn check_gives_a_write_of_a_status_channel_before_a_missing_one() {
 fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
     let members = BTreeSet::from([name("n"), name("m")]);
     for second in ["c.status.state", "C.STATUS.STATE"] {
-        let definitions = with_writer("n", &format!("c.status.state\", \"{second}"));
+        let definitions = with_writer("n", &["c.status.state", second]);
         let found = config::plan::check(&definitions, &members, &kinds());
         let expected = (
             "config.implied-channel",
@@ -3524,7 +3536,7 @@ fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
 /// connector writes on another node leaves the index with no one home.
 #[test]
 fn check_counts_a_connector_as_a_writer_of_its_status_index() {
-    let mut definitions = with_writer("m", "x");
+    let mut definitions = with_writer("m", &["x"]);
     let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
         panic!("the status index");
     };
