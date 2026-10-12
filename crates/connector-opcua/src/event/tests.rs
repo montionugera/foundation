@@ -10,10 +10,6 @@ use super::Loop;
 use crate::child;
 use crate::ffi::{self, DelayedCallback, EventLoop, Status};
 
-unsafe extern "C" {
-    fn UA_UInt32_random() -> u32;
-}
-
 /// Ticks of 100 ns from 1601 to 1970, the epoch of `dateTime_now`.
 const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 
@@ -278,7 +274,7 @@ fn draws(seed: u64) -> [u32; 4] {
     let clock = sim.node(sim::node::Config::default()).clock();
     let _events = Loop::new(clock, &mut Rng::from_seed(seed));
     // SAFETY: it draws from the generator of this thread.
-    std::array::from_fn(|_| unsafe { UA_UInt32_random() })
+    std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
 
 #[test]
@@ -924,8 +920,7 @@ fn connect(url: &CStr) {
     let client = unsafe { ffi::shim_client_new(f.events.raw()) };
     assert!(!client.is_null());
     // SAFETY: the client lives, and `url` ends with a NUL.
-    let status =
-        Status(unsafe { ffi::test::UA_Client_connectAsync(client, url.as_ptr()) });
+    let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
     assert_eq!(status.name(), "BadTcpEndpointUrlInvalid");
     // SAFETY: the client lives, and the loop outlives it.
     unsafe { ffi::UA_Client_delete(client) };

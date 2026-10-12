@@ -427,6 +427,11 @@ pub(super) async fn keep(
         let done = hold(gave, &files, &held, pointer).await;
         let Some(group) = group.upgrade() else { return };
         let mut group = group.borrow_mut();
+        // After a stop, `used` keeps the view at the stop, also when a taken spec's
+        // file is now durable.
+        if group.running().is_err() {
+            return;
+        }
         let moved = group.used.settle(pointer, done);
         group.wake_calls();
         if moved {
@@ -550,6 +555,15 @@ impl Mesh {
             Poll::Pending
         })
         .await
+    }
+
+    /// The spec that this node uses now. [`Mesh::spec`] waits for the read of a
+    /// committed pointer, and this call does not. A task that `spec` or a [`Watch`]
+    /// gave a spec finds that spec here, or a later one. It answers also after the
+    /// group stops, from the view at the stop.
+    #[must_use]
+    pub fn used(&self) -> Spec {
+        self.group.borrow().used.spec.clone()
     }
 
     /// A watch of the spec that this node uses.
