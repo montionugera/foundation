@@ -18,21 +18,32 @@
   (`laptop.architect`, 2026-10-12T18:28:19Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130192057). The
   rules are those of the spec in use, which is the base of each plan that applies, so a
-  plan that removes the subject's own policy passes. The check runs before each other
-  check that reads the spec in use (`ops.behind`, `ops.stale-plan`), so a subject with
-  no grant does not learn from another error what the spec holds. An error of the files
-  alone (`Documents::read`, the names of `config::check`) comes before the check. A
-  refusal is `ops.denied`, status 1, with the fix `Ask an admin of the region for an
-  access policy that allows it`. It names a name only when the request holds it. For
-  `plan`, it names the first name of the files with no grant, in the order of the tree
-  key. When only a name of the spec in use has no grant, it names the action and no
-  name. For `apply`, it names the first changed name with no grant. `admin` is no part
-  of the check: it governs a join ticket and a forced takeover, and `apply` on the key
-  of an access policy or a subject lets its holder change it (K3; C8 has `plan` list
-  access changes apart). #1213 checks the `apply` names and the index of each home of
-  the change record on each member and then removes that check from `ops`. `plan` makes
-  no change record, so its check stays in `ops`. Decided by `laptop.architect`
-  (2026-10-11T08:10:05Z,
+  plan that removes the subject's own policy passes when that policy gives the subject
+  `apply` and `admin` on its key. The check runs before each other check that reads the
+  spec in use (`ops.behind`, `ops.stale-plan`), so a subject with no grant does not
+  learn from another error what the spec holds. An error of the files alone
+  (`Documents::read`, the names of `config::check`) comes before the check. A refusal is
+  `ops.denied`, status 1, with the fix `Ask an admin of the region for an access policy
+  that allows it`. It names a name only when the request holds it. For `plan`, it names
+  the first name of the files with no grant, in the order of the tree key. When only a
+  name of the spec in use has no grant, it names the action and no name. For `apply`, it
+  names the first changed name with no grant. `apply` also needs `admin` on the key of
+  each access policy and each subject that the plan adds, changes, or removes, and the
+  refusal names the first such key with no grant. A policy governs its whole region
+  whatever its key, and a subject's keys decide who acts as it, so with `apply` alone a
+  grant on a subtree gives each name of the region. `admin` also governs a join ticket
+  and the creation of a region (K5). `plan` needs no `admin` (C8 has `plan` list access
+  changes apart). Limits: `admin` on the key of a policy or a subject gives each name of
+  its region. A connector needs `apply` alone, so a policy whose `subjects` select names
+  under a subtree also reaches a connector that a holder of `apply` adds there. Lost: no
+  `admin` check, with which a grant of `apply` on any subtree is a grant on the region;
+  and a check of each name that the old and the new `select` reach, because `**` reaches
+  names that the spec does not hold yet (`laptop.architect`, 2026-10-12T19:56:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131596199, which
+  supersedes "`admin` is no part of the check" of 6106994274). #1213 checks the `apply`
+  names, the `admin` keys, and the index of each home of the change record on each
+  member and then removes that check from `ops`. `plan` makes no change record, so its
+  check stays in `ops`. Decided by `laptop.architect` (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274), on
   decision 5 of plan revision 4
   (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).

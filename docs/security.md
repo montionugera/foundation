@@ -159,6 +159,9 @@ state on `main`.
 - Mesh to agent, to attack when `ops` gets real operations: text from a spec file
   or a peer that reaches a tool description or a tool result, as an instruction to
   the agent.
+- A change of an access policy or a subject needs `admin` on its key, because a
+  policy governs its whole region (SERVE ACCESS). So grant `admin` only to a subject
+  that may change access for the whole region.
 
 ### Node to node
 

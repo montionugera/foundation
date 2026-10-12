@@ -156,12 +156,11 @@
   codes are new, each with status 1. A body that is not this form is `ops.bad-request`,
   with the cause in the message and the fix ``Use a `foundation` program of the same
   version as the node``. So is each operation other than `plan` and `apply`, with the
-  message ``the operation `<name>` does not run on a node``. A subject with no grant
-  gets `ops.denied` (SERVE ACCESS). A reply of more than
-  `wire::hub::client::BODY_BYTES_MAX` bytes is `ops.large-reply`, with the bound in the
-  message and the fix `Plan and apply the change in smaller steps`, since
-  `hub::serve::Reply::send` panics on such a body (`laptop.architect`,
-  2026-10-08T11:24:14Z,
+  cause ``the operation `<name>` does not run on a node``. A subject with no grant gets
+  `ops.denied` (SERVE ACCESS). A reply of more than `wire::hub::client::BODY_BYTES_MAX`
+  bytes is `ops.large-reply`, with the bound in the message and the fix `Plan and apply
+  the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
+  (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
   bound holds for the reply of an error too. `serve` stops writing a reply at the bound,
   and does not hold the bytes of a large reply. The places of the problems of one file
