@@ -3127,6 +3127,33 @@ fn a_create_does_not_wait_for_a_remove_that_drops_while_the_create_is_in_flight(
     assert!(runs.contains(&(true, vec![])), "{runs:?}");
 }
 
+/// Whether a write open of `a` opens while a remove of `a` is in flight, whose future
+/// drops after the open starts, and the names in the data directory a millisecond
+/// later.
+fn write_open_with_remove_dropped_in_flight(value: u64) -> (bool, Vec<PathBuf>) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        drop(create(&node, "a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let mut opened = Box::pin(files.open(Path::new("a"), Mode::Write));
+        pend(opened.as_mut()).await;
+        drop(remove);
+        let opened = opened.await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let opened = opened.map(drop).is_ok();
+        (opened, files.list(Path::new("")).await.unwrap())
+    })
+}
+
+#[test]
+fn a_write_open_does_not_wait_for_a_remove_that_drops_while_the_open_is_in_flight() {
+    let runs: Vec<_> = (0..32)
+        .map(write_open_with_remove_dropped_in_flight)
+        .collect();
+    assert!(runs.contains(&(true, vec![])), "{runs:?}");
+}
+
 /// Whether a remove of `a` succeeds while a create of `a` is in flight, whose future
 /// drops after the remove starts, and the names in the data directory a millisecond
 /// later.
