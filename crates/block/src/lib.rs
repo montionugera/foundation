@@ -307,6 +307,12 @@ impl Pool {
         Self::new(config, heap)
     }
 
+    /// The most bytes the pool commits at once: the budget of its [`Config`].
+    #[must_use]
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
+
     /// The most bytes one block can hold.
     #[must_use]
     pub fn largest(&self) -> usize {
@@ -1212,6 +1218,15 @@ mod tests {
                 Config::new(128).expect("the budget fits"),
                 memory,
             ));
+        }
+
+        #[test]
+        fn gives_the_budget_of_its_config() {
+            for budget in [0, 1000] {
+                let config = Config::new(budget).expect("the budget fits");
+                let pool = Pool::heap(config);
+                assert_eq!(u64::try_from(pool.budget()), Ok(budget));
+            }
         }
     }
 
