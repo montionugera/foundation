@@ -2,6 +2,7 @@
 
 #![expect(clippy::print_stderr, reason = "xtask reports to the terminal")]
 
+mod attribution;
 mod build;
 mod cfg;
 mod field;
@@ -35,6 +36,7 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args[..] {
         ["layers"] => layers(root),
+        ["attribution"] => attribution::check(root),
         ["globals"] => globals::check(root),
         ["oracles"] => oracles::check(root),
         [name @ ("loom" | "shuttle")] => cfg::test(root, name),
@@ -54,7 +56,7 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage: cargo xtask <layers|globals|oracles|loom>\n       \
-                 cargo xtask <shuttle|miri|sanitizers>\n       \
+                 cargo xtask <shuttle|miri|sanitizers|attribution>\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
                  cargo xtask review <pr> <head sha>\n       \
