@@ -20,11 +20,10 @@
   each tab in the spaces, tabs, and `>` at the start of a line replaced by spaces to the
   next multiple of 4 columns, and with the spaces and tabs at the end of a line kept: as
   CommonMark with the GitHub extensions tables, footnotes, task lists, strikethrough,
-  and autolinks, so that a bare URL shows each mark in it as written. Each field and end
-  line is read in the text that GitHub shows on its line: with its escapes and entities
-  read, without the marks of emphasis and code spans, with each image as one character
-  that is not text, with no invisible character (Unicode default ignorable), and with
-  each run of white space as one space. The check
+  and autolinks. Each field and end line is read in the text that GitHub shows on its
+  line: with its escapes and entities read, without the marks of emphasis and code
+  spans, with each image as one character that is not text, with no invisible character
+  (Unicode default ignorable), and with each run of white space as one space. The check
   does not read a character as another character that looks the same, such as a Cyrillic
   letter in place of a Latin one. The tag filter acts only on raw HTML, which fails
   (corrected by the director at 2026-10-08T21:55:15Z,
@@ -279,13 +278,15 @@
   a `_` follows, such as `#13abc`, the `#8203` of `&#8203;`, and a `GH-<n>` after `@`,
   which GitHub shows as the mention of a user. GitHub shows no issue for each. It does
   not read a path with no host, such as `synnaxlabs/foundation/issues/13`, for which
-  GitHub shows an issue. GitHub links text that starts with `www.` also when no domain
-  with a dot follows it, and the check, as comrak does, links it only before such a
-  domain. So in such text the check reads each entity and mark that GitHub shows as
-  written, such as the `&#40;` of `#12 www.~&#40;<comment link>)`, which it reads as
-  `(`. The check reads `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the
-  path of a file under `crates/` in each ASCII case. Supersedes the words of goals 3 and
-  4 of https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
+  GitHub shows an issue. The check links a bare URL by the autolink rule of comrak,
+  which differs from that of GitHub in some forms, such as text after `www.` with no
+  domain with a dot, and a domain that starts with a symbol such as `©`. In such a form
+  the check can read the line in another way than GitHub shows it. For example, it reads
+  the `&#40;` of `#12 https://©.y&#40;<comment link>)` as `(`, where GitHub shows
+  `&#40;` as written, so it counts a comment link that GitHub does not show. The check
+  reads `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file
+  under `crates/` in each ASCII case. Supersedes the words of goals 3 and 4 of
+  https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
   item. A `Later steps:` line after the first of the end lines is not read. A last round
   posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
   is checked as before, so that the rule does not fail the rounds that came before it.
@@ -313,7 +314,10 @@
   ruled for a `GH-<n>` after a mark and after `@` at 2026-10-12T20:54:03Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6132434331), and
   ruled for text after `www.` at 2026-10-12T21:59:23Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133389460). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133389460) and for
+  each form in which comrak and GitHub link a bare URL in different ways at
+  2026-10-12T22:18:56Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133655869). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.

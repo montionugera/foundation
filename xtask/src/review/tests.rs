@@ -3312,18 +3312,21 @@ fn a_comment_link_with_a_gh_name_after_an_ignorable_character_counts() {
     assert_eq!(check(&record(vec![surfaced(&line)])), Vec::<String>::new());
 }
 
-/// A limit of REVIEW CHECK: GitHub links `www.` with no domain with a dot after it, and
-/// shows `&#40;` in it as written, but the check reads it as `(`, so a comment link
-/// follows it. A read of the links from `body_html` (#2473) gives both lines a problem.
+/// A limit of REVIEW CHECK: the check links a bare URL by the autolink rule of comrak.
+/// GitHub also links text after `www.` with no domain with a dot, and a domain that
+/// starts with a symbol such as `©`, and shows `&#40;` in it as written, but the check
+/// reads it as `(`, so a comment link follows it. A read of the links from `body_html`
+/// (#2473) gives each line a problem.
 #[test]
-fn a_www_text_with_no_dotted_domain_is_read_with_its_entities() {
-    let text = format!("www.~&#40;{OK})");
-    assert_eq!(
-        risk(vec![deferred(&format!("#12 {text}"))]),
-        Vec::<String>::new()
-    );
-    let line = format!("x {text}");
-    assert_eq!(check(&record(vec![surfaced(&line)])), Vec::<String>::new());
+fn a_bare_url_that_only_github_links_is_read_with_its_entities() {
+    for url in ["www.~", "https://\u{A9}.y"] {
+        let text = format!("{url}&#40;{OK})");
+        let deferral = risk(vec![deferred(&format!("#12 {text}"))]);
+        assert_eq!(deferral, Vec::<String>::new(), "{url}");
+        let line = format!("x {text}");
+        let surface = check(&record(vec![surfaced(&line)]));
+        assert_eq!(surface, Vec::<String>::new(), "{url}");
+    }
 }
 
 /// GitHub links a bare URL up to the next space, and shows each mark in it as written.
