@@ -8,7 +8,6 @@ use std::process::ExitCode;
 
 use comrak::nodes::{AstNode, LineColumn, NodeHeading, NodeValue, Sourcepos};
 use comrak::{Arena, Options, parse_document};
-use serde_json::Value;
 
 use crate::{field, gh};
 
@@ -698,9 +697,9 @@ impl Start {
 #[derive(Debug, Default)]
 struct Shown<'a> {
     /// The round number of the first top-level heading that has one ([`number`]). When
-    /// the comment is not old and has none, that of the comment as [`unblocked`] reads
-    /// it, since GitHub starts HTML blocks at other lines than comrak, and can show a
-    /// heading that comrak hides.
+    /// the comment is not old and has none, that of the comment respelled by
+    /// [`unblocked`], since GitHub starts HTML blocks at other lines than comrak, and can
+    /// show a heading that comrak hides.
     number: Option<String>,
     /// The top-level paragraphs before the first block that is not a paragraph.
     start: Start,
@@ -784,7 +783,7 @@ impl<'a> Shown<'a> {
             }
         }
         if shown.number.is_none() && !old {
-            shown.number = unblocked(body);
+            shown.number = tree(&arena, body).children().find_map(number);
         }
         hiding.extend(tagged(body, &starts, &codes).map(|at| (at, Cause::Raw)));
         hiding.sort_by_key(|(at, _)| *at);
@@ -989,12 +988,20 @@ fn normalized(text: &str) -> String {
     normalized
 }
 
-/// The round number of the first top-level heading that has one ([`number`]) in `body`
-/// read as GitHub reads its HTML blocks, by an older spec. At the start of each line
-/// ([`bare`]), each tag whose name starts with a name that the two specs list in a
-/// different way is renamed ([`RENAMED`]), and an invisible character ([`texts`]) is
-/// put before `<!` and a lowercase letter, which starts no HTML block on GitHub.
-fn unblocked(body: &str) -> Option<String> {
+/// The tree of `body` as GitHub shows it: respelled by [`unblocked`], with the
+/// footnotes that GitHub shows ([`footnotes`]).
+fn tree<'a>(arena: &'a Arena<'a>, body: &str) -> &'a AstNode<'a> {
+    let root = parse_document(arena, &unblocked(body), &options());
+    footnotes(root);
+    root
+}
+
+/// `body` respelled so that comrak starts an HTML block only where GitHub does, which
+/// reads HTML blocks by an older spec. At the start of each line ([`bare`]), each tag
+/// whose name starts with a name that the two specs list in a different way is renamed
+/// ([`RENAMED`]), and an invisible character ([`texts`]) is put before `<!` and a
+/// lowercase letter, which starts no HTML block on GitHub.
+fn unblocked(body: &str) -> String {
     let mut text = String::with_capacity(body.len());
     let (mark, body) = body.split_at(mark(body));
     text.push_str(mark);
@@ -1024,10 +1031,7 @@ fn unblocked(body: &str) -> Option<String> {
             None => text.push_str(rest),
         }
     }
-    let arena = Arena::new();
-    parse_document(&arena, &text, &options())
-        .children()
-        .find_map(number)
+    text
 }
 
 /// Each tag name that starts an HTML block of type 6 in one of the two specs only, and
@@ -1141,63 +1145,53 @@ fn stated(value: &str) -> bool {
     first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"
 }
 
-/// Reads the record of PR `pr` with `api`.
+/// Reads the record of PR `pr` with `api`, and the state of each issue or PR that a
+/// merge condition of its body names ([`conditions`]).
 fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
-    let path = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
-    let pull = api(&path)?;
-    let files = api(&format!("{path}/files"))?;
-    let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
-    let open = |n| {
-        let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
-        let issue = issue.first().ok_or("gh returned no issue")?;
-        Ok(field::text(issue, "state")? == "open")
-    };
-    record_of(&pull, &files, &comments, &open).map_err(|e| format!("PR {pr}: {e}"))
-}
-
-/// The record from the `gh api` objects of a PR, its files, and its comments, where
-/// `open` gives whether an issue or PR is open.
-fn record_of(
-    pull: &[Value],
-    files: &[Value],
-    comments: &[Value],
-    open: &dyn Fn(u64) -> Result<bool, String>,
-) -> Result<Record, String> {
-    let pull = pull.first().ok_or("gh returned no PR")?;
-    let body = if pull["body"].is_null() {
-        ""
-    } else {
-        field::text(pull, "body")?
-    };
-    let mut waits = Vec::new();
-    for n in conditions(body) {
-        if open(n)? {
-            waits.push(n);
-        }
-    }
-    Ok(Record {
-        branch: field::text(&pull["head"], "ref")?.to_string(),
-        base: field::text(&pull["base"], "ref")?.to_string(),
-        labels: field::list(pull, "labels")?
-            .iter()
-            .map(|l| field::text(l, "name").map(str::to_string))
-            .collect::<Result<_, _>>()?,
-        files: files
-            .iter()
-            .map(|f| field::text(f, "filename").map(str::to_string))
-            .collect::<Result<_, _>>()?,
-        comments: comments
-            .iter()
-            .map(|c| {
-                Ok(Comment {
-                    author: field::text(&c["user"], "login")?.to_string(),
-                    body: field::text(c, "body")?.to_string(),
-                    created: utc(field::text(c, "created_at")?)?.to_string(),
+    let read = || -> Result<Record, String> {
+        let path = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
+        let pull = api(&path)?;
+        let files = api(&format!("{path}/files"))?;
+        let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
+        let pull = pull.first().ok_or("gh returned no PR")?;
+        let body = if pull["body"].is_null() {
+            ""
+        } else {
+            field::text(pull, "body")?
+        };
+        let mut record = Record {
+            branch: field::text(&pull["head"], "ref")?.to_string(),
+            base: field::text(&pull["base"], "ref")?.to_string(),
+            labels: field::list(pull, "labels")?
+                .iter()
+                .map(|l| field::text(l, "name").map(str::to_string))
+                .collect::<Result<_, _>>()?,
+            files: files
+                .iter()
+                .map(|f| field::text(f, "filename").map(str::to_string))
+                .collect::<Result<_, _>>()?,
+            comments: comments
+                .iter()
+                .map(|c| {
+                    Ok(Comment {
+                        author: field::text(&c["user"], "login")?.to_string(),
+                        body: field::text(c, "body")?.to_string(),
+                        created: utc(field::text(c, "created_at")?)?.to_string(),
+                    })
                 })
-            })
-            .collect::<Result<_, String>>()?,
-        waits,
-    })
+                .collect::<Result<_, String>>()?,
+            waits: Vec::new(),
+        };
+        for n in conditions(body) {
+            let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
+            let issue = issue.first().ok_or("gh returned no issue")?;
+            if field::text(issue, "state")? == "open" {
+                record.waits.push(n);
+            }
+        }
+        Ok(record)
+    };
+    read().map_err(|e| format!("PR {pr}: {e}"))
 }
 
 /// Each issue or PR that a merge condition of `body` names, one time each, in body
@@ -1206,9 +1200,8 @@ fn record_of(
 /// also of a list item or a block quote, and also in a code span. A code block, a
 /// heading, a table, and HTML hold none. Only the issue right after the words counts.
 fn conditions(body: &str) -> Vec<u64> {
-    let body = normalized(body);
     let arena = Arena::new();
-    let root = parse_document(&arena, &body, &options());
+    let root = tree(&arena, &normalized(body));
     let mut found = Vec::new();
     for node in root.descendants() {
         if !matches!(node.data.borrow().value, NodeValue::Paragraph) {

@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use super::*;
 
 /// The head of #1089 when it merged.
@@ -1333,13 +1335,13 @@ fn fails_a_last_round_in_an_older_format() {
 #[test]
 fn names_the_pr_field_a_record_lacks() {
     use serde_json::json;
-    let pull = [json!({ "head": { "ref": "a" }, "base": {}, "labels": [] })];
+    let pull = json!({ "head": { "ref": "a" }, "base": {}, "labels": [] });
     assert_eq!(
-        record_of(&pull, &[], &[], &|_| Ok(false)).unwrap_err(),
-        "JSON has no string field `ref`"
+        fetched(&pull, &[], &[]).unwrap_err(),
+        "PR 1: JSON has no string field `ref`"
     );
     let pull =
-        [json!({ "head": { "ref": "a" }, "base": { "ref": "main" }, "labels": [] })];
+        json!({ "head": { "ref": "a" }, "base": { "ref": "main" }, "labels": [] });
     let comment = |created| {
         json!({
             "user": { "login": BOT },
@@ -1348,7 +1350,7 @@ fn names_the_pr_field_a_record_lacks() {
         })
     };
     let files = [json!({ "filename": "a.rs" })];
-    let read = record_of(&pull, &files, &[comment(CUTOFF)], &|_| Ok(false)).unwrap();
+    let read = fetched(&pull, &files, &[comment(CUTOFF)]).unwrap();
     assert_eq!((read.branch.as_str(), read.base.as_str()), ("a", "main"));
     assert_eq!(read.files, ["a.rs"]);
     assert_eq!(read.comments[0].author, BOT);
@@ -1361,12 +1363,31 @@ fn names_the_pr_field_a_record_lacks() {
         "2026-10-08T03:00:00+",
     ] {
         assert_eq!(
-            record_of(&pull, &files, &[comment(created)], &|_| Ok(false)).unwrap_err(),
+            fetched(&pull, &files, &[comment(created)]).unwrap_err(),
             format!(
-                "`created_at` is `{created}`, not a UTC time `YYYY-MM-DDTHH:MM:SSZ`"
+                "PR 1: `created_at` is `{created}`, not a UTC time \
+                 `YYYY-MM-DDTHH:MM:SSZ`"
             )
         );
     }
+}
+
+/// The record of PR 1 read through [`fetch`] from the `gh api` objects of the PR, its
+/// files, and its comments.
+fn fetched(
+    pull: &Value,
+    files: &[Value],
+    comments: &[Value],
+) -> Result<Record, String> {
+    let read = |path: &str| -> Result<Vec<Value>, String> {
+        Ok(match path {
+            "repos/{owner}/{repo}/pulls/1" => vec![pull.clone()],
+            "repos/{owner}/{repo}/pulls/1/files" => files.to_vec(),
+            "repos/{owner}/{repo}/issues/1/comments" => comments.to_vec(),
+            _ => panic!("no read of {path}"),
+        })
+    };
+    fetch("1", &read)
 }
 
 #[test]
@@ -3036,9 +3057,20 @@ fn waiting(
     body: &serde_json::Value,
     states: &[(u64, &str)],
 ) -> Result<Vec<String>, String> {
+    waiting_on(body, |n| {
+        let state = states.iter().find(|(i, _)| *i == n).map(|(_, s)| *s);
+        let state = state.ok_or(format!("HTTP 404 on #{n}"))?;
+        Ok(vec![serde_json::json!({ "number": n, "state": state })])
+    })
+}
+
+/// As [`waiting`], with `issue` giving the read of each issue.
+fn waiting_on(
+    body: &serde_json::Value,
+    issue: impl Fn(u64) -> Result<Vec<Value>, String>,
+) -> Result<Vec<String>, String> {
     use serde_json::json;
     let read = |path: &str| -> Result<Vec<Value>, String> {
-        let issue = path.strip_prefix("repos/{owner}/{repo}/issues/");
         Ok(match path {
             "repos/{owner}/{repo}/pulls/1" => vec![json!({
                 "head": { "ref": "a" },
@@ -3055,10 +3087,8 @@ fn waiting(
                 "created_at": CUTOFF,
             })],
             _ => {
-                let n: u64 = issue.and_then(|n| n.parse().ok()).expect("an issue");
-                let state = states.iter().find(|(i, _)| *i == n).map(|(_, s)| *s);
-                let state = state.ok_or(format!("gh api {path}: HTTP 404"))?;
-                vec![json!({ "number": n, "state": state })]
+                let n = path.strip_prefix("repos/{owner}/{repo}/issues/");
+                issue(n.and_then(|n| n.parse().ok()).expect("an issue"))?
             }
         })
     };
@@ -3109,11 +3139,11 @@ fn reads_the_words_in_each_ascii_case_and_across_a_line_break() {
 
 #[test]
 fn gives_one_problem_for_each_open_issue_in_body_order() {
-    let body = "Merges after #9. Merges after #2452 and #7.\n\n\
-                Merges after #12. Merges after #9."
+    let body = "Merges after #12. Merges after #2452 and #7.\n\n\
+                Merges after #9. Merges after #12."
         .into();
     let states = [(9, "open"), (2452, "closed"), (7, "open"), (12, "open")];
-    assert_eq!(waiting(&body, &states), Ok(vec![open(9), open(12)]));
+    assert_eq!(waiting(&body, &states), Ok(vec![open(12), open(9)]));
 }
 
 #[test]
@@ -3140,6 +3170,7 @@ fn reads_no_condition_that_github_does_not_show_as_text() {
         "<!-- Merges after #2452 -->",
         "| a |\n| - |\n| Merges after #2452 |",
         "It emerges after #2452.",
+        "1merges after #2452",
         "Merges after 2452, merges after GH-2452, merges after #, merges after.",
         "Merges #2452 after.",
     ] {
@@ -3157,10 +3188,40 @@ fn a_pr_with_no_body_passes() {
 fn a_failed_read_of_the_issue_fails_the_check() {
     assert_eq!(
         waiting(&"Merges after #99999.".into(), &[]),
-        Err("PR 1: gh api repos/{owner}/{repo}/issues/99999: HTTP 404".to_string())
+        Err("PR 1: HTTP 404 on #99999".to_string())
+    );
+    let body = "Merges after #7.".into();
+    assert_eq!(
+        waiting_on(&body, |_| Ok(Vec::new())),
+        Err("PR 1: gh returned no issue".to_string())
+    );
+    assert_eq!(
+        waiting_on(&body, |n| Ok(vec![serde_json::json!({ "number": n })])),
+        Err("PR 1: JSON has no string field `state`".to_string())
     );
     assert_eq!(
         waiting(&serde_json::json!(7), &[]),
         Err("PR 1: JSON has no string field `body`".to_string())
     );
+}
+
+/// GitHub shows only the first definition of a footnote label with a reference.
+#[test]
+fn a_footnote_that_github_does_not_show_holds_no_condition() {
+    let body = "Intro.\n\n[^1]: Merges after #2452\n".into();
+    assert_eq!(waiting(&body, &[(2452, "open")]), Ok(Vec::new()));
+    let states = [(2455, "open"), (2456, "open")];
+    let body =
+        "Ref [^2].\n\n[^2]: Merges after #2455\n\n[^2]: Merges after #2456\n".into();
+    assert_eq!(waiting(&body, &states), Ok(vec![open(2455)]));
+}
+
+/// GitHub reads HTML blocks by an older spec, in which `<search>` and `<!` with a
+/// lowercase letter start no HTML block.
+#[test]
+fn a_line_that_github_reads_as_no_html_block_holds_a_condition() {
+    let body = "Intro.\n\n<search> Merges after #2453\n".into();
+    assert_eq!(waiting(&body, &[(2453, "open")]), Ok(vec![open(2453)]));
+    let body = "Intro.\n\n<!x> Merges after #2457\n".into();
+    assert_eq!(waiting(&body, &[(2457, "open")]), Ok(vec![open(2457)]));
 }
