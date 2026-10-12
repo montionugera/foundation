@@ -12,14 +12,16 @@
   the last of its blocks returned. `node` holds the interval as a constant. Its value is
   not measured: it is the purge policy of `docs/decisions/open/parameters.md`. A shorter
   interval gives memory back sooner, and a longer one bounds how often a size that comes
-  back commits its range again. No shard calls `Pool::reclaim` on each loop turn: the
-  loop is the driver's (`env::shards`), and `alloc` and `purge` take back the returned
-  blocks. Lost: a field of `node::Config` for the interval, which no caller gives a
-  second value; a purge from `alloc`, which gives `block` a clock; a hook that each
-  driver calls on each turn, which moves the walk of the returned blocks and does not
-  shorten it. Look again at the hook when a measurement shows that walk in the latency
-  of an `alloc` (`laptop.architect-2`, #2443, 2026-10-11 21:30 UTC:
-  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6113992879).
+  back commits its range again. No shard takes back returned blocks on each loop turn:
+  the loop is the driver's (`env::shards`), and `alloc` and `purge` take them back
+  (BLOCK MEMORY). Lost: a field of `node::Config` for the interval, which no caller
+  gives a second value; a purge from `alloc`, which gives `block` a clock; a hook that
+  each driver calls on each turn, which moves the walk of the returned blocks and does
+  not shorten it. Look again at the hook when a measurement shows that walk in the
+  latency of an `alloc` (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
+  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6113992879; this
+  text, 2026-10-11T21:35:17Z:
+  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6114033383).
   Proposed by `ops` in #410; approved by the coordinator on #806. `block::Config::new`
   takes the budget as a `u64` and gives `block::Unfit` when the pool's reservation is
   more than `usize::MAX` bytes, so `node` passes each part as it is and keeps no check
