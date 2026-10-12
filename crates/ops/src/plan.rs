@@ -61,6 +61,21 @@ impl Files {
         }
     }
 
+    /// The tree key of each definition of the files, in order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::check`].
+    pub(crate) fn names(
+        &self,
+        kinds: &connector::kind::Table,
+    ) -> Result<Vec<Name>, Error> {
+        match config::check(&self.documents, kinds) {
+            Ok(entries) => Ok(entries.into_keys().collect()),
+            Err(diagnostics) => Err(Error::config(diagnostics, &self.paths)),
+        }
+    }
+
     /// The change from the files to the spec at `base`, and the plan that `apply`
     /// takes.
     ///

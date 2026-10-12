@@ -8,6 +8,8 @@ use mesh::used::{Behind, Cause};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use types::name::Name;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
 
@@ -20,6 +22,9 @@ const BEHIND: Code = Code::new("ops.behind");
 const STALE_PLAN: Code = Code::new("ops.stale-plan");
 const APPLY: Code = Code::new("ops.apply");
 const STOPPED: Code = Code::new("ops.stopped");
+const BAD_REQUEST: Code = Code::new("ops.bad-request");
+const DENIED: Code = Code::new("ops.denied");
+const LARGE_REPLY: Code = Code::new("ops.large-reply");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -55,6 +60,43 @@ pub(crate) enum Error {
     Start(Failure),
     /// The group of the mesh stopped, so the node can neither plan nor apply.
     Stopped(mesh::Stopped),
+    /// The body that a node got is no request.
+    Request { message: String },
+    /// No access policy gives `subject` the action `action` on `name`, or, with no
+    /// name, on a definition of the spec in use.
+    Denied {
+        subject: Name,
+        action: Action,
+        name: Option<Name>,
+    },
+    /// The reply of a node has `bytes` bytes, more than one reply holds.
+    LargeReply { bytes: usize },
+}
+
+/// The action that an operation on a node needs: the action of its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    Plan,
+    Apply,
+}
+
+impl Action {
+    /// The word of the action in a config file.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Apply => "apply",
+        }
+    }
+}
+
+impl From<Action> for spec::access::Action {
+    fn from(action: Action) -> Self {
+        match action {
+            Action::Plan => Self::Plan,
+            Action::Apply => Self::Apply,
+        }
+    }
 }
 
 impl Error {
@@ -81,7 +123,10 @@ impl Error {
             | Self::Stale { .. }
             | Self::Apply(_)
             | Self::Start(_)
-            | Self::Stopped(_) => 1,
+            | Self::Stopped(_)
+            | Self::Request { .. }
+            | Self::Denied { .. }
+            | Self::LargeReply { .. } => 1,
         }
     }
 
@@ -121,6 +166,19 @@ impl Error {
                 STOPPED,
                 "Fix the cause in the message, then start the node and plan again"
                     .to_owned(),
+            ),
+            Self::Request { .. } => (
+                BAD_REQUEST,
+                "Use a `foundation` program of the same version as the node".to_owned(),
+            ),
+            Self::Denied { .. } => (
+                DENIED,
+                "Ask an admin of the region for an access policy that allows it"
+                    .to_owned(),
+            ),
+            Self::LargeReply { .. } => (
+                LARGE_REPLY,
+                "Plan and apply the change in smaller steps".to_owned(),
             ),
         };
         Cow::Owned(vec![Problem {
@@ -307,6 +365,29 @@ impl fmt::Display for Error {
             Self::Apply(error) => error.fmt(f),
             Self::Start(failure) => f.write_str(&failure.message),
             Self::Stopped(stopped) => stopped.fmt(f),
+            Self::Request { message } => {
+                write!(f, "the body is no request: {message}")
+            }
+            Self::Denied {
+                subject,
+                action,
+                name,
+            } => {
+                let action = action.word();
+                write!(
+                    f,
+                    "no access policy gives `{subject}` the action `{action}` "
+                )?;
+                match name {
+                    Some(name) => write!(f, "on `{name}`"),
+                    None => f.write_str("on each definition of the spec in use"),
+                }
+            }
+            Self::LargeReply { bytes } => write!(
+                f,
+                "the reply has {bytes} bytes, and a reply holds at most \
+                 {BODY_BYTES_MAX}"
+            ),
         }
     }
 }

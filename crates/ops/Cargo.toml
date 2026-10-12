@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+access = { path = "../access" }
 clap = { workspace = true }
 config = { path = "../config" }
 connector = { path = "../connector" }
@@ -16,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 spec = { path = "../spec" }
 types = { path = "../types" }
+wire = { path = "../wire" }
 
 [lints]
 workspace = true
