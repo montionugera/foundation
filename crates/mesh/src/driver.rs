@@ -1353,6 +1353,8 @@ mod tests {
         members: BTreeMap<u8, BTreeSet<u8>>,
         /// The voter whose card has no address on each node.
         hidden: Option<u8>,
+        /// The message limit of each voter that does not take `BYTES_MAX`.
+        limits: BTreeMap<u8, usize>,
         /// The records of those members on each node, at the same time.
         records: BTreeMap<u8, BTreeMap<u8, Member>>,
         /// The home of `SECOND` on each node, at the same time.
@@ -1433,15 +1435,20 @@ mod tests {
         members: &[u8],
         voters: &[u8],
     ) -> Config {
-        config_at(node, tasks, id, 0, members, voters).await
+        config_at(node, tasks, id, 0, BYTES_MAX, members, voters).await
     }
 
-    /// As [`config`], with the transport at `port` of `node`.
+    /// The message limit of a transport, unless a test gives another.
+    const BYTES_MAX: usize = 1 << 16;
+
+    /// As [`config`], with the transport at `port` of `node`, which takes messages of
+    /// at most `bytes` bytes.
     async fn config_at(
         node: &sim::node::Node,
         tasks: &Tasks,
         id: u8,
         port: u16,
+        bytes: usize,
         members: &[u8],
         voters: &[u8],
     ) -> Config {
@@ -1469,12 +1476,13 @@ mod tests {
             clock: node.clock(),
             entropy: node.entropy(),
             tasks: tasks.clone(),
-            transport: Rc::new(create_transport(
+            transport: Rc::new(bind(
                 node,
-                tasks,
-                id,
                 port,
-                Rc::clone(&pool),
+                transport::Config {
+                    message_bytes_max: NonZeroUsize::new(bytes).unwrap(),
+                    ..transport_config(node, tasks, id, Rc::clone(&pool))
+                },
             )),
             pool,
             store: Rc::new(store),
@@ -1490,21 +1498,10 @@ mod tests {
         members: &[u8],
         voters: &[u8],
     ) -> Config {
-        let mut config = config_at(node, tasks, id, port, members, voters).await;
+        let mut config =
+            config_at(node, tasks, id, port, BYTES_MAX, members, voters).await;
         config.founding.members = members.iter().map(|&of| create_voter(of)).collect();
         config
-    }
-
-    /// A transport of node `id` at `port` of `node`, with `pool`. Port 0 is a free
-    /// port.
-    fn create_transport(
-        node: &sim::node::Node,
-        tasks: &Tasks,
-        id: u8,
-        port: u16,
-        pool: Rc<Pool>,
-    ) -> Transport {
-        bind(node, port, transport_config(node, tasks, id, pool))
     }
 
     fn transport_config(
@@ -1515,7 +1512,7 @@ mod tests {
     ) -> transport::Config {
         transport::Config {
             private_key: private(id),
-            message_bytes_max: NonZeroUsize::new(1 << 16).unwrap(),
+            message_bytes_max: NonZeroUsize::new(BYTES_MAX).unwrap(),
             window_bytes: 1 << 20,
             streams_max: NonZeroU32::new(16).unwrap(),
             idle: IDLE,
@@ -1934,15 +1931,21 @@ mod tests {
         id: u8,
         board: Arc<Mutex<Board>>,
     ) -> ! {
-        let (hidden, learners, founding) = {
+        let (hidden, learners, founding, bytes) = {
             let board = board.lock().unwrap();
-            (board.hidden, board.learners.clone(), board.founding.clone())
+            let bytes = board.limits.get(&id).copied().unwrap_or(BYTES_MAX);
+            (
+                board.hidden,
+                board.learners.clone(),
+                board.founding.clone(),
+                bytes,
+            )
         };
         let voters: Vec<u8> = IDS
             .into_iter()
             .filter(|of| !learners.contains(of))
             .collect();
-        let base = config_at(&node, &tasks, id, PORT, &IDS, &voters).await;
+        let base = config_at(&node, &tasks, id, PORT, bytes, &IDS, &voters).await;
         let transport = Rc::clone(&base.transport);
         let member = |of| {
             if hidden == Some(of) {
@@ -2249,6 +2252,72 @@ mod tests {
         };
         let most = u128::try_from(crate::change::HOMES_MAX).unwrap();
         assert_eq!(late(most, 512), IDS.map(|id| (id, moved)).into());
+    }
+
+    /// The board after voters 1 and 2 commit `changes` and then the home of node 2,
+    /// and voter 3 starts after them. Each voter takes messages of at most
+    /// `BYTES_MIN` bytes.
+    fn behind(changes: &[Change]) -> Board {
+        let mut cluster = Cluster::new(6);
+        let limits = IDS.map(|id| (id, message::BYTES_MIN)).into();
+        cluster.board.lock().unwrap().limits = limits;
+        let mut script: Vec<_> = changes.iter().map(encoded).collect();
+        script.push(encoded(&home_to(2)));
+        cluster.script_each(&script);
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(30));
+        assert_eq!(cluster.board.lock().unwrap().led.len(), script.len());
+        cluster.start_voter(3);
+        cluster.run(seconds(10));
+        cluster.board()
+    }
+
+    // Voter 3 applies the last home only after each entry before it.
+    #[test]
+    fn a_voter_of_the_least_limit_gets_100_home_changes_behind() {
+        let changes: Vec<_> = (0..100).map(|at| home_to(1 + at % 3)).collect();
+        let board = behind(&changes);
+        let last = |homes: &Vec<_>| homes.last().copied().flatten();
+        let homes: BTreeMap<_, _> = board
+            .homes
+            .iter()
+            .map(|(&id, homes)| (id, last(homes)))
+            .collect();
+        assert_eq!(homes, IDS.map(|id| (id, Some(key(2)))).into());
+        assert_eq!(board.states[&3], board.states[&1]);
+    }
+
+    #[test]
+    fn a_voter_of_the_least_limit_gets_100_joins_behind() {
+        let ticket = common::ticket_change(7, common::options("plant", true));
+        let joins = (10..110).map(|id| {
+            let card = common::signed(id, &format!("plant.joined{id}"));
+            let status =
+                common::status([(common::name("disk"), common::index(u128::from(id)))]);
+            Change::Join(Box::new(common::join_with(
+                &card,
+                7,
+                common::BEFORE_EXPIRY,
+                status,
+            )))
+        });
+        let changes: Vec<_> = iter::once(ticket).chain(joins).collect();
+        let board = behind(&changes);
+        let joined = (10..110).filter(|&id| board.states[&1].member(key(id)).is_some());
+        assert_eq!(joined.count(), 100);
+        assert_eq!(board.states[&3], board.states[&1]);
+    }
+
+    #[test]
+    fn voters_of_the_least_limit_commit_the_largest_change_of_each_kind() {
+        let largest = common::create_largest();
+        let lengths = largest.each_ref().map(|change| encoded(change).len());
+        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX]);
+        let board = behind(&largest);
+        let homes = |id| (id, board.homes[&id].last().copied().flatten());
+        assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
+        assert_eq!(board.states[&3], board.states[&1]);
     }
 
     #[test]
@@ -5694,28 +5763,12 @@ mod tests {
             });
         }
 
-        /// The config of node 1 of `IDS`, whose transport takes messages of at most
-        /// `bytes` bytes.
-        async fn limited(
-            node: &sim::node::Node,
-            tasks: &Tasks,
-            bytes: usize,
-        ) -> Config {
-            let config = config(node, tasks, 1, &IDS, &IDS).await;
-            let transport = transport::Config {
-                message_bytes_max: NonZeroUsize::new(bytes).unwrap(),
-                ..transport_config(node, tasks, 1, Rc::clone(&config.pool))
-            };
-            Config {
-                transport: Rc::new(bind(node, 0, transport)),
-                ..config
-            }
-        }
-
         #[test]
         fn refuses_a_transport_that_takes_less_than_an_append_of_the_largest_record() {
             solo(|node, tasks| async move {
-                let config = limited(&node, &tasks, message::BYTES_MIN - 1).await;
+                let config =
+                    config_at(&node, &tasks, 1, 0, message::BYTES_MIN - 1, &IDS, &IDS)
+                        .await;
                 let refused = Mesh::open(config).await.err().unwrap();
                 let limit = Error::Limit {
                     bytes_max: 50_354,
@@ -5733,7 +5786,9 @@ mod tests {
         #[test]
         fn opens_with_a_transport_that_takes_an_append_of_the_largest_record() {
             solo(|node, tasks| async move {
-                let config = limited(&node, &tasks, message::BYTES_MIN).await;
+                let config =
+                    config_at(&node, &tasks, 1, 0, message::BYTES_MIN, &IDS, &IDS)
+                        .await;
                 assert_eq!(Mesh::open(config).await.err(), None);
             });
         }

@@ -19,11 +19,12 @@ use types::node::{self, SealKey};
 use types::time::{Span, Stamp};
 
 use crate::bytes::{put_channel, put_count, put_name};
+use crate::card::addresses::{self, Addresses};
 use crate::card::{self, Card};
-use crate::change::{Change, Join};
+use crate::change::{CHUNKS_MAX, Change, HOLDERS_MAX, HOMES_MAX, Join};
 use crate::claim::Signer;
 use crate::member::Member;
-use crate::status::Status;
+use crate::status::{self, Status};
 use crate::ticket::{Options, Ticket, Voter};
 
 /// The term of each message.
@@ -297,6 +298,56 @@ pub(crate) fn unchecked(card: &card::Signed) -> card::Unchecked {
         card: card.card().clone(),
         signature: *card.signature(),
     }
+}
+
+/// The largest change of each kind: a home, a join, a ticket, and a spec at each
+/// bound.
+pub(crate) fn create_largest() -> [Change; 4] {
+    // A name of the most bytes that ends in `at`.
+    let long = |at: usize| {
+        let end = format!("b{at}");
+        name(&format!("{end:a>width$}", width = Name::MAX_BYTES))
+    };
+    let relay = Address::Relay {
+        node: public(2),
+        at: "[::1]:4000".parse().unwrap(),
+    };
+    let card = Card {
+        name: long(0),
+        public_key: public(3),
+        seal_key: SealKey::new([9; 32]).unwrap(),
+        addresses: Addresses::new(vec![relay; addresses::MAX.into()]).unwrap(),
+        version: u64::MAX,
+    };
+    let card = card::Signed::sign(key(3), card, &private(3));
+    let statuses = (0..usize::from(status::MAX)).map(|at| (long(at), index(9)));
+    let status = Status::new(statuses.collect()).unwrap();
+    let join = join_with(&card, 7, BEFORE_EXPIRY, status);
+    let mut options = options("a", true);
+    options.prefix = long(0);
+    let chunks = (0..CHUNKS_MAX).map(|at| {
+        let mut chunk = [0; 32];
+        chunk[..2].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+        Digest(chunk)
+    });
+    let holders = 0..u128::try_from(HOLDERS_MAX).unwrap();
+    let homes = 0..u128::try_from(HOMES_MAX).unwrap();
+    let spec = Change::Spec {
+        base: Pointer {
+            version: 7,
+            root: digest(1),
+        },
+        root: digest(2),
+        chunks: chunks.collect(),
+        holders: holders.map(node::Key::from_u128).collect(),
+        homes: homes.map(|at| (index(at), key(1))).collect(),
+    };
+    [
+        home(u128::MAX, u128::MAX),
+        Change::Join(Box::new(join)),
+        ticket_change(7, options),
+        spec,
+    ]
 }
 
 /// The byte form of `change`.

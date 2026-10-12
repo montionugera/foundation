@@ -382,7 +382,7 @@ async fn create_stranger(
     tasks: &Tasks,
 ) -> (Config, raft::Message) {
     let members = vec![create_voter(1), common::member(2), common::member(3)];
-    let mut config = config_at(node, tasks, 1, PORT, &IDS, &IDS).await;
+    let mut config = config_at(node, tasks, 1, PORT, BYTES_MAX, &IDS, &IDS).await;
     config.founding.members = members;
     let voters = Voters {
         incoming: [1, 2, 4].map(key).into(),
