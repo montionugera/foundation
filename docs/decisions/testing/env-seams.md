@@ -270,8 +270,8 @@
   then closes the handle as `File::close`. It removes the file of the handle, by device
   and inode with no follow of a link, as FILE RENAME does: `NotFound { path }` when the
   path no longer names it, and nothing is removed. Until the remove ends, also after a
-  drop of its future, a write open of the path gives `Busy`; on `os` the descriptor
-  closes after the unlink, so the lock holds across processes until then. The race
+  drop of its future, a write open of the path gives `Busy`; on `os` the lock is
+  released after the unlink, so the lock holds across processes until then. The race
   sentence of FILE RENAME holds for it too. A drop of the future can stop the remove
   before it starts, as for `Files::remove`; the file then stays, and the handle closes.
   The removal is not durable until `sync_dir` on its directory ends. A poisoned handle
