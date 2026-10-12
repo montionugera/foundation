@@ -55,7 +55,6 @@ impl Server {
     /// # Panics
     ///
     /// If open62541 refuses the node.
-    #[cfg(test)]
     pub(crate) fn add_double(&self, node: crate::client::Node, value: f64) {
         // SAFETY: the server lives.
         let status = Status(unsafe {

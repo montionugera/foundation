@@ -266,3 +266,9 @@
   proof in the handshake, since the client hello answers a challenge of the node that a
   1-RTT handshake cannot carry without a new replay defense, and it moves `access`
   checks into `transport`; a reserved place for a join, by the ruling on #2153.
+  Amended (2026-10-11, #2420, by `laptop.architect-2`): shard 0 binds the port once it
+  has claimed the data directory, before any buffer opens; a failed bind opens no
+  buffer (NODE START; 2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
+  supersedes the bind before any shard starts of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.

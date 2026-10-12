@@ -114,6 +114,18 @@
   `node::Error::Port` with an OS code that no OS call gave; a code of its own for the
   same fix. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
+  Shard 0 claims the data directory before it binds the port. So a start on the data
+  directory of a node that runs is `node.busy` with each `--listen`, and a start during
+  the stop of that node never gets `node.port`, since the stop holds the lock until the
+  port is free. A start whose port does not bind leaves the lock file, the shard count,
+  and the name in the data directory, and opens no buffer. Lost: the bind before the
+  claim, where one cause has two codes by the value of `--listen`; the bind before the
+  claim with its error kept until after the claim, which can report a port that became
+  free in between. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
+  Supersedes the order of the bind in the doc of `Node::start` approved in
+  https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629
+  (2026-10-11T10:50:50Z).
   Shard 0 writes the file `address` in the data directory in place, after the mesh opens
   and before the port takes a session: the node's key, the public key of its transport,
   and the bound socket address, in one sector with a CRC32C. Its form is private to
