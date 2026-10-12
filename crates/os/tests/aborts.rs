@@ -1,5 +1,5 @@
 //! Panics on shards and dedicated threads that abort the process. Each test runs in a
-//! child process of this test binary, so the binary runs only these tests.
+//! child process of this test binary.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
