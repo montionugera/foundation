@@ -794,6 +794,22 @@ fn a_start_with_no_region_and_no_node_key_on_a_stored_founding_stops() {
     assert_eq!(bytes(&mut sim, &host, identity::FILE), None);
 }
 
+/// A start with a file `name` and no file `node.key`, on a data directory that stores
+/// a founding, stops with each region and makes no new key: a new key is a new node
+/// to its region.
+#[test]
+fn a_start_with_a_name_file_and_no_node_key_on_a_stored_founding_stops() {
+    for region in [Region::Stored, Region::Absent] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+        remove(&mut sim, &host, identity::FILE);
+        let found = start_as(&mut sim, &host, region.clone(), "edge");
+        assert_eq!(found, Err(Error::NoCard), "{region:?}");
+        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{region:?}");
+    }
+}
+
 /// A start with a file `name` and the key of another node in `node.key`, on a data
 /// directory that stores a founding: the open of the region refuses the key, and a
 /// start with [`Region::Absent`] opens no region.

@@ -24,6 +24,19 @@ pub(crate) fn mesh() -> PathBuf {
     PathBuf::from(MESH)
 }
 
+/// Whether the data directory of `files` has the directory of the mesh.
+///
+/// # Errors
+///
+/// [`Error::Directory`] for a list that fails, other than with `NotFound`.
+pub(crate) async fn meshed(files: &env::files::Files) -> Result<bool, Error> {
+    match files.list(&mesh()).await {
+        Ok(_) => Ok(true),
+        Err(env::files::Error::NotFound { .. }) => Ok(false),
+        Err(error) => Err(Error::Directory(error)),
+    }
+}
+
 /// The directory of the node's chunk store.
 pub(crate) fn blob() -> PathBuf {
     PathBuf::from(BLOB)

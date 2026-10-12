@@ -472,10 +472,10 @@ fn a_region_with_no_name_file_and_no_key_file_fails_with_and_with_no_name() {
             (
                 Some(1),
                 "",
-                "error[node.failed]: the data directory stores a region and holds no \
-                 file `name`, and the file `node.key` is not there or holds a key that \
-                 the founding of the region does not hold; restore `node.key` from a \
-                 backup of this node, or give another data directory\n\
+                "error[node.failed]: the data directory stores a region, and the file \
+                 `node.key` is not there or holds a key that the founding of the region \
+                 does not hold; restore `node.key` from a backup of this node, or give \
+                 another data directory\n\
                  fix: Fix the cause that the message states, then start the node again\n"
             ),
             "{args:?}"

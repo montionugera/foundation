@@ -1369,10 +1369,10 @@ pub enum Error {
     /// The data directory holds no node name and stores no founding, and the start gave
     /// no name.
     Unnamed,
-    /// The data directory stores a founding and holds no file `name`, and the founding
-    /// holds no card of the node: the file `node.key` is not there, or it holds a key
-    /// with no card in the founding. A start that gives it wrote nothing: no file
-    /// `name`, and no new `node.key`, because a new key is a new node to its region.
+    /// The data directory stores a region, and the file `node.key` is not there, or,
+    /// with no file `name`, it holds a key with no card in the founding of the region.
+    /// A start that gives it wrote nothing: no file `name`, and no new `node.key`,
+    /// because a new key is a new node to its region.
     NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
     /// refuses it, so no shard started and the data directory keeps no name that its
@@ -1487,10 +1487,10 @@ impl fmt::Display for Error {
                 "the data directory holds no node name; give the node a name",
             ),
             Self::NoCard => f.write_str(
-                "the data directory stores a region and holds no file `name`, and the \
-                 file `node.key` is not there or holds a key that the founding of the \
-                 region does not hold; restore `node.key` from a backup of this node, \
-                 or give another data directory",
+                "the data directory stores a region, and the file `node.key` is not \
+                 there or holds a key that the founding of the region does not hold; \
+                 restore `node.key` from a backup of this node, or give another data \
+                 directory",
             ),
             Self::Reserved { name } => write!(
                 f,

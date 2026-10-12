@@ -12,8 +12,8 @@ use secret::seal::Opener;
 use types::ed25519::PrivateKey;
 use types::time::Stamp;
 
-use crate::Error;
 use crate::sector::{self, Held};
+use crate::{Error, directory};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "node.key";
@@ -44,15 +44,16 @@ pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error
     Ok(read(files).await?.map(|bytes| node_key(&bytes)))
 }
 
-/// The identity in `node.key` of `files`. When the file is not there, makes a new one
-/// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
-/// it. Call it under the lock of the data directory, after the claim has made the
+/// The identity in `node.key` of `files`. When the file is not there and the data
+/// directory has no directory of a mesh, makes a new one at mesh time from `clock`,
+/// once it has mesh time, and from `entropy`, and publishes it. Call it under the lock of the data directory, after the claim has made the
 /// directory durable, so that a key that `publish` made is durable when it reads it.
 ///
 /// # Errors
 ///
-/// [`Error::Key`] for a file of another length, tag, or checksum, and
-/// [`Error::Directory`] for a file call that fails.
+/// [`Error::Key`] for a file of another length, tag, or checksum,
+/// [`Error::NoCard`] when the file is not there and the data directory has the
+/// directory of a mesh, and [`Error::Directory`] for a file call that fails.
 pub(crate) async fn load(
     files: &Files,
     clock: &clock::Reader,
@@ -60,6 +61,10 @@ pub(crate) async fn load(
 ) -> Result<Identity, Error> {
     match read(files).await? {
         None => {
+            // A first start makes `node.key` durable before the mesh's directory.
+            if directory::meshed(files).await? {
+                return Err(Error::NoCard);
+            }
             clock.reach(Stamp::from_nanos(i64::MIN)).await;
             let now = match clock.status() {
                 clock::Status::Synced(now) | clock::Status::Holdover(now, _) => {

@@ -6905,10 +6905,9 @@ mod name {
     fn the_text_of_no_card_states_the_two_ways_out() {
         assert_eq!(
             Error::NoCard.to_string(),
-            "the data directory stores a region and holds no file `name`, and the file \
-             `node.key` is not there or holds a key that the founding of the region \
-             does not hold; restore `node.key` from a backup of this node, or give \
-             another data directory"
+            "the data directory stores a region, and the file `node.key` is not there \
+             or holds a key that the founding of the region does not hold; restore \
+             `node.key` from a backup of this node, or give another data directory"
         );
     }
 
