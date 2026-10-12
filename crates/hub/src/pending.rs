@@ -7,24 +7,28 @@ use std::pin::pin;
 use std::rc::Rc;
 use std::task::Poll;
 
-use types::channel::Key;
+use types::channel;
 
 use crate::{Ending, State};
+
+/// The key of an open that waits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Key(u64);
 
 /// An open that waits, registered on its channels: a change of the definitions that
 /// removes or changes one of them ends its wait at once. Dropping it ends the
 /// registration.
 pub(crate) struct Pending<'s> {
     state: &'s Rc<RefCell<State>>,
-    key: u64,
+    key: Key,
     ending: Ending,
 }
 
 impl<'s> Pending<'s> {
     /// An open registered on `keys`.
-    pub(crate) fn new(state: &'s Rc<RefCell<State>>, keys: Vec<Key>) -> Self {
+    pub(crate) fn new(state: &'s Rc<RefCell<State>>, keys: Vec<channel::Key>) -> Self {
         let mut borrowed = state.borrow_mut();
-        let key = borrowed.opened;
+        let key = Key(borrowed.opened);
         borrowed.opened += 1;
         let ending = borrowed.opens.add(key, keys);
         drop(borrowed);
@@ -37,7 +41,7 @@ impl<'s> Pending<'s> {
     ///
     /// When a change of the definitions ended its wait: [`Self::wait`] gives each end
     /// before the open checks more keys.
-    pub(crate) fn extend(&self, keys: &[Key]) {
+    pub(crate) fn extend(&self, keys: &[channel::Key]) {
         self.state.borrow_mut().opens.extend(self.key, keys);
     }
 
@@ -46,7 +50,7 @@ impl<'s> Pending<'s> {
     pub(crate) async fn wait<T>(
         &self,
         future: impl Future<Output = T>,
-    ) -> Result<T, Key> {
+    ) -> Result<T, channel::Key> {
         let mut future = pin!(future);
         poll_fn(|cx| {
             if let Some(key) = self.ending.removed() {

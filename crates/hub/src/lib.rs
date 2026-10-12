@@ -117,9 +117,9 @@ struct State {
     /// The waker of each reader that waits for a frame.
     wakers: hash::Map<::home::reader::Key, Waker>,
     /// The channels of each open that waits, by a key from `opened`.
-    opens: Sessions<u64>,
+    opens: Sessions<pending::Key>,
     /// The waker of each open in `opens`.
-    waiting: hash::Map<u64, Waker>,
+    waiting: hash::Map<pending::Key, Waker>,
     /// The count of opens ever registered in `opens`.
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
@@ -420,13 +420,13 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
     }
 }
 
-impl Sessions<u64> {
+impl Sessions<pending::Key> {
     /// Adds `keys` to the channels of the open `key`.
     ///
     /// # Panics
     ///
     /// When `key` is not open.
-    fn extend(&mut self, key: u64, keys: &[Key]) {
+    fn extend(&mut self, key: pending::Key, keys: &[Key]) {
         let open = self
             .0
             .get_mut(&key)
