@@ -197,18 +197,19 @@ impl Node {
     /// the mesh's group stops, which stops the node. It writes `address` empty when it
     /// stops serving, before the lock drops. An address in the file is no proof that a
     /// node runs: a crash or a failed empty write leaves it. It admits each member of
-    /// the region, and gives other peers at most 256 places at once: one for each
-    /// session of a program, and one for the key of a node. At the bound, the oldest
-    /// place frees for a new peer, and its session closes unless its peer is now a
-    /// member, so a peer outside the region keeps its session until 256 later peers
-    /// took a place. Returns once each shard runs or one has failed to start. No shard
-    /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
-    /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
-    /// bytes ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
-    /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
-    /// segment ([`Error::Reserved`]). A port that does not bind stops the node after
-    /// shard 0 claimed the data directory, and no buffer opens ([`Error::Port`]). Any
-    /// failure stops the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// the region, and gives other peers at most [`Settings::places_max`] places at
+    /// once: one for each session of a program, and one for the key of a node. At the
+    /// bound, the oldest place frees for a new peer, and its session closes unless its
+    /// peer is now a member, so a peer outside the region keeps its session until that
+    /// many later peers took a place. Returns once each shard runs or one has failed to
+    /// start. No shard starts when the disk budget holds no ring on each shard
+    /// ([`Error::Disk`]), when a shard's part of the pool budget gives a reservation of
+    /// more than `usize::MAX` bytes ([`Error::Pool`]), when [`Config::listen`] has a
+    /// multicast IP or the IPv4 broadcast IP ([`Error::Listen`]), or when
+    /// [`Config::name`] has a reserved segment ([`Error::Reserved`]). A port that does
+    /// not bind stops the node after shard 0 claimed the data directory, and no buffer
+    /// opens ([`Error::Port`]). Any failure stops the node, and [`Node::join`] gives
+    /// the first one (its `# Errors`).
     ///
     /// # Panics
     ///
