@@ -162,11 +162,10 @@
   the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
   (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
-  bound holds for the reply of an error too. `serve` stops writing a reply at the bound,
-  and does not hold the bytes of a large reply. The places of the problems of one file
-  share its path. `serve` reads the spec in use as the apply does, so a node that is
-  behind gives `ops.behind` for `plan` too (later step of
-  https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
+  bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
+  The places of the problems of one file share its path. `serve` reads the spec in use
+  as the apply does, so a node that is behind gives `ops.behind` for `plan` too (later
+  step of https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6071715327). A node
   that uses no spec gives `ops.denied` to each remote subject instead (SERVE ACCESS).
   The form, the status of an error, `ops.denied`, and `ops.large-reply` are decisions 5

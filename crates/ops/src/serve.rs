@@ -28,9 +28,9 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
 /// for an action that no access policy gives `subject` and for a request that names
 /// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// also needs `admin` on each key of an access policy or a subject that the plan
-/// changes. It gives a home only to an index on which `subject` has `apply`, and drops
-/// each other home with no error.
+/// also needs `admin` on each key of an access policy or a subject that the plan adds,
+/// changes, or removes. It gives a home only to an index on which `subject` has
+/// `apply`, and drops each other home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
