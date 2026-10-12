@@ -1178,16 +1178,16 @@ impl Sending {
         pushed
     }
 
-    /// Writes the rest of the message that `half` holds to `inner`, unless a reset or
-    /// a stop ended it. `Pending` while it holds part of a message that it writes, and
-    /// `Ready` else.
+    /// Writes the rest of the message that `half` holds to `inner`. `Pending` while it
+    /// holds part of it, and `Ready` else. A half that a reset or a stop ended holds
+    /// none.
     fn resume(
         &mut self,
         inner: &mut noq_proto::Connection,
         half: &mut Half,
     ) -> Poll<()> {
         half.notified = false;
-        if half.ended.is_none() && half.holds() {
+        if half.holds() {
             return self.write(inner, half, None);
         }
         Poll::Ready(())
