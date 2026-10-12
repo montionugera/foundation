@@ -749,8 +749,8 @@ mod tests {
     /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
     /// `out` has a value on one line: the value of the top attribute of `out` with
     /// the key of the attribute that ends `text`. After the closer's line end, `want`
-    /// holds the rest of `out`. Where that line end is, `out` has the line end of the
-    /// first line of `text`, or none when the closer's line is the last.
+    /// holds the rest of `out`. Where that line end is, `out` has `\n`, or none when
+    /// the closer's line is the last.
     fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
@@ -792,25 +792,16 @@ mod tests {
         let spaces = heredoc.trim_end_matches(lex::space).len();
         let spaces = heredoc.get(spaces..).unwrap_or_default();
         let after = want.get(closer..).unwrap_or_default();
-        let Some(rest) = after
+        let rest = after
             .strip_prefix("\r\n")
             .or_else(|| after.strip_prefix('\n'))
-        else {
-            return false;
-        };
-        // `update` ends an added line as the first line of `text` ends.
-        let added = if text
-            .split_once('\n')
-            .is_some_and(|(line, _)| line.ends_with('\r'))
-        {
-            "\r\n"
-        } else {
-            "\n"
-        };
+            .unwrap_or(after);
+        // A text whose first line ends in `\r\n` gets no heredoc, so `update` ends an
+        // added line here in `\n`.
         let tail = if rest.is_empty() {
             spaces.to_owned()
         } else {
-            format!("{spaces}{added}{rest}")
+            format!("{spaces}\n{rest}")
         };
         heredoc.starts_with("<<")
             && out
