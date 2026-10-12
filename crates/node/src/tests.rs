@@ -4539,6 +4539,81 @@ mod port {
             assert_eq!(node.join(), Ok(()));
         }
 
+        /// A node of the default message limit is a voter that takes each append of
+        /// the leader: each of 50 homes, which the peer sets at once, commits within
+        /// 10 s.
+        #[test]
+        fn homes_commit_with_a_voter_of_the_default_message_limit() {
+            for seed in 0..4 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let members = pair(&hosts);
+                let node = start(&hosts[0], region(&members));
+                let set = Arc::new(Mutex::new(0));
+                let out = Arc::clone(&set);
+                peer(&hosts[1], members, move |mesh, own| async move {
+                    own.clock().sleep(Span::SECOND).await;
+                    let mut sets = Vec::new();
+                    for key in 100..150 {
+                        let (mesh, out) = (mesh.clone(), Arc::clone(&out));
+                        sets.push(Box::pin(async move {
+                            let index = channel::Key::from_u128(key);
+                            if mesh.set_home(index, OTHER.0).await.is_ok() {
+                                *out.lock().unwrap() += 1;
+                            }
+                        }));
+                    }
+                    let mut end = pin!(own.clock().sleep(TEN));
+                    poll_fn(|cx| {
+                        sets.retain_mut(|set| set.as_mut().poll(cx).is_pending());
+                        if sets.is_empty() {
+                            return Poll::Ready(());
+                        }
+                        end.as_mut().poll(cx)
+                    })
+                    .await;
+                });
+                assert_eq!(sim.run_for(TWENTY), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                assert_eq!(*set.lock().unwrap(), 50, "{seed}");
+            }
+        }
+
+        /// A node of the least message limit that its transport takes, 1472 bytes,
+        /// cannot take an append of the largest record, so its mesh does not open.
+        #[test]
+        fn a_node_of_the_least_message_limit_does_not_start() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let limit = ::mesh::Error::Limit {
+                bytes_max: 1472,
+                bytes_min: 50_355,
+            };
+            let refused = node.join().unwrap_err();
+            assert_eq!(refused, Error::Mesh(limit));
+            assert_eq!(
+                refused.to_string(),
+                "the node's mesh did not open: this node takes messages of at most 1472 \
+                 bytes, below the 50355 bytes of an append of the largest record"
+            );
+        }
+
         /// A task's reader of a channel whose home is the peer holds a session to the
         /// peer when the node stops. The stop drops the hub and the reader, and each
         /// task of the hub then lets go of the transport (`hub::Hub::new`), so the
