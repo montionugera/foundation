@@ -49,17 +49,17 @@
   takes the keys from the spec in use: the status index of the connector, and each
   channel on it. A data channel with a new key changes no connector: the session of
   the kind ends, and the next start opens it again from its names or its selector
-  (KIND TABLE; `laptop.architect-2`, 2026-10-12T20:24:56Z:
-  https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132012721).
-  Lost: the key of the status index alone, because a kind that changes and comes back
-  keeps the index and gives each count a new key; the names of the kind's `check`, which
-  `node` then runs a second time at each apply; an end of the run when a status write
-  gives `Failure::Removed`, which comes only at the next status write and changes
-  CONNECTOR STATUS; a key of the connector in the spec, a new field of `spec` and a new
-  rule of the plan for what the status keys already tell; each spec in order, because a
-  node that was down sees only the last one (`laptop.architect-2`, #2358,
+  (KIND TABLE). Lost: the key of the status index alone, because a kind that changes and
+  comes back keeps the index and gives each count a new key; the names of the kind's
+  `check`, which `node` then runs a second time at each apply; an end of the run when a
+  status write gives `Failure::Removed`, which comes only at the next status write and
+  changes CONNECTOR STATUS; a key of the connector in the spec, a new field of `spec`
+  and a new rule of the plan for what the status keys already tell; each spec in order,
+  because a node that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
-  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704). The
+  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704; the
+  open from its names or its selector, 2026-10-12T20:24:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132012721). The
   lookup of these keys stays in `node`. Lost: `connector::status` gives the keys from
   the definitions, which makes `spec` a dependency of `connector` and of each kind for
   one caller, where a connector reads no spec and reaches its channels only through
