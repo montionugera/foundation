@@ -5563,6 +5563,39 @@ mod tests {
     }
 
     #[test]
+    fn a_too_large_write_after_writable_sends_the_held_rest_at_once() {
+        testing::run(1, |shard| {
+            let mut pair = connected(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            fill(&mut pair, shard, &mut sender);
+            pair.run(RUN);
+            let mut incoming = accept(&mut pair.server);
+            let now = pair.now();
+            let (_, ended) = drain(&mut pair.server, now, &mut incoming.receiver);
+            assert!(!ended);
+            pair.run(RUN);
+            let writable = Event::Writable {
+                stream: sender.key(),
+            };
+            assert!(events(&pair.client).contains(&&writable));
+            let now = pair.now();
+            let mut buffer = Vec::new();
+            assert!(pair.client.endpoint.transmit(now, &mut buffer).is_none());
+            let over = shard.block(&vec![1; MESSAGE_MAX + 1]);
+            let written =
+                pair::write(&mut pair.client.endpoint, now, &sender, &mut Some(over));
+            let large = Error::TooLarge {
+                bytes: MESSAGE_MAX + 1,
+                bytes_max: MESSAGE_MAX,
+            };
+            assert_eq!(written, Err(large));
+            let mut buffer = Vec::new();
+            let sent = pair.client.endpoint.transmit(now, &mut buffer).is_some();
+            assert!(sent, "the rest goes at once");
+        });
+    }
+
+    #[test]
     fn a_finish_while_the_sender_holds_part_of_a_message_ends_the_stream_after_it() {
         testing::run(1, |shard| {
             let mut pair = connected(shard);

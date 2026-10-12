@@ -1346,10 +1346,13 @@ mod tests {
         assert_eq!(sim.run(), Ok(()));
     }
 
-    /// Leaks a `send` of a message that the window cuts, then gives a too large
-    /// message to `send`, or to `try_send` when `tried`. The peer reads each cut
-    /// message whole.
-    fn too_large_behind_a_leaked_send(tried: bool) -> Result<(), sim::Error> {
+    /// Leaks a `send` of a message that the window cuts, waits `wait`, then gives a
+    /// too large message to `send`, or to `try_send` when `tried`. The peer reads
+    /// each cut message whole.
+    fn too_large_behind_a_leaked_send(
+        tried: bool,
+        wait: Span,
+    ) -> Result<(), sim::Error> {
         let bodies = Arc::new(AtomicUsize::new(0));
         let sent = Arc::clone(&bodies);
         let (mut sim, ..) = testing::sessions(
@@ -1373,6 +1376,9 @@ mod tests {
                 sent.store(count, Ordering::SeqCst);
                 #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
                 std::mem::forget(cut);
+                if wait > Span::ZERO {
+                    side.node.clock().sleep(wait).await;
+                }
                 let over = side.block(&vec![1; MESSAGE_BYTES_MAX + 1]);
                 let large = Error::TooLarge {
                     bytes: MESSAGE_BYTES_MAX + 1,
@@ -1409,12 +1415,20 @@ mod tests {
 
     #[test]
     fn a_too_large_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
-        assert_eq!(too_large_behind_a_leaked_send(false), Ok(()));
+        assert_eq!(too_large_behind_a_leaked_send(false, Span::ZERO), Ok(()));
     }
 
     #[test]
     fn a_too_large_try_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
-        assert_eq!(too_large_behind_a_leaked_send(true), Ok(()));
+        assert_eq!(too_large_behind_a_leaked_send(true, Span::ZERO), Ok(()));
+    }
+
+    /// The stream got the `Writable` of the leaked send, so `pump` does not write the
+    /// rest: the refused write does.
+    #[test]
+    fn a_too_large_send_after_the_writable_of_a_leaked_send_writes_its_rest() {
+        let wait = spans(Span::MILLISECOND, 200);
+        assert_eq!(too_large_behind_a_leaked_send(false, wait), Ok(()));
     }
 
     /// Leaks a `send` of a message that the window cuts, gives a too large message
