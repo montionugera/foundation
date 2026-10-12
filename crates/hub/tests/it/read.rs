@@ -748,6 +748,7 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
                 streams.push(stream);
             }
             drop((held, streams));
+            agent.sleep(QUIET).await;
             finish(&mut agent).await;
         },
     );
@@ -759,18 +760,15 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
     let reset = serve::Error::Stream(transport::Error::Reset {
         code: transport::Code(0),
     });
-    let closed = serve::Error::Stream(transport::Error::Closed {
-        code: transport::Code(0),
-    });
     assert_eq!(
         served,
         [
             Err(share),
             Ok(Got::Ended),
+            Err(reset.clone()),
+            Err(reset.clone()),
             Err(reset),
-            Ok(Got::Ended),
-            Err(closed.clone()),
-            Err(closed)
+            Ok(Got::Ended)
         ]
     );
 }
