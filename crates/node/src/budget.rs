@@ -24,8 +24,8 @@ pub(crate) const LEN: usize = TAG.len() + 16 + 4;
 pub struct Budget {
     /// The most bytes the node's pools may commit, split evenly across its shards;
     /// shard 0 also takes the remainder. Each shard's part must hold the largest block
-    /// its buffer reads and an entry of 4032 bytes beside the blocks of a group, else
-    /// [`crate::Node::join`] gives [`Error::Buffer`].
+    /// its buffer reads and be enough to open its ring, else [`crate::Node::join`]
+    /// gives [`Error::Buffer`]: [`buffer::Error::Budget`] names the least part.
     pub pool: Size,
     /// The disk budget of the node's rings, split evenly across its shards; shard 0
     /// also takes the remainder. Each ring that the start makes fits its part. A ring
