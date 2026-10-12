@@ -248,21 +248,49 @@
   own. A round that fails by this rule gets a run of `architecture` on its range, or on
   the whole PR when the clone cannot read the range, and then an edit of its round
   comment that names `architecture` and adds its findings. One run on the whole PR
-  serves each such round of the PR, and each edit states the range of the run. The last
-  round fails when its `Public surface:` line holds the word `owed`, or when the first
-  word of its value is not `none` and the line holds no comment link. The first comment
-  link after each `departs from` is no approval and does not count on that line. The
-  words of a line are the parts that its spaces divide it into, each with the characters
-  at its ends removed that are no letter and no number, as `char::is_alphanumeric` of
-  Rust reads a character. In a PR that changes a file of a risk crate (`crates/<name>/`,
-  with `<name>` in `RISK` in `xtask/src/review.rs`, which holds the risk crates of
-  ENGINEERS in `docs/decisions/operations/engineers.md`), the last round also fails when
-  its `Deferred:` line names an issue with no comment link after it in the line and
-  without the words `not in a risk crate` between it and the next issue of the line. The
-  first word `none` does not stop this rule. A file that the PR moves counts at its old
-  path and at its new one, in each rule that reads the files of the PR. An issue is each
-  `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
-  `https://github.com/<owner>/<repo>/issues/<n>` or
+  serves each such round of the PR, and each edit states the range of the run. A later
+  round that does not name `architecture` fails too when its range changes the public
+  surface of a source file: a `.rs` file under `crates/<crate>/src/`, at any depth, read
+  in any ASCII case of those letters. The public surface of a file is each inner
+  attribute of the file, which a `//!` line is, and each item with `pub` alone, at any
+  depth, with its attributes and its doc, as `syn` parses the text. A `pub` item of a
+  private module, of an `impl` block with no trait, or of an `extern` block counts with
+  the header and the attributes of each module and block around it. Not counted: a
+  function body, a trait `impl`, a `#[macro_export]` macro, and an item that only a
+  macro call makes (ruling 5 of
+  https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591). A file
+  that an end of the range does not have has no public surface there, so a file that the
+  range adds, removes, or moves counts only when it has one. A text that `syn` does not
+  parse counts, and so does a source file that is a symlink or a submodule at an end.
+  The check does not read `build.rs`, `tests/`, `benches/`, a module that a `#[path]`
+  attribute puts outside `src/`, or a crate outside `crates/`. The range is read as the
+  decision rule reads it, with a source file in place of a decision, except for a merge
+  with a conflict in a source file. Such a merge counts for that file only when each of
+  its two parents changed the public surface of the file from their merge base, or when
+  the merge gives the file a public surface other than that of the parent that changed
+  it, or other than that of the merge base when no parent changed it. The problem ends
+  with the cause, such as "Its range changes a `pub` item or its doc in
+  `crates/a/src/lib.rs`." When the range also changes a decision, the problem gives only
+  the decision. A round posted before the cutoff `SURFACE_CUTOFF` in
+  `xtask/src/review.rs` (2026-10-12T19:00:00Z) is checked as before, so that the new
+  rule does not fail the rounds that came before it. The cutoff is a fixed time: it
+  stays when the rule merges after it. The remedy is that of the decision rule. Ruled by
+  the director at 2026-10-12T18:27:47Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6130183588). The
+  last round fails when its `Public surface:` line holds the word `owed`, or when the
+  first word of its value is not `none` and the line holds no comment link. The first
+  comment link after each `departs from` is no approval and does not count on that line.
+  The words of a line are the parts that its spaces divide it into, each with the
+  characters at its ends removed that are no letter and no number, as
+  `char::is_alphanumeric` of Rust reads a character. In a PR that changes a file of a
+  risk crate (`crates/<name>/`, with `<name>` in `RISK` in `xtask/src/review.rs`, which
+  holds the risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`), the
+  last round also fails when its `Deferred:` line names an issue with no comment link
+  after it in the line and without the words `not in a risk crate` between it and the
+  next issue of the line. The first word `none` does not stop this rule. A file that the
+  PR moves counts at its old path and at its new one, in each rule that reads the files
+  of the PR. An issue is each `#<n>` of the line, also in a URL, each `GH-<n>`, and each
+  URL `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
   issue only when it starts a text node of the line as GitHub shows it, or follows in
   its node a character that is no ASCII letter, no ASCII digit, and no `_`. A code span,
