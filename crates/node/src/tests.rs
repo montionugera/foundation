@@ -3094,8 +3094,8 @@ mod port {
         assert_eq!(fate(&probe), Fate::Ran);
     }
 
-    /// With a file `name`, a `node.key` that a node did not write stops the start in
-    /// the claim, before the bind: a held port gives [`Error::Key`].
+    /// With a file `name`, a `node.key` of another length stops the start in the
+    /// claim, before the bind: a held port gives [`Error::Key`].
     #[test]
     fn a_node_key_that_is_not_a_key_wins_over_a_port_that_does_not_bind() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -3110,7 +3110,7 @@ mod port {
         let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
         assert_eq!(sim.run(), Ok(()));
         assert!(matches!(node.join(), Err(Error::Port { .. })));
-        write_key(&mut sim, &host, vec![0; identity::LEN]);
+        write_key(&mut sim, &host, vec![7; 3]);
         let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Err(Error::Key));
