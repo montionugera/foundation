@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::future::{Future as _, poll_fn};
 use std::mem::ManuallyDrop;
 use std::net::{IpAddr, SocketAddr};
+use std::panic;
 use std::pin::pin;
 use std::task::Poll;
 
@@ -42,17 +43,31 @@ pub struct Server {
 impl Server {
     /// Starts the server on `clock`, `net`, and `rng`, with its listener on `address`
     /// and port 4840 and room for 4 sessions, runs `body` while the server runs, then
-    /// closes the server. Each client of [`Server::connect`] also draws from `rng`.
+    /// closes the server, also after a panic in `body`, which it then resumes. Each
+    /// client of [`Server::connect`] also draws from `rng`.
     ///
     /// # Panics
     ///
     /// If the port is taken, or if open62541 refuses the server or a step of its
-    /// close. A panic in `body` leaks the server and its manager.
+    /// close. A panic of the start or of the close leaks the manager and the server
+    /// that it made by then, and a panic of the close replaces a panic of `body`.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
         address: IpAddr,
+        rng: Rng,
+        body: impl AsyncFnOnce(&Self) -> T,
+    ) -> T {
+        Self::serve(clock, net, address, rng, DOUBLE, body).await
+    }
+
+    /// As [`Server::scope`], with `double` as the value of [`VALUE`].
+    async fn serve<T>(
+        clock: Clock,
+        net: Net,
+        address: IpAddr,
         mut rng: Rng,
+        double: f64,
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
         let local = SocketAddr::new(address, PORT);
@@ -67,9 +82,9 @@ impl Server {
             .expect("the port is free"),
         );
         // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks the manager.
+        // panic of the start or the close leaks the manager.
         let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(VALUE, DOUBLE);
+        server.add_double(VALUE, double);
         let this = Self {
             clock,
             net,
@@ -81,7 +96,7 @@ impl Server {
                 manager.events().run();
                 Poll::<()>::Pending
             }));
-            let mut body = pin!(body(&this));
+            let mut body = pin!(super::caught(body(&this)));
             poll_fn(|cx| {
                 assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
                 body.as_mut().poll(cx)
@@ -90,7 +105,7 @@ impl Server {
         };
         server.close(&manager).await;
         drop(ManuallyDrop::into_inner(manager));
-        value
+        value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 
     /// Connects a client to the server, on its own connection manager.
@@ -149,11 +164,152 @@ impl std::fmt::Debug for Client {
 mod tests {
     use std::net::SocketAddr;
 
+    use env::clock::Clock;
     use env::rng::Rng;
     use sim::{Sim, node};
+    use types::time::Span;
 
+    use super::super::caught;
     use super::{PORT, Server};
     use crate::peer::session;
+
+    /// Runs `body` in the scope of a server, with the clock of the scope, and gives
+    /// the error of the run as text.
+    fn run<T: Send + 'static>(
+        body: impl AsyncFnOnce(&Server, Clock) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        sim.run_on(&node, move |node, _| async move {
+            let (address, clock) = (node.addresses()[0], node.clock());
+            let body = async |server: &Server| body(server, clock).await;
+            let rng = node.entropy().rng();
+            Server::scope(node.clock(), node.net(), address, rng, body).await
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    /// The error of a run of seed 0 whose task panics with `message`.
+    fn panicked(message: &str) -> Result<(), String> {
+        Err(format!(
+            "thread run_on panicked: {message}; replay with seed 0x0"
+        ))
+    }
+
+    /// `count` minutes.
+    fn minutes(count: i64) -> Span {
+        Span::from_nanos(count * 60 * 1_000_000_000)
+    }
+
+    /// A scope closes after a panic in its body, also with a client that drops with the
+    /// body before the close, so the next scope takes its port.
+    #[test]
+    fn a_scope_whose_body_panics_frees_its_port() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        sim.run_on(&node, move |node, _| async move {
+            let address = node.addresses()[0];
+            let body = async |server: &Server| {
+                let _client = server.connect().await;
+                panic!("the body panics");
+            };
+            let rng = node.entropy().rng();
+            let scope = Server::scope(node.clock(), node.net(), address, rng, body);
+            let panic = caught(scope).await.expect_err("the body panics");
+            assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
+            let body = async |server: &Server| {
+                let mut client = server.connect().await;
+                client.read().await;
+                client.close().await;
+            };
+            let rng = node.entropy().rng();
+            Server::scope(node.clock(), node.net(), address, rng, body).await;
+        })
+        .expect("the run ends");
+    }
+
+    /// The server has room for 4 sessions.
+    #[test]
+    fn a_fifth_client_of_a_scope_panics_with_its_status() {
+        let result = run(async |server: &Server, _| {
+            let mut clients = Vec::new();
+            for _ in 0..5 {
+                clients.push(server.connect().await);
+            }
+            for client in clients {
+                client.close().await;
+            }
+        });
+        assert_eq!(result, panicked("a connect failed: BadTimeout"));
+    }
+
+    /// A client that drops with no close holds its session until the session times out,
+    /// after 20 minutes.
+    #[test]
+    fn a_dropped_client_holds_its_session_until_it_times_out() {
+        let fifth = |wait: Span| {
+            run(async move |server: &Server, clock: Clock| {
+                for _ in 0..4 {
+                    drop(server.connect().await);
+                }
+                clock.sleep(wait).await;
+                server.connect().await.close().await;
+            })
+        };
+        let held = panicked("a connect failed: BadTooManySessions");
+        assert_eq!(fifth(minutes(19)), held);
+        assert_eq!(fifth(minutes(21)), Ok(()));
+    }
+
+    /// The server closes a channel idle for 10 minutes.
+    #[test]
+    fn a_read_of_a_client_that_lost_its_channel_panics_with_its_status() {
+        let result = run(async |server: &Server, clock: Clock| {
+            let mut client = server.connect().await;
+            client.read().await;
+            clock.sleep(minutes(11)).await;
+            client.read().await;
+            client.close().await;
+        });
+        assert_eq!(result, panicked("a read failed: BadSecureChannelClosed"));
+    }
+
+    #[test]
+    fn a_second_scope_at_the_address_of_a_scope_panics() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        let result = sim.run_on(&node, move |node, _| async move {
+            let address = node.addresses()[0];
+            let (clock, net, second) = (node.clock(), node.net(), node.entropy().rng());
+            let body = async |_: &Server| {
+                Server::scope(clock, net, address, second, async |_: &Server| ()).await;
+            };
+            let rng = node.entropy().rng();
+            Server::scope(node.clock(), node.net(), address, rng, body).await;
+        });
+        let free = "the port is free: AddressInUse { local: 10.0.0.1:4840 }";
+        assert_eq!(result.map_err(|error| error.to_string()), panicked(free));
+    }
+
+    #[test]
+    fn a_read_of_another_value_panics_with_it() {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(node::Config::default());
+        let result = sim.run_on(&node, move |node, _| async move {
+            let address = node.addresses()[0];
+            let body = async |server: &Server| {
+                let mut client = server.connect().await;
+                client.read().await;
+                client.close().await;
+            };
+            let rng = node.entropy().rng();
+            Server::serve(node.clock(), node.net(), address, rng, 2.5, body).await;
+        });
+        assert_eq!(
+            result.map_err(|error| error.to_string()),
+            panicked("read 2.5")
+        );
+    }
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {
