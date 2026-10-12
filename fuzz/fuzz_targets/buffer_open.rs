@@ -902,8 +902,8 @@ fn tails(buffer: &Buffer, slots: &[Slot]) -> Vec<Tail> {
 }
 
 /// Applies the edits to the ring file. Gives the room an open then finds, and
-/// whether a block of the area then holds a carry record that continues the chain
-/// of the record before it.
+/// whether a carry record on the way from the tail of the header block that the open
+/// reads continues the chain.
 async fn edit(
     file: &File,
     pool: &Rc<Pool>,
@@ -959,13 +959,14 @@ async fn edit(
     (Room::walked(&image, edits), carried)
 }
 
-/// Whether a block holds a carry record that continues the chain on the way from the
-/// tail in the first header block.
+/// Whether a carry record continues the chain on the way from the tail in the first
+/// header block, before the first record that does not.
 fn carries(image: &[u8]) -> bool {
-    (AREA_START..AREA_START + BLOCKS).any(|block| {
-        record::kind(image, block) == record::CARRY
-            && record::sealed(image, block, chain_before(image, block))
-    })
+    walk(image)
+        .windows(2)
+        .map(|step| step[0])
+        .take_while(|&(block, chain)| record::sealed(image, block, chain))
+        .any(|(block, _)| record::kind(image, block) == record::CARRY)
 }
 
 /// Opens the changed ring, which must open or refuse as `room` says. With no edits,
@@ -980,7 +981,7 @@ fn carries(image: &[u8]) -> bool {
 /// not checked.
 ///
 /// `carried` says whether a block of the ring holds a carry record that continues
-/// the chain from the tail in either header block.
+/// the chain on the way from the tail of the header block that the open reads.
 async fn check(
     shard: &Shard,
     input: &Input,
