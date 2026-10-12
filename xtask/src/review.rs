@@ -736,7 +736,9 @@ fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
 
 /// The end of the issue that starts at `at` in `value`: `#`, or `GH-` in each ASCII
 /// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]). A
-/// `GH-` starts `value` or follows a character that is no letter and no number.
+/// `GH-` starts `value` or follows a character that is no letter and no number. The
+/// start of a comment link ([`link`]) is such a URL too, so [`issues`] asks `link`
+/// first.
 fn issue(value: &str, at: usize) -> Option<usize> {
     let text = &value[at..];
     let before = value[..at].chars().next_back();
