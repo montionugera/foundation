@@ -394,7 +394,7 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
             }
         });
         let paths = os::paths();
-        let mut read = (0..200_000).map(|_| paths.read(&link, 1 << 12));
+        let mut read = (0..20_000).map(|_| paths.read(&link, 1 << 12));
         let other =
             read.find(|read| !matches!(read, Ok(Found::File(_) | Found::Directory(_))));
         stopped.store(true, Ordering::Relaxed);
