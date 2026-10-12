@@ -3366,6 +3366,24 @@ fn refuses_a_connector_that_writes_a_status_channel_of_another() {
     assert_eq!(found, [expected]);
 }
 
+/// A kind that writes a status channel of another twice, in any ASCII case, gives one
+/// problem.
+#[test]
+fn refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let writer = format!(
+            "connector \"d\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\", \"{second}\"]\n}}\n"
+        );
+        let documents = documents(&[COUNTED, &writer]);
+        let found = config::check(&documents, &kinds()).expect_err("problems");
+        let found: Vec<_> = (found.iter())
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        assert_eq!(found, ["config.implied-channel"], "second: {second}");
+    }
+}
+
 /// A kind cannot write a status channel of its own connector either.
 #[test]
 fn refuses_a_connector_that_writes_its_own_status_channel() {
@@ -3450,6 +3468,56 @@ fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another()
         "Give each `channel` block a name that differs by more than case".into(),
     );
     assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
+/// Stage 3 gives a write of a status channel of another before a missing status
+/// channel.
+#[test]
+fn check_gives_a_write_of_a_status_channel_before_a_missing_one() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", "c.status.state");
+    definitions
+        .remove(&name("d.status.state"))
+        .expect("implied");
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let write = (
+        "config.implied-channel",
+        None,
+        "the connector `c` implies the channel `c.status.state`, so the connector \
+         `d` cannot write it"
+            .into(),
+        "Write another channel from the connector `d`".into(),
+    );
+    let missing = (
+        "config.implied-channel",
+        None,
+        "the connector `d` implies the channel `d.status.state`, so the spec must hold \
+         it as the connector gives it"
+            .into(),
+        "Make the plan file with `plan`".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [write, missing]);
+}
+
+/// A kind that writes a status channel of another twice, in any ASCII case, gives
+/// `check` one problem.
+#[test]
+fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let definitions = with_writer("n", &format!("c.status.state\", \"{second}"));
+        let found = config::plan::check(&definitions, &members, &kinds());
+        let expected = (
+            "config.implied-channel",
+            None,
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        let found = problems(found.map(|()| unreachable()));
+        assert_eq!(found, [expected], "second: {second}");
+    }
 }
 
 /// A connector writes its status index, so a channel on that index that another

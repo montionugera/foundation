@@ -7,7 +7,7 @@ use spec::channel::{Data, Kind};
 use spec::connector::Connector;
 use spec::data_type::DataType;
 use spec::definition;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use types::name::{self, Name};
 
 use crate::{Definition, Entry, Found, LONG_NAME, span};
@@ -192,9 +192,10 @@ pub(crate) fn imply(found: &mut Found<'_>) {
     found.diagnostics.extend(refused);
 }
 
-/// The `config.implied-channel` diagnostic of each connector of `writes` whose kind
-/// writes, in any ASCII case, a channel that a connector of `writes` implies, at the
-/// connector's label.
+/// The `config.implied-channel` diagnostic of each channel that the kind of a connector
+/// of `writes` writes, in any ASCII case, and that a connector of `writes` implies, at
+/// the label of the connector that writes it. A channel that a kind writes twice gives
+/// one.
 pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic> {
     let mut implied = BTreeMap::new();
     for (connector, writes) in writes {
@@ -210,9 +211,12 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
     }
     let mut diagnostics = Vec::new();
     for (writer, writes) in writes {
+        let mut refused = BTreeSet::new();
         for channel in &writes.channels {
             let lower = channel.as_str().to_ascii_lowercase();
-            if let Some(implied) = implied.get(&lower) {
+            if let Some(implied) = implied.get(&lower)
+                && refused.insert(lower)
+            {
                 diagnostics.push(implied.refuse(
                     writes.label,
                     &format!("the connector `{writer}` cannot write it"),
