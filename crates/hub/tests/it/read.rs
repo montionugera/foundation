@@ -485,7 +485,7 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
-/// Runs a complete read of 400 wide frames whose program ends its stream by `stop` 1 s
+/// Runs a complete read of 400 wide frames whose program calls `stop` on its stream 1 s
 /// after the open, and asserts that the program gets `heads` heads, then `end`.
 fn stop_while_frames_come(
     stop: impl AsyncFnOnce(&mut Stream) + Send + 'static,
