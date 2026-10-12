@@ -31,8 +31,12 @@ impl<'s> Pending<'s> {
         Self { state, key, ending }
     }
 
-    /// Registers the open on `keys` too. After a change of the definitions ended its
-    /// wait, it does nothing, and the next wait gives that change.
+    /// Registers the open on `keys` too.
+    ///
+    /// # Panics
+    ///
+    /// When a change of the definitions ended its wait: [`Self::wait`] gives each end
+    /// before the open checks more keys.
     pub(crate) fn extend(&self, keys: &[Key]) {
         self.state.borrow_mut().opens.extend(self.key, keys);
     }

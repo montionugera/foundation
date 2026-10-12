@@ -421,12 +421,17 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
 }
 
 impl Sessions<u64> {
-    /// Adds `keys` to the channels of the open `key`. Does nothing after a change of
-    /// the definitions ended it.
+    /// Adds `keys` to the channels of the open `key`.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not open.
     fn extend(&mut self, key: u64, keys: &[Key]) {
-        if let Some(open) = self.0.get_mut(&key) {
-            open.keys.extend_from_slice(keys);
-        }
+        let open = self
+            .0
+            .get_mut(&key)
+            .expect("invariant: the open is registered");
+        open.keys.extend_from_slice(keys);
     }
 }
 
