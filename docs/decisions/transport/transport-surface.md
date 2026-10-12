@@ -30,6 +30,14 @@
   `pool.largest()`, which keeps the error and adds a case to each caller. Decided by
   `laptop.architect-2` (#1659, 2026-10-08T06:05:25Z):
   https://github.com/synnaxlabs/foundation/issues/1659#issuecomment-6053512557.
+  `Transport::message_bytes_max` gives that limit, as `Transport::new` kept it from
+  `Config::setup`, so a caller can check what this node takes (#1361). The name is that
+  of the field, of the value of `quic::Setup`, and of the value of the handshake. Lost:
+  the caller gives the limit to its user as a second input, which states the rule of
+  `transport` a second time in a crate that does not own it; `Transport::new` gives the
+  limit with the transport, a second value for each caller. Decided by
+  `laptop.architect-2` (#2472, 2026-10-12T18:40:46Z):
+  https://github.com/synnaxlabs/foundation/issues/2472#issuecomment-6130395959.
   Amended (2026-10-12, #2214): `Transport::ended` returns `env::tasks::Ended`, and
   `transport` exports no `Ended` of its own. The carrier's task spawns through one
   `env::tasks::Group`. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):

@@ -129,6 +129,7 @@ pub struct Transport {
     /// Counts the task of the carrier.
     group: Group,
     public_key: PublicKey,
+    message_bytes_max: usize,
     table: Rc<RefCell<Table>>,
 }
 
@@ -154,9 +155,11 @@ impl Transport {
         let public_key = config.private_key.public();
         let tasks = config.tasks.clone();
         let group = Group::new(tasks.clone());
+        let setup = config.setup()?;
+        let message_bytes_max = setup.message_bytes_max;
         let setup = quic::Setup {
             tasks: group.tasks().clone(),
-            ..config.setup()?
+            ..setup
         };
         let carrier = quic::Carrier::new(setup, part);
         let table = Table::new(public_key, tasks, carrier.handle());
@@ -164,6 +167,7 @@ impl Transport {
             carrier,
             group,
             public_key,
+            message_bytes_max,
             table,
         })
     }
@@ -178,6 +182,21 @@ impl Transport {
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
         self.public_key
+    }
+
+    /// The largest message that this node takes on a stream, and the largest datagram:
+    /// the smaller of [`Config::message_bytes_max`] and the largest block of
+    /// [`Config::pool`]. It is at least 1472, since [`Transport::new`] refuses a
+    /// smaller limit. Peers get it in the handshake.
+    ///
+    /// ```
+    /// fn limit(transport: &transport::Transport) -> usize {
+    ///     transport.message_bytes_max()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn message_bytes_max(&self) -> usize {
+        self.message_bytes_max
     }
 
     /// Gives the session to the node `peer`: the open one, from a dial or from the
@@ -512,6 +531,24 @@ mod tests {
                 let config = config(shard, Span::SECOND, 2 * largest, message);
                 let new = Transport::new(config, shard.part());
                 assert_eq!(new.err(), None, "{message} bytes");
+            }
+        });
+    }
+
+    #[test]
+    fn message_bytes_max_is_the_smaller_of_the_config_and_the_largest_block() {
+        testing::run(0, |shard| {
+            let largest = largest(shard);
+            for (message, expected) in [
+                (1472, 1472),
+                (largest - 1, largest - 1),
+                (largest, largest),
+                (largest + 1, largest),
+                (usize::MAX, largest),
+            ] {
+                let config = config(shard, Span::SECOND, 2 * largest, message);
+                let transport = Transport::new(config, shard.part()).expect("valid");
+                assert_eq!(transport.message_bytes_max(), expected, "{message} bytes");
             }
         });
     }
