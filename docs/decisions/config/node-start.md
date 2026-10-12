@@ -130,6 +130,9 @@
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754; a value
   that `node` refuses, 2026-10-12T15:37:03Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6127496580).
+  Supersedes "is `node.busy` with each `--listen`" and "a start during the stop of that
+  node never gets `node.port`" of
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754.
   Supersedes the order of the bind in the doc of `Node::start` approved in
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629
   (2026-10-11T10:50:50Z).
