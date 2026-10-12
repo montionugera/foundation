@@ -211,8 +211,10 @@ impl Sender {
 
     /// Sends one message: for each of `parts`, in order, the bytes of its range of
     /// `block`, then its zeros. The stream holds `block` until the carrier takes the
-    /// message, and copies no byte of it before then. It never sends a byte of
-    /// `block` outside the ranges. Waits, returns, and resets on drop as
+    /// message, and copies no byte of it before then. The carrier then holds `block`
+    /// while it holds a run of over 1452 bytes of it
+    /// ([`Config::window_bytes`](crate::Config::window_bytes)). It never sends a byte
+    /// of `block` outside the ranges. Waits, returns, and resets on drop as
     /// [`send`](Self::send).
     ///
     /// # Errors
@@ -1736,7 +1738,8 @@ mod tests {
                 let opened = side.session.open_sender(Class::Complete).await;
                 let mut sender = opened.expect("a stream");
                 // A message of at most 1452 bytes is copied, so the stream drops its
-                // block at once. A longer one is a slice of its block until the ACK.
+                // block at once. A longer one is a slice of its block until the peer
+                // acknowledges it and each byte before it, or the stream resets.
                 for (len, held) in [(100, false), (1452, false), (1453, true)] {
                     let block = side.block(&vec![7; len]);
                     let at = block.as_ptr();
@@ -3282,5 +3285,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod held;
 #[cfg(test)]
 mod stress;

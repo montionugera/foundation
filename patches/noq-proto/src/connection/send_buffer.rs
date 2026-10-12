@@ -346,9 +346,27 @@ impl SendBuffer {
         self.unsent != self.offset() || !self.retransmits.is_empty()
     }
 
-    /// Compute the amount of data that hasn't been acknowledged
-    pub(super) fn unacked(&self) -> u64 {
-        self.data.len() as u64 - self.acks.iter().map(|x| x.end - x.start).sum::<u64>()
+    /// Frees each byte, and returns how many it freed. The offset stays, as the final
+    /// offset of a reset.
+    pub(super) fn clear(&mut self) -> u64 {
+        let held = self.held();
+        let offset = self.offset();
+        // Not `pop_front`: a second caller stops its inline in `ack`.
+        *self = Self {
+            data: SendBufferData {
+                offset,
+                ..SendBufferData::default()
+            },
+            unsent: offset,
+            acks: ArrayRangeSet::new(),
+            retransmits: ArrayRangeSet::new(),
+        };
+        held
+    }
+
+    /// The bytes that the buffer holds, also those acknowledged after a gap
+    pub(super) fn held(&self) -> u64 {
+        self.data.len() as u64
     }
 }
 

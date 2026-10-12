@@ -523,8 +523,9 @@ impl Source {
 }
 
 /// The longest chunk that noq-proto copies into its own buffer: `MAX_COMBINE` of its
-/// `send_buffer` in 1.3.0. It keeps a longer chunk until the ACK.
-const COPIED_MAX: usize = 1452;
+/// `send_buffer` in 1.3.0. It keeps a longer chunk until the peer acknowledges it and
+/// each byte before it on its stream, or the stream resets.
+pub(crate) const COPIED_MAX: usize = 1452;
 
 /// The parts of a message that the stream has not taken all of, the first one cut at
 /// the first byte not taken. The list keeps its capacity.
@@ -2038,6 +2039,8 @@ mod tests {
     use crate::quic::pair::{self, Pair, Side};
     use crate::testing::{self, Shard};
     use crate::tls;
+
+    mod gap;
 
     /// The link delay each way.
     const DELAY: Duration = Duration::from_millis(10);
@@ -4029,25 +4032,24 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_sender_gives_back_its_blocks_when_the_peer_acknowledges() {
+    fn a_reset_sender_gives_back_its_blocks_at_once() {
         testing::run(1, |shard| {
             let mut pair = connected(shard);
             // noq-proto copies a write of 1452 bytes or less, and holds a larger one
-            // until the peer acknowledges it. A 2000-byte block takes 2112 bytes of
-            // the budget.
+            // until the peer acknowledges it and each byte before it, or the stream
+            // resets. A 2000-byte block takes 2112 bytes of the budget.
             let config = block::Config::new(3000).expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Pool::new(config, memory);
             let mut sender = open_sender(&mut pair, Class::Complete);
             let (now, message) = (pair.now(), pool.alloc(2000).expect("room").freeze());
             write(&mut pair.client, now, &mut sender, &[message]);
-            pair.client.endpoint.reset(now, &mut sender, Code(9));
             let exhausted = block::Error::Exhausted {
                 requested: 2000,
                 available: 888,
             };
             assert_eq!(pool.alloc(2000).err(), Some(exhausted));
-            pair.run(RUN);
+            pair.client.endpoint.reset(now, &mut sender, Code(9));
             assert_eq!(pool.alloc(2000).err(), None);
         });
     }
