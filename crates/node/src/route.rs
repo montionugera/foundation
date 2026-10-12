@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::poll_fn;
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::rc::{Rc, Weak};
 use std::task::Poll;
@@ -16,27 +17,23 @@ use wire::Protocol;
 
 use crate::scope::Scope;
 
-/// How long a stream may take to give its header, a patch as [`crate::WINDOW`] is.
-const HEADER: Span = Span::from_nanos(10_000_000_000);
-
-/// How many places the peers outside the region hold at once, a patch as [`HEADER`] is.
-/// A program holds one per session, and a node one for its key.
-const PLACES: usize = 256;
-
 /// Serves each session of `transport` in its own future on `tasks`, until the transport
 /// stops, and gives the error that stopped it. Admits each session of a member of
 /// `mesh`'s region. Gives each session of another peer a place, of at most
-/// [`PLACES`]; at the bound, the oldest place frees for it ([`Places::take`]).
-/// `route` decides each stream.
+/// `places_max`; at the bound, the oldest place frees for it ([`Places::take`]).
+/// `route` decides each stream, and rejects one whose header takes longer than
+/// `header_wait`.
 pub(crate) async fn accept(
     transport: Rc<Transport>,
     mesh: Option<Mesh>,
     hub: Hub,
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
+    header_wait: Span,
+    places_max: NonZeroUsize,
 ) -> Error {
     let mut sessions = Scope::new(tasks.clone());
-    let mut places = Places::default();
+    let mut places = Places::new(places_max);
     loop {
         let session = match transport.accept().await {
             Ok(session) => session,
@@ -44,7 +41,14 @@ pub(crate) async fn accept(
         };
         let held = places.take(&session, |peer| member(peer, mesh.as_ref()));
         let link = hub.link(session.clone());
-        let serve = serve(session, mesh.clone(), link, clock.clone(), tasks.clone());
+        let serve = serve(
+            session,
+            mesh.clone(),
+            link,
+            clock.clone(),
+            header_wait,
+            tasks.clone(),
+        );
         sessions.spawn(Box::pin(async move {
             serve.await;
             drop(held);
@@ -74,18 +78,27 @@ impl Drop for Hold {
 }
 
 /// The places that the peers outside the region hold, oldest first.
-#[derive(Default)]
 pub(crate) struct Places {
     held: VecDeque<Weak<Place>>,
     serial: u64,
+    max: NonZeroUsize,
 }
 
 impl Places {
+    /// No places held, of at most `max`.
+    pub(crate) const fn new(max: NonZeroUsize) -> Self {
+        Self {
+            held: VecDeque::new(),
+            serial: 0,
+            max,
+        }
+    }
+
     /// The hold of `session` on its place: the place that its node key still holds,
     /// which keeps its age, else a new place. `None` when `member` holds for the peer.
-    /// Each place whose peer `member` now holds frees, and its sessions stay. At
-    /// [`PLACES`], the oldest place frees first, and each session that holds it closes
-    /// with `wire::session::REFUSED`.
+    /// Each place whose peer `member` now holds frees, and its sessions stay. At `max`
+    /// places, the oldest place frees first, and each session that holds it closes with
+    /// `wire::session::REFUSED`.
     pub(crate) fn take(
         &mut self,
         session: &Session,
@@ -103,7 +116,7 @@ impl Places {
             Peer::Client => None,
         };
         let place = kept.unwrap_or_else(|| {
-            if self.held.len() >= PLACES
+            if self.held.len() >= self.max.get()
                 && let Some(oldest) =
                     self.held.pop_front().and_then(|old| old.upgrade())
             {
@@ -133,12 +146,21 @@ async fn serve(
     mesh: Option<Mesh>,
     link: Link,
     clock: env::clock::Clock,
+    header_wait: Span,
     tasks: env::tasks::Tasks,
 ) {
     let mut streams = Scope::new(tasks);
     while let Ok(incoming) = session.accept().await {
         let peer = session.peer();
-        let route = route(incoming, peer, mesh.clone(), link.clone(), clock.clone());
+        let link = link.clone();
+        let route = route(
+            incoming,
+            peer,
+            mesh.clone(),
+            link,
+            clock.clone(),
+            header_wait,
+        );
         streams.spawn(Box::pin(route));
     }
 }
@@ -146,17 +168,18 @@ async fn serve(
 /// Reads the header of `incoming`, its first message, and routes the stream that `peer`
 /// opened by its protocol. A `Mesh` stream of a node goes to `mesh`, and a `Hub` stream
 /// of a member of the region to `link`; each other stream, and one whose header does
-/// not arrive within [`HEADER`] on `clock`, is rejected.
+/// not arrive within `header_wait` on `clock`, is rejected.
 async fn route(
     mut incoming: Incoming,
     peer: Peer,
     mesh: Option<Mesh>,
     link: Link,
     clock: env::clock::Clock,
+    header_wait: Span,
 ) {
     let first = {
         let mut recv = pin!(incoming.receiver.recv());
-        let mut late = pin!(clock.sleep(HEADER));
+        let mut late = pin!(clock.sleep(header_wait));
         poll_fn(|cx| match recv.as_mut().poll(cx) {
             Poll::Ready(first) => Poll::Ready(Some(first)),
             Poll::Pending => late.as_mut().poll(cx).map(|()| None),
