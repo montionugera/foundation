@@ -285,5 +285,6 @@
   constants until #2453, which lets no simulation run a node at small limits; a check in
   `Node::start` before a shard starts, which states the rules of the transport a second
   time for values that only a test gives until #2453. #2453 checks the values of a
-  policy before a node keeps them. Supersedes "until #1662 sizes it" of
+  policy before a node keeps them. Supersedes "Deferred to #1662, which sizes the
+  window from the bandwidth-delay product" of
   https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609.

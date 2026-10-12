@@ -12,5 +12,5 @@
   https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083. "A field
   of `node::Config` lost" holds no more. Since #1732 a value that a policy sets reaches
   the node through `node::Config`, as the budget does, so #1285 puts the stamp limits in
-  `node::Settings` (NODE PORT). Supersedes "A field of `node::Config` lost" of
-  https://github.com/synnaxlabs/foundation/pull/1287#issuecomment-6034425115.
+  `node::Settings` (NODE PORT). Supersedes "Lost: the limits as `node::Config`
+  fields" of https://github.com/synnaxlabs/foundation/pull/1287#issuecomment-6034425115.
