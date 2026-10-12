@@ -387,23 +387,15 @@ impl<K> Default for Sessions<K> {
 
 impl<K: Copy + Ord + Hash> Sessions<K> {
     /// Opens the session `key` on `keys`, so that a removal of one of them ends it.
-    fn add(&mut self, key: K, keys: Box<[Key]>) -> Ending {
+    fn add(&mut self, key: K, keys: Vec<Key>) -> Ending {
         let ending = Ending::default();
         let open = Open {
-            keys: keys.into_vec(),
+            keys,
             ending: ending.clone(),
         };
         let added = self.0.insert(key, open);
         assert!(added.is_none(), "invariant: each key is added once");
         ending
-    }
-
-    /// Adds `keys` to the channels of the session `key`. Does nothing when it is not
-    /// open.
-    fn extend(&mut self, key: K, keys: &[Key]) {
-        if let Some(open) = self.0.get_mut(&key) {
-            open.keys.extend_from_slice(keys);
-        }
     }
 
     /// Returns whether the session `key` was open, and makes it not open.
@@ -425,6 +417,16 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
             .collect();
         ended.sort_unstable();
         ended
+    }
+}
+
+impl Sessions<u64> {
+    /// Adds `keys` to the channels of the open `key`. Does nothing after a change of
+    /// the definitions ended it.
+    fn extend(&mut self, key: u64, keys: &[Key]) {
+        if let Some(open) = self.0.get_mut(&key) {
+            open.keys.extend_from_slice(keys);
+        }
     }
 }
 

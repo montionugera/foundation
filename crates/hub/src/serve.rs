@@ -465,7 +465,7 @@ impl<'s> Opening<'s> {
         state.borrow_mut().catch_up();
         Self {
             state,
-            pending: Pending::new(state, Box::default()),
+            pending: Pending::new(state, Vec::new()),
             index: None,
             at: None,
             keys: Vec::new(),

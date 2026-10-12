@@ -22,7 +22,7 @@ pub(crate) struct Pending<'s> {
 
 impl<'s> Pending<'s> {
     /// An open registered on `keys`.
-    pub(crate) fn new(state: &'s Rc<RefCell<State>>, keys: Box<[Key]>) -> Self {
+    pub(crate) fn new(state: &'s Rc<RefCell<State>>, keys: Vec<Key>) -> Self {
         let mut borrowed = state.borrow_mut();
         let key = borrowed.opened;
         borrowed.opened += 1;
@@ -38,7 +38,7 @@ impl<'s> Pending<'s> {
     }
 
     /// Gives what `future` gives, or, at once, the first channel of the open that a
-    /// call removed or changed.
+    /// change of the definitions removed or changed.
     pub(crate) async fn wait<T>(
         &self,
         future: impl Future<Output = T>,

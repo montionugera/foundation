@@ -782,7 +782,10 @@ impl Session {
         key: ::home::reader::Key,
         channels: Channels,
     ) -> Self {
-        let ending = state.borrow_mut().readers.add(key, channels.keys);
+        let ending = state
+            .borrow_mut()
+            .readers
+            .add(key, channels.keys.into_vec());
         Self {
             state: Rc::clone(state),
             key,
