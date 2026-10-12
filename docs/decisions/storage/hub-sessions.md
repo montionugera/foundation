@@ -266,17 +266,17 @@
   waits for the home, it is registered on each channel that its check gave, as a served
   open is, and on no other index. A spec that removes an index removes or moves each
   data channel on it, and the open takes nothing of an index but its key, which a rename
-  keeps. A later spec in use that removes or changes one of them wakes it at once. It
-  then checks its names, or matches its selector, again, and waits for the home of the
-  index that the check gives. A moved channel then opens on its new index. A writer
-  whose name is gone fails with `Unknown`. A reader gets what an open at that instant
-  gets: its channels, `Empty`, or `ManyIndexes`. A spec that only adds a channel wakes
-  no open. When the home comes, a writer carries each index and opens with no `await`
-  between, because no channel of its check changed. A reader matches its selector again,
-  as an open at that instant does, so it also gets a channel that a spec added on its
-  index. It then carries the index and opens with no `await` between. A served read
-  selects by name and waits as a local reader does, so it follows the change too
-  (`laptop.architect`, 2026-10-09T05:24:32Z:
+  keeps. A later spec in use that removes or changes one of its channels wakes it at
+  once. It then checks its names, or matches its selector, again, and waits for the home
+  of the index that the check gives. A moved channel then opens on its new index. A
+  writer whose name is gone fails with `Unknown`. A reader gets what an open at that
+  instant gets: its channels, `Empty`, or `ManyIndexes`. A spec that only adds a channel
+  wakes no open. When the home comes, a writer carries each index and opens with no
+  `await` between, because no channel of its check changed. A reader matches its
+  selector again, as an open at that instant does, so it also gets a channel that a spec
+  added on its index. It then carries the index and opens with no `await` between. A
+  served read selects by name and waits as a local reader does, so it follows the change
+  too (`laptop.architect`, 2026-10-09T05:24:32Z:
   https://github.com/synnaxlabs/foundation/issues/2112#issuecomment-6074871156;
   2026-10-09T00:55:16Z:
   https://github.com/synnaxlabs/foundation/pull/2040#issuecomment-6072038723;
