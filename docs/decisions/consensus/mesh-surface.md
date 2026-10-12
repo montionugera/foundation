@@ -198,9 +198,10 @@
   older than each spec that a task told by `Mesh::spec` or a spec watch knows of.
   Lost: a hub task that follows the spec watch alone, which `keep` wakes in the same
   step as the told task; a doc that states the window and a call that waits for the
-  hub. Decided by `laptop.architect`
-  (2026-10-10T23:49:57Z:
-  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301).
+  hub. Decided by `laptop.architect` (2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301; the
+  text, 2026-10-12T19:41:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2476#issuecomment-6131357049).
   Lost also: `Mesh::pointer_used() -> Option<Pointer>`, after which an open calls
   `Mesh::spec`, which can wait for a read (`laptop.architect`, 2026-10-11T17:40:47Z:
   https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111819824).

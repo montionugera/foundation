@@ -71,4 +71,6 @@
   (2026-10-10T23:49:57Z:
   https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301; the
   text, 2026-10-12T16:35:38Z:
-  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6128454839).
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6128454839; the
+  stop, 2026-10-12T19:41:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2476#issuecomment-6131357049).
