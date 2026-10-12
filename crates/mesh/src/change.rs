@@ -97,8 +97,8 @@ const TICKET: u8 = 3;
 const SPEC: u8 = 4;
 
 /// The most chunk digests that one `Spec` change lists, so that
-/// [`message::BYTES_MIN`](crate::message::BYTES_MIN) stays under 64 KiB, the limit of
-/// a node.
+/// [`message::BYTES_MIN`](crate::message::BYTES_MIN) stays under 64 KiB, the default
+/// limit of a node.
 pub(crate) const CHUNKS_MAX: usize = 1024;
 
 /// The most holders of one `Spec` change, so that a change with [`CHUNKS_MAX`]

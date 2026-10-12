@@ -10,12 +10,12 @@
   is the base root and that holds no home leaves the pointer at the base. The compare
   still checks the base. Lost: a version in the record, which can disagree with the
   base. A record lists at most `CHUNKS_MAX` = 1024 digests, about 32 KiB, so that
-  `message::BYTES_MIN` stays under 64 KiB, the limit of a node; decode refuses a larger
-  count. `change::BYTES_MAX` = 50 255 bytes is the largest record of any kind: a `Spec`
-  change at each bound. `raft` drops the last entries of an `Append` until it fits
-  `message::BYTES_MIN` = `BYTES_MAX` + 100, an `Append` of one such record with no proof
-  and no link (RAFT SURFACE, MESH WIRE). So a record at the bound goes alone (#1361;
-  `laptop.architect`, 2026-10-12T18:29:52Z,
+  `message::BYTES_MIN` stays under 64 KiB, the default limit of a node; decode refuses a
+  larger count. `change::BYTES_MAX` = 50 255 bytes is the largest record of any kind: a
+  `Spec` change at each bound. `raft` drops the last entries of an `Append` until it
+  fits `message::BYTES_MIN` = `BYTES_MAX` + 100, an `Append` of one such record with no
+  proof and no link (RAFT SURFACE, MESH WIRE). So a record at the bound goes alone
+  (#1361; `laptop.architect`, 2026-10-12T18:29:52Z,
   https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
   Supersedes the bound by the count of entries of
   https://github.com/synnaxlabs/foundation/pull/1840#issuecomment-6056167437 and

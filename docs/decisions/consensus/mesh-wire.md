@@ -76,7 +76,9 @@
   at most `BYTES_MIN`", so a member never needs the limit of each peer. The decode of an
   `Append` refuses it when an entry is larger than one that holds a record of
   `BYTES_MAX` bytes, so no node takes an entry that no `Append` fits. The log holds
-  only entries that the node took or proposed, so its decode has no such bound.
+  only entries that the node took or proposed, so its decode has no such bound. The
+  bound of the decode of an `Append`: `laptop.architect`, 2026-10-12T19:45:38Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131426790).
   `Mesh::open` refuses a node that takes less than `BYTES_MIN` (`Error::Limit`), and
   `propose_voters` refuses a set of more than 127 voters, so that the proof of a message
   with no link fits. Both refusals land in the third PR of #1361. Lost: `mesh` cuts a
