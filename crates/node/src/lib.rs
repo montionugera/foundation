@@ -21,6 +21,7 @@ mod root;
 mod route;
 mod scope;
 mod sector;
+mod settings;
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the publish task waits on hub writer sessions")
@@ -36,7 +37,7 @@ use std::fmt;
 use std::future::poll_fn;
 use std::iter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -48,6 +49,7 @@ use types::time::{Span, Stamp};
 
 pub use crate::budget::{Budget, budget};
 use crate::handoff::{Give, Take};
+pub use crate::settings::Settings;
 use crate::stop::{Guard, Stop};
 
 /// The seams a node runs on. `node`'s entry point builds the real ones from `os`;
@@ -94,6 +96,9 @@ pub struct Config<M> {
     /// file `name` is gone writes it again from the card. [`Node::join`] gives the
     /// first failure.
     pub name: types::name::Name,
+    /// The limits of the node's port, its peers, and its chunk store. A value that the
+    /// transport refuses stops the node with [`Error::Transport`].
+    pub settings: Settings,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -107,6 +112,7 @@ impl<M> fmt::Debug for Config<M> {
             .field("listen", &self.listen)
             .field("region", &self.region)
             .field("name", &self.name)
+            .field("settings", &self.settings)
             .finish_non_exhaustive()
     }
 }
@@ -168,18 +174,6 @@ const LIMITS: home::order::Limits = home::order::Limits {
     earliest: Stamp::from_nanos(946_684_800_000_000_000),
     ahead: Span::from_nanos(10_000_000_000),
 };
-/// The transport's flow window of each stream and session, a patch until it is a
-/// setting, as [`LIMITS`] is.
-const WINDOW: usize = 1 << 20;
-/// The most streams of each kind a peer may open, a patch as [`WINDOW`] is.
-const STREAMS: NonZeroU32 = NonZeroU32::new(64).expect("not zero");
-/// How long a silent peer keeps its session, a patch as [`WINDOW`] is.
-const IDLE: Span = Span::from_nanos(30_000_000_000);
-/// The largest message of a stream, when the pool holds it, a patch as [`WINDOW`]
-/// is.
-const MESSAGE: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("not zero");
-/// The bytes the blob store leaves free on the disk, a patch as [`WINDOW`] is.
-const FLOOR: u64 = 1 << 30;
 
 impl Node {
     /// Starts one shard per core, named `shard-<i>`. Each shard is pinned to core `i`
@@ -203,18 +197,19 @@ impl Node {
     /// the mesh's group stops, which stops the node. It writes `address` empty when it
     /// stops serving, before the lock drops. An address in the file is no proof that a
     /// node runs: a crash or a failed empty write leaves it. It admits each member of
-    /// the region, and gives other peers at most 256 places at once: one for each
-    /// session of a program, and one for the key of a node. At the bound, the oldest
-    /// place frees for a new peer, and its session closes unless its peer is now a
-    /// member, so a peer outside the region keeps its session until 256 later peers
-    /// took a place. Returns once each shard runs or one has failed to start. No shard
-    /// starts when the disk budget holds no ring on each shard ([`Error::Disk`]), when
-    /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
-    /// bytes ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
-    /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
-    /// segment ([`Error::Reserved`]). A port that does not bind stops the node after
-    /// shard 0 claimed the data directory, and no buffer opens ([`Error::Port`]). Any
-    /// failure stops the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// the region, and gives other peers at most [`Settings::places_max`] places at
+    /// once: one for each session of a program, and one for the key of a node. At the
+    /// bound, the oldest place frees for a new peer, and its session closes unless its
+    /// peer is now a member, so a peer outside the region keeps its session until that
+    /// many later peers took a place. Returns once each shard runs or one has failed to
+    /// start. No shard starts when the disk budget holds no ring on each shard
+    /// ([`Error::Disk`]), when a shard's part of the pool budget gives a reservation of
+    /// more than `usize::MAX` bytes ([`Error::Pool`]), when [`Config::listen`] has a
+    /// multicast IP or the IPv4 broadcast IP ([`Error::Listen`]), or when
+    /// [`Config::name`] has a reserved segment ([`Error::Reserved`]). A port that does
+    /// not bind stops the node after shard 0 claimed the data directory, and no buffer
+    /// opens ([`Error::Port`]). Any failure stops the node, and [`Node::join`] gives
+    /// the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -425,12 +420,13 @@ impl Node {
     /// over it, did not open, [`Error::Budget`] or [`Error::Directory`] for a file
     /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
     /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
-    /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
-    /// mesh that did not open, [`Error::Directory`] for a file `address` that shard 0
-    /// could not write, or [`Error::Transport`] or [`Error::Group`], whichever the node
-    /// sees stop first, else [`Error::Directory`] for a file `address` that shard 0
-    /// could not write empty, else [`Error::Panicked`] for the first shard by core that
-    /// panicked. Any failed shard stops the node.
+    /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
+    /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
+    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
+    /// that shard 0 could not write, or [`Error::Transport`] or [`Error::Group`],
+    /// whichever the node sees stop first, else [`Error::Directory`] for a file
+    /// `address` that shard 0 could not write empty, else [`Error::Panicked`] for the
+    /// first shard by core that panicked. Any failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -806,6 +802,7 @@ struct Bind {
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
     net: env::net::Net,
+    settings: Settings,
 }
 
 impl Bind {
@@ -817,6 +814,7 @@ impl Bind {
             clock: config.clock.clone(),
             entropy: config.entropy.clone(),
             net: config.net.clone(),
+            settings: config.settings,
         }
     }
 
@@ -844,6 +842,7 @@ impl Bind {
             self.clock,
             self.entropy,
             self.net,
+            self.settings,
         ))
     }
 }
@@ -860,6 +859,7 @@ struct Endpoint {
     entropy: env::entropy::Entropy,
     /// The network, which the node's connectors reach their devices and stores on.
     net: env::net::Net,
+    settings: Settings,
 }
 
 /// The region that shard 0 opens, with what it needs to found the root region.
@@ -917,6 +917,7 @@ impl Endpoint {
         clock: env::clock::Clock,
         entropy: env::entropy::Entropy,
         net: env::net::Net,
+        settings: Settings,
     ) -> Self {
         let bound = address::bound(&port);
         let mut parts = port.split(NonZeroUsize::MIN);
@@ -929,6 +930,7 @@ impl Endpoint {
             clock,
             entropy,
             net,
+            settings,
         }
     }
 
@@ -947,44 +949,48 @@ impl Endpoint {
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
     /// the transport, also with the error of a founding, a store, or a mesh that did
     /// not open.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] when the transport refuses the settings.
     async fn open(
         self,
         identity: identity::Identity,
         files: env::files::Files,
         pool: Rc<block::Pool>,
         tasks: env::tasks::Tasks,
-    ) -> (Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>) {
+    ) -> Result<(Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>), Error>
+    {
         let config = transport::Config {
             private_key: identity.private_key.clone(),
-            message_bytes_max: MESSAGE,
-            window_bytes: WINDOW,
-            streams_max: STREAMS,
-            idle: IDLE,
+            message_bytes_max: self.settings.message_bytes_max,
+            window_bytes: self.settings.window_bytes,
+            streams_max: self.settings.streams_max,
+            idle: self.settings.idle,
             clock: self.clock.clone(),
             entropy: self.entropy.clone(),
             tasks: tasks.clone(),
             pool: Rc::clone(&pool),
         };
-        let transport = transport::Transport::new(config, self.part)
-            .expect("invariant: a buffer's pool holds a block of a whole UDP payload");
-        let transport = Rc::new(transport);
+        let transport = transport::Transport::new(config, self.part);
+        let transport = Rc::new(transport.map_err(Error::Transport)?);
         let founding =
             self.region
                 .founding(&files, Rc::clone(&pool), &self.entropy, &identity);
         let founding = match founding.await {
             Ok(Some(founding)) => founding,
-            Ok(None) => return (transport, Ok(None)),
-            Err(error) => return (transport, Err(error)),
+            Ok(None) => return Ok((transport, Ok(None))),
+            Err(error) => return Ok((transport, Err(error))),
         };
         let store = blob::Store::open(blob::Config {
             files: files.clone(),
             dir: directory::blob(),
             pool: Rc::clone(&pool),
-            floor_bytes: FLOOR,
+            floor_bytes: self.settings.floor_bytes,
         });
         let store = match store.await {
             Ok(store) => store,
-            Err(error) => return (transport, Err(Error::Blob(error))),
+            Err(error) => return Ok((transport, Err(Error::Blob(error)))),
         };
         let config = mesh::Config {
             key: identity.key,
@@ -1000,7 +1006,7 @@ impl Endpoint {
             store: Rc::new(store),
         };
         let mesh = mesh::Mesh::open(config).await;
-        (transport, mesh.map(Some).map_err(Error::Mesh))
+        Ok((transport, mesh.map(Some).map_err(Error::Mesh)))
     }
 }
 
@@ -1023,11 +1029,17 @@ impl Serve {
     /// broke, the port is freed only after the hub lets go of the region, as
     /// [`hub::Hub::new`] states, and after each task that a connector's run spawned has
     /// ended. Runs no task or connector and takes no session when a shard did not
-    /// open, or when the budgets were not kept, the identity did not load, the mesh
-    /// did not open, or `address` was not written, which goes into `failed`.
+    /// open, or when the budgets were not kept, the identity did not load, the
+    /// transport refused the settings, the mesh did not open, or `address` was not
+    /// written, which goes into `failed`.
     #[expect(
         clippy::too_many_arguments,
         reason = "shard 0's parts, which its claim and its open give in turn"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "shard 0's serve, whose parts each open from the one before; a longer \
+                  run answers the limit again"
     )]
     async fn run(
         self,
@@ -1056,8 +1068,11 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
+        let settings = endpoint.settings;
         let opened = endpoint.open(identity, files.clone(), pool, tasks.clone());
-        let (transport, mesh) = opened.await;
+        let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
+            return;
+        };
         let (freed, inbox, time) = (transport.ended(), self.inbox, self.time);
         // Each part that holds the transport or the node's stop drops as this block
         // ends, on each path, or is a task of the mesh, awaited below, a task of the
@@ -1098,8 +1113,15 @@ impl Serve {
                 });
                 let (ops, runs) = parts.unzip();
                 let group = follow(runs, hub.clone()).await;
-                let port =
-                    route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
+                let port = route::accept(
+                    transport,
+                    mesh,
+                    hub.clone(),
+                    clock,
+                    tasks.clone(),
+                    settings.header_wait,
+                    settings.places_max,
+                );
                 let stop = until(guard, port, group, fail);
                 inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
             });
@@ -1318,8 +1340,9 @@ pub enum Error {
         /// The count of shards.
         cores: usize,
     },
-    /// The transport of the node's port stopped, as when the OS breaks its socket.
-    /// The node stops.
+    /// The transport of the node's port stopped, as when the OS breaks its socket, or
+    /// refused a value of [`Config::settings`] ([`transport::Error::Config`]) before
+    /// the node took a session. The node stops.
     Transport(transport::Error),
     /// The mesh did not open, or the founding that the data directory stores did not
     /// read. A node that gives it took no session.
@@ -1448,6 +1471,9 @@ impl fmt::Display for Error {
                 "the pool budget {pool} gives one of {cores} shards a pool that needs \
                  more address space than this host has"
             ),
+            Self::Transport(error @ transport::Error::Config { .. }) => {
+                write!(f, "the node's transport refused its settings: {error}")
+            }
             Self::Transport(error) => {
                 write!(f, "the node's transport stopped: {error}")
             }
