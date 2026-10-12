@@ -1036,7 +1036,6 @@ mod tests {
         assert!(group.is_empty());
         assert_eq!(group.body_len_with(0, 0), table_len(0));
         assert_eq!(capacity(&group), before);
-        area.pool.reclaim();
         assert_eq!(
             area.pool.committed(),
             lent,
@@ -1367,7 +1366,6 @@ mod tests {
         assert_eq!(rejected, Err(Rejected::Pool(exhausted)));
         assert!(group.is_empty());
         assert!(group.meta.is_none(), "the meta block goes back");
-        area.pool.reclaim();
         assert_eq!(area.pool.committed(), block::footprint(META_LEN));
     }
 
