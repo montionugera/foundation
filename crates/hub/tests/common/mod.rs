@@ -1,6 +1,8 @@
 //! A hub on one shard of a sim node, with `time` and `value` on it, and the writes to
 //! it, for the tests and benches that count or time the hub.
 
+use std::collections::BTreeMap;
+
 use env::tasks::Tasks;
 use hub::Hub;
 use hub::home::Outcome;
@@ -23,23 +25,20 @@ pub(crate) const SETTLE: Span = Span::from_nanos(20_000_000);
 /// A hub on a new shard, with `time` and `value` defined, and the node's mesh time now.
 pub(crate) async fn hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
     let (hub, now) = hub::testing::open(env(node, tasks)).await;
-    hub.set_definitions(
-        definitions(&[])
-            .iter()
-            .map(|(name, channel)| (name, channel)),
-    );
+    hub.set_definitions(&definitions(&[]));
     (hub, now.nanos())
 }
 
 /// A hub on a new shard of node 1 in `region`, or alone with no region, with mesh
 /// time, and with `time`, `value`, and each of `more`, an `i64` channel on `time`,
-/// defined.
+/// defined. The founding of `region` must hold the [`definitions`] of `more`.
 pub(crate) async fn hub_in(
     node: &sim::node::Node,
     tasks: Tasks,
     region: Option<hub::Region>,
     more: &[Name],
 ) -> Hub {
+    let regional = region.is_some();
     let env = env(node, tasks);
     let (tasks, entropy) = (env.tasks.clone(), env.entropy.clone());
     let (home, interner, _, time) = home::testing::shard(env).await;
@@ -52,17 +51,15 @@ pub(crate) async fn hub_in(
         entropy,
         region,
     });
-    hub.set_definitions(
-        definitions(more)
-            .iter()
-            .map(|(name, channel)| (name, channel)),
-    );
+    if !regional {
+        hub.set_definitions(&definitions(more));
+    }
     hub
 }
 
 /// `time` with key 1, `value` with key 2, and each of `more`, from key 100 on, each
 /// an `i64` channel on `time`.
-fn definitions(more: &[Name]) -> Vec<(Name, Definition)> {
+pub(crate) fn definitions(more: &[Name]) -> BTreeMap<Name, Definition> {
     let time = Channel {
         key: channel::Key::from_u128(1),
         kind: Kind::Index {
@@ -78,10 +75,10 @@ fn definitions(more: &[Name]) -> Vec<(Name, Definition)> {
             kind: Kind::Data(Data::new(index, None, i64, None).expect("no unit")),
         })
     };
-    let mut definitions = vec![
+    let mut definitions = BTreeMap::from([
         (name("time"), Definition::Channel(time)),
         (name("value"), data(2)),
-    ];
+    ]);
     definitions.extend(
         (100..)
             .zip(more)

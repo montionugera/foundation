@@ -158,9 +158,10 @@ impl Hub {
         } = config;
         let next = home.next_commit();
         let used = region.as_ref().map(|region| region.mesh.used());
-        let applied = region.as_ref().zip(used.as_ref()).map(|(region, used)| {
-            used::Applied::new(region.mesh.watch_spec(), used)
-        });
+        let applied = region
+            .as_ref()
+            .zip(used.as_ref())
+            .map(|(region, used)| used::Applied::new(region.mesh.watch_spec(), used));
         let state = Rc::new(RefCell::new(State {
             home,
             interner,

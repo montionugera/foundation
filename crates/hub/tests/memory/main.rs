@@ -73,8 +73,14 @@ fn holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap() {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
         let transport = Rc::new(transport);
-        let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let region = region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            common::definitions(&[]),
+        )
+        .await;
         let hub = common::hub_in(&node, tasks.clone(), Some(region), &[]).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
@@ -294,8 +300,10 @@ fn holds_no_places_while_a_read_waits_for_its_home() {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
         let transport = Rc::new(transport);
+        let (other, definitions) = (Vec::new(), common::definitions(&wide));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+            region::open(&node, &tasks, Rc::clone(&transport), other, definitions)
+                .await;
         let hub = common::hub_in(&node, tasks.clone(), Some(region), &wide).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");

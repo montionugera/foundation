@@ -350,7 +350,8 @@ fn frees_the_share_of_the_open_of_a_read_before_its_places_go_out() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
     };
     read_session(318, ready, |mut agent| async move {
         agent.admit().await;
@@ -379,7 +380,8 @@ fn opens_a_read_whose_places_pass_the_share() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
         writes(test, &[10]).await;
     };
     let home = read_session(313, ready, |mut agent| async move {
@@ -562,7 +564,8 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
         let (clock, hub) = (test.clock.clone(), test.hub.clone());
         test.tasks.spawn(async move {
             clock.sleep(START).await;
@@ -630,7 +633,8 @@ where
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+                .await;
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         let mut test =
             Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
@@ -780,7 +784,8 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+                .await;
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         let mut test =
             Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;

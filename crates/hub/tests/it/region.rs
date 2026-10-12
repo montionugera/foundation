@@ -1,7 +1,10 @@
 //! Sessions of a hub whose node is in a region, where the mesh names the home of each
 //! index.
 
+use std::collections::BTreeMap;
+use std::future::poll_fn;
 use std::path::Path;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -10,9 +13,11 @@ use hub::reader::Ended;
 use hub::writer::Failure;
 use hub::{Link, serve};
 use spec::data_type::DataType;
+use spec::definition::Definition;
 use transport::stream::Incoming;
 use transport::{Class, Code};
 use types::channel;
+use types::name::Name;
 use types::time::Span;
 use wire::hub::Mode;
 
@@ -57,7 +62,8 @@ where
     sim.run_on(&node, move |node, tasks| async move {
         let transport =
             crate::net::transport(&node, &tasks, &own_pool(), HOME, 1 << 16);
-        let region = open(&node, &tasks, Rc::new(transport), Vec::new()).await;
+        let region =
+            open(&node, &tasks, Rc::new(transport), Vec::new(), channels()).await;
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         main(Test::new(node, tasks, layout, POOL, Some(region)).await).await;
     })
@@ -135,7 +141,7 @@ fn a_writer_sees_its_channel_move_while_it_waits_for_mesh_time() {
             name("value"),
             super::definition(2, DataType::Sample(I64), 3),
         );
-        hub.set_definitions(&moved);
+        test.set_spec(moved).await;
         test.sync().await;
         let opened = opening.await;
         let error = opened.expect_err("the mesh names OTHER as the home of time-b");
@@ -149,7 +155,8 @@ fn opens_no_writer_on_a_channel_removed_while_it_waits_for_mesh_time() {
         let hub = test.hub.clone();
         let mut opening = std::pin::pin!(hub.writer(config("a", &["value"])));
         assert!(poll_once(opening.as_mut()).is_pending());
-        hub.set_definitions(&super::without(&["time", "value", "value-c"]));
+        test.set_spec(super::without(&["time", "value", "value-c"]))
+            .await;
         test.sync().await;
         test.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         let std::task::Poll::Ready(opened) = poll_once(opening.as_mut()) else {
@@ -172,7 +179,7 @@ fn a_writer_does_not_open_at_a_home_that_moved_while_it_waits_for_a_middle_home(
             name("value-d"),
             super::definition(7, DataType::Sample(I64), 6),
         );
-        test.hub.set_definitions(&defs);
+        test.set_spec(defs).await;
         let time_c = channel::Key::from_u128(6);
         test.set_home(TIME, NODE).await;
         test.set_home(time_c, NODE).await;
@@ -207,7 +214,7 @@ fn a_writer_of_two_indexes_opens_after_an_index_it_left_moves_away() {
             name("value"),
             super::definition(2, DataType::Sample(I64), 6),
         );
-        test.hub.set_definitions(&defs);
+        test.set_spec(defs).await;
         test.set_home(channel::Key::from_u128(6), NODE).await;
         test.set_home(TIME, OTHER).await;
         let region = test.region.as_ref().expect("a region");
@@ -236,12 +243,32 @@ fn a_writer_does_not_open_on_a_mesh_that_stopped_while_it_waits_for_mesh_time() 
     });
 }
 
+/// Puts in use on `mesh` a spec of `definitions`, and returns once the mesh uses it.
+pub(super) async fn set_spec(
+    mesh: &mesh::Mesh,
+    definitions: BTreeMap<Name, Definition>,
+) {
+    let applied = mesh
+        .apply(mesh.pointer(), definitions, BTreeMap::new())
+        .await;
+    let pointer = applied.expect("applies the spec");
+    let used = mesh.spec().await.expect("the mesh runs");
+    assert_eq!(used.pointer, Some(pointer));
+}
+
 impl Test {
     /// Sets `home` as the home of `index` in the region.
     pub(super) async fn set_home(&self, index: channel::Key, home: types::node::Key) {
         let region = self.region.as_ref().expect("a region");
         let set = region.mesh.set_home(index, home).await;
         set.expect("sets the home");
+    }
+
+    /// Puts in use a spec of `definitions` in the region ([`set_spec`]), and returns
+    /// once each ready task, the hub's spec task too, has run.
+    pub(super) async fn set_spec(&self, definitions: BTreeMap<Name, Definition>) {
+        set_spec(&self.region.as_ref().expect("a region").mesh, definitions).await;
+        self.clock.sleep(Span::from_nanos(1)).await;
     }
 
     /// Makes the mesh stop at its next write of the log, and gives why it stopped.
@@ -285,7 +312,7 @@ fn a_session_does_not_open_on_a_channel_removed_while_it_waits_for_a_home() {
             std::pin::pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
         assert!(poll_once(opening.as_mut()).is_pending());
         assert!(poll_once(reading.as_mut()).is_pending());
-        test.hub.set_definitions(&without(&["value"]));
+        test.set_spec(without(&["value"])).await;
         test.set_home(TIME, NODE).await;
         let error = opening.await.expect_err("value was removed");
         assert_eq!(error, writer::Error::Unknown(name("value")));
@@ -307,7 +334,7 @@ fn a_session_opens_on_the_new_index_of_a_channel_moved_while_it_waits_for_a_home
         assert!(poll_once(reading.as_mut()).is_pending());
         let mut moved = channels();
         moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
-        test.hub.set_definitions(&moved);
+        test.set_spec(moved).await;
         test.set_home(TIME, NODE).await;
         assert!(poll_once(opening.as_mut()).is_pending());
         assert!(poll_once(reading.as_mut()).is_pending());
@@ -330,7 +357,7 @@ fn a_writer_opens_on_the_new_index_when_the_old_one_moves_away_during_its_home_w
         assert!(poll_once(opening.as_mut()).is_pending());
         let mut moved = channels();
         moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
-        test.hub.set_definitions(&moved);
+        test.set_spec(moved).await;
         test.set_home(TIME_B, NODE).await;
         test.set_home(TIME, OTHER).await;
         let mut writer = opening.await.expect("opens on time-b, homed at this node");
@@ -361,7 +388,7 @@ fn a_session_opens_on_the_new_type_of_a_channel_changed_while_it_waits_for_a_hom
         assert!(poll_once(reading.as_mut()).is_pending());
         let mut changed = channels();
         changed.insert(name("value"), definition(2, DataType::Sample(I32), 1));
-        test.hub.set_definitions(&changed);
+        test.set_spec(changed).await;
         test.set_home(TIME, NODE).await;
         let mut writer = opening.await.expect("opens");
         let mut reader = reading.await.expect("opens");
@@ -389,7 +416,7 @@ fn a_session_opens_on_the_new_key_of_a_channel_changed_while_it_waits_for_a_home
         assert!(poll_once(reading.as_mut()).is_pending());
         let mut changed = channels();
         changed.insert(name("value"), definition(7, DataType::Sample(I64), 1));
-        test.hub.set_definitions(&changed);
+        test.set_spec(changed).await;
         test.set_home(TIME, NODE).await;
         let mut writer = opening.await.expect("opens");
         let mut reader = reading.await.expect("opens");
@@ -398,7 +425,7 @@ fn a_session_opens_on_the_new_key_of_a_channel_changed_while_it_waits_for_a_home
         let received = reader.next().await.expect("a frame");
         assert_eq!(keys(&received), [1, 7]);
         assert_eq!(samples(&received, 7), [20]);
-        test.hub.set_definitions(&without(&["value"]));
+        test.set_spec(without(&["value"])).await;
         let removed = channel::Key::from_u128(7);
         let failure = written(&mut writer, &[(1, &[now + 1]), (7, &[30])]);
         assert_eq!(failure, Err(Failure::Removed(removed)));
@@ -477,11 +504,12 @@ fn a_session_on_a_stopped_mesh_gets_why_it_stopped() {
     });
 }
 
-/// Runs a session at [`NODE`] in the region, after `prepare` ran on the test, and gives
-/// what `serve` returned and the code that the peer saw on its stream.
+/// Runs a session at [`NODE`] in the region, after `prepare` ran on the test and a
+/// [`Pause`](super::Pause) that holds the polls of `serve`, and gives what `serve`
+/// returned and the code that the peer saw on its stream.
 fn served<F>(
     seed: u64,
-    prepare: impl FnOnce(Rc<Test>) -> F + Send + 'static,
+    prepare: impl FnOnce(Rc<Test>, Rc<super::Pause>) -> F + Send + 'static,
 ) -> (Option<Result<(), serve::Error>>, Option<Code>)
 where
     F: Future<Output = ()> + 'static,
@@ -490,8 +518,10 @@ where
     let (kept, codes) = (Arc::clone(&result), Arc::clone(&code));
     let home = move |test: Test, link: Link, incoming: Incoming| async move {
         let test = Rc::new(test);
-        prepare(Rc::clone(&test)).await;
-        let served = super::serve::serve(&link, incoming).await;
+        let held = Rc::new(super::Pause::default());
+        prepare(Rc::clone(&test), Rc::clone(&held)).await;
+        let mut serving = pin!(super::serve::serve(&link, incoming));
+        let served = poll_fn(|cx| held.poll(cx, serving.as_mut())).await;
         *kept.lock().expect("not poisoned") = Some(served);
     };
     let peer = move |mut peer: Peer| async move {
@@ -513,7 +543,7 @@ where
 
 #[test]
 fn stops_an_open_of_an_index_whose_home_is_another_node_with_not_home() {
-    let (served, code) = served(5, |test| async move {
+    let (served, code) = served(5, |test, _| async move {
         test.set_home(TIME, OTHER).await;
     });
     assert_eq!(served, Some(Err(serve::Error::NotHome)));
@@ -528,11 +558,11 @@ fn stops_an_open_of_an_index_whose_home_is_another_node_with_not_home() {
 /// removed one of its channels meanwhile.
 #[test]
 fn stops_an_open_of_a_channel_removed_while_it_waits_for_a_home_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
-            changing.hub.set_definitions(&without(&["value"]));
+            changing.set_spec(without(&["value"])).await;
             changing.set_home(TIME, NODE).await;
         });
     });
@@ -545,13 +575,13 @@ fn stops_an_open_of_a_channel_removed_while_it_waits_for_a_home_with_unknown() {
 /// `value` to `time-b`, stops with `UNKNOWN`, as for a removal.
 #[test]
 fn stops_an_open_of_a_channel_moved_while_it_waits_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
             let mut moved = channels();
             moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
-            changing.hub.set_definitions(&moved);
+            changing.set_spec(moved).await;
             changing.set_home(TIME, NODE).await;
         });
     });
@@ -563,14 +593,14 @@ fn stops_an_open_of_a_channel_moved_while_it_waits_with_unknown() {
 /// As above, while a call changes the data type of `value`.
 #[test]
 fn stops_an_open_of_a_channel_retyped_while_it_waits_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
             let mut retyped = channels();
             let f64 = types::sample::Type::Scalar(types::sample::Scalar::F64);
             retyped.insert(name("value"), definition(2, DataType::Sample(f64), 1));
-            changing.hub.set_definitions(&retyped);
+            changing.set_spec(retyped).await;
             changing.set_home(TIME, NODE).await;
         });
     });
@@ -579,19 +609,21 @@ fn stops_an_open_of_a_channel_retyped_while_it_waits_with_unknown() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// As above, while a call changes the data type of `value` after the home is named
+/// As above, while a spec changes the data type of `value` after the home is named
 /// and before the open runs again: the open reads its removal after the wait.
 #[test]
 fn stops_an_open_of_a_channel_retyped_after_its_home_is_named_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, open| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
+            open.pause();
             changing.set_home(TIME, NODE).await;
             let mut retyped = channels();
             let f64 = types::sample::Type::Scalar(types::sample::Scalar::F64);
             retyped.insert(name("value"), definition(2, DataType::Sample(f64), 1));
-            changing.hub.set_definitions(&retyped);
+            changing.set_spec(retyped).await;
+            assert_eq!(open.resume(), 1, "the home woke the open");
         });
     });
     let removed = serve::Error::Removed(channel::Key::from_u128(2));
@@ -603,12 +635,12 @@ fn stops_an_open_of_a_channel_retyped_after_its_home_is_named_with_unknown() {
 /// no home named after the call.
 #[test]
 fn stops_an_open_whose_index_is_removed_while_it_waits_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
             let removed = without(&["time", "value", "value-c"]);
-            changing.hub.set_definitions(&removed);
+            changing.set_spec(removed).await;
         });
     });
     assert_eq!(served, Some(Err(serve::Error::Removed(TIME))));
@@ -619,13 +651,13 @@ fn stops_an_open_whose_index_is_removed_while_it_waits_with_unknown() {
 /// its channels.
 #[test]
 fn stops_an_open_that_waits_with_its_first_removed_channel() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
-            changing.hub.set_definitions(&without(&["value"]));
+            changing.set_spec(without(&["value"])).await;
             let removed = without(&["time", "value", "value-c"]);
-            changing.hub.set_definitions(&removed);
+            changing.set_spec(removed).await;
         });
     });
     let removed = serve::Error::Removed(channel::Key::from_u128(2));
@@ -637,12 +669,12 @@ fn stops_an_open_that_waits_with_its_first_removed_channel() {
 /// before it.
 #[test]
 fn stops_an_open_of_a_channel_removed_and_defined_again_while_it_waits_with_unknown() {
-    let (served, code) = served(7, |test| async move {
+    let (served, code) = served(7, |test, _| async move {
         let changing = Rc::clone(&test);
         test.tasks.spawn(async move {
             changing.clock.sleep(Span::SECOND).await;
-            changing.hub.set_definitions(&without(&["value"]));
-            changing.hub.set_definitions(&channels());
+            changing.set_spec(without(&["value"])).await;
+            changing.set_spec(channels()).await;
             changing.set_home(TIME, NODE).await;
         });
     });
@@ -655,7 +687,7 @@ fn stops_an_open_of_a_channel_removed_and_defined_again_while_it_waits_with_unkn
 fn stops_an_open_on_a_stopped_mesh_with_failed() {
     let stopped = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&stopped);
-    let (served, code) = served(6, move |test| async move {
+    let (served, code) = served(6, move |test, _| async move {
         let stopped = test.stop_mesh().await;
         *kept.lock().expect("not poisoned") = Some(stopped);
     });
