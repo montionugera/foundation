@@ -417,13 +417,13 @@ impl Node {
     /// more than `usize::MAX` bytes, [`Error::Start`] for a shard that could not start
     /// or pin, or [`Error::Memory`] for a shard with no memory, else [`Error::Shards`]
     /// or [`Error::Directory`] for a data directory that shard 0 could not claim, else
-    /// [`Error::Name`], [`Error::Renamed`], [`Error::Mesh`], [`Error::Key`], or
-    /// [`Error::Directory`] for a stored name that it could not read or a name it could
-    /// not keep, else [`Error::Port`] for a port that did not bind, else
-    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
-    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
-    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
-    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
+    /// [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`],
+    /// [`Error::Key`], or [`Error::Directory`] for a stored name that it could not read
+    /// or a name it could not keep, else [`Error::Port`] for a port that did not bind,
+    /// else [`Error::Buffer`] for the first shard by core whose buffer, or the home
+    /// over it, did not open, [`Error::Budget`] or [`Error::Directory`] for a file
+    /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
+    /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
     /// mesh that did not open, [`Error::Directory`] for a file `address` that shard 0
     /// could not write, or [`Error::Transport`] or [`Error::Group`], whichever the node
@@ -488,12 +488,12 @@ pub async fn create_key(
 ///
 /// # Errors
 ///
-/// When `given` is `None`: [`Error::Unnamed`] when the data directory holds no name: no
-/// file `name`, and no file `node.key`, no founding, or no card of the key of
-/// `node.key` in the founding. With no file `name`: [`Error::Key`] for a file
-/// `node.key` that a node did not write, and [`Error::Mesh`] for a founding that does
-/// not read when `node.key` holds a key. [`Error::Name`] for a file `name` that a node
-/// did not write, and [`Error::Directory`] for a file call that fails.
+/// When `given` is `None`, with no file `name`: [`Error::Unnamed`] when the data
+/// directory stores no founding, [`Error::NoCard`] when it stores a founding with no
+/// card of the node (no file `node.key`, or no card of its key), [`Error::Key`] for a
+/// file `node.key` that a node did not write, and [`Error::Mesh`] for a founding that
+/// does not read. [`Error::Name`] for a file `name` that a node did not write, and
+/// [`Error::Directory`] for a file call that fails.
 pub async fn name(
     files: &env::files::Files,
     given: Option<types::name::Name>,
@@ -1331,8 +1331,14 @@ pub enum Error {
         /// The name the start gave.
         given: types::name::Name,
     },
-    /// The data directory holds no node name, and the start gave none.
+    /// The data directory holds no node name and stores no founding, and the start gave
+    /// no name.
     Unnamed,
+    /// The data directory stores a founding and holds no file `name`, and the founding
+    /// holds no card of the node: the file `node.key` is not there, or it holds a key
+    /// with no card in the founding. A start that gives it wrote nothing: no file
+    /// `name`, and no new `node.key`, because a new key is a new node to its region.
+    NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
     /// refuses it, so no shard started and the data directory keeps no name that its
     /// founding refuses.
@@ -1370,6 +1376,7 @@ impl Error {
             | Self::Name
             | Self::Renamed { .. }
             | Self::Unnamed
+            | Self::NoCard
             | Self::Reserved { .. }
             | Self::Budget => None,
         }
@@ -1443,6 +1450,12 @@ impl fmt::Display for Error {
             ),
             Self::Unnamed => f.write_str(
                 "the data directory holds no node name; give the node a name",
+            ),
+            Self::NoCard => f.write_str(
+                "the data directory stores a region and holds no file `name`, and the \
+                 file `node.key` is not there or holds a key that the founding of the \
+                 region does not hold; restore `node.key` from a backup of this node, \
+                 or give another data directory",
             ),
             Self::Reserved { name } => write!(
                 f,

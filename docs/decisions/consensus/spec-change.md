@@ -29,35 +29,36 @@
   voter bound of
   https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6059660161. The sum
   of 33 869 bytes: `laptop.architect`, 2026-10-08T12:46:52Z
-  (https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6060184527). Before
-  #1231 counts peers as holders, the rule of a majority of each half moves to
-  `raft::Voters::quorum` (#1875). Every member refuses, at apply, a change whose
-  holders are not a majority of each half of the voters as of the entry
-  (`Refused::Quorum`): the voters of the last `Voters` entry at or before it, or the
-  founding voters. So a `Voters` entry between the propose and the commit cannot leave
-  the pointer at chunks that no majority holds. The record lists only the chunks that
-  the base tree lacks, so the rule also needs the chunks of the base on a majority after
-  a change of voters (#1231). Every member applies a change whose base is the pointer,
-  and refuses one whose base is not (`Refused::Stale`), so after a change from one base
-  moves the pointer, each later change from that base gives `Stale`. The state machine
-  never reads chunks and never runs a check: a committed spec with problems moves the
-  pointer, and the node keeps the last spec it used (#1741). The pointer before the
-  first change is version 0 at the root of the tree of `Config::founding.definitions`.
-  No BQ12 signature check on the change in this milestone (#1213). The pointer is
-  `spec::Pointer`, and `mesh` has no pointer type of its own (#1887; `laptop.architect`,
-  2026-10-08T13:26:52Z,
+  (https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6060184527). The rule
+  of a majority of each half is `raft::Voters::quorum` (#1875), which counts a majority
+  as the commit of `raft` does (`Voters::committed`). So an empty half needs no holder
+  (`laptop.architect`, 2026-10-12T16:14:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2449#issuecomment-6128112293). Every
+  member refuses, at apply, a change whose holders are not a majority of each half of
+  the voters as of the entry (`Refused::Quorum`, from `raft::NoMajority`): the voters of
+  the last `Voters` entry at or before it, or the founding voters. So a `Voters` entry
+  between the propose and the commit cannot leave the pointer at chunks that no majority
+  holds. The record lists only the chunks that the base tree lacks, so the rule also
+  needs the chunks of the base on a majority after a change of voters (#1231). Every
+  member applies a change whose base is the pointer, and refuses one whose base is not
+  (`Refused::Stale`), so after a change from one base moves the pointer, each later
+  change from that base gives `Stale`. The state machine never reads chunks and never
+  runs a check: a committed spec with problems moves the pointer, and the node keeps the
+  last spec it used (#1741). The pointer before the first change is version 0 at the
+  root of the tree of `Config::founding.definitions`. No BQ12 signature check on the
+  change in this milestone (#1213). The pointer is `spec::Pointer`, and `mesh` has no
+  pointer type of its own (#1887; `laptop.architect`, 2026-10-08T13:26:52Z,
   https://github.com/synnaxlabs/foundation/pull/1886#issuecomment-6060906734, and the
   removal at 2026-10-08T16:04:51Z,
   https://github.com/synnaxlabs/foundation/pull/1913#issuecomment-6063975359). This
   supersedes the `mesh::Pointer` of
   https://github.com/synnaxlabs/foundation/issues/1083#issuecomment-6055806836.
-  `Mesh::open` refuses no founding definitions: the founding is agreed region state,
-  and a refusal at each open stops a node on a later build whose checks find more
-  problems. The node that founds the region checks the founding with the `spec`
-  function of #1841, and does not found a region whose founding has problems (#1744).
-  A founding with problems at a later build follows the rule of a committed spec with
-  problems (#1741). No refusal of the founding at open decided by `laptop.architect`,
-  2026-10-08T15:42:09Z
+  `Mesh::open` refuses no founding definitions: the founding is agreed region state, and
+  a refusal at each open stops a node on a later build whose checks find more problems.
+  The node that founds the region checks the founding with the `spec` function of #1841,
+  and does not found a region whose founding has problems (#1744). A founding with
+  problems at a later build follows the rule of a committed spec with problems (#1741).
+  No refusal of the founding at open decided by `laptop.architect`, 2026-10-08T15:42:09Z
   (https://github.com/synnaxlabs/foundation/pull/1897#issuecomment-6063561498), which
   changes "runs no check of `Config::founding`" in
   https://github.com/synnaxlabs/foundation/pull/1840#issuecomment-6056116151.
@@ -80,9 +81,8 @@
   Supersedes the check in `node` of
   https://github.com/synnaxlabs/foundation/pull/1966#issuecomment-6068129791,
   https://github.com/synnaxlabs/foundation/pull/1966#issuecomment-6068123507, and
-  https://github.com/synnaxlabs/foundation/issues/1957#issuecomment-6070012949.
-  Decided by `laptop.architect`: chunks through `blob` and no BQ12 check,
-  2026-10-07T06:42:23Z
+  https://github.com/synnaxlabs/foundation/issues/1957#issuecomment-6070012949. Decided
+  by `laptop.architect`: chunks through `blob` and no BQ12 check, 2026-10-07T06:42:23Z
   (https://github.com/synnaxlabs/foundation/issues/1083#issuecomment-6032512454); a spec
   with problems, 2026-10-07T07:03:20Z
   (https://github.com/synnaxlabs/foundation/issues/1083#issuecomment-6032786065); the
