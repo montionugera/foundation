@@ -138,6 +138,8 @@
   Supersedes "is `node.busy` with each `--listen`" and "a start during the stop of that
   node never gets `node.port`" of
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754.
+  Supersedes "`node` checks each value of its config before a shard starts" of
+  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6127496580.
   Supersedes the order of the bind in the doc of `Node::start` approved in
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629
   (2026-10-11T10:50:50Z).
