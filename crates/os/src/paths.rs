@@ -1,12 +1,15 @@
 //! The files of the host by the paths that a user gave.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
+use rustix::fs::Dir;
 use rustix::io::Errno;
 
 use crate::entropy;
@@ -29,8 +32,13 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     let file = File::open(path)?;
     if file.metadata()?.is_dir() {
         let (mut entries, mut size) = (Vec::new(), 0_usize);
-        for entry in fs::read_dir(path)? {
-            let entry = path.join(entry?.file_name());
+        for entry in Dir::new(file)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            let entry = path.join(OsStr::from_bytes(name));
             size = size.saturating_add(entry.as_os_str().len());
             if size > most {
                 return Ok(Found::Large);

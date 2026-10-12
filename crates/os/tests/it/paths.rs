@@ -371,3 +371,64 @@ fn two_writers_of_one_path_each_write_whole() {
     let entries = Ok(Found::Directory(vec![path]));
     assert_eq!(os::paths().read(&scratch.0, 1 << 12), entries);
 }
+
+/// `link` names a directory or a file at each instant: another thread swaps it with
+/// one rename. A read gives one of the two, never an error.
+#[test]
+fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
+    let scratch = Scratch::new();
+    let (dir, file) = (scratch.0.join("dir"), scratch.0.join("file"));
+    fs::create_dir(&dir).unwrap();
+    fs::write(&file, b"x").unwrap();
+    let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
+    symlink(&dir, &link).unwrap();
+    let stopped = AtomicBool::new(false);
+    let other = thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                for target in [&file, &dir] {
+                    symlink(target, &next).unwrap();
+                    fs::rename(&next, &link).unwrap();
+                }
+            }
+        });
+        let paths = os::paths();
+        let mut read = (0..200_000).map(|_| paths.read(&link, 1 << 12));
+        let other =
+            read.find(|read| !matches!(read, Ok(Found::File(_) | Found::Directory(_))));
+        stopped.store(true, Ordering::Relaxed);
+        other
+    });
+    assert_eq!(other, None);
+}
+
+/// `plant` is a directory, nothing, a file, or nothing, in turn, with no link.
+#[test]
+fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
+    let scratch = Scratch::new();
+    let plant = scratch.0.join("plant");
+    let stopped = AtomicBool::new(false);
+    let other = thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                fs::create_dir(&plant).unwrap();
+                fs::remove_dir(&plant).unwrap();
+                fs::write(&plant, b"x").unwrap();
+                fs::remove_file(&plant).unwrap();
+            }
+        });
+        let paths = os::paths();
+        let mut read = (0..20_000).map(|_| paths.read(&plant, 1 << 12));
+        let other = read.find(|read| {
+            !matches!(
+                read,
+                Ok(Found::File(_) | Found::Directory(_)) | Err(Error::NotFound)
+            )
+        });
+        stopped.store(true, Ordering::Relaxed);
+        other
+    });
+    assert_eq!(other, None);
+}

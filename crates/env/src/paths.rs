@@ -36,7 +36,8 @@ impl Paths {
 
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
     /// each entry of a directory whose entry paths hold at most `most` bytes in all,
-    /// in name order.
+    /// in name order. It reads what `path` names at its open: a later rename or
+    /// replace at `path` does not change what it reads.
     ///
     /// # Errors
     ///
