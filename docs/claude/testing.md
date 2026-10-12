@@ -58,14 +58,17 @@ https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
 type under test, other than in the test of a hand-written `Debug` impl itself, is never
-the only kill. `.cargo/mutants.toml` lists the few functions it skips. Each entry is as
+the only kill. Private means private to the type under test: a test of a `pub(crate)`
+type through its own calls kills through public calls, and its mutant gets no entry.
+`.cargo/mutants.toml` lists the few functions it skips. Each entry is as
 narrow as one function. Its comment says why no caller or peer can see the mutant, or
 names the test that kills it in a job that the mutants run does not see (Miri, loom,
 another OS). A mutant made by hand that `cargo mutants` never makes, and that only
 such an assertion kills, gets no entry, since one matches nothing. The doc of that test
 says why no caller or peer can see the mutant, and the round comment links that doc. A
-mutant that a test could kill but none does links its open issue. Miri and cargo-fuzz
-run on one pinned nightly, named in `rust-toolchain-nightly`, that only those gates use.
+mutant that a test could kill but none does links its open issue. Miri, cargo-fuzz, and
+the sanitizer gate (`cargo xtask sanitizers`) run on one pinned nightly, named in
+`rust-toolchain-nightly`, that only those gates use.
 
 ## Process tests
 
@@ -163,6 +166,8 @@ again once to prove that the failure replays (r16 59).
   `#[ignore]` when no issue is left. A test that needs a tool of one OS, and that CI
   runs on that OS, is `#[cfg_attr(not(target_os = "<os>"), ignore = "needs <tool>")]`,
   never `#[cfg(target_os = ...)]`, which hides it on another OS with no reason. A test
+  binary with no harness (`harness = false`) has no `ignore`, so there such a check is
+  `#[cfg(target_os = "<os>")]` with the comment `// needs <tool>` on its gate. A test
   of a behavior that differs by OS checks it on each OS that the crate builds for: with
   `#[cfg(target_os = ...)]` on its expected value, as `UNLINK_DIRECTORY` in
   `crates/os/tests/it/files.rs` does, or with one test for each OS. A behavior has no
