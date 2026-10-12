@@ -58,9 +58,9 @@
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6132506754, which
   supersede "`admin` is no part of the check" of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). #1213
-  checks the `apply` names, the `admin` keys, and the index of each home of the change
-  record on each member and then removes that check from `ops`. `plan` makes no change
-  record, so its check stays in `ops`. Decided by `laptop.architect`
+  checks the `apply` names, the edges, the `admin` keys, and the index of each home of
+  the change record on each member and then removes that check from `ops`. `plan` makes
+  no change record, so its check stays in `ops`. Decided by `laptop.architect`
   (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274), on
   decision 5 of plan revision 4
