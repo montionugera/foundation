@@ -57,7 +57,15 @@
   the plan for what the status keys already tell; each spec in order, because a node
   that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
-  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704). A
+  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704). The
+  lookup of these keys stays in `node`. Lost: `connector::status` gives the keys from
+  the definitions, which makes `spec` a dependency of `connector` and of each kind for
+  one caller, where a connector reads no spec and reaches its channels only through
+  `hub`, by name. That the status channels are on one index is the contract of
+  `status::channels`, which `node` and `config` both read. Trigger: a second caller of
+  the lookup, or status channels on more than one index (`laptop.architect-2`, #2451,
+  2026-10-12T16:05:03Z:
+  https://github.com/synnaxlabs/foundation/issues/2451#issuecomment-6127961287). A
   connector that a change adds starts once no first open of an added connector is
   pending on the node (below), unless its name has a loop (below): then the addition is
   a change, and the connector starts in that loop after the last run of its name
