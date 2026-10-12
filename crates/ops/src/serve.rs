@@ -28,9 +28,9 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
 /// for an action that no access policy gives `subject` and for a request that names
 /// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// also needs `admin` on each key of an access policy or a subject that the plan adds,
-/// changes, or removes. It gives a home only to an index on which `subject` has
-/// `apply`, and drops each other home with no error.
+/// also needs `admin` on the key of each definition other than a channel or a
+/// connector that the plan adds, changes, or removes. It gives a home only to an index
+/// on which `subject` has `apply`, and drops each other home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -285,14 +285,15 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
     check.names(Action::Apply, plan.changes.keys())?;
-    // A policy governs its whole region, and the keys of a subject decide who acts as
-    // it, so `apply` on a subtree would reach each name of the region.
-    let access = plan.changes.keys().filter(|name| {
-        [Kind::Access, Kind::Subject]
+    // A policy governs its whole region, the keys of a subject decide who acts as it,
+    // and a region record makes a region, so `apply` on a subtree would reach each
+    // name of the region.
+    let governing = plan.changes.keys().filter(|name| {
+        [Kind::Channel, Kind::Connector]
             .iter()
-            .any(|kind| kind.label(name).is_some())
+            .all(|kind| kind.label(name).is_none())
     });
-    check.names(Action::Admin, access)?;
+    check.names(Action::Admin, governing)?;
     // The homes list each placed index, so a home with no grant drops with no error.
     plan.homes
         .retain(|index, _| check.allows(Action::Apply, index));

@@ -421,7 +421,8 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
         let people = people();
-        applied(&node, &[("people.hcl", &people)]).await;
+        let placement = site().replace(SITE, "");
+        applied(&node, &[("people.hcl", &people), ("p.hcl", &placement)]).await;
         let version = mesh.pointer().version;
         let site = site();
         let files = [("people.hcl", &*people), ("site.hcl", &*site)];
@@ -430,7 +431,7 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
         // that changes only names under `site`.
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
         let (head, _) = split(&reply);
-        assert_eq!(head["output"]["added"], 3, "{head}");
+        assert_eq!(head["output"]["added"], 2, "{head}");
         assert_eq!(head["output"]["homes"], 1, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
     });
@@ -637,6 +638,52 @@ fn refuses_a_change_of_access_of_a_subject_with_no_admin_on_its_key() {
         for (text, _) in cases {
             let version = mesh.pointer().version;
             let files = [("people.hcl", &*admin), ("evil.hcl", text)];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let (head, _) = split(&reply);
+            assert_eq!(head["output"]["added"], 1, "{head}");
+            assert_eq!(mesh.pointer().version, version + 1);
+        }
+    });
+}
+
+#[test]
+fn refuses_a_policy_of_a_subject_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let yard = "channel \"yard.time\" { kind = \"index\" }\nplacement \
+                    \"yard.home\" {\n  select = \"yard.*\"\n  home = \"edge\"\n}\n";
+        applied(&node, &[("people.hcl", &people), ("yard.hcl", yard)]).await;
+        let version = mesh.pointer().version;
+        // `sam` has no grant on `yard.time`, which each policy selects.
+        let wipe =
+            "retention \"site.wipe\" {\n  select = \"yard.*\"\n  keep = \"0s\"\n}\n";
+        let away = "placement \"site.away\" {\n  select = \"yard.time\"\n  home = \
+                    \"edge\"\n}\n";
+        let cases = [
+            (wipe, "`site.wipe.@retention`"),
+            (away, "`site.away.@placement`"),
+        ];
+        for (text, key) in cases {
+            let files = [
+                ("people.hcl", &*people),
+                ("yard.hcl", yard),
+                ("p.hcl", text),
+            ];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let expected = denied("sam", "admin", key);
+            assert_eq!(split(&reply), (expected, &b""[..]), "{text}");
+        }
+        assert_eq!(mesh.pointer().version, version);
+
+        let admin =
+            people.replace("allow = [plan, apply]", "allow = [plan, apply, admin]");
+        applied(&node, &[("people.hcl", &admin), ("yard.hcl", yard)]).await;
+        for (text, _) in cases {
+            let version = mesh.pointer().version;
+            let files = [("people.hcl", &*admin), ("yard.hcl", yard), ("p.hcl", text)];
             let plan = planned(&node, &files).await;
             let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
             let (head, _) = split(&reply);
