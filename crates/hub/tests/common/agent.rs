@@ -36,6 +36,8 @@ pub(crate) struct Stream {
     pool: std::rc::Rc<block::Pool>,
     pub(crate) sender: Sender,
     pub(crate) receiver: Receiver,
+    /// The mode of the read that the stream sent.
+    mode: Option<Mode>,
 }
 
 impl Stream {
@@ -81,6 +83,7 @@ impl Stream {
         read.encode(&mut out);
         self.send(&out).await;
         self.send(&body).await;
+        self.mode = Some(open.mode);
     }
 
     /// The next message from the node, `None` once it finished.
@@ -88,12 +91,14 @@ impl Stream {
         Ok(self.receiver.recv().await?.map(|block| block.to_vec()))
     }
 
-    /// Reads the start of a read in `mode`: the places, their run, and `Opened`.
-    /// Gives the places, the run, and the decoder of the frames.
-    pub(crate) async fn opened(
-        &mut self,
-        mode: Mode,
-    ) -> (Places, Vec<Place>, wire::hub::Reader) {
+    /// Reads the start of the read that the stream sent: the places, their run, and
+    /// `Opened`. Gives the places, the run, and the decoder of the frames.
+    ///
+    /// # Panics
+    ///
+    /// When the stream sent no read.
+    pub(crate) async fn opened(&mut self) -> (Places, Vec<Place>, wire::hub::Reader) {
+        let mode = self.mode.expect("the stream sent a read");
         let mut start = client::Reader::new(mode);
         let mut next = async || {
             let message = self.recv().await.expect("receives");
@@ -174,6 +179,7 @@ impl Agent {
             pool: std::rc::Rc::clone(&pool),
             sender,
             receiver,
+            mode: None,
         };
         hello.send(&wire::header::encode(Protocol::Hub)).await;
         Self {
@@ -238,6 +244,7 @@ impl Agent {
             pool: std::rc::Rc::clone(&self.pool),
             sender,
             receiver,
+            mode: None,
         }
     }
 

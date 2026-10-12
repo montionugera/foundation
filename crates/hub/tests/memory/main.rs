@@ -400,6 +400,6 @@ fn holds_no_places_once_a_read_opens() {
 /// run, and `Opened`. The program holds nothing of the places.
 async fn opened(agent: &Agent, select: &str) -> agent::Stream {
     let mut stream = agent.read(client::Mode::Complete, &[select]).await;
-    stream.opened(client::Mode::Complete).await;
+    stream.opened().await;
     stream
 }

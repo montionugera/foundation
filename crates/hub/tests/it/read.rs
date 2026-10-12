@@ -111,7 +111,7 @@ fn sends_the_places_and_each_frame_of_a_complete_read() {
     let home = read_session(300, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (places, run, mut reader) = stream.opened(Mode::Complete).await;
+        let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 1 });
         assert_eq!(run, [place(2, I64, "value"), place(1, STAMP, "time")]);
         for value in [10, 20] {
@@ -134,7 +134,7 @@ fn sends_a_latest_read_the_index_once_when_its_selector_matches_it() {
     let home = read_session(301, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Latest, &["value", "time"]).await;
-        let (places, run, mut reader) = stream.opened(Mode::Latest).await;
+        let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 0 });
         assert_eq!(run, [place(1, STAMP, "time"), place(2, I64, "value")]);
         let got = got(&mut stream.receiver, &mut reader)
@@ -249,13 +249,13 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
             let mut busy = agent.read(Mode::Complete, &["time", "value"]).await;
             assert_eq!(busy.recv().await, reset_with(BUSY));
             let mut stream = agent.read(Mode::Complete, &["value"]).await;
-            let (places, _, _) = stream.opened(Mode::Complete).await;
+            let (places, _, _) = stream.opened().await;
             assert_eq!(places, Places { count: 2, index: 1 });
             drop(held);
             agent.sleep(Span::MILLISECOND).await;
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["time", "value"]).await;
-                let (places, _, _) = stream.opened(Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 0 });
             }
         },
@@ -288,7 +288,7 @@ fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
             let mut streams = Vec::new();
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["value"]).await;
-                let (places, _, _) = stream.opened(Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 1 });
                 streams.push(stream);
             }
@@ -331,8 +331,8 @@ fn frees_the_share_of_the_open_of_a_read_before_its_places_go_out() {
         agent.sleep(Span::from_nanos(10_000_000)).await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         agent.sleep(Span::from_nanos(10_000_000)).await;
-        wide.opened(Mode::Complete).await;
-        let (places, _, _) = stream.opened(Mode::Complete).await;
+        wide.opened().await;
+        let (places, _, _) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 1 });
         drop((held, wide, stream));
         finish(&mut agent).await;
@@ -356,7 +356,7 @@ fn opens_a_read_whose_places_pass_the_share() {
     let home = read_session(313, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["w.**", "value"]).await;
-        let (places, run, mut reader) = stream.opened(Mode::Complete).await;
+        let (places, run, mut reader) = stream.opened().await;
         let time = u32::try_from(MANY + 1).expect("fits");
         assert_eq!(
             places,
@@ -395,7 +395,7 @@ fn stops_a_read_whose_channel_is_removed_as_unknown() {
     let home = read_session(306, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        stream.opened(Mode::Complete).await;
+        stream.opened().await;
         assert_eq!(stream.recv().await, reset_with(UNKNOWN));
         finish(&mut agent).await;
     });
@@ -417,7 +417,7 @@ fn stops_a_read_that_gets_a_message_after_its_open_as_malformed() {
         |mut agent| async move {
             agent.admit().await;
             let mut stream = agent.read(Mode::Latest, &["value"]).await;
-            stream.opened(Mode::Latest).await;
+            stream.opened().await;
             stream.send(b"x").await;
             assert_eq!(stream.recv().await, reset_with(MALFORMED));
             finish(&mut agent).await;
@@ -443,7 +443,7 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     let home = read_session(311, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        stream.opened(Mode::Complete).await;
+        stream.opened().await;
         assert_eq!(stream.recv().await, reset_with(FAILED));
         finish(&mut agent).await;
     });
@@ -467,7 +467,7 @@ fn stop_while_frames_come(
     read_session(310, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (_, _, mut reader) = stream.opened(Mode::Complete).await;
+        let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
         stop(&mut stream).await;
         let mut frames = 0;
@@ -569,7 +569,7 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
     let home = read_session(308, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (_, _, mut reader) = stream.opened(Mode::Complete).await;
+        let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
         let mut frames = 0;
         while got(&mut stream.receiver, &mut reader).await.is_some() {
@@ -710,7 +710,7 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
             let mut streams = Vec::new();
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["value"]).await;
-                let (places, _, _) = stream.opened(Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 1 });
                 streams.push(stream);
             }

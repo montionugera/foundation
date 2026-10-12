@@ -137,7 +137,7 @@ async fn read(
     agent.admit().await;
     progress.admitted.store(true, Ordering::Relaxed);
     let mut stream = agent.read(mode, &["value"]).await;
-    let (_, _, reader) = stream.opened(mode).await;
+    let (_, _, reader) = stream.opened().await;
     progress.opened.fetch_add(1, Ordering::Relaxed);
     take(&mut stream.receiver, reader, &progress.client).await;
 }

@@ -493,7 +493,7 @@ async fn program(
             .collect();
         let select: Vec<_> = names.iter().map(String::as_str).collect();
         let mut stream = agent.read(mode, &select).await;
-        let (_, _, reader) = stream.opened(mode).await;
+        let (_, _, reader) = stream.opened().await;
         progress.opened.fetch_add(1, Ordering::Relaxed);
         take(&mut stream.receiver, reader, case, progress).await;
         stream.sender.finish().expect("finishes");
