@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// A global allocator that counts the bytes it holds and the bytes it gave out, so a
 /// test can bound the memory of a structure and the bytes that code allocates. It
-/// counts no allocations: to assert that code does not allocate,
-/// use [`Allocator`](crate::Allocator).
+/// counts no allocations: to assert that code does not allocate, use
+/// [`Allocator`](crate::Allocator).
 ///
 /// Each allocation that grows the count, [`Self::peak`], and [`Self::reset_peak`] take
 /// one spin lock that every thread shares, so allocations on many threads wait for each
