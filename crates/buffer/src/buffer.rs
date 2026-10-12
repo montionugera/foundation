@@ -410,9 +410,9 @@ impl Buffer {
     /// and [`Error::Invalid`] as each says. [`Error::Budget`] when the budget of `pool`
     /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
     /// No file changes. [`Error::Full`] when the ring has no block for its restart
-    /// record. [`Error::Pool`] with `TooLarge`
-    /// when a recovered entry is over the largest block of `pool`, which a read must
-    /// give it in: a larger pool must open the ring.
+    /// record. [`Error::Pool`] with `TooLarge` when a recovered entry is over the
+    /// largest block of `pool`, which a read must give it in: a larger pool must open
+    /// the ring.
     ///
     /// # Panics
     ///
