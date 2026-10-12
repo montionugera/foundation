@@ -576,8 +576,8 @@ fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     assert!(window.contains(&took), "{took:?}");
 }
 
-/// A read restores the request timeout of the client after it sends, so a close after
-/// a read on a server that stops still ends 5 to 6 s after it starts.
+/// A read restores the request timeout of the client after it sends, so a close after a
+/// read on a server that stops still ends 5 to 6 s after it starts.
 #[test]
 fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
     let (took, _) = run(0, async |node| {
