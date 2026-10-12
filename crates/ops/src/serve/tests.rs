@@ -780,3 +780,20 @@ fn stops_writing_a_reply_at_the_bound() {
     assert_eq!(error.to_string(), large()["errors"][0]["message"]);
     assert_eq!(strings.written.get(), fits + 1);
 }
+
+/// A value that no serializer can write.
+struct Unwritable;
+
+impl serde::Serialize for Unwritable {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("no JSON"))
+    }
+}
+
+#[test]
+#[should_panic(expected = "invariant: a reply is plain JSON data: no JSON")]
+fn panics_on_a_reply_that_is_no_json_data() {
+    if let Err(error) = Reply::line(&Unwritable) {
+        panic!("an error in place of the panic: {error}");
+    }
+}
