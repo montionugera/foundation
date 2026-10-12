@@ -63,7 +63,7 @@ pub(crate) enum Error {
     /// The body that a node got is no request.
     Request { message: String },
     /// No access policy gives `subject` the action `action` on `name`, or, with no
-    /// name, on a definition of the spec in use.
+    /// name, on a definition of the spec in use that the files do not hold.
     Denied {
         subject: Name,
         action: Action,
@@ -380,7 +380,9 @@ impl fmt::Display for Error {
                 )?;
                 match name {
                     Some(name) => write!(f, "on `{name}`"),
-                    None => f.write_str("on each definition of the spec in use"),
+                    None => f.write_str(
+                        "on a definition of the spec in use that the files do not hold",
+                    ),
                 }
             }
             Self::LargeReply { bytes } => write!(

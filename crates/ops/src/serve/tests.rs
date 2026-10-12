@@ -333,7 +333,11 @@ fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_spec() {
         let site = site();
         let reply =
             serve(&node, &name("sam"), &plan_body(&[("site.hcl", &site)])).await;
-        let expected = denied("sam", "plan", "each definition of the spec in use");
+        let expected = denied(
+            "sam",
+            "plan",
+            "a definition of the spec in use that the files do not hold",
+        );
         assert_eq!(split(&reply), (expected, &b""[..]));
 
         let both = [("people.hcl", &*people), ("site.hcl", &*site)];
