@@ -163,6 +163,8 @@ impl Mesh {
     ///   or the node of a home.
     /// - [`Error::WrongKey`] when `config.private_key` is not the key of this node in
     ///   `config.founding.members`.
+    /// - [`Error::Voters`] when the voters that the node starts with are more than one
+    ///   set can hold.
     /// - [`Error::Pool`] when the pool has no block for a chunk or the founding file,
     ///   and [`Error::Blob`] when a call of the store fails.
     /// - [`Error::Founding`] when the log holds a record and `config.dir` holds another
@@ -209,6 +211,12 @@ impl Mesh {
             definitions,
             homes,
         } = config.founding.clone();
+        if voters.len() > message::VOTERS_MAX {
+            return Err(Error::Voters {
+                voters: voters.len(),
+                most: message::VOTERS_MAX,
+            });
+        }
         let tree = spec::region::tree(&mut chunks, &definitions);
         let state =
             region::State::new(prefix, members, tree.root, voters.clone(), homes)
@@ -5582,6 +5590,30 @@ mod tests {
                     node.files().list(Path::new("")).await,
                     Ok(vec![BLOB.into()])
                 );
+            });
+        }
+
+        #[test]
+        fn refuses_a_founding_set_of_more_voters_than_one_set_holds() {
+            solo(|node, tasks| async move {
+                let ids: Vec<u8> = (1..=128).collect();
+                let refused = open(&node, &tasks, 1, &ids, &ids).await.err().unwrap();
+                assert_eq!(
+                    refused,
+                    Error::Voters {
+                        voters: 128,
+                        most: 127
+                    }
+                );
+                let text = "the set holds 128 voters, more than the 127 that one set can \
+                            hold";
+                assert_eq!(refused.to_string(), text);
+                assert_eq!(
+                    node.files().list(Path::new("")).await,
+                    Ok(vec![BLOB.into()])
+                );
+                let ids = &ids[..127];
+                open(&node, &tasks, 1, ids, ids).await.unwrap();
             });
         }
 
