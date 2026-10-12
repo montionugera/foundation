@@ -159,10 +159,12 @@ state on `main`.
 - Mesh to agent, to attack when `ops` gets real operations: text from a spec file
   or a peer that reaches a tool description or a tool result, as an instruction to
   the agent.
-- A change of each definition other than a channel or a connector needs `admin` on
-  its key, because a policy governs its whole region, a subject's keys decide who acts
-  as it, and a region record makes a region (SERVE ACCESS). So grant `admin` only to a
-  subject that may change access and policy for the whole region.
+- A change of each definition other than a channel needs `admin` on its key, because
+  a policy governs its whole region, a subject's keys decide who acts as it, a region
+  record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).
+  So grant `admin` only to a subject that may change access, policy, and connectors
+  for the whole region. A changed channel also needs `apply` on the channel at each
+  of its edges.
 
 ### Node to node
 
