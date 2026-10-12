@@ -211,26 +211,24 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
 }
 
 /// The `config.implied-channel` diagnostic of each channel that a connector of
-/// `writes` implies and that `definitions`, the definitions of a spec, lack or hold
-/// as another channel.
+/// `writes` implies and that `definitions`, the definitions of a spec with the name
+/// of each channel by key in `names`, lack or hold as another channel.
 pub(crate) fn implied_definitions(
     definitions: &BTreeMap<Name, definition::Definition>,
+    names: &BTreeMap<types::channel::Key, &Name>,
     writes: &BTreeMap<Name, Writes>,
 ) -> Vec<Diagnostic> {
-    let names: BTreeMap<_, _> = definitions
-        .iter()
-        .filter_map(|(name, definition)| match definition {
-            definition::Definition::Channel(channel) => Some((channel.key, name)),
-            _ => None,
-        })
-        .collect();
     let mut diagnostics = Vec::new();
     for (connector, writes) in writes {
         for (channel, kind) in &writes.implied {
             let held = match definitions.get(channel) {
                 Some(definition::Definition::Channel(stored)) => {
-                    let name = |key| names.get(&key).map(|name| Name::clone(name));
-                    stored.kind.clone().map(name) == kind.clone().map(Some)
+                    // An edge to a key that is no channel is `None`, so it differs.
+                    let edges = stored
+                        .kind
+                        .clone()
+                        .map(|key| names.get(&key).copied().cloned());
+                    edges == kind.clone().map(Some)
                 }
                 _ => false,
             };

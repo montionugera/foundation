@@ -143,11 +143,18 @@ fn problems(
     if !diagnostics.is_empty() {
         return diagnostics;
     }
-    diagnostics.extend(connector::implied_definitions(definitions, &writes));
+    let names: BTreeMap<Key, &Name> = definitions
+        .iter()
+        .filter_map(|(name, definition)| match definition {
+            definition::Definition::Channel(channel) => Some((channel.key, name)),
+            _ => None,
+        })
+        .collect();
+    diagnostics.extend(connector::implied_definitions(definitions, &names, &writes));
     if !diagnostics.is_empty() {
         return diagnostics;
     }
-    let model = Model::definitions(definitions, &writes);
+    let model = Model::definitions(definitions, &names, &writes);
     rules(&model, members, &mut diagnostics);
     diagnostics
 }
@@ -355,25 +362,19 @@ impl<'a> Model<'a> {
         model
     }
 
-    /// The model of `definitions`, with what each connector writes by tree key in
-    /// `writes`, and with no span. A data channel whose index is no channel has no
-    /// index.
+    /// The model of `definitions`, with the name of each channel by key in `names`,
+    /// what each connector writes by tree key in `writes`, and no span. A data
+    /// channel whose index is no channel has no index.
     fn definitions(
         definitions: &'a BTreeMap<Name, definition::Definition>,
+        names: &BTreeMap<Key, &'a Name>,
         writes: &'a BTreeMap<Name, connector::Writes>,
     ) -> Self {
-        let keys: BTreeMap<Key, &Name> = definitions
-            .iter()
-            .filter_map(|(name, definition)| match definition {
-                definition::Definition::Channel(channel) => Some((channel.key, name)),
-                _ => None,
-            })
-            .collect();
         let mut model = Self::new();
         for (name, definition) in definitions {
             match definition {
                 definition::Definition::Channel(channel) => {
-                    model.channel(name, &channel.kind, |key| keys.get(key).copied());
+                    model.channel(name, &channel.kind, |key| names.get(key).copied());
                 }
                 definition => model.add(name, definition, writes, None),
             }
