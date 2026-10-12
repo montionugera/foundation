@@ -200,6 +200,11 @@ impl<C> Context<C> {
     /// not longer than zero. [`Error::Retry`] with the hub's error when the home of an
     /// index is another node, or the mesh stopped.
     ///
+    /// When a write gives [`hub::writer::Failure::Removed`], return [`Error::Retry`]:
+    /// the next run opens its writer by name, so a channel that the spec defined again
+    /// with a new key is written. The frame of that write is lost, and so is each
+    /// sample of the device until the next run opens its writer.
+    ///
     /// # Panics
     ///
     /// When the hub gives an error that this open cannot get.
@@ -218,14 +223,16 @@ impl<C> Context<C> {
         self.inputs.hub.writer(config).await.map_err(writer_error)
     }
 
-    /// Takes the reader that the supervisor opened for this run, under the
-    /// connector's name, from the settings that `check` gave. `None` when `check`
-    /// gave none, or after the first call. When the reader ends with
-    /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
-    /// new reader before the next run. A reader with a hold opens again at its held
-    /// position. While the home keeps no frame there, each later run gets `Behind`.
-    /// Each close starts the hold again, so a hold longer than the wait between two
-    /// runs never ends.
+    /// Takes the reader that the supervisor opened for this run, under the connector's
+    /// name, from the settings that `check` gave. `None` when `check` gave none, or
+    /// after the first call. When the reader ends with [`hub::reader::Ended::Behind`]
+    /// or [`hub::reader::Ended::Removed`], return [`Error::Retry`]: the supervisor
+    /// opens a new reader from the selector before the next run, so a channel that the
+    /// spec defined again with a new key is read, and the open gives `Config` when the
+    /// selector matches nothing. A reader with a hold opens again at its held position.
+    /// While the home keeps no frame there, each later run gets `Behind`. Each close
+    /// starts the hold again, so a hold longer than the wait between two runs never
+    /// ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
