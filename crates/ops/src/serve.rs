@@ -304,12 +304,12 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
         let new = change.new.as_ref().map(|entry| entry.definition.kind());
         // A connector and a channel share a key, so a change can turn one into the
         // other.
-        let channel = matches!(
+        let exempt = matches!(
             (stored, new),
             (Some(Kind::Channel) | None, Some(Kind::Channel))
                 | (Some(Kind::Channel), None)
         );
-        (!channel).then_some(name)
+        (!exempt).then_some(name)
     });
     check.names(Action::Admin, admin)?;
     // The homes list each placed index, so a home with no grant drops with no error.
