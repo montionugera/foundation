@@ -82,13 +82,18 @@ jobs:
             -f description="$description" \
             -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
       # A run that fails or ends before the post above would leave `pending`, which
-      # holds a queue group until its timeout. On a PR, a run that a newer run cancels
+      # holds a queue group until its timeout. Only `pending` is replaced: GitHub can
+      # take the post above before a cancel. On a PR, a run that a newer run cancels
       # leaves the status to that run, and a run that hangs or that a person cancels
       # leaves `pending` until a new run.
       - if: >-
           env.TARGET != '' &&
           (failure() || (cancelled() && github.event_name == 'merge_group'))
         run: |
-          gh api "repos/$GH_REPO/statuses/$TARGET" -f state=error -f context=review \
-            -f description="The review check failed to run. See the log." \
-            -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          state=$(gh api "repos/$GH_REPO/commits/$TARGET/status" \
+            --jq '.statuses[] | select(.context == "review") | .state')
+          if [ "$state" = pending ]; then
+            gh api "repos/$GH_REPO/statuses/$TARGET" -f state=error -f context=review \
+              -f description="The review check failed to run. See the log." \
+              -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          fi
