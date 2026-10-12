@@ -33,7 +33,13 @@ pub type Task = Pin<Box<dyn Future<Output = ()>>>;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Tasks(Rc<dyn Driver>);
+pub struct Tasks(Spawner);
+
+#[derive(Clone)]
+enum Spawner {
+    Driver(Rc<dyn Driver>),
+    Counting(Rc<Counting>),
+}
 
 impl Tasks {
     /// Wraps `driver`.
@@ -44,7 +50,7 @@ impl Tasks {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Rc::new(driver))
+        Self(Spawner::Driver(Rc::new(driver)))
     }
 
     /// Starts `task` on this shard. It has no handle: stop it through its own cancel
@@ -60,7 +66,18 @@ impl Tasks {
     /// }
     /// ```
     pub fn spawn(&self, task: impl Future<Output = ()> + 'static) {
-        self.0.spawn(Box::pin(task));
+        match &self.0 {
+            Spawner::Driver(driver) => driver.spawn(Box::pin(task)),
+            Spawner::Counting(counting) => counting.spawn(Box::pin(task)),
+        }
+    }
+
+    // Not generic: a group made on a group's tasks would recurse without end in types.
+    fn spawn_task(&self, task: Task) {
+        match &self.0 {
+            Spawner::Driver(driver) => driver.spawn(task),
+            Spawner::Counting(counting) => counting.spawn(task),
+        }
     }
 }
 
@@ -109,10 +126,10 @@ impl Group {
     pub fn new(tasks: Tasks) -> Self {
         let count = Rc::<Count>::default();
         Self {
-            tasks: Tasks::new(Counting {
+            tasks: Tasks(Spawner::Counting(Rc::new(Counting {
                 tasks,
                 count: Rc::clone(&count),
-            }),
+            }))),
             count,
         }
     }
@@ -152,24 +169,25 @@ struct Counting {
     count: Rc<Count>,
 }
 
-impl Driver for Counting {
-    fn spawn(&self, task: Task) {
+impl Counting {
+    // Generic so that each poll of the task is a static call from `Counted`.
+    fn spawn<F: Future<Output = ()> + ?Sized + 'static>(&self, task: Pin<Box<F>>) {
         self.count.live.set(self.count.live.get().strict_add(1));
-        self.tasks.spawn(Counted {
+        self.tasks.spawn_task(Box::pin(Counted {
             task,
             _held: Held(Rc::clone(&self.count)),
-        });
+        }));
     }
 }
 
 // The fields drop in order, so the task's future drops before its count, also when
 // the shard drops it while it waits.
-struct Counted {
-    task: Task,
+struct Counted<F: ?Sized> {
+    task: Pin<Box<F>>,
     _held: Held,
 }
 
-impl Future for Counted {
+impl<F: Future<Output = ()> + ?Sized> Future for Counted<F> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -334,6 +352,23 @@ mod tests {
         group.tasks().spawn(async move { mark.set(true) });
         kept.poll(0);
         assert!(ran.get());
+    }
+
+    #[test]
+    fn a_task_of_a_group_made_on_another_group_counts_in_both() {
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        let done = Rc::new(Cell::new(false));
+        let pending = probed(&inner, &done);
+        let (mut outer_ended, mut inner_ended) = (outer.ended(), inner.ended());
+        kept.poll(0);
+        assert_eq!(noop(&mut outer_ended), Poll::Pending);
+        assert_eq!(noop(&mut inner_ended), Poll::Pending);
+        done.set(true);
+        kept.poll(0);
+        assert_eq!(pending.get(), Some(true));
+        assert_eq!(noop(&mut outer_ended), Poll::Ready(()));
+        assert_eq!(noop(&mut inner_ended), Poll::Ready(()));
     }
 
     /// Records, at its drop, whether a wait of its group was still pending.
