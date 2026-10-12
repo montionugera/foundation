@@ -3124,14 +3124,14 @@ fn a_later_round_posted_before_the_surface_cutoff_keeps_its_reviewers() {
     assert_eq!(
         check_at(
             &repo,
-            &record(vec![first(END), round("2026-10-12T23:59:59Z")])
+            &record(vec![first(END), round("2026-10-12T18:59:59Z")])
         ),
         Vec::<String>::new()
     );
     assert_eq!(
         check_at(
             &repo,
-            &record(vec![first(END), round("2026-10-13T00:00:00Z")])
+            &record(vec![first(END), round("2026-10-12T19:00:00Z")])
         ),
         vec![DECISION.replace(CHANGE, ITEM)]
     );

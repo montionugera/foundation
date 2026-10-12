@@ -100,7 +100,7 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// A later round posted before this UTC time needs no `architecture` for a range that
 /// changes the public surface of a crate, so that the rule does not fail the rounds
 /// that came before it.
-const SURFACE_CUTOFF: &str = "2026-10-13T00:00:00Z";
+const SURFACE_CUTOFF: &str = "2026-10-12T19:00:00Z";
 
 /// The last round, when posted before this UTC time, needs no comment link on its
 /// `Deferred:` and `Public surface:` lines, so that the rule does not fail the rounds
