@@ -84,11 +84,12 @@ pub struct Config {
     pub region: Option<Region>,
 }
 
-/// What the hub of a node in a region reads homes from, and reaches them on.
+/// What the hub of a node in a region takes its definitions and homes from, and
+/// reaches the homes on.
 #[derive(Debug)]
 pub struct Region {
-    /// The region's mesh. It names the home of each index and the addresses of each
-    /// member.
+    /// The region's mesh. It gives the spec in use, names the home of each index, and
+    /// gives the addresses of each member.
     pub mesh: ::mesh::Mesh,
     /// The transport of this shard. The hub dials the home of each remote reader on it.
     pub transport: Rc<transport::Transport>,
@@ -467,7 +468,7 @@ impl State {
     fn catch_up(&mut self) {
         if let Some(regional) = &mut self.region {
             let spec = regional.region.mesh.used();
-            if regional.applied.moved(&spec) {
+            if regional.applied.advance(&spec) {
                 self.define(&*spec.definitions);
             }
         }
