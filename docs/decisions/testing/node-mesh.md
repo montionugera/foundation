@@ -197,9 +197,15 @@
   for the tests of `node` and the `acceptance` lab until a node joins by ticket (#1157;
   the feature by `laptop.architect`, 2026-10-10T04:08:03Z:
   https://github.com/synnaxlabs/foundation/issues/2233#issuecomment-6093607742).
-  `Region::Absent` is `None`. The status of the member is empty until #728 gives the
-  status channels of the node their keys. By `laptop.architect-2` (#1744, plan revision
-  3, 2026-10-10T03:30:54Z):
+  `Region::Absent` is `None`. The member of the founder holds a status key for each name
+  of `node::status::TABLE`. `node` makes each key as it makes each key that `apply`
+  gives: a UUIDv7 at mesh time, with random bits from `entropy`. The time only orders
+  keys, so the founder does not wait for a known error. The keys live in the founding
+  that `mesh` stores, and `node` keeps no second copy, so a later start keeps each key.
+  A start does not change a stored status that lacks a name, and does not fail for it
+  (STATUS CHANNELS). By `laptop.architect-2` (#728, 2026-10-12T16:02:04Z):
+  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135. Earlier,
+  by `laptop.architect-2` (#1744, plan revision 3, 2026-10-10T03:30:54Z):
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Lost:
   `node` keeps its own founding file, a second copy of one value; `node` builds the
   founding again at each start, so a card with port 0 or a release that changes
