@@ -3394,6 +3394,38 @@ fn refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
     }
 }
 
+/// Two connectors that write one status channel of another each give one problem.
+#[test]
+fn refuses_each_connector_that_writes_one_status_channel_of_another() {
+    let writer = |key: &str| {
+        format!(
+            "connector \"{key}\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\"]\n}}\n"
+        )
+    };
+    let documents = documents(&[COUNTED, &writer("d"), &writer("e")]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = |at: &Document, key: &str| {
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(at),
+            format!(
+                "the connector `c` implies the channel `c.status.state`, so the \
+                 connector `{key}` cannot write it"
+            ),
+            format!("Write another channel from the connector `{key}`"),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        expected
+    };
+    let expected = [expected(&documents[1], "d"), expected(&documents[2], "e")];
+    assert_eq!(found, expected);
+}
+
 /// A kind cannot write a status channel of its own connector either.
 #[test]
 fn refuses_a_connector_that_writes_its_own_status_channel() {
