@@ -73,9 +73,9 @@
   https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301). `node`
   runs no check of its own. A spec with problems follows #1741: the mesh keeps the spec
   it uses, which is empty for a founding with problems, and the hub gets none of it. So
-  no spec from disk or a peer makes an open panic. A founding with problems
-  defines no channel, and `Config::region` has no panic (#1957 PR 2). The check in the
-  mesh only, by `laptop.architect`, 2026-10-09T20:52:20Z
+  no spec from disk or a peer makes an open panic. A founding with problems defines no
+  channel, and `Config::region` has no panic (#1957 PR 2). The check in the mesh only,
+  by `laptop.architect`, 2026-10-09T20:52:20Z
   (https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6089059684).
   Supersedes the check in `node` of
   https://github.com/synnaxlabs/foundation/pull/1966#issuecomment-6068129791,
