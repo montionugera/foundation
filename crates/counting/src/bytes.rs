@@ -61,10 +61,10 @@ impl Bytes {
     }
 
     /// The bytes of every block that this allocator gave out after it started, on every
-    /// thread, freed or not. A `realloc` that grows a block counts the bytes it adds, as
-    /// [`Self::held`] does. It never goes down, so a test takes the difference of two
-    /// reads. As the global allocator, read it in a binary with no test harness, like
-    /// [`Self::held`].
+    /// thread, freed or not. A `realloc` that grows a block counts the bytes it adds,
+    /// as [`Self::held`] does. It never goes down, so a test takes the difference of
+    /// two reads. As the global allocator, read it in a binary with no test harness,
+    /// like [`Self::held`].
     #[must_use]
     pub fn allocated(&self) -> usize {
         self.counts.allocated()
