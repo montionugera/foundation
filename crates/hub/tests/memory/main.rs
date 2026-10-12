@@ -55,6 +55,7 @@ fn main() {
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
     defines_no_channel_again_at_an_open_of_the_spec_applied();
+    defines_no_channel_again_at_the_first_poll_of_the_spec_task();
 }
 
 /// Patterns `x` that fill the open of a read of `value` to [`OPEN_BYTES_MAX`]: one
@@ -438,6 +439,35 @@ fn defines_no_channel_again_at_an_open_of_the_spec_applied() {
             "the first poll of an open allocates {peak} bytes over those held, and a \
              pointer for each of {WIDE} channels is {pointers} bytes"
         );
+    })
+    .expect("the run ends");
+}
+
+/// The spec task of a new hub defines no channel of the spec that `Hub::new` applied.
+fn defines_no_channel_again_at_the_first_poll_of_the_spec_task() {
+    let wide: Vec<_> = (0..WIDE).map(|n| name(&format!("w.{n}"))).collect();
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let definitions = common::definitions(&wide);
+        let region =
+            region::open(&node, &tasks, Rc::new(transport), Vec::new(), definitions)
+                .await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let hub = common::hub_in(&node, tasks, region).await;
+        ALLOCATOR.reset_peak();
+        let before = ALLOCATOR.held();
+        node.clock().sleep(Span::MILLISECOND).await;
+        let peak = ALLOCATOR.peak() - before;
+        let pointers = WIDE * size_of::<usize>();
+        assert!(
+            peak < pointers,
+            "the first poll of the spec task allocates {peak} bytes over those held, \
+             and a pointer for each of {WIDE} channels is {pointers} bytes"
+        );
+        drop(hub);
     })
     .expect("the run ends");
 }
