@@ -218,12 +218,15 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Er
 
 /// The reply of `apply` of the plan file `bytes`: its output.
 async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
+    let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Apply);
-    if let Some(name) = check.refused(plan.changes.keys().chain(plan.homes.keys())) {
+    if let Some(name) = check.refused(plan.changes.keys()) {
         return Err(check.denied(Some(name)));
     }
+    // The homes list each placed index, so a home with no grant drops with no error.
+    plan.homes
+        .retain(|index, _| check.refused([index]).is_none());
     let (pointer, applied) = spec.newest()?;
     let (mesh, kinds) = (&node.mesh, &node.kinds);
     let effect = apply::apply(plan, pointer, &applied, mesh, kinds, &node.key).await?;

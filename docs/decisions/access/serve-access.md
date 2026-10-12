@@ -1,35 +1,42 @@
-- **SERVE ACCESS (#1744, 2026-10-12)** `ops::serve` checks the request of a subject
-  with `access::Rules`, built from the definitions of the spec in use: the same spec
-  that the operation then compares, so `ops` holds no rules of its own. A name of the
-  check is the tree key of a definition, such as `plant.@access` for an access policy
-  and the label for a channel or a connector. `plan` needs the action `plan` on each
-  name of the files, and on each name of the spec in use that `plan` compares
+- **SERVE ACCESS (#1744, 2026-10-12)** `ops::serve` checks the request of a subject with
+  `access::Rules`, built from the definitions of the spec in use: the same spec that the
+  operation then compares, so `ops` holds no rules of its own. A name of the check is
+  the tree key of a definition, such as `plant.@access` for an access policy and the
+  label for a channel or a connector. `plan` needs the action `plan` on each name of the
+  files, and on each name of the spec in use that `plan` compares
   (`config::plan::planned`). A founding definition, which `plan` leaves out (FIRST
-  ADMIN), is not in the check. Lost: a check on the changed names alone, with which
-  the refusal depends on the content of the spec, so a subject learns if a definition
-  that it has no right on is there, or equals its guess. `apply` needs `apply` on the
-  tree key of each definition that the plan adds, changes, or removes. `serve` reads
-  those names from the plan alone, so the refusal depends only on the request and the
-  rules. The rules are those of the base spec, so a plan that removes the subject's own
-  policy passes. The check runs before each other check that reads the spec in use
+  ADMIN), is not in the check. Lost: a check on the changed names alone, with which the
+  refusal depends on the content of the spec, so a subject learns if a definition that
+  it has no right on is there, or equals its guess. `apply` needs `apply` on the tree
+  key of each definition that the plan adds, changes, or removes. `serve` reads those
+  names from the plan alone, so the refusal depends only on the request and the rules.
+  The apply gives a home of the plan only to an index on which the subject has `apply`,
+  and drops each other home with no error. So a subject with a grant on part of the tree
+  applies the files of the whole mesh. Lost: `apply` on each index of the homes, with
+  which such a subject applies no plan, because the homes list each placed index; and a
+  check of only the indexes with no home, with which the refusal depends on the state
+  (`laptop.architect`, 2026-10-12T18:28:19Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130192057). The
+  rules are those of the base spec, so a plan that removes the subject's own policy
+  passes. The check runs before each other check that reads the spec in use
   (`ops.behind`, `ops.stale-plan`), so a subject with no grant does not learn from
   another error what the spec holds. An error of the files alone (`Files::read`, the
-  names of `config::check`) comes before the check. A refusal is `ops.denied`, status
-  1, with the fix `Ask an admin of the region for an access policy that allows it`. It
+  names of `config::check`) comes before the check. A refusal is `ops.denied`, status 1,
+  with the fix `Ask an admin of the region for an access policy that allows it`. It
   names a name only when the request holds it. For `plan`, it names the first name of
-  the files with no grant, in the order of the tree key. When only a name of the spec
-  in use has no grant, it names the action and no name. For `apply`, it names the first
+  the files with no grant, in the order of the tree key. When only a name of the spec in
+  use has no grant, it names the action and no name. For `apply`, it names the first
   changed name with no grant. `admin` is no part of the check: it governs a join ticket
   and a forced takeover, and `apply` on the key of an access policy or a subject lets
   its holder change it (K3; C8 has `plan` list access changes apart). #1213 checks the
-  `apply` names on each member and then removes that check from `ops`. `plan` makes no
-  change record, so its check stays in `ops`. Decided by `laptop.architect`
-  (2026-10-11T08:10:05Z,
+  `apply` names and the index of each home of the change record on each member and then
+  removes that check from `ops`. `plan` makes no change record, so its check stays in
+  `ops`. Decided by `laptop.architect` (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274), on
   decision 5 of plan revision 4
   (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
-  Limits: a request with no name to check passes for each subject that the hub
-  admitted. That is a `plan` with no files on a spec that holds only founding
-  definitions, which gives `0 to add`. The rules take the root prefix, since a node
-  founds only a root region. Trigger: the PR that lets a node found or join a region
-  below the root gives `serve` the prefix of that region.
+  Limits: a request with no name to check passes for each subject that the hub admitted.
+  That is a `plan` with no files on a spec that holds only founding definitions, which
+  gives `0 to add`. The rules take the root prefix, since a node founds only a root
+  region. Trigger: the PR that lets a node found or join a region below the root gives
+  `serve` the prefix of that region.

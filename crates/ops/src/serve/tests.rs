@@ -1,13 +1,17 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mesh::used::Cause;
 use serde_json::{Value, json};
+use spec::definition::Definition;
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use super::serve;
 use crate::Node;
-use crate::common::{PLANT, SITE, create_node, fail_sync, name, placed_site, solo};
+use crate::common::{
+    NODE, PLANT, SITE, create_node, fail_sync, name, placed_site, solo,
+};
 use crate::plan;
 
 /// Lines that `ssh-keygen -t ed25519` wrote.
@@ -411,8 +415,34 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
     });
 }
 
+/// The home of the index `index` in `mesh`.
+async fn home(mesh: &mesh::Mesh, index: &str) -> Option<types::node::Key> {
+    let spec = mesh.spec().await.expect("a spec");
+    let Definition::Channel(channel) = &spec.definitions[&name(index)] else {
+        panic!("a channel at {index}");
+    };
+    mesh.watch(channel.key)
+        .next()
+        .await
+        .expect("a running mesh")
+}
+
+/// The plan of `files` that `@admin` makes and applies with no home, and the homes
+/// that it leaves out.
+async fn applied_with_no_home(
+    node: &Node,
+    files: &[(&str, &str)],
+) -> BTreeMap<Name, Name> {
+    let plan = planned(node, files).await;
+    let mut plan = config::plan::Plan::decode(&plan).expect("a plan");
+    let homes = std::mem::take(&mut plan.homes);
+    let reply = serve(node, &admin(), &apply_body(&plan.encode())).await;
+    assert!(split(&reply).0.get("output").is_some());
+    homes
+}
+
 #[test]
-fn refuses_an_apply_of_a_subject_with_no_grant_on_a_home() {
+fn an_apply_gives_no_home_to_an_index_on_which_the_subject_has_no_grant() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
         let people = people();
@@ -420,12 +450,10 @@ fn refuses_an_apply_of_a_subject_with_no_grant_on_a_home() {
         let placed = placed_site();
         let files = [("people.hcl", &*people), ("site.hcl", &*placed)];
         let plan = planned(&node, &files).await;
-        let mut site = config::plan::Plan::decode(&plan).expect("a plan");
-        let homes = std::mem::take(&mut site.homes);
+        let site = config::plan::Plan::decode(&plan).expect("a plan");
+        let homes = applied_with_no_home(&node, &files).await;
         assert_eq!(homes.keys().collect::<Vec<_>>(), [&name("site.time")]);
-        let reply = serve(&node, &admin(), &apply_body(&site.encode())).await;
-        assert!(split(&reply).0.get("output").is_some());
-        let mut only = site.clone();
+        let mut only = site;
         only.base = mesh.pointer();
         only.changes.clear();
         only.homes = homes;
@@ -433,13 +461,62 @@ fn refuses_an_apply_of_a_subject_with_no_grant_on_a_home() {
 
         let apply = apply_body(&only.encode());
         let reply = serve(&node, &name("bob"), &apply).await;
-        let expected = denied("bob", "apply", "`site.time`");
-        assert_eq!(split(&reply), (expected, &b""[..]));
+        let pointer = serde_json::to_value(plan::Pointer::from(mesh.pointer()))
+            .expect("a pointer as JSON");
+        let output = json!({ "output": {
+            "pointer": pointer,
+            "added": 0,
+            "changed": 0,
+            "removed": 0,
+            "homes": 0,
+        } });
+        assert_eq!(split(&reply), (output, &b""[..]));
         assert_eq!(mesh.pointer().version, version);
+        assert_eq!(home(&mesh, "site.time").await, None);
         let reply = serve(&node, &name("sam"), &apply).await;
         let (head, _) = split(&reply);
         assert_eq!(head["output"]["homes"], 1, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
+        assert_eq!(home(&mesh, "site.time").await, Some(NODE));
+    });
+}
+
+#[test]
+fn an_apply_gives_a_home_only_to_the_index_of_the_grant_of_the_subject() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people)]).await;
+        let site = site();
+        let yard = "channel \"yard.time\" { kind = \"index\" }\nplacement \"yard.home\" \
+                    {\n  select = \"yard.*\"\n  home = \"edge\"\n}\n";
+        let files = [
+            ("people.hcl", &*people),
+            ("site.hcl", &*site),
+            ("yard.hcl", yard),
+        ];
+        let homes = applied_with_no_home(&node, &files).await;
+        assert_eq!(homes.len(), 2);
+        let version = mesh.pointer().version;
+        // `sam` may apply `site.hum`, and has no grant on `yard.time`.
+        let hum = format!(
+            "{site}channel \"site.hum\" {{\n  data_type = \"f64\"\n  index = \
+             \"site.time\"\n}}\n"
+        );
+        let files = [
+            ("people.hcl", &*people),
+            ("site.hcl", &*hum),
+            ("yard.hcl", yard),
+        ];
+        let plan = planned(&node, &files).await;
+
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let (head, _) = split(&reply);
+        assert_eq!(head["output"]["added"], 1, "{head}");
+        assert_eq!(head["output"]["homes"], 1, "{head}");
+        assert_eq!(mesh.pointer().version, version + 1);
+        assert_eq!(home(&mesh, "site.time").await, Some(NODE));
+        assert_eq!(home(&mesh, "yard.time").await, None);
     });
 }
 
