@@ -4581,23 +4581,28 @@ fn a_record_over_the_largest_block_of_the_pool_is_recovered() {
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
-        let mut part = parts_pool.alloc(48_000).expect("the pool has a block");
+        let mut part = parts_pool.alloc(28_000).expect("the pool has a block");
         part.fill(7);
         let parts = Parts::from(part.freeze());
-        buffer
-            .append([
-                entry(1, a, Path::Live, 0, 1, Some(1), parts.clone()),
-                entry(1, a, Path::Live, 1, 1, Some(2), parts.clone()),
-                entry(1, a, Path::Live, 2, 1, Some(3), parts),
-            ])
-            .expect("queues");
+        let entries = (0..5u32).map(|seq| {
+            entry(
+                1,
+                a,
+                Path::Live,
+                u64::from(seq),
+                1,
+                Some(i64::from(seq) + 1),
+                parts.clone(),
+            )
+        });
+        buffer.append(entries).expect("queues");
         buffer.committed().await.expect("commits");
-        assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(3)));
+        assert_eq!(buffer.durable(a, Path::Live), tail(5, Some(5)));
         drop(buffer);
         let mut slots = Slots::new();
         let opened = shard.open(ring, &mut slots).await;
         let tails = opened.map(|buffer| buffer.tail(slots.index(key(1)), Path::Live));
-        assert_eq!(tails, Ok(tail(3, Some(3))));
+        assert_eq!(tails, Ok(tail(5, Some(5))));
     });
 }
 
@@ -4641,41 +4646,40 @@ fn an_open_with_no_largest_block_free_fails_and_the_next_recovers() {
     });
 }
 
-/// `append` refuses an entry whose parts, joined, no block of the shard's pool
-/// holds, with `Limit::Block` for the first such entry, and takes nothing. An entry
-/// of the largest block, which takes the whole budget, commits, a read gives it,
-/// and an open recovers it.
+/// `append` refuses an entry whose parts, joined, pass `Buffer::block_max`, with
+/// `Limit::Block` for the first such entry, and takes nothing. An entry of
+/// `block_max` bytes commits, a read gives it, and an open recovers it.
 #[test]
-fn an_entry_over_the_largest_pool_block_is_large() {
+fn an_entry_over_block_max_is_large() {
     run(155, |mut shard| async move {
         let largest = 1 << 17;
-        let over = Parts::from([shard.block(largest), shard.block(1)]);
-        let more = Parts::from([shard.block(largest), shard.block(2)]);
-        let fits = Parts::from(shard.block(largest));
         let config = block::Config::new(
             u64::try_from(block::footprint(largest)).expect("a usize fits in a u64"),
         )
         .expect("the budget fits");
+        let own = Rc::clone(&shard.pool);
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), largest);
         let ring = least(600_000);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let max = buffer.block_max();
+        assert_eq!(max, 61_441);
+        let over = parts_of(&own, &[max, 1]);
+        let more = parts_of(&own, &[max, 2]);
+        let fits = parts_of(&own, &[max]);
         let a = slots.index(key(1));
         let large = buffer.append([
             entry(1, a, Path::Live, 0, 1, Some(1), over),
             entry(1, a, Path::Live, 1, 1, Some(2), more),
         ]);
-        let limit = Limit::Block {
-            len: largest + 1,
-            max: largest,
-        };
+        let limit = Limit::Block { len: max + 1, max };
         assert_eq!(large, Err(Rejected::Large(limit)));
         assert_eq!(
             Rejected::Large(limit).to_string(),
-            "an entry has 131073 bytes of parts, and a block of the pool holds at \
-             most 131072"
+            "an entry has 61442 bytes of parts, and an entry of this buffer holds at \
+             most 61441"
         );
         assert_eq!(buffer.tail(a, Path::Live), tail(0, None));
         buffer
@@ -4686,13 +4690,248 @@ fn an_entry_over_the_largest_pool_block_is_large() {
         let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
         let lens =
             read.map(|read| read.entries.iter().map(|e| e.bytes.len()).collect());
-        assert_eq!(lens, Ok(vec![largest]));
+        assert_eq!(lens, Ok(vec![max]));
         drop(buffer);
         let mut slots = Slots::new();
         let opened = shard.open(ring, &mut slots).await;
         let tails = opened.map(|buffer| buffer.tail(slots.index(key(1)), Path::Live));
         assert_eq!(tails, Ok(tail(1, Some(1))), "an open recovers it");
     });
+}
+
+/// One part of each of `lens` bytes from `pool`.
+fn parts_of(pool: &Pool, lens: &[usize]) -> Parts {
+    let mut blocks = lens.iter().map(|&len| {
+        let mut block = pool.alloc(len).expect("the pool has a block");
+        block.fill(7);
+        block.freeze()
+    });
+    match (blocks.next(), blocks.next(), blocks.next()) {
+        (first, None, None) => Parts::from(first),
+        (Some(first), Some(second), None) => Parts::from([first, second]),
+        _ => unreachable!("one part or two"),
+    }
+}
+
+/// Opens a buffer on a new pool of `budget` bytes, then appends one entry whose
+/// parts have the lengths that `split` gives for `Buffer::block_max`. The parts come
+/// from the new pool when `from_buffer`, or else from the pool of the test. Gives
+/// `block_max` and what the append and its commit returned.
+async fn append_split(
+    mut shard: Shard,
+    budget: u64,
+    from_buffer: bool,
+    split: impl FnOnce(usize) -> Vec<usize>,
+) -> (usize, Result<(), Rejected>) {
+    let own = Rc::clone(&shard.pool);
+    shard.pool = Rc::new(Pool::heap(
+        block::Config::new(budget).expect("the budget fits"),
+    ));
+    let mut slots = Slots::new();
+    let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+    let max = buffer.block_max();
+    // The open leaves free blocks carved. A size whose blocks are all free goes
+    // back at its second purge, so the entry meets a fresh pool.
+    buffer.pool().purge();
+    buffer.pool().purge();
+    assert_eq!(buffer.pool().committed(), 0);
+    assert!(
+        max <= buffer.pool().largest(),
+        "a read holds the entry in a block"
+    );
+    let pool = if from_buffer { buffer.pool() } else { &*own };
+    let parts = parts_of(pool, &split(max));
+    let a = slots.index(key(1));
+    let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+    if appended.is_ok() {
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+    }
+    (max, appended)
+}
+
+/// The defect of #1053: an entry of the largest block, made from the pool of the
+/// buffer, got `Pool(Exhausted)` on each try. It is over `block_max`.
+#[test]
+fn an_entry_of_the_largest_block_made_from_the_pool_of_the_buffer_is_large() {
+    run(201, |shard| async move {
+        let largest = 1 << 17;
+        let budget = u64::try_from(block::footprint(largest)).expect("fits in u64");
+        let (max, appended) =
+            append_split(shard, budget, true, |_| vec![largest]).await;
+        let limit = Limit::Block { len: largest, max };
+        assert_eq!(appended, Err(Rejected::Large(limit)));
+    });
+}
+
+/// The second case of #1053: an entry under the largest block that does not fit
+/// beside the blocks of its group.
+#[test]
+fn an_entry_under_the_largest_block_made_from_the_pool_of_the_buffer_is_large() {
+    run(202, |shard| async move {
+        let (max, appended) =
+            append_split(shard, 1 << 17, true, |_| vec![70_000]).await;
+        let limit = Limit::Block { len: 70_000, max };
+        assert_eq!(appended, Err(Rejected::Large(limit)));
+    });
+}
+
+/// An entry of exactly `block_max` bytes, made from the pool of the buffer, appends
+/// in one part and in the split that takes the most of the budget.
+#[test]
+fn an_entry_of_block_max_made_from_the_pool_of_the_buffer_appends() {
+    let budget = u64::try_from(block::footprint(1 << 17)).expect("fits in u64");
+    run(203, move |shard| async move {
+        let appended = append_split(shard, budget, true, |max| vec![max]).await;
+        assert_eq!(appended, (61_441, Ok(())));
+    });
+    run(204, move |shard| async move {
+        let appended =
+            append_split(shard, budget, true, |max| vec![57_345, max - 57_345]).await;
+        assert_eq!(appended, (61_441, Ok(())));
+    });
+}
+
+/// The limit of `block_max`: a free block of a size with a block in use keeps its
+/// budget, so an entry at `block_max` gets `Exhausted` when the pool keeps a second
+/// block of the size of a part. After two purges the pool commits nothing, and the
+/// same entry appends.
+#[test]
+fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
+    run(206, |mut shard| async move {
+        let budget = u64::try_from(block::footprint(1 << 17)).expect("fits in u64");
+        let config = block::Config::new(budget).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let mut slots = Slots::new();
+        let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+        let pool = buffer.pool();
+        pool.purge();
+        pool.purge();
+        let lens = [57_345, buffer.block_max() - 57_345];
+        let a = slots.index(key(1));
+        let parts = parts_of(pool, &lens);
+        drop(pool.alloc(lens[1]).expect("a second block of the size"));
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        let exhausted = block::Error::Exhausted {
+            requested: 52_186,
+            available: 57_216,
+        };
+        assert_eq!(appended, Err(Rejected::Pool(exhausted)));
+        pool.purge();
+        pool.purge();
+        assert_eq!(pool.committed(), 0);
+        let parts = parts_of(pool, &lens);
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        assert_eq!(appended, Ok(()));
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+    });
+}
+
+/// An entry of `block_max` bytes in two parts, a head of 30 bytes and a body, as
+/// `home` makes a stored body, appends from the pool of a buffer just opened, with no
+/// purge: the open holds no block of the pool.
+#[test]
+fn an_entry_at_block_max_with_a_short_head_appends_after_an_open() {
+    for (case, budget, max) in [(207, 62_272, 4096), (208, 68_000, 8_257)] {
+        run(case, move |mut shard| async move {
+            let config = block::Config::new(budget).expect("the budget fits");
+            shard.pool = Rc::new(Pool::heap(config));
+            let mut slots = Slots::new();
+            let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+            assert_eq!(buffer.block_max(), max);
+            let a = slots.index(key(1));
+            for first in 0..3 {
+                let parts = parts_of(buffer.pool(), &[30, max - 30]);
+                let appended =
+                    buffer.append([entry(1, a, Path::Live, first, 1, Some(1), parts)]);
+                assert_eq!(appended, Ok(()), "budget {budget}, append {first}");
+                buffer.committed().await.expect("commits");
+            }
+        });
+    }
+}
+
+/// An open fails with `Budget` when its pool holds no entry of
+/// `Layout::ENTRY_MAX_MIN` bytes beside the blocks of a group, also when its largest
+/// block is under that entry, and opens from `min`.
+#[test]
+fn an_open_fails_on_a_pool_that_holds_no_entry() {
+    run(205, |mut shard| async move {
+        let config = block::Config::new(62_271).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        let error = opened.map(drop).expect_err("the open fails");
+        assert_eq!(
+            error,
+            Error::Budget {
+                budget: 62_271,
+                min: 62_272
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "a pool of 62271 bytes holds no entry of 4032 bytes: give it 62272 bytes \
+             or more"
+        );
+        let config = block::Config::new(1_000).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        let error = opened.map(drop).expect_err("the open fails");
+        assert_eq!(
+            error,
+            Error::Budget {
+                budget: 1_000,
+                min: 62_272
+            }
+        );
+        let names = shard.files.list(FilePath::new("")).await.expect("lists");
+        assert_eq!(names, Vec::<PathBuf>::new());
+        let config = block::Config::new(62_272).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        assert_eq!(opened.map(|buffer| buffer.block_max()), Ok(4096));
+    });
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// On a pool of any budget that commits nothing before it takes the entry's
+    /// parts, an entry of `block_max` bytes in any split into one or two parts made
+    /// from that pool appends, and one byte more gets `Limit::Block`.
+    #[test]
+    fn block_max_bounds_an_entry_in_any_split(
+        seed in any::<u64>(),
+        budget in 62_272..=1u64 << 19,
+        two in any::<bool>(),
+        cut in 0.0..=1.0f64,
+        over in any::<bool>(),
+    ) {
+        let split = move |len: usize| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss,
+                reason = "a fraction of a length under 2^53"
+            )]
+            let first = (len as f64 * cut) as usize;
+            if two { vec![first, len - first] } else { vec![len] }
+        };
+        run(seed, move |shard| async move {
+            let (max, appended) = if over {
+                append_split(shard, budget, false, |max| split(max + 1)).await
+            } else {
+                append_split(shard, budget, true, split).await
+            };
+            let expected = if over {
+                Err(Rejected::Large(Limit::Block { len: max + 1, max }))
+            } else {
+                Ok(())
+            };
+            assert_eq!(appended, expected);
+        });
+    }
 }
 
 /// An open fails with `Pool(TooLarge)` when a recovered entry is over the largest

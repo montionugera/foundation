@@ -10,6 +10,7 @@ pub(crate) fn buffer(error: &buffer::Error) -> Option<&files::Error> {
         buffer::Error::Files(error) => Some(error),
         buffer::Error::Full { .. }
         | buffer::Error::Pool(_)
+        | buffer::Error::Budget { .. }
         | buffer::Error::Length { .. }
         | buffer::Error::Missing
         | buffer::Error::Damaged

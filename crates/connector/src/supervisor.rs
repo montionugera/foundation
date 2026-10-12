@@ -2993,12 +2993,25 @@ mod tests {
         stamp: i64,
         sample: i64,
     ) -> Vec<hub::home::Outcome> {
+        let draft = draft_value(writer, stamp, sample, 2);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        outcomes.expect("the home takes it").to_vec()
+    }
+
+    /// A frame of `sample` at `stamp` for `writer`, which writes `plant.value` at
+    /// key `key` and its index.
+    fn draft_value(
+        writer: &hub::writer::Writer,
+        stamp: i64,
+        sample: i64,
+        key: u128,
+    ) -> frame::Draft {
         let entries = writer.set().entries();
         let entry = |key| {
             let key = channel::Key::from_u128(key);
             entries.iter().position(|entry| entry.key == key)
         };
-        let (time, value) = (entry(1).expect("time"), entry(2).expect("value"));
+        let (time, value) = (entry(1).expect("time"), entry(key).expect("value"));
         let group = entries[time].group;
         let mut series = [(time, 8), (value, 8)];
         series.sort_unstable();
@@ -3008,13 +3021,12 @@ mod tests {
         let value = draft.series_mut(value).expect("the value series");
         value.copy_from_slice(&sample.to_le_bytes());
         draft.set_count(group, 1);
-        let outcomes = writer.write(Label::Path(Path::Live), draft);
-        outcomes.expect("the home takes it").to_vec()
+        draft
     }
 
-    /// Defines `plant.time` (key 1), `plant.value` (key 2, `i64`), and the status
+    /// Defines `plant.time` (key 1), `plant.value` (key `key`, `i64`), and the status
     /// channels of `plant.write` on `hub`.
-    fn define(hub: &hub::Hub) {
+    fn define(hub: &hub::Hub, key: u128) {
         let time = Channel {
             key: channel::Key::from_u128(1),
             kind: spec::channel::Kind::Index {
@@ -3025,7 +3037,7 @@ mod tests {
         let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
         let data = Data::new(time.key, None, i64, None).expect("no unit");
         let value = Channel {
-            key: channel::Key::from_u128(2),
+            key: channel::Key::from_u128(key),
             kind: spec::channel::Kind::Data(data),
         };
         let (time, value) = (Definition::Channel(time), Definition::Channel(value));
@@ -3136,7 +3148,7 @@ mod tests {
         let got = run_on(|node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let write = Write::new(vec![30, 10, 20]);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
@@ -3216,7 +3228,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             tasks.spawn(beside(inputs.hub.clone(), node.clock()));
             let supervisor = Supervisor::new(inputs);
@@ -3267,7 +3279,7 @@ mod tests {
             });
             let kinds = Table::new().with("read", kind);
             let inputs = create_config(&node, tasks, kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let hub = inputs.hub.clone();
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3413,7 +3425,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let writes = vec![(ms(100), 7), (ms(300), 8)];
             tasks.spawn(write_at(inputs.hub.clone(), node.clock(), writes));
             let supervisor = Supervisor::new(inputs);
@@ -3623,6 +3635,132 @@ mod tests {
         );
     }
 
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// reader ends, the run returns `Retry`, and the reader of the restart reads key 3.
+    #[test]
+    fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await;
+                let mut got = got.lock().expect("no panic");
+                match next {
+                    Ok(received) => got.push(Ok(series(&received, 3))),
+                    Err(ended) => {
+                        got.push(Err(ended));
+                        return Err(Error::Retry("removed".into()));
+                    }
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define(&hub, 3);
+                clock.sleep(ms(1_500)).await;
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                let draft = draft_value(&writer, writer.now().nanos(), 7, 3);
+                let outcomes = writer.write(Label::Path(Path::Live), draft);
+                outcomes.expect("the home takes it");
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
+        assert_eq!(read.got, [Err(removed), Ok(vec![7])]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+            "{:?}",
+            read.statuses
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, "removed"),
+                (wait, "removed"),
+                (Span::ZERO, "removed"),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
+        );
+    }
+
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// write of the run gives `Removed`, the run returns `Retry`, and the writer of
+    /// the restart writes key 3. Lost: the frame of the refused write, and each sample
+    /// until the restart, after the first wait of the backoff.
+    #[test]
+    fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            None,
+            |ctx, got| async move {
+                let channels = vec![name("plant.value")];
+                let writer = ctx.writer(channels, Authority(1), None).await;
+                let mut writer = writer.expect("opens");
+                let first = got.lock().expect("no panic").is_empty();
+                let (key, sample) = if first { (2, 5) } else { (3, 7) };
+                if first {
+                    ctx.clock().sleep(ms(200)).await;
+                }
+                let draft = draft_value(&writer, writer.now().nanos(), sample, key);
+                let written = writer.write(Label::Path(Path::Live), draft);
+                let applied = |outcomes: &[_]| {
+                    matches!(outcomes, [hub::home::Outcome::Applied { .. }])
+                };
+                let written = written.map(applied);
+                let failed = written.is_err();
+                got.lock().expect("no panic").push(written);
+                if failed {
+                    return Err(Error::Retry("removed".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define(&hub, 3);
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
+        assert_eq!(read.got, [Err(removed), Ok(true)]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, "removed"),
+                (wait, "removed"),
+                (Span::ZERO, "removed"),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
+        );
+    }
+
     #[test]
     fn ends_with_a_config_error_for_a_reader_that_only_a_spec_change_fixes() {
         for (select, want) in [
@@ -3676,7 +3814,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3705,7 +3843,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3785,7 +3923,7 @@ mod tests {
         run_on(move |node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
             let mut other = None;
@@ -3835,7 +3973,7 @@ mod tests {
             move |tasks| async move {
                 let mut inputs =
                     create_config(&node, tasks, Table::new(), "plant.write").await;
-                define(&inputs.hub);
+                define(&inputs.hub, 2);
                 inputs.kinds = Arc::new(Table::new().with("write", write));
                 let supervisor = Supervisor::new(inputs);
                 let (name, token) = (name("plant.write"), Token::new());
@@ -3854,7 +3992,7 @@ mod tests {
         let (other, own) = sim
             .run_on(&node, |node, tasks| async move {
                 let (hub, _) = hub::testing::open(env(&node, tasks)).await;
-                define(&hub);
+                define(&hub, 2);
                 let other = write_as(&hub, "plant.other").await;
                 (other, write_as(&hub, "plant.write").await)
             })

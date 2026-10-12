@@ -526,10 +526,11 @@ impl Shard {
     ///
     /// [`Error::Resend`] for a frame labeled resend. [`Error::Full`] for a backfill
     /// frame when the ring or the pool has no room, and [`Error::Large`] for a frame
-    /// whose bodies no record or no block of the pool holds; no seq moves for either.
-    /// A handoff with no room decides before the size: the groups with samples of a
-    /// live frame are lost, and a backfill frame gets [`Error::Full`]. [`Error::Disk`]
-    /// after a failed commit, before any other error but [`Error::Resend`].
+    /// whose bodies no record holds or whose entry passes
+    /// [`buffer::Buffer::block_max`]; no seq moves for either. A handoff with no room
+    /// decides before the size: the groups with samples of a live frame are lost, and
+    /// a backfill frame gets [`Error::Full`]. [`Error::Disk`] after a failed commit,
+    /// before any other error but [`Error::Resend`].
     ///
     /// # Panics
     ///
