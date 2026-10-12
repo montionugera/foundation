@@ -4,8 +4,6 @@
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
-use std::future::Future as _;
-use std::pin::pin;
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
@@ -14,11 +12,19 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
 
-use crate::connection::Manager;
+use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::ffi::{self, Status};
 
 #[cfg(test)]
 mod tests;
+
+/// The most reads of a client in flight. A read past it waits until one ends.
+const READS: u16 = 16;
+
+const _: () = assert!(
+    READS as usize * CHUNKS as usize <= SENDS / 2,
+    "the other half of the sends of a connection is for the requests of open62541"
+);
 
 /// A numeric node of an OPC UA server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,18 +43,24 @@ pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
     /// read in flight.
-    answer: Box<Answer>,
+    reads: Box<Reads>,
+    clock: Clock,
+    /// The request timeout of the client.
+    timeout: Span,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
 
-/// The answer of the read in flight.
+/// The reads of a client in flight, shared with the callback.
 #[derive(Default)]
-struct Answer {
-    /// The request of the read in flight. The callback drops the answer of another
-    /// request, which is a read whose future dropped.
+struct Reads {
+    /// The request of the last read that open62541 took. The callback drops the answer
+    /// of another request, and `read` clears the late answer of a last read that timed
+    /// out or whose future dropped.
     request: Cell<Option<u32>>,
     value: Cell<Option<Result<f64, Status>>>,
+    /// The reads that open62541 took and has not called back, at most [`READS`].
+    pending: Cell<u16>,
 }
 
 impl Client {
@@ -77,36 +89,37 @@ impl Client {
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
+        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
+        // SAFETY: the client lives.
+        let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
+        let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
         let this = Self {
             raw,
-            answer: Box::default(),
+            reads: Box::default(),
+            clock,
+            timeout,
             connections,
         };
-        // SAFETY: the client lives.
-        let timeout_ms = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
-        let mut deadline =
-            pin!(clock.sleep(Span::from_nanos(i64::from(timeout_ms) * 1_000_000)));
+        let deadline = this.clock.now() + this.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
         let connected = this
             .connections
-            .drive(|cx| {
+            .drive_until(Some(deadline), |_| {
                 this.connections.events().run();
                 let state = this.state();
                 if state.status != Status::GOOD {
                     Poll::Ready(Err(state.status))
                 } else if state.session == ffi::Session::ACTIVATED {
                     Poll::Ready(Ok(()))
-                } else if deadline.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Err(Status::BAD_TIMEOUT))
                 } else {
                     Poll::Pending
                 }
             })
-            .await;
+            .await
+            .unwrap_or(Err(Status::BAD_TIMEOUT));
         match connected {
             Ok(()) => Ok(this),
             Err(status) => {
@@ -116,35 +129,60 @@ impl Client {
         }
     }
 
-    /// Reads the Value of `node`, a scalar Double.
+    /// Reads the Value of `node`, a scalar Double. A read that times out or whose
+    /// future dropped stays in flight until the server answers it or the connection
+    /// closes. While [`READS`] are in flight, a read first waits until one ends.
     ///
     /// # Errors
     ///
-    /// The status of open62541 when it refuses the request, the status of the answer
-    /// or of its value, or `BadTypeMismatch` when the value is not a scalar Double.
+    /// `BadTooManyOperations` when no read ends in the request timeout of the client
+    /// (5 s), as the server holds the requests of [`READS`] reads: the client sends no
+    /// more reads until the server answers one. `BadTimeout` when it has no answer
+    /// after that timeout, its wait included, the status of open62541 when it refuses
+    /// the request, the status of the answer or of its value, or `BadTypeMismatch` when
+    /// the value is not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
+        let deadline = self.clock.now() + self.timeout;
+        if self.reads.pending.get() == READS {
+            self.connections
+                .drive_until(Some(deadline), |_| {
+                    self.connections.events().run();
+                    if self.reads.pending.get() < READS {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+                .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
+        }
         let mut request = 0;
-        // SAFETY: the client lives, and `answer` outlives it.
+        // SAFETY: the client lives, and `reads` outlives it.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
                 node.namespace,
                 node.key,
                 answer,
-                ptr::from_ref::<Answer>(&self.answer).cast_mut().cast(),
+                ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                 &raw mut request,
             )
         });
         if status != Status::GOOD {
             return Err(status);
         }
-        self.answer.request.set(Some(request));
-        self.connections
-            .drive(|_| {
+        self.reads.pending.set(self.reads.pending.get() + 1);
+        self.reads.request.set(Some(request));
+        // It can hold the late answer of the last read.
+        self.reads.value.set(None);
+        let answer = self
+            .connections
+            .drive_until(Some(deadline), |_| {
                 self.connections.events().run();
-                self.answer.value.take().map_or(Poll::Pending, Poll::Ready)
+                self.reads.value.take().map_or(Poll::Pending, Poll::Ready)
             })
-            .await
+            .await;
+        answer.unwrap_or(Err(Status::BAD_TIMEOUT))
     }
 
     /// Closes the session and the connection of the client, and waits until the
@@ -215,12 +253,12 @@ impl Drop for Client {
     }
 }
 
-/// Puts the answer of `request` in the [`Answer`] at `data` when it is the read in
-/// flight.
+/// Ends one read of the [`Reads`] at `data`, and puts the answer of `request` there
+/// when it is the read that waits.
 ///
 /// # Safety
 ///
-/// `data` points at a live [`Answer`], and `value` points at the answer when `status`
+/// `data` points at live [`Reads`], and `value` points at the answer when `status`
 /// is `Good`.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
@@ -229,9 +267,10 @@ unsafe extern "C" fn answer(
     status: u32,
     value: *mut c_void,
 ) {
-    // SAFETY: the client that holds the answer lives.
-    let answer = unsafe { &*data.cast_const().cast::<Answer>() };
-    if answer.request.get() != Some(request) {
+    // SAFETY: the client that holds the reads lives.
+    let reads = unsafe { &*data.cast_const().cast::<Reads>() };
+    reads.pending.set(reads.pending.get() - 1);
+    if reads.request.get() != Some(request) {
         return;
     }
     let mut double = 0.0;
@@ -240,7 +279,7 @@ unsafe extern "C" fn answer(
         // SAFETY: open62541 gives the answer with `Good`.
         status = Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
     }
-    answer.value.set(Some(if status == Status::GOOD {
+    reads.value.set(Some(if status == Status::GOOD {
         Ok(double)
     } else {
         Err(status)
