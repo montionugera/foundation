@@ -78,6 +78,9 @@ impl Cause {
 /// The names of the lines that end each round comment, in order.
 const END: [&str; 3] = ["Deferred", "Public surface", "Hot path"];
 
+/// The name of a line that the end lines may hold. The check reads no value of it.
+const LATER: &str = "Later steps";
+
 /// The name of the line that lists the text fixes of a round.
 const FIXES: &str = "Text fixes";
 
@@ -94,6 +97,42 @@ const RATING_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// A later round posted before this UTC time needs no `architecture` for a range that
 /// changes a decision, so that the rule does not fail the rounds that came before it.
 const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
+
+/// The last round, when posted before this UTC time, needs no comment link on its
+/// `Deferred:` and `Public surface:` lines, so that the rule does not fail the rounds
+/// that came before it.
+const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
+
+/// The crates in which a deferral needs the OK of the architect. It must match the
+/// risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`.
+const RISK: [&str; 10] = [
+    "raft",
+    "buffer",
+    "delivery",
+    "block",
+    "ring",
+    "codec",
+    "wire",
+    "home",
+    "replica",
+    "transport",
+];
+
+/// The words on a `Deferred:` line that mark the issue before them as work in no risk
+/// crate.
+const UNRISKY: &str = "not in a risk crate";
+
+/// The word on a `Public surface:` line of an item with no approval.
+const OWED: &str = "owed";
+
+/// The words on a `Public surface:` line before the link to the comment that an item
+/// departs from, which is no approval.
+const DEPARTS: &str = "departs from";
+
+/// The end of each problem of a missing comment link.
+const LINK: &str = "A link is the URL of a GitHub comment in the text of the line, at \
+                    its start or after a space or `(`: a `[text](url)` link shows no \
+                    URL.";
 
 /// The record of a PR that the check reads.
 #[derive(Debug)]
@@ -116,10 +155,6 @@ struct Comment {
 
 /// A parsed `## Review round <n>` comment.
 #[derive(Debug, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is one fact of the comment, and none excludes another"
-)]
 struct Round {
     number: u32,
     reviewers: BTreeSet<String>,
@@ -132,12 +167,24 @@ struct Round {
     /// The comment has a line `Text fixes:` that is not `Text fixes: none`, so commits
     /// that apply its items may follow the round.
     fixed: bool,
-    /// The `Hot path:` end line names a function, so the round requires
-    /// `performance`. Always `false` for an old round, which [`Parsed`] checks.
+    /// `None` for an old round, which has no end lines: [`Parsed`] checks its hot path.
+    ends: Option<Ends>,
+    /// When the comment was posted ([`Comment::created`]). A rule that starts at a
+    /// cutoff compares it with its own.
+    posted: String,
+}
+
+/// The end lines of a round comment.
+#[derive(Debug, PartialEq, Eq)]
+struct Ends {
+    /// The value of the `Deferred:` line.
+    deferred: String,
+    /// The place in `deferred` of each [`BREAK`] that [`ends`] took out of it.
+    breaks: Vec<usize>,
+    /// The value of the `Public surface:` line.
+    surface: String,
+    /// The `Hot path:` line names a function, so the round requires `performance`.
     hot: bool,
-    /// The comment was posted at or after [`DECISION_CUTOFF`], so a later round must
-    /// name `architecture` when its range changes a decision.
-    decision_bound: bool,
 }
 
 /// A round comment that does not parse.
@@ -219,7 +266,9 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
 /// `decision_change` gives a phrase for its range (`History::decision_change`). For
 /// that rule, a round comment after the first is a later round, whatever its number,
-/// and so is a first round comment whose number is above 1.
+/// and so is a first round comment whose number is above 1. The last round, when
+/// posted at or after `LINK_CUTOFF`, must link the OK of each deferral of a PR that
+/// changes a risk crate, and an approval of its public surface ([`unlinked`]).
 fn problems(
     record: &Record,
     head: &str,
@@ -250,7 +299,8 @@ fn problems(
                     &record.files,
                     last,
                     code_change,
-                    (later && round.decision_bound).then_some(decision_change),
+                    (later && round.posted.as_str() >= DECISION_CUTOFF)
+                        .then_some(decision_change),
                 )?);
             }
             Err(e) => {
@@ -273,6 +323,7 @@ fn problems(
             ));
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
+        problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -311,6 +362,38 @@ fn unended(
              no `Text fixes:` line."
         )
     }))
+}
+
+/// The problems with the links on the end lines of `round`, the last round of a PR
+/// that changes `files`: the first issue of its `Deferred:` line with no OK
+/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what its
+/// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
+/// [`LINK_CUTOFF`].
+fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
+    let bound = round.posted.as_str() >= LINK_CUTOFF;
+    let Some(ends) = round.ends.as_ref().filter(|_| bound) else {
+        return Vec::new();
+    };
+    let number = round.number;
+    let risky = files.iter().any(|file| {
+        let file = file.to_ascii_lowercase();
+        let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
+        name.is_some_and(|(name, _)| RISK.contains(&name))
+    });
+    let problem = unokayed(&ends.deferred, &ends.breaks)
+        .filter(|_| risky)
+        .map(|issue| {
+            format!(
+                "review round {number} defers to {issue} with no link to the OK of the \
+                 architect after it on its `Deferred:` line. Add the link, or the \
+                 words `{UNRISKY}` after the issue when its work is in no risk crate. \
+                 {LINK}"
+            )
+        });
+    problem
+        .into_iter()
+        .chain(unapproved(number, &ends.surface))
+        .collect()
 }
 
 /// The problems with the reviewers that `round` names for a PR that changes `files`.
@@ -377,7 +460,7 @@ fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
     if code {
         required.push("breaker");
     }
-    if round.hot {
+    if round.ends.as_ref().is_some_and(|ends| ends.hot) {
         required.push("performance");
     }
     required
@@ -457,7 +540,6 @@ fn round(comment: &Comment) -> Option<Parsed> {
         .iter()
         .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
     let number = &quoted(shown.number.as_deref()?);
-    let text = &shown.text;
     let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
     let lines = fields.iter().map(String::as_str);
     let field = |name| lines.clone().find_map(|l: &str| l.strip_prefix(name));
@@ -468,9 +550,9 @@ fn round(comment: &Comment) -> Option<Parsed> {
         || [reviewers, range, findings].iter().any(Option::is_some)
         || hiding.is_some();
     let performance = |reviewers: Option<&BTreeSet<String>>| {
-        let performer =
-            reviewers.map_or_else(|| performer(text), |r| r.contains("performance"));
-        (old && !performer && named(text)).then(|| {
+        let performer = reviewers
+            .map_or_else(|| performer(&shown.text), |r| r.contains("performance"));
+        (old && !performer && named(&shown.text)).then(|| {
             format!(
                 "review round {number} names no performance, which this round requires."
             )
@@ -502,7 +584,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             )
         })?;
         let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
-        let hot = shown.end().map_or(Ok(false), |end| hot(end, number))?;
+        let tail = shown.end().map(|end| ends(end, number)).transpose()?;
         Ok(Round {
             number,
             reviewers: listed(reviewers.ok_or_else(|| missing("Reviewers"))?),
@@ -511,8 +593,8 @@ fn round(comment: &Comment) -> Option<Parsed> {
             end: end.to_string(),
             findings,
             fixed: fixed(&shown),
-            hot,
-            decision_bound: comment.created.as_str() >= DECISION_CUTOFF,
+            ends: tail,
+            posted: comment.created.clone(),
         })
     };
     let round = fields().map_err(|problem| Malformed { binding, problem });
@@ -582,18 +664,29 @@ fn blank(line: &str) -> bool {
     line.chars().all(|c| c == IMAGE || c == ' ')
 }
 
+/// The character that [`texts`] puts before a `GH-` that starts a text node or follows
+/// an ignorable character. [`ends`] takes it out of the end lines and keeps its places
+/// for [`issue`]. No text of a line holds it, since it is [`ignorable`].
+const BREAK: char = '\u{FFF7}';
+
 /// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
-/// `![]`, since [`IMAGE`] shows as nothing.
+/// `![]`, since [`IMAGE`] shows as nothing, and with no [`BREAK`].
 fn quoted(line: &str) -> String {
-    line.replace(IMAGE, "![]")
+    line.replace(IMAGE, "![]").replace(BREAK, "")
 }
 
-/// Whether the end lines `paragraph` of round `number` name a hot path: its `Hot path:`
-/// line has a value ([`stated`]). The paragraph must be the [`END`] lines in order and
-/// nothing else.
-fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
-    let (values, read) = entries(paragraph, &END);
+/// What the end lines `paragraph` of round `number` state. The paragraph must be the
+/// [`END`] lines in order and nothing else. A [`LATER`] line after the first line is
+/// not read.
+fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
     let [deferred, surface, hot] = END;
+    let (values, read) = entries(paragraph, &[deferred, surface, hot, LATER]);
+    let values = values
+        .into_iter()
+        .enumerate()
+        .filter(|(i, (name, _))| *i == 0 || *name != LATER)
+        .map(|(_, entry)| entry)
+        .collect::<Vec<_>>();
     for (i, name) in END.into_iter().enumerate() {
         let found = values.get(i).map(|(found, _)| *found);
         if read < paragraph.len() || found != Some(name) {
@@ -604,12 +697,169 @@ fn hot(paragraph: &[String], number: u32) -> Result<bool, String> {
             ));
         }
     }
-    if let Some((name, _)) = values.get(END.len()) {
-        return Err(format!(
-            "review round {number} has a second `{name}:` line in its end lines."
+    let [(_, deferred), (_, surface), (_, hot)] =
+        <[_; 3]>::try_from(values).map_err(|values| {
+            let name = values[END.len()].0;
+            format!(
+                "review round {number} has a second `{name}:` line in its end lines."
+            )
+        })?;
+    let (deferred, breaks) = unbroken(&deferred);
+    Ok(Ends {
+        deferred,
+        breaks,
+        surface: surface.replace(BREAK, ""),
+        hot: stated(&hot),
+    })
+}
+
+/// `value` with no [`BREAK`], and the place in it of each `BREAK` that `value` held.
+fn unbroken(value: &str) -> (String, Vec<usize>) {
+    let mut parts = value.split(BREAK);
+    let mut text = parts.next().unwrap_or_default().to_owned();
+    let mut breaks = Vec::new();
+    for part in parts {
+        breaks.push(text.len());
+        text.push_str(part);
+    }
+    (text, breaks)
+}
+
+/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with
+/// the places `breaks` ([`Ends::breaks`]), with no OK: no comment link ([`links`])
+/// starts after its start, and the words [`UNRISKY`] are not between it and the next
+/// issue. A comment link that is an issue is no OK of itself.
+fn unokayed(deferred: &str, breaks: &[usize]) -> Option<String> {
+    let lower = deferred.to_ascii_lowercase();
+    let ok = links(deferred).last();
+    let mut issues = issues(deferred, breaks).peekable();
+    while let Some(issue) = issues.next() {
+        let next = issues.peek().map_or(deferred.len(), |next| next.start);
+        let okayed = ok.is_some_and(|ok| ok > issue.start);
+        if !okayed && !lower[issue.end..next].contains(UNRISKY) {
+            return Some(deferred[issue].to_string());
+        }
+    }
+    None
+}
+
+/// The place of each issue in `value`, the value of a `Deferred:` line with the places
+/// `breaks`, in order: each issue ([`issue`]), and a comment link ([`link`]) with no
+/// issue before it, which names the deferral by its comment. No issue starts in a
+/// comment link or in another issue.
+fn issues(value: &str, breaks: &[usize]) -> impl Iterator<Item = Range<usize>> {
+    let mut end = 0;
+    value.char_indices().filter_map(move |(at, _)| {
+        if at < end {
+            return None;
+        }
+        let comment = link(value, at);
+        let first = end == 0;
+        end = comment.or_else(|| issue(value, breaks, at))?;
+        (comment.is_none() || first).then_some(at..end)
+    })
+}
+
+/// The end of the issue that starts at `at` in `value`, a value with the places
+/// `breaks` ([`Ends::breaks`]): `#`, or `GH-` in each ASCII case, and the digits after
+/// it, or the URL of an issue or a PR ([`numbered`]). A `GH-` starts `value`, is at a
+/// place of `breaks`, or follows a character that is no ASCII letter, no ASCII digit,
+/// and no `_`, as GitHub reads it. The start of a comment link ([`link`]) is such a URL
+/// too, so [`issues`] asks `link` first.
+fn issue(value: &str, breaks: &[usize], at: usize) -> Option<usize> {
+    let text = &value[at..];
+    let before = value[..at].chars().next_back();
+    let free = before.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+    let gh = text
+        .split_at_checked(3)
+        .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"))
+        .filter(|_| free || breaks.contains(&at));
+    let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
+    let url = text.strip_prefix(HOST);
+    let rest = number
+        .and_then(undigited)
+        .or_else(|| url.and_then(numbered))?;
+    Some(value.len() - rest.len())
+}
+
+/// `text` after the digits at its start, or `None` when it starts with no digit.
+fn undigited(text: &str) -> Option<&str> {
+    let rest = text.trim_start_matches(|c: char| c.is_ascii_digit());
+    (rest.len() < text.len()).then_some(rest)
+}
+
+/// The problem when `surface`, the value of the `Public surface:` line of round
+/// `number`, holds the word [`OWED`], in each ASCII case and with the characters at
+/// its ends removed that are no letter and no number, or names items ([`stated`])
+/// with no approval ([`approved`]).
+fn unapproved(number: u32, surface: &str) -> Option<String> {
+    let owed = |word: &str| {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+        word.eq_ignore_ascii_case(OWED)
+    };
+    if surface.split(' ').any(owed) {
+        return Some(format!(
+            "review round {number} has the word `{OWED}` on its `Public surface:` \
+             line. Get each approval, then put its link in the line."
         ));
     }
-    Ok(stated(&values[2].1))
+    (stated(surface) && !approved(surface)).then(|| {
+        format!(
+            "review round {number} names items on its `Public surface:` line with no \
+             link to an approval, apart from a link after `{DEPARTS}`. {LINK}"
+        )
+    })
+}
+
+/// Whether `surface` links an approval: a comment link ([`links`]) with the words
+/// [`DEPARTS`], in each ASCII case, at no place between it and the link before it.
+fn approved(surface: &str) -> bool {
+    let lower = surface.to_ascii_lowercase();
+    let before = std::iter::once(0).chain(links(surface));
+    before
+        .zip(links(surface))
+        .any(|(before, at)| !lower[before..at].contains(DEPARTS))
+}
+
+/// The start of each comment link ([`link`]) in `value`, in order.
+fn links(value: &str) -> impl Iterator<Item = usize> {
+    let hosts = value.match_indices(HOST).map(|(at, _)| at);
+    hosts.filter(|&at| link(value, at).is_some())
+}
+
+/// The end of the comment link that starts at `at` in `value`: [`HOST`] and the path
+/// of a comment ([`comment`]), at the start of `value` or after a space or `(`.
+fn link(value: &str, at: usize) -> Option<usize> {
+    let before = value[..at].chars().next_back();
+    let free = before.is_none_or(|c| c == ' ' || c == '(');
+    let path = value[at..].strip_prefix(HOST).filter(|_| free);
+    Some(value.len() - path.and_then(comment)?.len())
+}
+
+/// The start of each comment link, and of each URL of an issue or a PR.
+const HOST: &str = "https://github.com/";
+
+/// `path` after the path of a comment on GitHub at its start: the path of an issue or
+/// a PR ([`numbered`]), and `#issuecomment-`, `#pullrequestreview-`, or
+/// `#discussion_r` with the digits after it.
+fn comment(path: &str) -> Option<&str> {
+    let marks = ["issuecomment-", "pullrequestreview-", "discussion_r"];
+    let mark = numbered(path).and_then(|rest| rest.strip_prefix('#'));
+    let id = mark.and_then(|mark| marks.iter().find_map(|m| mark.strip_prefix(m)));
+    id.and_then(undigited)
+}
+
+/// `path` after the path of an issue or a PR on GitHub at its start: an owner, a
+/// repository, `pull` or `issues`, and a number.
+fn numbered(path: &str) -> Option<&str> {
+    let mut parts = path.splitn(4, '/');
+    let name = |name: &str| {
+        let letter = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+        !name.is_empty() && name.chars().all(letter)
+    };
+    let named = parts.by_ref().take(2).all(name);
+    let kind = parts.next().is_some_and(|k| k == "pull" || k == "issues");
+    parts.next().filter(|_| named && kind).and_then(undigited)
 }
 
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
@@ -649,8 +899,8 @@ fn entries<'n>(lines: &[String], names: &[&'n str]) -> (Vec<(&'n str, String)>, 
 }
 
 /// Options for the GitHub extensions that change which lines are text or what they
-/// show: tables, footnotes, task lists, and strikethrough. Each footnote stays in
-/// place ([`Shown::read`] moves it).
+/// show: tables, footnotes, task lists, strikethrough, and autolinks. Each footnote
+/// stays in place ([`Shown::read`] moves it).
 fn options() -> Options<'static> {
     let mut options = Options::default();
     let extension = &mut options.extension;
@@ -658,6 +908,7 @@ fn options() -> Options<'static> {
     extension.footnotes = true;
     extension.tasklist = true;
     extension.strikethrough = true;
+    extension.autolink = true;
     options.parse.leave_footnote_definitions = true;
     options
 }
@@ -886,18 +1137,16 @@ fn same(a: &str, b: &str) -> bool {
         .any(|n| matches!(n.data.borrow().value, NodeValue::FootnoteReference(_)))
 }
 
-/// The lines of text of `paragraph` as GitHub shows them: its text and code spans with
-/// no invisible character (Unicode default ignorable), each footnote reference as its
-/// number, each image as [`IMAGE`] in place of its text and line breaks, and each run
-/// of white space as one space, trimmed. A character that looks like another stays
+/// The lines of text of `paragraph` as GitHub shows them: its text and code spans
+/// ([`shown`]), each link as its text and not its target, each footnote reference as
+/// its number, each image as [`IMAGE`] in place of its text and line breaks, and each
+/// run of white space as one space, trimmed. A character that looks like another stays
 /// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut fresh = true;
     let image =
         |node: &'n AstNode<'n>| matches!(node.data.borrow().value, NodeValue::Image(_));
-    let shown =
-        |text: &str| text.chars().filter(|&c| !ignorable(c)).collect::<String>();
     for span in paragraph.descendants().skip(1) {
         if span.ancestors().skip(1).any(image) {
             continue;
@@ -926,6 +1175,23 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
         .iter()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
+}
+
+/// `text`, a text node or a code span, as GitHub shows it: with no invisible character
+/// (Unicode default ignorable), and with [`BREAK`] before each `GH-`, in each ASCII
+/// case, that starts it or follows an invisible character.
+fn shown(text: &str) -> String {
+    let mut shown = String::new();
+    for part in text.split(ignorable) {
+        if part
+            .get(..3)
+            .is_some_and(|gh| gh.eq_ignore_ascii_case("gh-"))
+        {
+            shown.push(BREAK);
+        }
+        shown.push_str(part);
+    }
+    shown
 }
 
 /// Whether `c` is a Unicode default ignorable code point, which shows as nothing.
@@ -1157,8 +1423,9 @@ fn record_of(
             .collect::<Result<_, _>>()?,
         files: files
             .iter()
-            .map(|f| field::text(f, "filename").map(str::to_string))
-            .collect::<Result<_, _>>()?,
+            .map(paths)
+            .collect::<Result<Vec<_>, _>>()?
+            .concat(),
         comments: comments
             .iter()
             .map(|c| {
@@ -1170,6 +1437,17 @@ fn record_of(
             })
             .collect::<Result<_, String>>()?,
     })
+}
+
+/// The paths of `file`, a file of a PR: its path before the PR when the PR moves it,
+/// then its path.
+fn paths(file: &Value) -> Result<Vec<String>, String> {
+    let moved = file.get("previous_filename").is_some();
+    let names = moved.then_some("previous_filename").into_iter();
+    names
+        .chain(["filename"])
+        .map(|name| field::text(file, name).map(str::to_string))
+        .collect()
 }
 
 /// `text` when it is a UTC time `YYYY-MM-DDTHH:MM:SSZ`, the form GitHub gives, in
