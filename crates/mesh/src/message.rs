@@ -318,6 +318,7 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
+    use crate::bytes::VOTERS_MAX;
     use crate::change;
     use crate::common::{at, key};
 
@@ -874,6 +875,28 @@ mod tests {
     }
 
     #[test]
+    fn decode_refuses_a_proof_of_more_grants_than_two_sets_of_voters_max() {
+        let proven = |grants| {
+            let Message::Raft(message) = raft(Body::HeartbeatReply) else {
+                unreachable!()
+            };
+            let mut proof = votes_of_254();
+            proof.voters = keys_of(0, grants)
+                .into_iter()
+                .map(|key| (key, Some(Signature([7; 64]))))
+                .collect();
+            Message::Raft(raft::Message {
+                proof: Some(proof),
+                ..message
+            })
+        };
+        let most = u128::try_from(2 * VOTERS_MAX).unwrap();
+        assert_eq!(most, 254);
+        assert_eq!(Message::decode(&proven(most).encode()), Some(proven(most)));
+        assert_eq!(Message::decode(&proven(most + 1).encode()), None);
+    }
+
+    #[test]
     fn decode_refuses_an_append_whose_last_entry_is_over_bytes_max_bytes() {
         let append = |bytes| {
             let entry = |index, bytes| Entry {
@@ -958,10 +981,11 @@ mod tests {
 
     #[test]
     fn a_joint_change_of_127_and_127_voters_and_its_largest_proof_fit() {
+        let most = u128::try_from(VOTERS_MAX).unwrap();
         let change = raft::Change {
             voters: Voters {
-                incoming: keys_of(0, 127),
-                outgoing: keys_of(127, 254),
+                incoming: keys_of(0, most),
+                outgoing: keys_of(most, 2 * most),
             },
             votes: votes_of_254(),
             signature: None,
