@@ -1073,3 +1073,25 @@ fn a_reader_woken_by_a_removal_opens_on_a_spec_in_use_that_adds_its_channel_back
         assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
     });
 }
+
+#[test]
+fn a_writer_waiting_for_mesh_time_opens_on_a_spec_in_use_that_moves_its_channel() {
+    unsynced(50, |mut test| async move {
+        test.set_home(TIME_B, NODE).await;
+        let hub = test.hub.clone();
+        let mut opening = pin!(hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        let mut moved = channels();
+        moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
+        test.set_spec(moved).await;
+        test.sync().await;
+        test.clock.sleep(Span::SECOND).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits for the home of the old index");
+        };
+        opened.expect("opens on time-b, which the spec in use names");
+        let fresh = poll_once(test.hub.writer(config("b", &["value"])));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
+}
