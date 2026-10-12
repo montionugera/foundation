@@ -829,6 +829,28 @@ fn a_failed_create_whose_free_fails_leaves_no_file() {
     crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
+/// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_fails_closes_the_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
+            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EIO)
+        });
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        file.close().await;
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(reopened, Ok(()));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
 /// A remove that drops while it waits for room in the full queue of the I/O thread
 /// never runs.
 #[test]
