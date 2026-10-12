@@ -105,7 +105,7 @@ pub(crate) struct Group {
 /// Why a group did not take a batch. Nothing changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Rejected {
-    /// The batch alone is over `Limit`, so no record or no pool block holds it.
+    /// The batch alone is over a [`Limit`], so this buffer never takes it.
     Large(Limit),
     /// The record with the batch and the group's entries would be over a
     /// [`Limit`] or past the room in the ring. The caller closes the group and
@@ -1149,8 +1149,8 @@ mod tests {
         assert_large(&mut area, &batch, limit);
         assert_eq!(
             limit.to_string(),
-            "an entry has 6658 bytes of parts, and an entry of this buffer holds at most \
-             6657"
+            "an entry has 6658 bytes of parts, and an entry of this buffer holds at \
+             most 6657"
         );
         let both = [entry(header(1, Path::Live, 0), body)];
         let body = Limit::Body {
@@ -1200,7 +1200,8 @@ mod tests {
                 Ok(0..count)
             };
             let mut group = Group::default();
-            prop_assert_eq!(group.push(&area.pool, area.block_max(), &area.writer, &mut batch), expected.clone());
+            let pushed = group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
+            prop_assert_eq!(pushed, expected.clone());
             prop_assert_eq!(group.is_empty(), expected.is_err());
             let checked = area.layout.check(count, count_of_parts, len);
             prop_assert_eq!(checked.map(|()| 0..count), expected.map_err(|rejected| {
@@ -1223,7 +1224,8 @@ mod tests {
                 let bytes = vec![7; len];
                 let parts = parts(&area.pool, &[&bytes]);
                 let mut batch = vec![entry(header(1, Path::Live, 0), parts)];
-                Group::default().push(&area.pool, area.block_max(), &area.writer, &mut batch)
+                let block_max = area.block_max();
+                Group::default().push(&area.pool, block_max, &area.writer, &mut batch)
             };
             prop_assert_eq!(push(max), Ok(0..1));
             let limit = Limit::Body { len: body_max + 1, max: body_max };

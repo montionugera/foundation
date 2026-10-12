@@ -819,8 +819,8 @@ mod buffer {
         );
         assert_eq!(
             e.to_string(),
-            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry of \
-             4032 bytes: give it 62272 bytes or more"
+            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry \
+             of 4032 bytes: give it 62272 bytes or more"
         );
     }
 

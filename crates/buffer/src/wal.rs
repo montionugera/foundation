@@ -291,7 +291,8 @@ pub enum Limit {
         /// The layout's `body_max`.
         max: usize,
     },
-    /// An entry whose parts, joined, pass [`Buffer::block_max`](crate::Buffer::block_max).
+    /// An entry whose parts, joined, pass
+    /// [`Buffer::block_max`](crate::Buffer::block_max).
     Block {
         /// Bytes of the entry's parts.
         len: usize,
