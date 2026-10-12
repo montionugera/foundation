@@ -27,6 +27,8 @@ mod allocate;
 #[expect(unsafe_code, reason = "the clock is an OS call")]
 mod clock;
 mod cores;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod dir;
 mod entropy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod files;
