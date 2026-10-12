@@ -1200,7 +1200,8 @@ mod tests {
                 Ok(0..count)
             };
             let mut group = Group::default();
-            let pushed = group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
+            let pushed =
+                group.push(&area.pool, area.block_max(), &area.writer, &mut batch);
             prop_assert_eq!(pushed, expected.clone());
             prop_assert_eq!(group.is_empty(), expected.is_err());
             let checked = area.layout.check(count, count_of_parts, len);
