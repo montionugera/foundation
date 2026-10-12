@@ -187,6 +187,20 @@ impl Runs {
                 .spawn(Box::pin(run(supervisor, opens, name, state)));
         }
     }
+
+    /// Makes the runs match each spec in use that `watch` gives ([`Runs::apply`]), the
+    /// spec in use now first, and gives the stop of the group.
+    pub(crate) async fn follow(
+        mut self,
+        mut watch: mesh::used::Watch,
+    ) -> mesh::Stopped {
+        loop {
+            match watch.next().await {
+                Ok(spec) => self.apply(&spec.definitions),
+                Err(stopped) => return stopped,
+            }
+        }
+    }
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its
