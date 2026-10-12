@@ -46,7 +46,8 @@
   of the sent data that noq keeps is more than these bytes: each kept copy of a short
   write keeps its whole allocation, and the queue slot of each kept segment, the shared
   header of each copy, and the owner box of each block that noq keeps a run of are not
-  counted (#2483). (`laptop.architect-2`, #2483, 2026-10-12 19:58 UTC:
+  counted (#2483; `laptop.architect-2`, #2483, 2026-10-12 19:58 UTC:
   https://github.com/synnaxlabs/foundation/issues/2483#issuecomment-6131627109, and
   #2439, 2026-10-12 20:05 UTC:
-  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896).
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896, which
+  supersedes the Limits sentence of 6131627109).
