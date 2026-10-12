@@ -223,8 +223,8 @@ fn a_value_that_the_transport_refuses_stops_the_start() {
     };
     assert_eq!(
         Error::Transport(error).to_string(),
-        "the node's transport stopped: config window_bytes must be at least twice the \
-         message limit"
+        "the node's transport refused its settings: config window_bytes must be at \
+         least twice the message limit"
     );
 }
 
@@ -243,13 +243,12 @@ fn the_defaults_are_the_values_that_foundation_runs_with() {
     assert_eq!(Settings::default(), settings);
 }
 
-/// The node rejects a stream whose header has not arrived within the header setting
-/// of 3 s. On a link of 4 KB/s, a first message of 60 KiB takes about 16 s.
-#[test]
-fn a_header_late_past_the_setting_is_rejected() {
+/// How long after its send a program waits for the reset of a stream whose header of
+/// 60 KiB takes about 16 s on a link of 4 KB/s, to a node of `header_wait`.
+fn late(header_wait: Span) -> Span {
     let mut sim = sim::Sim::new(sim::Config::default());
     let settings = Settings {
-        header_wait: Span::from_nanos(3 * Span::SECOND.nanos()),
+        header_wait,
         ..Settings::default()
     };
     let (host, node) = start(&mut sim, settings);
@@ -283,9 +282,19 @@ fn a_header_late_past_the_setting_is_rejected() {
     let (waited, read) = out.lock().unwrap().take().expect("the program reads");
     let code = Code(wire::header::REJECTED);
     assert_eq!(read, Err(transport::Error::Reset { code }));
+    waited
+}
+
+/// The node rejects a stream whose header has not arrived within the header setting:
+/// 3 s to 4 s after the send under 3 s, and within 1 s under zero.
+#[test]
+fn a_header_late_past_the_setting_is_rejected() {
+    let waited = late(Span::from_nanos(3 * Span::SECOND.nanos()));
     let (from, to) = (3 * Span::SECOND.nanos(), 4 * Span::SECOND.nanos());
     assert!(
         (from..to).contains(&waited.nanos()),
         "reset after {waited:?}"
     );
+    let waited = late(Span::ZERO);
+    assert!(waited < Span::SECOND, "reset after {waited:?}");
 }

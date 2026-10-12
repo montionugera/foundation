@@ -4653,6 +4653,28 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
+        /// Under a header setting of zero, a mesh stream whose header arrived when
+        /// the node first reads it still goes to the mesh.
+        #[test]
+        fn a_header_that_arrived_routes_under_a_header_wait_of_zero() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                settings: crate::Settings {
+                    header_wait: Span::ZERO,
+                    ..crate::Settings::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let header = wire::header::encode(wire::Protocol::Mesh);
+            let seen = dial(&mut sim, &host, Dialer::Node(CLIENT), &[&header]);
+            let Seen { sent, read, .. } = watch(sim, node, &seen);
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
         /// The node stops a mesh stream of a program, and resets its reply half, with
         /// the code of a rejected header. The mesh gets no message of it: it stops a
         /// stream at its first message that is not a mesh message with `MALFORMED`.

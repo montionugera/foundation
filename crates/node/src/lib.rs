@@ -1463,6 +1463,9 @@ impl fmt::Display for Error {
                 "the pool budget {pool} gives one of {cores} shards a pool that needs \
                  more address space than this host has"
             ),
+            Self::Transport(error @ transport::Error::Config { .. }) => {
+                write!(f, "the node's transport refused its settings: {error}")
+            }
             Self::Transport(error) => {
                 write!(f, "the node's transport stopped: {error}")
             }
