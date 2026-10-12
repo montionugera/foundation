@@ -3619,6 +3619,27 @@ fn an_open_refuses_a_carried_given_that_no_ring_holds() {
     });
 }
 
+/// A carried `given` of 2^63 - 1 is the largest that the open takes.
+#[test]
+fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
+    for (given, taken) in [((1 << 63) - 1, true), (1 << 63, false)] {
+        run(163, move |shard| async move {
+            shard.create_two_records().await;
+            let body = carry_body(&[carried(2, 4, given, None)]);
+            shard.put_carry(3 * BLOCK, &body).await;
+            let ring = layout(AREA, BODY_MAX);
+            if !taken {
+                shard.open_invalid(ring, 3 * BLOCK).await;
+                return;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let b = slots.index(key(2));
+            assert_eq!(buffer.durable(b, Path::Live), tail(4, None));
+        });
+    }
+}
+
 /// A carry body over `body_max` makes a record longer than the largest one of the
 /// layout. The walk cannot check such a record, of any kind, so it ends there.
 #[test]
