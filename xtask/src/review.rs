@@ -1202,11 +1202,14 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
 fn conditions(body: &str) -> Vec<u64> {
     let arena = Arena::new();
     let root = tree(&arena, &normalized(body));
+    let mut paragraphs: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph))
+        .collect();
+    // `tree` moves each footnote to the end.
+    paragraphs.sort_by_key(|n| n.data.borrow().sourcepos.start.line);
     let mut found = Vec::new();
-    for node in root.descendants() {
-        if !matches!(node.data.borrow().value, NodeValue::Paragraph) {
-            continue;
-        }
+    for node in paragraphs {
         let text = texts(node).join(" ").to_ascii_lowercase();
         for (at, words) in text.match_indices("merges after #") {
             if text[..at]

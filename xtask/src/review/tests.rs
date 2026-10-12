@@ -3144,6 +3144,9 @@ fn gives_one_problem_for_each_open_issue_in_body_order() {
         .into();
     let states = [(9, "open"), (2452, "closed"), (7, "open"), (12, "open")];
     assert_eq!(waiting(&body, &states), Ok(vec![open(12), open(9)]));
+    let body = "Ref [^1].\n\n[^1]: Merges after #5\n\nMerges after #6\n".into();
+    let states = [(5, "open"), (6, "open")];
+    assert_eq!(waiting(&body, &states), Ok(vec![open(5), open(6)]));
 }
 
 #[test]
