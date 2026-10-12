@@ -257,9 +257,10 @@
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
   issue only when it starts the line or follows a character that is no letter and no
-  number, as `char::is_alphanumeric` of Rust reads a character. The problem names the
-  round and the first such issue. A comment link is a URL in the text of the line as
-  GitHub shows it: `https://github.com/<owner>/<repo>/pull/<n>` or
+  number, as `char::is_alphanumeric` of Rust reads a character. No issue starts in a
+  comment link or in another issue. The problem names the round and the first such
+  issue. A comment link is a URL in the text of the line as GitHub shows it:
+  `https://github.com/<owner>/<repo>/pull/<n>` or
   `https://github.com/<owner>/<repo>/issues/<n>`, then `#issuecomment-<id>`,
   `#pullrequestreview-<id>`, or `#discussion_r<id>`. It starts the line or follows a
   space or `(`. A `[text](url)` link shows no URL and does not count, but its text
@@ -268,9 +269,10 @@
   the link of its comment. The limits: one link serves each issue before it on the
   `Deferred:` line, the words `not in a risk crate` serve only the issue before them,
   one link serves each item of the `Public surface:` line, and the check does not read
-  what a link says. The check reads `owed`, `departs from`, `GH-<n>`,
-  `not in a risk crate`, and the path of a file under `crates/` in each ASCII case.
-  Supersedes the words of goals 3 and 4 of
+  what a link says. An issue that only the target of a `[text](url)` link names is not
+  read: the check reads each line as GitHub shows it. The check reads `owed`,
+  `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file under
+  `crates/` in each ASCII case. Supersedes the words of goals 3 and 4 of
   https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
   item. A `Later steps:` line after the first of the end lines is not read. A last round
   posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
@@ -290,7 +292,10 @@
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6114997222), and
   ruled for a comment link with no issue before it and for the start of a `GH-<n>` at
   2026-10-11T23:28:34Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6115109286). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6115109286), and
+  ruled for the target of a `[text](url)` link and for an issue in a comment link at
+  2026-10-12T15:30:35Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6127385827). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
