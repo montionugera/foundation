@@ -441,10 +441,13 @@
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111912275,
   2026-10-11 17:51 UTC).
   `bench::client::Server::scope` closes its server also after a panic in its body,
-  which it then resumes, as `bench::Manager::scope` does. Lost: a scope that leaks the
-  server and its manager after a panic. The two fixtures of the crate then have two
-  forms after a panic, and each test of a panic through the scope runs in a child
-  process with no leak check, so a leak of the client under that test is not found.
+  which it then resumes, as `bench::Manager::scope` does. Supersedes, for a panic in
+  the body, the leak in the doc of `Server::scope` approved at `c1285785f`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520). Lost: a
+  scope that leaks the server and its manager after a panic. The two fixtures of the
+  crate then have two forms after a panic, and each test of a panic through the scope
+  runs in a child process with no leak check, so a leak of the client under that test is
+  not found.
   Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
   2026-10-12 18:31 UTC).

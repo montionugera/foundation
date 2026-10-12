@@ -82,7 +82,7 @@ impl Server {
             .expect("the port is free"),
         );
         // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic of the start or the close leaks the manager.
+        // panic other than one of `body` leaks the manager.
         let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
         server.add_double(VALUE, double);
         let this = Self {
@@ -317,6 +317,10 @@ mod tests {
         assert_eq!(result, panicked(free));
     }
 
+    /// No public call makes a server serve another value, so this test serves 2.5
+    /// through the private `Server::serve`. While a server serves `DOUBLE`, no caller of
+    /// `Client::read` can see the removal of its check of the value, so only this test
+    /// fails then.
     #[test]
     fn a_read_of_another_value_panics_with_it() {
         let result = run(async |node| serve(&node, 2.5, read).await);
