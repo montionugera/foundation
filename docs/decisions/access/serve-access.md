@@ -28,18 +28,25 @@
   the first name of the files with no grant, in the order of the tree key. When only a
   name of the spec in use has no grant, it names the action and no name. For `apply`, it
   names the first changed name with no grant. `apply` also needs `admin` on the key of
-  each access policy and each subject that the plan adds, changes, or removes, and the
-  refusal names the first such key with no grant. A policy governs its whole region
-  whatever its key, and a subject's keys decide who acts as it, so with `apply` alone a
-  grant on a subtree gives each name of the region. `admin` also governs a join ticket
-  and the creation of a region (K5). `plan` needs no `admin` (C8 has `plan` list access
-  changes apart). Limits: `admin` on the key of a policy or a subject gives each name of
-  its region. A connector needs `apply` alone, so a policy whose `subjects` select names
-  under a subtree also reaches a connector that a holder of `apply` adds there. Lost: no
-  `admin` check, with which a grant of `apply` on any subtree is a grant on the region;
-  and a check of each name that the old and the new `select` reach, because `**` reaches
-  names that the spec does not hold yet (`laptop.architect`, 2026-10-12T19:56:48Z,
-  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131596199, which
+  each definition that the plan adds, changes, or removes and that is not a channel or a
+  connector, and the refusal names the first such key with no grant. A policy of each
+  kind governs its whole region whatever its key, a subject's keys decide who acts as
+  it, and a region record makes a region, so with `apply` alone a grant on a subtree
+  gives each name of the region. A kind that a later PR adds needs `admin` until a
+  ruling adds it to the kinds that `apply` alone covers. `admin` also governs a join
+  ticket and the creation of a region (K5). `plan` needs no `admin` (C8 has `plan` list
+  access changes apart). Limits: `admin` on the key of a policy or a subject gives each
+  name of its region. A connector needs `apply` alone, so a policy whose `subjects`
+  select names under a subtree also reaches a connector that a holder of `apply` adds
+  there. Lost: no `admin` check, with which a grant of `apply` on any subtree is a grant
+  on the region; and a check of each name that the old and the new `select` reach,
+  because `**` reaches names that the spec does not hold yet; and a check that the
+  `select` of a policy stays under the subtree of its key, with which a subtree keeps
+  its own retention and compression policies, because a policy reaches its whole region
+  by design (`laptop.architect`, 2026-10-12T19:56:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131596199, and
+  2026-10-12T20:47:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6132338060, which
   supersedes "`admin` is no part of the check" of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). #1213
   checks the `apply` names, the `admin` keys, and the index of each home of the change
