@@ -31,8 +31,10 @@
   (`laptop.architect`, 2026-10-11T16:58:32Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111434083;
   2026-10-12T16:10:17Z:
-  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6128044346), as ENV
-  SEAMS bounds the wait of `Files::free` (`laptop.architect-2`, 2026-10-11T17:05:00Z:
+  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6128044346, which
+  narrows "A dropped put is not in flight" of 6111434083 to a put that dropped before
+  the `free` of the check started), as ENV SEAMS bounds the wait of `Files::free`
+  (`laptop.architect-2`, 2026-10-11T17:05:00Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387;
   2026-10-12T15:52:54Z:
   https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370). The
