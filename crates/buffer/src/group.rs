@@ -18,8 +18,9 @@ use crate::wal::{Ends, Full, Layout, Limit, Plan, Writer};
 pub(crate) const META_LEN: usize = record::HEADER_LEN + entry::TABLE_MAX;
 const _: () = assert!(META_LEN <= 1 << 16, "the table fits one 64 KiB block");
 
-/// The most bytes of parts, joined, that one entry may have on `pool`: the group's
-/// two blocks and the entry, in any split into two parts, fit its budget at once.
+/// The most bytes of parts, joined, that one entry may have on `pool`: one block of
+/// `pool` holds them, and the group's two blocks and the entry, in any split into two
+/// parts, fit its budget at once.
 ///
 /// # Errors
 ///
