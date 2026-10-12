@@ -40,6 +40,9 @@
   returned. Each other connector keeps its run, and the shard keeps its supervisor
   (`laptop.architect-2`, 2026-10-09T05:10:43Z:
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
+  Supersedes "At a spec change, `node` cancels each run and awaits it before it starts
+  the new supervisor" of
+  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231.
   A connector is also changed when a status channel of it has another key than at the
   last apply, with an equal kind, config, and node: a spec that the node did not see
   removed the channel, and the status session of the run holds the old key. `node`
@@ -55,10 +58,7 @@
   that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
   https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704).
-  Supersedes "At a spec change, `node` cancels each run and awaits it before it starts
-  the new supervisor" of
-  https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072411231. A
-  connector that a change adds starts once no first open of an added connector is
+  A connector that a change adds starts once no first open of an added connector is
   pending on the node (below), unless its name has a loop (below): then the addition is
   a change, and the connector starts in that loop after the last run of its name
   returned, so no two runs write one set of status channels. A change of a connector
