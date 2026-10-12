@@ -166,7 +166,9 @@
   Amended (2026-10-09, #2179): `Mesh::watch_spec() -> used::Watch` watches the spec
   that this node uses, so the hub of a node in a region takes the definitions of each
   new spec in use (`laptop.architect`, 2026-10-10T23:49:57Z:
-  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301), also of
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301;
+  supersedes "`node` gives the hub the definitions of each new spec in use" of
+  https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6088928607), also of
   a change that another node proposed. The first `next` gives the spec in use at once.
   Each later `next` waits until the pointer in use differs from the one it last gave,
   and gives the newest spec, so two changes between calls give one result. A change of
