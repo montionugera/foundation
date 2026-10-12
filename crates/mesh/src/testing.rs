@@ -170,7 +170,7 @@ mod tests {
     use types::digest::Digest;
 
     use crate::bytes::{put_change, put_position};
-    use crate::change::{CHUNKS_MAX, Malformed, Undecoded};
+    use crate::change::{self, CHUNKS_MAX, Malformed, Undecoded};
     use crate::common::{at, key};
 
     #[test]
@@ -686,6 +686,7 @@ mod tests {
             "raft_heartbeat_trailing",
             "raft_chain_cut_in_link",
             "raft_chain_count_no_link",
+            "raft_append_entry_over_bytes_max",
         );
         assert_eq!(count_files("mesh_message"), inputs.len());
         for (name, want) in messages() {
@@ -713,6 +714,17 @@ mod tests {
         let cut = inputs["raft_chain_cut_in_link"];
         assert!(links < cut.len() && cut.len() < links + bytes.len());
         refused.push(("raft_chain_cut_in_link", chain[..cut.len()].to_vec()));
+        let over = Entry {
+            at: at(3, 4),
+            data: Data::Bytes(vec![7; change::BYTES_MAX + 1]),
+        };
+        let body = Body::Append {
+            prev: at(2, 3),
+            entries: vec![over],
+            commit: 4,
+        };
+        let over = message(body, None, Vec::new()).encode();
+        refused.push(("raft_append_entry_over_bytes_max", over));
         for (name, want) in refused {
             assert_eq!(inputs[name], want, "{name}");
             assert_eq!(round_trip_message(inputs[name]), None, "{name}");
