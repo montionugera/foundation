@@ -411,6 +411,8 @@ mod quorum {
                 Tally::Open => "VotePending",
             };
             assert_eq!(tally, expected, "{:?}", case.voters);
+            let won = case.voters.quorum(|key| vote(key) == Some(true)).is_ok();
+            assert_eq!(won, expected == "VoteWon", "{:?}", case.voters);
         }
     }
 
