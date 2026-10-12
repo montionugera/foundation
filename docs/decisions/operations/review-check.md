@@ -256,10 +256,10 @@
   `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
-  issue only when it starts the line or follows a character that is no letter and no
-  number, as `char::is_alphanumeric` of Rust reads a character. No issue starts in a
-  comment link or in another issue. The problem names the round and the first such
-  issue. A comment link is a URL in the text of the line as GitHub shows it:
+  issue only when it starts the line or follows a character that is no ASCII letter, no
+  ASCII digit, and no `_`, as GitHub shows the line. No issue starts in a comment link
+  or in another issue. The problem names the round and the first such issue. A comment
+  link is a URL in the text of the line as GitHub shows it:
   `https://github.com/<owner>/<repo>/pull/<n>` or
   `https://github.com/<owner>/<repo>/issues/<n>`, then `#issuecomment-<id>`,
   `#pullrequestreview-<id>`, or `#discussion_r<id>`. It starts the line or follows a
@@ -270,8 +270,13 @@
   `Deferred:` line, the words `not in a risk crate` serve only the issue before them,
   one link serves each item of the `Public surface:` line, and the check does not read
   what a link says. An issue that only the target of a `[text](url)` link names is not
-  read: the check reads each line as GitHub shows it. The check reads `owed`,
-  `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file under
+  read: the check reads each line as GitHub shows it. The check also reads as an issue a
+  `GH-<n>` in a URL that is no issue link, such as the owner of
+  `https://github.com/gh-1/b/issues`, a `#<n>` or a `GH-<n>` that a letter, a digit, or
+  a `_` follows, such as `#13abc`, and the `#8203` of `&#8203;`. GitHub shows no issue
+  for each. It does not read a path with no host, such as
+  `synnaxlabs/foundation/issues/13`, for which GitHub shows an issue. The check reads
+  `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file under
   `crates/` in each ASCII case. Supersedes the words of goals 3 and 4 of
   https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
   item. A `Later steps:` line after the first of the end lines is not read. A last round
@@ -295,7 +300,9 @@
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6115109286), and
   ruled for the target of a `[text](url)` link and for an issue in a comment link at
   2026-10-12T15:30:35Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6127385827). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6127385827), and
+  ruled for the start of a `GH-<n>` and for three limits at 2026-10-12T18:22:54Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6130107518). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
