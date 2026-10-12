@@ -7,6 +7,7 @@ mod cfg;
 mod field;
 mod files;
 mod fuzz;
+mod gh;
 mod globals;
 mod libtest;
 mod map;
@@ -14,6 +15,7 @@ mod miri;
 mod nightly;
 mod open62541;
 mod oracles;
+mod queue;
 mod review;
 mod sanitizers;
 mod select;
@@ -44,14 +46,20 @@ fn main() -> ExitCode {
             .and_then(|seconds| fuzz::run(root, seconds)),
         ["open62541"] => open62541::check(root),
         ["open62541", tag] => open62541::run(root, open62541::URL, tag),
-        ["review", pr, head] => return review::run(root, pr, head),
+        ["review", pr, head] => return review::run(root, pr, head, &gh::api),
+        ["queue", "review", reference, group] => {
+            return queue::review(root, reference, group, &gh::api);
+        }
+        ["queue", "mutants", group] => queue::mutants(group, &gh::api),
         _ => {
             eprintln!(
                 "usage: cargo xtask <layers|globals|oracles|loom>\n       \
                  cargo xtask <shuttle|miri|sanitizers>\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
-                 cargo xtask review <pr> <head sha>"
+                 cargo xtask review <pr> <head sha>\n       \
+                 cargo xtask queue review <queue ref> <group sha>\n       \
+                 cargo xtask queue mutants <group sha>"
             );
             return ExitCode::FAILURE;
         }
