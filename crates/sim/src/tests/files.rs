@@ -3150,3 +3150,66 @@ fn a_remove_does_not_wait_for_a_create_that_drops_while_the_remove_is_in_flight(
     let runs: Vec<_> = (0..32).map(remove_with_create_dropped_in_flight).collect();
     assert!(runs.contains(&(true, vec!["a".into()])), "{runs:?}");
 }
+
+/// Whether a rename of `a` to `b` succeeds while a create of `b` is in flight, whose
+/// future drops after the driver rename starts.
+fn rename_with_create_dropped_after_driver_rename(value: u64) -> bool {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let mut file = create(&node, "a", KIB).await;
+        let mut rename = Box::pin(file.rename(Path::new("b")));
+        pend(rename.as_mut()).await;
+        // The sync of the rename ends, so its next poll starts the driver rename.
+        node.clock().sleep(Span::MILLISECOND).await;
+        let len = KIB;
+        let mut made = Box::pin(files.open(Path::new("b"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        pend(rename.as_mut()).await;
+        drop(made);
+        let renamed = rename.await.is_ok();
+        node.clock().sleep(Span::MILLISECOND).await;
+        renamed
+    })
+}
+
+#[test]
+fn a_driver_rename_does_not_wait_for_a_create_that_drops_after_it_starts() {
+    let runs: Vec<_> = (0..32)
+        .map(rename_with_create_dropped_after_driver_rename)
+        .collect();
+    assert!(runs.contains(&true), "{runs:?}");
+}
+
+/// The result of a create of `a` that first gives `Full`, while a create of `a` of
+/// another length is in flight, whose future drops after the second open starts.
+fn create_with_create_dropped_after_second_open(value: u64) -> Result<u64, Error> {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let len = 600 * KIB;
+        drop(create(&node, "big", len).await);
+        files.remove(Path::new("big")).await.unwrap();
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        // The first open gives `Full`, then the sync of the directory ends, so each
+        // next poll starts the next driver call.
+        for _ in 0..2 {
+            pend(made.as_mut()).await;
+            node.clock().sleep(Span::MILLISECOND).await;
+        }
+        let len = KIB;
+        let mut small = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(small.as_mut()).await;
+        pend(made.as_mut()).await;
+        drop(small);
+        let made = made.await.map(|file| file.len());
+        node.clock().sleep(Span::MILLISECOND).await;
+        made
+    })
+}
+
+#[test]
+fn a_second_open_does_not_wait_for_a_create_that_drops_after_it_starts() {
+    let runs: Vec<_> = (0..32)
+        .map(create_with_create_dropped_after_second_open)
+        .collect();
+    assert!(runs.contains(&Ok(600 * KIB)), "{runs:?}");
+}
