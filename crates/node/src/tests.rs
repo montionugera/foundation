@@ -2681,7 +2681,7 @@ mod hub {
     }
 }
 
-mod port {
+pub(crate) mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
 
@@ -4165,7 +4165,7 @@ mod port {
         }
     }
 
-    mod mesh {
+    pub(crate) mod mesh {
         use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4220,7 +4220,7 @@ mod port {
         }
 
         /// The member `key` with `private_key`, whose node listens on `host`.
-        fn member(
+        pub(crate) fn member(
             key: types::node::Key,
             private_key: &PrivateKey,
             host: &sim::node::Node,
@@ -4241,7 +4241,7 @@ mod port {
         }
 
         /// The region `plant`, where each of `members` is a voter.
-        fn region(members: &[Member]) -> Founding {
+        pub(crate) fn region(members: &[Member]) -> Founding {
             Founding {
                 prefix: "plant".parse().unwrap(),
                 members: members.to_vec(),
