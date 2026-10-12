@@ -26,6 +26,11 @@ workspace = true
 blob = { path = "../blob" }
 block = { path = "../block", features = ["sim"] }
 config-hcl = { path = "../config-hcl" }
+counting = { path = "../counting" }
 env = { path = "../env" }
 sim = { path = "../sim" }
 transport = { path = "../transport" }
+
+[[test]]
+name = "memory"
+harness = false
