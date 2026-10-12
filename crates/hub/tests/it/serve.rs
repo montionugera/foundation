@@ -133,14 +133,12 @@ pub(super) fn session_in<H, P>(
     let main = move |tasks: Tasks| async move {
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
-        let region = if regional {
-            let other = Vec::new();
-            Some(
-                region::open(&node, &tasks, Rc::clone(&transport), other, channels())
-                    .await,
-            )
-        } else {
-            None
+        let opened = regional.then(|| {
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+        });
+        let region = match opened {
+            Some(opened) => Some(opened.await),
+            None => None,
         };
         let mut test =
             Test::new(node.clone(), tasks.clone(), layout, POOL, region).await;
