@@ -24,7 +24,9 @@ mod tests;
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes. No `body` makes
 /// it panic. The reply holds `ops.bad-request` for a body that is no request of
 /// `plan` or `apply`, `ops.denied` for an action that no access policy gives
-/// `subject`, and `ops.large-reply` in place of a reply over the bound.
+/// `subject`, and `ops.large-reply` in place of a reply over the bound. `apply`
+/// gives a home only to an index on which `subject` has `apply`, and drops each other
+/// home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -169,16 +171,18 @@ impl<'a> Check<'a> {
         }
     }
 
+    /// Whether an access policy gives the action on `name`.
+    fn allows(&self, name: &Name) -> bool {
+        let grant = self.rules.grant(self.subject, name);
+        grant.actions().contains(self.action.into())
+    }
+
     /// The first of `names` on which no access policy gives the action.
     fn refused<'n>(
         &self,
         names: impl IntoIterator<Item = &'n Name>,
     ) -> Option<&'n Name> {
-        let action = spec::access::Action::from(self.action);
-        names.into_iter().find(|name| {
-            let grant = self.rules.grant(self.subject, name);
-            !grant.actions().contains(action)
-        })
+        names.into_iter().find(|name| !self.allows(name))
     }
 
     /// `Denied` on `name`, or on a name that the request does not hold.
@@ -225,8 +229,7 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Err
         return Err(check.denied(Some(name)));
     }
     // The homes list each placed index, so a home with no grant drops with no error.
-    plan.homes
-        .retain(|index, _| check.refused([index]).is_none());
+    plan.homes.retain(|index, _| check.allows(index));
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
     Ok(line(&Done { output: &effect }))
 }

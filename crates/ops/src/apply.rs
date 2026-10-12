@@ -116,8 +116,8 @@ pub(crate) struct Effect {
     pub(crate) pointer: plan::Pointer,
     #[serde(flatten)]
     pub(crate) counts: Counts,
-    /// The count of homes of the plan on whose index the subject has `apply`. An index
-    /// that has a home keeps it.
+    /// The count of homes that the applied plan lists. An index that has a home keeps
+    /// it.
     pub(crate) homes: usize,
 }
 
