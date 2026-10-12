@@ -555,7 +555,10 @@
   it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424). On
   Linux such an entry is on the file too, but the mode `0o600` of the open sets the mask
   of the list to no access, so the entry gives its user nothing until the operator
-  widens the mask. A file that a tool makes there with a wider mode gets a wider mask.
+  widens the mask. A file that a tool makes there with a wider mode gets a wider mask
+  (measured on Linux 7.0.0-1013-aws, ext4, #2504; `laptop.architect-2`,
+  2026-10-12T20:42:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6132261488).
   The entry is the operator's (`docs/security.md`, "Other local user"). Lost: an empty
   list on the hidden file on macOS. `rustix` and `libc` give no call for it. A clear
   after the open leaves a time in which a user that the entry names opens the file, and
