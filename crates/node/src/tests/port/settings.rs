@@ -184,9 +184,9 @@ fn refused(settings: Settings) -> Error {
 }
 
 /// An idle time of zero, a message limit under 1472 bytes, and a window smaller than
-/// twice the message limit each stop the start, and the node takes no session.
+/// twice the message limit each stop the node: `Node::join` gives `Error::Transport`.
 #[test]
-fn a_value_that_the_transport_refuses_stops_the_start() {
+fn a_value_that_the_transport_refuses_stops_the_node() {
     let cases = [
         (
             Settings {
