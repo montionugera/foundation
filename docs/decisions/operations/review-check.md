@@ -259,6 +259,9 @@
   `holds for #<n>`, although the `review` skill ("Done") asks that each condition that
   the PR body or an answer states is met. Stated by the director as goal 8 at
   2026-10-08T20:25:39Z
-  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), and
-  put next at 2026-10-12T20:40:08Z
-  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6132233750).
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), put
+  next at 2026-10-12T20:40:08Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6132233750), and
+  ruled for a code span, a list item, a block quote, and a table at
+  2026-10-12T21:23:35Z
+  (https://github.com/synnaxlabs/foundation/pull/2495#issuecomment-6132866182).
