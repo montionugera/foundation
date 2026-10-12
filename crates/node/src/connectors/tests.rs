@@ -1346,3 +1346,19 @@ fn a_new_key_of_a_count_alone_writes_the_new_count() {
     let starts = [start("plant.a", 0, 0), start("plant.a", 1_000, 0)];
     assert_eq!(rekeyed.starts, starts);
 }
+
+/// A spec change that gives only a data channel a new key keeps the run of each
+/// connector.
+#[test]
+fn a_new_key_of_a_data_channel_changes_no_connector() {
+    let mut first = rekeyed("quick", 0, 1, &[]);
+    first.extend(data());
+    let mut again = first.clone();
+    let Some(Definition::Channel(channel)) = again.get_mut(&name("plant.data.value"))
+    else {
+        panic!("the data channel is defined");
+    };
+    channel.key = types::channel::Key::from_u128(1_901);
+    let rekeyed = respec(first, again, "plant.a.status.state", None);
+    assert_eq!(rekeyed.starts, [start("plant.a", 0, 0)]);
+}
