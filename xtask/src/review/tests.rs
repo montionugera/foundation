@@ -3231,6 +3231,7 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         "https://gitlab.com/a/b/issues/13".to_string(),
         format!("#12 ({OK}), the high-13 line"),
         format!("#12 ({OK}), éGH-13"),
+        format!("#12 ({OK}), 1GH-13"),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
     }
