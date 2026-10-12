@@ -145,6 +145,17 @@ fn a_write_on_a_link_writes_the_file_it_names() {
 }
 
 #[test]
+fn a_write_on_a_link_to_nothing_is_not_found_and_makes_no_file() {
+    let scratch = Scratch::new();
+    let (file, link) = (scratch.0.join("plant.hcl"), scratch.0.join("link"));
+    symlink(&file, &link).unwrap();
+    let paths = os::paths();
+    assert_eq!(paths.write(&link, b"new"), Err(Error::NotFound));
+    assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(paths.read(&file, 3), Err(Error::NotFound));
+}
+
+#[test]
 fn two_writers_of_one_path_each_write_whole() {
     let scratch = Scratch::new();
     let path = scratch.0.join("plant.plan");

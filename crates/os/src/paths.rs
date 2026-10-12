@@ -31,7 +31,8 @@ impl env::paths::Driver for Driver {
         let kept = match fs::symlink_metadata(path) {
             Ok(old) if old.is_file() => Some(old.permissions()),
             Ok(_) => return in_place(path, bytes).map_err(|e| error(&e)),
-            // The open of the hidden file beside `path` fails for the same cause.
+            // Nothing is at `path`, or the open of the hidden file fails for the same
+            // cause.
             Err(_) => None,
         };
         let mut key = [0; 8];
