@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use access::Rules;
 use serde::de::{self, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
+use spec::definition::Kind;
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
@@ -27,8 +28,9 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
 /// for an action that no access policy gives `subject` and for a request that names
 /// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// gives a home only to an index on which `subject` has `apply`, and drops each other
-/// home with no error.
+/// also needs `admin` on each key of an access policy or a subject that the plan
+/// changes. It gives a home only to an index on which `subject` has `apply`, and drops
+/// each other home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -200,43 +202,46 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
     }
 }
 
-/// The access check of one request: `subject` needs `action` on each name that the
+/// The access check of one request: `subject` needs an action on each name that the
 /// operation reads or changes, by the rules of the spec in use.
 struct Check<'a> {
     rules: Rules,
     subject: &'a Name,
-    action: Action,
 }
 
 impl<'a> Check<'a> {
-    /// The check of `action` for `subject` by the access policies of `spec`.
-    fn new(spec: &used::Spec, subject: &'a Name, action: Action) -> Self {
+    /// The check of `subject` by the access policies of `spec`.
+    fn new(spec: &used::Spec, subject: &'a Name) -> Self {
         Self {
             rules: Rules::new([(Prefix::ROOT, spec.definitions().iter())]),
             subject,
-            action,
         }
     }
 
-    /// Whether an access policy gives the action on `name`.
-    fn allows(&self, name: &Name) -> bool {
+    /// Whether an access policy gives `action` on `name`.
+    fn allows(&self, action: Action, name: &Name) -> bool {
         let grant = self.rules.grant(self.subject, name);
-        grant.actions().contains(self.action.into())
+        grant.actions().contains(action.into())
     }
 
-    /// The first of `names` on which no access policy gives the action.
-    fn refused<'n>(
+    /// `Denied` of `action` on the first of `names` on which no access policy gives
+    /// it, or `Ok` when each has a grant.
+    fn names<'n>(
         &self,
+        action: Action,
         names: impl IntoIterator<Item = &'n Name>,
-    ) -> Option<&'n Name> {
-        names.into_iter().find(|name| !self.allows(name))
+    ) -> Result<(), Error> {
+        match names.into_iter().find(|name| !self.allows(action, name)) {
+            Some(name) => Err(self.denied(action, On::Name(name.clone()))),
+            None => Ok(()),
+        }
     }
 
-    /// `Denied` on `on`.
-    fn denied(&self, on: On) -> Error {
+    /// `Denied` of `action` on `on`.
+    fn denied(&self, action: Action, on: On) -> Error {
         Error::Denied {
             subject: self.subject.clone(),
-            action: self.action,
+            action,
             on,
         }
     }
@@ -247,10 +252,8 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(&node.kinds)?;
     let spec = used::spec(&node.mesh).await?;
-    let check = Check::new(&spec, subject, Action::Plan);
-    if let Some(name) = check.refused(&names) {
-        return Err(check.denied(On::Name(name.clone())));
-    }
+    let check = Check::new(&spec, subject);
+    check.names(Action::Plan, &names)?;
     let mut compared = spec
         .definitions()
         .iter()
@@ -258,11 +261,11 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
         .map(|(name, _)| name)
         .peekable();
     if names.is_empty() && compared.peek().is_none() {
-        return Err(check.denied(On::Nothing));
+        return Err(check.denied(Action::Plan, On::Nothing));
     }
     // The files do not hold this name, so the error does not tell what the spec holds.
-    if check.refused(compared).is_some() {
-        return Err(check.denied(On::Spec));
+    if compared.any(|name| !check.allows(Action::Plan, name)) {
+        return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
@@ -275,15 +278,22 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
 async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
-    let check = Check::new(&spec, subject, Action::Apply);
-    if let Some(name) = check.refused(plan.changes.keys()) {
-        return Err(check.denied(On::Name(name.clone())));
-    }
+    let check = Check::new(&spec, subject);
+    check.names(Action::Apply, plan.changes.keys())?;
+    // A policy governs its whole region, and the keys of a subject decide who acts as
+    // it, so `apply` on a subtree would reach each name of the region.
+    let access = plan.changes.keys().filter(|name| {
+        [Kind::Access, Kind::Subject]
+            .iter()
+            .any(|kind| kind.label(name).is_some())
+    });
+    check.names(Action::Admin, access)?;
     // The homes list each placed index, so a home with no grant drops with no error.
-    plan.homes.retain(|index, _| check.allows(index));
+    plan.homes
+        .retain(|index, _| check.allows(Action::Apply, index));
     // Else a subject with no grant learns the pointer in use from the output.
     if plan.changes.is_empty() && plan.homes.is_empty() {
-        return Err(check.denied(On::Nothing));
+        return Err(check.denied(Action::Apply, On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
     Reply::line(&Done { output: &effect })

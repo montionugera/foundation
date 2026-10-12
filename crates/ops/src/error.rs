@@ -73,11 +73,13 @@ pub(crate) enum Error {
     LargeReply,
 }
 
-/// The action that an operation on a node needs: the action of its name.
+/// An action that an operation on a node needs: the action of its name, and `Admin`
+/// on a changed key of an access policy or a subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Plan,
     Apply,
+    Admin,
 }
 
 /// What a refusal of an operation on a node names.
@@ -109,6 +111,7 @@ impl Action {
         match self {
             Self::Plan => "plan",
             Self::Apply => "apply",
+            Self::Admin => "admin",
         }
     }
 }
@@ -118,6 +121,7 @@ impl From<Action> for spec::access::Action {
         match action {
             Action::Plan => Self::Plan,
             Action::Apply => Self::Apply,
+            Action::Admin => Self::Admin,
         }
     }
 }

@@ -593,7 +593,7 @@ fn applies_a_plan_that_removes_the_policy_of_the_subject() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
         let policy = "access \"site.surveyor\" {\n  subjects = \"sam\"\n  select = \
-                      \"site.**\"\n  allow = [plan, apply]\n}\n";
+                      \"site.**\"\n  allow = [plan, apply, admin]\n}\n";
         applied(&node, &[("people.hcl", policy)]).await;
         let version = mesh.pointer().version;
         let reply = serve(&node, &name("sam"), &plan_body(&[])).await;
@@ -604,6 +604,45 @@ fn applies_a_plan_that_removes_the_policy_of_the_subject() {
         let (head, _) = split(&reply);
         assert_eq!(head["output"]["removed"], 1, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
+    });
+}
+
+#[test]
+fn refuses_a_change_of_access_of_a_subject_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people)]).await;
+        let version = mesh.pointer().version;
+        // A policy governs its whole region, whatever its key.
+        let policy = "access \"site.evil\" {\n  subjects = \"sam\"\n  select = \
+                      \"**\"\n  allow = [plan, apply]\n}\n";
+        let mole = format!("subject \"site.mole\" {{ keys = [\"{EVE}\"] }}\n");
+        let cases = [
+            (policy, "`site.evil.@access`"),
+            (&*mole, "`site.mole.@subject`"),
+        ];
+        for (text, key) in cases {
+            let files = [("people.hcl", &*people), ("evil.hcl", text)];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let expected = denied("sam", "admin", key);
+            assert_eq!(split(&reply), (expected, &b""[..]));
+        }
+        assert_eq!(mesh.pointer().version, version);
+
+        let admin =
+            people.replace("allow = [plan, apply]", "allow = [plan, apply, admin]");
+        applied(&node, &[("people.hcl", &admin)]).await;
+        for (text, _) in cases {
+            let version = mesh.pointer().version;
+            let files = [("people.hcl", &*admin), ("evil.hcl", text)];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let (head, _) = split(&reply);
+            assert_eq!(head["output"]["added"], 1, "{head}");
+            assert_eq!(mesh.pointer().version, version + 1);
+        }
     });
 }
 
