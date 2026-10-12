@@ -719,22 +719,24 @@ fn unokayed(deferred: &str) -> Option<String> {
 
 /// The place of each issue in `value`, the value of a `Deferred:` line, in order: each
 /// issue ([`issue`]), and a comment link ([`link`]) with no issue before it, which
-/// names the deferral by its comment. No issue starts in another.
+/// names the deferral by its comment. No issue starts in a comment link or in another
+/// issue.
 fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
     value.char_indices().filter_map(move |(at, _)| {
-        let comment = link(value, at).filter(|_| end == 0);
-        let found = || comment.or_else(|| issue(value, at));
-        let place = at..(at >= end).then(found).flatten()?;
-        end = place.end;
-        Some(place)
+        if at < end {
+            return None;
+        }
+        let comment = link(value, at);
+        let first = end == 0;
+        end = comment.or_else(|| issue(value, at))?;
+        (comment.is_none() || first).then_some(at..end)
     })
 }
 
 /// The end of the issue that starts at `at` in `value`: `#`, or `GH-` in each ASCII
-/// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]) that
-/// starts no comment link ([`link`]). A `GH-` starts `value` or follows a character
-/// that is no letter and no number.
+/// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]). A
+/// `GH-` starts `value` or follows a character that is no letter and no number.
 fn issue(value: &str, at: usize) -> Option<usize> {
     let text = &value[at..];
     let before = value[..at].chars().next_back();
@@ -743,9 +745,7 @@ fn issue(value: &str, at: usize) -> Option<usize> {
         .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"))
         .filter(|_| before.is_none_or(|c| !c.is_alphanumeric()));
     let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
-    let url = text
-        .strip_prefix(HOST)
-        .filter(|_| link(value, at).is_none());
+    let url = text.strip_prefix(HOST);
     let rest = number
         .and_then(undigited)
         .or_else(|| url.and_then(numbered))?;

@@ -3237,6 +3237,21 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
 }
 
 #[test]
+fn no_deferred_issue_starts_in_a_comment_link() {
+    let owner = "https://github.com/gh-1/b/pull/1#issuecomment-2";
+    for line in [
+        format!("#12 ({owner})"),
+        format!("{owner} not in a risk crate"),
+        format!("#12 ({owner} {OK})"),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
+    }
+    assert_eq!(risk(vec![deferred(owner)]), no_ok(owner));
+    let after = format!("#12 ({owner}), GH-13");
+    assert_eq!(risk(vec![deferred(&after)]), no_ok("GH-13"));
+}
+
+#[test]
 fn a_deferred_issue_passes_with_the_mark_that_its_work_is_in_no_risk_crate() {
     for marked in [
         "#12 not in a risk crate".to_string(),
