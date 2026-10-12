@@ -31,9 +31,10 @@
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104132104); approved
   by `laptop.architect` at `172d1b6e0` (2026-10-11T01:22:34Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104154087). The one
-  test, the trigger, the way out of a kept reserved name, the reason of the write after
-  the region opens, and the lost write over a kept reserved name: proposed in rounds 2
-  to 4 of #2331 (round 2: 2026-10-11T01:39:35Z,
+  test (superseded by the amendment of #728 below), the trigger, the way out of a kept
+  reserved name, the reason of the write after the region opens, and the lost write over
+  a kept reserved name: proposed in rounds 2 to 4 of #2331 (round 2:
+  2026-10-11T01:39:35Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104275190; round 3:
   2026-10-11T01:57:16Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104399766; round 4:
