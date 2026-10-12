@@ -372,8 +372,8 @@ fn two_writers_of_one_path_each_write_whole() {
     assert_eq!(os::paths().read(&scratch.0, 1 << 12), entries);
 }
 
-/// `link` names a directory or a file at each instant: another thread swaps it with
-/// one rename. A read gives one of the two, never an error.
+/// `link` names a directory or a file at each instant: another thread swaps it with one
+/// rename. A read gives one of the two, never an error.
 #[test]
 fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
     let scratch = Scratch::new();
