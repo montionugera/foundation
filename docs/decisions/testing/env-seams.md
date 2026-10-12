@@ -355,20 +355,19 @@
   or a dropped handle left to run (a write open, `Files::remove`, `File::rename`,
   `Files::list`, `Files::free`) is for a future or a handle that dropped before the call
   started. A drop while the call is in flight can add the wait or not: each wait of a
-  driver call is for the futures and handles that dropped before that driver call
-  started, and `File::rename`, and a create after `Full`, send a driver call after they
-  start. A caller awaits a call, or drops its future, before it starts a call that must
-  see its result. For a list, a `free`, a remove, and a write open (for a create, its
-  first open), the driver call starts with the call, and `sim` shows the order without
-  the wait. Its tests are on `sim` only, as `os` runs the calls of a `Files` in queue
-  order. Lost: a wait for each future that drops while the call is in flight. A caller
-  cannot build on it: it cannot know that the future will drop, and the same result
-  comes by rule when the future lives. `os` gives it only for a call that started first.
-  A driver that runs two calls at one time gives it for a write open only by a wait for
-  each live call on the path. Lost also: no wait for each such drop, with the start time
-  of the call as an input of each driver call, which changes the `Driver` surface for a
-  result that no caller can use. Decided by `laptop.architect-2`, #1186,
-  2026-10-11T22:42:41Z
+  driver call is for a future or a handle that dropped before that driver call started,
+  and `File::rename`, and a create after `Full`, send a driver call after they start. A
+  caller awaits a call, or drops its future, before it starts a call that must see its
+  result. For a list, a `free`, a remove, and a write open (for a create, its first
+  open), the driver call starts with the call, and `sim` shows the order without the
+  wait. Its tests are on `sim` only, as `os` runs the calls of a `Files` in queue order.
+  Lost: a wait for each future that drops while the call is in flight. A caller cannot
+  build on it: it cannot know that the future will drop, and the same result comes by
+  rule when the future lives. `os` gives it only for a call that started first. A driver
+  that runs two calls at one time gives it for a write open only by a wait for each live
+  call on the path. Lost also: no wait for each such drop, with the start time of the
+  call as an input of each driver call, which changes the `Driver` surface for a result
+  that no caller can use. Decided by `laptop.architect-2`, #1186, 2026-10-11T22:42:41Z
   (https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6114719100; a drop
   in flight can add the wait, 2026-10-12T15:52:54Z:
   https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370; a remove
