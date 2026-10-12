@@ -54,6 +54,10 @@ pub(crate) fn plan(
             .map(|(index, home)| (index.to_string(), home.to_string()))
             .collect(),
         changes,
+        reserved: applied
+            .iter()
+            .filter_map(|(name, definition)| Reserved::of(name, definition))
+            .collect(),
     };
     Ok((output, plan))
 }
@@ -69,6 +73,9 @@ pub(crate) struct Output {
     /// name. The apply gives this home only to an index with no home, so an index with
     /// a home keeps it.
     pub(crate) homes: BTreeMap<String, String>,
+    /// Each definition of the spec that Foundation made, in the order of its tree
+    /// key. No file can hold its label, so the plan leaves it out.
+    pub(crate) reserved: Vec<Reserved>,
     #[serde(flatten)]
     pub(crate) counts: Counts,
 }
@@ -80,7 +87,8 @@ impl Output {
     }
 
     /// One line for each change, with a `key` line under it for each fingerprint, then
-    /// the counts.
+    /// the counts, then one `note` line with the tree key of each definition that
+    /// Foundation made, when the spec holds one.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the table entries of #1744 call it")
@@ -99,13 +107,52 @@ impl Output {
                 format!("{symbol} {kind} {}\n{lines}", change.name)
             })
             .collect();
+        let made: Vec<String> = self
+            .reserved
+            .iter()
+            .map(|reserved| format!("{}.@{}", reserved.name, reserved.kind))
+            .collect();
+        let note = match made.len() {
+            0 => String::new(),
+            1 => format!(
+                "note: 1 definition that Foundation made is not in the files: {}\n",
+                made[0]
+            ),
+            count => format!(
+                "note: {count} definitions that Foundation made are not in the files: \
+                 {}\n",
+                made.join(", ")
+            ),
+        };
         format!(
-            "{}{} to add, {} to change, {} to remove.\n",
+            "{}{} to add, {} to change, {} to remove.\n{note}",
             lines.concat(),
             self.counts.added,
             self.counts.changed,
             self.counts.removed
         )
+    }
+}
+
+/// A definition of the spec that Foundation made, such as the admin subject of the
+/// first start.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct Reserved {
+    /// The label of the definition, such as `@admin`.
+    pub(crate) name: String,
+    /// The kind of the definition, such as `subject`.
+    pub(crate) kind: String,
+}
+
+impl Reserved {
+    /// The output of `definition` at the tree key `name`, when its label is reserved.
+    fn of(name: &Name, definition: &Definition) -> Option<Self> {
+        let kind = definition.kind();
+        let label = kind.label(name).filter(Name::reserved)?;
+        Some(Self {
+            name: label.to_string(),
+            kind: kind.as_str().to_owned(),
+        })
     }
 }
 

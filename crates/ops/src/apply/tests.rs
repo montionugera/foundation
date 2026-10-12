@@ -86,7 +86,12 @@ fn applies_a_plan_and_then_plans_no_change() {
             "Applied site.plan: 3 added, 1 home listed.\n"
         );
         let (output, _) = plan_on(&mesh, &[("site.hcl", &placed_site())]).await;
-        assert_eq!(output.text(), "0 to add, 0 to change, 0 to remove.\n");
+        assert_eq!(
+            output.text(),
+            "0 to add, 0 to change, 0 to remove.\n\
+             note: 2 definitions that Foundation made are not in the files: \
+             @admin.@access, @admin.@subject\n"
+        );
         let time = &mesh.spec().await.expect("a spec").definitions[&name("site.time")];
         let Definition::Channel(time) = time else {
             panic!("a channel at site.time");
@@ -1057,7 +1062,9 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
              + channel site.plc.status.state\n\
              + channel site.plc.status.time\n\
              - channel site.plc\n\
-             7 to add, 0 to change, 1 to remove.\n"
+             7 to add, 0 to change, 1 to remove.\n\
+             note: 2 definitions that Foundation made are not in the files: \
+             @admin.@access, @admin.@subject\n"
         );
         let applied = apply(path(), &planned.encode(), &mesh, &kinds(), keys(10))
             .await
