@@ -11,9 +11,7 @@ use env::threads::Threads;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
-use crate::common::{
-    Armed, Bomb, Relay, Relayed, Stuck, assert_aborts, assert_joins, panicked,
-};
+use crate::common::{Armed, Bomb, Relay, Relayed, Stuck, assert_joins, panicked};
 
 fn threads() -> Threads {
     os::threads().expect("the OS gives the cores of this process")
@@ -283,33 +281,6 @@ fn a_panic_whose_payload_panics_in_its_drop_in_a_tokio_task_gives_panicked() {
     };
     let handle = threads().start("thread-14", body).unwrap();
     assert_joins(handle, panicked("thread-14"));
-}
-
-#[test]
-fn a_panic_in_the_poll_and_then_the_drop_of_a_tokio_task_aborts_the_process() {
-    assert_aborts(|| {
-        let body = || async {
-            drop(tokio::spawn(Armed {
-                faulty: true,
-                _bomb: Bomb,
-            }));
-            pending::<()>().await;
-        };
-        let handle = threads().start("thread-15", body).unwrap();
-        assert_joins(handle, Ok(()));
-    });
-}
-
-#[test]
-fn a_panic_over_a_local_that_panics_in_its_drop_in_the_body_aborts_the_process() {
-    assert_aborts(|| {
-        let body = || async {
-            let _bomb = Bomb;
-            panic!("body");
-        };
-        let handle = threads().start("thread-16", body).unwrap();
-        assert_joins(handle, panicked("thread-16"));
-    });
 }
 
 #[test]

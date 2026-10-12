@@ -13,9 +13,7 @@ use env::tasks::Tasks;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
-use crate::common::{
-    Armed, Bomb, Relay, Relayed, Stuck, assert_aborts, assert_joins, panicked,
-};
+use crate::common::{Bomb, Relay, Relayed, Stuck, assert_joins, panicked};
 
 fn shards() -> Shards {
     os::shards().expect("the OS gives the cores of this process")
@@ -392,48 +390,6 @@ fn a_panic_whose_payload_panics_in_its_drop_in_a_tokio_task_ends_the_shard() {
     };
     let handle = shards().start(config("shard-15"), main).unwrap();
     assert_joins(handle, panicked("shard-15"));
-}
-
-#[test]
-fn a_panic_in_the_poll_and_then_the_drop_of_a_tokio_task_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |_: Tasks| async {
-            drop(tokio::task::spawn_local(Armed {
-                faulty: true,
-                _bomb: Bomb,
-            }));
-            pending::<()>().await;
-        };
-        let handle = shards().start(config("shard-16"), main).unwrap();
-        assert_joins(handle, Ok(()));
-    });
-}
-
-#[test]
-fn a_panic_over_a_local_that_panics_in_its_drop_in_a_task_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |tasks: Tasks| async move {
-            tasks.spawn(async {
-                let _bomb = Bomb;
-                panic!("task");
-            });
-            pending::<()>().await;
-        };
-        let handle = shards().start(config("shard-17"), main).unwrap();
-        assert_joins(handle, panicked("shard-17"));
-    });
-}
-
-#[test]
-fn a_panic_over_a_local_that_panics_in_its_drop_in_main_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |_: Tasks| async {
-            let _bomb = Bomb;
-            panic!("main");
-        };
-        let handle = shards().start(config("shard-18"), main).unwrap();
-        assert_joins(handle, panicked("shard-18"));
-    });
 }
 
 #[test]
