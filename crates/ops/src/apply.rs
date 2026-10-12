@@ -39,7 +39,7 @@ pub(crate) async fn apply(
         .to_str()
         .ok_or_else(|| Error::config(vec![front_end::not_utf8(path)], &[]))?;
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
-    let (pointer, applied) = used::spec(mesh).await?;
+    let (pointer, applied) = used::spec(mesh).await?.newest()?;
     let effect = planned(plan, pointer, &applied, mesh, kinds, key).await?;
     Ok(Applied {
         file: file.to_owned(),
