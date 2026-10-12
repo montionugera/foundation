@@ -2781,7 +2781,10 @@ mod tests {
                 let Err(TestCaseError::Reject(reason)) = &result else {
                     panic!("the case with chain {last:#x} runs: {result:?}");
                 };
-                assert!(reason.message().ends_with("a chain repeats"), "{reason}");
+                assert!(
+                    reason.message().ends_with("a chain repeats"),
+                    "a reject for another reason: {reason}"
+                );
             }
         }
 
