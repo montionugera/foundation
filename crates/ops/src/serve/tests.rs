@@ -200,7 +200,7 @@ fn refuses_each_body_that_is_no_request() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
         let after = [&plan_body(&[("site.hcl", &site())])[..], b"x"].concat();
-        let cases: [(&[u8], &str); 13] = [
+        let cases: [(&[u8], &str); 14] = [
             (b"", "no newline ends the first line"),
             (b"{\"apply\":{}}", "no newline ends the first line"),
             (b"\n", "EOF while parsing a value at line 1 column 0"),
@@ -222,6 +222,11 @@ fn refuses_each_body_that_is_no_request() {
             (
                 b"{\"plan\":{}}\n",
                 "missing field `files` at line 1 column 10",
+            ),
+            (
+                b"{\"plan\":{\"files\":[{\"path\":\"a.hcl\",\"text\":\"\",\
+                  \"mode\":1}]}}\n",
+                "unknown field `mode`, expected `path` or `text` at line 1 column 50",
             ),
             (
                 b"{\"plan\":{\"files\":[],\"force\":true}}\n",
@@ -483,8 +488,8 @@ fn an_apply_gives_a_home_only_to_the_index_of_the_grant_of_the_subject() {
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let site = site();
-        let yard = "channel \"yard.time\" { kind = \"index\" }\nplacement \"yard.home\" \
-                    {\n  select = \"yard.*\"\n  home = \"edge\"\n}\n";
+        let yard = "channel \"yard.time\" { kind = \"index\" }\nplacement \
+                    \"yard.home\" {\n  select = \"yard.*\"\n  home = \"edge\"\n}\n";
         let files = [
             ("people.hcl", &*people),
             ("site.hcl", &*site),
@@ -566,6 +571,25 @@ fn refuses_a_plan_and_an_apply_on_a_node_that_uses_an_old_spec_as_behind() {
         let reply = serve(&node, &name("eve"), &plan_body(&both)).await;
         let expected = denied("eve", "plan", "`influx`");
         assert_eq!(split(&reply), (expected, &b""[..]));
+    });
+}
+
+#[test]
+fn applies_a_plan_that_removes_the_policy_of_the_subject() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let policy = "access \"site.surveyor\" {\n  subjects = \"sam\"\n  select = \
+                      \"site.**\"\n  allow = [plan, apply]\n}\n";
+        applied(&node, &[("people.hcl", policy)]).await;
+        let version = mesh.pointer().version;
+        let reply = serve(&node, &name("sam"), &plan_body(&[])).await;
+        let (head, plan) = split(&reply);
+        assert_eq!(head["output"]["removed"], 1, "{head}");
+
+        let reply = serve(&node, &name("sam"), &apply_body(plan)).await;
+        let (head, _) = split(&reply);
+        assert_eq!(head["output"]["removed"], 1, "{head}");
+        assert_eq!(mesh.pointer().version, version + 1);
     });
 }
 
