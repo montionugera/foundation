@@ -57,14 +57,15 @@
   with `Spec::behind` set gives `ops.behind`, status 1, after the decode and before the
   base compare: the message names the newest pointer and one line for its `Cause`, and
   the fix is `Fix the cause, then plan again`. One private function of `ops` reads
-  `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`),
-  and one step of that spec gives this error. This supersedes the one function of item
-  1 of https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913,
-  which also gives `ops.behind`. A plan whose base is not the spec in use, before the
-  proposal or after another change applies first, is `ops.stale-plan`, status 1, fix
-  `Plan again`. Each other error of `Mesh::apply`, except a stop, is `ops.apply`, status
-  1, with its `Display` as the message and the fix `Fix the cause in the message, then
-  plan and apply again`. A stop of the group of the mesh, from `Mesh::spec` or from
+  `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`).
+  A call on that spec, the check that it is the newest, gives this error. This
+  supersedes the one function of item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, which also
+  gives `ops.behind`. A plan whose base is not the spec in use, before the proposal or
+  after another change applies first, is `ops.stale-plan`, status 1, fix `Plan again`.
+  Each other error of `Mesh::apply`, except a stop, is `ops.apply`, status 1, with its
+  `Display` as the message and the fix `Fix the cause in the message, then plan and
+  apply again`. A stop of the group of the mesh, from `Mesh::spec` or from
   `Mesh::apply`, is `ops.stopped`, status 1, in `plan` and in `apply`, with the
   `Display` of the stop as the message and the fix `Fix the cause in the message, then
   start the node and plan again`. It can come after a proposal, so plan again to see
@@ -137,5 +138,6 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). The
   order of the tree key is the ruling of `laptop.architect-2` (2026-10-12T18:27:00Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130170904), which
-  supersedes the order of the example in item 4. The field `key` waits for the approval
-  of `laptop.architect-2` on round 1 of #2466.
+  supersedes the order of the example in item 4. The field `key` is by
+  `laptop.architect-2` (2026-10-12T18:47:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
