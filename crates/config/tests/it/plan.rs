@@ -3311,3 +3311,14 @@ fn refuses_a_connector_whose_status_names_are_too_long() {
         [(code, None, message, fix)]
     );
 }
+
+#[test]
+fn planned_holds_only_for_a_file_kind_at_the_key_of_an_unreserved_label() {
+    use spec::definition::Kind;
+    let planned = |key: &str, kind| config::plan::planned(&name(key), kind);
+    assert!(planned("plant.@access", Kind::Access));
+    assert!(planned("plant.temp", Kind::Channel));
+    assert!(!planned("@admin.@access", Kind::Access), "a founding key");
+    assert!(!planned("plant", Kind::Access), "no tree key of the kind");
+    assert!(!planned("child.@region", Kind::Region), "no file block");
+}

@@ -1006,9 +1006,11 @@ fn unknown(
     }
 }
 
-/// Reports whether a plan holds a definition of `kind` at `name`: a kind that a block
-/// of a file defines, at the tree key of an unreserved label.
-fn planned(name: &Name, kind: definition::Kind) -> bool {
+/// Reports whether [`plan`] compares the stored definition of `kind` at the tree key
+/// `name` with the files: a kind that a block of a file defines, at the tree key of
+/// an unreserved label. `plan` never changes or removes another stored definition.
+#[must_use]
+pub fn planned(name: &Name, kind: definition::Kind) -> bool {
     KINDS.iter().any(|(block, _)| *block == kind)
         && kind.label(name).is_some_and(|label| !label.reserved())
 }
