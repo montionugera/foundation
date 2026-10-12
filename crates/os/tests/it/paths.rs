@@ -4,7 +4,7 @@ use std::fs::{self, Permissions};
 use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, symlink};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 use env::paths::{Error, Found};
@@ -382,23 +382,14 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
     fs::write(&file, b"x").unwrap();
     let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
     symlink(&dir, &link).unwrap();
-    let stopped = AtomicBool::new(false);
-    let other = thread::scope(|scope| {
-        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
-        scope.spawn(|| {
-            while !stopped.load(Ordering::Relaxed) {
-                for target in [&file, &dir] {
-                    symlink(target, &next).unwrap();
-                    fs::rename(&next, &link).unwrap();
-                }
-            }
-        });
-        let paths = os::paths();
-        let mut read = (0..20_000).map(|_| paths.read(&link, 1 << 12));
-        let other =
-            read.find(|read| !matches!(read, Ok(Found::File(_) | Found::Directory(_))));
-        stopped.store(true, Ordering::Relaxed);
-        other
+    let swap = || {
+        for target in [&file, &dir] {
+            symlink(target, &next).unwrap();
+            fs::rename(&next, &link).unwrap();
+        }
+    };
+    let other = race(swap, &link, |read| {
+        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
     });
     assert_eq!(other, None);
 }
@@ -408,27 +399,46 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
 fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
     let scratch = Scratch::new();
     let plant = scratch.0.join("plant");
-    let stopped = AtomicBool::new(false);
-    let other = thread::scope(|scope| {
-        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
-        scope.spawn(|| {
-            while !stopped.load(Ordering::Relaxed) {
-                fs::create_dir(&plant).unwrap();
-                fs::remove_dir(&plant).unwrap();
-                fs::write(&plant, b"x").unwrap();
-                fs::remove_file(&plant).unwrap();
-            }
-        });
-        let paths = os::paths();
-        let mut read = (0..20_000).map(|_| paths.read(&plant, 1 << 12));
-        let other = read.find(|read| {
-            !matches!(
-                read,
-                Ok(Found::File(_) | Found::Directory(_)) | Err(Error::NotFound)
-            )
-        });
-        stopped.store(true, Ordering::Relaxed);
-        other
+    let swap = || {
+        fs::create_dir(&plant).unwrap();
+        fs::remove_dir(&plant).unwrap();
+        fs::write(&plant, b"x").unwrap();
+        fs::remove_file(&plant).unwrap();
+    };
+    let other = race(swap, &plant, |read| {
+        matches!(
+            read,
+            Ok(Found::File(_) | Found::Directory(_)) | Err(Error::NotFound)
+        )
     });
     assert_eq!(other, None);
 }
+
+/// Reads `path` until another thread has called `swap` [`CYCLES`] times, and gives
+/// the first read that `expected` refuses. The bound is on the swaps, not the reads,
+/// so a slow or busy host still races each read against many swaps.
+fn race(
+    swap: impl Fn() + Sync,
+    path: &Path,
+    expected: impl Fn(&Result<Found, Error>) -> bool,
+) -> Option<Result<Found, Error>> {
+    let (cycles, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                swap();
+                cycles.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let paths = os::paths();
+        let mut other = None;
+        while other.is_none() && cycles.load(Ordering::Relaxed) < CYCLES {
+            other = Some(paths.read(path, 1 << 12)).filter(|read| !expected(read));
+        }
+        stopped.store(true, Ordering::Relaxed);
+        other
+    })
+}
+
+const CYCLES: usize = 5000;
