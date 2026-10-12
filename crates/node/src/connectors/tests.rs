@@ -22,7 +22,7 @@ use types::name::Name;
 use types::time::{Monotonic, Span};
 
 use super::Runs;
-use crate::tests::port::mesh::{member, region};
+use crate::tests::port::mesh::{self, member, region};
 
 /// The node that the runs are on.
 const NODE: &str = "plant.cloud";
@@ -1371,7 +1371,6 @@ async fn regional(
     tasks: &env::tasks::Tasks,
     homes: &[u128],
 ) -> (hub::Hub, ::mesh::Mesh) {
-    use std::sync::OnceLock;
     let key = types::node::Key::from_u128(1);
     let private_key = types::ed25519::PrivateKey([2; 32]);
     let mut founding = region(&[member(key, &private_key, node)]);
@@ -1379,61 +1378,12 @@ async fn regional(
         .iter()
         .map(|&index| (types::channel::Key::from_u128(index), key))
         .collect();
-    let at = std::net::SocketAddr::new(node.addresses()[0], 7000);
-    let bound = transport::Port::bind(&node.net(), at).expect("a port");
     let identity = crate::identity::Identity {
         key,
         private_key,
         opener: secret::seal::Opener::from_bytes([3; 32]),
     };
-    let endpoint = crate::Endpoint::new(
-        bound,
-        crate::Opening::Given(founding),
-        node.clock(),
-        node.entropy(),
-        node.net(),
-    );
-    let (driver, time) = clock::Clock::new(node.clock());
-    let wall = node.wall();
-    tasks.spawn(async move { driver.run(wall).await });
-    let (give, take) = crate::handoff::pair();
-    give.give(types::frame::key_set::Interner::new());
-    let (give, next) = crate::handoff::pair();
-    let config = block::Config::new(1 << 22).expect("the budget fits");
-    let memory = block::Heap::new(config.reservation());
-    let open = crate::Open {
-        shard: 0,
-        take,
-        give,
-        monotonic: node.clock(),
-        clock: time.clone(),
-        entropy: node.entropy(),
-        layout: ::buffer::Layout::new(64 << 20, crate::BODY_MAX).expect("a ring"),
-        failed: Arc::new(OnceLock::new()),
-        stop: crate::stop::Stop::default(),
-    };
-    let pool = Rc::new(block::Pool::new(config, memory));
-    let home = open.run(node.files(), pool, tasks.clone()).await;
-    let home = home.expect("the buffer opens");
-    let interner = next.await.expect("the open gives the interner");
-    let config = block::Config::new(1 << 20).expect("the budget fits");
-    let memory = block::Heap::new(config.reservation());
-    let pool = Rc::new(block::Pool::new(config, memory));
-    let opened = endpoint.open(identity, node.files(), pool, tasks.clone());
-    let (transport, mesh) = opened.await;
-    let mesh = mesh.expect("the mesh opens").expect("a region");
-    let hub = hub::Hub::new(hub::Config {
-        home,
-        interner,
-        tasks: tasks.clone(),
-        node: key,
-        time,
-        entropy: node.entropy(),
-        region: Some(hub::Region {
-            mesh: mesh.clone(),
-            transport,
-        }),
-    });
+    let (hub, mesh, _) = mesh::hub(node, tasks, identity, founding).await;
     (hub, mesh)
 }
 
