@@ -14,11 +14,11 @@ use std::path::Path;
 use std::process::Command;
 
 use disk::{Scratch, files};
-use env::files::{Error, Mode};
+use env::files::Mode;
 
 #[test]
 #[expect(unsafe_code, reason = "a hook before exec is an OS call")]
-fn a_child_holds_the_lock_of_a_closed_file_until_its_exec() {
+fn a_child_does_not_hold_the_lock_of_a_closed_file() {
     let scratch = Scratch::new();
     let (files, thread) = files(&scratch.0, "files");
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -46,11 +46,11 @@ fn a_child_holds_the_lock_of_a_closed_file_until_its_exec() {
         .unwrap();
     (&forked).read_exact(&mut [0]).unwrap();
     drop(file);
-    let held = runtime.block_on(files.open(a, Mode::Write)).map(drop);
+    let reopened = runtime.block_on(files.open(a, Mode::Write)).map(drop);
     (&released).write_all(&[0]).unwrap();
     child.join().unwrap();
     let opened = runtime.block_on(files.open(a, Mode::Write)).map(drop);
-    assert_eq!(held, Err(Error::Busy { path: a.into() }));
+    assert_eq!(reopened, Ok(()));
     assert_eq!(opened, Ok(()));
     drop(files);
     thread.join().unwrap();
