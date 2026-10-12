@@ -86,4 +86,7 @@
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111666626.
   `scripts/bench-host.sh` does not pass the flag. Until #2367 adds it, `laptop.monitor`
   adds it to the flags of each run (`laptop.director`, 2026-10-12T15:56:34Z:
-  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6127823084).
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6127823084). A run
+  with the flag names its bench targets (`--bench`), because the `lib test` target of a
+  crate does not build with it:
+  https://github.com/synnaxlabs/foundation/issues/2367#issuecomment-6127816867.
