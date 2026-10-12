@@ -67,8 +67,7 @@ pub(crate) const TABLE: [Channel; 5] = [
     },
 ];
 
-/// The most bytes of a name of [`TABLE`], so `<node>.<status>` fits a name for each
-/// node name of at most [`crate::name::MAX_BYTES`].
+/// The most bytes of a name of [`TABLE`].
 pub(crate) const MAX_BYTES: usize = 63;
 const _: () = {
     let mut i = 0;
