@@ -771,6 +771,7 @@ mod tests {
     fn holders_are_a_quorum_only_as_a_majority_of_each_half() {
         let short = |held, voters| Err(Refused::Quorum { held, voters });
         let cases = [
+            (voters(&[], &[]), keys(&[]), Ok(())),
             (voters(&[1], &[]), keys(&[1]), Ok(())),
             (voters(&[1], &[]), keys(&[]), short(0, 1)),
             (voters(&[1, 2], &[]), keys(&[1]), short(1, 2)),
