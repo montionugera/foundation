@@ -203,12 +203,13 @@ again once to prove that the failure replays (r16 59).
   process (the descriptor table, the thread count, a resource limit, a seccomp filter,
   the first-lookup state of the C library) gets a binary of its own with that one test,
   as a counting allocator does. Its module doc names that state. A child process holds a
-  copy of each descriptor, with its file locks, until its `exec`, so a test that starts
-  one goes in a binary with no test that opens files. When each test of a binary starts
-  one (the `root` tests of `os`), its module doc states that no test opens a file again
-  after it closes or drops a handle to it. Helpers that binaries share go in
-  `tests/common/`: `mod.rs`, and a file for a helper that only some binaries use, which
-  each of them mounts with `#[path]`.
+  copy of each descriptor, with its `flock` locks, until its `exec`, so a test that
+  starts one goes in a binary with no test that releases a lock and takes it again, such
+  as the `files` tests of `os`. When each test of a binary starts one (the `root` tests
+  of `os`), its module doc states that no test opens a file again after it closes or
+  drops a handle to it. Helpers that binaries share go in `tests/common/`: `mod.rs`, and
+  a file for a helper that only some binaries use, which each of them mounts with
+  `#[path]`.
 
 ## Oracles
 
