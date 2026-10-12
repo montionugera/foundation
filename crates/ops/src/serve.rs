@@ -34,16 +34,18 @@ mod tests;
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
-    let reply = match run(node, subject, body).await {
-        Ok(reply) => Ok(reply),
-        Err(error) => failed(&error),
-    };
-    reply.unwrap_or_else(|_large| large()).0
+    let reply = run(node, subject, body).await;
+    reply.unwrap_or_else(|error| failed(&error)).0
 }
 
-/// The reply of `ops.large-reply`.
-fn large() -> Reply {
-    failed(&Error::LargeReply).expect("invariant: the reply of `ops.large-reply` fits")
+/// A reply that would pass the bound.
+#[derive(Debug)]
+struct Large;
+
+impl From<Large> for Error {
+    fn from(Large: Large) -> Self {
+        Self::LargeReply
+    }
 }
 
 /// The bytes of a reply: at most `BODY_BYTES_MAX`.
@@ -55,12 +57,12 @@ impl Reply {
     ///
     /// # Errors
     ///
-    /// `LargeReply` when the line passes the bound.
-    fn line(head: &impl Serialize) -> Result<Self, Error> {
+    /// `Large` when the line passes the bound.
+    fn line(head: &impl Serialize) -> Result<Self, Large> {
         let mut reply = Self::default();
         match serde_json::to_writer(&mut reply, head) {
             Ok(()) => {}
-            Err(error) if error.is_io() => return Err(Error::LargeReply),
+            Err(error) if error.is_io() => return Err(Large),
             Err(error) => panic!("invariant: a reply is plain JSON data: {error}"),
         }
         reply.add(b"\n")?;
@@ -71,14 +73,14 @@ impl Reply {
     ///
     /// # Errors
     ///
-    /// `LargeReply`, with no byte added, when the reply would pass the bound.
-    fn add(&mut self, bytes: &[u8]) -> Result<(), Error> {
+    /// `Large`, with no byte added, when the reply would pass the bound.
+    fn add(&mut self, bytes: &[u8]) -> Result<(), Large> {
         let len = self.0.len().saturating_add(bytes.len());
         if u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX) {
             self.0.extend_from_slice(bytes);
             Ok(())
         } else {
-            Err(Error::LargeReply)
+            Err(Large)
         }
     }
 }
@@ -87,7 +89,7 @@ impl Write for Reply {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.add(bytes)
             .map(|()| bytes.len())
-            .map_err(|_large| io::ErrorKind::FileTooLarge.into())
+            .map_err(|Large| io::ErrorKind::FileTooLarge.into())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -164,15 +166,18 @@ struct Failed<'a> {
     status: u8,
 }
 
-/// The reply that holds `error`.
-///
-/// # Errors
-///
-/// `LargeReply` when the reply passes the bound.
-fn failed(error: &Error) -> Result<Reply, Error> {
-    Reply::line(&Failed {
-        errors: &error.problems(),
-        status: error.status(),
+/// The reply that holds `error`, or `ops.large-reply` when that reply passes the bound.
+fn failed(error: &Error) -> Reply {
+    let line = |error: &Error| {
+        Reply::line(&Failed {
+            errors: &error.problems(),
+            status: error.status(),
+        })
+    };
+    line(error).unwrap_or_else(|Large| {
+        line(&Error::LargeReply).unwrap_or_else(|Large| {
+            panic!("invariant: the reply of `ops.large-reply` fits")
+        })
     })
 }
 
@@ -296,5 +301,5 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
         return Err(check.denied(Action::Apply, On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
-    Reply::line(&Done { output: &effect })
+    Ok(Reply::line(&Done { output: &effect })?)
 }
