@@ -85,4 +85,5 @@
   benches the same way. Decided by `laptop.director`, 2026-10-11T17:23:57Z:
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111666626.
   `scripts/bench-host.sh` does not pass the flag. Until #2367 adds it, `laptop.monitor`
-  adds it to the flags of each run.
+  adds it to the flags of each run (`laptop.director`, 2026-10-12T15:56:34Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6127823084).
