@@ -40,10 +40,12 @@
   and a check of each name that the old and the new `select` reach, because `**` reaches
   names that the spec does not hold yet (`laptop.architect`, 2026-10-12T19:56:48Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131596199, which
-  supersedes "`admin` is no part of the check" of 6106994274). #1213 checks the `apply`
-  names, the `admin` keys, and the index of each home of the change record on each
-  member and then removes that check from `ops`. `plan` makes no change record, so its
-  check stays in `ops`. Decided by `laptop.architect` (2026-10-11T08:10:05Z,
+  supersedes "`admin` is no part of the check" of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). #1213
+  checks the `apply` names, the `admin` keys, and the index of each home of the change
+  record on each member and then removes that check from `ops`. `plan` makes no change
+  record, so its check stays in `ops`. Decided by `laptop.architect`
+  (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274), on
   decision 5 of plan revision 4
   (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).

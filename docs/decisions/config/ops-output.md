@@ -163,9 +163,14 @@
   (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
   bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
-  The places of the problems of one file share its path. `serve` reads the spec in use
-  as the apply does, so a node that is behind gives `ops.behind` for `plan` too (later
-  step of https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
+  The places of the problems of one file share its path (`laptop.architect`,
+  2026-10-12T20:11:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
+  `laptop.architect-2`, 2026-10-12T20:14:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131856346). `serve`
+  reads the spec in use as the apply does, so a node that is behind gives `ops.behind`
+  for `plan` too (later step of
+  https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6071715327). A node
   that uses no spec gives `ops.denied` to each remote subject instead (SERVE ACCESS).
   The form, the status of an error, `ops.denied`, and `ops.large-reply` are decisions 5
