@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::process::ExitCode;
 
-use comrak::nodes::{AstNode, LineColumn, NodeHeading, NodeValue, Sourcepos};
+use comrak::nodes::{AstNode, NodeHeading, NodeValue, Sourcepos};
 use comrak::{Arena, Options, parse_document};
 
 use crate::{field, gh};
@@ -728,21 +728,11 @@ impl<'a> Shown<'a> {
         let starts: Vec<usize> = std::iter::once(0)
             .chain(body.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
-        let at = |at: LineColumn| starts[at.line - 1] + at.column - 1;
         let line_start = |line: usize| starts[line - 1];
-        let source = |Sourcepos { start, end }: Sourcepos| {
-            line_start(start.line)..line_end(body, line_start(end.line))
-        };
         let arena = Arena::new();
         let root = parse_document(&arena, body, &options());
         // The code blocks of a footnote that GitHub does not show still hold its lines.
-        let mut codes = Vec::new();
-        for node in root.descendants() {
-            let data = node.data.borrow();
-            if let NodeValue::CodeBlock(_) = data.value {
-                codes.push(at(data.sourcepos.start)..source(data.sourcepos).end);
-            }
-        }
+        let codes = code_blocks(root, body, &starts);
         append_notes(root);
         // Whether each top-level block so far is a paragraph. So it is false at a
         // paragraph inside another block.
@@ -1073,6 +1063,24 @@ fn mark(text: &str) -> usize {
     } else {
         0
     }
+}
+
+/// The range in `body` of each code block of `root`, its tree, from its first character
+/// to the end of its last line. `starts` holds the start of each line of `body`.
+fn code_blocks<'n>(
+    root: &'n AstNode<'n>,
+    body: &str,
+    starts: &[usize],
+) -> Vec<Range<usize>> {
+    root.descendants()
+        .filter_map(|node| {
+            let data = node.data.borrow();
+            let Sourcepos { start, end } = data.sourcepos;
+            let from = starts[start.line - 1] + start.column - 1;
+            matches!(data.value, NodeValue::CodeBlock(_))
+                .then(|| from..line_end(body, starts[end.line - 1]))
+        })
+        .collect()
 }
 
 /// The first of the line starts `starts` of `body` whose line, after its [`mark`], the
