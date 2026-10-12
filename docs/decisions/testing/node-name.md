@@ -13,10 +13,11 @@
   A name with a segment that starts with `@` is reserved, and a region refuses it in a
   card. So `Node::start` stops with `Error::Reserved { name }` before the claim, also
   with `Region::Absent`: it starts no shard, and the data directory keeps no name that
-  its founding refuses (the CLI code is `node.reserved`). `node` checks only
-  `Name::reserved`, the one test of `mesh::region::fits` that the card of a root
-  founding can fail. Trigger: a join by ticket (#1157), where `fits` also refuses a name
-  outside the region, makes `mesh` give one check of a card name against a region, which
+  its founding refuses (the CLI code is `node.reserved`). `node` checks `Name::reserved`
+  and the length of the name (the amendment below), the two tests of
+  `mesh::region::fits` that the card and the status of a root founding can fail.
+  Trigger: a join by ticket (#1157), where `fits` also refuses a name outside the
+  region, makes `mesh` give one check of a card name against a region, which
   `fits` calls and `node` calls before the claim. No release kept a reserved name. Only
   a build of `main` before this check could, and a start of its data directory with
   another name gives `node.renamed`, whose second fix, another data directory, is the
@@ -147,4 +148,6 @@
   the longest name of the table, which moves with the table, so a release with a longer
   status name stops a node that ran; a check that `mesh` gives and `node` calls before
   the claim (the trigger above), which is an interface change of `mesh` and gives that
-  same limit.
+  same limit. Supersedes "`node` checks only `Name::reserved`, the one test of
+  `mesh::region::fits` that the card of a root founding can fail" of
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104734826.

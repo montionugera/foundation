@@ -204,7 +204,10 @@
   that `mesh` stores, and `node` keeps no second copy, so a later start keeps each key.
   A start does not change a stored status that lacks a name, and does not fail for it
   (STATUS CHANNELS). By `laptop.architect-2` (#728, 2026-10-12T16:02:04Z):
-  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135. Earlier,
+  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135.
+  Supersedes "The status of the member is empty until #728 gives the status channels of
+  the node their keys" of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Earlier,
   by `laptop.architect-2` (#1744, plan revision 3, 2026-10-10T03:30:54Z):
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Lost:
   `node` keeps its own founding file, a second copy of one value; `node` builds the
