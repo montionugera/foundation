@@ -7133,6 +7133,47 @@ mod name {
         assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
     }
 
+    /// A name longer than 191 bytes stops a start with no region before the claim,
+    /// and a later start with another name runs.
+    #[test]
+    fn a_long_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = "a".repeat(192);
+        let error = Error::Long { name: name(&long) };
+        assert_eq!(start_and_stop(&mut sim, &host, &long), Err(error));
+        assert_eq!(host.shard_starts().len(), 0);
+        assert_eq!(read(&mut sim, &host), None, "keeps no name");
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+    }
+
+    /// A long name fails after a reserved name and before a disk budget that holds no
+    /// ring.
+    #[test]
+    fn a_long_name_comes_after_a_reserved_name_and_before_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = name(&"a".repeat(192));
+        let reserved = name(&format!("@{}", "a".repeat(191)));
+        let cases = [
+            (long.clone(), Error::Long { name: long }),
+            (reserved.clone(), Error::Reserved { name: reserved }),
+        ];
+        for (given, error) in cases {
+            let node = Node::start(Config {
+                name: given,
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk: Size::from_bytes(1),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(error));
+        }
+        assert_eq!(host.shard_starts().len(), 0);
+    }
+
     /// A file of another length that is not 0, or that `encode` does not give, is
     /// not a name: also one whose padding is not zero, under a checksum that holds.
     #[test]
