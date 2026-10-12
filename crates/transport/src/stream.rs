@@ -1738,7 +1738,8 @@ mod tests {
                 let opened = side.session.open_sender(Class::Complete).await;
                 let mut sender = opened.expect("a stream");
                 // A message of at most 1452 bytes is copied, so the stream drops its
-                // block at once. A longer one is a slice of its block until the ACK.
+                // block at once. A longer one is a slice of its block until the peer
+                // acknowledges it and each byte before it, or the stream resets.
                 for (len, held) in [(100, false), (1452, false), (1453, true)] {
                     let block = side.block(&vec![7; len]);
                     let at = block.as_ptr();

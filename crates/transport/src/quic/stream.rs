@@ -523,7 +523,8 @@ impl Source {
 }
 
 /// The longest chunk that noq-proto copies into its own buffer: `MAX_COMBINE` of its
-/// `send_buffer` in 1.3.0. It keeps a longer chunk until the ACK.
+/// `send_buffer` in 1.3.0. It keeps a longer chunk until the peer acknowledges it and
+/// each byte before it on its stream, or the stream resets.
 pub(crate) const COPIED_MAX: usize = 1452;
 
 /// The parts of a message that the stream has not taken all of, the first one cut at
@@ -4035,8 +4036,8 @@ mod tests {
         testing::run(1, |shard| {
             let mut pair = connected(shard);
             // noq-proto copies a write of 1452 bytes or less, and holds a larger one
-            // until the peer acknowledges it or the stream resets. A 2000-byte block
-            // takes 2112 bytes of the budget.
+            // until the peer acknowledges it and each byte before it, or the stream
+            // resets. A 2000-byte block takes 2112 bytes of the budget.
             let config = block::Config::new(3000).expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Pool::new(config, memory);
