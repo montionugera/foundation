@@ -1,6 +1,7 @@
-//! The cost of one poll of a task spawned on `Tasks`, and of one spawned through a
-//! `Group`. Run with `cargo bench -p env --bench group`. A figure is the time of a run
-//! of polls over the polls, and each line gives p10 and p50 over its runs.
+//! The cost of one poll of a task spawned on `Tasks`, through a `Group`, and through
+//! a `Group` made on the `Tasks` of another. Run with `cargo bench -p env --bench
+//! group`. A figure is the time of a run of polls over the polls, and each line gives
+//! p10 and p50 over its runs.
 //!
 //! The task adds one to a counter and waits, so its `poll` can inline into the
 //! wrapper of the group. The lines take turns, run by run. To compare two builds, run
@@ -56,18 +57,23 @@ fn main() {
     tasks.spawn(Add(0));
     let group = Group::new(tasks);
     group.tasks().spawn(Add(0));
+    let nested = Group::new(group.tasks().clone());
+    nested.tasks().spawn(Add(0));
     let mut spawned = kept.0.take();
-    let mut times = [Vec::new(), Vec::new()];
+    let mut times = [Vec::new(), Vec::new(), Vec::new()];
     for _ in 0..RUNS {
         for (task, line) in spawned.iter_mut().zip(&mut times) {
             line.push(run(task));
         }
     }
-    println!("{:<24} {:>8} {:>8}", "ns per poll", "p10", "p50");
-    for (name, line) in ["on Tasks", "through a Group"].iter().zip(&mut times) {
+    println!("{:<28} {:>8} {:>8}", "ns per poll", "p10", "p50");
+    for (name, line) in ["on Tasks", "through a Group", "through a group of a group"]
+        .iter()
+        .zip(&mut times)
+    {
         line.sort_by(f64::total_cmp);
         println!(
-            "{name:<24} {:>8.3} {:>8.3}",
+            "{name:<28} {:>8.3} {:>8.3}",
             line[RUNS / 10],
             line[RUNS / 2]
         );
