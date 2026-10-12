@@ -726,14 +726,17 @@ fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     })
 }
 
-/// The end of the issue that starts at `at` in `value`: `#` or `GH-`, in each ASCII
+/// The end of the issue that starts at `at` in `value`: `#`, or `GH-` in each ASCII
 /// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]) that
-/// starts no comment link ([`link`]).
+/// starts no comment link ([`link`]). A `GH-` starts `value` or follows a character
+/// that is no letter and no number.
 fn issue(value: &str, at: usize) -> Option<usize> {
     let text = &value[at..];
+    let before = value[..at].chars().next_back();
     let gh = text
         .split_at_checked(3)
-        .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"));
+        .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"))
+        .filter(|_| before.is_none_or(|c| !c.is_alphanumeric()));
     let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
     let url = text.strip_prefix(HOST).filter(|_| !link(value, at));
     let rest = number
