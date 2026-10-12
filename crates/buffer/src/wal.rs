@@ -889,6 +889,9 @@ impl Cursor {
             crc,
         } = record;
         let offset = self.at.offset;
+        if body.len > self.layout.body_max {
+            return Err(Invalid { offset, kind });
+        }
         let unread = self.unread();
         let rest = self.layout.area - self.layout.place(offset);
         let (moved, chain, step) = match (Kind::decode(kind), body.whole()) {

@@ -3658,10 +3658,11 @@ fn an_open_ends_at_a_carry_record_over_body_max() {
     });
 }
 
-/// The walk reads a record within its window, also one with a body over `body_max`.
-/// At a `body_max` of 4088 the window is two blocks, so a body of 4120 bytes fits it.
+/// A record that follows the chain with a body over `body_max` is a wrong shape, also
+/// within the window. At a `body_max` of 4088 the window is two blocks, so a body of
+/// 4120 bytes fits it.
 #[test]
-fn an_open_takes_a_carry_body_over_body_max_within_the_window() {
+fn an_open_refuses_a_carry_body_over_body_max_within_the_window() {
     run(162, |shard| async move {
         let ring = layout(AREA, 4088);
         {
@@ -3680,10 +3681,18 @@ fn an_open_takes_a_carry_body_over_body_max_within_the_window() {
         let body = carry_body(&tails);
         assert!(body.len() > 4088, "a body of {} bytes", body.len());
         shard.put_carry(3 * BLOCK, &body).await;
-        let mut slots = Slots::new();
-        let buffer = shard.open(ring, &mut slots).await.expect("opens");
-        let b = slots.index(key(2));
-        assert_eq!(buffer.durable(b, Path::Live), tail(4, None));
+        shard.open_invalid(ring, 3 * BLOCK).await;
+    });
+}
+
+/// A data record over `body_max` within the window is a wrong shape too: the header
+/// of a ring of three-block records says 4088, so its two-block record passes it.
+#[test]
+fn an_open_refuses_a_data_body_over_body_max_within_the_window() {
+    run(164, |shard| async move {
+        shard.create_long_record().await;
+        shard.tamper(BODY_MAX_AT, &4088_u32.to_le_bytes()).await;
+        shard.open_invalid(layout(AREA, 4088), BLOCK).await;
     });
 }
 
