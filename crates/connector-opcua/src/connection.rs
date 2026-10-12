@@ -183,27 +183,18 @@ impl Manager {
         &self,
         run: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> T {
-        self.drive_to(None, run)
+        self.drive_until(None, run)
             .await
             .expect("invariant: a drive with no deadline ends only with a value")
     }
 
     /// Drives as [`Manager::drive`] does, but gives `None` when the clock reaches
-    /// `deadline` before `run` gives a value.
+    /// `deadline`, if any, before `run` gives a value.
     ///
     /// # Panics
     ///
     /// When another drive of the manager runs.
     pub(crate) async fn drive_until<T>(
-        &self,
-        deadline: Monotonic,
-        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
-    ) -> Option<T> {
-        self.drive_to(Some(deadline), run).await
-    }
-
-    /// The drive of [`Manager::drive`] and [`Manager::drive_until`].
-    async fn drive_to<T>(
         &self,
         deadline: Option<Monotonic>,
         mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,

@@ -107,7 +107,7 @@ impl Client {
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
         let connected = this
             .connections
-            .drive_until(deadline, |_| {
+            .drive_until(Some(deadline), |_| {
                 this.connections.events().run();
                 let state = this.state();
                 if state.status != Status::GOOD {
@@ -143,7 +143,7 @@ impl Client {
         let deadline = self.clock.now() + self.timeout;
         if self.reads.pending.get() == READS {
             self.connections
-                .drive_until(deadline, |_| {
+                .drive_until(Some(deadline), |_| {
                     self.connections.events().run();
                     if self.reads.pending.get() < READS {
                         Poll::Ready(())
@@ -175,7 +175,7 @@ impl Client {
         self.reads.value.set(None);
         let answer = self
             .connections
-            .drive_until(deadline, |_| {
+            .drive_until(Some(deadline), |_| {
                 self.connections.events().run();
                 self.reads.value.take().map_or(Poll::Pending, Poll::Ready)
             })
