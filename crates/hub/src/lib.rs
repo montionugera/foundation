@@ -11,6 +11,7 @@ pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod used;
 pub mod writer;
 
 use std::cell::{Cell, RefCell};
@@ -74,7 +75,12 @@ pub struct Config {
     /// The source of each challenge's nonce.
     pub entropy: env::entropy::Entropy,
     /// The node's region, or `None` for a node with no region. With `None`, this node
-    /// is the home of each index.
+    /// is the home of each index. With a region, the hub takes its definitions only
+    /// from the region's mesh: the spec in use at [`Hub::new`], each later spec in use,
+    /// and the spec in use at each open of a writer, a reader, or a served session,
+    /// when its pointer moved. So an open finds each channel of each spec that the mesh
+    /// told any task of. A later spec ends each session on a channel that it removes,
+    /// as [`Hub::set_definitions`] states, with no open.
     pub region: Option<Region>,
 }
 
@@ -120,15 +126,19 @@ struct State {
     /// Empty, so refusing each hello, until [`Hub::set_rules`] first runs.
     rules: access::Rules,
     region: Option<Region>,
+    /// The spec that the hub applied last, with a region.
+    applied: Option<used::Applied>,
     /// Where the hub spawns the task of each remote reader.
     tasks: env::tasks::Tasks,
     bodies: serve::client::Bodies,
 }
 
 impl Hub {
-    /// A hub over `config.home` that knows no channel yet. Spawns two tasks on
-    /// `config.tasks`: one that ends when the home's buffer fails, and one that applies
-    /// the end of each control lease and grace at the home. The hub holds the home
+    /// A hub over `config.home` that knows each channel of the spec that the mesh of
+    /// `config.region` uses, or no channel with no region. Spawns three tasks on
+    /// `config.tasks`: one that ends when the home's buffer fails, one that applies the
+    /// end of each control lease and grace at the home, and, with a region, one that
+    /// applies each later spec in use ([`Config::region`]). The hub holds the home
     /// and `config.region` until the hub and each value and future that it gave,
     /// directly or through another such value, drop. Each task of the hub ends at its
     /// next poll after that, and then holds neither. So a `::home::Commit` taken before
@@ -147,6 +157,10 @@ impl Hub {
             region,
         } = config;
         let next = home.next_commit();
+        let used = region.as_ref().map(|region| region.mesh.used());
+        let applied = region.as_ref().zip(used.as_ref()).map(|(region, used)| {
+            used::Applied::new(region.mesh.watch_spec(), used)
+        });
         let state = Rc::new(RefCell::new(State {
             home,
             interner,
@@ -167,11 +181,16 @@ impl Hub {
             entropy,
             rules: access::Rules::default(),
             region,
+            applied,
             tasks: tasks.clone(),
             bodies: serve::client::Bodies::default(),
         }));
         tasks.spawn(commit::run(Rc::downgrade(&state)));
         tasks.spawn(gate::run(Rc::downgrade(&state), time));
+        if let Some(used) = used {
+            state.borrow_mut().define(&*used.definitions);
+            tasks.spawn(used::run(Rc::downgrade(&state)));
+        }
         Self(state)
     }
 
@@ -189,20 +208,19 @@ impl Hub {
     ///
     /// # Panics
     ///
-    /// Before any change, when two channels of `definitions` have one key or one
-    /// name, or the index of a data channel is not an index of `definitions`.
+    /// If the hub has a region: its definitions come from the region's mesh. Before
+    /// any change, when two channels of `definitions` have one key or one name, or the
+    /// index of a data channel is not an index of `definitions`.
     pub fn set_definitions<'d>(
         &self,
         definitions: impl IntoIterator<Item = (&'d Name, &'d Definition)>,
     ) {
-        let channels: Vec<_> = definitions
-            .into_iter()
-            .filter_map(|(name, definition)| match definition {
-                Definition::Channel(channel) => Some((name, channel)),
-                _ => None,
-            })
-            .collect();
-        self.0.borrow_mut().set(&checked(&channels));
+        let mut state = self.0.borrow_mut();
+        assert!(
+            state.region.is_none(),
+            "a hub with a region takes its definitions from the region's mesh"
+        );
+        state.define(definitions);
     }
 
     /// Opens a writer session on `config.channels` and the index of each. It waits
@@ -220,6 +238,7 @@ impl Hub {
         &self,
         config: writer::Config,
     ) -> Result<Writer, writer::Error> {
+        self.0.borrow_mut().catch_up();
         Writer::open(&self.0, config).await
     }
 
@@ -253,6 +272,7 @@ impl Hub {
         &self,
         config: reader::Config,
     ) -> Result<Reader, reader::Error> {
+        self.0.borrow_mut().catch_up();
         Reader::open(&self.0, config).await
     }
 
@@ -417,6 +437,38 @@ impl Sessions<::home::reader::Key> {
 }
 
 impl State {
+    /// Makes the channels of `definitions` the defined channels, as
+    /// [`Hub::set_definitions`] says.
+    fn define<'d>(
+        &mut self,
+        definitions: impl IntoIterator<Item = (&'d Name, &'d Definition)>,
+    ) {
+        let channels: Vec<_> = definitions
+            .into_iter()
+            .filter_map(|(name, definition)| match definition {
+                Definition::Channel(channel) => Some((name, channel)),
+                _ => None,
+            })
+            .collect();
+        self.set(&checked(&channels));
+    }
+
+    /// Applies the spec that the region's mesh uses now. Does nothing with no region.
+    fn catch_up(&mut self) {
+        if let Some(region) = &self.region {
+            let spec = region.mesh.used();
+            self.apply(&spec);
+        }
+    }
+
+    /// Defines the channels of `spec`, unless its pointer is the one applied last.
+    fn apply(&mut self, spec: &::mesh::used::Spec) {
+        let applied = self.applied.as_mut().expect("invariant: a region");
+        if applied.moved(spec) {
+            self.define(&*spec.definitions);
+        }
+    }
+
     /// Makes `channels` the defined channels, as [`Hub::set_definitions`] says.
     fn set(&mut self, channels: &hash::Map<&Name, &spec::channel::Channel>) {
         let removed = self.channels.set(channels);

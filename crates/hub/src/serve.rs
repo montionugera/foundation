@@ -400,6 +400,7 @@ async fn open(
     if class != wanted {
         return Err(Error::Class(class));
     }
+    state.borrow_mut().catch_up();
     let mut opening = Opening::new(state);
     loop {
         let Some(message) = opening.recv(receiver).await? else {
