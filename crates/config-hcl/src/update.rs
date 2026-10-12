@@ -749,8 +749,7 @@ mod tests {
     /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
     /// `out` has a value on one line: the value of the top attribute of `out` with
     /// the key of the attribute that ends `text`. After the closer, `want` holds the
-    /// rest of `out`, with a line end that `out` lacks when the closer's line is the
-    /// last.
+    /// rest of `out`, with a `\n` that `out` lacks when the closer's line is the last.
     fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
         let start = out
             .char_indices()
