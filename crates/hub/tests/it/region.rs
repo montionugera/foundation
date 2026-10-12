@@ -302,8 +302,8 @@ fn a_session_waits_for_the_first_home_and_the_home_carries_the_index() {
     });
 }
 
-/// A session that waits for the home of its index finds a channel that a call removed
-/// meanwhile unknown.
+/// A session that waits for the home of its index finds a channel that a spec in use
+/// removed meanwhile unknown.
 #[test]
 fn a_session_does_not_open_on_a_channel_removed_while_it_waits_for_a_home() {
     run(7, |test| async move {
@@ -323,7 +323,7 @@ fn a_session_does_not_open_on_a_channel_removed_while_it_waits_for_a_home() {
 }
 
 /// A session that waits for the home of its index waits for the home of the new index
-/// of a channel that a call moved meanwhile, and opens on it.
+/// of a channel that a spec in use moved meanwhile, and opens on it.
 #[test]
 fn a_session_opens_on_the_new_index_of_a_channel_moved_while_it_waits_for_a_home() {
     run(8, |test| async move {
@@ -404,8 +404,8 @@ fn a_session_opens_on_the_new_type_of_a_channel_changed_while_it_waits_for_a_hom
     });
 }
 
-/// A session that waits for the home of its index opens on the key that a call gave
-/// its channel meanwhile, and a later removal of that key ends it.
+/// A session that waits for the home of its index opens on the key that a spec in use
+/// gave its channel meanwhile, and a later removal of that key ends it.
 #[test]
 fn a_session_opens_on_the_new_key_of_a_channel_changed_while_it_waits_for_a_home() {
     run(10, |test| async move {
@@ -536,6 +536,18 @@ fn ends_the_spec_task_once_the_hub_and_each_session_drop() {
     });
 }
 
+/// The spec task ends when the mesh's group stops.
+#[test]
+fn ends_the_spec_task_when_the_mesh_stops() {
+    run(38, |test| async move {
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.ended.get(), 0, "each task runs");
+        test.stop_mesh().await;
+        test.clock.sleep(SETTLE).await;
+        assert_eq!(test.ended.get(), 1, "the spec task ended");
+    });
+}
+
 #[test]
 fn a_writer_with_an_index_whose_home_is_another_node_does_not_open() {
     run(2, |test| async move {
@@ -656,8 +668,8 @@ fn stops_an_open_of_an_index_whose_home_is_another_node_with_not_home() {
     );
 }
 
-/// An open that waits for the home of its index stops with `UNKNOWN` when a call
-/// removed one of its channels meanwhile.
+/// An open that waits for the home of its index stops with `UNKNOWN` when a spec in
+/// use removed one of its channels meanwhile.
 #[test]
 fn stops_an_open_of_a_channel_removed_while_it_waits_for_a_home_with_unknown() {
     let (served, code) = served(7, |test, _| async move {
@@ -673,8 +685,8 @@ fn stops_an_open_of_a_channel_removed_while_it_waits_for_a_home_with_unknown() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// An open of `[time, value]` that waits for the home of `time`, while a call moves
-/// `value` to `time-b`, stops with `UNKNOWN`, as for a removal.
+/// An open of `[time, value]` that waits for the home of `time`, while a spec in use
+/// moves `value` to `time-b`, stops with `UNKNOWN`, as for a removal.
 #[test]
 fn stops_an_open_of_a_channel_moved_while_it_waits_with_unknown() {
     let (served, code) = served(7, |test, _| async move {
@@ -692,7 +704,7 @@ fn stops_an_open_of_a_channel_moved_while_it_waits_with_unknown() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// As above, while a call changes the data type of `value`.
+/// As above, while a spec in use changes the data type of `value`.
 #[test]
 fn stops_an_open_of_a_channel_retyped_while_it_waits_with_unknown() {
     let (served, code) = served(7, |test, _| async move {
@@ -733,8 +745,8 @@ fn stops_an_open_of_a_channel_retyped_after_its_home_is_named_with_unknown() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// An open that waits for the home of `time` stops when a call removes `time`, with
-/// no home named after the call.
+/// An open that waits for the home of `time` stops when a spec in use removes `time`,
+/// with no home named after the spec.
 #[test]
 fn stops_an_open_whose_index_is_removed_while_it_waits_with_unknown() {
     let (served, code) = served(7, |test, _| async move {
@@ -749,8 +761,8 @@ fn stops_an_open_whose_index_is_removed_while_it_waits_with_unknown() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// An open that waits stops with the channel of the first call that removed one of
-/// its channels.
+/// An open that waits stops with the channel of the first spec in use that removed
+/// one of its channels.
 #[test]
 fn stops_an_open_that_waits_with_its_first_removed_channel() {
     let (served, code) = served(7, |test, _| async move {
@@ -767,8 +779,8 @@ fn stops_an_open_that_waits_with_its_first_removed_channel() {
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
-/// A call that defines `value` again as it was does not undo its removal by the call
-/// before it.
+/// A spec in use that defines `value` again as it was does not undo its removal by
+/// the spec before it.
 #[test]
 fn stops_an_open_of_a_channel_removed_and_defined_again_while_it_waits_with_unknown() {
     let (served, code) = served(7, |test, _| async move {

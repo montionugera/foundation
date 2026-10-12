@@ -476,8 +476,8 @@ impl<'s> Opening<'s> {
         }
     }
 
-    /// Fails with the first channel of the open that a call removed. Else sets the
-    /// waker that such a call wakes.
+    /// Fails with the first channel of the open that a change of the definitions
+    /// removed. Else sets the waker that such a change wakes.
     fn watch(&self, cx: &Context<'_>) -> Result<(), Error> {
         if let Some(key) = self.ending.removed() {
             return Err(Error::Removed(key));
@@ -487,8 +487,8 @@ impl<'s> Opening<'s> {
         Ok(())
     }
 
-    /// Reads the next message of the peer. Fails at once when a call removes a
-    /// channel of the open.
+    /// Reads the next message of the peer. Fails at once when a change of the
+    /// definitions removes a channel of the open.
     async fn recv(&self, receiver: &mut Receiver) -> Result<Option<Block>, Error> {
         let mut recv = pin!(receiver.recv());
         poll_fn(|cx| {
@@ -525,7 +525,7 @@ impl<'s> Opening<'s> {
     }
 
     /// Waits until the mesh names this node the home of the index. Fails at once when
-    /// a call removes a channel of the open.
+    /// a change of the definitions removes a channel of the open.
     ///
     /// # Panics
     ///
@@ -551,8 +551,8 @@ impl Drop for Opening<'_> {
 
 /// Waits until the mesh names this node the home of the index of `opening`, and reads
 /// the peer meanwhile. Gives the highest grant that the peer sent, 0 for none, or
-/// `None` when the peer finished first. Fails at once when a call removes a channel of
-/// `opening`.
+/// `None` when the peer finished first. Fails at once when a change of the
+/// definitions removes a channel of `opening`.
 async fn wait_for(
     opening: &Opening<'_>,
     home: &mut Home,

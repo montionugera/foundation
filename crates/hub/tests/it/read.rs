@@ -858,3 +858,25 @@ fn a_client_read_opens_on_a_channel_that_a_spec_in_use_adds() {
     );
     assert_eq!(served.len(), 2, "{served:?}");
 }
+
+/// A read stream that is open when the session of its client closes ends with that
+/// close.
+#[test]
+fn ends_a_read_that_is_open_at_the_close_of_its_session_as_closed() {
+    let (served, ()) = homeless(
+        318,
+        async |test| test.set_home(TIME, NODE).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Latest, &["value"]).await;
+            let (places, _, _) = opened(&mut stream, Mode::Latest).await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            finish(&mut agent).await;
+            drop(stream);
+        },
+    );
+    let closed = serve::Error::Stream(transport::Error::Closed {
+        code: transport::Code(0),
+    });
+    assert_eq!(served, [Ok(Got::Ended), Err(closed)]);
+}

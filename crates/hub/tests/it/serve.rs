@@ -806,8 +806,8 @@ fn changed_homeless(
     result.lock().expect("not poisoned").take()
 }
 
-/// An open that waits for a home stops when a call gives one of its channels another
-/// sample type meanwhile.
+/// An open that waits for a home stops when a spec in use gives one of its channels
+/// another sample type meanwhile.
 #[test]
 fn stops_an_open_of_a_channel_retyped_while_it_waits_for_a_home_with_unknown() {
     let mut changed = channels();
@@ -817,8 +817,8 @@ fn stops_an_open_of_a_channel_retyped_while_it_waits_for_a_home_with_unknown() {
     assert_eq!(served, Some(Err(removed)));
 }
 
-/// An open that waits for the home of its index stops when a call makes one of its
-/// keys the index of the others meanwhile.
+/// An open that waits for the home of its index stops when a spec in use makes one of
+/// its keys the index of the others meanwhile.
 #[test]
 fn stops_an_open_of_keys_given_another_index_while_it_waits_for_a_home_with_unknown() {
     let mut swapped = channels();
