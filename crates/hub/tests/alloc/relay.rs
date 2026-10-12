@@ -13,7 +13,6 @@ use transport::{Address, Class};
 use types::authority::Authority;
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::FromHome;
 use wire::hub::client::Mode;
 
 use crate::agent::{Agent, SUBJECT};
@@ -182,24 +181,16 @@ async fn session(
     take(&mut receiver, reader, &progress.wire).await;
 }
 
-/// Decodes each message on `receiver` with `reader`, and counts each whole frame in
-/// `taken`, until it has taken each frame of the run.
+/// Reads each frame of the run from `receiver` with `reader`, and counts each in
+/// `taken`.
 async fn take(
     receiver: &mut Receiver,
     mut reader: wire::hub::Reader,
     taken: &AtomicUsize,
 ) {
-    let frames = usize::try_from(WARM + COUNTED).expect("few frames");
-    while taken.load(Ordering::Relaxed) < frames {
-        let message = receiver.recv().await.expect("receives").expect("a message");
-        let decoded = reader.decode(&message).expect("a valid message");
-        let last = matches!(
-            decoded,
-            FromHome::Body { .. } | FromHome::Ends { last: true, .. }
-        );
-        if last && reader.body().is_none() {
-            taken.fetch_add(1, Ordering::Relaxed);
-        }
+    for _ in 0..WARM + COUNTED {
+        peer::frame(receiver, &mut reader).await;
+        taken.fetch_add(1, Ordering::Relaxed);
     }
 }
 

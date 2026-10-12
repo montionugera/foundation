@@ -1,5 +1,5 @@
 //! The peer end of a HUB WIRE session, for the tests and benches that read through
-//! one.
+//! one. The frames of a client read come in the same messages.
 
 use block::Pool;
 use transport::stream::{Receiver, Sender};
@@ -32,6 +32,24 @@ pub(crate) async fn open(
         "the home opens the session"
     );
     reader
+}
+
+/// Reads the messages of one whole frame from `receiver` with `reader`, and gives how
+/// many it read.
+pub(crate) async fn frame(receiver: &mut Receiver, reader: &mut Reader) -> usize {
+    let mut messages = 0;
+    loop {
+        let message = receiver.recv().await.expect("receives").expect("a message");
+        let decoded = reader.decode(&message).expect("a valid message");
+        messages += 1;
+        let ended = matches!(
+            decoded,
+            FromHome::Body { .. } | FromHome::Ends { last: true, .. }
+        );
+        if ended && reader.body().is_none() {
+            return messages;
+        }
+    }
 }
 
 /// Sends `bytes` in one message.

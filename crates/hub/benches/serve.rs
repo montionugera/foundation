@@ -76,7 +76,7 @@ use types::frame::{Draft, Form};
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
 use wire::Protocol;
-use wire::hub::{FromHome, Mode, client};
+use wire::hub::{Mode, client};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -513,8 +513,8 @@ async fn program(
     node.clock().sleep(STEP).await;
 }
 
-/// Decodes each message on `receiver` with `reader` until it has read `RUN` frames of
-/// `case` in full, and counts each in `progress`.
+/// Reads `RUN` frames of `case` from `receiver` with `reader`, and counts each in
+/// `progress`.
 ///
 /// # Panics
 ///
@@ -525,24 +525,14 @@ async fn take(
     case: &Case,
     progress: &Progress,
 ) {
-    let (mut frames, mut messages) = (0, 0);
-    while frames < RUN {
-        let message = receiver.recv().await.expect("receives").expect("a message");
-        let decoded = reader.decode(&message).expect("a valid message");
-        messages += 1;
-        let ended = matches!(
-            decoded,
-            FromHome::Body { .. } | FromHome::Ends { last: true, .. }
+    for _ in 0..RUN {
+        let messages = peer::frame(receiver, &mut reader).await;
+        assert_eq!(
+            messages, case.messages,
+            "the messages of a frame of {}",
+            case.name
         );
-        if ended && reader.body().is_none() {
-            assert_eq!(
-                messages, case.messages,
-                "the messages of a frame of {}",
-                case.name
-            );
-            (frames, messages) = (frames + 1, 0);
-            progress.frames.fetch_add(1, Ordering::Relaxed);
-        }
+        progress.frames.fetch_add(1, Ordering::Relaxed);
     }
 }
 
