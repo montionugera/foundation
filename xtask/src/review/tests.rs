@@ -3140,7 +3140,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
     }
     for (line, issue) in [
         (format!("#12 ({OK}), #13"), "#13"),
-        (format!("{OK} #12"), "#12"),
+        (format!("{OK} #12"), OK),
         (format!("#12 ({OK}), #13 (the cut), #14"), "#13"),
         (format!("#12 ({OK}), #13 ({OK}), #14"), "#14"),
         (format!("(#12), {OK}, PR#13,#14"), "#13"),
@@ -3150,10 +3150,28 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         ),
         ("the cut (#0012).".to_string(), "#0012"),
         ("#12,https://github.com/a/b/pull/1".to_string(), "#12"),
-        (format!("{OK},#12 #13"), "#12"),
+        (format!("{OK},#12 #13"), OK),
         ("none, #12 is fixed in this PR".to_string(), "#12"),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), no_ok(issue), "{line}");
+    }
+}
+
+#[test]
+fn a_comment_link_with_no_issue_before_it_is_a_deferred_issue_and_no_ok() {
+    for line in [
+        OK.to_string(),
+        format!("none {OK}"),
+        format!("{OK}, #12 not in a risk crate"),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), no_ok(OK), "{line}");
+    }
+    for line in [
+        format!("{OK} ({OK})"),
+        format!("{OK} not in a risk crate"),
+        format!("#12 ({OK})"),
+    ] {
+        assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
     }
 }
 

@@ -700,27 +700,32 @@ fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
 }
 
 /// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line, with
-/// no OK: no comment link ([`links`]) is after it in the value, and the words
-/// [`UNRISKY`] are not between it and the next issue.
+/// no OK: no comment link ([`links`]) starts after its start, and the words
+/// [`UNRISKY`] are not between it and the next issue. A comment link that is an issue
+/// is no OK of itself.
 fn unokayed(deferred: &str) -> Option<String> {
-    let tail = &deferred[links(deferred).last().unwrap_or(0)..];
-    let lower = tail.to_ascii_lowercase();
-    let mut issues = issues(tail).peekable();
+    let lower = deferred.to_ascii_lowercase();
+    let ok = links(deferred).last();
+    let mut issues = issues(deferred).peekable();
     while let Some(issue) = issues.next() {
-        let next = issues.peek().map_or(tail.len(), |next| next.start);
-        if !lower[issue.end..next].contains(UNRISKY) {
-            return Some(tail[issue].to_string());
+        let next = issues.peek().map_or(deferred.len(), |next| next.start);
+        let okayed = ok.is_some_and(|ok| ok > issue.start);
+        if !okayed && !lower[issue.end..next].contains(UNRISKY) {
+            return Some(deferred[issue].to_string());
         }
     }
     None
 }
 
-/// The place of each issue ([`issue`]) in `value`, in order. No issue starts in
-/// another.
+/// The place of each issue in `value`, the value of a `Deferred:` line, in order: each
+/// issue ([`issue`]), and a comment link ([`link`]) with no issue before it, which
+/// names the deferral by its comment. No issue starts in another.
 fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
     value.char_indices().filter_map(move |(at, _)| {
-        let place = at..(at >= end).then(|| issue(value, at)).flatten()?;
+        let comment = link(value, at).filter(|_| end == 0);
+        let found = || comment.or_else(|| issue(value, at));
+        let place = at..(at >= end).then(found).flatten()?;
         end = place.end;
         Some(place)
     })
@@ -738,7 +743,9 @@ fn issue(value: &str, at: usize) -> Option<usize> {
         .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"))
         .filter(|_| before.is_none_or(|c| !c.is_alphanumeric()));
     let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
-    let url = text.strip_prefix(HOST).filter(|_| !link(value, at));
+    let url = text
+        .strip_prefix(HOST)
+        .filter(|_| link(value, at).is_none());
     let rest = number
         .and_then(undigited)
         .or_else(|| url.and_then(numbered))?;
@@ -787,28 +794,29 @@ fn approved(surface: &str) -> bool {
 /// The start of each comment link ([`link`]) in `value`, in order.
 fn links(value: &str) -> impl Iterator<Item = usize> {
     let hosts = value.match_indices(HOST).map(|(at, _)| at);
-    hosts.filter(|&at| link(value, at))
+    hosts.filter(|&at| link(value, at).is_some())
 }
 
-/// Whether a comment link starts at `at` in `value`: [`HOST`] and the path of a
-/// comment ([`comment`]), at the start of `value` or after a space or `(`.
-fn link(value: &str, at: usize) -> bool {
+/// The end of the comment link that starts at `at` in `value`: [`HOST`] and the path
+/// of a comment ([`comment`]), at the start of `value` or after a space or `(`.
+fn link(value: &str, at: usize) -> Option<usize> {
     let before = value[..at].chars().next_back();
     let free = before.is_none_or(|c| c == ' ' || c == '(');
-    free && value[at..].strip_prefix(HOST).is_some_and(comment)
+    let path = value[at..].strip_prefix(HOST).filter(|_| free);
+    Some(value.len() - path.and_then(comment)?.len())
 }
 
 /// The start of each comment link, and of each URL of an issue or a PR.
 const HOST: &str = "https://github.com/";
 
-/// Whether `path` starts with the path of a comment on GitHub: the path of an issue
-/// or a PR ([`numbered`]), and `#issuecomment-`, `#pullrequestreview-`, or
-/// `#discussion_r` with a digit after it.
-fn comment(path: &str) -> bool {
+/// `path` after the path of a comment on GitHub at its start: the path of an issue or
+/// a PR ([`numbered`]), and `#issuecomment-`, `#pullrequestreview-`, or
+/// `#discussion_r` with the digits after it.
+fn comment(path: &str) -> Option<&str> {
     let marks = ["issuecomment-", "pullrequestreview-", "discussion_r"];
     let mark = numbered(path).and_then(|rest| rest.strip_prefix('#'));
     let id = mark.and_then(|mark| marks.iter().find_map(|m| mark.strip_prefix(m)));
-    id.and_then(undigited).is_some()
+    id.and_then(undigited)
 }
 
 /// `path` after the path of an issue or a PR on GitHub at its start: an owner, a
