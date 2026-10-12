@@ -1095,10 +1095,10 @@ impl Serve {
                     };
                     (ops, runs(mesh, key, config).follow(mesh.watch_spec()))
                 });
-                let (ops, group) = parts.unzip();
+                let (ops, runs) = parts.unzip();
                 let port =
                     route::accept(transport, mesh, hub.clone(), clock, tasks.clone());
-                let stop = until(guard, port, group, fail);
+                let stop = until(guard, port, runs, fail);
                 inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
             });
             // `hold` leaves `serve` to drop here: after a failed write it still holds
@@ -1184,20 +1184,20 @@ fn kinds() -> connector::kind::Table {
     connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
-/// Ready when the node stops (`guard`), the transport stops (`port`), or the mesh's
-/// group stops (`group`, with a mesh), by the rank of [`end`]. A transport or a group
-/// that ends it goes into `fail` first.
+/// Drives `runs`, with a mesh, which ends when the mesh's group stops. Ready when the
+/// node stops (`guard`), the transport stops (`port`), or `runs` ends, by the rank of
+/// [`end`]. A transport or a group that ends it goes into `fail` first.
 async fn until(
     guard: Guard,
     port: impl Future<Output = transport::Error>,
-    group: Option<impl Future<Output = mesh::Stopped>>,
+    runs: Option<impl Future<Output = mesh::Stopped>>,
     fail: impl Fn(Error),
 ) {
     let (mut guard, mut port) = (pin!(guard), pin!(port));
-    let mut group = pin!(group);
+    let mut runs = pin!(runs);
     poll_fn(|cx| {
-        let group = match group.as_mut().as_pin_mut() {
-            Some(group) => group.poll(cx),
+        let group = match runs.as_mut().as_pin_mut() {
+            Some(runs) => runs.poll(cx),
             None => Poll::Pending,
         };
         let ended = end(guard.as_mut().poll(cx), port.as_mut().poll(cx), group);
