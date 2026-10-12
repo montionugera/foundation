@@ -41,6 +41,8 @@ enum Cause {
     /// definition, in a paragraph: comrak then places its text in the wrong lines
     /// ([`misplaced`]).
     Misplaced,
+    /// A footnote definition inside another one ([`footnotes`]).
+    Nested,
 }
 
 impl Cause {
@@ -68,6 +70,13 @@ impl Cause {
                 ),
                 "Write each link and image on one line, and put a blank line after \
                  each link reference definition",
+            ),
+            Cause::Nested => (
+                format!(
+                    "a footnote inside a footnote, which the check cannot read as \
+                     GitHub shows it, in the line `{line}`"
+                ),
+                "Move it out of the other footnote",
             ),
         };
         format!("review round {number} has {cause}. {remedy}, {FORMAT}")
@@ -733,7 +742,7 @@ impl<'a> Shown<'a> {
         let root = parse_document(&arena, body, &options());
         // The code blocks of a footnote that GitHub does not show still hold its lines.
         let codes = code_blocks(root, body, &starts);
-        append_notes(root);
+        let nested = append_notes(root).err();
         // Whether each top-level block so far is a paragraph. So it is false at a
         // paragraph inside another block.
         let mut unbroken = true;
@@ -776,6 +785,7 @@ impl<'a> Shown<'a> {
             shown.number = respelled(&arena, body).children().find_map(number);
         }
         hiding.extend(tagged(body, &starts, &codes).map(|at| (at, Cause::Raw)));
+        hiding.extend(nested.map(|line| (line_start(line), Cause::Nested)));
         hiding.sort_by_key(|(at, _)| *at);
         shown.hiding = hiding
             .into_iter()
@@ -848,17 +858,28 @@ fn misplaced<'n>(paragraph: &'n AstNode<'n>, last: usize) -> bool {
 }
 
 /// Moves to the end of `root` each footnote definition that GitHub shows, where GitHub
-/// shows it, and detaches each other one ([`footnotes`]).
-fn append_notes<'n>(root: &'n AstNode<'n>) {
-    for note in footnotes(root) {
+/// shows it, and detaches each other one ([`footnotes`]). Errors as `footnotes` does.
+fn append_notes<'n>(root: &'n AstNode<'n>) -> Result<(), usize> {
+    for note in footnotes(root)? {
         root.append(note);
     }
+    Ok(())
 }
 
 /// Detaches from `root` each footnote definition that GitHub does not show, and gives
-/// the others in body order. GitHub shows the first definition of each label with a
-/// reference.
-fn footnotes<'n>(root: &'n AstNode<'n>) -> Vec<&'n AstNode<'n>> {
+/// the others in body order. GitHub shows the first definition of each label to end,
+/// when a reference names it. Errors with the line of the first definition inside
+/// another, and detaches none: comrak reads no reference to it.
+fn footnotes<'n>(root: &'n AstNode<'n>) -> Result<Vec<&'n AstNode<'n>>, usize> {
+    let note = |n: &AstNode<'_>| {
+        matches!(n.data.borrow().value, NodeValue::FootnoteDefinition(_))
+    };
+    let nested = root
+        .descendants()
+        .find(|n| note(n) && n.ancestors().skip(1).any(note));
+    if let Some(node) = nested {
+        return Err(node.data.borrow().sourcepos.start.line);
+    }
     let notes: Vec<_> = root
         .descendants()
         .filter_map(|node| match &node.data.borrow().value {
@@ -883,7 +904,7 @@ fn footnotes<'n>(root: &'n AstNode<'n>) -> Vec<&'n AstNode<'n>> {
             node.detach();
         }
     }
-    shown
+    Ok(shown)
 }
 
 /// Whether comrak reads the footnote labels `a` and `b` as one label.
@@ -989,13 +1010,10 @@ fn normalized(text: &str) -> String {
     normalized
 }
 
-/// The tree of `body` respelled by [`unblocked`], with only the footnotes that GitHub
-/// shows, each in place. Its source positions give the lines of `body`, not the
-/// columns.
+/// The tree of `body` respelled by [`unblocked`]. Its source positions give the lines
+/// of `body`, not the columns.
 fn respelled<'a>(arena: &'a Arena<'a>, body: &str) -> &'a AstNode<'a> {
-    let root = parse_document(arena, &unblocked(body), &options());
-    footnotes(root);
-    root
+    parse_document(arena, &unblocked(body), &options())
 }
 
 /// `body` respelled so that comrak starts an HTML block only where GitHub does, which
@@ -1202,7 +1220,7 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
                 .collect::<Result<_, String>>()?,
             waits: Vec::new(),
         };
-        for n in conditions(body) {
+        for n in conditions(body)? {
             let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
             let issue = issue.first().ok_or("gh returned no issue")?;
             if field::text(issue, "state")? == "open" {
@@ -1219,9 +1237,18 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
 /// digit, then white space and `#<n>`, in a paragraph as GitHub shows it ([`texts`]),
 /// also of a list item or a block quote, and also in a code span. A code block, a
 /// heading, a table, and HTML hold none. Only the issue right after the words counts.
-fn conditions(body: &str) -> Vec<u64> {
+/// Errors when the body has a footnote inside a footnote ([`footnotes`]).
+fn conditions(body: &str) -> Result<Vec<u64>, String> {
     let arena = Arena::new();
-    let root = respelled(&arena, &normalized(body));
+    let body = normalized(body);
+    let root = respelled(&arena, &body);
+    footnotes(root).map_err(|line| {
+        let line = body.lines().nth(line - 1).unwrap_or_default().trim();
+        format!(
+            "the PR body has a footnote inside a footnote in the line `{line}`, which \
+             the check cannot read as GitHub shows it. Move it out of the other footnote."
+        )
+    })?;
     let paragraphs = root
         .descendants()
         .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph));
@@ -1246,7 +1273,7 @@ fn conditions(body: &str) -> Vec<u64> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// `text` when it is a UTC time `YYYY-MM-DDTHH:MM:SSZ`, the form GitHub gives, in

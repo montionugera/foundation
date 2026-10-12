@@ -1900,15 +1900,11 @@ fn passes_a_footnote_with_no_reference_that_hides_no_field() {
         "[^a[b]: x",
         "> [^a\\]: x",
         "- [^a\\]: x",
-        "[^1]: [^a\\]: x",
-        "[^1]: [^2]: [^a\\]: x",
         "a\n[^a\\]: x",
         "[^a\\]: x](https://x.y)",
         "a `x\n  [^a\\]: y`",
         "> a `x\n> [^a\\]: y`",
         "- a `x\n  [^a\\]: y`",
-        "[^1]: - [^a\\]: x",
-        "[^1]: > [^a\\]: x",
         "a\r[^a\\]: x",
         "[^1]: x",
         "> [^a]: x",
@@ -2174,6 +2170,53 @@ fn fails_a_paragraph_that_comrak_places_in_the_wrong_lines() {
         check(&record(vec![alone])),
         vec![misplaced("[r]: https://x.y")]
     );
+}
+
+/// GitHub shows the first footnote of each label to end, so a footnote inside another
+/// can hide the one that holds it, and comrak reads no reference to it.
+#[test]
+fn fails_a_round_with_a_footnote_inside_a_footnote() {
+    let nested = |notes: &str| {
+        let text = ROUND.replace("weakening.\n\n", &format!("weakening.\n\n{notes}"));
+        check(&record(vec![bot(&text)]))
+    };
+    let problem = "review round 3 has a footnote inside a footnote, which the check \
+                   cannot read as GitHub shows it, in the line `[^b]: y`. Move it out \
+                   of the other footnote, in the format of \
+                   .claude/skills/review/SKILL.md, \"Round comment\".";
+    assert_eq!(
+        nested("Ref [^a].\n\n[^a]: x\n\n    [^b]: y\n\n"),
+        vec![problem]
+    );
+    assert_eq!(
+        nested("Intro.\n\n[^a]: x\n\n    [^b]: y\n\n"),
+        vec![problem]
+    );
+    let inside = |line: &str| {
+        format!(
+            "review round 3 has a footnote inside a footnote, which the check cannot \
+             read as GitHub shows it, in the line `{line}`. Move it out of the other \
+             footnote, in the format of .claude/skills/review/SKILL.md, \"Round \
+             comment\"."
+        )
+    };
+    for (notes, line) in [
+        ("[^1]: [^a\\]: x", "[^1]: [^a\\]: x"),
+        ("[^1]: [^2]: [^a\\]: x", "[^1]: [^2]: [^a\\]: x"),
+        ("[^1]: - [^a\\]: x", "[^1]: - [^a\\]: x"),
+        ("[^1]: > [^a\\]: x", "[^1]: > [^a\\]: x"),
+    ] {
+        assert_eq!(
+            nested(&format!("{notes}\n\n")),
+            vec![inside(line)],
+            "{notes}"
+        );
+    }
+    let flat = "Intro.\n\n[^a]: x\n\n[^b]: y\n\n";
+    assert_eq!(nested(flat), Vec::<String>::new());
+    let before =
+        ROUND.replace("weakening.\n\n", "weakening.\n\n[^a]: x\n\n    [^b]: y\n\n");
+    assert_eq!(check(&record(vec![old(&before)])), Vec::<String>::new());
 }
 
 #[test]
@@ -3217,6 +3260,41 @@ fn a_footnote_that_github_does_not_show_holds_no_condition() {
     let body =
         "Ref [^2].\n\n[^2]: Merges after #2455\n\n[^2]: Merges after #2456\n".into();
     assert_eq!(waiting(&body, &states), Ok(vec![open(2455)]));
+}
+
+/// GitHub shows the first footnote of each label to end, so a footnote inside another
+/// can hide the one that holds it, and comrak reads no reference to it.
+#[test]
+fn fails_the_run_on_a_footnote_inside_a_footnote_of_the_body() {
+    let states = [(5, "open"), (6, "open"), (8, "open")];
+    for (body, line) in [
+        (
+            "Ref [^a] [^b].\n\n[^a]: Merges after #5\n\n    [^b]: Merges after #8\n",
+            "[^b]: Merges after #8",
+        ),
+        (
+            "Ref [^a].\n\n[^a]: Merges after #5\n\n    [^a]: Merges after #8\n",
+            "[^a]: Merges after #8",
+        ),
+        (
+            "Intro.\n\n[^a]: x\n\n    [^b]: Merges after #8\n",
+            "[^b]: Merges after #8",
+        ),
+    ] {
+        assert_eq!(
+            waiting(&body.into(), &states),
+            Err(format!(
+                "PR 1: the PR body has a footnote inside a footnote in the line \
+                 `{line}`, which the check cannot read as GitHub shows it. Move it out \
+                 of the other footnote."
+            )),
+            "{body}"
+        );
+    }
+    let body = "Ref [^a].\n\n[^a]: Merges after #5\n\n    Merges after #8\n";
+    assert_eq!(waiting(&body.into(), &states), Ok(vec![open(5), open(8)]));
+    let body = "Ref [^a].\n\n> [^a]: Merges after #5\n>\n>     [^b]: Merges after #8\n";
+    assert_eq!(waiting(&body.into(), &states), Ok(vec![open(5)]));
 }
 
 /// GitHub reads HTML blocks by an older spec, in which `<search>` and `<!` with a
