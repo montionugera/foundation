@@ -6,9 +6,8 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
-#[path = "it/common.rs"]
-#[expect(dead_code, reason = "this binary uses some of the helpers")]
-mod common;
+#[path = "common/panics.rs"]
+mod panics;
 
 /// Runs `child` in a new process of this test binary that runs only the calling test,
 /// and asserts that the process aborts at a panic that unwinds into the unwind of
@@ -47,7 +46,7 @@ mod shards {
     use env::tasks::Tasks;
 
     use super::assert_aborts;
-    use crate::common::{Armed, Bomb, assert_joins, panicked};
+    use crate::panics::{Armed, Bomb, assert_joins, panicked};
 
     fn shards() -> Shards {
         os::shards().expect("the OS gives the cores of this process")
@@ -109,7 +108,7 @@ mod threads {
     use env::threads::Threads;
 
     use super::assert_aborts;
-    use crate::common::{Armed, Bomb, assert_joins, panicked};
+    use crate::panics::{Armed, Bomb, assert_joins, panicked};
 
     fn threads() -> Threads {
         os::threads().expect("the OS gives the cores of this process")
