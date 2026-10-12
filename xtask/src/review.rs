@@ -383,8 +383,8 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
         .map(|issue| {
             format!(
                 "review round {number} defers to {issue} with no link to the OK of the \
-             architect after it on its `Deferred:` line. Add the link, or the words \
-             `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
+                 architect after it on its `Deferred:` line. Add the link, or the words \
+                 `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
             )
         });
     problem
@@ -712,12 +712,11 @@ fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
 
 /// `value` with no [`BREAK`], and the place in it of each `BREAK` that `value` held.
 fn unbroken(value: &str) -> (String, Vec<usize>) {
-    let mut text = String::with_capacity(value.len());
+    let mut parts = value.split(BREAK);
+    let mut text = parts.next().unwrap_or_default().to_owned();
     let mut breaks = Vec::new();
-    for (i, part) in value.split(BREAK).enumerate() {
-        if i > 0 {
-            breaks.push(text.len());
-        }
+    for part in parts {
+        breaks.push(text.len());
         text.push_str(part);
     }
     (text, breaks)

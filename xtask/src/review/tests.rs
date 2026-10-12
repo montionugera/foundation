@@ -3302,9 +3302,14 @@ fn an_issue_url_with_a_gh_repo_after_a_mark_or_an_ignorable_character_is_read() 
 }
 
 #[test]
-fn a_comment_link_with_a_gh_name_after_an_ignorable_character_is_an_ok() {
-    let line = "#12 (https://github.com/\u{200B}gh-1/b/pull/1#issuecomment-2)";
-    assert_eq!(risk(vec![deferred(line)]), Vec::<String>::new());
+fn a_comment_link_with_a_gh_name_after_an_ignorable_character_counts() {
+    let url = "https://github.com/\u{200B}gh-1/b/pull/1#issuecomment-2";
+    assert_eq!(
+        risk(vec![deferred(&format!("#12 ({url})"))]),
+        Vec::<String>::new()
+    );
+    let line = format!("`Share` ({url})");
+    assert_eq!(check(&record(vec![surfaced(&line)])), Vec::<String>::new());
 }
 
 /// GitHub links a bare URL up to the next space, and shows each mark in it as written.
@@ -3313,6 +3318,7 @@ fn a_bare_url_shows_its_marks_as_written() {
     for url in [
         "https://github.com/*gh-1*/b/pull/1#issuecomment-2",
         "https://github.com/a/**b**/pull/1#issuecomment-2",
+        "https://github.com/a/b/pull/1#issuecomment-*2*",
     ] {
         let line = format!("#12 ({url})");
         assert_eq!(risk(vec![deferred(&line)]), no_ok("#12"), "{line:?}");
