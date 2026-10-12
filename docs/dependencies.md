@@ -76,10 +76,9 @@ with neither is a finding. A line that no crate of the workspace reaches can nam
 of the copy in place of a test outside it, with the reason that no crate reaches it; the
 PR runs that test with the mutant, as the breaker does. When a crate of the workspace
 first reaches the line, such as `transport` with 0-RTT, a test outside the copy takes
-its place. CI does not run the tests of a copy, so a later change of the copy that
-breaks one of these lines fails no check: #2474 adds a CI step that runs the tests of
-each Rust copy on a PR that changes it. Decided by laptop.architect-2,
-2026-10-12T18:34:13Z:
+its place. Until #2474 runs the tests of each Rust copy on a PR that changes it, a later
+change of the copy that breaks one of these lines fails no check. Decided by
+laptop.architect-2, 2026-10-12T18:34:13Z:
 https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6130288471. The
 `breaker` of the PR runs each mutant on the list, and each hand mutant. The root
 `Cargo.toml` excludes `.claude`: cargo skips a workspace that excludes the path and
