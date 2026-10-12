@@ -8,3 +8,8 @@
   comes from the spec (NODE SETTINGS), not from the caller of `Node::start`.
   Decided by the architect on #1287:
   https://github.com/synnaxlabs/foundation/pull/1287#issuecomment-6034425115.
+  Amended (2026-10-12, #1662, by `laptop.architect-2`, 15:50 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083. "A field
+  of `node::Config` lost" holds no more. Since #1732 a value that a policy sets reaches
+  the node through `node::Config`, as the budget does, so #1285 puts the stamp limits in
+  `node::Settings` (NODE PORT).
