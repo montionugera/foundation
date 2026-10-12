@@ -62,7 +62,6 @@ struct Peer<'s> {
     value: f64,
     /// The server does not run while it is set.
     paused: Rc<Cell<bool>>,
-    server: Rc<Server>,
 }
 
 impl Peer<'_> {
@@ -107,7 +106,7 @@ async fn serve<T>(
     let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
         .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
-    let server = Rc::new(unsafe { Server::start(&manager, c"", sessions) });
+    let server = unsafe { Server::start(&manager, c"", sessions) };
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
     server.add_double(VALUE, value);
     let peer = Peer {
@@ -118,7 +117,6 @@ async fn serve<T>(
         url: format!("opc.tcp://{local}"),
         value,
         paused: Rc::default(),
-        server: Rc::clone(&server),
     };
     let paused = Rc::clone(&peer.paused);
     let out = {
@@ -135,7 +133,6 @@ async fn serve<T>(
         })
         .await
     };
-    let server = Rc::into_inner(server).expect("the body drops its peer");
     server.close(&manager).await;
     out
 }
