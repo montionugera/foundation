@@ -110,7 +110,7 @@ impl<'a> History<'a> {
         match self.range(from, end, &CODE)? {
             Range::Empty => Ok(None),
             Range::Counted(phrase) => Ok(Some(phrase)),
-            Range::Diff { tree, end } => self.first_change(&tree, &end),
+            Range::Diff { tree, end, .. } => self.first_change(&tree, &end),
         }
     }
 
@@ -144,7 +144,7 @@ impl<'a> History<'a> {
         let (tree, end) = match self.range(from, end, &DECISION)? {
             Range::Empty => return Ok(None),
             Range::Counted(phrase) => return Ok(Some(phrase)),
-            Range::Diff { tree, end } => (tree, end),
+            Range::Diff { tree, end, .. } => (tree, end),
         };
         let changed = self
             .diff(&tree, &end)?
@@ -167,7 +167,9 @@ impl<'a> History<'a> {
     /// conflict in `<path>` in `<merge>`", "has a conflict in `<path>` between its
     /// start and the base", "has `<old>`, which the PR changes and the base moves into
     /// the source file `<new>`", "has `<text>`, which names no commit", and "holds the
-    /// base at more than one newest commit: `<commit>`, `<commit>`".
+    /// base at more than one newest commit: `<commit>`, `<commit>`". A conflict in a
+    /// source file counts only as `surface_conflict` says, where `end` resolves a
+    /// conflict between its start and the base.
     ///
     /// # Errors
     ///
@@ -177,14 +179,15 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
     ) -> Result<Option<String>, String> {
-        let (tree, end) = match self.range(from, end, &SOURCE)? {
+        let (tree, end, settled) = match self.range(from, end, &SOURCE)? {
             Range::Empty => return Ok(None),
             Range::Counted(phrase) => return Ok(Some(phrase)),
-            Range::Diff { tree, end } => (tree, end),
+            Range::Diff { tree, end, settled } => (tree, end, settled),
         };
         for entry in self.diff(&tree, &end)? {
             let path = String::from_utf8_lossy(&entry.path);
-            if (SOURCE.counts)(&path) && self.surface_changed(&entry)? {
+            let counted = (SOURCE.counts)(&path) && !settled.iter().any(|s| *s == path);
+            if counted && self.surface_changed(&entry)? {
                 return Ok(Some(format!(
                     "changes a `pub` item or its doc in `{path}`"
                 )));
@@ -196,23 +199,80 @@ impl<'a> History<'a> {
     /// Whether `entry`, of a source file, changes the public surface of the file. A
     /// file that does not exist has none.
     fn surface_changed(&self, entry: &Entry) -> Result<bool, String> {
-        let text = |mode: &str, blob: &str| {
-            if absent(blob) {
-                return Ok(Some(String::new()));
-            }
-            // A submodule's blob is a commit and a symlink's blob is its target.
-            if [GITLINK, SYMLINK].contains(&mode) {
-                return Ok(None);
-            }
-            let text = self.output(&["cat-file", "blob", blob])?;
-            Ok::<_, String>(Some(String::from_utf8_lossy(&text).into_owned()))
+        let old = self.source(&entry.old_mode, &entry.old)?;
+        let new = self.source(&entry.new_mode, &entry.new)?;
+        Ok(!same(old.as_deref(), new.as_deref()))
+    }
+
+    /// Whether a conflict in the source file `path` between the commits `first` and
+    /// `second`, which the commit `result` resolves, counts: when each of the two
+    /// changed the public surface of the file from their merge base, or `result` gives
+    /// the file a surface other than that of the one that changed it, or other than
+    /// that of the merge base when neither did. A path with a byte that is not UTF-8,
+    /// and two commits with no single merge base, count.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn surface_conflict(
+        &self,
+        path: &str,
+        first: &str,
+        second: &str,
+        result: &str,
+    ) -> Result<bool, String> {
+        if path.contains(char::REPLACEMENT_CHARACTER) {
+            return Ok(true);
+        }
+        let bases = self.git(&["merge-base", "--all", first, second])?;
+        let [base] = bases.lines().collect::<Vec<_>>()[..] else {
+            return Ok(true);
         };
-        let old = text(&entry.old_mode, &entry.old)?;
-        let new = text(&entry.new_mode, &entry.new)?;
-        Ok(match (old, new) {
-            (Some(old), Some(new)) => surface::changed(&old, &new),
-            _ => true,
-        })
+        let base = self.source_at(base, path)?;
+        let first = self.source_at(first, path)?;
+        let second = self.source_at(second, path)?;
+        let first_changed = !same(base.as_deref(), first.as_deref());
+        let second_changed = !same(base.as_deref(), second.as_deref());
+        let changed = if first_changed { first } else { second };
+        let result = self.source_at(result, path)?;
+        Ok(first_changed && second_changed
+            || !same(changed.as_deref(), result.as_deref()))
+    }
+
+    /// The text of the file `path` in `commit`, as [`History::source`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn source_at(&self, commit: &str, path: &str) -> Result<Option<String>, String> {
+        let tree = format!("{commit}^{{tree}}");
+        let line =
+            self.output(&["--literal-pathspecs", "ls-tree", "-z", &tree, path])?;
+        // `<mode> <type> <object>TAB<path>NUL`, or nothing when the tree has no `path`.
+        let fields = String::from_utf8_lossy(&line);
+        let mut fields = fields.split([' ', '\t']);
+        match (fields.next(), fields.nth(1)) {
+            (Some(mode), Some(blob)) => self.source(mode, blob),
+            _ => Ok(Some(String::new())),
+        }
+    }
+
+    /// The text of a source file of mode `mode` and blob `blob`: empty when `blob` is
+    /// all zeros, the file being absent, and `None` for a symlink or a submodule, whose
+    /// blob is no Rust text.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git cat-file`.
+    fn source(&self, mode: &str, blob: &str) -> Result<Option<String>, String> {
+        if absent(blob) {
+            return Ok(Some(String::new()));
+        }
+        if [GITLINK, SYMLINK].contains(&mode) {
+            return Ok(None);
+        }
+        let text = self.output(&["cat-file", "blob", blob])?;
+        Ok(Some(String::from_utf8_lossy(&text).into_owned()))
     }
 
     /// The range `<from>..<end>`, as a rule that counts the paths of `kind` reads it.
@@ -242,13 +302,13 @@ impl<'a> History<'a> {
                 bases.join("`, `")
             )));
         };
-        if let Some((path, merge)) = self.resolved(&from, &end, &base, kind.counts)? {
+        if let Some((path, merge)) = self.resolved(&from, &end, &base, kind)? {
             return Ok(Range::Counted(format!(
                 "resolves a conflict in `{path}` in `{merge}`"
             )));
         }
         let merged = self.merged(&from, newest)?;
-        if let Some(path) = merged.conflict(kind.counts) {
+        if let Some(path) = self.conflict(kind, &merged, &from, newest, &end)? {
             return Ok(Range::Counted(format!(
                 "has a conflict in `{path}` between its start and the base"
             )));
@@ -256,15 +316,16 @@ impl<'a> History<'a> {
         Ok(match self.moved(&from, newest, &merged.tree, kind)? {
             Some(moved) => Range::Counted(moved),
             None => Range::Diff {
+                settled: merged.conflicts(kind.counts).map(str::to_owned).collect(),
                 tree: merged.tree,
                 end,
             },
         })
     }
 
-    /// The first conflicted path for which `counts` holds in a merge of the base on
-    /// the first-parent chain of `<from>..<end>`, and that merge. `base` is the SHA of
-    /// the base.
+    /// The first conflict that counts for `kind` ([`History::conflict`]) in a merge of
+    /// the base on the first-parent chain of `<from>..<end>`, and that merge. `base` is
+    /// the SHA of the base.
     ///
     /// # Errors
     ///
@@ -274,7 +335,7 @@ impl<'a> History<'a> {
         from: &str,
         end: &str,
         base: &str,
-        counts: impl Fn(&str) -> bool,
+        kind: &Kind,
     ) -> Result<Option<(String, String)>, String> {
         let commits = format!("{from}..{end}");
         let chain = self.git(&[
@@ -288,9 +349,40 @@ impl<'a> History<'a> {
             let Some((first, second)) = self.base_merge(line, base)? else {
                 continue;
             };
-            if let Some(path) = self.merged(first, second)?.conflict(&counts) {
-                let merge = line.split(' ').next().unwrap_or_default();
-                return Ok(Some((path.to_string(), merge.to_string())));
+            let merge = line.split(' ').next().unwrap_or_default();
+            let merged = self.merged(first, second)?;
+            if let Some(path) = self.conflict(kind, &merged, first, second, merge)? {
+                return Ok(Some((path, merge.to_string())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The first path that `merged`, the merge of `first` and `second`, has a conflict
+    /// in and that `kind` counts, with the commit `result` that resolves it. Under
+    /// [`Conflict::Surface`], only a conflict that changes the public surface
+    /// ([`History::surface_conflict`]) counts.
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command.
+    fn conflict(
+        &self,
+        kind: &Kind,
+        merged: &Merged,
+        first: &str,
+        second: &str,
+        result: &str,
+    ) -> Result<Option<String>, String> {
+        for path in merged.conflicts(kind.counts) {
+            let counts = match kind.conflict {
+                Conflict::Counts => true,
+                Conflict::Surface => {
+                    self.surface_conflict(path, first, second, result)?
+                }
+            };
+            if counts {
+                return Ok(Some(path.to_owned()));
             }
         }
         Ok(None)
@@ -833,6 +925,13 @@ impl Entry {
 
 /// Whether `field`, a mode or a blob of `git diff --raw`, is all zeros: the path is
 /// not in that tree.
+/// Whether two texts of a source file have one public surface. `None`, a text that is
+/// no Rust text, has none.
+fn same(old: Option<&str>, new: Option<&str>) -> bool {
+    old.zip(new)
+        .is_some_and(|(old, new)| !surface::changed(old, new))
+}
+
 fn absent(field: &str) -> bool {
     field.bytes().all(|b| b == b'0')
 }
@@ -843,12 +942,24 @@ struct Kind {
     counts: fn(&str) -> bool,
     /// What a phrase calls a counted path that a move makes, with the space after it.
     noun: &'static str,
+    /// When a conflict in a counted path counts.
+    conflict: Conflict,
+}
+
+/// When a conflict in a path that a [`Kind`] counts counts.
+enum Conflict {
+    /// Each conflict.
+    Counts,
+    /// A conflict that changes the public surface of the file
+    /// ([`History::surface_conflict`]).
+    Surface,
 }
 
 /// The code files: each path that is not a `.md` file.
 const CODE: Kind = Kind {
     counts: |path| !text_path(path),
     noun: "the code file ",
+    conflict: Conflict::Counts,
 };
 
 /// The files under `docs/decisions/`, in any ASCII case of those letters: a file system
@@ -860,6 +971,7 @@ const DECISION: Kind = Kind {
         start.is_some_and(|start| start.eq_ignore_ascii_case(decisions))
     },
     noun: "the decision ",
+    conflict: Conflict::Counts,
 };
 
 /// The source files of the crates: each `.rs` file under `crates/<crate>/src/`, at any
@@ -872,6 +984,7 @@ const SOURCE: Kind = Kind {
             .is_some_and(|(_, rest)| rest.starts_with("src/") && rust_path(rest))
     },
     noun: "the source file ",
+    conflict: Conflict::Surface,
 };
 
 /// A file to write in a tree.
@@ -905,12 +1018,12 @@ struct Merged {
 }
 
 impl Merged {
-    /// The first conflicted path for which `counts` holds.
-    fn conflict(&self, counts: impl Fn(&str) -> bool) -> Option<&str> {
+    /// Each conflicted path for which `counts` holds.
+    fn conflicts(&self, counts: fn(&str) -> bool) -> impl Iterator<Item = &str> {
         self.conflicts
             .iter()
             .map(String::as_str)
-            .find(|path| counts(path))
+            .filter(move |path| counts(path))
     }
 }
 
@@ -923,8 +1036,13 @@ enum Range {
     /// one in which the base moves a path of the PR into such a path.
     Counted(String),
     /// A range whose diff decides: from the tree of `from` and the newest base commit
-    /// that `end` holds, to the commit `end`.
-    Diff { tree: String, end: String },
+    /// that `end` holds, to the commit `end`. The diff does not read a path of
+    /// `settled`: a counted path with a conflict in that tree that does not count.
+    Diff {
+        tree: String,
+        end: String,
+        settled: Vec<String>,
+    },
 }
 
 /// Whether `path`, a path as `git` gives it, is a `.md` file, the one kind of file

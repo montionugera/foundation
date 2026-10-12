@@ -2884,27 +2884,74 @@ fn a_change_of_mode_alone_changes_no_surface() {
     repo.remove();
 }
 
-#[test]
-fn a_merge_that_resolves_a_conflict_in_a_source_file_changes_the_surface() {
-    let repo = Repo::new("surface-item-conflict");
+/// The surface phrase of a range that merges `base` into `pr`, which conflict on
+/// one line of `crates/a/src/lib.rs` that starts as `fn a() {}`, and resolves the
+/// conflict with `merged`.
+fn resolved(name: &str, pr: &str, base: &str, merged: &str) -> Option<String> {
+    let repo = Repo::new(name);
     let lib = "crates/a/src/lib.rs";
-    let base = repo.commit(lib, "fn a() {}\n");
-    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    let main = repo.commit(lib, "fn a() {}\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &main]);
     repo.git(&["switch", "--quiet", "-c", "pr"]);
-    let start = repo.commit(lib, "fn a() { pr(); }\n");
-    repo.advance_main(lib, "fn a() { base(); }\n");
+    let start = repo.commit(lib, pr);
+    repo.advance_main(lib, base);
     let merge = repo
         .command()
         .args(["merge", "--no-edit", "origin/main"])
         .output()
         .unwrap();
-    assert!(!merge.status.success(), "{merge:?}");
-    let end = repo.commit(lib, "fn a() { base(); }\n");
-    assert_eq!(
-        repo.surface_change(&start, &end),
-        Ok(Some(format!("resolves a conflict in `{lib}` in `{end}`")))
-    );
+    assert!(!merge.status.success(), "{name}: {merge:?}");
+    let end = repo.commit(lib, merged);
+    let found = repo.surface_change(&start, &end).unwrap();
+    if let Some(phrase) = &found {
+        assert_eq!(
+            *phrase,
+            format!("resolves a conflict in `{lib}` in `{end}`")
+        );
+    }
     repo.remove();
+    found
+}
+
+#[test]
+fn a_conflict_in_a_source_file_counts_when_the_merge_adds_a_surface() {
+    let pr_item = "pub fn a() { pr(); }\n";
+    let base_item = "pub fn a() { base(); }\n";
+    let pr_body = "fn a() { pr(); }\n";
+    let base_body = "fn a() { base(); }\n";
+    for (name, pr, base, merged, counted) in [
+        (
+            "surface-both",
+            pr_item,
+            "pub fn a(b: u8) {}\n",
+            pr_item,
+            true,
+        ),
+        (
+            "surface-pr-keeps",
+            pr_item,
+            base_body,
+            "pub fn a() { base(); }\n",
+            false,
+        ),
+        (
+            "surface-base-keeps",
+            pr_body,
+            base_item,
+            "pub fn a() { pr(); }\n",
+            false,
+        ),
+        ("surface-pr-other", pr_item, base_body, base_body, true),
+        ("surface-base-other", pr_body, base_item, pr_body, true),
+        ("surface-none-keeps", pr_body, base_body, base_body, false),
+        ("surface-none-other", pr_body, base_body, base_item, true),
+    ] {
+        assert_eq!(
+            resolved(name, pr, base, merged).is_some(),
+            counted,
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -2935,12 +2982,12 @@ fn a_source_file_that_the_base_removes_and_the_range_keeps_changes_the_surface()
 }
 
 #[test]
-fn a_source_file_conflict_of_the_start_and_the_base_changes_the_surface() {
+fn a_source_file_conflict_of_the_start_and_the_base_counts_by_the_end() {
     let (repo, _) = Repo::with_pr("surface-item-closed");
     let lib = "crates/a/src/lib.rs";
     repo.advance_main(lib, "fn a() {}\n// old\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
-    let start = repo.commit(lib, "fn a() {}\n// pr\n");
+    let start = repo.commit(lib, "pub fn a() {}\n// pr\n");
     repo.commit(lib, "fn a() {}\n// old\n");
     repo.advance_main(lib, "fn a() {}\n// base\n");
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
@@ -2950,6 +2997,8 @@ fn a_source_file_conflict_of_the_start_and_the_base_changes_the_surface() {
             "has a conflict in `{lib}` between its start and the base"
         )))
     );
+    let kept = repo.commit(lib, "pub fn a() {}\n// base\n");
+    assert_eq!(repo.surface_change(&start, &kept), Ok(None));
     repo.remove();
 }
 
