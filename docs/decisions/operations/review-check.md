@@ -255,13 +255,17 @@
   path and at its new one, in each rule that reads the files of the PR. An issue is each
   `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
-  `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. The problem
-  names the round and the first such issue. A comment link is a URL in the text of the
-  line as GitHub shows it: `https://github.com/<owner>/<repo>/pull/<n>` or
+  `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
+  issue only when it starts the line or follows a character that is no letter and no
+  number, as `char::is_alphanumeric` of Rust reads a character. The problem names the
+  round and the first such issue. A comment link is a URL in the text of the line as
+  GitHub shows it: `https://github.com/<owner>/<repo>/pull/<n>` or
   `https://github.com/<owner>/<repo>/issues/<n>`, then `#issuecomment-<id>`,
   `#pullrequestreview-<id>`, or `#discussion_r<id>`. It starts the line or follows a
   space or `(`. A `[text](url)` link shows no URL and does not count, but its text
-  counts when it is such a URL. The limits: one link serves each issue before it on the
+  counts when it is such a URL. On the `Deferred:` line, a comment link with no issue
+  before it in the line is an issue and no comment link: the line names the deferral by
+  the link of its comment. The limits: one link serves each issue before it on the
   `Deferred:` line, the words `not in a risk crate` serve only the issue before them,
   one link serves each item of the `Public surface:` line, and the check does not read
   what a link says. The check reads `owed`, `departs from`, `GH-<n>`,
@@ -283,7 +287,10 @@
   approved with those rules at 2026-10-11T21:24:40Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6113934252), and
   ruled for the words of a line at 2026-10-11T23:16:06Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6114997222). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6114997222), and
+  ruled for a comment link with no issue before it and for the start of a `GH-<n>` at
+  2026-10-11T23:28:34Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6115109286). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
