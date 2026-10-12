@@ -2691,32 +2691,46 @@ mod pool {
 
     use block::testing::Scarce;
     use types::frame::{self, Form};
+    use types::time::Monotonic;
 
     use super::hub::{I64, data, define, entry, index, writer};
     use super::*;
 
-    const SECOND: i64 = 1_000_000_000;
+    const SECOND_NS: i64 = Span::SECOND.nanos();
 
     /// A shard gives the pages of a block size back to the system 10 to 20 s after
-    /// the last block of that size returned. The last return falls at each of 10
-    /// phases of the shard's timer, so one of them comes just after a purge.
+    /// the last block of that size returned. The last return falls at the open of
+    /// the writer and at each of 1 to 9 s after the start. A return at the open also
+    /// keeps its pages until 20 s after the start, before which the timer cannot
+    /// purge twice.
     #[test]
     fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
+        let after = |span| move |at: Monotonic| at.checked_add(span).expect("in range");
         for phase in 0..10 {
-            let phase = Span::from_nanos(phase * SECOND);
-            let held = kept(phase, Span::from_nanos(10 * SECOND - 1));
+            let phase = Span::from_nanos(phase * SECOND_NS);
+            let early = after(Span::from_nanos(10 * SECOND_NS - 1));
+            let held = kept(phase, move |_, returned| early(returned));
             assert!(held, "the size keeps its pages at {phase:?}");
-            let idle = !kept(phase, Span::from_nanos(20 * SECOND + 1));
+            let late = after(Span::from_nanos(20 * SECOND_NS + 1));
+            let idle = !kept(phase, move |_, returned| late(returned));
             assert!(idle, "the pages went back at {phase:?}");
         }
+        let early = after(Span::from_nanos(20 * SECOND_NS - 1));
+        let held = kept(Span::ZERO, move |start, _| early(start));
+        assert!(held, "the size keeps its pages until 20 s after the start");
     }
 
-    /// Whether a block size keeps its pages `wait` after its last block returned,
-    /// `phase` after the shard opened: whether a take of its block succeeds while the
-    /// memory refuses. The memory shows a purge only through its next commit: while
-    /// it refuses, a commit of bytes that the system still holds succeeds, and a
-    /// commit of purged bytes gives `Refused`.
-    fn kept(phase: Span, wait: Span) -> bool {
+    /// Whether a block size keeps its pages at the instant that `at` gives from the
+    /// start of the node and the return of its last block. That block returns at
+    /// `phase` after the start, or at the open of the writer when it comes later.
+    /// The size keeps its pages when a take of its block succeeds while the memory
+    /// refuses. The memory shows a purge only through its next commit: while it
+    /// refuses, a commit of bytes that the system still holds succeeds, and a commit
+    /// of purged bytes gives `Refused`.
+    fn kept(
+        phase: Span,
+        at: impl FnOnce(Monotonic, Monotonic) -> Monotonic + Send + 'static,
+    ) -> bool {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 1);
         let switch = Rc::new(RefCell::new(None));
@@ -2726,6 +2740,8 @@ mod pool {
             *made.borrow_mut() = Some(switch);
             Ok(memory)
         });
+        let start = host.clock().now();
+        let phase = start.checked_add(phase).expect("in range");
         let node = Node::start(config(&host, Size::MEBIBYTE, memory));
         let switch = switch.take().expect("the shard got its memory");
         let seen = Arc::new(Mutex::new(None));
@@ -2738,19 +2754,19 @@ mod pool {
             series.sort_unstable();
             // Takes a block for a frame of 4 KiB of samples and drops it at once.
             let take = || writer.draft(Form::Raw, &series).map(drop);
-            clock.sleep(phase).await;
+            clock.sleep_until(phase).await;
             switch.refuse();
             let new = take();
             switch.allow();
             let carved = take();
             switch.refuse();
             let again = take();
-            clock.sleep(wait).await;
+            clock.sleep_until(at(start, clock.now())).await;
             let later = take();
             switch.allow();
             *out.lock().unwrap() = Some((new, carved, again, later));
         });
-        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND)), Ok(()));
+        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND_NS)), Ok(()));
         let seen = seen.lock().unwrap().take();
         let (new, carved, again, later) = seen.expect("the task ran to its end");
         let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
