@@ -4635,7 +4635,7 @@ fn an_open_with_no_largest_block_free_fails_and_the_next_recovers() {
         let opened = shard.open(ring, &mut Slots::new()).await;
         let exhausted = block::Error::Exhausted {
             requested: 512 << 10,
-            available: 306_432,
+            available: 306_688,
         };
         assert_eq!(opened.map(drop), Err(Error::Pool(exhausted)));
         drop(held);
@@ -4828,23 +4828,55 @@ fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
     });
 }
 
-/// An open fails with `Pool` when its pool cannot hold the blocks of an empty entry
-/// in two parts beside the blocks of a group.
+/// An entry of `block_max` bytes in two parts, a head of 30 bytes and a body, as
+/// `home` makes a stored body, appends from the pool of a buffer just opened, with no
+/// purge: the open holds no block of the pool.
+#[test]
+fn an_entry_at_block_max_with_a_short_head_appends_after_an_open() {
+    for (case, budget, max) in [(207, 62_272, 4096), (208, 68_000, 8_257)] {
+        run(case, move |mut shard| async move {
+            let config = block::Config::new(budget).expect("the budget fits");
+            shard.pool = Rc::new(Pool::heap(config));
+            let mut slots = Slots::new();
+            let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+            assert_eq!(buffer.block_max(), max);
+            let a = slots.index(key(1));
+            for first in 0..3 {
+                let parts = parts_of(buffer.pool(), &[30, max - 30]);
+                let appended =
+                    buffer.append([entry(1, a, Path::Live, first, 1, Some(1), parts)]);
+                assert_eq!(appended, Ok(()), "budget {budget}, append {first}");
+                buffer.committed().await.expect("commits");
+            }
+        });
+    }
+}
+
+/// An open fails with `Budget` when its pool holds no entry of
+/// `Layout::ENTRY_MAX_MIN` bytes beside the blocks of a group, and opens from `need`.
 #[test]
 fn an_open_fails_on_a_pool_that_holds_no_entry() {
     run(205, |mut shard| async move {
-        let config = block::Config::new(57_791).expect("the budget fits");
+        let config = block::Config::new(62_271).expect("the budget fits");
         shard.pool = Rc::new(Pool::heap(config));
         let opened = shard.open(least(600_000), &mut Slots::new()).await;
-        let exhausted = block::Error::Exhausted {
-            requested: 0,
-            available: 127,
-        };
-        assert_eq!(opened.err(), Some(Error::Pool(exhausted)));
-        let config = block::Config::new(57_792).expect("the budget fits");
+        let error = opened.map(drop).expect_err("the open fails");
+        assert_eq!(
+            error,
+            Error::Budget {
+                budget: 62_271,
+                need: 62_272
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "a pool of 62271 bytes holds no entry of 4032 bytes: give it 62272 bytes \
+             or more"
+        );
+        let config = block::Config::new(62_272).expect("the budget fits");
         shard.pool = Rc::new(Pool::heap(config));
         let opened = shard.open(least(600_000), &mut Slots::new()).await;
-        assert_eq!(opened.map(|buffer| buffer.block_max()), Ok(64));
+        assert_eq!(opened.map(|buffer| buffer.block_max()), Ok(4096));
     });
 }
 
@@ -4857,7 +4889,7 @@ proptest! {
     #[test]
     fn block_max_bounds_an_entry_in_any_split(
         seed in any::<u64>(),
-        budget in 57_792..=1u64 << 19,
+        budget in 62_272..=1u64 << 19,
         two in any::<bool>(),
         cut in 0.0..=1.0f64,
         over in any::<bool>(),

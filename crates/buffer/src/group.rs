@@ -38,6 +38,11 @@ pub(crate) fn block_max(budget: usize, largest: usize) -> Option<usize> {
     Some(low)
 }
 
+/// The least budget on which [`block_max`] is at least `len`.
+pub(crate) fn budget(len: usize) -> usize {
+    need(&class_starts(len), len)
+}
+
 /// The first length of each size class of the pool, up to `largest`.
 fn class_starts(largest: usize) -> Vec<usize> {
     let mut starts = vec![0];

@@ -27,7 +27,7 @@ use types::time::Span;
 use types::wait;
 
 use crate::entry::{self, ENTRIES_MAX, Entry};
-use crate::group::{self, Closed, Group, META_LEN, Sealed};
+use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
 use crate::log::{self, Found, Logs, Mark, Tail};
 use crate::read::{self, Read, Reading, Stored};
@@ -76,6 +76,14 @@ pub enum Error {
     /// The pool has no block for a header, a recovery read, the restart record, a
     /// recovered entry, or a read.
     Pool(block::Error),
+    /// The pool's budget holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside
+    /// the blocks of a group.
+    Budget {
+        /// The budget of the pool.
+        budget: usize,
+        /// The least budget that opens a ring.
+        need: usize,
+    },
     /// A file call failed.
     Files(files::Error),
     /// The ring file has another length than its header says, or it is not empty and
@@ -118,6 +126,12 @@ impl fmt::Display for Error {
                  bytes and {free} are free"
             ),
             Self::Pool(error) => write!(f, "the pool has no block: {error}"),
+            Self::Budget { budget, need } => write!(
+                f,
+                "a pool of {budget} bytes holds no entry of {} bytes: give it {need} \
+                 bytes or more",
+                Layout::ENTRY_MAX_MIN
+            ),
             Self::Files(error) => write!(f, "a file call failed: {error}"),
             Self::Length { expected, found } => write!(
                 f,
@@ -391,11 +405,10 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// [`Error::Files`], [`Error::Pool`], [`Error::Length`], [`Error::Missing`],
-    /// [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`], [`Error::Unaligned`],
-    /// and [`Error::Invalid`] as each says. [`Error::Full`] when the ring has no block
-    /// for its restart record. [`Error::Pool`] when `pool` cannot hold the blocks of
-    /// an empty entry in two parts beside the blocks of a group, and with `TooLarge`
+    /// [`Error::Files`], [`Error::Pool`], [`Error::Budget`], [`Error::Length`],
+    /// [`Error::Missing`], [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`],
+    /// [`Error::Unaligned`], and [`Error::Invalid`] as each says. [`Error::Full`] when
+    /// the ring has no block for its restart record. [`Error::Pool`] with `TooLarge`
     /// when a recovered entry is over the largest block of `pool`, which a read must
     /// give it in: a larger pool must open the ring.
     ///
@@ -414,13 +427,12 @@ impl Buffer {
             layout,
             commit,
         } = config;
-        // Held at once, as the first append of an empty entry in two parts holds them.
-        let empty = [META_LEN, record::HEADER_LEN, 0, 0].map(|len| pool.alloc(len));
-        for block in empty {
-            drop(block?);
-        }
         let block_max = group::block_max(pool.budget(), pool.largest())
-            .expect("invariant: the pool holds the blocks of an empty entry");
+            .filter(|&max| max >= Layout::ENTRY_MAX_MIN)
+            .ok_or(Error::Budget {
+                budget: pool.budget(),
+                need: group::budget(Layout::ENTRY_MAX_MIN),
+            })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let chain = random(&entropy);
@@ -472,7 +484,7 @@ impl Buffer {
     /// The most bytes of parts, joined, that one entry may have ([`Limit::Block`]). The
     /// pool has room for an entry at or under it, in one part or two, when it commits
     /// only the bytes of that entry's parts. It is at most the largest block of
-    /// [`Buffer::pool`].
+    /// [`Buffer::pool`]. It is at least [`Layout::ENTRY_MAX_MIN`].
     #[must_use]
     pub fn block_max(&self) -> usize {
         self.shared.block_max

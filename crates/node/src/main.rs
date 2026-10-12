@@ -283,29 +283,34 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
         }
         node::Error::Buffer {
             core,
-            error: error @ buffer::Error::Pool(pool),
+            error: error @ buffer::Error::Pool(block::Error::Refused { .. }),
         } => {
             let budget = known.budget.pool;
-            let (message, fix) = match pool {
-                block::Error::Refused { .. } => (
-                    format!(
-                        "the system refused memory for shard-{core} that its part of \
-                         the pool budget {budget} has room for: {error}"
-                    ),
-                    "Free memory on this host".to_owned(),
-                ),
-                block::Error::TooLarge { .. } | block::Error::Exhausted { .. } => {
-                    let (from, fix) = source(dir, known.from.pool, Resource::Memory);
-                    let message = format!(
-                        "the pool budget {budget}, {from}, gives shard-{core} too \
-                         little: {error}"
-                    );
-                    (message, fix)
-                }
-            };
             Failure {
                 code: MEMORY,
-                message,
+                message: format!(
+                    "the system refused memory for shard-{core} that its part of the \
+                     pool budget {budget} has room for: {error}"
+                ),
+                fix: "Free memory on this host".to_owned(),
+            }
+        }
+        node::Error::Buffer {
+            core,
+            error:
+                error @ (buffer::Error::Pool(
+                    block::Error::TooLarge { .. } | block::Error::Exhausted { .. },
+                )
+                | buffer::Error::Budget { .. }),
+        } => {
+            let budget = known.budget.pool;
+            let (from, fix) = source(dir, known.from.pool, Resource::Memory);
+            Failure {
+                code: MEMORY,
+                message: format!(
+                    "the pool budget {budget}, {from}, gives shard-{core} too little: \
+                     {error}"
+                ),
                 fix,
             }
         }
@@ -513,10 +518,13 @@ mod tests {
     /// The failure of a pool budget `pool`, which comes `from` there, that gives
     /// shard 3 `error`.
     fn pool_failure(pool: Size, from: Origin, error: block::Error) -> Failure {
-        let error = node::Error::Buffer {
-            core: 3,
-            error: buffer::Error::Pool(error),
-        };
+        buffer_failure(pool, from, buffer::Error::Pool(error))
+    }
+
+    /// The failure of a pool budget `pool`, which comes `from` there, whose shard 3
+    /// opens its buffer with `error`.
+    fn buffer_failure(pool: Size, from: Origin, error: buffer::Error) -> Failure {
+        let error = node::Error::Buffer { core: 3, error };
         let budget = Budget {
             pool,
             disk: DISK_MOST,
@@ -808,6 +816,25 @@ mod tests {
                 message: "the pool budget 1MiB, a quarter of the available memory, \
                           gives shard-3 too little: the pool has no block: pool is \
                           full: asked for 64 bytes, 0 bytes free"
+                    .to_owned(),
+                fix: "Free memory on this host".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_pool_under_the_least_budget_is_a_pool_budget_that_gives_too_little() {
+        let small = buffer::Error::Budget {
+            budget: 32_768,
+            need: 62_272,
+        };
+        assert_eq!(
+            buffer_failure(Size::MEBIBYTE, Origin::Quarter, small),
+            Failure {
+                code: MEMORY,
+                message: "the pool budget 1MiB, a quarter of the available memory, \
+                          gives shard-3 too little: a pool of 32768 bytes holds no \
+                          entry of 4032 bytes: give it 62272 bytes or more"
                     .to_owned(),
                 fix: "Free memory on this host".to_owned(),
             }
