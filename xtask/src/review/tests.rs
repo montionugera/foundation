@@ -3237,6 +3237,15 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
 }
 
 #[test]
+fn a_deferred_issue_that_only_the_target_of_a_link_names_is_not_read() {
+    let target = "https://github.com/synnaxlabs/foundation/issues/13";
+    let words = format!("[the frame cut]({target})");
+    assert_eq!(risk(vec![deferred(&words)]), Vec::<String>::new());
+    let number = format!("[#13]({target})");
+    assert_eq!(risk(vec![deferred(&number)]), no_ok("#13"));
+}
+
+#[test]
 fn no_deferred_issue_starts_in_a_comment_link() {
     let owner = "https://github.com/gh-1/b/pull/1#issuecomment-2";
     for line in [
