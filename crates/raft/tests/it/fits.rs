@@ -15,8 +15,8 @@ use crate::network::{Network, run, run_of_many};
 
 const ELECTION: u32 = 10;
 
-/// The bytes of `message` in the byte form of `mesh`, with 64 bytes for each
-/// signature, present or not.
+/// The bytes of `message` in a test byte form near that of `mesh`, with 64 bytes for
+/// each signature, present or not.
 pub(crate) fn bytes(message: &Message) -> usize {
     let proof = message.proof.as_ref().map_or(0, proof);
     let chain: usize = message.chain.iter().map(link).sum();

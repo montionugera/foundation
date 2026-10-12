@@ -96,8 +96,8 @@ const JOIN: u8 = 2;
 const TICKET: u8 = 3;
 const SPEC: u8 = 4;
 
-/// The most chunk digests that one `Spec` change lists, so that one change (about
-/// 32 KiB) fits in an append of 64 KiB.
+/// The most chunk digests that one `Spec` change lists, so that a change at each
+/// bound is [`RECORD_MAX`] bytes.
 pub(crate) const CHUNKS_MAX: usize = 1024;
 
 /// The most holders of one `Spec` change, so that a change with [`CHUNKS_MAX`]
@@ -367,15 +367,17 @@ impl std::error::Error for Unknown {}
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use types::name::Name;
     use types::time::Span;
 
     use super::*;
     use crate::card::Card;
-    use crate::card::addresses::Addresses;
+    use crate::card::addresses::{self, Addresses};
     use crate::common::{
         BEFORE_EXPIRY, digest, encoded, home, index, join, join_with, key, name,
         options, private, public, spec, status_bytes, ticket_change, with_status,
     };
+    use crate::status;
 
     #[test]
     fn a_home_change_has_a_fixed_byte_form() {
@@ -582,8 +584,11 @@ mod tests {
 
     #[test]
     fn the_largest_change_of_each_other_kind_is_below_record_max_bytes() {
-        // A name of 255 bytes that ends in `at`.
-        let long = |at: usize| name(&format!("{:a>255}", format!("b{at}")));
+        // A name of the most bytes that ends in `at`.
+        let long = |at: usize| {
+            let end = format!("b{at}");
+            name(&format!("{end:a>width$}", width = Name::MAX_BYTES))
+        };
         let relay = transport::Address::Relay {
             node: public(2),
             at: "[::1]:4000".parse().unwrap(),
@@ -592,11 +597,12 @@ mod tests {
             name: long(0),
             public_key: public(3),
             seal_key: types::node::SealKey::new([9; 32]).unwrap(),
-            addresses: Addresses::new(vec![relay; 32]).unwrap(),
+            addresses: Addresses::new(vec![relay; addresses::MAX.into()]).unwrap(),
             version: u64::MAX,
         };
         let card = card::Signed::sign(key(3), card, &private(3));
-        let status = Status::new((0..64).map(|at| (long(at), index(9))).collect());
+        let statuses = (0..usize::from(status::MAX)).map(|at| (long(at), index(9)));
+        let status = Status::new(statuses.collect());
         let join = join_with(&card, 7, BEFORE_EXPIRY, status.unwrap());
         let mut options = options("a", true);
         options.prefix = long(0);
