@@ -10,16 +10,18 @@
   approved by the coordinator on #806. Each shard runs one task that calls `Pool::purge`
   each 10 s of the node's monotonic clock, from before the open of its buffer to the end
   of the shard, so a size gives its pages back 10 to 20 s after the last of its blocks
-  returned. `node` holds the interval as a constant. Its value is not measured: it is
-  the purge policy of `docs/decisions/open/parameters.md`. A shorter interval gives
-  memory back sooner, and a longer one bounds how often a size that comes back commits
-  its range again. No shard takes back returned blocks on each loop turn: the loop is
-  the driver's (`env::shards`), and `alloc` and `purge` take them back (BLOCK MEMORY).
-  Lost: a field of `node::Config` for the interval, which no caller gives a second
-  value; a purge from `alloc`, which gives `block` a clock; a hook that each driver
-  calls on each turn, which moves the walk of the returned blocks and does not shorten
-  it. Look again at the hook when a measurement shows that walk in the latency of an
-  `alloc` (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
+  returned, or later when the timer wakes late. A size with no block in use gives its
+  pages back sooner when an `alloc` of another size needs its budget. `node` holds the
+  interval as a constant. Its value is not measured: it is the purge policy of
+  `docs/decisions/open/parameters.md`. A shorter interval gives memory back sooner, and
+  a longer one bounds how often a size that comes back commits its range again. No shard
+  takes back returned blocks on each loop turn: the loop is the driver's
+  (`env::shards`), and `alloc` and `purge` take them back (BLOCK MEMORY). Lost: a field
+  of `node::Config` for the interval, which no caller gives a second value; a purge from
+  `alloc`, which gives `block` a clock; a hook that each driver calls on each turn,
+  which moves the walk of the returned blocks and does not shorten it. Look again at the
+  hook when a measurement shows that walk in the latency of an `alloc`
+  (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6113992879; this
   text, 2026-10-11T21:35:17Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6114033383).
