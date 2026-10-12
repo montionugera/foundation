@@ -43,6 +43,7 @@ struct Peer {
     value: f64,
     /// The server does not run while it is set.
     paused: Rc<Cell<bool>>,
+    server: Rc<Server>,
 }
 
 impl Peer {
@@ -87,7 +88,7 @@ async fn serve<T>(
     let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
         .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
-    let server = unsafe { Server::start(&manager, c"", sessions) };
+    let server = Rc::new(unsafe { Server::start(&manager, c"", sessions) });
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
     server.add_double(VALUE, value);
     let peer = Peer {
@@ -97,6 +98,7 @@ async fn serve<T>(
         url: format!("opc.tcp://{local}"),
         value,
         paused: Rc::default(),
+        server: Rc::clone(&server),
     };
     let paused = Rc::clone(&peer.paused);
     let out = {
@@ -113,6 +115,7 @@ async fn serve<T>(
         })
         .await
     };
+    let server = Rc::into_inner(server).expect("the body drops its peer");
     server.close(&manager).await;
     out
 }
@@ -487,56 +490,30 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
 /// reads it, then a new client reads it.
 #[test]
 fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value() {
-    let (reads, _) = run(0, async |node| {
-        let mut rng = node.entropy().rng();
-        let local = SocketAddr::new(node.addresses()[0], PORT);
-        let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
-            .expect("the port is free");
-        // SAFETY: the close below deletes the server before the manager drops.
-        let server = unsafe { Server::start(&manager, c"", 4) };
-        server.add_double(VALUE, 1.5);
-        let url = format!("opc.tcp://{local}");
-        let reads = {
-            let mut server_drive = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut body = pin!(async {
-                let (clock, net) = (node.clock(), node.net());
-                let mut client = Client::connect(clock, net, &mut rng, &url)
-                    .await
-                    .expect("the client connects");
-                let first = client.read(VALUE).await;
-                // SAFETY: the server lives, and copies the name.
-                let namespace = unsafe {
-                    ffi::test::UA_Server_addNamespace(
-                        server.raw(),
-                        c"urn:added".as_ptr(),
-                    )
-                };
-                let added = Node {
-                    namespace,
-                    key: 1000,
-                };
-                server.add_double(added, 2.5);
-                let second = client.read(added).await;
-                client.close().await;
-                let (clock, net) = (node.clock(), node.net());
-                let mut fresh = Client::connect(clock, net, &mut rng, &url)
-                    .await
-                    .expect("the client connects");
-                let third = fresh.read(added).await;
-                fresh.close().await;
-                (first, namespace, second, third)
-            });
-            poll_fn(|cx| {
-                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
-                body.as_mut().poll(cx)
-            })
-            .await
-        };
-        server.close(&manager).await;
-        reads
+    let ((value, reads), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read(VALUE).await;
+            // SAFETY: the server lives, and copies the name.
+            let namespace = unsafe {
+                ffi::test::UA_Server_addNamespace(
+                    peer.server.raw(),
+                    c"urn:added".as_ptr(),
+                )
+            };
+            let added = Node {
+                namespace,
+                key: 1000,
+            };
+            peer.server.add_double(added, 2.5);
+            let second = client.read(added).await;
+            client.close().await;
+            let mut fresh = peer.connected().await;
+            let third = fresh.read(added).await;
+            fresh.close().await;
+            (peer.value, (first, namespace, second, third))
+        })
+        .await
     });
-    assert_eq!(reads, (Ok(1.5), 2, Ok(2.5), Ok(2.5)));
+    assert_eq!(reads, (Ok(value), 2, Ok(2.5), Ok(2.5)));
 }
