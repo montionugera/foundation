@@ -12,8 +12,8 @@ use buffer::{Buffer, Entry};
 use control::Gate;
 use control::lease::Lease;
 use delivery::Reader;
-use types::channel::Slot;
-use types::frame::key_set::{self, KeySet};
+use types::channel::{self, Slot};
+use types::frame::key_set::KeySet;
 use types::frame::{self, Draft, Frame, Label, Path};
 use types::hash;
 use types::time::{Interval, Monotonic, Span, Stamp};
@@ -94,7 +94,7 @@ const GRACE: Span = Span::from_nanos(10_000_000_000);
 ///     },
 /// })
 /// .await?;
-/// shard.carry(index);
+/// assert!(shard.carry(index, stamps));
 /// let charge = home::reader::complete::Charge::Whole;
 /// let reader = shard.open_complete(index, 1 << 20, charge);
 ///
@@ -159,8 +159,9 @@ pub struct Shard {
     scratch: Scratch,
     /// The readers of each index, by the same place as `indexes`.
     readers: reader::Set,
-    /// The gate that the open restored for each index not carried since.
-    recovered: hash::Map<Slot, Gate>,
+    /// The gate for the next carry of each index that is not carried: the one that
+    /// the open restored, or the one that a shed kept.
+    kept: hash::Map<Slot, Gate>,
 }
 
 /// What a shard is built from.
@@ -311,7 +312,7 @@ impl Shard {
         let holders = handoff::newest(&buffer).await?;
         let now = clock.now().monotonic;
         let grace = Lease::new(GRACE).expect("invariant: the grace is positive");
-        let recovered = holders
+        let kept = holders
             .into_iter()
             .map(|(slot, last)| (slot, Gate::recover(last, now, grace)))
             .collect();
@@ -326,18 +327,22 @@ impl Shard {
             next: 0,
             scratch: Scratch::default(),
             readers: reader::Set::default(),
-            recovered,
+            kept,
         })
     }
 
-    /// Carries the index at `slot`, with no connected writer. At the first carry of
-    /// `slot` after [`open`](Self::open), its gate starts from the handoff that the
-    /// open restored: until the grace from the open ends, the recorded holder holds
-    /// control. Each path continues from its tail in the buffer. It does nothing when
-    /// the shard carries `slot` already.
-    pub fn carry(&mut self, slot: Slot) {
+    /// Carries the index `key` at `slot`, with no connected writer. `key` must be the
+    /// index that holds `slot` in the slot table of its writers' key sets. The shard
+    /// does not check the pair, and writes `key` in each handoff entry of the index.
+    /// Its gate starts from the one that the shard keeps for `slot`: the handoff that
+    /// [`open`](Self::open) restored, or the gate that a [`shed`](Self::shed) kept.
+    /// Until the grace from the open ends, a restored holder holds control. Each path
+    /// continues from its tail in the buffer. Returns whether this call started the
+    /// carry: `false`, with no change, when the shard carries `slot` already.
+    #[must_use]
+    pub fn carry(&mut self, slot: Slot, key: channel::Key) -> bool {
         if self.places.contains_key(&slot) {
-            return;
+            return false;
         }
         let tail = |path| {
             let tail = self.buffer.tail(slot, path);
@@ -347,19 +352,25 @@ impl Shard {
             }
         };
         let live = tail(Path::Live);
-        let gate = self.recovered.remove(&slot).unwrap_or_default();
-        let index = Index::new(self.limits, gate, live, tail(Path::Backfill));
+        let gate = self.kept.remove(&slot).unwrap_or_default();
+        let backfill = tail(Path::Backfill);
+        let index = Index::new(self.limits, key, slot, gate, live, backfill);
         let place = self.indexes.len();
         self.places.insert(slot, place);
         self.indexes.push(index);
         self.readers.carry(place, slot, live.seq);
+        true
     }
 
-    /// Stops carrying the index at `slot`: its control gate goes, and with it a handoff
-    /// that waits for room. Each named reader of the index stops holding its position.
-    /// Its frames stay in the buffer, so a later [`carry`](Self::carry) of `slot`
-    /// continues each path from its tail in the buffer: the last entry appended, on
-    /// disk or not. It does nothing when the shard does not carry `slot`.
+    /// Stops carrying the index at `slot`. Each named reader of the index stops holding
+    /// its position. Its frames stay in the buffer, so a later [`carry`](Self::carry)
+    /// of `slot` continues each path from its tail in the buffer: the last entry
+    /// appended, on disk or not. The shard also keeps the control gate for that carry
+    /// when the gate holds a restored holder or a handoff that waits, so a shed
+    /// changes no control. A gate that the shard keeps does not change. When its grace
+    /// ends before the next carry of `slot`, the first [`advance`](Self::advance) or
+    /// [`open_writer`](Self::open_writer) after that carry drops the holder. It does
+    /// nothing when the shard does not carry `slot`.
     ///
     /// # Panics
     ///
@@ -375,11 +386,14 @@ impl Shard {
         );
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
-        self.indexes.swap_remove(place);
+        let gate = self.indexes.swap_remove(place).gate;
+        // With no writer open, a holder is a restored one.
+        if gate.holder().is_some() || gate.handoff().is_some() {
+            self.kept.insert(slot, gate);
+        }
         self.readers.shed(place);
         if place != last {
-            let moved = self.places.values_mut().find(|at| **at == last);
-            *moved.expect("invariant: the last place has a slot") = place;
+            self.places.insert(self.indexes[place].slot, place);
             let claims = self.writers.values_mut().flat_map(|s| &mut s.claims);
             for claim in claims.filter(|claim| claim.place == last) {
                 claim.place = place;
@@ -403,14 +417,14 @@ impl Shard {
 
     /// Applies what came due by now in the gate of each carried index: a holder whose
     /// control lease ran out loses control, and a restored holder that did not reopen
-    /// in its grace is dropped. Appends a handoff for each index whose holder changed
-    /// and that has an open writer, as [`close_writer`](Self::close_writer) does. Call
-    /// it at [`deadline`](Self::deadline); an earlier call changes nothing. Takes O(n)
-    /// time for n carried indexes, plus O(c) for each holder that loses control, for c
-    /// claims of open writers. Until #2314, an index with no open writer records its
-    /// handoff at the next open of a writer on it. After it,
-    /// [`deadline`](Self::deadline) is `None` or later than the shard's monotonic time
-    /// at the call.
+    /// in its grace is dropped. Appends a handoff for each index whose holder changed,
+    /// with or without an open writer, as [`close_writer`](Self::close_writer) does.
+    /// Before the node first has mesh time, such a handoff waits as one with no room
+    /// does. Call it at [`deadline`](Self::deadline); an earlier call changes nothing.
+    /// After it, [`deadline`](Self::deadline) is `None` or later than the shard's
+    /// monotonic time at the call. Takes O(n) time for n carried indexes. Each holder
+    /// that loses control adds O(w) time for the w open writers of its index, and the
+    /// append of its handoff.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
@@ -418,26 +432,10 @@ impl Shard {
             if !self.indexes[place].gate.advance(monotonic) {
                 continue;
             }
-            // No writer opens before mesh time.
             let Some(mesh) = mesh else {
                 continue;
             };
-            let held = self.writers.values().find_map(|session| {
-                let mut groups = (0..).zip(&session.claims);
-                let (group, _) = groups.find(|(_, claim)| claim.place == place)?;
-                Some((session, group))
-            });
-            let Some((session, group)) = held else {
-                continue;
-            };
-            // A handoff with no room waits, and a failed commit fails the next write.
-            drop(record(
-                &self.buffer,
-                &mut self.indexes,
-                session,
-                iter::once(group),
-                mesh,
-            ));
+            record(&self.buffer, &mut self.indexes, iter::once(place), mesh);
         }
     }
 
@@ -490,7 +488,8 @@ impl Shard {
             claims.push(Claim { place, key });
         }
         let session = Session { set, claims };
-        self.record_all(&session, mesh);
+        let places = session.claims.iter().map(|claim| claim.place);
+        record(&self.buffer, &mut self.indexes, places, mesh);
         let key = writer::Key {
             shard: self.number,
             number: self.next,
@@ -515,7 +514,8 @@ impl Shard {
         for claim in &session.claims {
             self.indexes[claim.place].gate.close(claim.key, now);
         }
-        self.record_all(&session, mesh);
+        let places = session.claims.iter().map(|claim| claim.place);
+        record(&self.buffer, &mut self.indexes, places, mesh);
     }
 
     /// Applies `frame` to each index it holds, whole or not at all per index. The
@@ -554,13 +554,16 @@ impl Shard {
         let scratch = &mut self.scratch;
         let mut split = scratch.split.split(&session.set, frame);
         while let Some((group, stamps)) = split.next() {
-            let (claim, _) = session.claim(group);
+            let claim = session.claim(group);
             let index = &mut self.indexes[claim.place];
             let checked = index.check(claim.key, path, stamps, now, mesh);
             scratch.checks.push((group, checked, None));
         }
-        let groups = scratch.checks.iter().map(|&(group, ..)| group);
-        let recorded = record(&self.buffer, &mut self.indexes, session, groups, mesh);
+        let places = scratch
+            .checks
+            .iter()
+            .map(|&(group, ..)| session.claim(group).place);
+        let recorded = record(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
             entries,
@@ -573,18 +576,16 @@ impl Shard {
         drop(split);
         // Made also when a handoff found no room: freezing gives a lost live frame to
         // latest readers.
-        let ready = made.is_ok() && recorded == Ok(true);
+        let ready = made.is_ok() && recorded;
         if !ready {
             entries.clear();
         }
         // An empty append still reports a failed commit.
         let appended = room(self.buffer.append(entries.drain(..)));
         let room = match (recorded, appended, made, path) {
-            (Err(error), ..) | (Ok(_), Err(error), ..) => Err(error),
-            (Ok(true), Ok(_), Err(block::Error::TooLarge { .. }), _) => {
-                Err(Error::Large)
-            }
-            (Ok(true), Ok(true), Ok(()), _) => Ok(true),
+            (_, Err(error), ..) => Err(error),
+            (true, Ok(_), Err(block::Error::TooLarge { .. }), _) => Err(Error::Large),
+            (true, Ok(true), Ok(()), _) => Ok(true),
             (.., Path::Backfill) => Err(Error::Full),
             (.., Path::Live) => Ok(false),
         };
@@ -853,30 +854,13 @@ impl Shard {
         };
         place
     }
-
-    /// Appends the unrecorded handoff of each index of `session`.
-    fn record_all(&mut self, session: &Session, mesh: Stamp) {
-        let groups = (0..session.claims.len()).map(|group| {
-            u32::try_from(group).expect("invariant: a key set has u32 groups")
-        });
-        // A handoff with no room waits, and a failed commit fails the next write.
-        drop(record(
-            &self.buffer,
-            &mut self.indexes,
-            session,
-            groups,
-            mesh,
-        ));
-    }
 }
 
 impl Session {
-    /// The writer's claim on the index of `group`, and the index's entry in the key
-    /// set.
-    fn claim(&self, group: u32) -> (Claim, &key_set::Entry) {
+    /// The writer's claim on the index of `group`.
+    fn claim(&self, group: u32) -> Claim {
         let group = usize::try_from(group).expect("invariant: a usize holds a u32");
-        let entry = &self.set.entries()[self.set.groups()[group]];
-        (self.claims[group], entry)
+        self.claims[group]
     }
 }
 
@@ -912,31 +896,26 @@ fn freeze(
     Ok(())
 }
 
-/// Appends the unrecorded handoff of the index of each of `groups` of `session`, each
-/// alone, on the live path at mesh time `mesh`, and marks it recorded. A handoff that
-/// finds no room in the ring or the pool stays unrecorded. Returns whether every
-/// handoff was recorded.
-///
-/// # Errors
-///
-/// [`Error::Disk`] after a failed commit.
+/// Appends the unrecorded handoff of the index at each of `places`, each alone, on the
+/// live path at mesh time `mesh`, and marks it recorded. A handoff that finds no room
+/// in the ring or the pool stays unrecorded, and so does each after a failed commit,
+/// which the next append reports. Returns whether every handoff was recorded.
 fn record(
     buffer: &Buffer,
     indexes: &mut [Index],
-    session: &Session,
-    groups: impl Iterator<Item = u32>,
+    places: impl Iterator<Item = usize>,
     mesh: Stamp,
-) -> Result<bool, Error> {
+) -> bool {
     let pool = buffer.pool();
     let mut all = true;
-    for group in groups {
-        let (claim, entry) = session.claim(group);
-        let index = &mut indexes[claim.place];
+    for place in places {
+        let index = &mut indexes[place];
         let Some((handoff, first)) = index.handoff() else {
             continue;
         };
-        let appended = match handoff::entry(pool, handoff, entry, first, mesh) {
-            Ok(handoff) => buffer.append([handoff]),
+        let (key, slot) = (index.key, index.slot);
+        let handoff = match handoff::entry(pool, handoff, key, slot, first, mesh) {
+            Ok(handoff) => handoff,
             Err(block::Error::Exhausted { .. } | block::Error::Refused { .. }) => {
                 all = false;
                 continue;
@@ -945,16 +924,19 @@ fn record(
                 panic!("invariant: the pool of the ring holds a handoff: {error}")
             }
         };
-        if let Err(buffer::Rejected::Large(limit)) = appended {
-            panic!("invariant: a record holds one handoff: {limit}");
-        }
-        if room(appended)? {
-            index.gate.recorded();
-        } else {
-            all = false;
+        match buffer.append([handoff]) {
+            Ok(()) => index.gate.recorded(),
+            Err(
+                buffer::Rejected::Full { .. }
+                | buffer::Rejected::Pool(_)
+                | buffer::Rejected::Files(_),
+            ) => all = false,
+            Err(buffer::Rejected::Large(limit)) => {
+                panic!("invariant: a record holds one handoff: {limit}")
+            }
         }
     }
-    Ok(all)
+    all
 }
 
 /// Spends the seq of each accepted group of `checks`, and makes the outcome of each
@@ -970,9 +952,9 @@ fn spend<'a>(
 ) -> &'a [Outcome] {
     out.clear();
     for (group, checked, frozen) in checks.drain(..) {
-        let (claim, entry) = session.claim(group);
-        let slot = entry.slot;
+        let claim = session.claim(group);
         let index = &mut indexes[claim.place];
+        let slot = index.slot;
         out.push(match checked {
             // A group with no samples stores nothing, so it needs no room.
             Ok(accepted) if accepted.last().is_none() => {
@@ -1183,8 +1165,8 @@ mod tests {
         /// [`two_indexes`].
         async fn shard(&self, area: u64) -> Shard {
             let mut shard = self.open(area, 4).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             shard
         }
 
@@ -1208,7 +1190,7 @@ mod tests {
             let mut shard = self.open(AREA, count).await;
             let groups: Vec<_> = (0..count)
                 .map(|n| {
-                    shard.carry(Slot::new(n));
+                    assert!(shard.carry(Slot::new(n), key(Slot::new(n))));
                     Group {
                         index: key(Slot::new(n)),
                         data: &[],
@@ -1687,7 +1669,7 @@ mod tests {
             let first = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
             assert_eq!(shard.write(a, LIVE, first), Ok(&[applied(0, 0, 1)][..]));
             let latest = shard.open_latest(Slot::new(0));
-            shard.carry(Slot::new(0));
+            assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2])]);
             assert_eq!(shard.write(a, LIVE, next), Ok(&[applied(0, 1, 1)][..]));
             assert_eq!(taken(&mut shard, latest, 0), [Range { seq: 1, count: 1 }]);
@@ -1896,7 +1878,7 @@ mod tests {
     fn refuses_a_group_with_the_error_of_a_data_series_before_its_index() {
         run(73, |test| async move {
             let mut shard = test.open(AREA, 2).await;
-            shard.carry(Slot::new(1));
+            assert!(shard.carry(Slot::new(1), key(Slot::new(1))));
             let set = intern(&[Group {
                 index: key(Slot::new(1)),
                 data: &[(key(Slot::new(0)), Type::Scalar(Scalar::I64))],
@@ -2634,8 +2616,8 @@ mod tests {
     fn opens_no_writer_before_the_node_has_mesh_time() {
         run(60, |test| async move {
             let mut shard = test.unsynced().await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             assert_eq!(shard.now(), None);
             let a = shard.open_writer(writer("a", 1, &two_indexes()));
             assert_eq!(a, Err(writer::Error::Unsynced));
@@ -2775,8 +2757,8 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.open(AREA, 4).await;
             test.clock.sleep(GRACE).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
             assert_eq!(
@@ -2785,6 +2767,129 @@ mod tests {
             );
         })
         .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn reserves_control_after_a_shed_and_a_carry_in_the_grace() {
+        let (mut sim, node) = cut_after(183, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+            let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[refused(0, Refusal::Reserved), refused(2, Refusal::Reserved)][..])
+            );
+        })
+        .expect("the run after the cut ends");
+    }
+
+    /// Cuts the power of `node`, then checks that the open restores no holder: a
+    /// writer of another subject at the authority of `a` takes control.
+    fn check_no_holder_after_a_cut(mut sim: sim::Sim, node: &sim::node::Node) {
+        sim.crash(node, sim::Crash::Power);
+        sim.run_on(node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            assert_eq!(shard.deadline(), None, "no holder is restored");
+            let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2]), (2, &[20])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[applied(0, 1, 1), applied(2, 1, 1)][..])
+            );
+        })
+        .expect("the run after the second cut ends");
+    }
+
+    #[test]
+    fn records_the_drop_of_a_restored_holder_with_no_writer_at_the_end_of_the_grace() {
+        let (mut sim, node) = cut_after(184, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the run after the first cut ends");
+        check_no_holder_after_a_cut(sim, &node);
+    }
+
+    #[test]
+    fn records_the_drop_of_a_restored_holder_after_a_shed_and_a_carry_in_the_grace() {
+        let (mut sim, node) = cut_after(185, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the run after the first cut ends");
+        check_no_holder_after_a_cut(sim, &node);
+    }
+
+    #[test]
+    fn records_the_drop_at_a_carry_after_a_grace_that_ends_while_shed() {
+        let (mut sim, node) = cut_after(191, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            test.clock.sleep(GRACE).await;
+            assert_eq!(shard.deadline(), None, "a kept gate has no deadline");
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+            assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
+            shard.advance();
+            assert_eq!(shard.deadline(), None);
+            shard.committed().await.expect("the commit ends");
+        })
+        .expect("the run after the first cut ends");
+        check_no_holder_after_a_cut(sim, &node);
+    }
+
+    /// The close of `subject-a` finds no room, so its handoff waits across the shed and
+    /// the carry, and the ring's last record names `subject-a`. Its reopen gives
+    /// control back to the recorded holder, so nothing is appended.
+    #[test]
+    fn keeps_a_handoff_that_waits_for_room_across_a_shed_and_a_carry() {
+        run(186, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard
+                .open_writer(writer("subject-a", 1, &set))
+                .expect("synced");
+            // A sealed record, so the handoff of the close needs a block.
+            shard.committed().await.expect("the commit ends");
+            let blocks = test.fill();
+            shard.close_writer(a);
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+            drop(blocks);
+            shard
+                .open_writer(writer("subject-a", 1, &set))
+                .expect("synced");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("subject-a"));
+            assert_eq!(handoffs.len(), 2, "one handoff to subject-a for each index");
+        });
     }
 
     #[test]
@@ -2831,7 +2936,7 @@ mod tests {
             let mut shard = test.open(AREA, 4).await;
             let opened = test.reader.now().monotonic;
             assert_eq!(shard.deadline(), None, "no index is carried");
-            shard.carry(Slot::new(0));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             assert_eq!(shard.deadline(), Some(opened + GRACE));
         })
         .expect("the run after the cut ends");
@@ -3036,14 +3141,84 @@ mod tests {
         sim.run_on(&node, |node, tasks| async move {
             let test = Test::new(node, tasks);
             let mut shard = test.unsynced().await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             test.clock.sleep(GRACE).await;
             assert!(shard.deadline().is_some_and(|due| due <= test.clock.now()));
             shard.advance();
             assert_eq!(shard.deadline(), None);
         })
         .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn keeps_a_handoff_that_comes_due_before_the_node_has_mesh_time_unrecorded() {
+        let (mut sim, node) = cut_after(189, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
+            let (clock, reader) = clock::Clock::new(test.clock.clone());
+            let mut shard = Test::with(0, buffer, reader).await;
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+            test.clock.sleep(GRACE).await;
+            shard.advance();
+            let wall = test.node.wall();
+            test.tasks.spawn(async move { clock.run(wall).await });
+            while shard.now().is_none() {
+                test.clock.sleep(Span::from_nanos(1)).await;
+            }
+            // The drop to no holder is not on disk, so a reopen of a changes nothing.
+            shard.open_writer(writer("a", 1, &set)).expect("synced");
+            shard.committed().await.expect("the commit ends");
+            let handoffs = find(&test.ring().await, &handoff_to("a"));
+            assert_eq!(handoffs.len(), 2, "only the handoffs before the cut");
+        })
+        .expect("the run after the cut ends");
+    }
+
+    #[test]
+    fn starts_a_carry_again_only_after_a_shed_that_keeps_no_gate() {
+        run(192, |test| async move {
+            let mut shard = test.shard(AREA).await;
+            assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
+            shard.shed(Slot::new(0));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
+        });
+    }
+
+    #[test]
+    fn starts_a_carry_again_only_after_a_shed_that_keeps_a_gate() {
+        let (mut sim, node) = cut_after(193, false);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let mut shard = test.shard(AREA).await;
+            assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
+            shard.shed(Slot::new(2));
+            shard.shed(Slot::new(0));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.deadline().is_some(), "the shed kept the gate");
+            assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
+        })
+        .expect("the run after the cut ends");
+    }
+
+    /// A kept gate that equals a new one gives the next carry the same control, so no
+    /// public call shows what a shed keeps, and the test reads `kept`. Only it fails
+    /// when the shed keeps each gate.
+    #[test]
+    fn keeps_no_gate_at_a_shed_of_an_index_with_no_holder_and_no_waiting_handoff() {
+        run(190, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            shard.close_writer(a);
+            shard.shed(Slot::new(0));
+            shard.shed(Slot::new(2));
+            assert!(shard.kept.is_empty(), "each gate equals a new one");
+        });
     }
 
     #[test]
@@ -3162,8 +3337,8 @@ mod tests {
             let mut shard = test.open(AREA, 4).await;
             let before = find(&test.ring().await, &handoff_to("subject-a")).len();
             test.clock.sleep(GRACE).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             shard
                 .open_writer(writer("subject-a", 1, &set))
                 .expect("synced");
@@ -3212,8 +3387,8 @@ mod tests {
             assert_eq!(shard.now(), None);
             let wall = test.node.wall();
             test.tasks.spawn(async move { clock.run(wall).await });
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             while shard.now().is_none() {
                 test.clock.sleep(Span::from_nanos(1)).await;
             }
@@ -3539,7 +3714,7 @@ mod tests {
         run(42, |test| async move {
             let buffer = test.create_buffer(AREA, 4087, 1).await;
             let mut shard = test.over(buffer).await;
-            shard.carry(Slot::new(0));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             let set = intern(&[Group {
                 index: key(Slot::new(0)),
                 data: &[],
@@ -3615,7 +3790,7 @@ mod tests {
                 data: &[(key(Slot::new(1)), Type::Scalar(Scalar::I64))],
             }]);
             let mut shard = test.open(AREA, 4).await;
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let marked = test.now();
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
             let write = frame(&test.pool, &set, &[(0, &[1, 2]), (1, &[10, 20])]);
@@ -3779,7 +3954,7 @@ mod tests {
         fn opens_and_closes_a_reader_of_each_mode_with_no_mesh_time() {
             run(97, |test| async move {
                 let mut shard = test.unsynced().await;
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
                 let readers = [session.into(), shard.open_latest(Slot::new(0))];
                 assert_ne!(readers[0], readers[1]);
@@ -3798,8 +3973,8 @@ mod tests {
                 let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
                 let (clock, mesh) = clock::Clock::new(test.clock.clone());
                 let mut shard = Test::with(0, buffer, mesh.clone()).await;
-                shard.carry(Slot::new(0));
-                shard.carry(Slot::new(2));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+                assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
                 let complete = complete(&mut shard, Slot::new(0));
                 let latest = latest(&mut shard, Slot::new(0));
                 let set = two_indexes();
@@ -4598,7 +4773,7 @@ mod tests {
                 shard.close_writer(a);
                 shard.close_reader(old.into());
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let new = shard.open_complete(Slot::new(0), 1, Charge::Whole);
                 assert_ne!(reader::Key::from(new), reader::Key::from(old));
                 shard.grant(old, CREDIT);
@@ -4682,7 +4857,7 @@ mod tests {
                 close(&mut shard, old);
                 shard.shed(Slot::new(0));
                 shard.shed(Slot::new(2));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 assert_ne!(latest(&mut shard, Slot::new(0)), old);
             });
         }
@@ -4715,7 +4890,7 @@ mod tests {
                 shard.shed(Slot::new(0));
                 let carried = latest(&mut shard, Slot::new(2));
                 close(&mut shard, carried);
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let carried = latest(&mut shard, Slot::new(0));
                 close(&mut shard, carried);
             });
@@ -4744,7 +4919,7 @@ mod tests {
                     close(shard, reader);
                 }
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(3));
+                assert!(shard.carry(Slot::new(3), key(Slot::new(3))));
                 let never = reader::Key {
                     slot: Slot::new(3),
                     session: two.session,
@@ -4763,7 +4938,7 @@ mod tests {
                     close(&mut shard, reader);
                     old.push(reader);
                     shard.shed(Slot::new(0));
-                    shard.carry(Slot::new(0));
+                    assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 }
                 for &reader in &old {
                     assert!(matches!(shard.take(reader), reader::Next::Empty));
@@ -4773,7 +4948,7 @@ mod tests {
             });
         }
 
-        /// The ring is full, so the handoff of the close waits, and the shed drops it.
+        /// The ring is full, so the handoff of the close waits, and the shed keeps it.
         /// No entry is appended after the lost frames, so their gap goes.
         #[test]
         fn gives_the_first_lost_seq_again_after_a_shed_and_a_carry_as_after_a_restart()
@@ -4796,10 +4971,11 @@ mod tests {
                     }
                 };
                 shard.close_writer(a);
-                // No public outcome shows a waiting handoff before the shed drops it.
+                // No public outcome of this test shows the waiting handoff: the open
+                // of b replaces it.
                 assert!(shard.indexes[0].handoff().is_some(), "the handoff waits");
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
                 let stamp = 10 + n * 400;
                 let next = frame(&test.pool, &set, &[(0, &[stamp]), (1, &[3])]);
@@ -4833,7 +5009,7 @@ mod tests {
                 shard.close_reader(reader);
                 drop(blocks);
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
                 let late = frame(&test.pool, &set, &[(0, &[15]), (1, &[3])]);
                 assert_eq!(shard.write(b, LIVE, late), Ok(&[applied(0, 0, 1)][..]));
@@ -4864,7 +5040,7 @@ mod tests {
                 shard.close_writer(a);
                 assert_eq!(stored(&shard, Slot::new(0), Path::Live), 0);
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
                 let next = frame(&test.pool, &set, &[(0, &[40]), (1, &[4])]);
                 assert_eq!(shard.write(b, LIVE, next), Ok(&[applied(0, 2, 1)][..]));
@@ -4886,7 +5062,7 @@ mod tests {
                 shard.close_writer(a);
                 assert_eq!(stored(&shard, Slot::new(0), Path::Live), 0);
                 shard.shed(Slot::new(0));
-                shard.carry(Slot::new(0));
+                assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
                 let next = frame(&test.pool, &set, &[(0, &[40]), (1, &[4])]);
                 assert_eq!(shard.write(b, LIVE, next), Ok(&[applied(0, 1, 1)][..]));
@@ -4965,7 +5141,7 @@ mod tests {
             fn opens_no_named_reader_before_the_node_has_mesh_time() {
                 run(120, |test| async move {
                     let mut shard = test.unsynced().await;
-                    shard.carry(Slot::new(0));
+                    assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                     let complete = shard.open_named_complete(
                         Slot::new(0),
                         key("s", "r"),
@@ -5079,7 +5255,7 @@ mod tests {
                     close(&mut shard, first.key.into());
                     shard.close_writer(a);
                     shard.shed(Slot::new(0));
-                    shard.carry(Slot::new(0));
+                    assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                     let second = named(&mut shard, "a", "r");
                     let b = shard.open_writer(writer("w", 1, &set)).expect("synced");
                     committed(&test, &mut shard, b, &[50]).await;
@@ -5416,8 +5592,8 @@ mod tests {
     fn refuses_a_lease_of_zero_as_unsynced_before_the_node_has_mesh_time() {
         run(72, |test| async move {
             let mut shard = test.unsynced().await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let zero = Writer {
                 lease: Some(Span::ZERO),
                 ..writer("a", 1, &two_indexes())
@@ -5436,8 +5612,8 @@ mod tests {
             let set = two_indexes();
             let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
             let mut shard = test.numbered(3, buffer).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             shard.open_writer(writer("a", 1, &set)).expect("synced");
             let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
             let other = writer::Key { shard: 2, ..b };
@@ -5500,8 +5676,8 @@ mod tests {
         run(76, |test| async move {
             let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
             let mut shard = test.numbered(1, buffer).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let set = two_indexes();
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
             assert_eq!(
@@ -5771,8 +5947,8 @@ mod tests {
             })
             .await
             .expect("opens");
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let set = two_indexes();
             assert_eq!(
                 shard.open_writer(writer("a", 1, &set)),
@@ -5840,8 +6016,8 @@ mod tests {
                 test.clock.sleep(Span::from_nanos(1)).await;
             }
             let mut shard = Test::with(0, buffer, mesh).await;
-            shard.carry(Slot::new(0));
-            shard.carry(Slot::new(2));
+            assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+            assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let set = two_indexes();
             // The clock task reads it too, but `sim` polls one task at a time, so no
             // read of that task falls inside a call.

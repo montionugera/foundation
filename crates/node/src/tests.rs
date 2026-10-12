@@ -1782,7 +1782,7 @@ mod home {
                 index,
                 data: &[(values, Type::Scalar(Scalar::I64))],
             }]);
-            home.carry(slot);
+            assert!(home.carry(slot, index));
             let now = mesh_now(&clock, &host.clock()).await;
             let key = home
                 .open_writer(writer::Writer {
