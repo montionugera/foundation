@@ -801,6 +801,34 @@ fn hold_while_another_create_fails(mode: Mode) {
     writer_thread.join().unwrap();
 }
 
+/// The `ftruncate` that frees the blocks of a failed create also fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_create_whose_free_fails_leaves_no_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("freed", move || async move {
+        crate::seccomp::answer_calls(
+            &[libc::SYS_fallocate, libc::SYS_ftruncate],
+            |data, k| match i64::from(data.nr) {
+                libc::SYS_fallocate => Some(libc::ENOSPC),
+                libc::SYS_ftruncate if k == 1 => Some(libc::EIO),
+                _ => None,
+            },
+        );
+        let (files, thread) = files(&dir, "files");
+        let mode = Mode::Create { len: 4 * KIB };
+        let created = files.open(Path::new("a"), mode).await.map(|_| ());
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(created, Err(io("a", Operation::Open, libc::EIO)));
+        assert_eq!(reopened, Err(Error::NotFound { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
 /// A remove that drops while it waits for room in the full queue of the I/O thread
 /// never runs.
 #[test]
