@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Poll, ready};
 
 use types::channel;
 
@@ -46,7 +46,8 @@ impl<'s> Pending<'s> {
     }
 
     /// Gives what `future` gives, or, at once, the first channel of the open that a
-    /// change of the definitions removed or changed.
+    /// change of the definitions removed or changed. When `future` is ready, the hub
+    /// applies the spec in use first, as an open at that instant does.
     pub(crate) async fn wait<T>(
         &self,
         future: impl Future<Output = T>,
@@ -59,7 +60,9 @@ impl<'s> Pending<'s> {
             let mut state = self.state.borrow_mut();
             state.waiting.insert(self.key, cx.waker().clone());
             drop(state);
-            future.as_mut().poll(cx).map(Ok)
+            let output = ready!(future.as_mut().poll(cx));
+            self.state.borrow_mut().catch_up();
+            Poll::Ready(self.ending.removed().map_or(Ok(output), Err))
         })
         .await
     }

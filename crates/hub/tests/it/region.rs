@@ -977,3 +977,52 @@ fn stops_an_open_on_a_stopped_mesh_with_failed() {
         format!("the mesh stopped: {stopped}")
     );
 }
+
+#[test]
+fn a_waiting_writer_fails_on_a_spec_in_use_that_came_before_its_home() {
+    run(46, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits");
+        };
+        let fresh = poll_once(test.hub.writer(config("b", &["value"])));
+        let Poll::Ready(Err(fresh)) = fresh else {
+            panic!("an open at that instant does not fail");
+        };
+        assert_eq!(fresh, writer::Error::Unknown(name("value")));
+        match opened {
+            Ok(_) => {
+                panic!("the waiting writer opened on value, which the spec removed")
+            }
+            Err(error) => assert_eq!(error, writer::Error::Unknown(name("value"))),
+        }
+    });
+}
+
+#[test]
+fn a_waiting_reader_matches_a_channel_of_a_spec_in_use_before_its_home() {
+    run(47, |test| async move {
+        let names = ["value", "value-x"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.pause.pause();
+        let mut added = channels();
+        added.insert(name("value-x"), definition(9, DataType::Sample(I64), 1));
+        test.set_spec(added).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits");
+        };
+        let mut reader = opened.expect("opens");
+        test.pause.resume();
+        let mut writer = test.writer("a", &names).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (9, &[8])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 2, 9]);
+    });
+}
