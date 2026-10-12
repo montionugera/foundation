@@ -71,11 +71,11 @@
   not recorded (decided by the architect, 2026-10-07T16:24:54Z:
   https://github.com/synnaxlabs/foundation/issues/1051#issuecomment-6042136383).
   Each member takes a message of `message::BYTES_MIN` bytes: an `Append` with no proof
-  and no link, of one entry that holds a record of `change::RECORD_MAX` bytes, the
+  and no link, of one entry that holds a record of `change::BYTES_MAX` bytes, the
   largest record of any kind. `mesh` gives `raft` the `Config::fits` "the byte form is
   at most `BYTES_MIN`", so a member never needs the limit of each peer. The decode of an
   `Append` refuses it when an entry is larger than one that holds a record of
-  `RECORD_MAX` bytes, so no node takes an entry that no `Append` fits. The log holds
+  `BYTES_MAX` bytes, so no node takes an entry that no `Append` fits. The log holds
   only entries that the node took or proposed, so its decode has no such bound.
   `Mesh::open` refuses a node that takes less than `BYTES_MIN` (`Error::Limit`), and
   `propose_voters` refuses a set of more than 127 voters, so that the proof of a message

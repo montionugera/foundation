@@ -97,7 +97,7 @@ const TICKET: u8 = 3;
 const SPEC: u8 = 4;
 
 /// The most chunk digests that one `Spec` change lists, so that a change at each
-/// bound is [`RECORD_MAX`] bytes.
+/// bound is [`BYTES_MAX`] bytes.
 pub(crate) const CHUNKS_MAX: usize = 1024;
 
 /// The most holders of one `Spec` change, so that a change with [`CHUNKS_MAX`]
@@ -109,7 +109,7 @@ pub(crate) const HOLDERS_MAX: usize = 64;
 pub(crate) const HOMES_MAX: usize = 512;
 
 /// The most bytes of the byte form of a change: a `Spec` change at each bound.
-pub(crate) const RECORD_MAX: usize = 50_255;
+pub(crate) const BYTES_MAX: usize = 50_255;
 
 impl Change {
     /// Adds the one byte form of the change to `out`: a kind byte, then the body of
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_change_at_each_bound_is_record_max_bytes() {
+    fn a_spec_change_at_each_bound_is_bytes_max_bytes() {
         let mut change = many(CHUNKS_MAX);
         let Change::Spec { holders, homes, .. } = &mut change else {
             unreachable!()
@@ -579,11 +579,11 @@ mod tests {
             .map(node::Key::from_u128)
             .collect();
         *homes = homes_of(HOMES_MAX);
-        assert_eq!(encoded(&change).len(), RECORD_MAX);
+        assert_eq!(encoded(&change).len(), BYTES_MAX);
     }
 
     #[test]
-    fn the_largest_change_of_each_other_kind_is_below_record_max_bytes() {
+    fn the_largest_change_of_each_other_kind_is_below_bytes_max_bytes() {
         // A name of the most bytes that ends in `at`.
         let long = |at: usize| {
             let end = format!("b{at}");
@@ -612,7 +612,7 @@ mod tests {
             encoded(&ticket_change(7, options)).len(),
         ];
         assert_eq!(lengths, [33, 19_601, 307]);
-        assert!(lengths.iter().all(|&length| length < RECORD_MAX));
+        assert!(lengths.iter().all(|&length| length < BYTES_MAX));
     }
 
     /// A spec change with no chunk and `count` homes.
