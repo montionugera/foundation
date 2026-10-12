@@ -2689,7 +2689,8 @@ mod pool {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use block::testing::Scarce;
+    use ::hub::writer::Writer;
+    use block::testing::{Scarce, Switch};
     use types::frame::{self, Form};
     use types::time::Monotonic;
 
@@ -2720,6 +2721,17 @@ mod pool {
         assert!(held, "the size keeps its pages until 20 s after the start");
     }
 
+    /// The timer runs from before the open of the buffer, whose reads take blocks of
+    /// 4 KiB, so that size goes back by 20 s and 1 ms after the start.
+    #[test]
+    fn a_size_that_the_open_of_the_buffer_used_goes_back_20_s_after_the_start() {
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4056 });
+        let early = probe(4000, Span::ZERO);
+        assert_eq!(early, Ok(()), "the open of the buffer carved the size");
+        let late = probe(4000, Span::from_nanos(20 * SECOND_NS + 1_000_000));
+        assert_eq!(late, Err(refused), "the pages of the size went back");
+    }
+
     /// Whether a block size keeps its pages at the instant that `at` gives from the
     /// start of the node and the return of its last block. That block returns at
     /// `phase` after the start, or at the open of the writer when it comes later.
@@ -2731,6 +2743,66 @@ mod pool {
         phase: Span,
         at: impl FnOnce(Monotonic, Monotonic) -> Monotonic + Send + 'static,
     ) -> bool {
+        let (new, carved, again, later) = on_writer(4096, async move |rig| {
+            let phase = rig.start.checked_add(phase).expect("in range");
+            rig.clock.sleep_until(phase).await;
+            rig.switch.refuse();
+            let new = rig.take();
+            rig.switch.allow();
+            let carved = rig.take();
+            rig.switch.refuse();
+            let again = rig.take();
+            rig.clock.sleep_until(at(rig.start, rig.clock.now())).await;
+            let later = rig.take();
+            rig.switch.allow();
+            (new, carved, again, later)
+        });
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
+        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
+        assert_eq!(carved, Ok(()), "the pool carves the block");
+        assert_eq!(again, Ok(()), "a carved size needs no commit");
+        if let Err(error) = &later {
+            assert_eq!(error, &refused, "the memory refused the take");
+        }
+        later.is_ok()
+    }
+
+    /// The take of a block for `bytes` of samples, at `at` after the start of the
+    /// node, while the memory refuses.
+    fn probe(bytes: usize, at: Span) -> Result<(), frame::Error> {
+        on_writer(bytes, async move |rig| {
+            let at = rig.start.checked_add(at).expect("in range");
+            rig.clock.sleep_until(at).await;
+            rig.switch.refuse();
+            let taken = rig.take();
+            rig.switch.allow();
+            taken
+        })
+    }
+
+    /// A writer on a node of one shard whose memory is `Scarce`.
+    struct Rig {
+        writer: Writer,
+        series: [(usize, usize); 2],
+        switch: Switch,
+        clock: env::clock::Clock,
+        start: Monotonic,
+    }
+
+    impl Rig {
+        /// Takes a block for a frame of the rig's samples and drops it at once.
+        fn take(&self) -> Result<(), frame::Error> {
+            self.writer.draft(Form::Raw, &self.series).map(drop)
+        }
+    }
+
+    /// Runs `task` on a writer of 8 bytes of times and `bytes` of values, on a node
+    /// of one shard whose memory is `Scarce`. Returns its output after 40 s of the
+    /// sim, and after the node stops.
+    fn on_writer<T: Send + 'static>(
+        bytes: usize,
+        task: impl AsyncFnOnce(Rig) -> T + Send + 'static,
+    ) -> T {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 1);
         let switch = Rc::new(RefCell::new(None));
@@ -2741,7 +2813,6 @@ mod pool {
             Ok(memory)
         });
         let start = host.clock().now();
-        let phase = start.checked_add(phase).expect("in range");
         let node = Node::start(config(&host, Size::MEBIBYTE, memory));
         let switch = switch.take().expect("the shard got its memory");
         let seen = Arc::new(Mutex::new(None));
@@ -2750,36 +2821,23 @@ mod pool {
             define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
             let writer = writer(&hub, &["value"]).await;
             let (time, value) = (entry(writer.set(), 1), entry(writer.set(), 2));
-            let mut series = [(time, 8), (value, 4096)];
+            let mut series = [(time, 8), (value, bytes)];
             series.sort_unstable();
-            // Takes a block for a frame of 4 KiB of samples and drops it at once.
-            let take = || writer.draft(Form::Raw, &series).map(drop);
-            clock.sleep_until(phase).await;
-            switch.refuse();
-            let new = take();
-            switch.allow();
-            let carved = take();
-            switch.refuse();
-            let again = take();
-            clock.sleep_until(at(start, clock.now())).await;
-            let later = take();
-            switch.allow();
-            *out.lock().unwrap() = Some((new, carved, again, later));
+            let rig = Rig {
+                writer,
+                series,
+                switch,
+                clock,
+                start,
+            };
+            *out.lock().unwrap() = Some(task(rig).await);
         });
         assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND_NS)), Ok(()));
         let seen = seen.lock().unwrap().take();
-        let (new, carved, again, later) = seen.expect("the task ran to its end");
-        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
-        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
-        assert_eq!(carved, Ok(()), "the pool carves the block");
-        assert_eq!(again, Ok(()), "a carved size needs no commit");
         node.stop();
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Ok(()));
-        if let Err(error) = &later {
-            assert_eq!(error, &refused, "the memory refused the take");
-        }
-        later.is_ok()
+        seen.expect("the task ran to its end")
     }
 }
 
