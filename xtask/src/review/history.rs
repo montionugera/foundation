@@ -923,8 +923,6 @@ impl Entry {
     }
 }
 
-/// Whether `field`, a mode or a blob of `git diff --raw`, is all zeros: the path is
-/// not in that tree.
 /// Whether two texts of a source file have one public surface. `None`, a text that is
 /// no Rust text, has none.
 fn same(old: Option<&str>, new: Option<&str>) -> bool {
@@ -932,6 +930,8 @@ fn same(old: Option<&str>, new: Option<&str>) -> bool {
         .is_some_and(|(old, new)| !surface::changed(old, new))
 }
 
+/// Whether `field`, a mode or a blob of `git diff --raw`, is all zeros: the path is
+/// not in that tree.
 fn absent(field: &str) -> bool {
     field.bytes().all(|b| b == b'0')
 }
