@@ -189,8 +189,7 @@ impl Writer {
         let (mut keys, groups) = loop {
             let (keys, groups) = resolve(&state.borrow(), &channels)?;
             let checked = indexes(&groups);
-            let pending =
-                Pending::new(state, keys.iter().chain(&checked).copied().collect());
+            let pending = Pending::new(state, keys.as_slice().into());
             // A change of a channel ends the wait at once, and the names resolve again.
             if let Ok(homed) = pending.wait(crate::homes(state, &checked)).await {
                 homed?;

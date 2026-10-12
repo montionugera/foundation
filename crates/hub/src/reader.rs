@@ -614,9 +614,9 @@ pub(crate) enum Home {
 
 /// What the selector that `select` gives matches once the home of its index is known,
 /// with an item that `item` makes for each channel, and that home. It first applies
-/// the spec in use. A change of a channel that it matched, or of their index, ends a
-/// wait for the home at once, and it matches again. It calls `select` before and after
-/// each wait for the home, and keeps no selector or item across a wait.
+/// the spec in use. A change of a channel that it matched ends a wait for the home at
+/// once, and it matches again. It calls `select` before and after each wait for the
+/// home, and keeps no selector or item across a wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
@@ -629,7 +629,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             let defined = defined(&borrowed, select().borrow())?;
             let index = defined[0].1.index();
             let keys = defined.iter().map(|(_, channel)| channel.key());
-            (index, keys.chain([index]).collect())
+            (index, keys.collect())
         };
         let pending = Pending::new(state, keys);
         if let Ok(homed) = pending.wait(crate::homes(state, &[index])).await {
