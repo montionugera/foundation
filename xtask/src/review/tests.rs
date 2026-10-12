@@ -3130,6 +3130,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         format!("#12 (the frame cut,\n{OK})"),
         format!("#12 <{OK}>"),
         format!("#12({OK})"),
+        format!("#12 ({OK}), #13 ({OK})"),
     ] {
         assert_eq!(
             risk(vec![deferred(&linked)]),
@@ -3141,6 +3142,7 @@ fn a_last_round_of_a_risk_crate_pr_links_an_ok_after_each_deferred_issue() {
         (format!("#12 ({OK}), #13"), "#13"),
         (format!("{OK} #12"), "#12"),
         (format!("#12 ({OK}), #13 (the cut), #14"), "#13"),
+        (format!("#12 ({OK}), #13 ({OK}), #14"), "#14"),
         (format!("(#12), {OK}, PR#13,#14"), "#13"),
         (
             "#12 ([the OK](https://github.com/a/b/pull/1#issuecomment-2))".into(),
@@ -3452,6 +3454,7 @@ fn a_last_round_links_an_approval_on_a_public_surface_line_that_names_items() {
         format!("`hub::Route` ({OK}), and `hub::Send` (departs from {OK})"),
         "none, since the doc of `hub::Route` departs from no ruling".to_string(),
         format!("`hub::Route`, approval owedé ({OK})"),
+        format!("`hub::Route`, approval owed2 and 2owed ({OK})"),
         SURFACE_2372.to_string(),
     ] {
         assert_eq!(check(&surface), Vec::<String>::new(), "{surface}");
