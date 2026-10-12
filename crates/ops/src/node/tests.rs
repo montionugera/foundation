@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use types::channel::Key;
 
 use super::Node;
-use crate::apply::Applied;
+use crate::apply::{Applied, Effect};
 use crate::common::{NODE, PLANT, Reader, fail_sync, front_ends, placed_site, solo};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -73,13 +73,15 @@ fn applies_with_each_connector_kind_of_the_node() {
         let applied = node.apply(Path::new("plant.plan"), &plan).await;
         let expected = Applied {
             file: "plant.plan".to_owned(),
-            pointer: plan::Pointer::from(mesh.pointer()),
-            counts: Counts {
-                added: 18,
-                changed: 0,
-                removed: 0,
+            effect: Effect {
+                pointer: plan::Pointer::from(mesh.pointer()),
+                counts: Counts {
+                    added: 18,
+                    changed: 0,
+                    removed: 0,
+                },
+                homes: 3,
             },
-            homes: 3,
         };
         assert_eq!(applied, Ok(serde_json::to_value(expected).expect("JSON")));
     });
@@ -97,13 +99,15 @@ fn plans_and_applies_in_the_json_of_the_cli() {
         let pointer = mesh.pointer();
         let expected = Applied {
             file: "site.plan".to_owned(),
-            pointer: plan::Pointer::from(pointer),
-            counts: Counts {
-                added: 3,
-                changed: 0,
-                removed: 0,
+            effect: Effect {
+                pointer: plan::Pointer::from(pointer),
+                counts: Counts {
+                    added: 3,
+                    changed: 0,
+                    removed: 0,
+                },
+                homes: 1,
             },
-            homes: 1,
         };
         assert_eq!(applied, Ok(serde_json::to_value(expected).expect("JSON")));
         let (_, output) = node.plan(site()).await.expect("a second plan");

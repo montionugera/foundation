@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use document::Span;
+use document::{Document, Span};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,8 +21,7 @@ mod tests;
 ///
 /// # Errors
 ///
-/// [`Error::Config`] with each problem of [`front_end::read`], else with each problem
-/// of [`config::plan::plan`].
+/// As [`Files::read`], then [`Files::plan`].
 ///
 /// # Panics
 ///
@@ -35,31 +34,71 @@ pub(crate) fn plan(
     front_ends: &FrontEnds,
     kinds: &connector::kind::Table,
 ) -> Result<(Output, config::plan::Plan), Error> {
-    let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-    let failed = |diagnostics| Error::config(diagnostics, &paths);
-    let documents = front_end::read(files, front_ends).map_err(failed)?;
-    let plan = config::plan::plan(&documents, base, applied, members, kinds)
-        .map_err(failed)?;
-    let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
-        .map(|(name, line)| Change::of(name, line, &paths))
-        .collect();
-    changes.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let changes: Vec<Change> = changes.into_iter().map(|(_, change)| change).collect();
-    let output = Output {
-        base: Pointer::from(plan.base),
-        counts: Counts::of(&plan, applied),
-        homes: plan
-            .homes
-            .iter()
-            .map(|(index, home)| (index.to_string(), home.to_string()))
-            .collect(),
-        changes,
-        reserved: applied
-            .iter()
-            .filter_map(|(name, definition)| Reserved::of(name, definition))
-            .collect(),
-    };
-    Ok((output, plan))
+    Files::read(files, front_ends)?.plan(base, applied, members, kinds)
+}
+
+/// The config files of one plan, each read into its Document.
+pub(crate) struct Files {
+    paths: Vec<PathBuf>,
+    documents: Vec<Document>,
+}
+
+impl Files {
+    /// Reads each of `files` with its front end. `Source(i)` is `files[i]`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`front_end::read`].
+    ///
+    /// # Panics
+    ///
+    /// As [`front_end::read`] panics.
+    pub(crate) fn read(files: &[File], front_ends: &FrontEnds) -> Result<Self, Error> {
+        let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        match front_end::read(files, front_ends) {
+            Ok(documents) => Ok(Self { paths, documents }),
+            Err(diagnostics) => Err(Error::config(diagnostics, &paths)),
+        }
+    }
+
+    /// The change from the files to the spec at `base`, and the plan that `apply`
+    /// takes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::plan::plan`].
+    pub(crate) fn plan(
+        &self,
+        base: spec::Pointer,
+        applied: &BTreeMap<Name, Definition>,
+        members: &BTreeSet<Name>,
+        kinds: &connector::kind::Table,
+    ) -> Result<(Output, config::plan::Plan), Error> {
+        let paths = &self.paths;
+        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
+            .map_err(|diagnostics| Error::config(diagnostics, paths))?;
+        let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
+            .map(|(name, line)| Change::of(name, line, paths))
+            .collect();
+        changes.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let changes: Vec<Change> =
+            changes.into_iter().map(|(_, change)| change).collect();
+        let output = Output {
+            base: Pointer::from(plan.base),
+            counts: Counts::of(&plan, applied),
+            homes: plan
+                .homes
+                .iter()
+                .map(|(index, home)| (index.to_string(), home.to_string()))
+                .collect(),
+            changes,
+            reserved: applied
+                .iter()
+                .filter_map(|(name, definition)| Reserved::of(name, definition))
+                .collect(),
+        };
+        Ok((output, plan))
+    }
 }
 
 /// The change from the files to the spec, as `plan` gives it.

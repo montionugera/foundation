@@ -12,12 +12,22 @@ use crate::error::Error;
 ///
 /// # Errors
 ///
-/// - [`Error::Behind`] when the node does not use the newest spec.
 /// - [`Error::Stopped`] when the group of `mesh` stopped.
+/// - [`Error::Behind`] when the node does not use the newest spec.
 pub(crate) async fn spec(
     mesh: &mesh::Mesh,
 ) -> Result<(spec::Pointer, Rc<BTreeMap<Name, Definition>>), Error> {
-    let spec = mesh.spec().await.map_err(Error::Stopped)?;
+    newest(mesh.spec().await.map_err(Error::Stopped)?)
+}
+
+/// The pointer and the definitions, by tree key, of `spec`.
+///
+/// # Errors
+///
+/// [`Error::Behind`] when `spec` is not the newest spec of its node.
+pub(crate) fn newest(
+    spec: mesh::used::Spec,
+) -> Result<(spec::Pointer, Rc<BTreeMap<Name, Definition>>), Error> {
     if let Some(behind) = spec.behind {
         return Err(Error::Behind(Box::new(behind)));
     }

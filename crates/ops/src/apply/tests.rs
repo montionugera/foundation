@@ -20,7 +20,7 @@ use types::digest::Digest;
 use types::ed25519::PrivateKey;
 use types::name::{Name, Prefix};
 
-use super::{Applied, apply};
+use super::{Applied, Effect, apply};
 use crate::common::{
     ADMIN, NODE, PLANT, Reader, fail_sync, files, founded, front_ends, keys, name,
     placed_site, solo,
@@ -72,13 +72,15 @@ fn applies_a_plan_and_then_plans_no_change() {
             applied,
             Applied {
                 file: "site.plan".to_owned(),
-                pointer: plan::Pointer::from(pointer),
-                counts: Counts {
-                    added: 3,
-                    changed: 0,
-                    removed: 0,
+                effect: Effect {
+                    pointer: plan::Pointer::from(pointer),
+                    counts: Counts {
+                        added: 3,
+                        changed: 0,
+                        removed: 0,
+                    },
+                    homes: 1,
                 },
-                homes: 1,
             }
         );
         assert_eq!(
@@ -149,7 +151,7 @@ fn counts_each_change_and_removal_of_an_apply() {
             .await
             .expect("an apply");
         assert_eq!(
-            applied.counts,
+            applied.effect.counts,
             Counts {
                 added: 0,
                 changed: 1,
@@ -226,7 +228,7 @@ fn gives_a_stale_plan_when_another_apply_commits_first() {
             (Ok(won), lost) | (lost, Ok(won)) => (won, lost),
             ends => panic!("no apply in {ends:?}"),
         };
-        assert_eq!(won.pointer, plan::Pointer::from(pointer));
+        assert_eq!(won.effect.pointer, plan::Pointer::from(pointer));
         assert_eq!(lost.as_ref().map_err(Error::status), Err(1));
         assert_eq!(lost, Err(stale));
     });
@@ -740,13 +742,15 @@ fn leaves_out_each_count_of_zero() {
         };
         let applied = Applied {
             file: "a\n.plan".to_owned(),
-            pointer: plan::Pointer::from(pointer),
-            counts: Counts {
-                added,
-                changed,
-                removed,
+            effect: Effect {
+                pointer: plan::Pointer::from(pointer),
+                counts: Counts {
+                    added,
+                    changed,
+                    removed,
+                },
+                homes,
             },
-            homes,
         };
         applied.text()
     };
@@ -767,16 +771,18 @@ fn leaves_out_each_count_of_zero() {
 fn escapes_the_file_as_an_error_does() {
     let applied = Applied {
         file: "it's \"b\\c\"\ne\u{301}.plan".to_owned(),
-        pointer: plan::Pointer::from(Pointer {
-            version: 1,
-            root: spec::tree::empty(),
-        }),
-        counts: Counts {
-            added: 0,
-            changed: 0,
-            removed: 0,
+        effect: Effect {
+            pointer: plan::Pointer::from(Pointer {
+                version: 1,
+                root: spec::tree::empty(),
+            }),
+            counts: Counts {
+                added: 0,
+                changed: 0,
+                removed: 0,
+            },
+            homes: 0,
         },
-        homes: 0,
     };
     assert_eq!(
         applied.text(),
@@ -793,13 +799,15 @@ fn gives_the_json_of_an_apply() {
     let root = pointer.root.clone();
     let applied = Applied {
         file: "site.plan".to_owned(),
-        pointer,
-        counts: Counts {
-            added: 1,
-            changed: 2,
-            removed: 3,
+        effect: Effect {
+            pointer,
+            counts: Counts {
+                added: 1,
+                changed: 2,
+                removed: 3,
+            },
+            homes: 4,
         },
-        homes: 4,
     };
     let value = serde_json::to_value(&applied).expect("JSON");
     assert_eq!(
@@ -941,13 +949,15 @@ fn proposes_nothing_for_a_plan_with_no_change() {
             applied,
             Applied {
                 file: "site.plan".to_owned(),
-                pointer: plan::Pointer::from(pointer),
-                counts: Counts {
-                    added: 0,
-                    changed: 0,
-                    removed: 0,
+                effect: Effect {
+                    pointer: plan::Pointer::from(pointer),
+                    counts: Counts {
+                        added: 0,
+                        changed: 0,
+                        removed: 0,
+                    },
+                    homes: 0,
                 },
-                homes: 0,
             }
         );
         assert_eq!(applied.text(), "Applied site.plan: no change.\n");
@@ -1000,7 +1010,7 @@ fn applies_a_plan_with_no_home_and_then_a_plan_with_only_a_home() {
         let applied = apply(path(), &only.encode(), &mesh, &kinds(), keys(10))
             .await
             .expect("a plan with only a home applies");
-        assert_eq!(applied.pointer, plan::Pointer::from(mesh.pointer()));
+        assert_eq!(applied.effect.pointer, plan::Pointer::from(mesh.pointer()));
         assert_eq!(applied.text(), "Applied site.plan: 1 home listed.\n");
         assert_eq!(mesh.pointer().version, 2);
         assert_eq!(mesh.watch(key).next().await, Ok(Some(NODE)));
@@ -1075,6 +1085,6 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
             "the plan showed:\n{}",
             output.text()
         );
-        assert_eq!(applied.counts, output.counts);
+        assert_eq!(applied.effect.counts, output.counts);
     });
 }
