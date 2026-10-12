@@ -874,6 +874,27 @@ mod tests {
     }
 
     #[test]
+    fn decode_refuses_an_append_whose_last_entry_is_over_bytes_max_bytes() {
+        let append = |bytes| {
+            let entry = |index, bytes| Entry {
+                at: at(1, index),
+                data: Data::Bytes(vec![0; bytes]),
+            };
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![entry(1, 1), entry(2, bytes)],
+                commit: 0,
+            })
+        };
+        let most = append(change::BYTES_MAX);
+        assert_eq!(Message::decode(&most.encode()), Some(most));
+        assert_eq!(
+            Message::decode(&append(change::BYTES_MAX + 1).encode()),
+            None
+        );
+    }
+
+    #[test]
     fn decode_refuses_an_append_of_a_change_over_bytes_max_and_8_bytes() {
         let append = |voters: u128| {
             let change = raft::Change {
