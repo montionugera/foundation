@@ -796,8 +796,8 @@ mod tests {
             .strip_prefix("\r\n")
             .or_else(|| after.strip_prefix('\n'))
             .unwrap_or(after);
-        // A text whose first line ends in `\r\n` gets no heredoc, so `update` ends an
-        // added line here in `\n`.
+        // A text whose first line ends in `\r\n` gets no heredoc, so the line end that
+        // `update` adds to the last line before an added line is `\n` here.
         let tail = if rest.is_empty() {
             spaces.to_owned()
         } else {
