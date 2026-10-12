@@ -256,10 +256,12 @@
   `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
-  issue only when it starts the line or follows a character that is no ASCII letter, no
-  ASCII digit, and no `_`, as GitHub shows the line. No issue starts in a comment link
-  or in another issue. The problem names the round and the first such issue. A comment
-  link is a URL in the text of the line as GitHub shows it:
+  issue only when it starts a text node of the line as GitHub shows it, or follows in
+  its node a character that is no ASCII letter, no ASCII digit, and no `_`. A code span,
+  a link, an image, and the start or the end of a mark each end a text node. An
+  ignorable character, such as U+200B or U+00AD, is such a character. No issue starts in
+  a comment link or in another issue. The problem names the round and the first such
+  issue. A comment link is a URL in the text of the line as GitHub shows it:
   `https://github.com/<owner>/<repo>/pull/<n>` or
   `https://github.com/<owner>/<repo>/issues/<n>`, then `#issuecomment-<id>`,
   `#pullrequestreview-<id>`, or `#discussion_r<id>`. It starts the line or follows a
@@ -273,17 +275,18 @@
   read: the check reads each line as GitHub shows it. The check also reads as an issue a
   `GH-<n>` in a URL that is no issue link, such as the owner of
   `https://github.com/gh-1/b/issues`, a `#<n>` or a `GH-<n>` that a letter, a digit, or
-  a `_` follows, such as `#13abc`, and the `#8203` of `&#8203;`. GitHub shows no issue
-  for each. It does not read a path with no host, such as
-  `synnaxlabs/foundation/issues/13`, for which GitHub shows an issue. The check reads
-  `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file under
-  `crates/` in each ASCII case. Supersedes the words of goals 3 and 4 of
-  https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
-  item. A `Later steps:` line after the first of the end lines is not read. A last round
-  posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
-  is checked as before, so that the rule does not fail the rounds that came before it.
-  The cutoff is a fixed time: it stays when the rule merges after it. Stated by the
-  director as rule item 24 at 2026-10-11T03:39:26Z
+  a `_` follows, such as `#13abc`, the `#8203` of `&#8203;`, and a `GH-<n>` after `@`,
+  which GitHub shows as the mention of a user. GitHub shows no issue for each. It does
+  not read a path with no host, such as `synnaxlabs/foundation/issues/13`, for which
+  GitHub shows an issue. The check reads `owed`, `departs from`, `GH-<n>`, `not in a
+  risk crate`, and the path of a file under `crates/` in each ASCII case. Supersedes the
+  words of goals 3 and 4 of https://github.com/synnaxlabs/foundation/issues/1211 that
+  ask for a link for each item. A `Later steps:` line after the first of the end lines
+  is not read. A last round posted before the cutoff `LINK_CUTOFF` in
+  `xtask/src/review.rs` (2026-10-12T12:00:00Z) is checked as before, so that the rule
+  does not fail the rounds that came before it. The cutoff is a fixed time: it stays
+  when the rule merges after it. Stated by the director as rule item 24 at
+  2026-10-11T03:39:26Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6105098668), and
   ruled at 2026-10-11T10:47:32Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6108222189), and
@@ -302,7 +305,9 @@
   2026-10-12T15:30:35Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6127385827), and
   ruled for the start of a `GH-<n>` and for three limits at 2026-10-12T18:22:54Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6130107518). The
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6130107518), and
+  ruled for a `GH-<n>` after a mark and after `@` at 2026-10-12T20:54:03Z
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6132434331). The
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
