@@ -5,6 +5,7 @@
 #![cfg(not(loom))]
 
 mod common;
+mod name;
 mod one_node;
 mod port;
 mod rig;
