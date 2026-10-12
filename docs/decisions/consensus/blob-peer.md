@@ -9,13 +9,14 @@
   block of the chunk's length and calls `Store::put`, so a put holds one chunk in
   memory, and `Reply::Stored` goes only once the chunk is durable. A get holds the chunk
   that it sends. `transport` also holds each chunk whole until the peer acknowledged
-  each byte of it and each byte before it on the stream, so a get can hold more than one
-  chunk. The bound is `transport`'s (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
-  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): a
-  session holds at most `window_bytes` of sent bytes, and `transport` copies a part of
-  at most 1452 bytes and holds no block for it. So the chunks that `transport` holds for
-  a session have at most `window_bytes` bytes together, plus two chunks for each
-  stream. They are at most `window_bytes / 1453` chunks, plus two for each stream
+  each byte of it and each byte before it on the stream, or the stream resets, so a get
+  can hold more than one chunk. The bound is `transport`'s (#2361; `laptop.architect-2`,
+  2026-10-11T06:02:25Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): a session
+  holds at most `window_bytes` of sent bytes, and `transport` copies a part of at most
+  1452 bytes and holds no block for it. So the chunks that `transport` holds for a
+  session have at most `window_bytes` bytes together, plus two chunks for each stream.
+  They are at most `window_bytes / 1453` chunks, plus two for each stream
   (`laptop.architect-2`, 2026-10-11T17:39:39Z,
   https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297;
   `laptop.architect`, 2026-10-11T20:52:09Z,
