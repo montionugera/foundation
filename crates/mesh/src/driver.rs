@@ -5614,6 +5614,63 @@ mod tests {
             });
         }
 
+        // With 629 voters, the pre-vote proof of a candidate that each voter grants
+        // fits no message, and `raft` panics at its next `Vote`.
+        #[test]
+        fn refuses_a_founding_set_whose_pre_vote_proof_fits_no_message() {
+            fn private(id: u16) -> PrivateKey {
+                let mut bytes = [0x5a; 32];
+                bytes[..2].copy_from_slice(&id.to_le_bytes());
+                PrivateKey(bytes)
+            }
+            fn key(id: u16) -> node::Key {
+                node::Key::from_u128(u128::from(id))
+            }
+            fn member(id: u16) -> Member {
+                let mut card = common::member(1).card.card().clone();
+                card.name = format!("plant.node{id}").parse().unwrap();
+                card.public_key = private(id).public();
+                Member {
+                    card: card::Signed::sign(key(id), card, &private(id)),
+                    ..common::member(1)
+                }
+            }
+            solo(|node, tasks| async move {
+                let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
+                let peers = 2..=629;
+                let founding = &mut config.founding;
+                founding.members.extend(peers.clone().map(member));
+                founding.voters.extend(peers.clone().map(key));
+                let mesh = match Mesh::start(config).await {
+                    Err(refused) => {
+                        let most = message::VOTERS_MAX;
+                        assert_eq!(refused, Error::Voters { voters: 629, most });
+                        return;
+                    }
+                    Ok(mesh) => mesh,
+                };
+                let sent = mesh.outgoing(key(2)).await.unwrap();
+                for id in peers {
+                    let answer = Answer::Granted(None);
+                    let mut ready = Ready {
+                        messages: vec![raft::Message {
+                            from: key(id),
+                            to: key(1),
+                            term: sent.term,
+                            body: Body::PreVoteReply { answer },
+                            proof: None,
+                            chain: Vec::new(),
+                        }],
+                        ..Ready::default()
+                    };
+                    Signer::new(key(id), &private(id)).sign(&mut ready);
+                    let granted = ready.messages.remove(0);
+                    assert_eq!(mesh.receive(private(id).public(), granted), Ok(()));
+                }
+                panic!("the mesh started with 629 voters");
+            });
+        }
+
         #[test]
         fn refuses_the_first_founding_home_at_a_node_that_is_not_a_member() {
             solo(|node, tasks| async move {
