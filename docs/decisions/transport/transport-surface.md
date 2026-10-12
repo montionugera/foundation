@@ -39,8 +39,9 @@
   `laptop.architect-2` (#2472, 2026-10-12T18:40:46Z):
   https://github.com/synnaxlabs/foundation/issues/2472#issuecomment-6130395959.
   Amended (2026-10-12, #2214): `Transport::ended` returns `env::tasks::Ended`, and
-  `transport` exports no `Ended` of its own. The carrier's task spawns through one
-  `env::tasks::Group`. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
+  `transport` exports no `Ended` of its own. The carrier's task of a `Transport` spawns
+  through one `env::tasks::Group` that the `Transport` holds; a `Client` counts no
+  task. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
   https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454.
   Supersedes the `pub struct Ended` of
   https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072912165
