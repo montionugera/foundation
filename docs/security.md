@@ -129,14 +129,15 @@ state on `main`.
   region has the peer's public key, once, at the header (NODE PORT); it rejects a
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
-  a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. At the bound, the oldest place frees for
-  the new peer, and its sessions close unless its peer is now a member. So a peer
-  outside the region keeps its session until 256 later peers took a place. A flood that
-  takes 256 places in the time that a peer needs to prove its right (a member, the
-  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
-  limit on handshakes before admission bounds that rate (#563). It rejects a stream
-  whose header has not arrived within 10 s.
+  a session, and gives other peers at most 256 places by default
+  (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
+  for the key of a node. At the bound, the oldest place frees for the new peer, and its
+  sessions close unless its peer is now a member. So a peer outside the region keeps its
+  session until that many later peers took a place. A flood that takes that many
+  places in the time that a peer needs to prove its right (a member, the client hello
+  of #1744, or the ticket of #1157) closes that peer's session; only a limit on
+  handshakes before admission bounds that rate (#563). It rejects a stream whose header
+  has not arrived within 10 s by default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
@@ -390,8 +391,11 @@ state on `main`.
 - Each third-party crate needs a person's approval (`docs/dependencies.md`).
   `cargo deny check advisories bans licenses sources` runs in CI on each change to a
   manifest. aws-lc-rs is the only crypto provider, with one recorded exception.
-- `unsafe` is denied in the workspace. The crates that allow it (`block`, `ring`,
-  `counting`, `waker`) run under Miri in CI.
+- `unsafe` is denied in the workspace. Each use expects `unsafe_code` with a reason
+  (`docs/claude/rust.md`, "Unsafe"). `cargo xtask miri` runs each crate that names
+  `unsafe_code` under Miri, except `os` and `connector-opcua`, which Miri cannot run.
+  CI starts it on a change to a `models` path of `ci.yaml`, which names each crate
+  that it runs and each workspace crate that one of them depends on.
 - The `fuzz/` crate has its own lock file. The `deny` job of `ci.yaml` checks it with
   `cargo deny` on each change to it.
 - A local patch of a Rust crate (`patches/`) is a path package, which `cargo deny`

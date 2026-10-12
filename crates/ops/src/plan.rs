@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use document::Span;
+use document::{Document, Span};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,8 +21,7 @@ mod tests;
 ///
 /// # Errors
 ///
-/// [`Error::Config`] with each problem of [`front_end::read`], else with each problem
-/// of [`config::plan::plan`].
+/// As [`Documents::read`], then [`Documents::plan`].
 ///
 /// # Panics
 ///
@@ -35,27 +34,71 @@ pub(crate) fn plan(
     front_ends: &FrontEnds,
     kinds: &connector::kind::Table,
 ) -> Result<(Output, config::plan::Plan), Error> {
-    let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-    let failed = |diagnostics| Error::config(diagnostics, &paths);
-    let documents = front_end::read(files, front_ends).map_err(failed)?;
-    let plan = config::plan::plan(&documents, base, applied, members, kinds)
-        .map_err(failed)?;
-    let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
-        .map(|(name, line)| Change::of(name, line, &paths))
-        .collect();
-    changes.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let changes: Vec<Change> = changes.into_iter().map(|(_, change)| change).collect();
-    let output = Output {
-        base: Pointer::from(plan.base),
-        counts: Counts::of(&plan, applied),
-        homes: plan
-            .homes
-            .iter()
-            .map(|(index, home)| (index.to_string(), home.to_string()))
-            .collect(),
-        changes,
-    };
-    Ok((output, plan))
+    Documents::read(files, front_ends)?.plan(base, applied, members, kinds)
+}
+
+/// The config files of one plan, each read into its Document.
+pub(crate) struct Documents {
+    paths: Vec<PathBuf>,
+    documents: Vec<Document>,
+}
+
+impl Documents {
+    /// Reads each of `files` with its front end. `Source(i)` is `files[i]`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`front_end::read`].
+    ///
+    /// # Panics
+    ///
+    /// As [`front_end::read`] panics.
+    pub(crate) fn read(files: &[File], front_ends: &FrontEnds) -> Result<Self, Error> {
+        let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        match front_end::read(files, front_ends) {
+            Ok(documents) => Ok(Self { paths, documents }),
+            Err(diagnostics) => Err(Error::config(diagnostics, &paths)),
+        }
+    }
+
+    /// The change from the files to the spec at `base`, and the plan that `apply`
+    /// takes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::plan::plan`].
+    pub(crate) fn plan(
+        &self,
+        base: spec::Pointer,
+        applied: &BTreeMap<Name, Definition>,
+        members: &BTreeSet<Name>,
+        kinds: &connector::kind::Table,
+    ) -> Result<(Output, config::plan::Plan), Error> {
+        let paths = &self.paths;
+        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
+            .map_err(|diagnostics| Error::config(diagnostics, paths))?;
+        let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
+            .map(|(name, line)| Change::of(name, line, paths))
+            .collect();
+        changes.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let changes: Vec<Change> =
+            changes.into_iter().map(|(_, change)| change).collect();
+        let output = Output {
+            base: Pointer::from(plan.base),
+            counts: Counts::of(&plan, applied),
+            homes: plan
+                .homes
+                .iter()
+                .map(|(index, home)| (index.to_string(), home.to_string()))
+                .collect(),
+            changes,
+            reserved: applied
+                .iter()
+                .filter_map(|(name, definition)| Reserved::of(name, definition))
+                .collect(),
+        };
+        Ok((output, plan))
+    }
 }
 
 /// The change from the files to the spec, as `plan` gives it.
@@ -69,6 +112,9 @@ pub(crate) struct Output {
     /// name. The apply gives this home only to an index with no home, so an index with
     /// a home keeps it.
     pub(crate) homes: BTreeMap<String, String>,
+    /// Each definition of the spec that Foundation made, in the order of its tree
+    /// key. No file can hold its label, so the plan leaves it out.
+    pub(crate) reserved: Vec<Reserved>,
     #[serde(flatten)]
     pub(crate) counts: Counts,
 }
@@ -80,7 +126,8 @@ impl Output {
     }
 
     /// One line for each change, with a `key` line under it for each fingerprint, then
-    /// the counts.
+    /// the counts, then one `note` line with the tree key of each definition that
+    /// Foundation made, when the spec holds one.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the table entries of #1744 call it")
@@ -99,13 +146,55 @@ impl Output {
                 format!("{symbol} {kind} {}\n{lines}", change.name)
             })
             .collect();
+        let made: Vec<&str> = self
+            .reserved
+            .iter()
+            .map(|reserved| reserved.key.as_str())
+            .collect();
+        let note = match made.len() {
+            0 => String::new(),
+            1 => format!(
+                "note: 1 definition that Foundation made is not in the files: {}\n",
+                made[0]
+            ),
+            count => format!(
+                "note: {count} definitions that Foundation made are not in the files: \
+                 {}\n",
+                made.join(", ")
+            ),
+        };
         format!(
-            "{}{} to add, {} to change, {} to remove.\n",
+            "{}{} to add, {} to change, {} to remove.\n{note}",
             lines.concat(),
             self.counts.added,
             self.counts.changed,
             self.counts.removed
         )
+    }
+}
+
+/// A definition of the spec that Foundation made, such as the admin subject of the
+/// first start.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct Reserved {
+    /// The label of the definition, such as `@admin`.
+    pub(crate) name: String,
+    /// The kind of the definition, such as `subject`.
+    pub(crate) kind: String,
+    /// The tree key of the definition, such as `@admin.@subject`.
+    pub(crate) key: String,
+}
+
+impl Reserved {
+    /// The output of `definition` at the tree key `key`, when its label is reserved.
+    fn of(key: &Name, definition: &Definition) -> Option<Self> {
+        let kind = definition.kind();
+        let label = kind.label(key).filter(Name::reserved)?;
+        Some(Self {
+            name: label.to_string(),
+            kind: kind.as_str().to_owned(),
+            key: key.to_string(),
+        })
     }
 }
 
