@@ -78,9 +78,9 @@ pub struct Config {
     /// is the home of each index. With a region, the hub takes its definitions only
     /// from the region's mesh: the spec in use at [`Hub::new`], each later spec in use,
     /// and the spec in use at each open of a writer, a reader, or a served session,
-    /// when its pointer moved. So an open finds each channel of each spec that the mesh
-    /// told any task of. A later spec ends each session on a channel that it removes,
-    /// as [`Hub::set_definitions`] states, with no open.
+    /// when its pointer moved. So an open works on a spec no older than each spec that
+    /// the mesh gave any task before the open. A later spec ends each session on a
+    /// channel that it removes, as [`Hub::set_definitions`] states, with no open.
     pub region: Option<Region>,
 }
 
@@ -135,15 +135,15 @@ struct State {
 
 impl Hub {
     /// A hub over `config.home` that knows each channel of the spec that the mesh of
-    /// `config.region` uses, or no channel with no region. Spawns three tasks on
-    /// `config.tasks`: one that ends when the home's buffer fails, one that applies the
-    /// end of each control lease and grace at the home, and, with a region, one that
-    /// applies each later spec in use ([`Config::region`]). The hub holds the home
-    /// and `config.region` until the hub and each value and future that it gave,
-    /// directly or through another such value, drop. Each task of the hub ends at its
-    /// next poll after that, and then holds neither. So a `::home::Commit` taken before
-    /// `new` and awaited after that drop resolves once the buffer's task ended, and
-    /// when the caller holds no other part of the home, the ring closes when that
+    /// `config.region` uses, or no channel with no region. Spawns two tasks on
+    /// `config.tasks`: one that ends when the home's buffer fails, and one that applies
+    /// the end of each control lease and grace at the home. With a region, it spawns a
+    /// third, which applies each later spec in use ([`Config::region`]). The hub holds
+    /// the home and `config.region` until the hub and each value and future that it
+    /// gave, directly or through another such value, drop. Each task of the hub ends at
+    /// its next poll after that, and then holds neither. So a `::home::Commit` taken
+    /// before `new` and awaited after that drop resolves once the buffer's task ended,
+    /// and when the caller holds no other part of the home, the ring closes when that
     /// commit drops.
     #[must_use]
     pub fn new(config: Config) -> Self {
