@@ -1,9 +1,12 @@
 - **HUB LINK (2026-10-08)** `Hub::link(session)` gives a `hub::Link` for one transport
   session. `node` calls `Link::serve` for each hub stream that NODE PORT serves once it
   reads its header. On a client link, the first stream given to `serve` is its hello
-  stream, and each later one a request stream; `serve` takes the role at the call
-  (`laptop.architect`, 2026-10-08T18:56:15Z,
-  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066908418).
+  stream, and each later one a request stream or a read stream, by its first message
+  (`client::First::decode`); `serve` takes the role at the call (`laptop.architect`,
+  2026-10-08T18:56:15Z,
+  https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066908418; the read
+  stream by `laptop.architect`, 2026-10-10T23:31:47Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608).
   `hub::Config` gets `node` (the `via` that `admit` checks), `time` (`clock::Reader`),
   and `entropy` (the nonces). The link waits for `Admitted::ends` of a hello with
   `clock::Reader::reach` (CLOCK REACH), so `hub` knows nothing of how mesh time moves
@@ -12,8 +15,9 @@
   first byte of the response, so a client that sends its next request when a reply
   ends never gets `MALFORMED`. `Reply::send` panics on a body over `BODY_BYTES_MAX`, a
   precondition that the maker of the body checks. Each order error names its cause,
-  though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request stream
-  before an admitted hello) and `Pending` (a request while one waits for its reply).
+  though both stop with `MALFORMED`: `serve::Error::Unadmitted` (a request or read
+  stream before an admitted hello) and `Pending` (a request while one waits for its
+  reply).
   A message of the wrong kind for its stream, such as a hello on a request stream, is
   `serve::Error::Client` with `wire::hub::client::Error::Kind` (`laptop.architect`,
   2026-10-08T15:38:46Z,
@@ -50,11 +54,11 @@
   Supersedes the name `Hub::rules` of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066050140.
   A rule of the client wire, which each SDK follows: a program sends the header of its
-  first request stream once the challenge after its hello comes. The node sends it
-  only after it admits the hello, so this rule also makes the hello stream the first
+  first request or read stream once the challenge after its hello comes. The node sends
+  it only after it admits the hello, so this rule also makes the hello stream the first
   that `Link::serve` gets, in any order of the headers. The node does not check the
   rule. A program that breaks it gets `Unadmitted`, `Client` with `Kind`, or a served
-  request (`laptop.architect`, 2026-10-08T19:22:10Z,
+  request or read (`laptop.architect`, 2026-10-08T19:22:10Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6067359431).
   Supersedes the result for a program that breaks the rule of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066239520.
@@ -119,3 +123,67 @@
   Supersedes "A stalled request holds its reservation until its stream or session
   ends; only an admitted subject can do this"
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6069496483).
+  A read takes no request turn: a link serves its reads beside its one open request. The
+  transport session's `streams_max` bounds the reads of a link; there is no `READS_MAX`.
+  The node holds the open of a read before it checks its signature, so the open
+  reserves its length under `BODIES_BYTES_MAX` and the subject's share, as a request
+  body does, until it decodes after the wait for the home of its index. An open that
+  does not fit stops with `BUSY` (`serve::Error::Share` or `Bodies`). The node opens an
+  unnamed `hub::reader::Reader` for the read, only at the home of its index. A read
+  whose home is another node stops with `NOT_HOME` (`serve::Error::Reader` with
+  `Remote`) before the node opens a stream to that home, and it interns no key set
+  (#2419). Decided by `laptop.architect` (2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
+  3). Supersedes "runs at the local home or at a remote one" of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402 item 2.
+  `serve::Error::Reader` and `serve::Error::Ended` hold why it did not open or ended,
+  and `hub` maps each variant of `reader::Error` and `reader::Ended` to its code in one
+  exhaustive `match`: `UNKNOWN` for a selector that matches no channel, `MALFORMED` for
+  channels on more than one index, and `FAILED` for the path to the home (`Stream`,
+  `Transport`, `Message`, `Frame`, `Credit`). `Unsynced` and `Replaced` cannot come
+  for an unnamed reader, so their arms panic. Decided by `laptop.architect`
+  (2026-10-10T23:31:47Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608, items 2,
+  5, and 6). The ruling approved the plan
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402), which
+  gives the other codes (plan item 6): `UNKNOWN` for a removed channel, `BUSY` for the
+  pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal for a
+  refusal of the home. A complete read that misses a frame gets `Behind` and the finish
+  of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
+  panics too (`laptop.architect`, 2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
+  1). Supersedes the `Remote` panic arm of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 6,
+  as https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 3
+  gives `Remote` the code NOT_HOME. A home's `MALFORMED` gives `FAILED`, as the
+  program's open was well formed; `UNKNOWN`, `NOT_HOME`, `BUSY`, and `FAILED` of the
+  home keep their code (`laptop.architect`, 2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
+  2). Supersedes "the code of the home's refusal" of plan item 6 for `MALFORMED`.
+  The program ends a read with the finish of its stream, also while the read waits for
+  the home of its index, and the node then finishes the stream. A message after the open
+  stops the read with `MALFORMED` (`serve::Error::Client` with `Trailing`)
+  (`laptop.architect`, 2026-10-11T17:25:34Z,
+  https://github.com/synnaxlabs/foundation/pull/2425#issuecomment-6111681323). A read
+  holds the reservation of its open until the home of its index is known and its open
+  decodes after that wait. While it waits, it holds its open and the key of its
+  index, and no places. After that decode it holds no reservation. A decoded selector
+  lives across no wait: the read drops it before the wait for the home, and before it
+  sends its first place to the program (`laptop.architect`, 2026-10-11T16:46:33Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6111323686).
+  Supersedes "After its open decodes, a read holds no reservation." of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 4,
+  and "until the node decoded it" of
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 5.
+  Lost: the decoded selector through the wait, which holds about 26 times the bytes of
+  the open with no reservation; and a compact `types::name::Selector`, an interface
+  change of `types` that still holds a few times the bytes of the open. It holds its
+  places from the last match of its selector, after the wait for the home of its index,
+  until the program took its last place. A place is the name, the key, and the sample
+  type of one channel that its selector matches. It holds none while it waits for the
+  home of its index. For its life it holds the key and the slot of each of those
+  channels. So one read holds at most the defined channels of one index, and a link
+  holds at most `streams_max` reads. No cap bounds the reads of one subject or of one
+  node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the share, which refuses a
+  read wider than the share at each retry (`laptop.architect`, 2026-10-11T15:17:29Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item 4).

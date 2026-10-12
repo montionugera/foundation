@@ -11,6 +11,7 @@ pub mod clock;
 pub mod entropy;
 pub mod files;
 pub mod net;
+pub mod paths;
 pub mod rng;
 pub mod serial;
 pub mod shards;

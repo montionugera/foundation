@@ -86,6 +86,42 @@ impl Kind for Hold {
     }
 }
 
+/// A kind with the count `frames`, whose run records its start, sets the count to 1,
+/// and holds until the cancel.
+struct Tally {
+    starts: Starts,
+}
+
+impl Kind for Tally {
+    type Config = usize;
+
+    fn parse(&self, config: &Document) -> Result<usize, Vec<Diagnostic>> {
+        Ok(config.attributes.iter().len())
+    }
+
+    fn check(&self, _: &usize) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels {
+            counts: vec![name("frames")],
+            ..Channels::default()
+        })
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<usize>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), *ctx.config());
+        self.starts.lock().expect("no panic").push(start);
+        ctx.count("frames").set(1);
+        ctx.cancel().wait().await;
+        Ok(())
+    }
+}
+
 /// A kind whose run records its start, opens a writer of `plant.data.time` and
 /// `plant.data.value`, writes one frame at once, and holds the writer until the cancel.
 struct Source {
@@ -376,6 +412,12 @@ fn kinds(
         .with("source", source)
         .with("sink", sink("plant.data.*"))
         .with("void", sink("plant.none.*"))
+        .with(
+            "tally",
+            Tally {
+                starts: Arc::clone(starts),
+            },
+        )
 }
 
 /// The settings of a complete reader of the channels that `select` matches.
@@ -1165,4 +1207,158 @@ fn a_change_before_the_first_run_counts_from_its_apply() {
     let missed: Vec<_> = runs.iter().filter(|run| run.1 == Some(false)).collect();
     assert_eq!(missed, Vec::<&_>::new());
     assert!(runs.iter().any(|run| run.1 == Some(true)), "{runs:?}");
+}
+
+/// The definitions of `plant.a` of `kind` on [`NODE`] at `version`, with the counts
+/// `counts`, whose status channels have keys from `first` on.
+fn rekeyed(
+    kind: &str,
+    version: usize,
+    first: u128,
+    counts: &[Name],
+) -> BTreeMap<Name, Definition> {
+    let connector = name("plant.a");
+    let first = types::channel::Key::from_u128(first);
+    let mut definitions: BTreeMap<Name, Definition> =
+        testing::create_status(&connector, counts, first)
+            .into_iter()
+            .collect();
+    let config = Checked::new(config(version)).expect("a shallow document");
+    let placed = Connector::new(name(kind), name(NODE), config);
+    definitions.insert(connector, Definition::Connector(placed));
+    definitions
+}
+
+/// What [`rekey`] gives.
+struct Rekeyed {
+    /// The frames on the new channel that the test reads.
+    frames: usize,
+    starts: Events,
+}
+
+/// Applies `plant.a` of `kind` with status keys from 1, then at 1 s the spec in use
+/// after an apply that removed it and one that placed it again at `version`, which
+/// `mesh::used::Watch::next` gives as one change. The status channels then have new
+/// keys from 1001. The task of `hold` ends `linger` after the cancel. Gives the frames
+/// of `plant.a.status.state` on the new keys and each start until 10 s, as [`record`]
+/// does.
+fn rekey(kind: &'static str, version: usize, linger: Option<Span>) -> Rekeyed {
+    let first = rekeyed(kind, 0, 1, &[]);
+    let again = rekeyed(kind, version, 1_001, &[]);
+    respec(first, again, "plant.a.status.state", linger)
+}
+
+/// Applies `first`, then at 1 s `again`, as one change. Gives the frames of `select`
+/// in `again` and each start until 10 s, as [`record`] does.
+fn respec(
+    first: BTreeMap<Name, Definition>,
+    again: BTreeMap<Name, Definition>,
+    select: &'static str,
+    linger: Option<Span>,
+) -> Rekeyed {
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let (starts, cancels, got) =
+            (Starts::default(), Starts::default(), Starts::default());
+        let kinds = kinds(linger, &starts, &cancels, &got);
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Synced).await;
+        let hub = config.hub.clone();
+        let clock = node.clock();
+        let start = clock.now();
+        let mut runs = Runs::new(config, name(NODE));
+        hub.set_definitions(&first);
+        runs.apply(&first);
+        clock.sleep_until(start + ms(1_000)).await;
+        hub.set_definitions(&again);
+        let open = ::hub::reader::Config {
+            select: types::name::Selector::new([select]).expect("a selector"),
+            mode: ::hub::reader::Mode::Complete,
+            subject: name("plant.test"),
+            name: None,
+            hold: Span::ZERO,
+        };
+        let mut reader = hub.reader(open).await.expect("the reader opens");
+        let frames = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&frames);
+        tasks.spawn(async move {
+            while reader.next().await.is_ok() {
+                counted.set(counted.get() + 1);
+            }
+        });
+        runs.apply(&again);
+        clock.sleep_until(start + ms(10_000)).await;
+        drop(runs);
+        let starts = starts.lock().expect("no panic");
+        let since = |(connector, at, version): &(String, Monotonic, usize)| {
+            (connector.clone(), *at - start, *version)
+        };
+        Rekeyed {
+            frames: frames.get(),
+            starts: starts.iter().map(since).collect(),
+        }
+    });
+    run.expect("the run ends")
+}
+
+/// The control: a change of the config with the new keys starts a run that writes
+/// them.
+#[test]
+fn a_change_with_new_status_keys_writes_the_new_status() {
+    let rekeyed = rekey("quick", 1, None);
+    assert_eq!(rekeyed.frames, 1, "`state` running");
+}
+
+/// A removal and a placement again of the same connector, which the node sees as one
+/// spec in use, start a run that writes the status channels of the new keys.
+#[test]
+fn a_removal_and_a_placement_in_one_spec_in_use_writes_the_new_status() {
+    let rekeyed = rekey("quick", 0, None);
+    assert_eq!(rekeyed.frames, 1, "`state` running");
+    let starts = [start("plant.a", 0, 0), start("plant.a", 1_000, 0)];
+    assert_eq!(rekeyed.starts, starts);
+}
+
+/// The run of the new keys starts only after the old run returned, so no two runs of
+/// one name write its status.
+#[test]
+fn a_placement_again_starts_after_the_old_run_ended() {
+    let rekeyed = rekey("hold", 0, Some(ms(2_000)));
+    assert_eq!(rekeyed.frames, 1, "`state` running");
+    let starts = [start("plant.a", 0, 0), start("plant.a", 3_000, 0)];
+    assert_eq!(rekeyed.starts, starts);
+}
+
+/// A spec change that keeps the status index and gives the count channel a new key
+/// starts the run again, and the new count channel gets its value.
+#[test]
+fn a_new_key_of_a_count_alone_writes_the_new_count() {
+    let counts = [name("frames")];
+    let first = rekeyed("tally", 0, 1, &counts);
+    let mut again = first.clone();
+    let frames = name("plant.a.status.frames");
+    let Some(Definition::Channel(channel)) = again.get_mut(&frames) else {
+        panic!("the count channel is defined");
+    };
+    channel.key = types::channel::Key::from_u128(1_001);
+    let rekeyed = respec(first, again, "plant.a.status.frames", None);
+    assert_eq!(rekeyed.frames, 2, "the frames of the count on its new key");
+    let starts = [start("plant.a", 0, 0), start("plant.a", 1_000, 0)];
+    assert_eq!(rekeyed.starts, starts);
+}
+
+/// A spec change that gives only a data channel a new key keeps the run of each
+/// connector.
+#[test]
+fn a_new_key_of_a_data_channel_changes_no_connector() {
+    let mut first = rekeyed("quick", 0, 1, &[]);
+    first.extend(data());
+    let mut again = first.clone();
+    let Some(Definition::Channel(channel)) = again.get_mut(&name("plant.data.value"))
+    else {
+        panic!("the data channel is defined");
+    };
+    channel.key = types::channel::Key::from_u128(1_901);
+    let rekeyed = respec(first, again, "plant.a.status.state", None);
+    assert_eq!(rekeyed.starts, [start("plant.a", 0, 0)]);
 }

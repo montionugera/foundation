@@ -5,8 +5,9 @@
 ## Toolchain
 
 - Stable Rust, pinned in `rust-toolchain.toml`. Edition 2024.
-- Miri and cargo-fuzz need nightly. They run on one pinned nightly that only those
-  gates use. Builds and tests stay on stable (r16 64).
+- Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) need nightly.
+  They run on one pinned nightly that only those gates use. Every other build and test
+  stays on stable (r16 64).
 - One Cargo workspace. Crates live in `crates/<name>`, with `publish = false`. The
   package name is the bare module name (`types`, `hub`), so code reads `types::Frame`.
 - Dev tools live in `xtask` and run as `cargo xtask <task>`.

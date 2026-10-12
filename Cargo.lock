@@ -897,6 +897,7 @@ dependencies = [
  "clock",
  "codec",
  "control",
+ "counting",
  "delivery",
  "divan",
  "env",
@@ -2471,6 +2472,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "comrak",
+ "proptest",
  "semver",
  "serde_json",
 ]
