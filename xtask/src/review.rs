@@ -41,14 +41,20 @@ enum Cause {
     /// definition, in a paragraph: comrak then places its text in the wrong lines
     /// ([`misplaced`]).
     Misplaced,
-    /// A footnote definition inside another one ([`footnotes`]).
+    /// A footnote definition inside another one ([`nested`]).
     Nested,
 }
 
 impl Cause {
     /// The problem of round `number` with this cause in `line`.
     fn problem(self, number: u32, line: &str) -> String {
-        let (cause, remedy) = match self {
+        let (cause, remedy) = self.text(line);
+        format!("review round {number} has {cause}. {remedy}, {FORMAT}")
+    }
+
+    /// What this cause in `line` is, and the remedy.
+    fn text(self, line: &str) -> (String, &'static str) {
+        match self {
             Cause::Raw => (
                 format!(
                     "raw HTML, which can hide text on GitHub, in the line `{line}`"
@@ -78,8 +84,7 @@ impl Cause {
                 ),
                 "Move it out of the other footnote",
             ),
-        };
-        format!("review round {number} has {cause}. {remedy}, {FORMAT}")
+        }
     }
 }
 
@@ -113,8 +118,8 @@ struct Record {
     files: Vec<String>,
     comments: Vec<Comment>,
     /// Each issue or PR that a merge condition of the body names ([`conditions`]) and
-    /// that is open, in body order.
-    waits: Vec<u64>,
+    /// that is open, in body order, or the problem of a body that the check cannot read.
+    waits: Result<Vec<u64>, String>,
 }
 
 #[derive(Debug)]
@@ -285,11 +290,14 @@ fn problems(
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
     }
-    for n in &record.waits {
-        problems.push(format!(
-            "the PR body has `Merges after #{n}`, and #{n} is open. Run `review` again \
-             when it merges or closes."
-        ));
+    match &record.waits {
+        Ok(waits) => problems.extend(waits.iter().map(|n| {
+            format!(
+                "the PR body has `Merges after #{n}`, and #{n} is open. Run `review` \
+                 again when it merges or closes."
+            )
+        })),
+        Err(problem) => problems.push(problem.clone()),
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -734,15 +742,14 @@ impl<'a> Shown<'a> {
             old,
             ..Self::default()
         };
-        let starts: Vec<usize> = std::iter::once(0)
-            .chain(body.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
+        let starts = starts(body);
         let line_start = |line: usize| starts[line - 1];
         let arena = Arena::new();
         let root = parse_document(&arena, body, &options());
         // The code blocks of a footnote that GitHub does not show still hold its lines.
         let codes = code_blocks(root, body, &starts);
-        let nested = append_notes(root).err();
+        let nested = nested(root);
+        append_notes(root);
         // Whether each top-level block so far is a paragraph. So it is false at a
         // paragraph inside another block.
         let mut unbroken = true;
@@ -789,9 +796,7 @@ impl<'a> Shown<'a> {
         hiding.sort_by_key(|(at, _)| *at);
         shown.hiding = hiding
             .into_iter()
-            .map(|(at, cause)| {
-                (body[at.max(mark(body))..line_end(body, at)].trim(), cause)
-            })
+            .map(|(at, cause)| (quoted_line(body, at), cause))
             .collect();
         shown
     }
@@ -858,28 +863,28 @@ fn misplaced<'n>(paragraph: &'n AstNode<'n>, last: usize) -> bool {
 }
 
 /// Moves to the end of `root` each footnote definition that GitHub shows, where GitHub
-/// shows it, and detaches each other one ([`footnotes`]). Errors as `footnotes` does.
-fn append_notes<'n>(root: &'n AstNode<'n>) -> Result<(), usize> {
-    for note in footnotes(root)? {
+/// shows it, and detaches each other one ([`footnotes`]).
+fn append_notes<'n>(root: &'n AstNode<'n>) {
+    for note in footnotes(root) {
         root.append(note);
     }
-    Ok(())
+}
+
+/// The line of the first footnote definition of `root` inside another one. GitHub
+/// shows it as a footnote of its own, and comrak reads no reference to it.
+fn nested<'n>(root: &'n AstNode<'n>) -> Option<usize> {
+    let note = |n: &AstNode<'_>| {
+        matches!(n.data.borrow().value, NodeValue::FootnoteDefinition(_))
+    };
+    root.descendants()
+        .find(|n| note(n) && n.ancestors().skip(1).any(note))
+        .map(|n| n.data.borrow().sourcepos.start.line)
 }
 
 /// Detaches from `root` each footnote definition that GitHub does not show, and gives
 /// the others in body order. GitHub shows the first definition of each label to end,
-/// when a reference names it. Errors with the line of the first definition inside
-/// another, and detaches none: comrak reads no reference to it.
-fn footnotes<'n>(root: &'n AstNode<'n>) -> Result<Vec<&'n AstNode<'n>>, usize> {
-    let note = |n: &AstNode<'_>| {
-        matches!(n.data.borrow().value, NodeValue::FootnoteDefinition(_))
-    };
-    let nested = root
-        .descendants()
-        .find(|n| note(n) && n.ancestors().skip(1).any(note));
-    if let Some(node) = nested {
-        return Err(node.data.borrow().sourcepos.start.line);
-    }
+/// when a reference names it.
+fn footnotes<'n>(root: &'n AstNode<'n>) -> Vec<&'n AstNode<'n>> {
     let notes: Vec<_> = root
         .descendants()
         .filter_map(|node| match &node.data.borrow().value {
@@ -904,7 +909,7 @@ fn footnotes<'n>(root: &'n AstNode<'n>) -> Result<Vec<&'n AstNode<'n>>, usize> {
             node.detach();
         }
     }
-    Ok(shown)
+    shown
 }
 
 /// Whether comrak reads the footnote labels `a` and `b` as one label.
@@ -1083,6 +1088,18 @@ fn mark(text: &str) -> usize {
     }
 }
 
+/// The start of each line of `text`.
+fn starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect()
+}
+
+/// The line of `body` that starts at `at`, with no [`mark`], trimmed.
+fn quoted_line(body: &str, at: usize) -> &str {
+    body[at.max(mark(body))..line_end(body, at)].trim()
+}
+
 /// The range in `body` of each code block of `root`, its tree, from its first character
 /// to the end of its last line. `starts` holds the start of each line of `body`.
 fn code_blocks<'n>(
@@ -1218,14 +1235,18 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
                     })
                 })
                 .collect::<Result<_, String>>()?,
-            waits: Vec::new(),
+            waits: conditions(body),
         };
-        for n in conditions(body)? {
-            let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
-            let issue = issue.first().ok_or("gh returned no issue")?;
-            if field::text(issue, "state")? == "open" {
-                record.waits.push(n);
+        if let Ok(waits) = &mut record.waits {
+            let mut open = Vec::new();
+            for n in waits.drain(..) {
+                let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
+                let issue = issue.first().ok_or("gh returned no issue")?;
+                if field::text(issue, "state")? == "open" {
+                    open.push(n);
+                }
             }
+            *waits = open;
         }
         Ok(record)
     };
@@ -1237,18 +1258,17 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
 /// digit, then white space and `#<n>`, in a paragraph as GitHub shows it ([`texts`]),
 /// also of a list item or a block quote, and also in a code span. A code block, a
 /// heading, a table, and HTML hold none. Only the issue right after the words counts.
-/// Errors when the body has a footnote inside a footnote ([`footnotes`]).
+/// Errors with the problem of a footnote inside a footnote ([`nested`]).
 fn conditions(body: &str) -> Result<Vec<u64>, String> {
     let arena = Arena::new();
     let body = normalized(body);
     let root = respelled(&arena, &body);
-    footnotes(root).map_err(|line| {
-        let line = body.lines().nth(line - 1).unwrap_or_default().trim();
-        format!(
-            "the PR body has a footnote inside a footnote in the line `{line}`, which \
-             the check cannot read as GitHub shows it. Move it out of the other footnote."
-        )
-    })?;
+    if let Some(line) = nested(root) {
+        let (cause, remedy) =
+            Cause::Nested.text(quoted_line(&body, starts(&body)[line - 1]));
+        return Err(format!("the PR body has {cause}. {remedy}."));
+    }
+    footnotes(root);
     let paragraphs = root
         .descendants()
         .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph));

@@ -60,7 +60,7 @@ fn record(comments: Vec<Comment>) -> Record {
         labels: Vec::new(),
         files: FILES.iter().map(ToString::to_string).collect(),
         comments,
-        waits: Vec::new(),
+        waits: Ok(Vec::new()),
     }
 }
 
@@ -2078,6 +2078,30 @@ fn an_old_round_reads_the_first_footnote_of_a_label_with_a_reference() {
 }
 
 #[test]
+fn an_old_round_with_a_footnote_inside_a_footnote_hides_each_footnote_with_no_reference()
+ {
+    // GitHub shows only `Confirmed a finding.` (`gh api markdown`).
+    let round = old(
+        "## Review round 1\n\nConfirmed a finding.\n\n[^z]: Hot path: `send`\n\n\
+         [^c]: y\n\n    [^d]: z",
+    );
+    assert_eq!(
+        check(&record(vec![round, bot(ROUND)])),
+        Vec::<String>::new()
+    );
+    let fields = |notes: &str| {
+        old(&format!(
+            "## Review round 1\n\n{notes}Reviewers: reviewer, breaker\nRange: `a..b`\n\
+             Findings: 2\n\nHot path: `send`"
+        ))
+    };
+    assert_eq!(
+        check(&record(vec![fields("[^a]: x\n\n    [^b]: y\n\n")])),
+        check(&record(vec![fields("")]))
+    );
+}
+
+#[test]
 fn an_old_round_reads_a_tab_after_a_quote_mark_to_the_next_multiple_of_4() {
     // Each line starts at an odd offset.
     let round = |text: &str| {
@@ -2212,6 +2236,10 @@ fn fails_a_round_with_a_footnote_inside_a_footnote() {
             "{notes}"
         );
     }
+    assert_eq!(
+        nested("Intro.\n\n[^a]: x\n\n    [^b]: y\n    z\n\n"),
+        vec![problem]
+    );
     let flat = "Intro.\n\n[^a]: x\n\n[^b]: y\n\n";
     assert_eq!(nested(flat), Vec::<String>::new());
     let before =
@@ -3280,14 +3308,22 @@ fn fails_the_run_on_a_footnote_inside_a_footnote_of_the_body() {
             "Intro.\n\n[^a]: x\n\n    [^b]: Merges after #8\n",
             "[^b]: Merges after #8",
         ),
+        (
+            "Intro.\n\n[^a]: x\n\n    [^b]: y\n    Merges after #8\n",
+            "[^b]: y",
+        ),
+        (
+            "\u{feff}[^1]: [^a\\]: Merges after #8\n",
+            "[^1]: [^a\\]: Merges after #8",
+        ),
     ] {
         assert_eq!(
             waiting(&body.into(), &states),
-            Err(format!(
-                "PR 1: the PR body has a footnote inside a footnote in the line \
-                 `{line}`, which the check cannot read as GitHub shows it. Move it out \
-                 of the other footnote."
-            )),
+            Ok(vec![format!(
+                "the PR body has a footnote inside a footnote, which the check cannot \
+                 read as GitHub shows it, in the line `{line}`. Move it out of the other \
+                 footnote."
+            )]),
             "{body}"
         );
     }
