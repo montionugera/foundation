@@ -9,7 +9,11 @@ use types::hello::Hello;
 use types::name::Name;
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::client::{Challenge, Mode, Open, Read, Request, Response, Signed};
+use wire::hub::FromHome;
+use wire::hub::client::{
+    self, Challenge, FromNode, Mode, Open, Place, Places, Read, Request, Response,
+    Signed,
+};
 
 use crate::net::{HOME, NODE, own_pool, public_key};
 
@@ -82,6 +86,37 @@ impl Stream {
     /// The next message from the node, `None` once it finished.
     pub(crate) async fn recv(&mut self) -> Result<Option<Vec<u8>>, transport::Error> {
         Ok(self.receiver.recv().await?.map(|block| block.to_vec()))
+    }
+
+    /// Reads the start of a read in `mode`: the places, their run, and `Opened`.
+    /// Gives the places, the run, and the decoder of the frames.
+    pub(crate) async fn opened(
+        &mut self,
+        mode: Mode,
+    ) -> (Places, Vec<Place>, wire::hub::Reader) {
+        let mut start = client::Reader::new(mode);
+        let mut next = async || {
+            let message = self.recv().await.expect("receives");
+            message.expect("a message before the finish")
+        };
+        let Ok(FromNode::Places(places)) = start.decode(&next().await) else {
+            panic!("the places come first");
+        };
+        let mut run = Vec::new();
+        let mut reader = loop {
+            let Ok(FromNode::Run { places, home }) = start.decode(&next().await) else {
+                panic!("a message of the run of places");
+            };
+            run.extend(places);
+            if let Some(home) = home {
+                break home;
+            }
+        };
+        assert!(
+            matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
+            "then `Opened`"
+        );
+        (places, run, reader)
     }
 
     /// The next challenge from the node.
