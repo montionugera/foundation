@@ -308,12 +308,12 @@ pub(crate) fn write_table(headers: &[Header], into: &mut [u8]) -> usize {
     len
 }
 
-/// Why a body is not an entry table.
+/// Why a body is not an entry table or a carry body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Invalid {
     /// The body ends before the table or the bytes it names.
     Truncated,
-    /// A count of entries over [`ENTRIES_MAX`].
+    /// A count of entries or tails over [`ENTRIES_MAX`].
     Count(u32),
     /// A path byte that is not live or backfill.
     Path(u8),
