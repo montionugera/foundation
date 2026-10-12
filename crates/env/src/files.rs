@@ -781,8 +781,9 @@ impl fmt::Display for Operation {
 /// each remove of the path through a descriptor of the driver that has not ended. A
 /// list of a directory first waits for each call on a path directly in it that a
 /// dropped future or descriptor of the driver left to run. A `free` first waits for
-/// each call that a dropped future or descriptor of the driver left to run. Each of
-/// these waits is for a future or descriptor that dropped before the call started.
+/// each call that a dropped future or descriptor of the driver left to run. Each wait
+/// for the calls that a dropped future or descriptor left to run is for a future or
+/// descriptor that dropped before the call that waits started.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
