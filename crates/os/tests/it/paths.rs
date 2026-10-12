@@ -139,10 +139,7 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
 #[cfg(target_os = "linux")]
 #[test]
 fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files() {
-    use rustix::{
-        fs::{XattrFlags, getxattr, setxattr},
-        io::Errno,
-    };
+    use rustix::fs::{XattrFlags, getxattr, setxattr};
     // The `posix_acl_xattr` form: a version, then a tag, the bits, and a user.
     let list = |entries: &[(u16, u16, u32)]| {
         let mut bytes = 2u32.to_le_bytes().to_vec();
@@ -159,8 +156,14 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     let path = scratch.0.join("plant.hcl");
     fs::write(&path, b"old").unwrap();
     let access = "system.posix_acl_access";
-    let mut taken = [0; 64];
-    assert_eq!(getxattr(&path, access, &mut taken[..]), Err(Errno::NODATA));
+    let old = list(&[
+        (owner, read_write, unnamed),
+        (named, read, 4343),
+        (group, none, unnamed),
+        (mask, read, unnamed),
+        (other, none, unnamed),
+    ]);
+    setxattr(&path, access, &old, XattrFlags::empty()).unwrap();
     let given = list(&[
         (owner, all, unnamed),
         (named, read_write, 4242),
@@ -171,6 +174,7 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     let default = "system.posix_acl_default";
     setxattr(&scratch.0, default, &given, XattrFlags::empty()).unwrap();
     os::paths().write(&path, b"new").unwrap();
+    let mut taken = [0; 64];
     let len = getxattr(&path, access, &mut taken[..]).unwrap();
     let expected = list(&[
         (owner, read_write, unnamed),
