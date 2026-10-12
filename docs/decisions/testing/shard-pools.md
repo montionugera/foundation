@@ -24,7 +24,11 @@
   (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6113992879; this
   text, 2026-10-11T21:35:17Z:
-  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6114033383).
+  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6114033383; the late
+  wake and the sooner return, #2457, 2026-10-12T18:22:39Z:
+  https://github.com/synnaxlabs/foundation/pull/2457#issuecomment-6130103538, with the
+  sentence of `laptop.architect`, 2026-10-12T16:47:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2457#issuecomment-6128635605).
   Supersedes "The purge timer and `reclaim` on each loop turn land with the first PR
   that allocates from a pool, since no test can see either before then (#410)"
   (https://github.com/synnaxlabs/foundation/pull/806). `block::Config::new` takes the
