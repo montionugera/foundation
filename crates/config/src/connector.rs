@@ -192,10 +192,10 @@ pub(crate) fn imply(found: &mut Found<'_>) {
     found.diagnostics.extend(refused);
 }
 
-/// The `config.implied-channel` diagnostic of each channel that the kind of a connector
-/// of `writes` writes, in any ASCII case, and that a connector of `writes` implies, at
-/// the label of the connector that writes it. A channel that a kind writes twice gives
-/// one.
+/// The `config.implied-channel` diagnostic, at the label of the connector that writes
+/// it, of each channel that the kind of a connector of `writes` writes and that a
+/// connector of `writes` implies, in any ASCII case. A connector gives one for each
+/// such channel, however many times its kind writes it.
 pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic> {
     let mut implied = BTreeMap::new();
     for (connector, writes) in writes {
