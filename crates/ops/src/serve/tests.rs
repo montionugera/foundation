@@ -33,6 +33,8 @@ const SAM: &str = concat!(
 
 const DENIED_FIX: &str =
     "Ask an admin of the region for an access policy that allows it";
+/// What `ops.denied` names for a request that names no definition.
+const NOTHING: &str = "a request that names no definition";
 
 /// The subject of the first admin, which may do each action on each name.
 fn admin() -> Name {
@@ -460,17 +462,10 @@ fn an_apply_gives_no_home_to_an_index_on_which_the_subject_has_no_grant() {
         let version = mesh.pointer().version;
 
         let apply = apply_body(&only.encode());
+        // With the home dropped, the plan of `bob` names no definition.
         let reply = serve(&node, &name("bob"), &apply).await;
-        let pointer = serde_json::to_value(plan::Pointer::from(mesh.pointer()))
-            .expect("a pointer as JSON");
-        let output = json!({ "output": {
-            "pointer": pointer,
-            "added": 0,
-            "changed": 0,
-            "removed": 0,
-            "homes": 0,
-        } });
-        assert_eq!(split(&reply), (output, &b""[..]));
+        let expected = denied("bob", "apply", NOTHING);
+        assert_eq!(split(&reply), (expected, &b""[..]));
         assert_eq!(mesh.pointer().version, version);
         assert_eq!(home(&mesh, "site.time").await, None);
         let reply = serve(&node, &name("sam"), &apply).await;
@@ -571,6 +566,57 @@ fn refuses_a_plan_and_an_apply_on_a_node_that_uses_an_old_spec_as_behind() {
         let reply = serve(&node, &name("eve"), &plan_body(&both)).await;
         let expected = denied("eve", "plan", "`influx`");
         assert_eq!(split(&reply), (expected, &b""[..]));
+    });
+}
+
+#[test]
+fn refuses_a_request_that_names_no_definition_for_each_subject() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        // `plan` compares no founding definition, so the spec has no name to check.
+        for subject in ["@admin", "mallory"] {
+            let reply = serve(&node, &name(subject), &plan_body(&[])).await;
+            let expected = denied(subject, "plan", NOTHING);
+            assert_eq!(split(&reply), (expected, &b""[..]));
+        }
+        let plan = planned(&node, &[("site.hcl", &site())]).await;
+        let mut empty = config::plan::Plan::decode(&plan).expect("a plan");
+        empty.changes.clear();
+        empty.homes.clear();
+        applied(&node, &[("people.hcl", &people())]).await;
+        let version = mesh.pointer().version;
+        empty.base = mesh.pointer();
+        let apply = apply_body(&empty.encode());
+        for subject in ["@admin", "mallory"] {
+            let reply = serve(&node, &name(subject), &apply).await;
+            let expected = denied(subject, "apply", NOTHING);
+            assert_eq!(split(&reply), (expected, &b""[..]));
+        }
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+#[test]
+fn refuses_each_remote_subject_on_a_node_that_uses_no_spec() {
+    let mut founding = spec::founding::create(crate::common::ADMIN.public());
+    let policy = founding[&name("@admin.@access")].clone();
+    // An access policy at a key that is no tree key of its kind: a problem.
+    founding.insert(name("x"), policy);
+    crate::common::founded(&["edge"], founding, |_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let spec = mesh.spec().await.expect("a spec");
+        assert_eq!(spec.pointer, None, "{spec:?}");
+        assert!(spec.behind.is_some(), "{spec:?}");
+        let site = site();
+        let reply = serve(&node, &admin(), &plan_body(&[("site.hcl", &site)])).await;
+        let expected = denied("@admin", "plan", "`site.home.@placement`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        let reply = serve(&node, &admin(), &plan_body(&[])).await;
+        let expected = denied("@admin", "plan", NOTHING);
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        let local = node.plan(vec![(PathBuf::from("site.hcl"), site)]).await;
+        let error = local.expect_err("a node behind");
+        assert_eq!(error["errors"][0]["code"], "ops.behind", "{error}");
     });
 }
 

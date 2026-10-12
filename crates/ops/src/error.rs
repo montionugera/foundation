@@ -62,12 +62,11 @@ pub(crate) enum Error {
     Stopped(mesh::Stopped),
     /// The body that a node got is no request.
     Request { message: String },
-    /// No access policy gives `subject` the action `action` on `name`, or, with no
-    /// name, on a definition of the spec in use that the files do not hold.
+    /// No access policy gives `subject` the action `action` on `on`.
     Denied {
         subject: Name,
         action: Action,
-        name: Option<Name>,
+        on: On,
     },
     /// The reply of a node has `bytes` bytes, more than one reply holds.
     LargeReply { bytes: usize },
@@ -78,6 +77,17 @@ pub(crate) enum Error {
 pub(crate) enum Action {
     Plan,
     Apply,
+}
+
+/// What a refusal of an operation on a node names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum On {
+    /// A name that the request holds.
+    Name(Name),
+    /// A definition of the spec in use that the files do not hold.
+    Spec,
+    /// No name: the request names no definition.
+    Nothing,
 }
 
 impl Action {
@@ -371,18 +381,19 @@ impl fmt::Display for Error {
             Self::Denied {
                 subject,
                 action,
-                name,
+                on,
             } => {
                 let action = action.word();
                 write!(
                     f,
                     "no access policy gives `{subject}` the action `{action}` "
                 )?;
-                match name {
-                    Some(name) => write!(f, "on `{name}`"),
-                    None => f.write_str(
+                match on {
+                    On::Name(name) => write!(f, "on `{name}`"),
+                    On::Spec => f.write_str(
                         "on a definition of the spec in use that the files do not hold",
                     ),
+                    On::Nothing => f.write_str("on a request that names no definition"),
                 }
             }
             Self::LargeReply { bytes } => write!(

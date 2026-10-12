@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::error::{Action, Error, Problem};
+use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
 use crate::plan::Documents;
@@ -24,9 +24,9 @@ mod tests;
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes. No `body` makes
 /// it panic. The reply holds `ops.bad-request` for a body that is no request of
 /// `plan` or `apply`, `ops.denied` for an action that no access policy gives
-/// `subject`, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// gives a home only to an index on which `subject` has `apply`, and drops each other
-/// home with no error.
+/// `subject` and for a request that names no definition, and `ops.large-reply` in
+/// place of a reply over the bound. `apply` gives a home only to an index on which
+/// `subject` has `apply`, and drops each other home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -185,12 +185,12 @@ impl<'a> Check<'a> {
         names.into_iter().find(|name| !self.allows(name))
     }
 
-    /// `Denied` on `name`, or on a name that the request does not hold.
-    fn denied(&self, name: Option<&Name>) -> Error {
+    /// `Denied` on `on`.
+    fn denied(&self, on: On) -> Error {
         Error::Denied {
             subject: self.subject.clone(),
             action: self.action,
-            name: name.cloned(),
+            on,
         }
     }
 }
@@ -202,16 +202,20 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Er
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Plan);
     if let Some(name) = check.refused(&names) {
-        return Err(check.denied(Some(name)));
+        return Err(check.denied(On::Name(name.clone())));
     }
-    let compared = spec
+    let mut compared = spec
         .definitions()
         .iter()
         .filter(|(name, definition)| config::plan::planned(name, definition.kind()))
-        .map(|(name, _)| name);
+        .map(|(name, _)| name)
+        .peekable();
+    if names.is_empty() && compared.peek().is_none() {
+        return Err(check.denied(On::Nothing));
+    }
     // The files do not hold this name, so the error does not tell what the spec holds.
     if check.refused(compared).is_some() {
-        return Err(check.denied(None));
+        return Err(check.denied(On::Spec));
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
@@ -226,10 +230,14 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Err
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Apply);
     if let Some(name) = check.refused(plan.changes.keys()) {
-        return Err(check.denied(Some(name)));
+        return Err(check.denied(On::Name(name.clone())));
     }
     // The homes list each placed index, so a home with no grant drops with no error.
     plan.homes.retain(|index, _| check.allows(index));
+    // Else a subject with no grant learns the pointer in use from the output.
+    if plan.changes.is_empty() && plan.homes.is_empty() {
+        return Err(check.denied(On::Nothing));
+    }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
     Ok(line(&Done { output: &effect }))
 }

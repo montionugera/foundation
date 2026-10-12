@@ -6,7 +6,7 @@ use std::path::Path;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Error};
+use crate::error::{Action, Error, On};
 use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
@@ -475,7 +475,7 @@ fn every() -> Vec<Error> {
         Error::Denied {
             subject: "bob".parse().expect("a name"),
             action: Action::Plan,
-            name: None,
+            on: On::Spec,
         },
         Error::LargeReply { bytes: 0 },
     ]
