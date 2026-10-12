@@ -342,7 +342,7 @@ struct Sessions<K>(hash::Map<K, Open>);
 /// The channels of an open session, and its ending.
 #[derive(Debug)]
 struct Open {
-    keys: Box<[Key]>,
+    keys: Vec<Key>,
     ending: Ending,
 }
 
@@ -390,12 +390,20 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
     fn add(&mut self, key: K, keys: Box<[Key]>) -> Ending {
         let ending = Ending::default();
         let open = Open {
-            keys,
+            keys: keys.into_vec(),
             ending: ending.clone(),
         };
         let added = self.0.insert(key, open);
         assert!(added.is_none(), "invariant: each key is added once");
         ending
+    }
+
+    /// Adds `keys` to the channels of the session `key`. Does nothing when it is not
+    /// open.
+    fn extend(&mut self, key: K, keys: &[Key]) {
+        if let Some(open) = self.0.get_mut(&key) {
+            open.keys.extend_from_slice(keys);
+        }
     }
 
     /// Returns whether the session `key` was open, and makes it not open.

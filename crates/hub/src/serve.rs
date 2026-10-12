@@ -483,7 +483,7 @@ impl<'s> Opening<'s> {
     /// Checks that each of `keys` is known, on the index of the open, and not named
     /// before, and adds it to the channels of the open.
     fn check(&mut self, keys: keys::Iter<'_>) -> Result<(), Error> {
-        let state = self.state.borrow();
+        let (state, from) = (self.state.borrow(), self.keys.len());
         for key in keys {
             let of = state.channels.get(key).ok_or(Error::Unknown(key))?.index();
             if *self.index.get_or_insert(of) != of {
@@ -498,7 +498,7 @@ impl<'s> Opening<'s> {
             self.keys.push(key);
         }
         drop(state);
-        self.pending = Pending::new(self.state, self.keys.as_slice().into());
+        self.pending.extend(&self.keys[from..]);
         Ok(())
     }
 
