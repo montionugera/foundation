@@ -11,7 +11,7 @@ use types::ed25519::PublicKey;
 use types::name::{Name, Prefix};
 use types::node;
 
-use raft::Voters;
+use raft::{NoMajority, Voters};
 use spec::definition::Definition;
 
 use crate::bytes::{
@@ -288,7 +288,7 @@ impl State {
                 pointer: self.pointer,
             });
         }
-        quorum(&self.voters, holders)?;
+        self.voters.quorum(|key| holders.contains(&key))?;
         self.pointer = change::pointer(base, root, homes);
         Ok(())
     }
@@ -420,28 +420,6 @@ impl State {
     }
 }
 
-/// Whether `holders` are a majority of each half of `voters`.
-///
-/// # Errors
-///
-/// [`Refused::Quorum`] for the first half that lacks a majority, the incoming half
-/// first.
-pub(crate) fn quorum(
-    voters: &Voters,
-    holders: &BTreeSet<node::Key>,
-) -> Result<(), Refused> {
-    let outgoing = (!voters.outgoing.is_empty()).then_some(&voters.outgoing);
-    for half in std::iter::once(&voters.incoming).chain(outgoing) {
-        let held = half.intersection(holders).count();
-        // `held` is at most `half.len()`, so neither side overflows.
-        if held.saturating_mul(2) <= half.len() {
-            let voters = half.len();
-            return Err(Refused::Quorum { held, voters });
-        }
-    }
-    Ok(())
-}
-
 /// What a node that joins gives the voter that admits it.
 #[cfg_attr(
     not(test),
@@ -503,6 +481,15 @@ pub(crate) enum Refused {
     /// The bytes of a committed entry of a known kind are not the body of that kind,
     /// as [`change::Malformed::Body`].
     Body(Undecoded),
+}
+
+impl From<NoMajority> for Refused {
+    fn from(short: NoMajority) -> Self {
+        Self::Quorum {
+            held: short.counted,
+            voters: short.voters,
+        }
+    }
 }
 
 impl From<Unfit> for Refused {
@@ -778,6 +765,11 @@ mod tests {
             incoming: keys(incoming),
             outgoing: keys(outgoing),
         }
+    }
+
+    // The check of a spec change's holders, as `State::apply` makes it.
+    fn quorum(voters: &Voters, holders: &BTreeSet<node::Key>) -> Result<(), Refused> {
+        Ok(voters.quorum(|key| holders.contains(&key))?)
     }
 
     #[test]

@@ -101,10 +101,38 @@ impl Voters {
         }
     }
 
-    // Whether a majority of each set satisfies `pred`.
-    pub(crate) fn quorum(&self, pred: impl Fn(node::Key) -> bool) -> bool {
-        self.tally(|key| Some(pred(key))) == Tally::Won
+    /// Whether the nodes that `counted` accepts are a majority of each set.
+    ///
+    /// # Errors
+    ///
+    /// [`NoMajority`] for the first set that lacks one, `incoming` first.
+    pub fn quorum(
+        &self,
+        counted: impl Fn(node::Key) -> bool,
+    ) -> Result<(), NoMajority> {
+        for set in [&self.incoming, &self.outgoing] {
+            let voters = set.len();
+            let counted = set.iter().filter(|&&key| counted(key)).count();
+            if counted < majority(voters) {
+                return Err(NoMajority { counted, voters });
+            }
+        }
+        Ok(())
     }
+}
+
+/// A set of voters in which the nodes that count are not a majority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoMajority {
+    /// The nodes of the set that count.
+    pub counted: usize,
+    /// The nodes of the set.
+    pub voters: usize,
+}
+
+// The nodes that are a majority of a set of `voters` nodes. An empty set needs none.
+fn majority(voters: usize) -> usize {
+    if voters == 0 { 0 } else { voters / 2 + 1 }
 }
 
 fn majority_committed(
@@ -116,16 +144,13 @@ fn majority_committed(
     }
     let mut held: Vec<u64> = set.iter().map(|&key| matched(key)).collect();
     held.sort_unstable();
-    held[set.len() - (set.len() / 2 + 1)]
+    held[set.len() - majority(set.len())]
 }
 
 fn majority_tally(
     set: &BTreeSet<node::Key>,
     vote: &impl Fn(node::Key) -> Option<bool>,
 ) -> Tally {
-    if set.is_empty() {
-        return Tally::Won;
-    }
     let (mut yes, mut open) = (0, 0);
     for &key in set {
         match vote(key) {
@@ -134,7 +159,7 @@ fn majority_tally(
             None => open += 1,
         }
     }
-    let quorum = set.len() / 2 + 1;
+    let quorum = majority(set.len());
     if yes >= quorum {
         Tally::Won
     } else if yes + open >= quorum {
@@ -146,6 +171,8 @@ fn majority_tally(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn key(id: u64) -> node::Key {
@@ -184,8 +211,46 @@ mod tests {
             incoming: BTreeSet::from([key(1), key(2), key(3)]),
             outgoing: BTreeSet::from([key(1), key(4), key(5)]),
         };
-        assert!(!voters.quorum(|node| node <= key(3)));
-        assert!(voters.quorum(|node| node <= key(4)));
+        let short = NoMajority {
+            counted: 1,
+            voters: 3,
+        };
+        assert_eq!(voters.quorum(|node| node <= key(3)), Err(short));
+        assert_eq!(voters.quorum(|node| node <= key(4)), Ok(()));
+    }
+
+    fn keys(ids: &BTreeSet<u8>) -> BTreeSet<node::Key> {
+        ids.iter().map(|&id| key(u64::from(id))).collect()
+    }
+
+    proptest! {
+        // `quorum` is the commit rule and the vote rule: the counted nodes commit an
+        // index and win a vote exactly when they are a quorum.
+        #[test]
+        fn quorum_is_the_commit_and_vote_rule(
+            incoming in prop::collection::btree_set(0..8_u8, 0..6),
+            outgoing in prop::collection::btree_set(0..8_u8, 0..6),
+            counted in prop::collection::btree_set(0..8_u8, 0..8),
+        ) {
+            let voters = Voters {
+                incoming: keys(&incoming),
+                outgoing: keys(&outgoing),
+            };
+            let counted = keys(&counted);
+            let quorum = voters.quorum(|key| counted.contains(&key));
+            let committed = voters.committed(|key| u64::from(counted.contains(&key)));
+            prop_assert_eq!(quorum.is_ok(), committed >= 1);
+            let tally = voters.tally(|key| Some(counted.contains(&key)));
+            prop_assert_eq!(quorum.is_ok(), tally == Tally::Won);
+            let short = |set: &BTreeSet<node::Key>| {
+                let counted = set.intersection(&counted).count();
+                let voters = set.len();
+                (!set.is_empty() && counted * 2 <= voters)
+                    .then_some(NoMajority { counted, voters })
+            };
+            let expected = short(&voters.incoming).or_else(|| short(&voters.outgoing));
+            prop_assert_eq!(quorum, expected.map_or(Ok(()), Err));
+        }
     }
 
     #[test]
