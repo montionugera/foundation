@@ -1443,13 +1443,20 @@ mod tests {
         assert_eq!(too_large_behind_a_leaked_send(Call::Send, wait), Ok(()));
     }
 
-    /// Leaks a `send` of a message that the window cuts, gives a too large message
-    /// to `send` when `refused`, then panics on a range in `send_parts` and sends
-    /// `c`. Gives the result of `c`, the messages that the peer read before `c`
-    /// or an error, with `c`, and that error.
+    /// What a test gives to `send` between a leak and a range panic.
+    #[cfg(panic = "unwind")]
+    enum Between {
+        Nothing,
+        TooLarge,
+    }
+
+    /// Leaks a `send` of a message that the window cuts, gives `between` to `send`,
+    /// then panics on a range in `send_parts` and sends `c`. Gives the result of
+    /// `c`, the messages that the peer read before `c` or an error, with `c`, and
+    /// that error.
     #[cfg(panic = "unwind")]
     fn range_panic_behind_a_leaked_send(
-        refused: bool,
+        between: Between,
     ) -> (Result<(), Error>, Vec<Vec<u8>>, Option<Error>) {
         let result = Arc::new(Mutex::new(None));
         let read = Arc::new(Mutex::new(None));
@@ -1472,7 +1479,7 @@ mod tests {
                 };
                 #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
                 std::mem::forget(cut);
-                if refused {
+                if let Between::TooLarge = between {
                     let large = Err(Error::TooLarge {
                         bytes: 1473,
                         bytes_max: 1472,
@@ -1526,7 +1533,8 @@ mod tests {
     #[test]
     #[cfg(panic = "unwind")]
     fn a_range_panic_as_the_first_use_after_a_leak_cancels_the_leaked_message() {
-        let (sent, messages, error) = range_panic_behind_a_leaked_send(false);
+        let (sent, messages, error) =
+            range_panic_behind_a_leaked_send(Between::Nothing);
         assert_eq!(sent, Err(CANCELLED));
         assert_eq!(messages.first().map(Vec::as_slice), Some(&b"a"[..]));
         assert_eq!(error, Some(CANCELLED));
@@ -1535,7 +1543,8 @@ mod tests {
     #[test]
     #[cfg(panic = "unwind")]
     fn a_range_panic_after_a_too_large_send_leaves_the_leaked_message_whole() {
-        let (sent, messages, error) = range_panic_behind_a_leaked_send(true);
+        let (sent, messages, error) =
+            range_panic_behind_a_leaked_send(Between::TooLarge);
         assert_eq!(sent, Ok(()));
         assert_eq!(error, None);
         let (first, rest) = messages.split_first().expect("a message");
