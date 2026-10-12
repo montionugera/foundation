@@ -33,6 +33,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # Each status of this run attempt links it, so the last step can find its own.
+      RUN_URL: >-
+        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+        github.run_id }}/attempts/${{ github.run_attempt }}
     steps:
       # Pending first, so a step that fails never leaves an earlier `success`. In the
       # queue, the status goes to the group, and the check reads the head of its PR.
@@ -53,7 +57,7 @@ jobs:
           echo "TARGET=$TARGET" >> "$GITHUB_ENV"
           gh api "repos/$GH_REPO/statuses/$TARGET" -f state=pending -f context=review \
             -f description="The review check runs." \
-            -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            -f target_url="$RUN_URL"
       - uses: actions/checkout@v4
         with:
           # The check that runs is the one on the default branch, never the PR's.
@@ -80,20 +84,22 @@ jobs:
           esac
           gh api "repos/$GH_REPO/statuses/$TARGET" -f state="$state" -f context=review \
             -f description="$description" \
-            -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            -f target_url="$RUN_URL"
       # A run that fails or ends before the post above would leave `pending`, which
-      # holds a queue group until its timeout. Only `pending` is replaced: GitHub can
-      # take the post above before a cancel. On a PR, a run that a newer run cancels
-      # leaves the status to that run, and a run that hangs or that a person cancels
-      # leaves `pending` until a new run.
+      # holds a queue group until its timeout. Only a result that this run attempt
+      # posted is kept: GitHub can take the post above before a cancel or a lost
+      # response. On a PR, a run that a newer run cancels leaves the status to that
+      # run, and a run that hangs or that a person cancels leaves `pending` until a
+      # new run.
       - if: >-
           env.TARGET != '' &&
           (failure() || (cancelled() && github.event_name == 'merge_group'))
         run: |
-          state=$(gh api "repos/$GH_REPO/commits/$TARGET/status" \
-            --jq '.statuses[] | select(.context == "review") | .state')
-          if [ "$state" = pending ]; then
+          posted=$(gh api "repos/$GH_REPO/commits/$TARGET/status" --jq '.statuses[]
+            | select(.context == "review" and .state != "pending") | .target_url') ||
+            posted=
+          if [ "$posted" != "$RUN_URL" ]; then
             gh api "repos/$GH_REPO/statuses/$TARGET" -f state=error -f context=review \
               -f description="The review check failed to run. See the log." \
-              -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+              -f target_url="$RUN_URL"
           fi
