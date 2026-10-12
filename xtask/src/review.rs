@@ -698,8 +698,8 @@ impl Start {
 struct Shown<'a> {
     /// The round number of the first top-level heading that has one ([`number`]). When
     /// the comment is not old and has none, that of the comment respelled by
-    /// [`unblocked`], since GitHub starts HTML blocks at other lines than comrak, and can
-    /// show a heading that comrak hides.
+    /// [`unblocked`], since GitHub starts HTML blocks at other lines than comrak and
+    /// can show a heading that comrak hides.
     number: Option<String>,
     /// The top-level paragraphs before the first block that is not a paragraph.
     start: Start,
@@ -743,7 +743,7 @@ impl<'a> Shown<'a> {
                 codes.push(at(data.sourcepos.start)..source(data.sourcepos).end);
             }
         }
-        footnotes(root);
+        append_notes(root);
         // Whether each top-level block so far is a paragraph. So it is false at a
         // paragraph inside another block.
         let mut unbroken = true;
@@ -783,7 +783,7 @@ impl<'a> Shown<'a> {
             }
         }
         if shown.number.is_none() && !old {
-            shown.number = tree(&arena, body).children().find_map(number);
+            shown.number = respelled(&arena, body).children().find_map(number);
         }
         hiding.extend(tagged(body, &starts, &codes).map(|at| (at, Cause::Raw)));
         hiding.sort_by_key(|(at, _)| *at);
@@ -857,9 +857,18 @@ fn misplaced<'n>(paragraph: &'n AstNode<'n>, last: usize) -> bool {
     spans.all(|span| span.data.borrow().sourcepos.end.line < last)
 }
 
-/// Moves to the end of `root` the first definition of each footnote label with a
-/// reference, as GitHub shows it, and detaches each other one.
-fn footnotes<'n>(root: &'n AstNode<'n>) {
+/// Moves to the end of `root` each footnote definition that GitHub shows, where GitHub
+/// shows it, and detaches each other one ([`footnotes`]).
+fn append_notes<'n>(root: &'n AstNode<'n>) {
+    for note in footnotes(root) {
+        root.append(note);
+    }
+}
+
+/// Detaches from `root` each footnote definition that GitHub does not show, and gives
+/// the others in body order. GitHub shows the first definition of each label with a
+/// reference.
+fn footnotes<'n>(root: &'n AstNode<'n>) -> Vec<&'n AstNode<'n>> {
     let notes: Vec<_> = root
         .descendants()
         .filter_map(|node| match &node.data.borrow().value {
@@ -871,6 +880,7 @@ fn footnotes<'n>(root: &'n AstNode<'n>) {
         .collect();
     // comrak counts the references of the last definition of a label, and GitHub
     // shows the first.
+    let mut shown = Vec::new();
     for (i, (node, name, _)) in notes.iter().enumerate() {
         let label = |(_, other, _): &(_, String, _)| same(name, other);
         let first = !notes[..i].iter().any(label);
@@ -878,11 +888,12 @@ fn footnotes<'n>(root: &'n AstNode<'n>) {
             .iter()
             .any(|note @ (_, _, references)| *references > 0 && label(note));
         if first && referenced {
-            root.append(node);
+            shown.push(*node);
         } else {
             node.detach();
         }
     }
+    shown
 }
 
 /// Whether comrak reads the footnote labels `a` and `b` as one label.
@@ -988,9 +999,10 @@ fn normalized(text: &str) -> String {
     normalized
 }
 
-/// The tree of `body` as GitHub shows it: respelled by [`unblocked`], with the
-/// footnotes that GitHub shows ([`footnotes`]).
-fn tree<'a>(arena: &'a Arena<'a>, body: &str) -> &'a AstNode<'a> {
+/// The tree of `body` respelled by [`unblocked`], with only the footnotes that GitHub
+/// shows, each in place. Its source positions give the lines of `body`, not the
+/// columns.
+fn respelled<'a>(arena: &'a Arena<'a>, body: &str) -> &'a AstNode<'a> {
     let root = parse_document(arena, &unblocked(body), &options());
     footnotes(root);
     root
@@ -1201,13 +1213,10 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
 /// heading, a table, and HTML hold none. Only the issue right after the words counts.
 fn conditions(body: &str) -> Vec<u64> {
     let arena = Arena::new();
-    let root = tree(&arena, &normalized(body));
-    let mut paragraphs: Vec<_> = root
+    let root = respelled(&arena, &normalized(body));
+    let paragraphs = root
         .descendants()
-        .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph))
-        .collect();
-    // `tree` moves each footnote to the end.
-    paragraphs.sort_by_key(|n| n.data.borrow().sourcepos.start.line);
+        .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph));
     let mut found = Vec::new();
     for node in paragraphs {
         let text = texts(node).join(" ").to_ascii_lowercase();
