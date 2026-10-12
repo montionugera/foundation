@@ -80,6 +80,8 @@ pub(crate) struct Writes {
     channels: Vec<Name>,
     /// The channels that it implies, by name.
     implied: Vec<(Name, Kind<Name>)>,
+    /// The status index that it implies.
+    index: Name,
     /// The span of the connector's label.
     label: Option<Span>,
 }
@@ -93,11 +95,7 @@ impl Writes {
 
     /// The status index that it implies.
     pub(crate) fn index(&self) -> &Name {
-        let (time, _) = self
-            .implied
-            .first()
-            .expect("invariant: `writes` implies `time`");
-        time
+        &self.index
     }
 }
 
@@ -140,6 +138,7 @@ pub(crate) fn writes(
     Ok(Writes {
         channels: channels.writes,
         implied,
+        index: time,
         label: at,
     })
 }
