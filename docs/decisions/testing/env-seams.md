@@ -497,23 +497,28 @@
   https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128368790).
   Amended (2026-10-12T16:50:09Z, #1930): each file that `os` opens is closed on exec,
   and `os` releases the `flock` lock of a file itself, before it closes a descriptor
-  that a write open locked. A lock lasts until an unlock, or until each copy of its
-  descriptor closes, and a child of the process holds a copy of each open file from its
-  fork to its exec, or to its end. So a lock that only the close released made a write
-  open after a close give `Busy` in that window, on Linux and on macOS, against
-  `File::close` of `env::files`. A failed create frees its blocks before its unlink for
-  the same cause. The copy still keeps the room of a removed file until the copy closes.
-  `os` cannot free that room at the remove: until `sync_dir` ends, a crash can undo the
-  removal, and the file must then be whole. `os` keeps this gap, and the doc of
-  `os::files()` states it: a Foundation node spawns no process, so only tests see it.
-  Lost: the lock window as a gap on record with a rule for tests, which leaves
-  `File::close` false in `os` where one unlock makes it true, and which each test that
-  starts a child must know; a lock of the process (`fcntl`), which a child does not get,
-  but which gives no `Busy` between two `Files` of one process, and which the close of
-  any descriptor of the file drops; a second try of a `Busy` open, which hides the hold
-  of another process; a hold of each removed file until the sync of its directory, to
-  free its blocks then, which is state in `os` for a case that only tests see. Trigger:
-  the first change that makes a node spawn a process closes the room gap on the spawn
-  side, with the macOS gaps of the amendment of #2000. Decided by `laptop.architect-2`
-  (2026-10-12T16:50:09Z:
-  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128674782).
+  that a write open locked. An unlock that the filesystem fails, as an NFS `LOCKU` or a
+  FUSE daemon can, leaves the lock to the close, so the window stays on that filesystem.
+  A lock lasts until an unlock, or until each copy of its descriptor closes, and a child
+  of the process holds a copy of each open file from its fork to its exec, or to its
+  end. So a lock that only the close released made a write open after a close give
+  `Busy` in that window, on Linux and on macOS, against `File::close` of `env::files`. A
+  failed create frees its blocks before its unlink for the same cause. The copy still
+  keeps the room of a removed file until the copy closes. `os` cannot free that room at
+  the remove: until `sync_dir` ends, a crash can undo the removal, and the file must
+  then be whole. `os` keeps this gap, and the doc of `os::files()` states it: a
+  Foundation node spawns no process, so only tests see it. Lost: the lock window as a
+  gap on record with a rule for tests, which leaves `File::close` false in `os` where
+  one unlock makes it true, and which each test that starts a child must know; a lock of
+  the process (`fcntl`), which a child does not get, but which gives no `Busy` between
+  two `Files` of one process, and which the close of any descriptor of the file drops; a
+  second try of a `Busy` open, which hides the hold of another process; a hold of each
+  removed file until the sync of its directory, to free its blocks then, which is state
+  in `os` for a case that only tests see; a list of the failures of the unlock from
+  outside, with a panic on each other error, which panics on an errno that a FUSE daemon
+  or a seccomp filter gives and the list does not name. Trigger: the first change that
+  makes a node spawn a process closes the room gap on the spawn side, with the macOS
+  gaps of the amendment of #2000. Decided by `laptop.architect-2` (2026-10-12T16:50:09Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128674782;
+  2026-10-12T18:18:49Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6130043360).
