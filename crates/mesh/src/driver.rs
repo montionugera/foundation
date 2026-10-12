@@ -260,9 +260,9 @@ impl Mesh {
     }
 
     /// Gives a future that resolves once each task of the mesh has ended: the group's
-    /// task and each task that sends. The future holds no clone, so it does not keep
-    /// the group running. Once it resolves, the mesh holds no file, and a new open of
-    /// its directory can take the log.
+    /// task, each task that sends, and the task that keeps the spec in use. The future
+    /// holds no clone, so it does not keep the group running. Once it resolves, the
+    /// mesh holds no file, and a new open of its directory can take the log.
     #[must_use]
     pub fn ended(&self) -> tasks::Ended {
         self.tasks.ended()
