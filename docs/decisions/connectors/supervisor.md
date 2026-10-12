@@ -57,8 +57,8 @@
   the plan for what the status keys already tell; each spec in order, because a node
   that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
-  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704).
-  A connector that a change adds starts once no first open of an added connector is
+  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704). A
+  connector that a change adds starts once no first open of an added connector is
   pending on the node (below), unless its name has a loop (below): then the addition is
   a change, and the connector starts in that loop after the last run of its name
   returned, so no two runs write one set of status channels. A change of a connector
