@@ -1,9 +1,9 @@
 //! A request that the hub refuses for its length allocates no body, the heap of a hub
 //! does not grow over many opens and closes of a named complete reader, a served open
-//! holds each of its keys once, a read that waits for its home holds no places, and an
-//! open defines no channel of the spec that its hub applied again. This binary has no
-//! test harness: the count covers each thread, and a harness allocates on its own
-//! thread at any time.
+//! holds and copies each of its keys once, a read that waits for its home holds no
+//! places, and an open defines no channel of the spec that its hub applied again. This
+//! binary has no test harness: the count covers each thread, and a harness allocates on
+//! its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -52,7 +52,7 @@ fn main() {
     refuses_a_request_over_the_share_before_it_allocates_the_body();
     holds_the_same_bytes_over_many_opens_of_a_named_reader();
     holds_no_more_bytes_for_an_open_that_names_one_channel_many_times();
-    holds_each_key_of_an_open_once_over_many_messages();
+    copies_each_key_of_an_open_once_over_many_messages();
     holds_no_places_while_a_read_waits_for_its_home();
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
@@ -139,16 +139,27 @@ const MESSAGES: usize = 1280;
 /// The most bytes that the home may hold for the keys of one open of two channels.
 const OPEN_MAX: usize = 4 << 20;
 
-/// The bytes that the hub holds before and after a served open, and the error of the
-/// first send that failed. A peer node opens a latest session of `channels` channels
-/// on a hub that defines `time`, `value`, and each of `more`, sends `first`, and then
-/// each message of `rest` until a send fails.
+/// What [`served_open`] measured over the messages of `rest`.
+struct Served {
+    /// The bytes held before them.
+    before: usize,
+    /// The bytes held after them.
+    after: usize,
+    /// The bytes given out while the peer sent them, on both nodes.
+    allocated: usize,
+    /// The error of the first send that failed.
+    failed: Option<transport::Error>,
+}
+
+/// A peer node opens a latest session of `channels` channels on a hub that defines
+/// `time`, `value`, and each of `more`, sends `first`, and then each message of `rest`
+/// until a send fails.
 fn served_open(
     more: Vec<types::name::Name>,
     channels: u32,
     first: Vec<u8>,
     rest: impl Iterator<Item = Vec<u8>> + Send + 'static,
-) -> (usize, usize, Option<transport::Error>) {
+) -> Served {
     let measured = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&measured);
     let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
@@ -188,7 +199,7 @@ fn served_open(
         send(&out).await.expect("sends the open");
         send(&first).await.expect("sends keys");
         node.clock().sleep(common::SETTLE).await;
-        let before = ALLOCATOR.held();
+        let (before, given) = (ALLOCATOR.held(), ALLOCATOR.allocated());
         let mut failed = None;
         for message in rest {
             if let Err(error) = send(&message).await {
@@ -197,7 +208,12 @@ fn served_open(
             }
         }
         node.clock().sleep(common::SETTLE).await;
-        *kept.lock().expect("not poisoned") = Some((before, ALLOCATOR.held(), failed));
+        *kept.lock().expect("not poisoned") = Some(Served {
+            before,
+            after: ALLOCATOR.held(),
+            allocated: ALLOCATOR.allocated() - given,
+            failed,
+        });
         session.close(Code(0));
         node.clock().sleep(Span::MILLISECOND).await;
     };
@@ -216,7 +232,12 @@ fn holds_no_more_bytes_for_an_open_that_names_one_channel_many_times() {
     let mut run = vec![0; KEYS * keys::LEN];
     keys::encode(&[channel::Key::from_u128(2); KEYS], &mut run);
     let rest = std::iter::repeat_n(run.clone(), MESSAGES - 1);
-    let (before, after, failed) = served_open(Vec::new(), u32::MAX, run, rest);
+    let Served {
+        before,
+        after,
+        failed,
+        ..
+    } = served_open(Vec::new(), u32::MAX, run, rest);
     let code = Code(wire::header::MALFORMED);
     let stopped = transport::Error::Stopped { code };
     assert_eq!(failed, Some(stopped), "the home stops the stream");
@@ -229,13 +250,15 @@ fn holds_no_more_bytes_for_an_open_that_names_one_channel_many_times() {
 
 /// Channels whose keys an open sends one to a message.
 const RUNS: usize = 1000;
-/// The most bytes that the home may hold for each key of an open.
+/// The most bytes that the home may hold, and that the two nodes may allocate, for each
+/// key of an open.
 const KEY_MAX: usize = 256;
 
 /// A peer node opens a latest session of one channel more than [`RUNS`], and sends
 /// the key of each of [`RUNS`] channels in a message of its own. The open registers
-/// each key once, so the home holds at most [`KEY_MAX`] bytes for each key.
-fn holds_each_key_of_an_open_once_over_many_messages() {
+/// each key once, so the home holds, and the two nodes allocate, at most [`KEY_MAX`]
+/// bytes for each key. A copy of the keys at each message allocates about 8 MB.
+fn copies_each_key_of_an_open_once_over_many_messages() {
     let more: Vec<_> = (0..RUNS).map(|n| name(&format!("w.{n}"))).collect();
     let run = |n: usize| {
         let mut run = vec![0; keys::LEN];
@@ -244,13 +267,18 @@ fn holds_each_key_of_an_open_once_over_many_messages() {
         run
     };
     let channels = u32::try_from(RUNS + 1).expect("fits");
-    let (before, after, failed) =
-        served_open(more, channels, run(0), (1..RUNS).map(run));
-    assert_eq!(failed, None, "the home takes each key");
+    let served = served_open(more, channels, run(0), (1..RUNS).map(run));
+    assert_eq!(served.failed, None, "the home takes each key");
     assert!(
-        after.saturating_sub(before) < RUNS * KEY_MAX,
-        "{RUNS} keys of one open raised the bytes held by {} from {before}",
-        after - before,
+        served.after.saturating_sub(served.before) < RUNS * KEY_MAX,
+        "{RUNS} keys of one open raised the bytes held by {} from {}",
+        served.after - served.before,
+        served.before,
+    );
+    assert!(
+        served.allocated < RUNS * KEY_MAX,
+        "{RUNS} keys of one open allocated {} bytes",
+        served.allocated,
     );
 }
 
