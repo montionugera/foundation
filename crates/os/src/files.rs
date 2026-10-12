@@ -137,7 +137,7 @@ impl env::files::Driver for Disk {
 
 /// One open file. Each call keeps the file open until it ends.
 struct File {
-    fd: Arc<OwnedFd>,
+    fd: Arc<Opened>,
     /// The data directory, which a rename acts in.
     data: Arc<OwnedFd>,
     len: u64,
@@ -156,7 +156,7 @@ impl File {
         let (fd, path) = (Arc::clone(&self.fd), Arc::clone(&self.path.borrow()));
         Box::pin(
             self.queue
-                .run(move || call(&fd).map_err(fail(&path, operation))),
+                .run(move || call(&fd.fd).map_err(fail(&path, operation))),
         )
     }
 }
@@ -186,7 +186,7 @@ impl Descriptor for File {
     fn rename<'a>(&'a self, from: &'a Path, to: &'a Path) -> Request<'a, ()> {
         let (fd, data) = (Arc::clone(&self.fd), Arc::clone(&self.data));
         let (old, new) = (from.to_path_buf(), to.to_path_buf());
-        let renamed = self.queue.run(move || rename(&fd, &data, &old, &new));
+        let renamed = self.queue.run(move || rename(&fd.fd, &data, &old, &new));
         Box::pin(async move {
             renamed.await?;
             *self.path.borrow_mut() = Arc::from(to);
@@ -207,11 +207,11 @@ impl Descriptor for File {
         let Self {
             fd, data, queue, ..
         } = *self;
-        // The drop closes the file after the unlink, so its lock holds until then.
+        // The drop releases the lock after the unlink, so the lock holds until then.
         Box::pin(async move {
             queue
                 .run(move || {
-                    let removed = remove(&fd, &data, &path);
+                    let removed = remove(&fd.fd, &data, &path);
                     drop(fd);
                     removed
                 })
@@ -264,9 +264,27 @@ impl Queue {
     }
 }
 
+/// The descriptor of an open file. Its drop releases the lock of a write open before
+/// it closes the descriptor: a `flock` lock lasts until each copy of the descriptor
+/// closes, and a child of the process holds a copy until its exec.
+struct Opened {
+    fd: OwnedFd,
+    locked: bool,
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        if self.locked
+            && let Err(e) = fs::flock(&self.fd, FlockOperation::Unlock)
+        {
+            panic!("invariant: the lock of {:?} is released: {e:?}", self.fd);
+        }
+    }
+}
+
 /// Opens the file at `path`, and gives it and its length. A write open locks the
 /// file first, so a held file gives `Busy` before any other check.
-fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error> {
+fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error> {
     let failed = fail(path, Operation::Open);
     let flags = match mode {
         Mode::Read => OFlags::RDONLY,
@@ -274,10 +292,13 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error
         Mode::Create { .. } => OFlags::RDWR.union(OFlags::CREATE),
     };
     let (fd, stat) = loop {
-        let fd = fs::openat(data, path, flags.union(OFlags::CLOEXEC), FILE)
-            .map_err(&failed)?;
+        let mut fd = Opened {
+            fd: fs::openat(data, path, flags.union(OFlags::CLOEXEC), FILE)
+                .map_err(&failed)?,
+            locked: false,
+        };
         if mode != Mode::Read {
-            match fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+            match fs::flock(&fd.fd, FlockOperation::NonBlockingLockExclusive) {
                 Err(Errno::WOULDBLOCK) => {
                     return Err(Error::Busy {
                         path: path.to_path_buf(),
@@ -285,8 +306,9 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error
                 }
                 locked => locked.map_err(&failed)?,
             }
+            fd.locked = true;
         }
-        let stat = fs::fstat(&fd).map_err(&failed)?;
+        let stat = fs::fstat(&fd.fd).map_err(&failed)?;
         let flags = AtFlags::empty();
         if mode == Mode::Read || named(data, path, flags, &stat).map_err(&failed)? {
             break (fd, stat);
@@ -300,13 +322,13 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error
         // Not atomic: a crash before `allocate` sets the length leaves an empty file,
         // which this allocates.
         Mode::Create { len } if found == 0 && len != 0 => {
-            allocate(&fd, len)
-                .and_then(|()| sync_all(&fd))
+            allocate(&fd.fd, len)
+                .and_then(|()| sync_all(&fd.fd))
                 // A child process can hold a copy of `fd`, so the blocks are freed
                 // here, not at its close. A failed create leaves no file, so a later
                 // write open gives `NotFound`, not an empty file.
                 .or_else(|errno| {
-                    let freed = fs::ftruncate(&fd, 0);
+                    let freed = fs::ftruncate(&fd.fd, 0);
                     fs::unlinkat(data, path, AtFlags::empty())?;
                     freed.and(Err(errno))
                 })
