@@ -690,9 +690,12 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
   2026-10-11 15:26 UTC).
-  A client keeps at most 16 reads in flight. Only reads whose futures dropped make more
-  than one, and a read past the 16 first waits until one of them ends, at the latest at
-  its request timeout. A client sends and takes at most 8 chunks in a message, and the
+  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 16 first waits until one of them
+  ends. open62541 gives a read no timeout, so a read stays in flight until the server
+  answers it or the channel closes, as the server holds its request until then. The
+  read itself gives `BadTimeout` at the request timeout of the client, its wait
+  included. A client sends and takes at most 8 chunks in a message, and the
   test server sends at most 8, so the reads in flight times the chunks of a message
   stay at 128, half of the 256 sends of a connection. The other half is for the
   requests of open62541 itself. open62541 checks the chunks of a message that it sends

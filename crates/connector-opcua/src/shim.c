@@ -665,12 +665,19 @@ UA_StatusCode shim_response_result(const void *response) {
 
 /* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. */
+ * NULL. The request has no timeout, so it ends only at its answer or at the close of the
+ * channel. */
 UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
-    return UA_Client_readValueAttribute_async(
+    /* open62541 takes the timeout of a request from the config, and 0 is no timeout. */
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_UInt32 timeout = config->timeout;
+    config->timeout = 0;
+    UA_StatusCode status = UA_Client_readValueAttribute_async(
         client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+    config->timeout = timeout;
+    return status;
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no

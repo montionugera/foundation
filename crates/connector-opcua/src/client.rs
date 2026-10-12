@@ -5,16 +5,16 @@
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::future::Future as _;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
-use env::clock::Clock;
+use env::clock::{Clock, Sleep};
 use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
 
-use crate::connection::{Manager, SENDS};
+use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::ffi::{self, Status};
 
 #[cfg(test)]
@@ -22,10 +22,6 @@ mod tests;
 
 /// The most reads of a client in flight. A read past it waits until one ends.
 const READS: u16 = 16;
-
-/// The most chunks in a message that a client sends or takes, and that the test server
-/// sends.
-pub(crate) const CHUNKS: u32 = 8;
 
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
@@ -49,16 +45,22 @@ pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
     /// read in flight.
-    answer: Box<Answer>,
+    reads: Box<Reads>,
+    clock: Clock,
+    /// The request timeout of the client.
+    timeout: Span,
+    /// The deadline of a read, kept so that a read allocates no timer.
+    deadline: Sleep,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
 
-/// The answer of the read in flight.
+/// The reads of a client in flight, shared with the callback.
 #[derive(Default)]
-struct Answer {
-    /// The request of the read in flight. The callback drops the answer of another
-    /// request, which is a read whose future dropped.
+struct Reads {
+    /// The request of the last read that open62541 took, until it times out. The
+    /// callback drops the answer of another request, and `read` clears the answer of a
+    /// last read whose future dropped.
     request: Cell<Option<u32>>,
     value: Cell<Option<Result<f64, Status>>>,
     /// The reads that open62541 took and has not called back, at most [`READS`].
@@ -93,15 +95,18 @@ impl Client {
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
+        // SAFETY: the client lives.
+        let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
+        let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
         let this = Self {
             raw,
-            answer: Box::default(),
+            reads: Box::default(),
+            deadline: clock.sleep(timeout),
+            clock,
+            timeout,
             connections,
         };
-        // SAFETY: the client lives.
-        let timeout_ms = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
-        let mut deadline =
-            pin!(clock.sleep(Span::from_nanos(i64::from(timeout_ms) * 1_000_000)));
+        let mut deadline = pin!(this.clock.sleep(this.timeout));
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
@@ -130,50 +135,63 @@ impl Client {
         }
     }
 
-    /// Reads the Value of `node`, a scalar Double. When 16 reads whose futures dropped
-    /// are in flight, it first waits until one of them ends, which takes at most the
-    /// request timeout.
+    /// Reads the Value of `node`, a scalar Double. A read that times out or whose
+    /// future dropped stays in flight until the server answers it or the connection
+    /// closes. While [`READS`] are in flight, a read first waits until one ends.
     ///
     /// # Errors
     ///
-    /// The status of open62541 when it refuses the request, the status of the answer
-    /// or of its value, or `BadTypeMismatch` when the value is not a scalar Double.
+    /// `BadTimeout` when it has no answer after the request timeout of the client
+    /// (5 s), the wait included, the status of open62541 when it refuses the request,
+    /// the status of the answer or of its value, or `BadTypeMismatch` when the value is
+    /// not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
-        if self.answer.pending.get() == READS {
+        let deadline = &mut self.deadline;
+        deadline.reset(self.clock.now() + self.timeout);
+        if self.reads.pending.get() == READS {
             self.connections
-                .drive(|_| {
+                .drive(|cx| {
                     self.connections.events().run();
-                    if self.answer.pending.get() < READS {
-                        Poll::Ready(())
+                    if self.reads.pending.get() < READS {
+                        Poll::Ready(Ok(()))
+                    } else if Pin::new(&mut *deadline).poll(cx).is_ready() {
+                        Poll::Ready(Err(Status::BAD_TIMEOUT))
                     } else {
                         Poll::Pending
                     }
                 })
-                .await;
+                .await?;
         }
         let mut request = 0;
-        // SAFETY: the client lives, and `answer` outlives it.
+        // SAFETY: the client lives, and `reads` outlives it.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
                 node.namespace,
                 node.key,
                 answer,
-                ptr::from_ref::<Answer>(&self.answer).cast_mut().cast(),
+                ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                 &raw mut request,
             )
         });
         if status != Status::GOOD {
             return Err(status);
         }
-        self.answer.pending.set(self.answer.pending.get() + 1);
-        self.answer.request.set(Some(request));
+        self.reads.pending.set(self.reads.pending.get() + 1);
+        self.reads.request.set(Some(request));
         // It can hold the answer of a read whose future dropped after the callback.
-        self.answer.value.set(None);
+        self.reads.value.set(None);
         self.connections
-            .drive(|_| {
+            .drive(|cx| {
                 self.connections.events().run();
-                self.answer.value.take().map_or(Poll::Pending, Poll::Ready)
+                if let Some(value) = self.reads.value.take() {
+                    Poll::Ready(value)
+                } else if Pin::new(&mut *deadline).poll(cx).is_ready() {
+                    self.reads.request.set(None);
+                    Poll::Ready(Err(Status::BAD_TIMEOUT))
+                } else {
+                    Poll::Pending
+                }
             })
             .await
     }
@@ -246,12 +264,12 @@ impl Drop for Client {
     }
 }
 
-/// Puts the answer of `request` in the [`Answer`] at `data` when it is the read in
-/// flight.
+/// Ends one read of the [`Reads`] at `data`, and puts the answer of `request` there
+/// when it is the read that waits.
 ///
 /// # Safety
 ///
-/// `data` points at a live [`Answer`], and `value` points at the answer when `status`
+/// `data` points at live [`Reads`], and `value` points at the answer when `status`
 /// is `Good`.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
@@ -260,10 +278,10 @@ unsafe extern "C" fn answer(
     status: u32,
     value: *mut c_void,
 ) {
-    // SAFETY: the client that holds the answer lives.
-    let answer = unsafe { &*data.cast_const().cast::<Answer>() };
-    answer.pending.set(answer.pending.get() - 1);
-    if answer.request.get() != Some(request) {
+    // SAFETY: the client that holds the reads lives.
+    let reads = unsafe { &*data.cast_const().cast::<Reads>() };
+    reads.pending.set(reads.pending.get() - 1);
+    if reads.request.get() != Some(request) {
         return;
     }
     let mut double = 0.0;
@@ -272,7 +290,7 @@ unsafe extern "C" fn answer(
         // SAFETY: open62541 gives the answer with `Good`.
         status = Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
     }
-    answer.value.set(Some(if status == Status::GOOD {
+    reads.value.set(Some(if status == Status::GOOD {
         Ok(double)
     } else {
         Err(status)

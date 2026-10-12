@@ -46,7 +46,7 @@ impl Server {
                 port,
                 host.as_ptr(),
                 sessions,
-                crate::client::CHUNKS,
+                crate::connection::CHUNKS,
             )
         };
         let raw = NonNull::new(raw).expect("open62541 refused the server");

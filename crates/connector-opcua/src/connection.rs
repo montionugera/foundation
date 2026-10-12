@@ -42,6 +42,9 @@ const READ_BYTES: usize = 1 << 16;
 /// chunks of its messages in flight at most this.
 pub(crate) const SENDS: usize = 256;
 
+/// The most chunks in a message that an open62541 endpoint on a manager sends or takes.
+pub(crate) const CHUNKS: u32 = 8;
+
 /// The most sends that one write takes.
 const PARTS: usize = 16;
 

@@ -12,7 +12,8 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Answer, CHUNKS, Client, Node, READS, answer};
+use super::{Client, Node, Reads, answer};
+use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::server::Server;
@@ -26,13 +27,13 @@ const VALUE: Node = Node {
     key: 1000,
 };
 
-/// A `ByteString` whose answer needs [`CHUNKS`] chunks, from [`read_large`].
+/// A `ByteString` whose answer needs 8 chunks, [`CHUNKS`], from [`read_large`].
 const FITS: Node = Node {
     namespace: 1,
     key: 1002,
 };
 
-/// A `ByteString` whose answer needs more than [`CHUNKS`] chunks, from [`read_large`].
+/// A `ByteString` whose answer needs 9 chunks, one past [`CHUNKS`], from [`read_large`].
 const PAST: Node = Node {
     namespace: 1,
     key: 1003,
@@ -290,8 +291,8 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 }
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
-/// Gives its answer and the time it took.
-fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
+/// Gives its answer, the time it took, and the reads in flight after it.
+fn read_after(dropped: u16) -> (Result<f64, Status>, Span, u16) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -301,30 +302,78 @@ fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
             let start = peer.clock.now();
             let read = client.read(VALUE).await;
             let took = peer.clock.now() - start;
+            let pending = client.reads.pending.get();
             peer.paused.set(false);
             client.close().await;
-            (read, took)
+            (read, took, pending)
         })
         .await
     });
     out
 }
 
-/// Below the bound, a read times out at its own request timeout. At the bound, it first
-/// waits for the dropped reads to time out, 3 s to 4 s after its start, so it ends 3 s
-/// to 4 s later.
+/// Below the bound, a read sends its request and times out, which leaves it in flight.
+/// At the bound, the dropped reads stay in flight, so it times out in its wait and
+/// sends nothing.
 #[test]
 fn a_read_at_the_bound_waits_for_a_dropped_read_to_end() {
-    let (below, below_took) = read_after(READS - 1);
-    let (at, at_took) = read_after(READS);
+    let (below, below_took, below_pending) = read_after(15);
+    let (at, at_took, at_pending) = read_after(16);
     assert_eq!(
-        (below, at),
-        (Err(Status::BAD_TIMEOUT), Err(Status::BAD_TIMEOUT))
+        (below, below_pending, at, at_pending),
+        (Err(Status::BAD_TIMEOUT), 16, Err(Status::BAD_TIMEOUT), 16)
     );
-    let own = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(own.contains(&below_took), "{below_took:?}");
-    let waits = Span::from_nanos(8_000_000_000)..=Span::from_nanos(10_000_000_000);
-    assert!(waits.contains(&at_took), "{at_took:?}");
+    let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(timeout.contains(&below_took), "{below_took:?}");
+    assert!(timeout.contains(&at_took), "{at_took:?}");
+}
+
+/// The answers of 16 dropped reads end them all, so a read after one more dropped read
+/// sends its request and leaves two reads in flight.
+#[test]
+fn the_answers_of_dropped_reads_end_them() {
+    let ((read, pending), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            drop_reads(&mut client, 16).await;
+            peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
+            peer.paused.set(true);
+            drop_reads(&mut client, 1).await;
+            let read = client.read(VALUE).await;
+            let pending = client.reads.pending.get();
+            peer.paused.set(false);
+            client.close().await;
+            (read, pending)
+        })
+        .await
+    });
+    assert_eq!((read, pending), (Err(Status::BAD_TIMEOUT), 2));
+}
+
+/// A stalled server keeps each request of a read that timed out, and answers them all
+/// in one pass when it runs again. Without the bound on its requests, the 257th answer
+/// closes the channel.
+#[test]
+fn a_read_after_272_reads_on_a_stalled_server_gives_the_value() {
+    let ((timeouts, read, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            let mut timeouts = Vec::new();
+            for _ in 0..16 {
+                drop_reads(&mut client, 16).await;
+                timeouts.push(client.read(VALUE).await);
+            }
+            peer.paused.set(false);
+            peer.clock.sleep(Span::from_nanos(10_000_000)).await;
+            let read = client.read(VALUE).await;
+            client.close().await;
+            (timeouts, read, peer.value)
+        })
+        .await
+    });
+    assert_eq!(timeouts, vec![Err(Status::BAD_TIMEOUT); 16]);
+    assert_eq!(read, Ok(value));
 }
 
 /// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
@@ -332,9 +381,8 @@ fn a_read_at_the_bound_waits_for_a_dropped_read_to_end() {
 fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            let fits = usize::try_from(CHUNKS - 1).expect("fits") * CHUNK;
-            peer.server.add_bytes(FITS, fits);
-            peer.server.add_bytes(PAST, fits + 2 * CHUNK);
+            peer.server.add_bytes(FITS, 7 * CHUNK);
+            peer.server.add_bytes(PAST, 8 * CHUNK);
             peer.server.set_chunks(chunks);
             let mut client = peer.connected().await;
             let reads = (client.read(FITS).await, client.read(PAST).await);
@@ -369,7 +417,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
     let (value, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            let outside = Answer::default();
+            let outside = Reads::default();
             let mut request = 0;
             // SAFETY: the client lives, and `outside` outlives it.
             let status = Status(unsafe {
