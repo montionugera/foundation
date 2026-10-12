@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{cancel, status, supervisor};
+use crate::{cancel, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -58,9 +58,11 @@ pub trait Kind: Send + Sync + 'static {
 /// What a checked connector reads and writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Channels {
-    /// The channels it reads from the mesh: commands for the device, or samples it
-    /// sends out.
-    pub reads: Vec<Name>,
+    /// The settings of the reader of the channels it reads from the mesh: commands for
+    /// the device, or samples it sends out. Get them from [`reader::read`]. The
+    /// supervisor opens the reader under the connector's name before each run. `None`
+    /// for a kind that reads no channel.
+    pub reader: Option<reader::Settings>,
     /// The channels it writes to the mesh: samples from the device.
     pub writes: Vec<Name>,
     /// The last segment of each count channel of the kind,
@@ -71,7 +73,7 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The supervisor stops; a spec change starts it again.
+    /// The config cannot work. The connector stops until the next spec change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -116,6 +118,7 @@ pub struct Context<C> {
     cancel: cancel::Token,
     tasks: Tasks,
     status: status::Status,
+    reader: Option<hub::reader::Reader>,
     // Its `tasks` field is the shard's, which no run counts: spawn only through
     // `self.tasks`.
     inputs: Rc<supervisor::Config>,
@@ -129,6 +132,7 @@ impl<C> Context<C> {
         cancel: cancel::Token,
         tasks: Tasks,
         status: status::Status,
+        reader: Option<hub::reader::Reader>,
         inputs: Rc<supervisor::Config>,
     ) -> Self {
         Self {
@@ -137,6 +141,7 @@ impl<C> Context<C> {
             cancel,
             tasks,
             status,
+            reader,
             inputs,
         }
     }
@@ -149,6 +154,7 @@ impl<C> Context<C> {
             cancel: self.cancel,
             tasks: self.tasks,
             status: self.status,
+            reader: self.reader,
             inputs: self.inputs,
         }
     }
@@ -188,20 +194,40 @@ impl<C> Context<C> {
     ///
     /// # Errors
     ///
-    /// As [`hub::Hub::writer`].
+    /// [`Error::Config`] with one diagnostic and no span, for a writer that only a
+    /// spec change fixes: `connector.unknown-channel` for a name that no channel has,
+    /// `connector.no-channel` for no name, and `connector.lease` for a lease that is
+    /// not longer than zero. [`Error::Retry`] with the hub's error when the home of an
+    /// index is another node, or the mesh stopped.
+    ///
+    /// # Panics
+    ///
+    /// When the hub gives an error that this open cannot get.
     pub async fn writer(
         &self,
         channels: Vec<Name>,
         authority: Authority,
         lease: Option<time::Span>,
-    ) -> Result<hub::writer::Writer, hub::writer::Error> {
+    ) -> Result<hub::writer::Writer, Error> {
         let config = hub::writer::Config {
             subject: self.name.clone(),
             authority,
             lease,
             channels,
         };
-        self.inputs.hub.writer(config).await
+        self.inputs.hub.writer(config).await.map_err(writer_error)
+    }
+
+    /// Takes the reader that the supervisor opened for this run, under the
+    /// connector's name, from the settings that `check` gave. `None` when `check`
+    /// gave none, or after the first call. When the reader ends with
+    /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
+    /// new reader before the next run. A reader with a hold opens again at its held
+    /// position. While the home keeps no frame there, each later run gets `Behind`.
+    /// Each close starts the hold again, so a hold longer than the wait between two
+    /// runs never ends.
+    pub fn reader(&mut self) -> Option<hub::reader::Reader> {
+        self.reader.take()
     }
 
     /// The count `name` of the connector's status, `<connector>.status.<name>`, to
@@ -223,8 +249,9 @@ impl<C> Context<C> {
     }
 
     /// Runs the kind's own tasks on its shard. Each task must end when
-    /// [`Context::cancel`] is cancelled. The next run of the same `Supervisor::run`
-    /// call starts only after each of them ends.
+    /// [`Context::cancel`] is cancelled. The next run of the same
+    /// [`Opened::run`](crate::supervisor::Opened::run) call starts only after each of
+    /// them ends.
     #[must_use]
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
@@ -343,6 +370,60 @@ impl fmt::Debug for Table {
 }
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
+const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
+const NO_CHANNEL: Code = Code::new("connector.no-channel");
+const MANY_INDEXES: Code = Code::new("connector.many-indexes");
+const LEASE: Code = Code::new("connector.lease");
+
+/// The class of `error` of the open of a named reader.
+///
+/// # Panics
+///
+/// For `Unsynced`, which the supervisor's open never gives, and for an error of a
+/// reader away from its home, since a named reader opens only at its home.
+pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
+    use hub::reader::Error as Hub;
+    let (code, fix) = match error {
+        Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
+        Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
+        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
+        Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
+            panic!("invariant: a named reader away from its home gave: {error}")
+        }
+    };
+    config_error(code, &error, fix)
+}
+
+/// The class of `error` of a writer.
+///
+/// # Panics
+///
+/// For `Unsynced`: the hub waits for mesh time.
+fn writer_error(error: hub::writer::Error) -> Error {
+    use hub::home::writer::Error as Home;
+    use hub::writer::Error as Hub;
+    let (code, fix) = match error {
+        Hub::Unknown(_) => (UNKNOWN_CHANNEL, "Define the channel in the spec"),
+        Hub::Empty => (NO_CHANNEL, "Give the connector a channel to write"),
+        Hub::Home(home @ Home::Lease { .. }) => (LEASE, home.fix()),
+        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Home(Home::Unsynced) => {
+            panic!("invariant: a writer of the hub gave: {error}")
+        }
+    };
+    config_error(code, &error, fix)
+}
+
+/// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
+fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
+    Error::Config(vec![Diagnostic::new(
+        code,
+        None,
+        error.to_string(),
+        fix.into(),
+    )])
+}
 
 /// One run of a kind.
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
@@ -435,7 +516,7 @@ mod tests {
                 return Err(vec![diagnostic(RANGE, "n is over 8")]);
             }
             Ok(Channels {
-                reads: Vec::new(),
+                reader: None,
                 writes: (0..*n).map(|i| name(&format!("counter.c{i}"))).collect(),
                 counts: vec![name("frames")],
             })
@@ -485,7 +566,7 @@ mod tests {
         assert_eq!(
             channels,
             Ok(Channels {
-                reads: Vec::new(),
+                reader: None,
                 writes,
                 counts: vec![name("frames")],
             })
@@ -717,6 +798,7 @@ mod tests {
                 token.clone(),
                 tasks.clone(),
                 status::Status::new(Vec::new()),
+                None,
                 inputs,
             );
             let clock = node.clock();
@@ -745,7 +827,8 @@ mod tests {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
             let status = status::Status::new(Vec::new());
-            let ctx = Context::new(name("a"), (), Token::new(), tasks, status, inputs);
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
         });
         assert_ne!(a, b);
@@ -764,6 +847,91 @@ mod tests {
         assert_eq!(retry.to_string(), "an attempt failed: timed out");
         let source = std::error::Error::source(&retry).map(ToString::to_string);
         assert_eq!(source.as_deref(), Some("timed out"));
+    }
+
+    /// Calls the mapping directly: the hub of `hub::testing` has no region, so it never
+    /// gives `Remote` or `Mesh`. #2376 holds the test through a run.
+    #[test]
+    fn retries_a_hub_error_that_the_home_or_the_mesh_can_clear() {
+        let home = types::node::Key::from_u128(7);
+        let stopped = || hub::mesh::Stopped::Dropped;
+        let reader = |error| reader_error(error).to_string();
+        let writer = |error| writer_error(error).to_string();
+        assert_eq!(
+            reader(hub::reader::Error::Remote { home }),
+            format!(
+                "an attempt failed: the home of the index of the reader is node \
+                 {home}, and a named reader opens only at this node"
+            )
+        );
+        assert_eq!(
+            writer(hub::writer::Error::Remote { home }),
+            format!(
+                "an attempt failed: the home of an index of the writer is node \
+                 {home}, and a writer writes only at this node"
+            )
+        );
+        let mesh =
+            "an attempt failed: the mesh stopped: each mesh of the group dropped";
+        assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
+        assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+    }
+
+    /// Calls the mapping directly: the supervisor opens a reader only after the status
+    /// channels, which wait for mesh time, so no run can give `Unsynced`.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a reader opened before mesh time: the node has no mesh \
+                    time yet: open the named reader again later"
+    )]
+    fn panics_for_a_reader_that_has_no_mesh_time() {
+        drop(reader_error(hub::reader::Error::Unsynced));
+    }
+
+    /// Calls the mapping directly, since a named reader opens only at its home. The
+    /// arm of `Transport` has no test: `connector` cannot build a `transport` error.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the pool had no \
+                    block for the open: pool is full: asked for 8 bytes, 0 bytes free"
+    )]
+    fn panics_for_a_reader_error_away_from_its_home() {
+        let pool = block::Error::Exhausted {
+            requested: 8,
+            available: 0,
+        };
+        drop(reader_error(hub::reader::Error::Pool(pool)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    refused the reader with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refusal_of_the_reader() {
+        let refusal = wire::hub::Refusal::NotHome;
+        drop(reader_error(hub::reader::Error::Refused(refusal)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the reply of \
+                    the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_reply_that_breaks_the_hub_protocol() {
+        drop(reader_error(hub::reader::Error::Message(
+            wire::hub::Error::Empty,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a writer of the hub gave: the node has no mesh time yet"
+    )]
+    fn panics_for_a_writer_error_that_the_hub_never_gives() {
+        let unsynced = hub::home::writer::Error::Unsynced;
+        drop(writer_error(hub::writer::Error::Home(unsynced)));
     }
 
     #[test]

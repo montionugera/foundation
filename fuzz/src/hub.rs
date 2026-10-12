@@ -40,16 +40,16 @@ impl Run {
     /// Whether `error` is the refusal of `message` where the run continues. Only one
     /// error is correct, and a message that the run takes has none.
     #[must_use]
-    pub fn refused(self, message: &[u8], error: Error) -> bool {
+    pub fn refused(self, message: &[u8], error: &Error) -> bool {
         let len = message.len();
         if len == 0 {
-            error == Error::Empty
+            *error == Error::Empty
         } else if !len.is_multiple_of(self.width) {
-            error == Error::Length { len }
+            *error == Error::Length { len }
         } else {
             let (items, remain) = (len / self.width, self.remain);
             u32::try_from(items).is_ok_and(|items| items > remain)
-                && error == Error::Run { items, remain }
+                && *error == Error::Run { items, remain }
         }
     }
 }

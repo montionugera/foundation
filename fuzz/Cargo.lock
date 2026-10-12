@@ -132,7 +132,9 @@ version = "0.0.0"
 dependencies = [
  "block",
  "env",
+ "transport",
  "types",
+ "wire",
 ]
 
 [[package]]
@@ -870,6 +872,7 @@ dependencies = [
  "clock",
  "config-hcl",
  "connector",
+ "connector-influx",
  "crc32c",
  "document",
  "env",

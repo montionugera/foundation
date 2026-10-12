@@ -51,6 +51,8 @@ exclude_re = [
   # Class 4 is 320 bytes on either side of the branch: `ALIGN * 5` and
   # `(ALIGN << 0) * 5`.
   'crates/block/src/lib\.rs:.*replace < with <= in class_payload',
+  # At `index == CLASSES_MAX` both arms give `CLASSES_MAX`. `Ord::min` is not `const`.
+  'crates/block/src/lib\.rs:.*replace < with <= in classes$',
   # Stubs that panic until #68 fills them; #68 removes these lines.
   'crates/transport/src/datagram\.rs:',
   'crates/transport/src/session\.rs:.*Session::datagrams\b',
@@ -77,20 +79,29 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
-  # The oracle of the `node_identity` fuzz target and of the property tests, and the
-  # entry of the target. Each panics only when `decode` is wrong, and the mutants of
-  # `decode` show that `check` does.
+  # The oracle of `node.key` in the `node_identity` fuzz target and the property
+  # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
+  # and the mutants of `written` show that it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
+  # The oracle of `admin.key` in the same target and tests, for the same reason.
+  'crates/node/src/admin\.rs:.*replace check with \(\)',
+  # The check that `identity::check`, `admin::check`, and `address::check` call, for
+  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
+  # it panics.
+  'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # The oracle of `address` in the same target and tests, for the same reason.
+  'crates/node/src/address\.rs:.*replace check with \(\)',
+  # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
+  # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
+  # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
+  'crates/node/src/fuzz\.rs:.*replace file -> ',
   # No public call reads the entries that an open leaks. The unit test
   # `an_open_keeps_no_entry_once_it_drops` reads them.
   'crates/hub/src/serve\.rs:.*replace <impl Drop for Opening<._>>::drop with \(\)',
   # Only Miri sees the stub task that a skipped clear leaks, and the miri job runs
   # those tests.
   'crates/connector-ni/src/daqmx\.rs:.*replace <impl Drop for Task>::drop with \(\)',
-  # Only a counting allocator sees the buffer that a skipped free leaks, and no public
-  # call reaches the manager until #435 PR 6c, whose memory test removes this entry.
-  'crates/connector-opcua/src/connection\.rs:.*replace <impl Drop for Buffer>::drop with \(\)',
   # A fence changes the order of memory operations around a counter read, and no
   # result a test can see. Loom does not model a counter read.
   'crates/os/src/clock\.rs:.*replace (settle|hold) with \(\)',
@@ -143,4 +154,13 @@ exclude_re = [
   # back. `each_commit_of_the_logs_syncs_one_entry_of_each_index` kills it through the
   # private logs.
   'crates/buffer/src/bench\.rs:.*replace Logs::commit with \(\)$',
+  # A connector on another node runs here only in a mesh of two nodes, which no test of
+  # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
+  # `a_connector_on_another_node_starts_no_run` kills it.
+  'crates/node/src/connectors\.rs:.*\*connector\.node\(\) == self\.node with true',
+  # A kept clone of an ended session holds only memory of shard 0 (its carrier slot)
+  # while its place lives, and a close of an ended session does nothing. No counting
+  # test of `node` opens sessions yet (#2370). The unit test
+  # `a_session_whose_hold_drops_leaves_its_place` kills it through `Places::take`.
+  'crates/node/src/route\.rs:.*replace <impl Drop for Hold>::drop with \(\)',
 ]

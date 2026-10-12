@@ -1,13 +1,15 @@
 //! `os::interrupt` holds the first SIGINT or SIGTERM and completes its future at it,
 //! and a second one ends the process. This binary has no test harness: the threads
 //! of a harness start before the hold, so a signal would end the process. With the
-//! argument `child`, it is the process that the test signals, and with `blocked`, one
-//! that blocks SIGTERM first.
+//! argument `child`, it is the process that the test signals, with `blocked`, one
+//! that blocks SIGTERM first, with `pending`, one that also makes it pending, and with
+//! `ignored`, one that ignores SIGINT and sends it to itself. With `both`, it blocks
+//! both and writes whether the future stays pending.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 #[path = "../common/mask.rs"]
@@ -29,38 +31,65 @@ fn main() {
     match std::env::args_os().nth(1) {
         Some(arg) if arg == "child" => {
             mask::set(&[]);
-            child();
+            child(&[]);
         }
         Some(arg) if arg == "blocked" => {
             mask::set(&[libc::SIGTERM]);
-            child();
+            child(&[]);
         }
-        #[cfg(target_os = "linux")]
+        Some(arg) if arg == "pending" => {
+            mask::set(&[libc::SIGTERM]);
+            kill_process(getpid(), Signal::TERM).expect("the child signals itself");
+            child(&[]);
+        }
+        Some(arg) if arg == "ignored" => {
+            mask::set(&[]);
+            ignore(libc::SIGINT);
+            child(&[Signal::INT]);
+        }
+        Some(arg) if arg == "both" => {
+            mask::set(&[libc::SIGINT, libc::SIGTERM]);
+            both();
+        }
+        #[cfg(target_os = "linux")] // needs /proc
         Some(arg) if arg == "early" => {
             mask::set(&[]);
             early(false);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(target_os = "linux")] // needs /proc
         Some(arg) if arg == "early-waiting" => {
             mask::set(&[]);
             early(true);
         }
         _ => {
             a_blocked_sigterm_stays_blocked_after_the_first_signal();
+            a_blocked_sigterm_pending_before_the_call_does_not_complete_the_future();
+            an_ignored_sigint_does_not_complete_the_future_or_end_the_process();
+            with_both_blocked_the_future_stays_pending();
             a_second_signal_ends_the_process();
             the_future_completes_at_the_first_signal();
-            #[cfg(target_os = "linux")]
+            #[cfg(target_os = "linux")] // needs /proc
             a_signal_before_the_first_poll_completes_the_future();
         }
     }
 }
 
-/// Holds the signals, then waits for one and the end of the process.
-fn child() {
+/// Holds the signals and sends itself `own`. Writes `held` when the future then stays
+/// pending for [`QUIET`], else `early`, then `fired` when it completes, and waits for
+/// the end of the process.
+fn child(own: &[Signal]) {
     let interrupt = os::interrupt().expect("the signal thread starts");
     let mut output = std::io::stdout();
-    writeln!(output, "held").expect("a write to the test");
     runtime().block_on(async {
+        let mut interrupt = pin!(interrupt);
+        for &signal in own {
+            kill_process(getpid(), signal).expect("the child signals itself");
+        }
+        if timeout(QUIET, interrupt.as_mut()).await.is_ok() {
+            writeln!(output, "early").expect("a write to the test");
+            return;
+        }
+        writeln!(output, "held").expect("a write to the test");
         timeout(BOUND, interrupt)
             .await
             .unwrap_or_else(|_| panic!("no signal came in {BOUND:?}"));
@@ -69,45 +98,104 @@ fn child() {
     });
 }
 
+/// Holds the signals with both blocked and sends both to itself. Writes `held` when
+/// the future then stays pending for [`QUIET`], else `early`, and on Linux whether
+/// a signal thread started.
+fn both() {
+    let interrupt = os::interrupt().expect("the call succeeds");
+    kill_process(getpid(), Signal::INT).expect("the child signals itself");
+    kill_process(getpid(), Signal::TERM).expect("the child signals itself");
+    let early = runtime()
+        .block_on(async { timeout(QUIET, interrupt).await })
+        .is_ok();
+    let mut output = std::io::stdout();
+    writeln!(output, "{}", if early { "early" } else { "held" }).expect("a write");
+    #[cfg(target_os = "linux")] // needs /proc
+    writeln!(output, "thread {}", signal_thread_blocks_sigint().is_some())
+        .expect("a write to the test");
+}
+
+/// Sets the action of `signal` to `SIG_IGN`.
+#[expect(unsafe_code, reason = "a signal action is an OS call")]
+fn ignore(signal: libc::c_int) {
+    // SAFETY: `SIG_IGN` runs no code in the process.
+    let old = unsafe { libc::signal(signal, libc::SIG_IGN) };
+    assert_ne!(old, libc::SIG_ERR, "{}", std::io::Error::last_os_error());
+}
+
+/// Starts a child in `mode`, checks that it holds the signals, sends it `signal`, and
+/// checks that the future completes. Gives the child, which waits for its end.
+fn fire(mode: &str, signal: Signal) -> Child {
+    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
+        .arg(mode)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("the child starts");
+    let pid = Pid::from_child(&child);
+    let mut lines = BufReader::new(child.stdout.take().expect("a pipe")).lines();
+    let mut line = || lines.next().expect("a line of the child").expect("a read");
+    assert_eq!(line(), "held", "{mode}: the future stays pending");
+    kill_process(pid, signal).expect("the test signals the child");
+    assert_eq!(
+        line(),
+        "fired",
+        "{mode}: the {signal:?} completes the future"
+    );
+    child
+}
+
+/// Ends `child`, which is still there.
+fn end(mut child: Child) {
+    child.kill().expect("the child is there");
+    child.wait().expect("the child ends");
+}
+
 /// With no hold, a SIGTERM that the caller blocks does not end the process. After
 /// the first SIGINT, the hold must give that back, as it does when its thread
 /// cannot start.
 fn a_blocked_sigterm_stays_blocked_after_the_first_signal() {
-    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
-        .arg("blocked")
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the child starts");
-    let pid = Pid::from_child(&child);
-    let mut lines = BufReader::new(child.stdout.take().expect("a pipe")).lines();
-    let mut line = || lines.next().expect("a line of the child").expect("a read");
-    assert_eq!(line(), "held", "the child holds the signals");
-    kill_process(pid, Signal::INT).expect("the test signals the child");
-    assert_eq!(line(), "fired", "the first SIGINT completes the future");
-    kill_process(pid, Signal::TERM).expect("the test signals the child");
+    let mut child = fire("blocked", Signal::INT);
+    kill_process(Pid::from_child(&child), Signal::TERM).expect("the test signals");
     runtime().block_on(async { sleep(QUIET).await });
     let ended = child.try_wait().expect("a wait");
-    child.kill().unwrap_or(());
-    child.wait().expect("the child ends");
     assert_eq!(
         ended, None,
         "a SIGTERM that the caller blocked ended the child"
     );
+    end(child);
+}
+
+/// The hold leaves out a signal that the caller blocks, so one that is pending
+/// before the call stays pending.
+fn a_blocked_sigterm_pending_before_the_call_does_not_complete_the_future() {
+    end(fire("pending", Signal::INT));
+}
+
+/// The hold leaves out a signal that the caller ignores, so it stays ignored.
+fn an_ignored_sigint_does_not_complete_the_future_or_end_the_process() {
+    end(fire("ignored", Signal::TERM));
+}
+
+fn with_both_blocked_the_future_stays_pending() {
+    let output = Command::new(std::env::current_exe().expect("the test binary"))
+        .arg("both")
+        .output()
+        .expect("the child runs");
+    assert!(output.status.success(), "{}", output.status);
+    #[cfg(target_os = "linux")] // needs /proc
+    let expected = "held\nthread false\n";
+    #[cfg(not(target_os = "linux"))]
+    let expected = "held\n";
+    let found = String::from_utf8(output.stdout).expect("text");
+    assert_eq!(
+        found, expected,
+        "the future stays pending, with no signal thread"
+    );
 }
 
 fn a_second_signal_ends_the_process() {
-    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
-        .arg("child")
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the child starts");
-    let pid = Pid::from_child(&child);
-    let mut lines = BufReader::new(child.stdout.take().expect("a pipe")).lines();
-    let mut line = || lines.next().expect("a line of the child").expect("a read");
-    assert_eq!(line(), "held", "the child holds the signals");
-    kill_process(pid, Signal::TERM).expect("the test signals the child");
-    assert_eq!(line(), "fired", "the first SIGTERM completes the future");
-    kill_process(pid, Signal::TERM).expect("the test signals the child");
+    let mut child = fire("child", Signal::TERM);
+    kill_process(Pid::from_child(&child), Signal::TERM).expect("the test signals");
     let status = child.wait().expect("the child ends");
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status}");
 }
@@ -130,7 +218,7 @@ fn the_future_completes_at_the_first_signal() {
 /// Holds the signals and signals itself, then, once the signal thread has taken the
 /// signal, polls the future once and writes whether it completed. When `waiting`, the
 /// signal comes after the signal thread is in `sigwait`.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn early(waiting: bool) {
     use std::task::{Context, Waker};
 
@@ -165,7 +253,7 @@ fn early(waiting: bool) {
 /// pending set tells that it is not yet taken. It reads the pending set first: in the
 /// other order, it can read the mask during `sigwait` and the pending set after the
 /// wake, and see neither.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn untaken() -> bool {
     let process = std::fs::read_to_string("/proc/self/status").expect("a status");
     has_sigint(&process, "ShdPnd:") || signal_thread_blocks_sigint() != Some(false)
@@ -173,7 +261,7 @@ fn untaken() -> bool {
 
 /// Whether the thread `signal` blocks SIGINT, or `None` when no thread has that name
 /// yet.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn signal_thread_blocks_sigint() -> Option<bool> {
     for task in std::fs::read_dir("/proc/self/task").expect("the tasks list") {
         let task = task.expect("a task").path();
@@ -188,7 +276,7 @@ fn signal_thread_blocks_sigint() -> Option<bool> {
 }
 
 /// Whether the signal set of `field` in `status`, a status file of `/proc`, has SIGINT.
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn has_sigint(status: &str, field: &str) -> bool {
     let mask = status
         .lines()
@@ -198,7 +286,7 @@ fn has_sigint(status: &str, field: &str) -> bool {
     mask & (1 << (libc::SIGINT - 1)) != 0
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")] // needs /proc
 fn a_signal_before_the_first_poll_completes_the_future() {
     for mode in ["early", "early-waiting"] {
         let output = Command::new(std::env::current_exe().expect("the test binary"))

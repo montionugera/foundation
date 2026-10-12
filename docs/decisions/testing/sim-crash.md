@@ -56,7 +56,15 @@
   commit of a create in flight. Supersedes
   https://github.com/synnaxlabs/foundation/pull/1553#issuecomment-6045160531: a commit
   makes the entries of the directory durable. A create that a `Power` crash cuts is
-  whole or has no bytes, and the prefix decides whether its entry stays. A cut gives a
+  whole or has no bytes, and the prefix decides whether its entry stays. A create of one
+  or more bytes over a file with no bytes whose entry is durable draws its bytes apart
+  from the prefix: the file keeps no bytes or is whole, and the prefix decides each
+  other change of the directory. At a crash of either kind, a create with no room for
+  its bytes that the draw keeps whole fails as with no crash: it makes no file, and it
+  removes a file with no bytes that it found. After a `Power` crash, the prefix decides
+  whether that remove stays. Supersedes
+  https://github.com/synnaxlabs/foundation/issues/1264#issuecomment-6044288692 for such
+  a create: after a `Process` crash the file is whole or has no bytes. A cut gives a
   state that a journaled file system can reach, or a state that only a missing
   `sync_dir` reaches. Lost: a log for each directory, which gives states that need no
   missing `sync_dir`.
@@ -67,4 +75,10 @@
   2026-10-08T02:27:20Z:
   https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6050920514; the order
   that the calls ended, 2026-10-08T02:43:34Z:
-  https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6051095403.
+  https://github.com/synnaxlabs/foundation/pull/1743#issuecomment-6051095403; the create
+  over a file with no bytes, 2026-10-11T15:44:18Z:
+  https://github.com/synnaxlabs/foundation/issues/1687#issuecomment-6110740868; the
+  create with no room, 2026-10-11T16:10:18Z:
+  https://github.com/synnaxlabs/foundation/pull/2414#issuecomment-6110981071; the text
+  of that create, 2026-10-11T16:44:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2414#issuecomment-6111302856.

@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes `Scope` to the `scope` bench, `fuzz` to the fuzz targets, and `create_key` to
-# the tests. Off by default.
+# Exposes `Scope` to the `scope` bench, `fuzz` to the fuzz targets, and `create_key` and
+# `Region::Given` to the tests. Off by default.
 sim = []
 
 [[bin]]
@@ -21,6 +21,7 @@ buffer = { path = "../buffer" }
 clock = { path = "../clock" }
 config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector" }
+connector-influx = { path = "../connector-influx" }
 crc32c = { workspace = true }
 document = { path = "../document" }
 env = { path = "../env" }
@@ -39,14 +40,20 @@ wire = { path = "../wire" }
 [dev-dependencies]
 bytes = { workspace = true }
 codec = { path = "../codec" }
+connector = { path = "../connector", features = ["sim"] }
 connector-influx = { path = "../connector-influx", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
 http = { workspace = true }
+hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
 sim = { path = "../sim" }
+
+[[test]]
+name = "memory"
+harness = false
 
 [[bench]]
 name = "scope"

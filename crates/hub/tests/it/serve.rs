@@ -955,7 +955,7 @@ fn closes_the_session_when_the_future_drops() {
         assert_eq!(ended.get(), 0, "the link holds the home");
         drop(link);
         clock.sleep(SETTLE).await;
-        assert_eq!(ended.get(), 1, "the commit task ended");
+        assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
     };
     session(55, Class::Complete, false, home, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;

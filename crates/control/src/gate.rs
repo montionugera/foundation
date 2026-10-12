@@ -162,7 +162,8 @@ impl Gate {
     /// Checks a write from `key` at `now`. It applies what came due by `now`, as
     /// [`Gate::advance`] does, and does not renew the control lease. For n open
     /// writers, takes O(1) time for a write from the holder when nothing came due,
-    /// O(log n) to refuse a write, and O(n) when control changes. Does not allocate.
+    /// O(log n) to refuse a write, and O(n) for each holder that loses control. Does
+    /// not allocate.
     ///
     /// # Errors
     ///
@@ -214,16 +215,27 @@ impl Gate {
 
     /// Applies what has come due by `now`: a holder whose control lease ran out loses
     /// control, and a recovered holder that did not reopen in time is dropped. Call it
-    /// at [`Gate::deadline`].
-    pub fn advance(&mut self, now: Monotonic) {
+    /// at [`Gate::deadline`]. After it, [`Gate::deadline`] is `None` or later than
+    /// `now`. Returns whether anything came due.
+    pub fn advance(&mut self, now: Monotonic) -> bool {
         if self.deadline().is_none_or(|due| now < due) {
-            return;
+            return false;
         }
-        if let Seat::Held { key, .. } = self.seat {
-            let i = self.position(key);
-            self.claims[i].expired = true;
+        self.expire(now);
+        true
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn expire(&mut self, now: Monotonic) {
+        // A lease taken at the last monotonic reading ends at that reading.
+        while self.deadline().is_some_and(|at| at <= now) {
+            if let Seat::Held { key, .. } = self.seat {
+                let i = self.position(key);
+                self.claims[i].expired = true;
+            }
+            self.elect(now);
         }
-        self.elect(now);
     }
 
     /// When the gate next changes on its own, or `None` when only an input can change
@@ -628,6 +640,16 @@ mod tests {
         }
 
         #[test]
+        fn is_passed_by_each_waiter_whose_lease_ends_at_the_last_monotonic_reading() {
+            let mut gate = Gate::new();
+            gate.open(writer("a", 100), Some(lease(1)), at(u64::MAX - 1));
+            gate.open(writer("b", 100), Some(lease(1)), at(u64::MAX - 1));
+            assert!(gate.advance(at(u64::MAX)));
+            assert_eq!(gate.holder(), None);
+            assert_eq!(gate.deadline(), None);
+        }
+
+        #[test]
         fn is_not_renewed_by_inputs_from_waiters() {
             let mut gate = Gate::new();
             gate.open(writer("a", 100), Some(lease(10)), at(0));
@@ -635,7 +657,7 @@ mod tests {
             let c = gate.open(writer("c", 50), None, at(2));
             assert_eq!(write(&mut gate, b, at(3)), Err(Error::Waiting));
             gate.close(c, at(4));
-            gate.advance(at(5));
+            assert!(!gate.advance(at(5)));
             assert_eq!(gate.deadline(), Some(at(10)));
         }
     }

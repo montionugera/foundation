@@ -1,6 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::rig::Rig;
+use crate::rig::{self, Rig};
 use crate::text;
 
 /// The exit status, the standard output, and the standard error of `output`.
@@ -47,6 +47,24 @@ fn a_data_directory_with_a_newline_prints_one_line() {
             ""
         )
     );
+    let data = rig.dir.join("a\nb");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test reads what the rig wrote to the disk"
+    )]
+    let kept = std::fs::read(data.join("data/budget")).expect("read the budget file");
+    assert_eq!(kept, rig::budget(rig::POOL, rig.disk));
+    // The disk budget bounds the length of each ring, not the other files of the node.
+    let entries =
+        std::fs::read_dir(data.join("data")).expect("read the data directory");
+    let rings = (entries.map(|entry| entry.expect("read an entry").file_name()))
+        .filter(|name| name.to_str().is_some_and(|name| name.starts_with("shard-")))
+        .map(|shard| {
+            let path = data.join("data").join(shard).join("ring");
+            std::fs::metadata(path).expect("read the ring").len()
+        })
+        .sum::<u64>();
+    assert!((1..=rig.disk).contains(&rings), "{rings} bytes of rings");
 }
 
 #[test]
@@ -75,6 +93,20 @@ fn a_second_node_on_a_data_directory_fails_and_the_first_runs_on() {
 }
 
 #[test]
+fn a_first_start_founds_the_region_and_a_restart_needs_no_admin_key() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let admin = rig.dir.join("foundation-data/data/admin.key");
+    let len = std::fs::metadata(&admin).expect("stat the admin key").len();
+    assert_eq!(len, 54);
+    std::fs::remove_file(&admin).expect("remove the admin key");
+    rig.start_with(&[]);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert!(!admin.exists(), "a restart made a new admin key");
+}
+
+#[test]
 fn a_restart_with_another_name_fails() {
     let mut rig = Rig::new();
     rig.start();
@@ -89,6 +121,23 @@ fn a_restart_with_another_name_fails() {
              fix: Give `--name edge`, or another data directory with `--data`\n"
         )
     );
+}
+
+#[test]
+fn a_first_start_with_a_reserved_name_fails_and_a_start_with_another_name_runs() {
+    let mut rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "@x"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.reserved]: the name @x has a segment that starts with `@`, \
+             which is reserved for Foundation\n\
+             fix: Give a name with no segment that starts with `@`\n"
+        )
+    );
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
 }
 
 #[test]
@@ -135,8 +184,24 @@ fn a_data_directory_that_is_a_file_fails() {
             "",
             "error[node.data]: cannot write the data directory plain: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write plain and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make plain a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
+        )
+    );
+}
+
+#[test]
+fn a_data_directory_whose_parent_is_missing_fails() {
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--data", "missing/x", "--name", "edge"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.data]: cannot write the data directory missing/x: No such file \
+             or directory (os error 2)\n\
+             fix: Make missing/x a directory that this user can write, and let it \
+             write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -154,8 +219,8 @@ fn a_data_directory_with_a_newline_that_is_a_file_fails_on_one_line() {
             "",
             "error[node.data]: cannot write the data directory a\\nb: Not a directory \
              (os error 20)\n\
-             fix: Let this user make and write a\\nb and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make a\\nb a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -231,6 +296,77 @@ fn a_kept_pool_budget_that_gives_a_shard_too_little_fails() {
     );
 }
 
+/// A file `budget` with a checksum that matches and the largest pool budget. On one
+/// core, the part of shard 0 is the whole budget.
+#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
+#[test]
+fn a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic() {
+    let rig = Rig::new();
+    rig.keep(u64::MAX, rig.disk);
+    let output = rig.run_on_one_core(&["start", "--name", "edge"], b"");
+    let (status, out, errors) = ended(&output);
+    assert_eq!((status, out), (Some(1), ""), "{errors}");
+    assert_eq!(
+        errors,
+        "error[node.memory]: the pool budget 18446744073709551615B, which \
+         foundation-data keeps from its first start, gives one of 1 shards a pool \
+         that needs more address space than this host has\n\
+         fix: Remove the file `budget` in foundation-data, and the next start \
+         computes the budgets again from the free memory and disk\n"
+    );
+}
+
+/// A kept pool budget of 1 PiB, whose part on one core is under `usize::MAX` bytes and
+/// more than the address space of the host.
+#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
+#[test]
+fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
+    let rig = Rig::new();
+    rig.keep(1 << 50, rig.disk);
+    let output = rig.run_on_one_core(&["start", "--name", "edge"], b"");
+    let (status, out, errors) = ended(&output);
+    assert_eq!((status, out), (Some(1), ""), "{errors}");
+    assert_eq!(
+        errors,
+        "error[node.memory]: the pool budget 1024TiB, which foundation-data keeps \
+         from its first start, needs more address space for shard-0 than the system \
+         gives: a reserve of 108086391056891968 bytes of address space failed: Cannot \
+         allocate memory (os error 12); lower the memory budget\n\
+         fix: Remove the file `budget` in foundation-data, and the next start \
+         computes the budgets again from the free memory and disk\n"
+    );
+}
+
+/// A first start under an address space of 1 GiB, which its pool budget does not fit.
+#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset and prlimit")]
+#[test]
+fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
+    let rig = Rig::new();
+    std::fs::remove_file(rig.budget()).expect("remove the budget file");
+    let output = rig.run_on_one_core_in(1 << 30, &["start", "--name", "edge"], b"");
+    let (status, out, errors) = ended(&output);
+    assert_eq!((status, out), (Some(1), ""), "{errors}");
+    // The size of the reserve depends on the free memory of the host.
+    let (message, fix) = errors.split_once('\n').expect("two lines");
+    let size = (message.strip_prefix(
+        "error[node.failed]: no memory for the pool of shard-0: a reserve of ",
+    ))
+    .and_then(|rest| {
+        rest.strip_suffix(
+            " bytes of address space failed: Cannot allocate memory (os error 12); \
+             lower the memory budget",
+        )
+    });
+    assert!(
+        size.is_some_and(|size| size.parse::<u64>().is_ok()),
+        "{errors}"
+    );
+    assert_eq!(
+        fix,
+        "fix: Fix the cause that the message states, then start the node again\n"
+    );
+}
+
 #[test]
 fn a_kept_disk_budget_that_holds_no_ring_fails() {
     let rig = Rig::new();
@@ -272,8 +408,8 @@ fn a_data_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory foundation-data: open \
              of lock failed with OS error 13\n\
-             fix: Let this user make and write foundation-data and each file in it, or \
-             give another directory with `--data`\n"
+             fix: Make foundation-data a directory that this user can write, and let \
+             it write each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -296,8 +432,8 @@ fn a_new_data_directory_in_a_directory_that_the_user_cannot_write_fails() {
             "",
             "error[node.data]: cannot write the data directory read: Permission \
              denied (os error 13)\n\
-             fix: Let this user make and write read and each file in it, or give \
-             another directory with `--data`\n"
+             fix: Make read a directory that this user can write, and let it write \
+             each file in it, or give another directory with `--data`\n"
         )
     );
 }
@@ -329,7 +465,7 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
     rig.start();
     rig.stop();
     let mode = |mode| std::fs::Permissions::from_mode(mode);
-    for (file, call) in [("node.key", "open"), ("shard-0/ring", "open")] {
+    for (file, call) in [("shard-0/ring", "open"), ("mesh/log/log-0", "open")] {
         let path = rig.dir.join("foundation-data/data").join(file);
         std::fs::set_permissions(&path, mode(0o400)).expect("make it read-only");
         let output = rig.run(&["start"], b"");
@@ -342,14 +478,30 @@ fn a_file_of_the_data_directory_that_the_user_cannot_write_fails() {
                 format!(
                     "error[node.data]: cannot write the data directory foundation-data: \
                      {call} of {file} failed with OS error 13\n\
-                     fix: Let this user make and write foundation-data and each file in \
-                     it, or give another directory with `--data`\n"
+                     fix: Make foundation-data a directory that this user can write, \
+                     and let it write each file in it, or give another directory \
+                     with `--data`\n"
                 )
                 .as_str()
             ),
             "{file}"
         );
     }
+}
+
+/// A start only reads `node.key`, so a key that the user cannot write starts.
+#[test]
+fn a_key_that_the_user_cannot_write_starts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let path = rig.dir.join("foundation-data/data/node.key");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+        .expect("make it read-only");
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
 }
 
 #[test]
@@ -468,4 +620,145 @@ fn a_node_whose_standard_output_nobody_reads_exits_0_at_sigterm() {
     });
     drop(reader);
     assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn an_admin_key_that_holds_no_key_fails() {
+    let rig = Rig::new();
+    let data = rig.dir.join("foundation-data/data");
+    std::fs::create_dir_all(&data).expect("make the directory");
+    std::fs::write(data.join("admin.key"), [0xff; 54]).expect("write the admin key");
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.failed]: the file `admin.key` in the data directory is not an \
+             admin key; restore it from a backup, or remove it to make a new admin\n\
+             fix: Fix the cause that the message states, then start the node again\n"
+        )
+    );
+}
+
+#[test]
+fn a_start_on_a_port_that_another_socket_holds_fails() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a process test holds a port that the node then asks for"
+    )]
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a socket");
+    let at = held.local_addr().expect("the bound address").to_string();
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge", "--listen", &at], b"")),
+        (
+            Some(1),
+            "",
+            &*format!(
+                "error[node.port]: cannot bind the node's port at {at}: address {at} \
+                 is in use\n\
+                 fix: Give `--listen` an address of this host with a port that is free \
+                 and that this user can bind\n"
+            )
+        )
+    );
+}
+
+#[test]
+fn a_start_at_a_multicast_ip_fails() {
+    let rig = Rig::new();
+    let listen = ["start", "--name", "edge", "--listen", "224.0.0.1:0"];
+    assert_eq!(
+        ended(&rig.run(&listen, b"")),
+        (
+            Some(1),
+            "",
+            "error[node.port]: cannot bind the node's port at 224.0.0.1:0: a \
+             multicast or broadcast IP is not an address of a host\n\
+             fix: Give `--listen` an address of this host with a port that is free \
+             and that this user can bind\n"
+        )
+    );
+}
+
+#[test]
+fn a_chunk_store_that_the_user_cannot_list_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let blob = rig.dir.join("foundation-data/data/blob");
+    let mode = |mode| std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(&blob, mode(0o000)).expect("make it closed");
+    let output = rig.run(&["start"], b"");
+    std::fs::set_permissions(&blob, mode(0o755)).expect("make it open");
+    assert_eq!(
+        ended(&output),
+        (
+            Some(1),
+            "",
+            "error[node.data]: cannot write the data directory foundation-data: list \
+             of blob failed with OS error 13\n\
+             fix: Make foundation-data a directory that this user can write, and let \
+             it write each file in it, or give another directory with `--data`\n"
+        )
+    );
+}
+
+#[test]
+fn a_listen_that_is_no_socket_address_fails() {
+    let rig = Rig::new();
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge", "--listen", "x"], b"")),
+        (
+            Some(2),
+            "",
+            "error[ops.argument]: invalid value for one of the arguments: \
+             `--listen <LISTEN>`: invalid socket address syntax\n\
+             fix: Match the arguments to `foundation --help` or \
+             `foundation <operation> --help`\n"
+        )
+    );
+}
+
+#[test]
+fn a_start_with_another_name_after_the_name_file_is_gone_fails() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    std::fs::remove_file(rig.dir.join("foundation-data/data/name"))
+        .expect("remove the name file");
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "other"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.renamed]: the data directory foundation-data holds the node \
+             edge, not other\n\
+             fix: Give `--name edge`, or another data directory with `--data`\n"
+        )
+    );
+    rig.start_with(&[]);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test reads what the binary wrote to the disk"
+)]
+fn a_node_holds_the_file_address_while_it_runs_and_writes_it_empty_at_sigterm() {
+    let mut rig = Rig::new();
+    let address = rig.dir.join("foundation-data/data/address");
+    rig.start();
+    let held = std::fs::read(&address).expect("read the file address");
+    assert_eq!(held.len(), 99);
+    assert_eq!(held[..20], *b"foundation/address/1");
+    assert_eq!(held[95..], crc32c::crc32c(&held[..95]).to_le_bytes());
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    let stopped = std::fs::read(&address).expect("read the file address");
+    assert_eq!(stopped, [0; 99]);
 }

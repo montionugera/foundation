@@ -236,7 +236,7 @@ fn a_reopen_with_another_prefix_is_refused() {
 fn a_reopen_with_another_record_of_a_member_is_refused() {
     let (mut sim, node, region) = founded(0);
     let mut given = region.clone();
-    given.members = vec![common::member(1), record(2, 2, 9), common::member(3)];
+    given.members = vec![common::member(1), member_signed(2, 2, 9), common::member(3)];
     let error = refused(&mut sim, &node, given.clone());
     assert_eq!(error, mismatch(&region, &given));
     let text = format!(
@@ -791,7 +791,7 @@ fn a_keep_after_a_dropped_keep_of_another_founding_keeps_its_founding() {
 #[test]
 fn memory_that_the_system_refuses_for_the_founding_file_gives_the_pool_error() {
     solo(|node, tasks| async move {
-        let budget = block::Config { budget: 4 << 20 };
+        let budget = block::Config::new(4 << 20).expect("the budget fits");
         let (memory, switch) = Scarce::new(budget.reservation());
         let config = Config {
             pool: Rc::new(Pool::new(budget, memory)),
@@ -816,7 +816,7 @@ fn memory_that_the_system_refuses_for_the_founding_read_gives_the_pool_error() {
     let (mut sim, node, region) = founded(0);
     let error = sim
         .run_on(&node, |node, tasks| async move {
-            let budget = block::Config { budget: 4 << 20 };
+            let budget = block::Config::new(4 << 20).expect("the budget fits");
             let (memory, switch) = Scarce::new(budget.reservation());
             let pool = Rc::new(Pool::new(budget, memory));
             drop(pool.alloc(crate::file::CHUNK).unwrap());
@@ -843,7 +843,7 @@ fn memory_that_the_system_refuses_for_the_read_gives_the_pool_error() {
     let (mut sim, node, _) = founded(0);
     let read = sim
         .run_on(&node, |node, _| async move {
-            let budget = block::Config { budget: 4 << 20 };
+            let budget = block::Config::new(4 << 20).expect("the budget fits");
             let (memory, switch) = Scarce::new(budget.reservation());
             let pool = Rc::new(Pool::new(budget, memory));
             switch.refuse();

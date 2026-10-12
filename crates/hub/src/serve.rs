@@ -40,9 +40,11 @@ pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A message that `wire::hub` refuses, or a client body that ended early
-    /// ([`wire::hub::Error::Unfinished`]). Code `MALFORMED`.
+    /// A message from a reader's node that `wire::hub` refuses. Code `MALFORMED`.
     Message(wire::hub::Error),
+    /// A message from a program that `wire::hub::client` refuses, or a body that ended
+    /// early ([`wire::hub::client::Error::Unfinished`]). Code `MALFORMED`.
+    Client(wire::hub::client::Error),
     /// The peer opened the stream one way. Code `MALFORMED`.
     OneWay,
     /// The stream's class is not the class of the open's mode. Code `MALFORMED`.
@@ -108,6 +110,7 @@ impl Error {
     pub(crate) fn code(&self) -> Option<Code> {
         match self {
             Self::Message(_)
+            | Self::Client(_)
             | Self::OneWay
             | Self::Class(_)
             | Self::ManyIndexes
@@ -132,6 +135,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Message(error) => write!(f, "a hub message is not valid: {error}"),
+            Self::Client(error) => {
+                write!(f, "a client message is not valid: {error}")
+            }
             Self::OneWay => f.write_str("a hub session needs a two-way stream"),
             Self::Class(class) => write!(
                 f,
@@ -212,6 +218,12 @@ impl From<Away> for Error {
 impl From<wire::hub::Error> for Error {
     fn from(error: wire::hub::Error) -> Self {
         Self::Message(error)
+    }
+}
+
+impl From<wire::hub::client::Error> for Error {
+    fn from(error: wire::hub::client::Error) -> Self {
+        Self::Client(error)
     }
 }
 
@@ -753,7 +765,8 @@ mod tests {
 
     #[test]
     fn gives_the_path_range_and_series_count_of_the_frame_in_the_head() {
-        let pool = block::Pool::heap(block::Config { budget: 1 << 20 });
+        let pool =
+            block::Pool::heap(block::Config::new(1 << 20).expect("the budget fits"));
         let mut interner = Interner::new();
         let index = interner.slots().index(key(1));
         let (frame, set) = frame(&mut interner, &pool, &[2, 3], &[8, 8, 8]);
@@ -766,7 +779,8 @@ mod tests {
     /// The head carries the range of the session's index group, not the first group.
     #[test]
     fn gives_the_range_of_the_index_group_of_the_session() {
-        let pool = block::Pool::heap(block::Config { budget: 1 << 20 });
+        let pool =
+            block::Pool::heap(block::Config::new(1 << 20).expect("the budget fits"));
         let mut interner = Interner::new();
         let slots = interner.slots();
         slots.index(key(1));

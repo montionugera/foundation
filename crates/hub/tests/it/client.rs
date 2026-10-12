@@ -34,7 +34,7 @@ async fn connect(
     at: Address,
     key: PrivateKey,
 ) -> Result<Client, Error> {
-    let config = block::Config { budget: 2 << 24 };
+    let config = block::Config::new(2 << 24).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     connect_with(node, tasks, at, key, Rc::new(pool)).await
 }
@@ -424,7 +424,9 @@ fn refuses_a_response_whose_body_ends_early() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"abcd").await,
-                    Err(Error::Message(wire::hub::Error::Unfinished { remain: 2 }))
+                    Err(Error::Message(wire::hub::client::Error::Unfinished {
+                        remain: 2
+                    }))
                 );
             })
         },
@@ -460,7 +462,9 @@ fn gives_the_turn_after_a_response_that_is_not_valid() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"ab").await,
-                    Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                    Err(Error::Message(wire::hub::client::Error::Kind {
+                        kind: 0xff
+                    }))
                 );
                 let next = within(&node.clock(), QUIET, client.request(b"cd")).await;
                 assert_eq!(next, Some(Ok(b"dc".to_vec())));
@@ -648,8 +652,35 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
             node.clock().sleep(LIFE).await;
             assert_eq!(
                 client.request(b"ab").await,
-                Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
             );
+        },
+    );
+}
+
+/// Each request after the end of the renewal gives the error that ended it, not only
+/// the first.
+#[test]
+fn gives_the_error_of_the_renewal_to_each_later_request() {
+    raw(
+        135,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            let refused = own_pool().copy(&[0xff]).expect("room");
+            sender.send(refused).await.expect("sends");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(LIFE).await;
+            let ended = Err(Error::Message(wire::hub::client::Error::Kind {
+                kind: 0xff,
+            }));
+            assert_eq!(client.request(b"ab").await, ended);
+            assert_eq!(client.request(b"cd").await, ended);
         },
     );
 }
@@ -672,7 +703,9 @@ fn gives_the_error_of_the_renewal_to_a_request_in_flight() {
             let client = connect(&node, tasks, at, AGENT).await.expect("connects");
             assert_eq!(
                 client.request(b"ab").await,
-                Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
             );
         },
     );
@@ -928,7 +961,7 @@ fn ends_the_life_of_a_hello_at_the_end_of_time() {
 
 /// A pool of 1 MiB over memory that a test can make refuse, and the switch for it.
 fn scarce() -> (Rc<block::Pool>, block::testing::Switch) {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     let (memory, switch) = block::testing::Scarce::new(config.reservation());
     (Rc::new(block::Pool::new(config, memory)), switch)
 }
@@ -1014,7 +1047,7 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 0 };
+            let config = block::Config::new(0).expect("the budget fits");
             let heap = block::Heap::new(config.reservation());
             let pool = Rc::new(block::Pool::new(config, heap));
             let refused = connect_with(&node, tasks, at, AGENT, pool).await.map(drop);
@@ -1043,7 +1076,7 @@ fn sends_a_body_over_the_largest_block_of_its_pool() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 1 << 16 };
+            let config = block::Config::new(1 << 16).expect("the budget fits");
             let pool = block::Pool::new(
                 config.clone(),
                 block::Heap::new(config.reservation()),
@@ -1072,7 +1105,7 @@ fn sends_a_body_over_the_room_of_its_pool() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 1 << 17 };
+            let config = block::Config::new(1 << 17).expect("the budget fits");
             let pool = block::Pool::new(
                 config.clone(),
                 block::Heap::new(config.reservation()),
@@ -1173,7 +1206,7 @@ fn names_each_error() {
             "the session failed: the peer stopped answering",
         ),
         (
-            Error::Message(wire::hub::Error::Empty),
+            Error::Message(wire::hub::client::Error::Empty),
             "the node sent a message that is not valid: the hub message is empty",
         ),
         (
@@ -1239,9 +1272,11 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             POOL,
             Some(rules()),
             move |node, tasks, at| async move {
-                let config = block::Config {
-                    budget: block::footprint(1 << 16),
-                };
+                let config = block::Config::new(
+                    u64::try_from(block::footprint(1 << 16))
+                        .expect("a usize fits in a u64"),
+                )
+                .expect("the budget fits");
                 let pool = block::Pool::new(
                     config.clone(),
                     block::Heap::new(config.reservation()),

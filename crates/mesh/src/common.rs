@@ -30,7 +30,7 @@ use crate::ticket::{Options, Ticket, Voter};
 pub(crate) const TERM: Term = Term(5);
 
 pub(crate) const EXPIRY: Stamp = Stamp::from_nanos(1_000);
-const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
+pub(crate) const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
 pub(crate) const EPHEMERAL: Span = Span::from_nanos(60);
 
 pub(crate) fn key(id: u8) -> node::Key {
@@ -76,7 +76,7 @@ pub(crate) fn ticket(id: u8) -> Ticket {
     Ticket::new(private(id), "plant".parse().unwrap(), vec![voter()])
 }
 
-/// The record of node `id`, with a card that the node signed.
+/// The member `id`, with a card that the node signed.
 pub(crate) fn member(id: u8) -> Member {
     Member {
         card: signed(id, &format!("plant.node{id}")),
@@ -110,7 +110,7 @@ pub(crate) fn create_members(ids: &[u8]) -> Vec<Member> {
 /// A pool of 1 MiB. It reserves 51 MiB, so the tests of 8 threads stay under the
 /// 4 GiB that CI gives a test process.
 pub(crate) fn create_pool() -> Rc<Pool> {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());
     Rc::new(Pool::new(config, memory))
 }
@@ -259,7 +259,8 @@ pub(crate) fn options(prefix: &str, reusable: bool) -> Options {
     }
 }
 
-pub(crate) fn record(id: u8, options: Options) -> Change {
+/// The change that records the ticket of node `id` with `options`.
+pub(crate) fn ticket_change(id: u8, options: Options) -> Change {
     Change::Ticket {
         public_key: public(id),
         options,
@@ -268,17 +269,48 @@ pub(crate) fn record(id: u8, options: Options) -> Change {
 
 /// The join of node `id` with the name `name_text`, which ticket `ticket_id` admits.
 pub(crate) fn join(ticket_id: u8, id: u8, name_text: &str) -> Join {
-    let card = signed(id, name_text);
+    let status = status([(name("disk"), index(9))]);
+    join_with(&signed(id, name_text), ticket_id, BEFORE_EXPIRY, status)
+}
+
+/// The join at `at` of the node of `card` with `status`, which ticket `ticket_id`
+/// admits.
+pub(crate) fn join_with(
+    card: &card::Signed,
+    ticket_id: u8,
+    at: Stamp,
+    status: Status,
+) -> Join {
     Join {
         ticket: public(ticket_id),
-        at: BEFORE_EXPIRY,
-        card: card::Unchecked {
-            key: key(id),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        },
-        admission: ticket(ticket_id).admission(&card),
-        status: status([(name("disk"), index(9))]),
+        at,
+        card: unchecked(card),
+        admission: ticket(ticket_id).admission(card),
+        status,
+    }
+}
+
+/// `card` in the form a request or a join carries.
+pub(crate) fn unchecked(card: &card::Signed) -> card::Unchecked {
+    card::Unchecked {
+        key: card.key(),
+        card: card.card().clone(),
+        signature: *card.signature(),
+    }
+}
+
+/// The byte form of `change`.
+pub(crate) fn encoded(change: &Change) -> Vec<u8> {
+    let mut out = Vec::new();
+    change.encode(&mut out);
+    out
+}
+
+/// The position `index` of `term`.
+pub(crate) fn at(term: u64, index: u64) -> Position {
+    Position {
+        term: Term(term),
+        index,
     }
 }
 
@@ -335,14 +367,14 @@ fn votes(term: Term, leader: u8, voted: &[u8]) -> Proof {
 /// # Panics
 ///
 /// When `leader` is not 1, 2 or 3, as [`proven`].
-pub(crate) fn change(leader: u8, at: Position, voters: Voters) -> Entry {
+pub(crate) fn voters_entry(leader: u8, at: Position, voters: Voters) -> Entry {
     assert!((1..=3).contains(&leader), "leader {leader} is not a voter");
-    change_voted(leader, at, voters, &[1, 2, 3])
+    voters_entry_voted(leader, at, voters, &[1, 2, 3])
 }
 
 /// The configuration entry `voters` that `leader` wrote at `at`, with the vote of
 /// each of `voted` in the term of `at`, signed as `sign` signs a change.
-pub(crate) fn change_voted(
+pub(crate) fn voters_entry_voted(
     leader: u8,
     at: Position,
     voters: Voters,

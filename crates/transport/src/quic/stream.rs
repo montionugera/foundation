@@ -49,8 +49,7 @@ pub(crate) struct Sender {
     bytes_max: usize,
 }
 
-/// What a connection keeps of a stream that this side sends on, until the stream
-/// finishes or resets.
+/// What a connection keeps of a stream that this side sends on.
 #[derive(Debug)]
 struct Half {
     key: Key,
@@ -61,7 +60,7 @@ struct Half {
     /// The bytes of `header` that the stream has not taken.
     unsent: Range<usize>,
     /// The block of the message in hand.
-    block: Bytes,
+    block: Source,
     /// The rest of a chunk of the message in hand that the stream took in part.
     chunk: Bytes,
     /// The parts of the message in hand that the stream has not taken all of. Empty
@@ -141,7 +140,8 @@ pub(super) struct Streams {
     /// Streams the peer opened that the caller has not accepted, by class byte,
     /// oldest first, each with the first byte of its first message.
     incoming: [VecDeque<(StreamId, u8)>; 4],
-    /// Each stream that this side sends on and has not finished.
+    /// Each stream that this side sends on and has not finished, while the connection
+    /// lives.
     halves: Map<StreamId, Half>,
     sending: Sending,
     /// The messages that hold a block and have not gone to the caller.
@@ -351,7 +351,7 @@ impl Half {
             started: true,
             header: [0; 1 + varint::BYTES_MAX],
             unsent: 0..0,
-            block: Bytes::new(),
+            block: Source::default(),
             chunk: Bytes::new(),
             parts: Kept::default(),
             body: 0,
@@ -368,7 +368,7 @@ impl Half {
     /// write gives the message's parts. The half holds no part of a message.
     fn load(&mut self, block: Block, bytes: usize, rest: Rest) {
         self.rest = rest;
-        self.block = Bytes::from_owner(Body(block));
+        self.block = Source::Block(block);
         self.body = bytes;
         let prefix = message::prefix(bytes);
         let start = usize::from(self.started);
@@ -379,6 +379,13 @@ impl Half {
 
     fn holds(&self) -> bool {
         self.left() > 0
+    }
+
+    /// Ends the stream with `error`, which each later write and finish gives. The
+    /// parts list gives back its capacity, which no later message can use.
+    fn close(&mut self, error: Error) {
+        self.ended = Some(error);
+        self.parts = Kept::default();
     }
 
     /// Whether a byte of the message in hand went, its header included.
@@ -458,7 +465,7 @@ impl Half {
             if !left.skip() {
                 return Ok(());
             }
-            let (piece, after) = left.piece(&self.block, buffer);
+            let (piece, after) = left.piece(&mut self.block, buffer);
             match piece {
                 Piece::Chunk(chunk) => (self.chunk, *left) = (chunk, after),
                 Piece::Copied(bytes) => {
@@ -472,6 +479,46 @@ impl Half {
                 }
             }
         }
+    }
+}
+
+/// The block of the message in hand. It becomes a `Bytes` only when noq-proto keeps
+/// a slice of it, because `Bytes::from_owner` allocates.
+#[derive(Debug)]
+enum Source {
+    Block(Block),
+    Shared(Bytes),
+}
+
+impl Default for Source {
+    fn default() -> Self {
+        Self::Shared(Bytes::new())
+    }
+}
+
+impl Source {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Block(block) => block,
+            Self::Shared(bytes) => bytes,
+        }
+    }
+
+    /// A slice of `range` for noq-proto to keep. The later slices of the message
+    /// share the `Bytes` that the first one makes.
+    fn slice(&mut self, range: Range<usize>) -> Bytes {
+        if let Self::Shared(shared) = self {
+            return shared.slice(range);
+        }
+        // The `Shared` arm does not run. A `let else` in its place costs 2 to 6 ns
+        // on each message with a run over 1452 bytes (box2).
+        let shared = match mem::take(self) {
+            Self::Block(block) => Bytes::from_owner(Body(block)),
+            Self::Shared(bytes) => bytes,
+        };
+        let slice = shared.slice(range);
+        *self = Self::Shared(shared);
+        slice
     }
 }
 
@@ -624,7 +671,7 @@ impl<'a> Left<'a> {
     /// `buffer`. A longer one is a copy of `buffer` of its length.
     fn piece<'b>(
         &self,
-        block: &'b Bytes,
+        block: &'b mut Source,
         buffer: &'b mut Vec<u8>,
     ) -> (Piece<'b>, Self) {
         if self.tail.is_empty() && self.head.zeros == 0 {
@@ -632,12 +679,12 @@ impl<'a> Left<'a> {
             let mut after = self.clone();
             after.head.range.start = range.end;
             if range.len() <= COPIED_MAX {
-                return (Piece::Copied(&block[range]), after);
+                return (Piece::Copied(&block.bytes()[range]), after);
             }
             return (Piece::Chunk(block.slice(range)), after);
         }
         buffer.clear();
-        let after = self.stretch(block, buffer);
+        let after = self.stretch(block.bytes(), buffer);
         if buffer.is_empty() {
             let (range, after) = self.run();
             return (Piece::Chunk(block.slice(range)), after);
@@ -1186,7 +1233,7 @@ impl Sending {
     /// [`Sending::end`], with `first` the first stream in turn before the caller
     /// wrote `half`.
     fn end_after(&mut self, half: &mut Half, first: Option<Key>) {
-        (half.unsent, half.block, half.body) = (0..0, Bytes::new(), 0);
+        (half.unsent, half.block, half.body) = (0..0, Source::default(), 0);
         half.chunk = Bytes::new();
         half.parts.clear();
         let admission = self.share.admission(&self.budget);
@@ -1239,14 +1286,16 @@ impl Streams {
         }
     }
 
-    /// Gives `error` to each handle of the connection, for each later stream call.
+    /// Gives `error` to each handle of the connection, for each later stream call,
+    /// and drops the sending half of each stream, which no later call reaches.
     ///
     /// # Panics
     ///
     /// When the connection closed before.
-    pub(super) fn end(&self, error: Error) {
+    pub(super) fn end(&mut self, error: Error) {
         let set = self.closed.set(error);
         assert!(set.is_ok(), "invariant: a connection closes once");
+        self.halves = Map::default();
     }
 
     /// Starts the wait for the peer's hello at `now`, when the handshake ends.
@@ -1426,7 +1475,7 @@ impl Streams {
                 if half.ended.is_some() {
                     return Ok(None);
                 }
-                half.ended = Some(Error::Stopped { code });
+                half.close(Error::Stopped { code });
                 self.sending.end(half);
                 if half.rest == Rest::Finish {
                     self.halves.remove(&id);
@@ -1647,7 +1696,7 @@ impl Streams {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
         if half.sent() {
             reset(inner, half.key.id, Code(0));
-            half.ended = Some(Error::Reset { code: Code(0) });
+            half.close(Error::Reset { code: Code(0) });
         } else if half.unsent.start == 0 {
             // Not even the class byte went, so the next message opens the stream.
             half.started = false;
@@ -1892,7 +1941,8 @@ const STOPPED: &str = "invariant: a stream resets at the peer's stop";
 const OPEN: &str = "invariant: only a stop resets a sender's stream";
 const RECEIVING: &str = "invariant: a receiver's stream is open until it ends";
 const OPENED: &str = "invariant: a stream this side just opened is open";
-const HALF: &str = "invariant: a sender that is not finished has its half";
+const HALF: &str =
+    "invariant: a sender that is not finished has its half while the connection lives";
 
 /// The byte that starts a stream of `class` on the wire. The byte order is the order
 /// in which [`Streams::accept`] gives streams.
@@ -2435,9 +2485,11 @@ mod tests {
         testing::run(1, |shard| {
             let mut pair = Pair::new(shard, Span::SECOND, DELAY);
             // A 100-byte block takes 192 bytes of the budget, and `_filled` leaves 300.
-            let config = block::Config {
-                budget: block::footprint(1_472) + 300,
-            };
+            let config = block::Config::new(
+                u64::try_from(block::footprint(1_472) + 300)
+                    .expect("a usize fits in a u64"),
+            )
+            .expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Rc::new(Pool::new(config, memory));
             let _filled = pool.alloc(1_472).expect("room");
@@ -2766,9 +2818,11 @@ mod tests {
     fn a_whole_message_that_finds_the_pool_full_keeps_its_room() {
         testing::run(1, |shard| {
             let mut pair = narrow(shard);
-            let config = block::Config {
-                budget: block::footprint(MESSAGE_MAX),
-            };
+            let config = block::Config::new(
+                u64::try_from(block::footprint(MESSAGE_MAX))
+                    .expect("a usize fits in a u64"),
+            )
+            .expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Rc::new(Pool::new(config, memory));
             let held = pool.alloc(MESSAGE_MAX).expect("room");
@@ -3981,7 +4035,7 @@ mod tests {
             // noq-proto copies a write of 1452 bytes or less, and holds a larger one
             // until the peer acknowledges it. A 2000-byte block takes 2112 bytes of
             // the budget.
-            let config = block::Config { budget: 3000 };
+            let config = block::Config::new(3000).expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Pool::new(config, memory);
             let mut sender = open_sender(&mut pair, Class::Complete);
@@ -4861,6 +4915,84 @@ mod tests {
         });
     }
 
+    /// 2000 parts of one byte and one zero each.
+    fn spread() -> Vec<Part> {
+        (0..2000)
+            .map(|at| Part {
+                range: at..at + 1,
+                zeros: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stream_that_the_peer_stopped_keeps_no_parts_list() {
+        testing::run(1, |shard| {
+            let mut pair = connected(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            let now = pair.now();
+            write(&mut pair.client, now, &mut sender, &[shard.block(b"a")]);
+            let mut bulk = open_sender(&mut pair, Class::CatchUp);
+            fill(&mut pair, shard, &mut bulk);
+            pair.run(RUN);
+            let id = accept(&mut pair.server).receiver.key().id;
+            let now = pair.now();
+            let written = pair.client.endpoint.write(
+                now,
+                &sender,
+                &mut Some(shard.block(&[7; 2000])),
+                &spread(),
+            );
+            assert_eq!(written, Ok(Poll::Pending));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 2000, "the stream keeps the parts");
+            let stopped = pair.server.connection().recv_stream(id).stop(7u32.into());
+            stopped.expect("stopped");
+            pair.run(RUN);
+            let now = pair.now();
+            let written = pair::write(
+                &mut pair.client.endpoint,
+                now,
+                &sender,
+                &mut Some(shard.block(b"b")),
+            );
+            assert_eq!(written, Err(Error::Stopped { code: Code(7) }));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 0, "the parts list of the stopped stream");
+        });
+    }
+
+    #[test]
+    fn a_stream_that_a_cancel_reset_keeps_no_parts_list() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            // Runs over 1452 bytes go as slices, so the stream keeps each part left.
+            let runs: Vec<Part> = (0..45)
+                .map(|at| Part {
+                    range: at * 1500..at * 1500 + 1453,
+                    zeros: 0,
+                })
+                .collect();
+            let prefix = message::prefix(45 * 1453).len();
+            spend(&mut pair, shard, &mut sender, prefix + 1);
+            let now = pair.now();
+            let block = shard.block(&vec![7; 45 * 1500]);
+            let written =
+                pair.client
+                    .endpoint
+                    .write(now, &sender, &mut Some(block), &runs);
+            assert_eq!(written, Ok(Poll::Pending));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 45, "the stream keeps the parts");
+            pair.client.endpoint.cancel(now, &sender);
+            let finished = pair.client.endpoint.finish(now, &mut sender);
+            assert_eq!(finished, Err(Error::Reset { code: Code(0) }));
+            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
+            assert_eq!(kept, 0, "the parts list of the reset stream");
+        });
+    }
+
     #[test]
     fn stopped_by_the_peer_reset_at_once() {
         testing::run(1, |shard| {
@@ -5172,9 +5304,10 @@ mod tests {
     fn pieces(block: &Bytes, parts: &[Part]) -> Vec<(&'static str, Vec<u8>)> {
         let (mut left, mut buffer) = (Left::new(parts), Vec::new());
         let within = block.as_ptr_range();
+        let mut source = Source::Shared(block.clone());
         let mut pieces = Vec::new();
         while left.skip() {
-            let (piece, after) = left.piece(block, &mut buffer);
+            let (piece, after) = left.piece(&mut source, &mut buffer);
             let (kind, bytes) = match piece {
                 Piece::Chunk(chunk) if within.contains(&chunk.as_ptr()) => {
                     ("slice", chunk.to_vec())

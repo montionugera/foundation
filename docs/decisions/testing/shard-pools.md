@@ -9,4 +9,24 @@
   the shard's thread, which needs a second path for the error and a `Send + Sync`
   seam. The purge timer and `reclaim` on each loop turn land with the first PR that
   allocates from a pool, since no test can see either before then (#410). Proposed
-  by `ops` in #410; approved by the coordinator on #806.
+  by `ops` in #410; approved by the coordinator on #806. `block::Config::new` takes
+  the budget as a `u64` and gives `block::Unfit` when the pool's reservation is more
+  than `usize::MAX` bytes, so `node` passes each part as it is and keeps no check of
+  its own. Decided by `laptop.architect` (2026-10-07 10:27 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6036013562, and
+  made `const fn` by `laptop.architect` (2026-10-10 06:37 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6094721967, and
+  stated as more than `usize::MAX` bytes by `laptop.architect` (2026-10-10 09:23
+  UTC): https://github.com/synnaxlabs/foundation/pull/2269#issuecomment-6096088015.
+  `Node::start` builds each `block::Config` before any shard starts, and for an
+  `Unfit` starts no shard and gives `Error::Pool`. Decided by `laptop.architect`
+  (2026-10-10 15:27 UTC):
+  https://github.com/synnaxlabs/foundation/pull/2269#issuecomment-6099086353, and
+  `Error::Pool` approved by `laptop.architect-2` (2026-10-10 15:32 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6099130173.
+  Shard 0 binds the port (NODE START), so `Error::Pool` wins over `Error::Port`. By
+  `laptop.architect-2` (#2438, 2026-10-11T20:43:59Z:
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113549763) and
+  `laptop.architect` (2026-10-11T20:45:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113562774), which
+  supersede "after the port binds" of the first link.

@@ -13,27 +13,33 @@
   does not read leaves the last spec in use (SPEC CHANGE). After a missing chunk, a
   retry each second (`RETRY`, on the `env` clock) gets only that chunk, and reads again
   only when the store gives it. A failed store call or file call is read again each
-  second. The state is at most two trees: the chunks of the spec in use, from
-  `spec::region::tree` of its definitions, and the chunks of the tree of the newest
-  committed pointer that the task got. A newer pointer drops the chunks of the one it
-  replaces. The base tree of `Mesh::apply` comes from `Config::store` only, never from
-  the chunks of the spec in use. The pointer in use is one empty file `<version>-<root>`
-  in `<Config::dir>/spec`. A spec takes effect after the create and the sync of the
-  directory of its file. The node then removes each other file in the directory, as
-  `Mesh::open` does, which keeps only the highest version. A failed removal is not a
-  cause: the next change or open removes the file. At an open, the task skips each
-  replayed pointer at or below the one that it knows. This is correct while the replay
-  passes through the pointer of the file, and Raft never drops a committed entry.
-  Trigger: before a forced takeover (K5) can drop a committed entry, its issue decides
-  how the task meets the new history. `Mesh::open` reads the spec of the highest version
-  that a file names from the store, or uses the founding spec when there is no file. A
-  spec that does not read or has problems is not an error of the open: `behind` gives
-  the cause. A file that does not name a pointer gives `Error::Stray`, and a failed file
-  call `Error::Files`. The restart read gets one missing chunk for each run of
-  `definitions`, so it costs time squared in the chunks of the tree. Trigger: before a
-  milestone opens a node on a spec of more than `CHUNKS_MAX` chunks, `spec::tree` gets
-  one level of a tree at a time (#1231). Decided by `laptop.architect`,
-  2026-10-08T11:03:36Z
+  second. The state is at most two trees: the chunks of the spec in use, which
+  `spec::region::definitions` gives (REGION CHECK; `laptop.architect-2`,
+  2026-10-08T16:16:05Z,
+  https://github.com/synnaxlabs/foundation/pull/1891#issuecomment-6064178995), or
+  `spec::region::tree` of the founding definitions, and the chunks of the tree of the
+  newest committed pointer that the task got. A newer pointer drops the chunks of the
+  one it replaces. The base tree of `Mesh::apply` comes from `Config::store` only, never
+  from the chunks of the spec in use. The pointer in use is one empty file
+  `<version>-<root>` in `<Config::dir>/spec`. A spec takes effect after the create and
+  the sync of the directory of its file. After a stop, a spec whose file became durable
+  takes no effect in that run, and the next open uses it (MESH SURFACE;
+  `laptop.architect`, 2026-10-11T16:47:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111328950). The node
+  then removes each other file in the directory, as `Mesh::open` does, which keeps only
+  the highest version. A failed removal is not a cause: the next change or open removes
+  the file. At an open, the task skips each replayed pointer at or below the one that it
+  knows. This is correct while the replay passes through the pointer of the file, and
+  Raft never drops a committed entry. Trigger: before a forced takeover (K5) can drop a
+  committed entry, its issue decides how the task meets the new history. `Mesh::open`
+  reads the spec of the highest version that a file names from the store, or uses the
+  founding spec when there is no file. A spec that does not read or has problems is not
+  an error of the open: `behind` gives the cause. A file that does not name a pointer
+  gives `Error::Stray`, and a failed file call `Error::Files`. The restart read gets one
+  missing chunk for each run of `definitions`, so it costs time squared in the chunks of
+  the tree. Trigger: before a milestone opens a node on a spec of more than `CHUNKS_MAX`
+  chunks, `spec::tree` gets one level of a tree at a time (#1231). Decided by
+  `laptop.architect`, 2026-10-08T11:03:36Z
   (https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6058455178); the
   read with `definitions`, `Cause::Read`, and the two trees, 2026-10-08T11:13:40Z
   (https://github.com/synnaxlabs/foundation/issues/1741#issuecomment-6058621907), with

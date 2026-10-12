@@ -19,7 +19,7 @@ use crate::bytes::{
     take_count, take_key, take_keys, take_name, take_prefix, take_rising,
 };
 use crate::card;
-use crate::change::{self, Change, Join, Malformed};
+use crate::change::{self, Change, Join, Undecoded};
 use crate::member::Member;
 use crate::status::Status;
 use crate::ticket::{self, Options, Record};
@@ -293,27 +293,48 @@ impl State {
         Ok(())
     }
 
+    /// Checks `join` as [`State::apply`] does, with no change to the state.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refused`] that [`State::apply`] gives for `join`.
+    pub(crate) fn check(&self, join: &Join) -> Result<(), Refused> {
+        self.admitted(join).map(drop)
+    }
+
     // Admits the node of `join`. The ticket counts a use only when all checks pass.
     fn join(&mut self, join: Join) -> Result<(), Refused> {
-        let card = join.card.check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
-        let record =
-            self.tickets
-                .get_mut(&join.ticket.to_bytes())
-                .ok_or(Refused::Unknown {
-                    public_key: join.ticket,
-                })?;
-        record
-            .admit(&card, &join.admission, join.at)
-            .map_err(Refused::Ticket)?;
+        let (card, names) = self.admitted(&join)?;
+        let record = self
+            .tickets
+            .get_mut(&join.ticket.to_bytes())
+            .expect("invariant: admitted checks that the ticket is recorded");
+        record.count();
         let member = Member {
             card,
             admission: join.admission,
-            ephemeral: record.options.ephemeral,
+            ephemeral: record.ephemeral(),
             status: join.status,
         };
         self.insert(member, names);
         Ok(())
+    }
+
+    // The checked card of `join` and its names from `fits`, when the region admits
+    // it.
+    fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
+        let card = join.card.clone().check().map_err(Refused::Forged)?;
+        let names = self.fits(&card, &join.status)?;
+        let record =
+            self.tickets
+                .get(&join.ticket.to_bytes())
+                .ok_or(Refused::Unknown {
+                    public_key: join.ticket,
+                })?;
+        record
+            .check(&card, &join.admission, join.at)
+            .map_err(Refused::Ticket)?;
+        Ok((card, names))
     }
 
     // Adds `member`, whose names `fits` gave.
@@ -480,13 +501,8 @@ pub(crate) enum Refused {
         voters: usize,
     },
     /// The bytes of a committed entry of a known kind are not the body of that kind,
-    /// as [`Malformed::Body`].
-    Body {
-        /// The kind byte.
-        kind: u8,
-        /// The length of the bytes.
-        length: usize,
-    },
+    /// as [`change::Malformed::Body`].
+    Body(Undecoded),
 }
 
 impl From<Unfit> for Refused {
@@ -519,11 +535,7 @@ impl fmt::Display for Refused {
                 "{held} of {voters} voters hold the chunks of a spec change, not a \
                  majority"
             ),
-            Self::Body { kind, length } => Malformed::Body {
-                kind: *kind,
-                length: *length,
-            }
-            .fmt(f),
+            Self::Body(undecoded) => undecoded.fmt(f),
         }
     }
 }
@@ -618,8 +630,8 @@ mod tests {
     use super::*;
     use crate::common::{
         EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
-        member, name, options, private, public, record, signed, spec, status, ticket,
-        with_status,
+        member, name, options, private, public, signed, spec, status, ticket,
+        ticket_change, unchecked, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -644,7 +656,7 @@ mod tests {
     fn state() -> State {
         let mut state =
             create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
-        let recorded = state.apply(record(7, options("plant.edge", false)));
+        let recorded = state.apply(ticket_change(7, options("plant.edge", false)));
         assert_eq!(recorded, Ok(false));
         state
     }
@@ -737,6 +749,16 @@ mod tests {
         assert_eq!(state.pointer().version, 2);
         assert_eq!(state.home(index(7)), Some(node(1)));
         assert_eq!(state.home(index(8)), Some(node(2)));
+    }
+
+    #[test]
+    fn a_spec_change_that_lists_a_home_moves_the_version_also_when_it_gives_none() {
+        let mut state = state();
+        assert_eq!(state.apply(homed(spec(0, 1, 2, &[]), &[(7, 2)])), Ok(true));
+        let moved = state.pointer();
+        assert_eq!(state.apply(homed(spec(1, 2, 2, &[]), &[(7, 1)])), Ok(false));
+        assert_eq!(state.home(index(7)), Some(node(2)));
+        assert_eq!(state.pointer(), moved.next(digest(2)));
     }
 
     #[test]
@@ -892,7 +914,10 @@ mod tests {
         let mut members = create_members(&[1, 2]);
         members[1].card = signed(2, "factory.node2");
         let mut state = create_state(Prefix::ROOT, members).unwrap();
-        assert_eq!(state.apply(record(8, options("site_a", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("site_a", false))),
+            Ok(false)
+        );
         let join = join(8, 3, "site_a.pt_1");
         assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
         let names = [1, 2, 3]
@@ -921,7 +946,7 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(7, options("plant", true))),
+            state.apply(ticket_change(7, options("plant", true))),
             Err(Refused::Recorded {
                 public_key: public(7)
             })
@@ -934,22 +959,25 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(8, options("plants.edge", false))),
+            state.apply(ticket_change(8, options("plants.edge", false))),
             Err(Refused::Outside {
                 prefix: name("plants.edge"),
                 region: name("plant").into()
             })
         );
         assert_eq!(state, before);
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
     }
 
     #[test]
     fn a_join_admits_the_node_with_the_ticket_options() {
         let mut state = state();
-        let join = join(7, 3, "plant.edge.a");
-        let admission = join.admission;
-        assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
+        let first = join(7, 3, "plant.edge.a");
+        let admission = first.admission;
+        assert_eq!(apply_join(&mut state, first), Ok(false));
         let expected = Member {
             card: signed(3, "plant.edge.a"),
             admission,
@@ -957,7 +985,15 @@ mod tests {
             status: status([(name("disk"), index(9))]),
         };
         assert_eq!(state.member(node(3)), Some(&expected));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1007,11 +1043,7 @@ mod tests {
         let card = holding(3, 1, "plant.edge.a");
         let mut join = join(7, 3, "plant.edge.a");
         join.admission = ticket(7).admission(&card);
-        join.card = card::Unchecked {
-            key: node(3),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        };
+        join.card = unchecked(&card);
         let held = Unfit::Held { key: node(1) };
         assert_eq!(
             held.to_string(),
@@ -1047,7 +1079,10 @@ mod tests {
     #[test]
     fn a_join_with_a_reserved_name_is_refused_and_counts_no_use() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
         let before = state.clone();
         assert_eq!(
             apply_join(&mut state, join(8, 3, "plant.@changes")),
@@ -1057,14 +1092,16 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     // `plant.@changes` is the region's changes channel.
     #[test]
     fn a_join_with_a_reserved_status_name_is_refused() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         let before = state.clone();
         let mut reserved = join(8, 3, "plant");
         reserved.status = status([(name("@changes"), index(9))]);
@@ -1129,7 +1166,10 @@ mod tests {
     // Member 1 is `plant.node1`. Ticket 8 admits any node under `plant`.
     fn open_state() -> State {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         state
     }
 
@@ -1153,7 +1193,6 @@ mod tests {
             );
             assert_eq!(state, before);
         }
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     #[test]
@@ -1173,10 +1212,17 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(0));
         let other = with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]);
         assert_eq!(apply_join(&mut state, other), Ok(false));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 5, "plant.edge.c"), &[("disk", 11)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1370,10 +1416,10 @@ mod tests {
                 ),
             ),
             (
-                Refused::Body {
+                Refused::Body(Undecoded {
                     kind: 2,
                     length: 40,
-                },
+                }),
                 "a change of kind 2 and 40 bytes is not in the byte form of its kind"
                     .to_owned(),
             ),
@@ -1454,7 +1500,9 @@ mod tests {
             prop::sample::select(vec!["plant.edge", "plant", "factory"]),
             any::<bool>(),
         )
-            .prop_map(|(id, prefix, reusable)| record(id, options(prefix, reusable)));
+            .prop_map(|(id, prefix, reusable)| {
+                ticket_change(id, options(prefix, reusable))
+            });
         let homes = prop::collection::btree_map(0..3_u128, 1..3_u8, 0..3);
         let specs = (0..3_u64, 1..3_u8, 1..4_u8, homes).prop_map(
             |(version, base, root, homes)| {
@@ -1500,6 +1548,25 @@ mod tests {
                         prop_assert_eq!(moved, given);
                     }
                     (Ok(_), _) => {}
+                }
+            }
+        }
+
+        // A check of a join gives what its apply gives, and changes nothing.
+        #[test]
+        fn a_check_of_a_join_gives_the_result_of_its_apply(
+            steps in prop::collection::vec(steps(), 0..16),
+        ) {
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                if let Change::Join(join) = &step {
+                    let before = state.clone();
+                    let checked = state.check(join);
+                    prop_assert_eq!(&state, &before);
+                    prop_assert_eq!(checked, state.apply(step).map(drop));
+                } else {
+                    let _applied = state.apply(step);
                 }
             }
         }

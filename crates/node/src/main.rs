@@ -1,8 +1,7 @@
 //! The `foundation` binary. It runs the command line, and `foundation start` runs a
-//! node until SIGINT or SIGTERM.
+//! node until a SIGINT or SIGTERM that reaches it.
 
 use std::io::{self, Write};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -24,9 +23,11 @@ const DATA: Code = Code::new("node.data");
 const UNNAMED: Code = Code::new("node.unnamed");
 const RENAMED: Code = Code::new("node.renamed");
 const NAME: Code = Code::new("node.name");
+const RESERVED: Code = Code::new("node.reserved");
 const DISK: Code = Code::new("node.disk");
 const MEMORY: Code = Code::new("node.memory");
 const BUDGET: Code = Code::new("node.budget");
+const PORT: Code = Code::new("node.port");
 const FAILED: Code = Code::new("node.failed");
 
 fn main() -> ExitCode {
@@ -45,7 +46,8 @@ fn main() -> ExitCode {
     })
 }
 
-/// Runs a node on the data directory of `start` until SIGINT or SIGTERM stops it.
+/// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
+/// the process stops it.
 fn node(start: &Start) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;
@@ -84,8 +86,8 @@ fn node(start: &Start) -> Result<(), Failure> {
         }),
         entropy: os::entropy(),
         net: net(),
-        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        region: None,
+        listen: start.listen,
+        region: node::Region::Stored,
         name: known.name.clone(),
     });
     let stopper = node.stopper();
@@ -260,6 +262,25 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
                 fix,
             }
         }
+        node::Error::Pool { pool, cores } => match known.from.pool {
+            Origin::Kept => kept_pool(dir, *pool, *cores),
+            Origin::Most | Origin::Quarter => failed(error),
+        },
+        node::Error::Memory {
+            core,
+            error: error @ os::memory::Error::Reserve { .. },
+        } if known.from.pool == Origin::Kept => {
+            let budget = known.budget.pool;
+            let (from, fix) = kept(dir);
+            Failure {
+                code: MEMORY,
+                message: format!(
+                    "the pool budget {budget}, {from}, needs more address space for \
+                     shard-{core} than the system gives: {error}"
+                ),
+                fix,
+            }
+        }
         node::Error::Buffer {
             core,
             error: error @ buffer::Error::Pool(pool),
@@ -292,9 +313,28 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
     }
 }
 
+/// The failure of a pool budget `pool`, kept in the data directory `dir`, that gives
+/// one of `cores` shards a pool past the address space of the host.
+fn kept_pool(dir: &Path, pool: types::byte::Size, cores: usize) -> Failure {
+    let (from, fix) = kept(dir);
+    Failure {
+        code: MEMORY,
+        message: format!(
+            "the pool budget {pool}, {from}, gives one of {cores} shards a pool that \
+             needs more address space than this host has"
+        ),
+        fix,
+    }
+}
+
 /// The failure of `error`, an error that no budget causes, in the data directory
 /// `dir`.
 fn failure(dir: &Path, error: &node::Error) -> Failure {
+    if let Some(error @ env::files::Error::Io { code, .. }) = error.files()
+        && refused(*code)
+    {
+        return unwritable(dir, error);
+    }
     let data = dir.display();
     let (code, message, fix) = match error {
         node::Error::Directory(env::files::Error::Busy { .. }) => (
@@ -302,11 +342,6 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             format!("another node runs in {data}"),
             "Stop that node, or give another data directory with `--data`".to_owned(),
         ),
-        node::Error::Directory(error @ env::files::Error::Io { code, .. })
-        | node::Error::Buffer {
-            error: buffer::Error::Files(error @ env::files::Error::Io { code, .. }),
-            ..
-        } if refused(*code) => return unwritable(dir, error),
         node::Error::Unnamed => (
             UNNAMED,
             format!("the data directory {data} holds no node"),
@@ -317,10 +352,25 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
             format!("the data directory {data} holds the node {stored}, not {given}"),
             format!("Give `--name {stored}`, or another data directory with `--data`"),
         ),
+        node::Error::Reserved { name } => (
+            RESERVED,
+            format!(
+                "the name {name} has a segment that starts with `@`, which is reserved \
+                 for Foundation"
+            ),
+            "Give a name with no segment that starts with `@`".to_owned(),
+        ),
         node::Error::Name => (
             NAME,
             format!("the file `name` in the data directory {data} is not a node name"),
             "Remove it, and start the node with its name".to_owned(),
+        ),
+        error @ (node::Error::Port { .. } | node::Error::Listen { .. }) => (
+            PORT,
+            error.to_string(),
+            "Give `--listen` an address of this host with a port that is free and that \
+             this user can bind"
+                .to_owned(),
         ),
         node::Error::Budget => (
             BUDGET,
@@ -337,18 +387,25 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
     Failure { code, message, fix }
 }
 
+/// That a budget comes from the file `budget` of the data directory `dir`, as text,
+/// and the fix of a kept budget that does not fit: remove the file.
+fn kept(dir: &Path) -> (String, String) {
+    let data = dir.display();
+    (
+        format!("which {data} keeps from its first start"),
+        format!(
+            "Remove the file `budget` in {data}, and the next start computes the \
+             budgets again from the free memory and disk"
+        ),
+    )
+}
+
 /// Where a budget of `resource` that gives the node too little comes from, `from`,
 /// as text, and its fix. `dir` is the data directory.
 fn source(dir: &Path, from: Origin, resource: Resource) -> (String, String) {
     let data = dir.display();
     match (from, resource) {
-        (Origin::Kept, _) => (
-            format!("which {data} keeps from its first start"),
-            format!(
-                "Remove the file `budget` in {data}, and the next start computes the \
-                 budgets again from the free memory and disk"
-            ),
-        ),
+        (Origin::Kept, _) => kept(dir),
         (Origin::Most, _) => (
             "the most that a first start gives".to_owned(),
             "Start the node on fewer cores: on Linux, give it a smaller CPU affinity \
@@ -376,15 +433,15 @@ fn refused(code: i32) -> bool {
     )
 }
 
-/// The failure of a data directory `dir` that this user cannot write.
+/// The failure of a data directory `dir` that this user cannot use as it is.
 fn unwritable(dir: &Path, error: impl std::fmt::Display) -> Failure {
     let dir = dir.display();
     Failure {
         code: DATA,
         message: format!("cannot write the data directory {dir}: {error}"),
         fix: format!(
-            "Let this user make and write {dir} and each file in it, or give another \
-             directory with `--data`"
+            "Make {dir} a directory that this user can write, and let it write each \
+             file in it, or give another directory with `--data`"
         ),
     }
 }
@@ -609,6 +666,118 @@ mod tests {
         );
     }
 
+    /// A first start gives at most 1 GiB, so no process makes `Error::Pool` from it,
+    /// and only this test sees the arm of `stopped` for a first start.
+    #[test]
+    fn a_pool_budget_past_the_address_space_from_a_first_start_fails_with_its_text() {
+        let error = node::Error::Pool {
+            pool: POOL_MOST,
+            cores: 16,
+        };
+        let budget = Budget {
+            pool: POOL_MOST,
+            disk: Size::GIBIBYTE,
+        };
+        for from in [Origin::Most, Origin::Quarter] {
+            assert_eq!(
+                stopped(dir(), &error, &known(budget, from)),
+                Failure {
+                    code: FAILED,
+                    message: "the pool budget 1GiB gives one of 16 shards a pool that \
+                              needs more address space than this host has"
+                        .to_owned(),
+                    fix: "Fix the cause that the message states, then start the node \
+                          again"
+                        .to_owned(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_pool_budget_that_the_system_cannot_reserve_tells_the_user_to_remove_it() {
+        let error = node::Error::Memory {
+            core: 3,
+            error: os::memory::Error::Reserve {
+                len: 1 << 46,
+                code: 12,
+            },
+        };
+        let budget = Budget {
+            pool: Size::from_bytes(1 << 50),
+            disk: Size::GIBIBYTE,
+        };
+        assert_eq!(
+            stopped(dir(), &error, &known(budget, Origin::Kept)),
+            Failure {
+                code: MEMORY,
+                message:
+                    "the pool budget 1024TiB, which foundation-data keeps from its \
+                          first start, needs more address space for shard-3 than the \
+                          system gives: a reserve of 70368744177664 bytes of address \
+                          space failed: Cannot allocate memory (os error 12); lower \
+                          the memory budget"
+                        .to_owned(),
+                fix: "Remove the file `budget` in foundation-data, and the next start \
+                      computes the budgets again from the free memory and disk"
+                    .to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_memory_error_but_a_reserve_of_a_kept_pool_budget_fails_with_its_text() {
+        let reserve = os::memory::Error::Reserve {
+            len: 1 << 46,
+            code: 12,
+        };
+        let budget = Budget {
+            pool: Size::from_bytes(1 << 50),
+            disk: Size::GIBIBYTE,
+        };
+        for (error, from) in [
+            (reserve, Origin::Most),
+            (reserve, Origin::Quarter),
+            (os::memory::Error::Refused, Origin::Kept),
+        ] {
+            let error = node::Error::Memory { core: 3, error };
+            assert_eq!(
+                stopped(dir(), &error, &known(budget, from)),
+                Failure {
+                    code: FAILED,
+                    message: error.to_string(),
+                    fix: "Fix the cause that the message states, then start the node \
+                          again"
+                        .to_owned(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_pool_budget_past_the_address_space_tells_the_user_to_remove_it() {
+        let pool = Size::from_bytes(u64::MAX);
+        let error = node::Error::Pool { pool, cores: 16 };
+        let budget = Budget {
+            pool,
+            disk: Size::GIBIBYTE,
+        };
+        assert_eq!(
+            stopped(dir(), &error, &known(budget, Origin::Kept)),
+            Failure {
+                code: MEMORY,
+                message:
+                    "the pool budget 18446744073709551615B, which foundation-data \
+                          keeps from its first start, gives one of 16 shards a pool \
+                          that needs more address space than this host has"
+                        .to_owned(),
+                fix: "Remove the file `budget` in foundation-data, and the next start \
+                      computes the budgets again from the free memory and disk"
+                    .to_owned(),
+            }
+        );
+    }
+
     #[test]
     fn a_budget_file_that_no_node_wrote_tells_the_user_to_remove_it() {
         assert_eq!(
@@ -704,10 +873,12 @@ mod tests {
                 core: 2,
                 error: buffer::Error::Files(io("shard-2/ring", code)),
             };
+            let log = mesh::log::Error::Files(io("mesh/log/log-0", code));
             let reason = io::Error::from_raw_os_error(code);
             for (error, file) in [
                 (node::Error::Directory(io("node.key", code)), "node.key"),
                 (ring, "shard-2/ring"),
+                (node::Error::Mesh(mesh::Error::Log(log)), "mesh/log/log-0"),
             ] {
                 assert_eq!(
                     of(&error),
@@ -717,8 +888,9 @@ mod tests {
                             "cannot write the data directory foundation-data: open of \
                              {file} failed with OS error {code}"
                         ),
-                        fix: "Let this user make and write foundation-data and each \
-                              file in it, or give another directory with `--data`"
+                        fix: "Make foundation-data a directory that this user can \
+                              write, and let it write each file in it, or give another \
+                              directory with `--data`"
                             .to_owned(),
                     },
                     "{reason}"
@@ -758,6 +930,31 @@ mod tests {
             failed(
                 "cannot open the buffer of shard-2: a file call failed: open of \
                  shard-2/ring failed with OS error 28"
+            )
+        );
+        let founding = mesh::Error::Files(io("mesh/founding", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Mesh(founding)),
+            failed(
+                "the node's mesh did not open: open of mesh/founding failed with OS \
+                 error 28"
+            )
+        );
+        let chunk = blob::Error::Files(io("blob/chunk", ENOSPC));
+        assert_eq!(
+            of(&node::Error::Blob(chunk)),
+            failed(
+                "cannot open the node's chunk store: open of blob/chunk failed with OS \
+                 error 28"
+            )
+        );
+        let log = mesh::log::Error::Files(io("mesh/log/log-0", ENOSPC));
+        let stopped = node::Error::Group(mesh::Stopped::Write(log));
+        assert_eq!(
+            of(&stopped),
+            failed(
+                "the group of the node's mesh stopped: open of mesh/log/log-0 failed \
+                 with OS error 28"
             )
         );
     }

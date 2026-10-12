@@ -1,4 +1,6 @@
-//! The C functions of open62541 and `shim.c` that Rust calls, each declared once.
+//! The C functions of open62541, `shim.c`, and `server.c` that Rust calls, each
+//! declared once. `shim.c` asserts the size of each C enum that this module mirrors,
+//! and each value of such an enum that it names.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -15,10 +17,26 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_INVALID_ARGUMENT: Self = Self(0x80AB_0000);
     pub(crate) const BAD_CONNECTION_CLOSED: Self = Self(0x80AE_0000);
+    pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
+    pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
     #[cfg(test)]
     pub(crate) const BAD_INTERNAL_ERROR: Self = Self(0x8002_0000);
     #[cfg(test)]
     pub(crate) const BAD_OUT_OF_RANGE: Self = Self(0x803C_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SERVER_NOT_CONNECTED: Self = Self(0x800D_0000);
 
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
@@ -302,6 +320,37 @@ pub(crate) struct Hooks {
 #[repr(C)]
 pub(crate) struct Client([u8; 0]);
 
+/// `UA_SecureChannelState` of a client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct Channel(pub(crate) c_int);
+
+impl Channel {
+    /// `UA_SECURECHANNELSTATE_CLOSED`.
+    pub(crate) const CLOSED: Self = Self(0);
+}
+
+/// `UA_SessionState` of a client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct Session(pub(crate) c_int);
+
+impl Session {
+    /// `UA_SESSIONSTATE_CREATE_REQUESTED`.
+    pub(crate) const CREATE_REQUESTED: Self = Self(1);
+    /// `UA_SESSIONSTATE_ACTIVATED`.
+    pub(crate) const ACTIVATED: Self = Self(4);
+}
+
+/// `UA_ClientAsyncReadValueAttributeCallback`.
+pub(crate) type Read = unsafe extern "C" fn(
+    client: *mut Client,
+    data: *mut c_void,
+    request: u32,
+    status: u32,
+    value: *mut c_void,
+);
+
 /// The `shim_now` of `shim.c`.
 pub(crate) type Now = unsafe extern "C" fn(clock: *mut c_void) -> i64;
 
@@ -332,6 +381,8 @@ unsafe extern "C" {
 
     pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
+    pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
+    pub(crate) static shim_free_passes: c_int;
     pub(crate) fn shim_log_warning(
         el: *mut EventLoop,
         message: *const u8,
@@ -341,6 +392,28 @@ unsafe extern "C" {
     pub(crate) fn shim_client_new(el: *mut EventLoop) -> *mut Client;
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
+    pub(crate) fn shim_client_free(client: *mut Client);
+    pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
+    pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
+    pub(crate) fn UA_Client_connectAsync(
+        client: *mut Client,
+        url: *const c_char,
+    ) -> u32;
+    pub(crate) fn UA_Client_getState(
+        client: *mut Client,
+        channel: *mut Channel,
+        session: *mut Session,
+        status: *mut u32,
+    );
+    pub(crate) fn shim_client_read(
+        client: *mut Client,
+        namespace: u16,
+        node: u32,
+        callback: Read,
+        data: *mut c_void,
+        request: *mut u32,
+    ) -> u32;
+    pub(crate) fn shim_value_double(value: *const c_void, out: *mut f64) -> u32;
 
     pub(crate) fn shim_cm_new(
         el: *mut EventLoop,
@@ -361,6 +434,7 @@ unsafe extern "C" {
     );
 }
 
-/// Only tests use these.
-#[cfg(test)]
+/// Only tests and `bench` use these.
+#[cfg(any(test, feature = "sim"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "`bench` uses only some"))]
 pub(crate) mod test;

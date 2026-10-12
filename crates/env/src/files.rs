@@ -61,7 +61,9 @@ impl Files {
     /// ends can leave it with no bytes. After `sync_dir` ends, a crash leaves it whole,
     /// with `len` zero bytes. A create that gives [`Error::Full`] leaves no file
     /// at `path` and keeps no blocks. Another error can leave an empty file at `path`,
-    /// as a crash can.
+    /// as a crash can. A create that finds no room syncs the directory of `path` one
+    /// time and tries again, since a removed file's room counts as used until that
+    /// sync.
     ///
     /// # Errors
     ///
@@ -74,7 +76,8 @@ impl Files {
     /// - [`Error::Length`] when [`Mode::Create`] finds a file of another length that
     ///   is not empty.
     /// - [`Error::Full`] when the disk has no room for the file that
-    ///   [`Mode::Create`] allocates.
+    ///   [`Mode::Create`] allocates, after that sync. A `sync_dir` error from that
+    ///   sync comes back as it is.
     /// - [`Error::Io`] for other failures.
     ///
     /// # Panics
@@ -90,7 +93,14 @@ impl Files {
     /// ```
     pub async fn open(&self, path: &Path, mode: Mode) -> Result<File, Error> {
         check(path);
-        let descriptor = self.0.open(path, mode).await?;
+        let descriptor = match self.0.open(path, mode).await {
+            Err(Error::Full { .. }) if matches!(mode, Mode::Create { .. }) => {
+                let dir = path.parent().unwrap_or(Path::new(""));
+                self.0.sync_dir(dir).await?;
+                self.0.open(path, mode).await?
+            }
+            result => result?,
+        };
         if let Mode::Create { len } = mode
             && descriptor.len() != len
         {
@@ -108,8 +118,10 @@ impl Files {
         })
     }
 
-    /// The names of the files and directories directly in `dir`, sorted. Each is a
-    /// bare name, not joined with `dir`. It does not list inside subdirectories.
+    /// The names of the files and directories directly in `dir`, sorted. Each is a bare
+    /// name, not joined with `dir`. It does not list inside subdirectories. It first
+    /// waits for each call on a path directly in `dir` that a dropped future or handle
+    /// of this `Files` left to run, so the names are as those calls leave them.
     ///
     /// # Errors
     ///
@@ -216,7 +228,9 @@ impl Files {
         self.0.sync_dir(dir).await
     }
 
-    /// The bytes free on the disk of the data directory.
+    /// The bytes free on the disk of the data directory. It first waits for each call
+    /// that a dropped future or handle of this `Files` left to run, so the result is as
+    /// those calls leave the disk.
     ///
     /// # Errors
     ///
@@ -757,11 +771,13 @@ impl fmt::Display for Operation {
 /// What `os` and `sim` implement to run [`Files`]. Only they implement it.
 ///
 /// Paths reach it checked and relative to the data directory. It opens, creates, and
-/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks
-/// what it returns. A write open, a remove, and a rename to a path first wait for
-/// each call on the path that a dropped future or descriptor of the driver left to
-/// run, and for each remove of the path through a descriptor of the driver that has
-/// not ended.
+/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks what
+/// it returns. A write open, a remove, and a rename to a path first wait for each call
+/// on the path that a dropped future or descriptor of the driver left to run, and for
+/// each remove of the path through a descriptor of the driver that has not ended. A
+/// list of a directory first waits for each call on a path directly in it that a
+/// dropped future or descriptor of the driver left to run. A `free` first waits for
+/// each call that a dropped future or descriptor of the driver left to run.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
@@ -901,6 +917,9 @@ mod tests {
             mode: Mode,
         ) -> Request<'a, Box<dyn Descriptor>> {
             self.record(format!("open {} {mode:?}", path.display()));
+            if path.file_name() == Some(OsStr::new("full")) {
+                return Box::pin(async { Err(Error::Full { path: path.into() }) });
+            }
             let descriptor: Box<dyn Descriptor> = Box::new(Fixed {
                 len: self.len,
                 sync: self.sync.clone(),
@@ -936,7 +955,15 @@ mod tests {
 
         fn sync_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
             self.record(format!("sync_dir {}", dir.display()));
-            Box::pin(async { Ok(()) })
+            let result = match dir.to_str() {
+                Some("unsynced") => Err(Error::Io {
+                    path: dir.into(),
+                    operation: Operation::SyncDir,
+                    code: 5,
+                }),
+                _ => Ok(()),
+            };
+            Box::pin(async { result })
         }
 
         fn free(&self) -> Request<'_, u64> {
@@ -1202,6 +1229,73 @@ mod tests {
             let (files, _) = Fixed::files(512);
             assert_eq!(open(&files, Mode::Write).len(), 512);
         }
+
+        #[test]
+        fn syncs_the_directory_once_and_tries_again_when_create_finds_no_room() {
+            let (files, calls) = Fixed::files(0);
+            let mode = Mode::Create { len: 4_096 };
+            let results = ["ring/full", "full"].map(|path| {
+                ready(files.open(Path::new(path), mode)).expect_err("no room")
+            });
+            assert_eq!(
+                results,
+                [
+                    Error::Full {
+                        path: "ring/full".into()
+                    },
+                    Error::Full {
+                        path: "full".into()
+                    },
+                ]
+            );
+            assert_eq!(
+                *calls.borrow(),
+                [
+                    "open ring/full Create { len: 4096 }",
+                    "sync_dir ring",
+                    "open ring/full Create { len: 4096 }",
+                    "open full Create { len: 4096 }",
+                    "sync_dir ",
+                    "open full Create { len: 4096 }",
+                ]
+            );
+        }
+
+        #[test]
+        fn gives_full_of_an_open_to_read_or_write_with_no_sync() {
+            let (files, calls) = Fixed::files(0);
+            let results = [Mode::Read, Mode::Write]
+                .map(|mode| ready(files.open(Path::new("ring/full"), mode)).map(drop));
+            let full = Err(Error::Full {
+                path: "ring/full".into(),
+            });
+            assert_eq!(results, [full.clone(), full]);
+            assert_eq!(
+                *calls.borrow(),
+                ["open ring/full Read", "open ring/full Write"]
+            );
+        }
+
+        #[test]
+        fn gives_the_error_of_the_sync_after_a_create_finds_no_room() {
+            let (files, calls) = Fixed::files(0);
+            let mode = Mode::Create { len: 4_096 };
+            assert_eq!(
+                ready(files.open(Path::new("unsynced/full"), mode)).map(drop),
+                Err(Error::Io {
+                    path: "unsynced".into(),
+                    operation: Operation::SyncDir,
+                    code: 5,
+                })
+            );
+            assert_eq!(
+                *calls.borrow(),
+                [
+                    "open unsynced/full Create { len: 4096 }",
+                    "sync_dir unsynced"
+                ]
+            );
+        }
     }
 
     mod remove {
@@ -1431,9 +1525,10 @@ mod tests {
             let mut file = Stuck::file(Operation::Rename);
             drop_pending(file.rename(Path::new("ring/1")));
             assert_eq!(ready(file.write_at(0, &[])), poisoned("ring/0"));
-            let into = block::Pool::heap(block::Config { budget: 4_096 })
-                .alloc(0)
-                .expect("room");
+            let into =
+                block::Pool::heap(block::Config::new(4_096).expect("the budget fits"))
+                    .alloc(0)
+                    .expect("room");
             assert_eq!(ready(file.read_at(0, into)).map(drop), poisoned("ring/0"));
         }
 

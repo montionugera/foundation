@@ -37,7 +37,8 @@
 //! copy of those ranges into a new block, then a `send` of it. A `send_parts` allocates
 //! as a `send`, plus one allocation for the copy of each stretch of ranges over 1452
 //! bytes and for each growth of the segment queue of noq-proto, which it drops after
-//! each acknowledgement.
+//! each acknowledgement, less one when the `send` gives noq-proto a slice of the block
+//! and the `send_parts` does not.
 //!
 //! A send reads the clock and wakes a task, so the control does both per block. The sim
 //! and `os` costs for both differ: on a Xeon 8488C, an `os` clock read costs about 7
@@ -947,7 +948,7 @@ fn config(
     key: PrivateKey,
     room: Room,
 ) -> Config {
-    let pool = block::Config { budget: 1 << 24 };
+    let pool = block::Config::new(1 << 24).expect("the budget fits");
     let memory = Heap::new(pool.reservation());
     Config {
         private_key: key,

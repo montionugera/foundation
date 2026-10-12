@@ -1,6 +1,17 @@
 use proptest::prelude::*;
+use types::name;
 
 use super::*;
+
+/// The cause of a name that does not parse.
+fn unnamed(error: name::Error) -> text::Error<Box<name::Error>> {
+    text::Error::Parse(Box::new(error))
+}
+
+/// The cause of `bytes` that are not UTF-8.
+fn not_utf8(bytes: &[u8]) -> text::Error<Box<name::Error>> {
+    text::Error::Utf8(std::str::from_utf8(bytes).unwrap_err())
+}
 
 const KEY: [u8; 32] = [
     0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
@@ -123,6 +134,8 @@ mod pins {
         );
         assert_eq!(BODY_BYTES_MAX, 16_777_216);
         assert_eq!((Challenge::LEN, Request::LEN, Response::LEN), (33, 73, 9));
+        assert_eq!(OPEN_BYTES_MAX, 65_536);
+        assert_eq!((Read::LEN, Places::LEN), (73, 9));
     }
 }
 
@@ -201,14 +214,33 @@ mod signed {
     #[test]
     fn refuses_a_subject_that_is_not_a_name() {
         let mut hello = encode_signed(&signed("a.b"));
-        for subject in [*b"a..", *b"a.*", [0xff, b'.', b'b']] {
+        let cases = [
+            (
+                *b"a..",
+                unnamed(name::Error::Segment {
+                    input: "a..".to_owned(),
+                    segment: String::new(),
+                }),
+            ),
+            (
+                *b"a.*",
+                unnamed(name::Error::Wildcard {
+                    input: "a.*".to_owned(),
+                }),
+            ),
+            ([0xff, b'.', b'b'], not_utf8(&[0xff])),
+        ];
+        for (subject, cause) in cases {
             hello[2..5].copy_from_slice(&subject);
-            assert_eq!(Signed::decode(&hello), Err(Error::Subject));
+            assert_eq!(Signed::decode(&hello), Err(Error::Subject(cause)));
         }
         let mut empty = encode_signed(&signed("a"));
         empty.remove(2);
         empty[1] = 0;
-        assert_eq!(Signed::decode(&empty), Err(Error::Subject));
+        assert_eq!(
+            Signed::decode(&empty),
+            Err(Error::Subject(unnamed(name::Error::Empty)))
+        );
     }
 
     #[test]
@@ -225,7 +257,13 @@ mod signed {
         let mut hello = encode_signed(&signed("a"));
         hello[2] = b'*';
         hello[3..35].copy_from_slice(&[0; 32]);
-        assert_eq!(Signed::decode(&hello), Err(Error::Subject));
+        let wildcard = name::Error::Wildcard {
+            input: "*".to_owned(),
+        };
+        assert_eq!(
+            Signed::decode(&hello),
+            Err(Error::Subject(unnamed(wildcard)))
+        );
     }
 }
 
@@ -277,7 +315,8 @@ mod request {
         assert_eq!(
             Request::decode(&over),
             Err(Error::Oversize {
-                length: BODY_BYTES_MAX + 1
+                length: BODY_BYTES_MAX + 1,
+                cap: BODY_BYTES_MAX,
             })
         );
     }
@@ -334,7 +373,10 @@ mod response {
         over[1..9].copy_from_slice(&u64::MAX.to_le_bytes());
         assert_eq!(
             Response::decode(&over),
-            Err(Error::Oversize { length: u64::MAX })
+            Err(Error::Oversize {
+                length: u64::MAX,
+                cap: BODY_BYTES_MAX,
+            })
         );
     }
 
@@ -529,9 +571,25 @@ fn gives_the_code_and_the_text_of_each_refusal() {
             "a message of the program broke the client wire",
         ),
         (
+            Refusal::Unknown,
+            16,
+            "the selector matches no channel, or a channel of the read was removed",
+        ),
+        (
+            Refusal::NotHome,
+            17,
+            "the home of the index of the read moved",
+        ),
+        (
+            Refusal::Failed,
+            18,
+            "the reader failed: the buffer or the mesh of the home of the index \
+             stopped, or the path from the node to that home failed",
+        ),
+        (
             Refusal::Busy,
             19,
-            "the node had no memory for a response or a request body",
+            "the node had no memory for a response, a request body, or a read",
         ),
         (
             Refusal::Refused,
@@ -563,7 +621,113 @@ fn gives_the_code_and_the_text_of_each_refusal() {
 
 #[test]
 fn gives_no_refusal_for_0_or_a_code_outside_the_set() {
-    for code in [0, 1, 3, 16, 17, 18, 25, 27, u32::MAX] {
+    for code in [0, 1, 3, 15, 25, 27, u32::MAX] {
         assert_eq!(Refusal::from_code(code), None, "{code}");
     }
+}
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one case for each error")]
+fn names_each_error() {
+    let cases = [
+        (Error::Empty, "the hub message is empty"),
+        (
+            Error::Kind { kind: 9 },
+            "the hub message has kind 9, which this stream does not carry",
+        ),
+        (
+            Error::Length { len: 4 },
+            "the hub message has 4 bytes, which no message of its kind has",
+        ),
+        (
+            Error::Subject(unnamed(name::Error::Empty)),
+            "the subject of the hello is not a name: a name or pattern is empty",
+        ),
+        (
+            Error::SmallOrder,
+            "the key of the hello is a point of small order",
+        ),
+        (
+            Error::Trailing,
+            "a hub message came after the body of the stream",
+        ),
+        (
+            Error::Oversize {
+                length: 16_777_217,
+                cap: 16_777_216,
+            },
+            "the body has 16777217 bytes, over the cap of 16777216",
+        ),
+        (
+            Error::Body {
+                len: 11,
+                remain: 10,
+            },
+            "the body message has 11 bytes, and 10 remain in the body",
+        ),
+        (
+            Error::Unfinished { remain: 3 },
+            "the stream ended with 3 bytes of its body to come",
+        ),
+        (
+            Error::Mode { byte: 3 },
+            "the open of the read names mode 3, which no read has",
+        ),
+        (
+            Error::Selector(unnamed(name::Error::NoInclude)),
+            "the selector of the read does not read: a selector includes no names",
+        ),
+        (
+            Error::Index { index: 3, count: 3 },
+            "the places of the read put the index at place 3 of 3",
+        ),
+        (
+            Error::Sample(text::Error::Parse(sample::Error::Syntax)),
+            "the sample type of a place of the read does not read: expected a sample \
+             type such as f64, f32[3], list<u8, 16>, string, or bytes",
+        ),
+        (
+            Error::Name(not_utf8(&[0xff])),
+            "the name of a place of the read does not read: invalid utf-8 sequence of \
+             1 bytes from index 0",
+        ),
+        (
+            Error::Run {
+                items: 3,
+                remain: 2,
+            },
+            "the run message holds 3 items, and 2 remain in the run",
+        ),
+        (
+            Error::Unstamped {
+                sample: sample::Type::Scalar(sample::Scalar::U8),
+            },
+            "the index place of the read has sample type u8, not timestamp",
+        ),
+        (
+            Error::Finished,
+            "the node finished the read stream before its last place",
+        ),
+    ];
+    for (error, text) in cases {
+        assert_eq!(error.to_string(), text);
+    }
+}
+
+#[test]
+fn gives_the_cause_of_a_text_that_does_not_read() {
+    use std::error::Error as _;
+    let name = unnamed(name::Error::NoInclude);
+    let sample = text::Error::Parse(sample::Error::Syntax);
+    let errors = [
+        (Error::Subject(name.clone()), name.to_string()),
+        (Error::Selector(name.clone()), name.to_string()),
+        (Error::Name(name.clone()), name.to_string()),
+        (Error::Sample(sample.clone()), sample.to_string()),
+    ];
+    for (error, cause) in errors {
+        let source = error.source().map(ToString::to_string);
+        assert_eq!(source, Some(cause), "{error:?}");
+    }
+    assert!(Error::Empty.source().is_none());
 }

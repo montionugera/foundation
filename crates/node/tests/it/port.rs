@@ -121,7 +121,7 @@ fn start_node(
         entropy: os::entropy(),
         net: os::net(),
         listen,
-        region: None,
+        region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
     })
 }
@@ -251,7 +251,7 @@ fn run<F: Future<Output = ()> + 'static>(
 
 /// A program's transport on a free port of `[::]`, and its pool.
 fn client(tasks: env::tasks::Tasks) -> (transport::Client, Rc<block::Pool>) {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());
     let pool = Rc::new(block::Pool::new(config, memory));
     let config = transport::client::Config {

@@ -1,10 +1,12 @@
 use types::frame::{Path, Range};
 
-use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends, rest_of_run};
-use crate::common::body;
+use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
+use crate::common::{body, rest_of_run};
 
-/// The decoder at the reader's node: it takes each message from the home, in order,
-/// and checks the order and the runs of the session.
+/// The decoder of the replies of a reader session, at the reader's node and at the
+/// program, which gets it from [`client::Reader`](crate::hub::client::Reader). It
+/// takes each message from the home, in order, and checks the order and the runs of
+/// the session.
 #[derive(Debug)]
 pub struct Reader {
     places: u32,
@@ -59,10 +61,19 @@ impl Reader {
     /// When `open.channels` is 0.
     #[must_use]
     pub fn new(open: &Open) -> Self {
-        assert!(open.channels > 0, "an open names at least one channel");
+        Self::of(open.channels, open.mode == Mode::Latest)
+    }
+
+    /// A decoder for a session of `places` places, latest when `latest`.
+    ///
+    /// # Panics
+    ///
+    /// When `places` is 0.
+    pub(in crate::hub) fn of(places: u32, latest: bool) -> Self {
+        assert!(places > 0, "a session has at least one place");
         Self {
-            places: open.channels,
-            latest: open.mode == Mode::Latest,
+            places,
+            latest,
             next: Next::Opened,
             end: 0,
         }
@@ -182,7 +193,7 @@ impl Reader {
         if seq < self.end {
             return Err(Error::Seq { seq, end: self.end });
         }
-        match super::end(head.range) {
+        match head.range.end() {
             Some(end) => Ok(end),
             None => past_max(head.range),
         }
@@ -708,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an open names at least one channel")]
+    #[should_panic(expected = "a session has at least one place")]
     fn panics_on_an_open_of_no_channel() {
         drop(Reader::new(&open(0)));
     }

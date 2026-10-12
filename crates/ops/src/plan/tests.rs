@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use connector::kind::Table;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
-use document::{Document, Position, Source, Span};
+use document::{Document, Position, Span};
 use spec::channel::{self, Channel, Data};
 use spec::connector::Connector;
 use spec::data_type::DataType;
@@ -19,7 +19,7 @@ use types::sample;
 use super::{Output, plan};
 use crate::common::{PLANT, Reader, SITE, files, front_ends, name, placed_site};
 use crate::error::Error;
-use crate::front_end::{self, File, FrontEnd};
+use crate::front_end::{File, FrontEnd, FrontEnds};
 
 fn empty() -> spec::Pointer {
     spec::Pointer {
@@ -76,8 +76,20 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel plant.dip
 + channel plant.trend
 + connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
 + connector influx
-6 to add, 0 to change, 0 to remove.
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.error
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
+18 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -198,30 +210,6 @@ fix: Use a file that ends in `.hcl`
 }
 
 #[test]
-fn names_each_extension_of_the_table_in_the_fix() {
-    let mut front_ends = front_ends();
-    front_ends.insert(
-        "toml",
-        FrontEnd {
-            read: config_hcl::read,
-        },
-    );
-    let two = front_end::unknown(Source(0), &front_ends);
-    assert_eq!(two.fix, "Use a file that ends in `.hcl` or `.toml`");
-    front_ends.insert(
-        "yaml",
-        FrontEnd {
-            read: config_hcl::read,
-        },
-    );
-    let diagnostic = front_end::unknown(Source(0), &front_ends);
-    assert_eq!(
-        diagnostic.fix,
-        "Use a file that ends in `.hcl`, `.toml`, or `.yaml`"
-    );
-}
-
-#[test]
 fn gives_each_note_with_its_place() {
     let time = "channel \"a.time\" { kind = \"index\" }\n";
     let problems = problems(&[("one.hcl", time), ("two.hcl", time)]);
@@ -270,12 +258,12 @@ fn reads_a_file_named_only_by_its_extension() {
 #[test]
 #[should_panic(expected = "invariant: a front end gives a problem with each error")]
 fn refuses_a_front_end_error_with_no_problem() {
-    let front_ends = BTreeMap::from([(
+    let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
         },
-    )]);
+    );
     let applied = BTreeMap::from([(name("a.time"), channel(1, INDEX))]);
     drop(plan(
         &files(&[("a.hcl", "")]),
@@ -399,7 +387,7 @@ fn names_one_problem_or_the_count_and_exits_with_2() {
 
 #[test]
 fn escapes_a_control_character_in_the_text_of_a_problem() {
-    let front_ends = BTreeMap::from([(
+    let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |source, _| {
@@ -421,7 +409,7 @@ fn escapes_a_control_character_in_the_text_of_a_problem() {
                 Err(vec![diagnostic])
             },
         },
-    )]);
+    );
     let error = plan(
         &files(&[("a\u{1b}\\.hcl", "")]),
         empty(),
@@ -698,9 +686,21 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel plant.dip
 + channel plant.trend
 + connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
 + connector influx
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.error
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
 - channel plc
-6 to add, 0 to change, 1 to remove.
+18 to add, 0 to change, 1 to remove.
 "
     );
 }
@@ -720,9 +720,21 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel plant.dip
 + channel plant.trend
 + connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
 + connector influx
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.error
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
 - connector plant.time
-6 to add, 0 to change, 1 to remove.
+18 to add, 0 to change, 1 to remove.
 "
     );
 }
