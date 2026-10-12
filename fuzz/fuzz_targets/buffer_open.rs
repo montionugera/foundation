@@ -626,8 +626,9 @@ fn walk(image: &[u8]) -> Vec<(usize, u32)> {
 
 /// The records that the open takes on the way from the tail in the first header
 /// block: the block each starts at, and the blocks to the next. It ends before the
-/// first record that is not sealed or that passes the end of the area, the tail one
-/// lap later, or the largest record of the header's `body_max`.
+/// first record that is not sealed, whose body is over the header's `body_max`, or
+/// that passes the end of the area, the tail one lap later, or the largest record of
+/// the header's `body_max`.
 fn taken(image: &[u8]) -> Vec<(usize, usize)> {
     let largest = (record::HEAD + header::body_max(image)).div_ceil(BLOCK);
     let mut lap = BLOCKS;
@@ -638,7 +639,10 @@ fn taken(image: &[u8]) -> Vec<(usize, usize)> {
         };
         let size = (record::HEAD + record::len(image, block)).div_ceil(BLOCK);
         let bound = largest.min(AREA_START + BLOCKS - block).min(lap);
-        if size > bound || !record::sealed(image, block, chain) {
+        if size > bound
+            || record::len(image, block) > header::body_max(image)
+            || !record::sealed(image, block, chain)
+        {
             break;
         }
         let blocks = if next > block {

@@ -331,7 +331,8 @@ state on `main`.
   path byte, and a carried tail below the path's tail, one that continues the chain
   only from the second header, one inside a data record, off the way, one that only
   the older header reaches, one that passes the end of the area, and one after a
-  data record longer than the window.
+  data record longer than the window. The `body_over_max` input holds a data record
+  that follows the chain with a body over `body_max`.
 
 ### Device to connector
 
