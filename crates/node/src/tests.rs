@@ -7147,10 +7147,10 @@ mod name {
         assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
     }
 
-    /// A long name fails after a reserved name and before a disk budget that holds no
-    /// ring.
+    /// A long name fails after a reserved name, and before a listen address that no
+    /// peer reaches and a disk budget that holds no ring.
     #[test]
-    fn a_long_name_comes_after_a_reserved_name_and_before_a_small_disk() {
+    fn a_long_name_comes_after_a_reserved_name_and_before_the_other_checks() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         let long = name(&"a".repeat(192));
@@ -7162,6 +7162,7 @@ mod name {
         for (given, error) in cases {
             let node = Node::start(Config {
                 name: given,
+                listen: "224.0.0.1:0".parse().expect("a socket address"),
                 budget: Budget {
                     pool: Size::MEBIBYTE,
                     disk: Size::from_bytes(1),
