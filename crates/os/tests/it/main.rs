@@ -28,10 +28,10 @@ mod threads;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod wall;
 
-/// A child holds the file locks of each other test of this binary until its `exec`, so
-/// a test here that starts one makes them give `Busy`. A test that starts a child goes
-/// in a binary of its own. The scan covers each file under `it/` and each file that a
-/// `#[path]` attribute of a scanned file mounts.
+/// A child holds the file locks of each other test of this binary until its `exec`, or
+/// its exit when it does not `exec`, so a test here that starts one makes them give
+/// `Busy`. A test that starts a child goes in a binary of its own. The scan covers each
+/// file under `it/` and each file that a `#[path]` attribute of a scanned file mounts.
 #[test]
 fn no_test_of_this_binary_starts_a_child() {
     use std::path::{Path, PathBuf};
@@ -56,6 +56,8 @@ fn no_test_of_this_binary_starts_a_child() {
         concat!("process", "::Command"),
         concat!("pre", "_exec"),
         concat!("current", "_exe"),
+        concat!("fo", "rk"),
+        concat!("posix", "_spawn"),
     ];
     let mut scanned = Vec::new();
     while let Some(path) = found.pop() {
