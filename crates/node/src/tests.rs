@@ -2694,15 +2694,29 @@ mod pool {
 
     use super::hub::{I64, data, define, entry, index, writer};
     use super::*;
-    use crate::PURGE;
 
-    /// A shard gives the pages of a block size back to the system once the size
-    /// stayed idle. The memory shows a purge only through its next commit: while it
-    /// refuses, a commit of bytes that the system still holds succeeds, and a commit
-    /// of purged bytes does not. So a frame that the pool cannot take then is a frame
-    /// whose pages went back.
+    const SECOND: i64 = 1_000_000_000;
+
+    /// A shard gives the pages of a block size back to the system 10 to 20 s after
+    /// the last block of that size returned. The last return falls at each of 10
+    /// phases of the shard's timer, so one of them comes just after a purge.
     #[test]
-    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_two_purge_intervals() {
+    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
+        for phase in 0..10 {
+            let phase = Span::from_nanos(phase * SECOND);
+            let held = kept(phase, Span::from_nanos(10 * SECOND - 1));
+            assert!(held, "the size keeps its pages at {phase:?}");
+            let idle = !kept(phase, Span::from_nanos(20 * SECOND + 1));
+            assert!(idle, "the pages went back at {phase:?}");
+        }
+    }
+
+    /// Whether a block size keeps its pages `wait` after its last block returned,
+    /// `phase` after the shard opened: whether a take of its block succeeds while the
+    /// memory refuses. The memory shows a purge only through its next commit: while
+    /// it refuses, a commit of bytes that the system still holds succeeds, and a
+    /// commit of purged bytes gives `Refused`.
+    fn kept(phase: Span, wait: Span) -> bool {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 1);
         let switch = Rc::new(RefCell::new(None));
@@ -2724,35 +2738,32 @@ mod pool {
             series.sort_unstable();
             // Takes a block for a frame of 4 KiB of samples and drops it at once.
             let take = || writer.draft(Form::Raw, &series).map(drop);
+            clock.sleep(phase).await;
             switch.refuse();
             let new = take();
             switch.allow();
             let carved = take();
             switch.refuse();
-            let kept = take();
-            let less = Span::from_nanos(PURGE.nanos() - 1);
-            clock.sleep(less).await;
-            let held = take();
+            let again = take();
+            clock.sleep(wait).await;
+            let later = take();
             switch.allow();
-            clock.sleep(Span::from_nanos(2 * PURGE.nanos())).await;
-            switch.refuse();
-            let idle = take();
-            switch.allow();
-            *out.lock().unwrap() = Some((new, carved, kept, held, idle));
+            *out.lock().unwrap() = Some((new, carved, again, later));
         });
-        let four = Span::from_nanos(4 * PURGE.nanos());
-        assert_eq!(sim.run_for(four), Ok(()));
+        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND)), Ok(()));
         let seen = seen.lock().unwrap().take();
-        let (new, carved, kept, held, idle) = seen.expect("the task ran to its end");
+        let (new, carved, again, later) = seen.expect("the task ran to its end");
         let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
         assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
         assert_eq!(carved, Ok(()), "the pool carves the block");
-        assert_eq!(kept, Ok(()), "a carved size needs no commit");
-        assert_eq!(held, Ok(()), "the size keeps its pages for one interval");
-        assert_eq!(idle, Err(refused), "the pages of the idle size went back");
+        assert_eq!(again, Ok(()), "a carved size needs no commit");
         node.stop();
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Ok(()));
+        if let Err(error) = &later {
+            assert_eq!(error, &refused, "the memory refused the take");
+        }
+        later.is_ok()
     }
 }
 
