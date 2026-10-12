@@ -485,32 +485,42 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
-/// A message after the open stops a read while its frames still come.
-#[test]
-fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
-    const FRAMES: i64 = 400;
-    let ready = async |test: &Test| writes_wide(test, FRAMES).await;
-    let home = read_session(310, ready, |mut agent| async move {
+/// Runs a complete read of 400 wide frames whose program ends its stream by `stop` 1 s
+/// after the open, and asserts that the program gets `heads` heads, then `end`.
+fn stop_while_frames_come(
+    stop: impl AsyncFnOnce(&mut Stream) + Send + 'static,
+    heads: usize,
+    end: Result<Option<Vec<u8>>, transport::Error>,
+) -> Home {
+    let ready = async |test: &Test| writes_wide(test, 400).await;
+    read_session(310, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
         agent.sleep(Span::SECOND).await;
-        stream.send(b"x").await;
+        stop(&mut stream).await;
         let mut frames = 0;
-        let end = loop {
+        let got = loop {
             match stream.recv().await {
                 Ok(Some(message)) => {
                     if let Ok(FromHome::Head(_)) = reader.decode(&message) {
                         frames += 1;
                     }
                 }
-                end => break end,
+                got => break got,
             }
         };
-        assert_eq!(end, reset_with(MALFORMED));
-        assert!(frames > 0, "frames came before the stop");
+        assert_eq!(got, end);
+        assert_eq!(frames, heads);
         finish(&mut agent).await;
-    });
+    })
+}
+
+/// A message after the open stops a read while its frames still come.
+#[test]
+fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
+    let message = async |stream: &mut Stream| stream.send(b"x").await;
+    let home = stop_while_frames_come(message, 228, reset_with(MALFORMED));
     let trailing = serve::Error::Client(client::Error::Trailing);
     assert_eq!(home.served, [Err(trailing), Ok(Got::Ended)]);
 }
@@ -519,29 +529,8 @@ fn stops_a_read_with_frames_to_send_at_a_message_after_its_open() {
 /// after the poll in which the finish arrives.
 #[test]
 fn ends_a_read_with_frames_to_send_at_a_finish_after_its_open() {
-    const FRAMES: i64 = 400;
-    let ready = async |test: &Test| writes_wide(test, FRAMES).await;
-    let home = read_session(310, ready, |mut agent| async move {
-        agent.admit().await;
-        let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
-        agent.sleep(Span::SECOND).await;
-        stream.sender.finish().expect("finishes");
-        let mut frames = 0;
-        let end = loop {
-            match stream.recv().await {
-                Ok(Some(message)) => {
-                    if let Ok(FromHome::Head(_)) = reader.decode(&message) {
-                        frames += 1;
-                    }
-                }
-                end => break end,
-            }
-        };
-        assert_eq!(end, Ok(None));
-        assert_eq!(frames, 228);
-        finish(&mut agent).await;
-    });
+    let finish = async |stream: &mut Stream| stream.sender.finish().expect("finishes");
+    let home = stop_while_frames_come(finish, 228, Ok(None));
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
