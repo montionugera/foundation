@@ -10,8 +10,9 @@
 //!
 //! The CRC covers `len`, `kind`, and the body, and it continues from the CRC of the
 //! record before: the chain. The writer starts a chain from a random value each
-//! time it opens the ring. Bytes from an earlier chain, at a record start or inside
-//! a body, then never read as the next record.
+//! time it opens the ring. Old bytes where the next record starts then read as that
+//! record only when they hold a record sealed with the chain value there, also from
+//! inside an old body: one chance in 2^32 for bytes that do not depend on that value.
 
 #![deny(
     clippy::indexing_slicing,

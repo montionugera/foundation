@@ -148,8 +148,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The least [`entry_max`](Self::entry_max) of any layout: the bytes of parts
-    /// that one entry alone holds in a record at the smallest `body_max`.
+    /// The least [`entry_max`](Self::entry_max) of any layout and the least
+    /// [`Buffer::block_max`](crate::Buffer::block_max) of any buffer: the bytes of
+    /// parts that one entry alone holds in a record at the smallest `body_max`.
     pub const ENTRY_MAX_MIN: usize = BODY_MIN - entry::table_len(1);
 
     /// A ring of `area` bytes whose records hold a body of at most `body_max` bytes.
@@ -240,8 +241,8 @@ impl Layout {
     /// Checks a batch of `entries` entries, with `parts` parts and `bytes` bytes of
     /// parts in all, against the limits of one record of this ring, as
     /// [`Buffer::append`](crate::Buffer::append) does before it queues the batch.
-    /// It does not check [`Limit::Block`](crate::Limit::Block), which depends on
-    /// the pool.
+    /// It does not check [`Limit::Block`](crate::Limit::Block), which
+    /// [`Buffer::block_max`](crate::Buffer::block_max) gives.
     ///
     /// # Errors
     ///
@@ -296,12 +297,12 @@ pub enum Limit {
         /// The layout's `body_max`.
         max: usize,
     },
-    /// An entry whose parts, joined, no block of the shard's pool holds. A read
-    /// gives each entry in one block.
+    /// An entry whose parts, joined, pass
+    /// [`Buffer::block_max`](crate::Buffer::block_max).
     Block {
         /// Bytes of the entry's parts.
         len: usize,
-        /// The pool's largest block payload.
+        /// [`Buffer::block_max`](crate::Buffer::block_max).
         max: usize,
     },
 }
@@ -325,8 +326,8 @@ impl fmt::Display for Limit {
             ),
             Self::Block { len, max } => write!(
                 f,
-                "an entry has {len} bytes of parts, and a block of the pool holds at \
-                 most {max}"
+                "an entry has {len} bytes of parts, and an entry of this buffer holds \
+                 at most {max}"
             ),
         }
     }
