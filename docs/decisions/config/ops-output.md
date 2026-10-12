@@ -58,12 +58,13 @@
   base compare: the message names the newest pointer and one line for its `Cause`, and
   the fix is `Fix the cause, then plan again`. One private function of `ops` reads
   `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`),
-  and one step of that spec gives this error. A plan whose base is not the spec in
-  use, before the proposal or after
-  another change applies first, is `ops.stale-plan`, status 1, fix `Plan again`. Each
-  other error of `Mesh::apply`, except a stop, is `ops.apply`, status 1, with its
-  `Display` as the message and the fix `Fix the cause in the message, then plan and
-  apply again`. A stop of the group of the mesh, from `Mesh::spec` or from
+  and one step of that spec gives this error. This supersedes the one function of item
+  1 of https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913,
+  which also gives `ops.behind`. A plan whose base is not the spec in use, before the
+  proposal or after another change applies first, is `ops.stale-plan`, status 1, fix
+  `Plan again`. Each other error of `Mesh::apply`, except a stop, is `ops.apply`, status
+  1, with its `Display` as the message and the fix `Fix the cause in the message, then
+  plan and apply again`. A stop of the group of the mesh, from `Mesh::spec` or from
   `Mesh::apply`, is `ops.stopped`, status 1, in `plan` and in `apply`, with the
   `Display` of the stop as the message and the fix `Fix the cause in the message, then
   start the node and plan again`. It can come after a proposal, so plan again to see
@@ -124,14 +125,13 @@
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6072065332).
   The plan output also has `reserved`: each definition of the spec in use that
   Foundation made, as `Reserved { name, kind, key }` with its label, its kind, and its
-  tree key, in the order of its tree key. `plan` leaves these out of its changes,
-  since no file can hold
-  a reserved label (FIRST ADMIN). When the spec holds one, the text ends with one line
-  after the counts: `note: <n> definitions that Foundation made are not in the files:`
-  and the tree key of each, with `, ` between two, or `note: 1 definition that
-  Foundation made is not in the files:` and its tree key. A spec with none gives no
-  line and an empty `reserved`. The text and the field are item 4 of plan revision 1
-  of #1744, by `laptop.architect-2` (2026-10-08T06:01:36Z,
+  tree key, in the order of its tree key. `plan` leaves these out of its changes, since
+  no file can hold a reserved label (FIRST ADMIN). When the spec holds one, the text
+  ends with one line after the counts: `note: <n> definitions that Foundation made are
+  not in the files:` and the tree key of each, with `, ` between two, or `note: 1
+  definition that Foundation made is not in the files:` and its tree key. A spec with
+  none gives no line and an empty `reserved`. The text and the field are item 4 of plan
+  revision 1 of #1744, by `laptop.architect-2` (2026-10-08T06:01:36Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053458318), which
   revision 3 moves to PR 2 (2026-10-10T03:30:54Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). The
