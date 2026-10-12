@@ -32,8 +32,10 @@
   put early by the room of that file, until the next put that stores a chunk
   (`laptop.architect`, 2026-10-11T05:39:27Z:
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105909022). `node`
-  gives 1 GiB until #1662 makes it a setting (`laptop.architect-2`,
-  2026-10-09T03:49:41Z:
+  gives `node::Settings::floor_bytes`, 1 GiB by default (`laptop.architect-2`,
+  2026-10-12T15:50:49Z:
+  https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083), as
+  `laptop.architect-2` asked (2026-10-09T03:49:41Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). Lost: a
   `Peer` handle that keeps one long stream and pipelines each request (a shallow
   wrapper, and a join of send and receive to keep both windows from filling);

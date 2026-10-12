@@ -19,6 +19,7 @@ impl Status {
     pub(crate) const BAD_CONNECTION_CLOSED: Self = Self(0x80AE_0000);
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
+    pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
     #[cfg(test)]
     pub(crate) const BAD_INTERNAL_ERROR: Self = Self(0x8002_0000);
     #[cfg(test)]
@@ -389,7 +390,7 @@ unsafe extern "C" {
         length: usize,
     );
 
-    pub(crate) fn shim_client_new(el: *mut EventLoop) -> *mut Client;
+    pub(crate) fn shim_client_new(el: *mut EventLoop, chunks: u32) -> *mut Client;
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);

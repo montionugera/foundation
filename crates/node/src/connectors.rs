@@ -6,8 +6,10 @@ use std::rc::Rc;
 
 use connector::cancel;
 use connector::supervisor::{self, Supervisor};
+use spec::channel::Kind;
 use spec::connector::Connector;
 use spec::definition::Definition;
+use types::channel;
 use types::name::Name;
 
 use crate::scope::Scope;
@@ -68,11 +70,21 @@ impl Drop for Pending {
     }
 }
 
+/// One connector as the spec in use places it.
+#[derive(Clone, PartialEq)]
+struct Placed {
+    connector: Connector,
+    /// The keys of its status channels: its status index first, then each channel on
+    /// it. A new key means that a spec the node did not see removed the channel, also
+    /// with an equal `connector`.
+    status: Vec<channel::Key>,
+}
+
 /// The state that `apply` and the loop of one name share.
 struct Loop {
     /// `None` once the spec removed the connector.
-    connector: Option<Connector>,
-    /// Cancelled when `connector` changes. It cancels the run in progress.
+    placed: Option<Placed>,
+    /// Cancelled when `placed` changes. It cancels the run in progress.
     changed: cancel::Token,
     /// Cancelled at each apply. A run that gave `Config` runs again once the token of
     /// its start is cancelled, also by an apply before `run` returned.
@@ -94,13 +106,13 @@ enum First {
 }
 
 impl Loop {
-    /// Sets the connector to `wanted`, and cancels the run of the old one. Before the
+    /// Sets the placement to `wanted`, and cancels the run of the old one. Before the
     /// first run, a change counts the next open in `opens`, and a removal frees it.
-    fn change(&mut self, wanted: Option<Connector>, opens: &Rc<Opens>) {
-        self.connector = wanted;
+    fn change(&mut self, wanted: Option<Placed>, opens: &Rc<Opens>) {
+        self.placed = wanted;
         self.changed.cancel();
         self.changed = cancel::Token::new();
-        match (&self.connector, &self.first) {
+        match (&self.placed, &self.first) {
             (None, First::Opening(_)) => self.first = First::Waiting,
             (Some(_), First::Waiting) => self.first = First::Opening(opens.begin()),
             _ => {}
@@ -144,14 +156,20 @@ impl Runs {
     /// Makes the runs match the connectors of `definitions` on the node. Cancels the
     /// run of each connector that is gone or changed, and starts a run of each one
     /// that is new or changed, or whose last run gave `Config`, after the last run of
-    /// its name returned. Each other connector keeps its run. The first run of a loop
-    /// waits until no open of a loop whose first run has not started is pending.
+    /// its name returned. Each other connector keeps its run. A connector with a new
+    /// key of a status channel is changed. The first run of a loop waits until no open
+    /// of a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
-        let wanted: BTreeMap<&Name, &Connector> = definitions
+        let by_index = by_index(definitions);
+        let wanted: BTreeMap<&Name, Placed> = definitions
             .iter()
             .filter_map(|(name, definition)| match definition {
                 Definition::Connector(connector) if *connector.node() == self.node => {
-                    Some((name, connector))
+                    let placed = Placed {
+                        connector: connector.clone(),
+                        status: status(definitions, &by_index, name),
+                    };
+                    Some((name, placed))
                 }
                 _ => None,
             })
@@ -163,18 +181,18 @@ impl Runs {
             }
             state.applied.cancel();
             state.applied = cancel::Token::new();
-            let wanted = wanted.get(name).copied();
-            if state.connector.as_ref() != wanted {
+            let wanted = wanted.get(name);
+            if state.placed.as_ref() != wanted {
                 state.change(wanted.cloned(), &self.opens);
             }
             true
         });
-        for (name, connector) in wanted {
+        for (name, placed) in wanted {
             if self.loops.contains_key(name) {
                 continue;
             }
             let state = Rc::new(RefCell::new(Loop {
-                connector: Some(connector.clone()),
+                placed: Some(placed),
                 changed: cancel::Token::new(),
                 applied: cancel::Token::new(),
                 ended: false,
@@ -189,6 +207,42 @@ impl Runs {
     }
 }
 
+/// The keys of the data channels on each index channel of `definitions`, in their
+/// order.
+fn by_index(
+    definitions: &BTreeMap<Name, Definition>,
+) -> BTreeMap<channel::Key, Vec<channel::Key>> {
+    let mut by_index: BTreeMap<channel::Key, Vec<channel::Key>> = BTreeMap::new();
+    for definition in definitions.values() {
+        if let Definition::Channel(channel) = definition
+            && let Kind::Data(data) = &channel.kind
+        {
+            by_index.entry(*data.index()).or_default().push(channel.key);
+        }
+    }
+    by_index
+}
+
+/// The keys of the status channels of the connector `name`: its status index, then
+/// each channel on it in `by_index`. Empty when the status names are refused or
+/// `definitions` has no channel at the name of the index; the open of the status
+/// session then fails.
+fn status(
+    definitions: &BTreeMap<Name, Definition>,
+    by_index: &BTreeMap<channel::Key, Vec<channel::Key>>,
+    name: &Name,
+) -> Vec<channel::Key> {
+    let Ok((index, _)) = connector::status::channels(name, &[]) else {
+        return Vec::new();
+    };
+    let Some(Definition::Channel(index)) = definitions.get(&index) else {
+        return Vec::new();
+    };
+    let mut keys = vec![index.key];
+    keys.extend(by_index.get(&index.key).into_iter().flatten().copied());
+    keys
+}
+
 /// The loop of the name `name`: runs its connector until a change removes it. Its
 /// first run starts once `opens` settled, with its own count freed.
 async fn run(
@@ -200,7 +254,7 @@ async fn run(
     loop {
         let (connector, changed, applied) = {
             let mut state = state.borrow_mut();
-            let Some(connector) = state.connector.clone() else {
+            let Some(Placed { connector, .. }) = state.placed.clone() else {
                 state.ended = true;
                 return;
             };
