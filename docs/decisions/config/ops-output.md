@@ -61,18 +61,22 @@
   call on that spec, the check that it is the newest, gives this error. This supersedes
   the one function of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, which also
-  gives `ops.behind`. A plan whose base is not the spec in use, before the proposal or
-  after another change applies first, is `ops.stale-plan`, status 1, fix `Plan again`.
-  Each other error of `Mesh::apply`, except a stop, is `ops.apply`, status 1, with its
-  `Display` as the message and the fix `Fix the cause in the message, then plan and
-  apply again`. A stop of the group of the mesh, from `Mesh::spec` or from
-  `Mesh::apply`, is `ops.stopped`, status 1, in `plan` and in `apply`, with the
-  `Display` of the stop as the message and the fix `Fix the cause in the message, then
-  start the node and plan again`. It can come after a proposal, so plan again to see
-  whether the change applied. Lost: a code for each variant of the stop, which gives a
-  better hint but adds three codes for one cause. The code has only this cause: #1744
-  gives a node that does not run `ops.no-node` (`laptop.architect-2`,
-  2026-10-09T23:13:35Z,
+  gives `ops.behind`. The one reader and its newest check are by `laptop.architect-2`
+  (2026-10-12T18:47:07Z, item 2 and the first text fix of
+  https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446) and, for
+  `Mesh::spec`, by `laptop.architect` (2026-10-12T19:42:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6131381280). A plan
+  whose base is not the spec in use, before the proposal or after another change applies
+  first, is `ops.stale-plan`, status 1, fix `Plan again`. Each other error of
+  `Mesh::apply`, except a stop, is `ops.apply`, status 1, with its `Display` as the
+  message and the fix `Fix the cause in the message, then plan and apply again`. A stop
+  of the group of the mesh, from `Mesh::spec` or from `Mesh::apply`, is `ops.stopped`,
+  status 1, in `plan` and in `apply`, with the `Display` of the stop as the message and
+  the fix `Fix the cause in the message, then start the node and plan again`. It can
+  come after a proposal, so plan again to see whether the change applied. Lost: a code
+  for each variant of the stop, which gives a better hint but adds three codes for one
+  cause. The code has only this cause: #1744 gives a node that does not run
+  `ops.no-node` (`laptop.architect-2`, 2026-10-09T23:13:35Z,
   https://github.com/synnaxlabs/foundation/pull/2192#issuecomment-6090851088).
   Supersedes the code `ops.stopped` of `Unreached::Stopped` in
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935.

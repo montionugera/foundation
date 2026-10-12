@@ -34,7 +34,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
-| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL of the data directory opens. With write, it can write the node's keys and so become that node. With write to the data directory before the start that founds the root region, it can write `admin.key`, which that start founds with, and so choose the first admin of the root region. With read of `admin.key`, it is the first admin | Read, write, or list another file or directory that `os` makes; read memory of the process |
+| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL opens: an ACL of the data directory, or the entries that a directory gives to its new files, which a file that `os::paths` writes there takes on macOS, also in place of a file that had none. With write, it can write the node's keys and so become that node. With write to the data directory before the start that founds the root region, it can write `admin.key`, which that start founds with, and so choose the first admin of the root region. With read of `admin.key`, it is the first admin | Read, write, or list another file or directory that `os` makes; read memory of the process |
 | Agent host | Use the key of the agent's subject, which the MCP process holds | Go past that subject's allows |
 | Dependency | Ship hostile or defective code in a crate we build | |
 
@@ -129,14 +129,15 @@ state on `main`.
   region has the peer's public key, once, at the header (NODE PORT); it rejects a
   client's until #1744. `node` stops and resets each other stream until its protocol
   has a server. It reads no datagram yet (#1661). It admits each member of the region to
-  a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. At the bound, the oldest place frees for
-  the new peer, and its sessions close unless its peer is now a member. So a peer
-  outside the region keeps its session until 256 later peers took a place. A flood that
-  takes 256 places in the time that a peer needs to prove its right (a member, the
-  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
-  limit on handshakes before admission bounds that rate (#563). It rejects a stream
-  whose header has not arrived within 10 s.
+  a session, and gives other peers at most 256 places by default
+  (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
+  for the key of a node. At the bound, the oldest place frees for the new peer, and its
+  sessions close unless its peer is now a member. So a peer outside the region keeps its
+  session until that many later peers took a place. A flood that takes that many
+  places in the time that a peer needs to prove its right (a member, the client hello
+  of #1744, or the ticket of #1157) closes that peer's session; only a limit on
+  handshakes before admission bounds that rate (#563). It rejects a stream whose header
+  has not arrived within 10 s by default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
@@ -396,8 +397,11 @@ state on `main`.
 - Each third-party crate needs a person's approval (`docs/dependencies.md`).
   `cargo deny check advisories bans licenses sources` runs in CI on each change to a
   manifest. aws-lc-rs is the only crypto provider, with one recorded exception.
-- `unsafe` is denied in the workspace. The crates that allow it (`block`, `ring`,
-  `counting`, `waker`) run under Miri in CI.
+- `unsafe` is denied in the workspace. Each use expects `unsafe_code` with a reason
+  (`docs/claude/rust.md`, "Unsafe"). `cargo xtask miri` runs each crate that names
+  `unsafe_code` under Miri, except `os` and `connector-opcua`, which Miri cannot run.
+  CI starts it on a change to a `models` path of `ci.yaml`, which names each crate
+  that it runs and each workspace crate that one of them depends on.
 - The `fuzz/` crate has its own lock file. The `deny` job of `ci.yaml` checks it with
   `cargo deny` on each change to it.
 - A local patch of a Rust crate (`patches/`) is a path package, which `cargo deny`

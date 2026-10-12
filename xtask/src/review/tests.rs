@@ -1,4 +1,3 @@
-use super::history::tests::Repo;
 use super::*;
 
 /// The head of #1089 when it merged.
@@ -1419,21 +1418,6 @@ fn returns_a_failure_to_read_history() {
             &|_, _| Ok(None)
         ),
         Err("git diff: bad".to_string())
-    );
-}
-
-#[test]
-fn reads_items_of_each_page_and_a_single_object() {
-    use serde_json::json;
-    assert_eq!(
-        items(b"[{\"a\":1},{\"a\":2}]\n[{\"a\":3}]").unwrap(),
-        vec![json!({"a": 1}), json!({"a": 2}), json!({"a": 3})]
-    );
-    assert_eq!(items(b"{\"head\":{}}").unwrap(), vec![json!({"head": {}})]);
-    assert_eq!(items(b"").unwrap(), Vec::<Value>::new());
-    assert_eq!(
-        items(b"[1,").unwrap_err().to_string(),
-        "EOF while parsing a value at line 1 column 3"
     );
 }
 

@@ -272,3 +272,25 @@
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
   supersedes the bind before any shard starts of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
+  Amended (2026-10-12, #1662, by `laptop.architect-2`, 15:50 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083. The
+  limits above, the 10 s wait for a header, and the 256 places are the defaults of
+  `node::Settings`, the field `settings` of `node::Config`, and are constants no more.
+  `foundation` gives the defaults. No spec sets them yet: a `node_settings` policy does
+  when a node applies one (#2453, after #2074), so the window keeps its cap until then.
+  The transport is the one place that refuses a value, as the buffer is for a part of
+  the pool budget (NODE SETTINGS). By then the node has claimed its data directory and
+  bound its port, and `Node::join` gives `Error::Transport` with the
+  `transport::Error::Config`. Lost: one field of `node::Config` for each value; the
+  constants until #2453, which lets no simulation run a node at small limits; a check in
+  `Node::start` before a shard starts, which states the rules of the transport a second
+  time for values that only a test gives until #2453. #2453 checks the values of a
+  policy before a node keeps them. Supersedes the limits as constants of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669
+  (2026-10-07 21:09 UTC), the floor as a patch of
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818
+  (2026-10-09 03:49 UTC), the two bounds as patches of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), and the window that #1662 sizes of
+  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609
+  (2026-10-07 23:41 UTC).
