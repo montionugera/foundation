@@ -33,12 +33,10 @@ pub type Task = Pin<Box<dyn Future<Output = ()>>>;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Tasks(Spawner);
-
-#[derive(Clone)]
-enum Spawner {
-    Driver(Rc<dyn Driver>),
-    Counting(Rc<Counting>),
+pub struct Tasks {
+    driver: Rc<dyn Driver>,
+    // The count of the innermost group that spawns through this handle.
+    count: Option<Rc<Count>>,
 }
 
 impl Tasks {
@@ -50,7 +48,10 @@ impl Tasks {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Spawner::Driver(Rc::new(driver)))
+        Self {
+            driver: Rc::new(driver),
+            count: None,
+        }
     }
 
     /// Starts `task` on this shard. It has no handle: stop it through its own cancel
@@ -66,17 +67,19 @@ impl Tasks {
     /// }
     /// ```
     pub fn spawn(&self, task: impl Future<Output = ()> + 'static) {
-        match &self.0 {
-            Spawner::Driver(driver) => driver.spawn(Box::pin(task)),
-            Spawner::Counting(counting) => counting.spawn(Box::pin(task)),
-        }
-    }
-
-    // Not generic: a group made on a group's tasks would recurse without end in types.
-    fn spawn_task(&self, task: Task) {
-        match &self.0 {
-            Spawner::Driver(driver) => driver.spawn(task),
-            Spawner::Counting(counting) => counting.spawn(task),
+        match &self.count {
+            None => self.driver.spawn(Box::pin(task)),
+            Some(count) => {
+                let mut next = Some(&**count);
+                while let Some(group) = next {
+                    group.live.set(group.live.get().strict_add(1));
+                    next = group.parent.as_deref();
+                }
+                self.driver.spawn(Box::pin(Counted {
+                    task: Box::pin(task),
+                    _held: Held(Rc::clone(count)),
+                }));
+            }
         }
     }
 }
@@ -124,12 +127,15 @@ impl Group {
     /// A group with no task, which spawns on `tasks`.
     #[must_use]
     pub fn new(tasks: Tasks) -> Self {
-        let count = Rc::<Count>::default();
+        let count = Rc::new(Count {
+            parent: tasks.count,
+            ..Count::default()
+        });
         Self {
-            tasks: Tasks(Spawner::Counting(Rc::new(Counting {
-                tasks,
-                count: Rc::clone(&count),
-            }))),
+            tasks: Tasks {
+                driver: tasks.driver,
+                count: Some(Rc::clone(&count)),
+            },
             count,
         }
     }
@@ -163,31 +169,14 @@ impl fmt::Debug for Group {
     }
 }
 
-// Spawns each task on the shard's `Tasks` with the group's count.
-struct Counting {
-    tasks: Tasks,
-    count: Rc<Count>,
-}
-
-impl Counting {
-    // Generic so that each poll of the task is a static call from `Counted`.
-    fn spawn<F: Future<Output = ()> + ?Sized + 'static>(&self, task: Pin<Box<F>>) {
-        self.count.live.set(self.count.live.get().strict_add(1));
-        self.tasks.spawn_task(Box::pin(Counted {
-            task,
-            _held: Held(Rc::clone(&self.count)),
-        }));
-    }
-}
-
 // The fields drop in order, so the task's future drops before its count, also when
 // the shard drops it while it waits.
-struct Counted<F: ?Sized> {
+struct Counted<F> {
     task: Pin<Box<F>>,
     _held: Held,
 }
 
-impl<F: Future<Output = ()> + ?Sized> Future for Counted<F> {
+impl<F: Future<Output = ()>> Future for Counted<F> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -195,20 +184,27 @@ impl<F: Future<Output = ()> + ?Sized> Future for Counted<F> {
     }
 }
 
+// Holds the task in its group and in each group that the group spawns through.
 struct Held(Rc<Count>);
 
 impl Drop for Held {
     fn drop(&mut self) {
-        let live = self.0.live.get().strict_sub(1);
-        self.0.live.set(live);
-        if live == 0 {
-            self.0.waiting.take().into_values().for_each(Waker::wake);
+        let mut next = Some(&*self.0);
+        while let Some(group) = next {
+            let live = group.live.get().strict_sub(1);
+            group.live.set(live);
+            if live == 0 {
+                group.waiting.take().into_values().for_each(Waker::wake);
+            }
+            next = group.parent.as_deref();
         }
     }
 }
 
 #[derive(Default)]
 struct Count {
+    // The count of the group whose `Tasks` made this group.
+    parent: Option<Rc<Count>>,
     live: Cell<usize>,
     // The waker of each `Ended` that waits, by its slot.
     waiting: RefCell<BTreeMap<u64, Waker>>,
