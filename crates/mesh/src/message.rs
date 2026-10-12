@@ -34,6 +34,10 @@ const APPEND_REJECT: u8 = 9;
 /// of [`RECORD_MAX`] bytes. Each member takes a message of this size.
 pub(crate) const BYTES_MIN: usize = RECORD_MAX + 100;
 
+// The bytes of an entry that holds a record of `RECORD_MAX` bytes: its position, its
+// kind, the length, and the record.
+const ENTRY_MAX: usize = 16 + 1 + 8 + RECORD_MAX;
+
 /// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
 /// `raft::Config::fits`.
 pub(crate) fn fits(message: &raft::Message) -> bool {
@@ -129,7 +133,8 @@ impl Message {
     }
 
     /// The message that `bytes` is the byte form of, or `None` when it is the byte
-    /// form of no message.
+    /// form of no message or of an `Append` with an entry that holds more than a
+    /// record of [`RECORD_MAX`] bytes.
     pub(crate) fn decode(mut bytes: &[u8]) -> Option<Self> {
         let bytes = &mut bytes;
         let message = match u8::from_le_bytes(take(bytes)?) {
@@ -256,6 +261,11 @@ fn take_body(bytes: &mut &[u8]) -> Option<Body> {
             let prev = take_position(bytes)?;
             let commit = u64::from_le_bytes(take(bytes)?);
             let entries = entry::decode(std::mem::take(bytes))?;
+            // `raft` must fit each entry in an `Append` alone.
+            let alone = |entry| entry::len(std::slice::from_ref(entry)) <= ENTRY_MAX;
+            if !entries.iter().all(alone) {
+                return None;
+            }
             Body::Append {
                 prev,
                 entries,
@@ -841,6 +851,58 @@ mod tests {
             chain: Vec::new(),
         })
         .encode();
+    }
+
+    #[test]
+    fn decode_refuses_an_append_of_a_record_over_record_max_bytes() {
+        let append = |bytes| {
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![Entry {
+                    at: at(1, 1),
+                    data: Data::Bytes(vec![0; bytes]),
+                }],
+                commit: 0,
+            })
+        };
+        let most = append(RECORD_MAX);
+        assert_eq!(Message::decode(&most.encode()), Some(most));
+        assert_eq!(Message::decode(&append(RECORD_MAX + 1).encode()), None);
+    }
+
+    #[test]
+    fn decode_refuses_an_append_of_a_change_over_record_max_and_8_bytes() {
+        let append = |voters: u128| {
+            let change = raft::Change {
+                voters: Voters {
+                    incoming: (1..=voters).map(node::Key::from_u128).collect(),
+                    outgoing: BTreeSet::new(),
+                },
+                votes: Proof {
+                    grant: Grant::Vote,
+                    candidate: key(1),
+                    voters: [(key(1), Some(signature(1)))].into(),
+                },
+                signature: Some(signature(2)),
+            };
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![Entry {
+                    at: at(1, 1),
+                    data: Data::Voters(change),
+                }],
+                commit: 0,
+            })
+        };
+        // The bytes of the change: the message less its head, the entry's position, and
+        // its kind.
+        let bytes =
+            |voters| append(voters).encode().len() - (BYTES_MIN - RECORD_MAX - 8);
+        let most = 1 + u128::try_from(RECORD_MAX - bytes(1)).unwrap() / 16;
+        assert_eq!(bytes(most), RECORD_MAX - 6);
+        assert_eq!(bytes(most + 1), RECORD_MAX + 10);
+        assert_eq!(Message::decode(&append(most).encode()), Some(append(most)));
+        assert_eq!(Message::decode(&append(most + 1).encode()), None);
     }
 
     #[test]
