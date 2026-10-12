@@ -36,9 +36,9 @@ impl Applied {
     }
 }
 
-/// Applies each spec that the watch in `state` gives. It holds `state` only during a
-/// poll, so the first poll after the state drops ends it. It also ends when the group
-/// stops.
+/// Applies the spec in use each time the watch in `state` gives one. It holds `state`
+/// only during a poll, so the first poll after the state drops ends it. It also ends
+/// when the group stops.
 pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
     poll_fn(|cx| {
         loop {
@@ -53,11 +53,7 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
             match next {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(_)) => return Poll::Ready(()),
-                Poll::Ready(Ok(spec)) => {
-                    if applied.moved(&spec) {
-                        state.define(&*spec.definitions);
-                    }
-                }
+                Poll::Ready(Ok(_)) => state.catch_up(),
             }
         }
     })
