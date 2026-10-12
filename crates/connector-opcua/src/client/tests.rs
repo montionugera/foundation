@@ -33,7 +33,8 @@ const FITS: Node = Node {
     key: 1002,
 };
 
-/// A `ByteString` whose answer needs 9 chunks, one past [`CHUNKS`], from [`read_large`].
+/// A `ByteString` whose answer needs 9 chunks, one past [`CHUNKS`], from
+/// [`read_large`].
 const PAST: Node = Node {
     namespace: 1,
     key: 1003,
@@ -291,8 +292,8 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 }
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
-/// Gives its answer, the time it took, and the reads in flight after it.
-fn read_after(dropped: u16) -> (Result<f64, Status>, Span, u16) {
+/// Gives its answer and the time it took.
+fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -302,77 +303,124 @@ fn read_after(dropped: u16) -> (Result<f64, Status>, Span, u16) {
             let start = peer.clock.now();
             let read = client.read(VALUE).await;
             let took = peer.clock.now() - start;
-            let pending = client.reads.pending.get();
             peer.paused.set(false);
             client.close().await;
-            (read, took, pending)
+            (read, took)
         })
         .await
     });
     out
 }
 
-/// Below the bound, a read sends its request and times out, which leaves it in flight.
-/// At the bound, the dropped reads stay in flight, so it times out in its wait and
-/// sends nothing.
+/// Below the bound, a read sends its request and times out. At the bound, the dropped
+/// reads stay in flight, so it times out in its wait and sends nothing.
 #[test]
-fn a_read_at_the_bound_waits_for_a_dropped_read_to_end() {
-    let (below, below_took, below_pending) = read_after(15);
-    let (at, at_took, at_pending) = read_after(16);
+fn a_read_at_the_bound_times_out_in_its_wait() {
+    let (below, below_took) = read_after(15);
+    let (at, at_took) = read_after(16);
     assert_eq!(
-        (below, below_pending, at, at_pending),
-        (Err(Status::BAD_TIMEOUT), 16, Err(Status::BAD_TIMEOUT), 16)
+        (below, at),
+        (Err(Status::BAD_TIMEOUT), Err(Status::BAD_TIMEOUT))
     );
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(timeout.contains(&below_took), "{below_took:?}");
     assert!(timeout.contains(&at_took), "{at_took:?}");
 }
 
+/// Reads [`VALUE`] while [`Peer::paused`] is set, except for one pass of the server
+/// `at` after the read starts. Gives its answer and the time it took.
+async fn read_with_pass(
+    client: &mut Client,
+    peer: &Peer<'_>,
+    at: Span,
+) -> (Result<f64, Status>, Span) {
+    let start = peer.clock.now();
+    let mut pass = pin!(peer.clock.sleep(at));
+    let (mut woke, mut passed) = (false, false);
+    let mut read = pin!(client.read(VALUE));
+    let read = poll_fn(|cx| {
+        if !woke && pass.as_mut().poll(cx).is_ready() {
+            woke = true;
+            peer.paused.set(false);
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        if woke && !passed {
+            passed = true;
+            peer.paused.set(true);
+        }
+        read.as_mut().poll(cx)
+    })
+    .await;
+    (read, peer.clock.now() - start)
+}
+
+/// A read at the bound whose wait ends 3 s in still times out 5 s after it starts.
+#[test]
+fn the_timeout_of_a_read_counts_its_wait() {
+    let ((read, took), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            drop_reads(&mut client, 16).await;
+            let out =
+                read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
+                    .await;
+            peer.paused.set(false);
+            client.close().await;
+            out
+        })
+        .await
+    });
+    assert_eq!(read, Err(Status::BAD_TIMEOUT));
+    let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(timeout.contains(&took), "{took:?}");
+}
+
 /// The answers of 16 dropped reads end them all, so a read after one more dropped read
-/// sends its request and leaves two reads in flight.
+/// sends its request at once and gets its answer in one pass of the server.
 #[test]
 fn the_answers_of_dropped_reads_end_them() {
-    let ((read, pending), _) = run(0, async |node| {
+    let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             drop_reads(&mut client, 16).await;
             peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
             peer.paused.set(true);
             drop_reads(&mut client, 1).await;
-            let read = client.read(VALUE).await;
-            let pending = client.reads.pending.get();
+            let (read, _) =
+                read_with_pass(&mut client, &peer, Span::from_nanos(1_000_000_000))
+                    .await;
             peer.paused.set(false);
             client.close().await;
-            (read, pending)
+            (read, peer.value)
         })
         .await
     });
-    assert_eq!((read, pending), (Err(Status::BAD_TIMEOUT), 2));
+    assert_eq!(read, Ok(value));
 }
 
-/// A stalled server keeps each request of a read that timed out, and answers them all
-/// in one pass when it runs again. Without the bound on its requests, the 257th answer
-/// closes the channel.
+/// A stalled server keeps the request of each read that timed out, and answers them
+/// all in one pass when it runs again. Without the bound on its requests, 17 rounds of
+/// 16 dropped reads send 272, and the 257th answer closes the channel.
 #[test]
-fn a_read_after_272_reads_on_a_stalled_server_gives_the_value() {
-    let ((timeouts, read, value), _) = run(0, async |node| {
+fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
+    let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             peer.paused.set(true);
-            let mut timeouts = Vec::new();
-            for _ in 0..16 {
+            for _ in 0..17 {
                 drop_reads(&mut client, 16).await;
-                timeouts.push(client.read(VALUE).await);
+                peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
             }
             peer.paused.set(false);
             peer.clock.sleep(Span::from_nanos(10_000_000)).await;
             let read = client.read(VALUE).await;
             client.close().await;
-            (timeouts, read, peer.value)
+            (read, peer.value)
         })
         .await
     });
-    assert_eq!(timeouts, vec![Err(Status::BAD_TIMEOUT); 16]);
     assert_eq!(read, Ok(value));
 }
 
