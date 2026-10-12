@@ -261,6 +261,7 @@ impl Lab {
                     .name
                     .parse()
                     .expect("lab failure: a node name is a name"),
+                settings: node::Settings::default(),
             });
             member.node = Some(node);
         }

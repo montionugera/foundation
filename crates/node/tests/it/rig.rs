@@ -46,7 +46,8 @@ impl Rig {
     /// get the same PID. On Unix, first removes the directory of each test process of
     /// this user that is gone, also when a node that it started still runs there. A
     /// directory in which such a node makes a file during the removal stays until a
-    /// later rig. Its data directory keeps a pool budget of 1 GiB and a disk budget of
+    /// later rig, and one whose PID the OS gave to another process stays while that
+    /// process runs. Its data directory keeps a pool budget of 1 GiB and a disk budget of
     /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter of
     /// the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
@@ -761,6 +762,30 @@ fn a_sweep_passes_over_a_directory_that_a_process_writes_in() {
     assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
+/// A sweep passes over a directory that is gone before its remove, and panics on any
+/// other error of the remove.
+#[test]
+#[cfg(unix)]
+fn a_sweep_panics_when_a_remove_fails_with_another_error() {
+    let rig = Rig::new();
+    let made = rig
+        .dir
+        .join(format!("{PREFIX}{}-made-0", std::process::id()));
+    let dead = rig.dir.join(format!("{PREFIX}{}-denied-0", gone()));
+    for dir in [&made, &dead] {
+        std::fs::create_dir(dir).expect("make the directory");
+    }
+    sweep(&made, |_| Err(ErrorKind::NotFound.into()));
+    let swept = std::panic::AssertUnwindSafe(|| {
+        sweep(&made, |_| Err(ErrorKind::PermissionDenied.into()));
+    });
+    let panic = std::panic::catch_unwind(swept).expect_err("the sweep panics");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some(&*format!("remove {}: permission denied", dead.display()))
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_rig_keeps_a_file_with_the_name_of_a_directory() {
@@ -1187,8 +1212,14 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`] runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills its
-/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
+/// The status with which [`a_run_dies_while_it_leaves_a_directory`] exits. The test
+/// binary gives 0 or 101 in each other case.
+const DIED: i32 = 3;
+
+/// Exits with [`DIED`] after it made the tree of [`create_tree`] and while
+/// [`create_left`] fills its draft, as a killed run does: `exit` runs no destructor.
+/// Does nothing when [`DIES`] is not set. It does not abort, because on macOS each
+/// abort writes a crash report that no sweep removes.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1198,7 +1229,12 @@ fn a_run_dies_while_it_leaves_a_directory() {
     )]
     if std::env::var_os(DIES).is_some() {
         create_tree(0);
-        create_left(gone(), "died", |_| std::process::abort());
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::exit,
+            reason = "the child dies with no destructor, as a killed run does"
+        )]
+        create_left(gone(), "died", |_| std::process::exit(DIED));
     }
 }
 
@@ -1206,8 +1242,6 @@ fn a_run_dies_while_it_leaves_a_directory() {
 #[test]
 #[cfg(unix)]
 fn a_sweep_removes_the_draft_of_a_run_that_died() {
-    use std::os::unix::process::ExitStatusExt;
-
     let mut child = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", "rig::a_run_dies_while_it_leaves_a_directory"])
         .env(DIES, "1")
@@ -1217,9 +1251,9 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
         .expect("run the test binary");
     let status = child.wait().expect("wait for the test binary");
     assert_eq!(
-        status.signal(),
-        Some(6),
-        "the run does not abort in `create_left`"
+        status.code(),
+        Some(DIED),
+        "the run does not exit in `create_left`"
     );
     drop(Rig::new());
     // Any draft of the child, whatever its name.

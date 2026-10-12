@@ -1,4 +1,4 @@
-//! `node::name` on a data directory with no file `name` and no file `node.key` makes no
+//! `node::name` on a data directory with no file `name` and no mesh directory makes no
 //! pool for the read of a founding, whose reservation is over 2 MiB. The count covers
 //! each thread, so this binary has no test harness.
 

@@ -171,6 +171,7 @@ unsafe extern "C" {
         port: u16,
         host: *const std::ffi::c_char,
         sessions: u16,
+        chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
     pub(crate) fn shim_server_add_double(
@@ -179,6 +180,13 @@ unsafe extern "C" {
         node: u32,
         value: f64,
     ) -> u32;
+    pub(crate) fn shim_server_add_bytes(
+        server: *mut Server,
+        namespace: u16,
+        node: u32,
+        length: usize,
+    ) -> u32;
+    pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;

@@ -11,7 +11,7 @@ use types::ed25519::PublicKey;
 use types::name::{Name, Prefix};
 use types::node;
 
-use raft::Voters;
+use raft::{NoMajority, Voters};
 use spec::definition::Definition;
 
 use crate::bytes::{
@@ -288,7 +288,7 @@ impl State {
                 pointer: self.pointer,
             });
         }
-        quorum(&self.voters, holders)?;
+        self.voters.quorum(|key| holders.contains(&key))?;
         self.pointer = change::pointer(base, root, homes);
         Ok(())
     }
@@ -420,28 +420,6 @@ impl State {
     }
 }
 
-/// Whether `holders` are a majority of each half of `voters`.
-///
-/// # Errors
-///
-/// [`Refused::Quorum`] for the first half that lacks a majority, the incoming half
-/// first.
-pub(crate) fn quorum(
-    voters: &Voters,
-    holders: &BTreeSet<node::Key>,
-) -> Result<(), Refused> {
-    let outgoing = (!voters.outgoing.is_empty()).then_some(&voters.outgoing);
-    for half in std::iter::once(&voters.incoming).chain(outgoing) {
-        let held = half.intersection(holders).count();
-        // `held` is at most `half.len()`, so neither side overflows.
-        if held.saturating_mul(2) <= half.len() {
-            let voters = half.len();
-            return Err(Refused::Quorum { held, voters });
-        }
-    }
-    Ok(())
-}
-
 /// What a node that joins gives the voter that admits it.
 #[cfg_attr(
     not(test),
@@ -503,6 +481,15 @@ pub(crate) enum Refused {
     /// The bytes of a committed entry of a known kind are not the body of that kind,
     /// as [`change::Malformed::Body`].
     Body(Undecoded),
+}
+
+impl From<NoMajority> for Refused {
+    fn from(short: NoMajority) -> Self {
+        Self::Quorum {
+            held: short.counted,
+            voters: short.voters,
+        }
+    }
 }
 
 impl From<Unfit> for Refused {
@@ -784,6 +771,7 @@ mod tests {
     fn holders_are_a_quorum_only_as_a_majority_of_each_half() {
         let short = |held, voters| Err(Refused::Quorum { held, voters });
         let cases = [
+            (voters(&[], &[]), keys(&[]), Ok(())),
             (voters(&[1], &[]), keys(&[1]), Ok(())),
             (voters(&[1], &[]), keys(&[]), short(0, 1)),
             (voters(&[1, 2], &[]), keys(&[1]), short(1, 2)),
@@ -795,8 +783,15 @@ mod tests {
             (voters(&[1, 2, 3], &[1, 2]), keys(&[1, 2]), Ok(())),
         ];
         for (voters, holders, expected) in cases {
-            let quorum = quorum(&voters, &holders);
-            assert_eq!(quorum, expected, "{voters:?} {holders:?}");
+            let mut state = state();
+            state.set_voters(voters.clone());
+            let mut change = spec(0, 1, 2, &[]);
+            let Change::Spec { holders: held, .. } = &mut change else {
+                unreachable!()
+            };
+            *held = holders.clone();
+            let applied = state.apply(change).map(drop);
+            assert_eq!(applied, expected, "{voters:?} {holders:?}");
         }
         assert_eq!(
             Refused::Quorum { held: 1, voters: 2 }.to_string(),
@@ -1569,25 +1564,6 @@ mod tests {
                     let _applied = state.apply(step);
                 }
             }
-        }
-
-        // More holders never lose a quorum, and every voter is one.
-        #[test]
-        fn more_holders_keep_a_quorum(
-            incoming in prop::collection::btree_set(0..6_u8, 1..5),
-            outgoing in prop::collection::btree_set(0..6_u8, 0..5),
-            holders in prop::collection::btree_set(0..6_u8, 0..6),
-            more in prop::collection::btree_set(0..6_u8, 0..6),
-        ) {
-            let voters = Voters {
-                incoming: keys(&incoming),
-                outgoing: keys(&outgoing),
-            };
-            let all = keys(holders.union(&more));
-            if quorum(&voters, &keys(&holders)).is_ok() {
-                prop_assert_eq!(quorum(&voters, &all), Ok(()));
-            }
-            prop_assert_eq!(quorum(&voters, &keys(incoming.union(&outgoing))), Ok(()));
         }
 
         // The applied state is the last home that each index was given.

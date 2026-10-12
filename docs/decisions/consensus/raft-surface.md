@@ -178,6 +178,10 @@
   https://github.com/synnaxlabs/foundation/issues/1105#issuecomment-6050855747 and
   finding 2 of
   https://github.com/synnaxlabs/foundation/pull/1762#issuecomment-6051260164.
+  `Voters::quorum` and `NoMajority` are public: `mesh` counts the holders of a spec
+  change as `raft` counts a commit (#1875). Decided by `laptop.architect`,
+  2026-10-08T11:53:51Z, item 4:
+  https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6059278643.
   `Config::fits` says whether the caller can send a message to each peer. An `Append`
   with no proof drops its last entries until it fits, down to one, and the progress of
   the peer records the last entry that stays. A message with a proof drops its entries,

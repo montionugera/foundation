@@ -84,6 +84,8 @@ jobs:
               - 'crates/block/**'
               - 'crates/counting/**'
               - 'crates/waker/**'
+              - 'crates/env/**'
+              - 'crates/types/**'
               - 'crates/node/**'
               - 'crates/connector/**'
               - 'crates/connector-ni/**'
@@ -278,18 +280,40 @@ jobs:
   mutants:
     needs: changes
     if: >-
-      !cancelled() && github.event_name == 'pull_request' &&
-      needs.changes.outputs.rust != 'false'
+      !cancelled() && needs.changes.outputs.rust != 'false' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     # A mutant that hangs runs until its timeout, so the run needs parallel jobs and
-    # memory that the 2-core hosted runner lacks.
-    runs-on: [self-hosted, Linux, ARM64]
+    # memory that the 2-core hosted runner lacks. In the queue, the job runs no mutant:
+    # it carries the result of this job at the head of the PR to the group. The rule
+    # that a missed mutant fails CI is in `docs/claude/testing.md`.
+    runs-on: >-
+      ${{ github.event_name == 'merge_group' && 'ubuntu-latest' ||
+      fromJSON('["self-hosted", "Linux", "ARM64"]') }}
     timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: read
     steps:
+      - if: github.event_name == 'merge_group'
+        uses: actions/checkout@v4
+        with:
+          # The check that runs is the one on the default branch, never the PR's.
+          ref: ${{ github.event.repository.default_branch }}
+      - if: github.event_name == 'merge_group'
+        uses: Swatinem/rust-cache@v2
+      - if: github.event_name == 'merge_group'
+        name: The mutants result at the head of the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GROUP: ${{ github.event.merge_group.head_sha }}
+        run: cargo xtask queue mutants "$GROUP"
       # A mutant can allocate in a loop until the host runs out of memory. Each runner
       # unit on the host has a cap, the caps leave 2 GiB of the host free, and the
       # unit's OOMPolicy=continue keeps the runner up, so only a test process dies
       # (#803). Hosts whose template sets none of this: #898.
-      - name: Check the memory cap of the runner
+      - if: github.event_name == 'pull_request'
+        name: Check the memory cap of the runner
         run: |
           set -o pipefail
           c=$(cut -d: -f3 /proc/self/cgroup)
@@ -321,15 +345,19 @@ jobs:
             exit 1
           }
           echo "The runner caps take $sum KiB of $total KiB"
-      - uses: actions/checkout@v4
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Add cargo to the path
+      - if: github.event_name == 'pull_request'
+        name: Add cargo to the path
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - uses: taiki-e/install-action@v2
+      - if: github.event_name == 'pull_request'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0
-      - name: Mutants in the diff
+      - if: github.event_name == 'pull_request'
+        name: Mutants in the diff
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
