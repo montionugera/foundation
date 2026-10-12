@@ -1026,3 +1026,50 @@ fn a_waiting_reader_matches_a_channel_of_a_spec_in_use_before_its_home() {
         assert_eq!(keys(&received), [1, 2, 9]);
     });
 }
+
+#[test]
+fn a_writer_woken_by_a_removal_opens_on_a_spec_in_use_that_adds_its_channel_back() {
+    run(48, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        let removed = poll_once(test.hub.writer(config("b", &["value"])));
+        let Poll::Ready(Err(removed)) = removed else {
+            panic!("an open on a removed channel does not fail");
+        };
+        assert_eq!(removed, writer::Error::Unknown(name("value")));
+        test.set_spec(channels()).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits");
+        };
+        opened.expect("opens on value, which the spec in use defines");
+        let fresh = poll_once(test.hub.writer(config("c", &["value"])));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
+}
+
+#[test]
+fn a_reader_woken_by_a_removal_opens_on_a_spec_in_use_that_adds_its_channel_back() {
+    run(49, |test| async move {
+        let latest = || unnamed(&["value"], reader::Mode::Latest);
+        let mut reading = pin!(test.hub.reader(latest()));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        let removed = poll_once(test.hub.reader(latest()));
+        let Poll::Ready(Err(removed)) = removed else {
+            panic!("an open on a removed channel does not fail");
+        };
+        assert_eq!(removed, reader::Error::Empty);
+        test.set_spec(channels()).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits");
+        };
+        opened.expect("opens on value, which the spec in use defines");
+        let fresh = poll_once(test.hub.reader(latest()));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
+}
