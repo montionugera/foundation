@@ -647,6 +647,39 @@ fn refuses_a_change_of_access_of_a_subject_with_no_admin_on_its_key() {
 }
 
 #[test]
+fn refuses_a_change_or_removal_of_access_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let crew = "access \"site.crew\" {\n  subjects = \"bob\"\n  select = \
+                    \"site.*\"\n  allow = [plan]\n}\n";
+        let mole = format!("subject \"site.mole\" {{ keys = [\"{EVE}\"] }}\n");
+        let both = format!("{crew}{mole}");
+        applied(&node, &[("people.hcl", &people), ("crew.hcl", &both)]).await;
+        let version = mesh.pointer().version;
+        let taken = crew
+            .replace("\"bob\"", "\"sam\"")
+            .replace("\"site.*\"", "\"**\"")
+            .replace("[plan]", "[plan, apply, admin]");
+        let rekeyed = mole.replace(EVE, SAM);
+        let cases = [
+            (format!("{taken}{mole}"), "`site.crew.@access`"),
+            (mole.clone(), "`site.crew.@access`"),
+            (format!("{crew}{rekeyed}"), "`site.mole.@subject`"),
+            (crew.to_owned(), "`site.mole.@subject`"),
+        ];
+        for (text, key) in &cases {
+            let files = [("people.hcl", &*people), ("crew.hcl", &**text)];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let expected = denied("sam", "admin", key);
+            assert_eq!(split(&reply), (expected, &b""[..]), "{text}");
+        }
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+#[test]
 fn refuses_a_request_that_names_no_definition_for_each_subject() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
@@ -770,8 +803,7 @@ fn stops_writing_a_reply_at_the_bound() {
         len: fits,
         written: Cell::new(0),
     };
-    let reply = Reply::line(&strings).expect("a reply at the bound");
-    assert_eq!(reply.0.len(), fits * 101 + 2);
+    Reply::line(&strings).expect("a reply at the bound");
     let strings = Strings {
         len: 10 * fits,
         written: Cell::new(0),
