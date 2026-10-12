@@ -1,5 +1,5 @@
-//! The mesh of a root region from its founding, for the unit tests of `ops` and its test
-//! binaries. Each mounts this file with `#[path]`.
+//! The mesh of a root region from its founding, for the unit tests of `ops` and its
+//! test binaries. Each mounts this file with `#[path]`.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
