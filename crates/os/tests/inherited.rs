@@ -1,4 +1,5 @@
-//! A child holds a copy of each descriptor of this process from its fork to its exec, or
+//! A child holds a copy of each descriptor of this process from its fork. It holds
+//! each one that is closed on exec, as each file of `os::files` is, until its exec, or
 //! to its end.
 
 // Lets Clippy treat the helpers as test code.
