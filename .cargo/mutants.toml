@@ -24,9 +24,6 @@ exclude_re = [
   # The build and the runs need the pinned nightly and cargo-fuzz, which no test has. A
   # crash planted in a target must fail the `fuzz` job of `ci.yaml` (#2105).
   'xtask/src/fuzz\.rs:.*(replace run_one ->| in run$)',
-  # Calls the GitHub API. The review workflow runs it on each PR: a round with findings
-  # shows that it fails.
-  'xtask/src/review\.rs:.*(replace run ->| in run$)',
   # Calls the GitHub API. The review workflow runs it on each PR: with no PR record,
   # the status is `error`.
   'xtask/src/gh\.rs:.*(replace api ->| in api$)',

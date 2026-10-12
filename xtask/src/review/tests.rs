@@ -1,4 +1,3 @@
-use super::history::tests::Repo;
 use super::*;
 
 /// The head of #1089 when it merged.

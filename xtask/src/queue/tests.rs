@@ -2,6 +2,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 use super::*;
+use crate::review::Repo;
 
 /// The ref of the queue group of #2398.
 const REF: &str = "refs/heads/gh-readonly-queue/main/\
@@ -247,5 +248,73 @@ fn the_queue_reads_the_runs_at_the_head_of_the_pr() {
              ?check_name=mutants&filter=all: Not Found (HTTP 404)"
                 .to_string()
         ])
+    );
+}
+
+/// A GitHub that holds the group commit `group` of `base` and `head`, and PR 2398
+/// with a round comment that finds nothing and ends at `head`.
+fn reviewed(
+    base: &str,
+    head: &str,
+    group: &str,
+) -> impl Fn(&str) -> Result<Vec<Value>, String> {
+    let commit = json!({ "parents": [{ "sha": base }, { "sha": head }] });
+    let pull = json!({
+        "head": { "ref": "box1/2398-x" },
+        "base": { "ref": "main" },
+        "labels": [],
+    });
+    let round = format!(
+        "**box1.red-team** · reviewer\nQuality: 8/10\nIt is good.\n\n\
+         ## Review round 1\n\nReviewers: reviewer\nRange: `{base}..{head}`\n\
+         Findings: none\n\nDeferred: none\nPublic surface: none\nHot path: none"
+    );
+    let comment = json!({
+        "user": { "login": "synnax-foundation-factory[bot]" },
+        "body": round,
+        "created_at": "2026-10-12T00:00:00Z",
+    });
+    let group = format!("repos/{{owner}}/{{repo}}/commits/{group}");
+    move |path| match path {
+        _ if path == group => Ok(vec![commit.clone()]),
+        "repos/{owner}/{repo}/pulls/2398" => Ok(vec![pull.clone()]),
+        "repos/{owner}/{repo}/pulls/2398/files" => {
+            Ok(vec![json!({ "filename": "b.txt" })])
+        }
+        "repos/{owner}/{repo}/issues/2398/comments" => Ok(vec![comment.clone()]),
+        _ => Err(format!("gh api {path}: Not Found (HTTP 404)")),
+    }
+}
+
+#[test]
+fn the_queue_reviews_the_head_of_the_pr() {
+    let (repo, head) = Repo::with_pr("queue-review");
+    let base = repo.git(&["rev-parse", "main"]);
+    let tree = repo.git(&["rev-parse", "HEAD^{tree}"]);
+    let group = repo.git(&["commit-tree", &tree, "-p", &base, "-p", &head, "-m", "g"]);
+    let github = reviewed(&base, &head, &group);
+    assert_eq!(review(&repo.dir, REF, &group, &github), ExitCode::SUCCESS);
+    let found = reviewed(&base, &head, &group);
+    let found = |path: &str| {
+        found(path).map(|mut objects| {
+            if path.ends_with("/comments") {
+                objects[0]["body"] = objects[0]["body"]
+                    .as_str()
+                    .unwrap()
+                    .replace("Findings: none", "Findings: 1")
+                    .into();
+            }
+            objects
+        })
+    };
+    assert_eq!(review(&repo.dir, REF, &group, &found), ExitCode::FAILURE);
+    repo.remove();
+}
+
+#[test]
+fn a_pr_that_github_does_not_give_exits_2() {
+    assert_eq!(
+        review(Path::new("."), REF, GROUP, &github(&[BASE, HEAD], vec![])),
+        ExitCode::from(2)
     );
 }
