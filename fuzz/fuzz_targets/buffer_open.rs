@@ -323,7 +323,7 @@ impl Room {
     }
 
     /// The room an open finds in `image` after `edits`, from the records that it
-    /// reads ([`read`]). Unknown after an edit other than `MoveTail`, whose records
+    /// takes ([`taken`]). Unknown after an edit other than `MoveTail`, whose records
     /// the open can read in other ways.
     fn walked(image: &[u8], edits: &[Edit]) -> Self {
         if !edits
@@ -334,7 +334,7 @@ impl Room {
         }
         let tail = u128::from(header::tail(image));
         let (mut data, mut end) = (tail, tail);
-        for (block, blocks) in read(image) {
+        for (block, blocks) in taken(image) {
             end += (blocks * BLOCK) as u128;
             if matches!(record::kind(image, block), record::DATA | record::CARRY) {
                 data = end;
@@ -624,14 +624,14 @@ fn walk(image: &[u8]) -> Vec<(usize, u32)> {
     way
 }
 
-/// The records that the open reads on the way from the tail in the first header
+/// The records that the open takes on the way from the tail in the first header
 /// block: the block each starts at, and the blocks to the next. It ends before the
 /// first record that is not sealed or that passes the end of the area, the tail one
 /// lap later, or the largest record of the header's `body_max`.
-fn read(image: &[u8]) -> Vec<(usize, usize)> {
+fn taken(image: &[u8]) -> Vec<(usize, usize)> {
     let largest = (record::HEAD + header::body_max(image)).div_ceil(BLOCK);
     let mut lap = BLOCKS;
-    let mut read = Vec::new();
+    let mut records = Vec::new();
     for step in walk(image).windows(2) {
         let [(block, chain), (next, _)] = *step else {
             unreachable!("a window of two")
@@ -647,9 +647,9 @@ fn read(image: &[u8]) -> Vec<(usize, usize)> {
             next + BLOCKS - block
         };
         lap = lap.saturating_sub(blocks);
-        read.push((block, blocks));
+        records.push((block, blocks));
     }
-    read
+    records
 }
 
 fn key(index: usize) -> channel::Key {
@@ -947,7 +947,7 @@ async fn edit(
         "the records of the build do not seal as written up to its last"
     );
     let written = image.clone();
-    for (block, _) in read(&written) {
+    for (block, _) in taken(&written) {
         apply(&mut image, &Edit::SealRecord { block });
         assert!(
             image == written,
@@ -971,16 +971,16 @@ async fn edit(
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");
     let carried = header::read(&image).is_some_and(|start| {
-        let mut read = image.clone();
-        read.copy_within(start..start + BLOCK, 0);
-        carries(&read)
+        let mut chosen = image.clone();
+        chosen.copy_within(start..start + BLOCK, 0);
+        carries(&chosen)
     });
     (Room::walked(&image, edits), carried)
 }
 
-/// Whether the open reads a carry record of `image` ([`read`]).
+/// Whether the open takes a carry record of `image` ([`taken`]).
 fn carries(image: &[u8]) -> bool {
-    read(image)
+    taken(image)
         .into_iter()
         .any(|(block, _)| record::kind(image, block) == record::CARRY)
 }
