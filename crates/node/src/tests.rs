@@ -64,7 +64,11 @@ fn refuse(refused: usize, error: os::memory::Error) -> Memory {
 
 /// The seams of `host`, with a pool budget of `budget` from `memory`, a disk budget
 /// of [`DISK`], and the port at [`listen`].
-fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block::Heap> {
+fn config<M>(
+    host: &sim::node::Node,
+    budget: Size,
+    memory: Box<dyn FnMut(usize) -> Result<M, os::memory::Error>>,
+) -> Config<M> {
     Config {
         shards: host.shards(),
         clock: host.clock(),
@@ -2265,7 +2269,7 @@ mod hub {
     }
 
     /// The position of channel `key` in `set`.
-    fn entry(set: &KeySet, key: u128) -> usize {
+    pub(super) fn entry(set: &KeySet, key: u128) -> usize {
         let key = Key::from_u128(key);
         let entries = set.entries();
         entries.iter().position(|e| e.key == key).expect("an entry")
@@ -2675,6 +2679,77 @@ mod hub {
         let (_host, node) = node(&mut sim, 1);
         node.spawn(|_| async {});
         assert!(format!("{node:?}").contains("queue: Queue"), "{node:?}");
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+    }
+}
+
+mod pool {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use block::testing::Scarce;
+    use types::frame::{self, Form};
+
+    use super::hub::{I64, data, define, entry, index, writer};
+    use super::*;
+    use crate::PURGE;
+
+    /// A shard gives the pages of a block size back to the system once the size
+    /// stayed idle. The memory shows a purge only through its next commit: while it
+    /// refuses, a commit of bytes that the system still holds succeeds, and a commit
+    /// of purged bytes does not. So a frame that the pool cannot take then is a frame
+    /// whose pages went back.
+    #[test]
+    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_two_purge_intervals() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 1);
+        let switch = Rc::new(RefCell::new(None));
+        let made = Rc::clone(&switch);
+        let memory = Box::new(move |len| {
+            let (memory, switch) = Scarce::new(len);
+            *made.borrow_mut() = Some(switch);
+            Ok(memory)
+        });
+        let node = Node::start(config(&host, Size::MEBIBYTE, memory));
+        let switch = switch.take().expect("the shard got its memory");
+        let seen = Arc::new(Mutex::new(None));
+        let (out, clock) = (Arc::clone(&seen), host.clock());
+        node.spawn(move |hub| async move {
+            define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
+            let writer = writer(&hub, &["value"]).await;
+            let (time, value) = (entry(writer.set(), 1), entry(writer.set(), 2));
+            let mut series = [(time, 8), (value, 4096)];
+            series.sort_unstable();
+            // Takes a block for a frame of 4 KiB of samples and drops it at once.
+            let take = || writer.draft(Form::Raw, &series).map(drop);
+            switch.refuse();
+            let new = take();
+            switch.allow();
+            let carved = take();
+            switch.refuse();
+            let kept = take();
+            let less = Span::from_nanos(PURGE.nanos() - 1);
+            clock.sleep(less).await;
+            let held = take();
+            switch.allow();
+            clock.sleep(Span::from_nanos(2 * PURGE.nanos())).await;
+            switch.refuse();
+            let idle = take();
+            switch.allow();
+            *out.lock().unwrap() = Some((new, carved, kept, held, idle));
+        });
+        let four = Span::from_nanos(4 * PURGE.nanos());
+        assert_eq!(sim.run_for(four), Ok(()));
+        let seen = seen.lock().unwrap().take();
+        let (new, carved, kept, held, idle) = seen.expect("the task ran to its end");
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
+        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
+        assert_eq!(carved, Ok(()), "the pool carves the block");
+        assert_eq!(kept, Ok(()), "a carved size needs no commit");
+        assert_eq!(held, Ok(()), "the size keeps its pages for one interval");
+        assert_eq!(idle, Err(refused), "the pages of the idle size went back");
         node.stop();
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Ok(()));
@@ -5471,7 +5546,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], three idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5481,7 +5556,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
