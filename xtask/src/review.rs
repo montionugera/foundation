@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::field;
 
 mod history;
+mod surface;
 
 use history::Place;
 
@@ -95,6 +96,11 @@ const RATING_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// A later round posted before this UTC time needs no `architecture` for a range that
 /// changes a decision, so that the rule does not fail the rounds that came before it.
 const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
+
+/// A later round posted before this UTC time needs no `architecture` for a range that
+/// changes the public surface of a crate, so that the rule does not fail the rounds
+/// that came before it.
+const SURFACE_CUTOFF: &str = "2026-10-13T00:00:00Z";
 
 /// The last round, when posted before this UTC time, needs no comment link on its
 /// `Deferred:` and `Public surface:` lines, so that the rule does not fail the rounds
@@ -230,6 +236,7 @@ fn problems_in(
         &|end| history.place(end, head),
         &|from, end| history.code_change(from, end),
         &|from, end| history.decision_change(from, end),
+        &|from, end| history.surface_change(from, end),
     )
 }
 
@@ -260,17 +267,20 @@ fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// written. `code_change` gives the first code change in a range, with a merge of the
 /// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
 /// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
-/// `decision_change` gives a phrase for its range (`History::decision_change`). For
-/// that rule, a round comment after the first is a later round, whatever its number,
-/// and so is a first round comment whose number is above 1. The last round, when
-/// posted at or after `LINK_CUTOFF`, must link the OK of each deferral of a PR that
-/// changes a risk crate, and an approval of its public surface ([`unlinked`]).
+/// `decision_change` gives a phrase for its range (`History::decision_change`), and so
+/// must one posted at or after `SURFACE_CUTOFF` when `surface_change` gives one
+/// (`History::surface_change`). For those rules, a round comment after the first is a
+/// later round, whatever its number, and so is a first round comment whose number is
+/// above 1. The last round, when posted at or after `LINK_CUTOFF`, must link the OK of
+/// each deferral of a PR that changes a risk crate, and an approval of its public
+/// surface ([`unlinked`]).
 fn problems(
     record: &Record,
     head: &str,
     place: &dyn Fn(&str) -> Result<Place, String>,
     code_change: Change<'_>,
     decision_change: Change<'_>,
+    surface_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let rounds: Vec<_> = record
@@ -290,13 +300,17 @@ fn problems(
         match &parsed.round {
             Ok(round) => {
                 let later = i > 0 || round.number > 1;
+                let bound = |cutoff| later && round.posted.as_str() >= cutoff;
+                let changes = [
+                    bound(DECISION_CUTOFF).then_some(decision_change),
+                    bound(SURFACE_CUTOFF).then_some(surface_change),
+                ];
                 problems.extend(unnamed(
                     round,
                     &record.files,
                     last,
                     code_change,
-                    (later && round.posted.as_str() >= DECISION_CUTOFF)
-                        .then_some(decision_change),
+                    &changes,
                 )?);
             }
             Err(e) => {
@@ -393,15 +407,15 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
 /// A later round may skip `breaker` when its range changes no code, which only the
 /// `last` round checks with `code_change`: a rebase can drop the range of an earlier
 /// round from the clone, but the last round's end must be on the head's chain. A
-/// round with a `decision_change` requires `architecture` too when that gives a phrase
+/// round requires `architecture` too when one of `changes`, in order, gives a phrase
 /// for its range. When `required` does not already ask for `architecture`, its problem
-/// gives the remedy, then the phrase.
+/// gives the remedy, then the first such phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     last: bool,
     code_change: Change<'_>,
-    decision_change: Option<Change<'_>>,
+    changes: &[Option<Change<'_>>],
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let mut missing: Vec<&str> = required(round, files)
@@ -424,18 +438,20 @@ fn unnamed(
             missing.join(", ")
         ));
     }
-    if !round.reviewers.contains("architecture")
-        && !missing.contains(&"architecture")
-        && let Some(decision_change) = decision_change
-        && let Some(change) = decision_change(&round.from, &round.end)?
-    {
-        problems.push(format!(
-            "review round {} names no architecture, which this round requires. Run \
-             `architecture` on its range, or on the whole PR when the clone cannot \
-             read the range, then edit the round comment: add `architecture` to \
-             `Reviewers:` and add its findings. Its range {change}.",
-            round.number
-        ));
+    if !round.reviewers.contains("architecture") && !missing.contains(&"architecture") {
+        for change in changes.iter().flatten() {
+            if let Some(change) = change(&round.from, &round.end)? {
+                problems.push(format!(
+                    "review round {} names no architecture, which this round \
+                     requires. Run `architecture` on its range, or on the whole PR \
+                     when the clone cannot read the range, then edit the round \
+                     comment: add `architecture` to `Reviewers:` and add its \
+                     findings. Its range {change}.",
+                    round.number
+                ));
+                break;
+            }
+        }
     }
     Ok(problems)
 }

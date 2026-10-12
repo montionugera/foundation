@@ -95,6 +95,7 @@ fn check(record: &Record) -> Vec<String> {
             Ok((!text).then(|| "changes code at `a.rs:2`".to_string()))
         },
         &|_, _| Ok(None),
+        &|_, _| Ok(None),
     )
     .unwrap()
 }
@@ -1302,6 +1303,7 @@ fn a_breaker_skip_problem_shows_an_image_in_a_commit_that_it_quotes() {
             &|_| Ok(Place::Head),
             &|from, end| Ok((end != HEAD).then(|| unnamed(from))),
             &|_, _| Ok(None),
+            &|_, _| Ok(None),
         ),
         Ok(vec![
             "review round 3 skips `breaker`, but its range has `38cba24f![]`, which \
@@ -1388,7 +1390,8 @@ fn a_breaker_skip_on_a_range_that_changes_only_a_script_fails() {
             HEAD,
             &|_| Ok(Place::Head),
             &script,
-            &|_, _| Ok(None)
+            &|_, _| Ok(None),
+            &|_, _| Ok(None),
         ),
         Ok(vec![
             "review round 3 skips `breaker`, but its range changes code at `a.sh:1`."
@@ -1413,7 +1416,8 @@ fn returns_a_failure_to_read_history() {
             HEAD,
             &failed,
             &|_, _| Ok(None),
-            &|_, _| Ok(None)
+            &|_, _| Ok(None),
+            &|_, _| Ok(None),
         ),
         Err("git rev-parse: bad".to_string())
     );
@@ -1424,7 +1428,8 @@ fn returns_a_failure_to_read_history() {
             HEAD,
             &|_| Ok(Place::Head),
             &failed,
-            &|_, _| Ok(None)
+            &|_, _| Ok(None),
+            &|_, _| Ok(None),
         ),
         Err("git diff: bad".to_string())
     );
@@ -3039,6 +3044,7 @@ fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
             &|_| Ok(Place::Head),
             &|_, _| Ok(None),
             &failed,
+            &|_, _| Ok(None),
         )
     };
     let range = format!("a..{HEAD}");
@@ -3050,6 +3056,128 @@ fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
     assert_eq!(check(vec![earlier]), Ok(Vec::new()));
     let later = bound(&clean(2, "reviewer, breaker", &range));
     assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
+}
+
+/// A rated comment by the bot, posted at the surface cutoff.
+fn surface_bound(body: &str) -> Comment {
+    Comment {
+        created: SURFACE_CUTOFF.to_string(),
+        ..bot(&rated(body))
+    }
+}
+
+/// The phrase of a range that changes the public surface of `LIB`.
+const ITEM: &str = "changes a `pub` item or its doc in `crates/a/src/lib.rs`";
+
+/// A source file of the crate `a`.
+const LIB: &str = "crates/a/src/lib.rs";
+
+#[test]
+fn a_later_round_whose_range_changes_the_doc_of_a_pub_fn_requires_architecture() {
+    let (repo, _) = Repo::with_pr("review-pub-doc");
+    let start = repo.commit(LIB, "/// A.\npub fn a() {}\n");
+    let end = repo.commit(LIB, "/// A, changed.\npub fn a() {}\n");
+    let range = format!("{start}..{end}");
+    let rounds = |reviewers| {
+        record(vec![
+            first(END),
+            surface_bound(&clean(2, reviewers, &range)),
+        ])
+    };
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, breaker")),
+        vec![DECISION.replace(CHANGE, ITEM)]
+    );
+    assert_eq!(
+        check_at(&repo, &rounds("reviewer, architecture, breaker")),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_range_changes_the_doc_of_a_private_fn_keeps_its_reviewers() {
+    let (repo, _) = Repo::with_pr("review-private-doc");
+    let start = repo.commit(LIB, "/// A.\nfn a() {}\n");
+    let end = repo.commit(LIB, "/// A, changed.\nfn a() {}\n");
+    let round =
+        surface_bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        Vec::<String>::new()
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_posted_before_the_surface_cutoff_keeps_its_reviewers() {
+    let (repo, start) = Repo::with_pr("review-surface-cutoff");
+    let end = repo.commit(LIB, "pub fn a() {}\n");
+    let round = |created: &str| Comment {
+        created: created.to_string(),
+        ..bot(&rated(&clean(
+            2,
+            "reviewer, breaker",
+            &format!("{start}..{end}"),
+        )))
+    };
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-12T23:59:59Z")])
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        check_at(
+            &repo,
+            &record(vec![first(END), round("2026-10-13T00:00:00Z")])
+        ),
+        vec![DECISION.replace(CHANGE, ITEM)]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_later_round_whose_range_changes_a_decision_and_a_pub_item_gets_one_problem() {
+    let (repo, start) = Repo::with_pr("review-surface-both");
+    repo.commit("docs/decisions/x.md", "a rule\n");
+    let end = repo.commit(LIB, "pub fn a() {}\n");
+    let round =
+        surface_bound(&clean(2, "reviewer, breaker", &format!("{start}..{end}")));
+    assert_eq!(
+        check_at(&repo, &record(vec![first(END), round])),
+        vec![DECISION]
+    );
+    repo.remove();
+}
+
+#[test]
+fn reads_the_surface_only_of_a_later_round_with_no_architecture_and_no_decision() {
+    let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
+    let check = |comments, decision: Option<&str>| {
+        problems(
+            &record(comments),
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|_, _| Ok(None),
+            &|_, _| Ok(decision.map(str::to_string)),
+            &failed,
+        )
+    };
+    let range = format!("a..{HEAD}");
+    let one = surface_bound(&clean(1, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![one], None), Ok(Vec::new()));
+    let named = surface_bound(&clean(2, "reviewer, architecture, breaker", &range));
+    assert_eq!(check(vec![named], None), Ok(Vec::new()));
+    let earlier = bound(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![earlier], None), Ok(Vec::new()));
+    let later = || surface_bound(&clean(2, "reviewer, breaker", &range));
+    assert_eq!(check(vec![later()], None), Err("git diff: bad".to_string()));
+    assert_eq!(
+        check(vec![later()], Some(CHANGE)),
+        Ok(vec![DECISION.to_string()])
+    );
 }
 
 /// A link to a comment.
