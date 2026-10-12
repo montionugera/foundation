@@ -6,26 +6,29 @@
   `sim` tests pass `block::Heap`. A shard with no memory is a start failure: later
   shards do not start, the node stops, and `join` gives `Error::Memory` with the core
   and the `os::memory::Error`. Lost: making the pool on the shard's thread, which needs
-  a second path for the error and a `Send + Sync` seam. Each shard runs one task that
-  calls `Pool::purge` each 10 s of the node's monotonic clock, from before the open of
-  its buffer to the end of the shard, so a size gives its pages back 10 to 20 s after
-  the last of its blocks returned. `node` holds the interval as a constant. Its value is
-  not measured: it is the purge policy of `docs/decisions/open/parameters.md`. A shorter
-  interval gives memory back sooner, and a longer one bounds how often a size that comes
-  back commits its range again. No shard takes back returned blocks on each loop turn:
-  the loop is the driver's (`env::shards`), and `alloc` and `purge` take them back
-  (BLOCK MEMORY). Lost: a field of `node::Config` for the interval, which no caller
-  gives a second value; a purge from `alloc`, which gives `block` a clock; a hook that
-  each driver calls on each turn, which moves the walk of the returned blocks and does
-  not shorten it. Look again at the hook when a measurement shows that walk in the
-  latency of an `alloc` (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
+  a second path for the error and a `Send + Sync` seam. Proposed by `ops` in #410;
+  approved by the coordinator on #806. Each shard runs one task that calls `Pool::purge`
+  each 10 s of the node's monotonic clock, from before the open of its buffer to the end
+  of the shard, so a size gives its pages back 10 to 20 s after the last of its blocks
+  returned. `node` holds the interval as a constant. Its value is not measured: it is
+  the purge policy of `docs/decisions/open/parameters.md`. A shorter interval gives
+  memory back sooner, and a longer one bounds how often a size that comes back commits
+  its range again. No shard takes back returned blocks on each loop turn: the loop is
+  the driver's (`env::shards`), and `alloc` and `purge` take them back (BLOCK MEMORY).
+  Lost: a field of `node::Config` for the interval, which no caller gives a second
+  value; a purge from `alloc`, which gives `block` a clock; a hook that each driver
+  calls on each turn, which moves the walk of the returned blocks and does not shorten
+  it. Look again at the hook when a measurement shows that walk in the latency of an
+  `alloc` (`laptop.architect-2`, #2443: the ruling, 2026-10-11T21:30:42Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6113992879; this
   text, 2026-10-11T21:35:17Z:
   https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6114033383).
-  Proposed by `ops` in #410; approved by the coordinator on #806. `block::Config::new`
-  takes the budget as a `u64` and gives `block::Unfit` when the pool's reservation is
-  more than `usize::MAX` bytes, so `node` passes each part as it is and keeps no check
-  of its own. Decided by `laptop.architect` (2026-10-07 10:27 UTC):
+  Supersedes "The purge timer and `reclaim` on each loop turn land with the first PR
+  that allocates from a pool, since no test can see either before then (#410)"
+  (https://github.com/synnaxlabs/foundation/pull/806). `block::Config::new` takes the
+  budget as a `u64` and gives `block::Unfit` when the pool's reservation is more than
+  `usize::MAX` bytes, so `node` passes each part as it is and keeps no check of its own.
+  Decided by `laptop.architect` (2026-10-07 10:27 UTC):
   https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6036013562, and made
   `const fn` by `laptop.architect` (2026-10-10 06:37 UTC):
   https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6094721967, and
