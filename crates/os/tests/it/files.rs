@@ -829,6 +829,15 @@ fn a_failed_create_whose_free_fails_leaves_no_file() {
     crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
+/// Makes each unlock by `flock` of this thread, or of a thread that it starts later,
+/// give `errno`.
+#[cfg(target_os = "linux")]
+fn unlock_gives(errno: i32) {
+    crate::seccomp::answer_calls(&[libc::SYS_flock], move |data, _| {
+        (data.args[1] == libc::LOCK_UN as u64).then_some(errno)
+    });
+}
+
 /// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
 #[cfg(target_os = "linux")]
 #[test]
@@ -837,9 +846,7 @@ fn a_close_whose_unlock_fails_closes_the_file() {
     let dir = scratch.0.clone();
     let threads = os::threads().unwrap();
     let handle = threads.start("unlock", move || async move {
-        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
-            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EIO)
-        });
+        unlock_gives(libc::EIO);
         let (files, thread) = files(&dir, "files");
         let file = create(&files, "a", 4 * KIB).await;
         file.close().await;
@@ -860,9 +867,7 @@ fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
     let threads = os::threads().unwrap();
     let (sent, io) = std::sync::mpsc::channel();
     let handle = threads.start("unlock", move || async move {
-        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
-            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EBADF)
-        });
+        unlock_gives(libc::EBADF);
         let (files, thread) = files(&dir, "files");
         let file = create(&files, "a", 4 * KIB).await;
         sent.send(thread).unwrap();
@@ -883,9 +888,7 @@ fn the_close_of_a_read_handle_sends_no_unlock() {
     let dir = scratch.0.clone();
     let threads = os::threads().unwrap();
     let handle = threads.start("unlock", move || async move {
-        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
-            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EBADF)
-        });
+        unlock_gives(libc::EBADF);
         let (files, thread) = files(&dir, "files");
         let read = files.open(Path::new("a"), Mode::Read).await.unwrap();
         read.close().await;
