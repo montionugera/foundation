@@ -830,6 +830,8 @@ mod buffer {
             "cannot open the buffer of shard-0: the pool has no block: block of 52186 \
              bytes is above the largest block of 28672 bytes"
         );
+        let made = ["lock", "name", "shards-16"].map(PathBuf::from);
+        assert_eq!(listed(&mut run.sim, &run.host, ""), made);
     }
 
     #[test]
