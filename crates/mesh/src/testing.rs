@@ -172,6 +172,7 @@ mod tests {
     use crate::bytes::{put_change, put_position};
     use crate::change::{self, CHUNKS_MAX, Malformed, Undecoded};
     use crate::common::{at, key};
+    use crate::message::VOTERS_MAX;
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -687,6 +688,7 @@ mod tests {
             "raft_chain_cut_in_link",
             "raft_chain_count_no_link",
             "raft_append_entry_over_bytes_max",
+            "raft_proof_over_grants_max",
         );
         assert_eq!(count_files("mesh_message"), inputs.len());
         for (name, want) in messages() {
@@ -714,6 +716,15 @@ mod tests {
         let cut = inputs["raft_chain_cut_in_link"];
         assert!(links < cut.len() && cut.len() < links + bytes.len());
         refused.push(("raft_chain_cut_in_link", chain[..cut.len()].to_vec()));
+        refused.extend(over_bounds());
+        for (name, want) in refused {
+            assert_eq!(inputs[name], want, "{name}");
+            assert_eq!(round_trip_message(inputs[name]), None, "{name}");
+        }
+    }
+
+    // The message inputs that a bound of the decode refuses.
+    fn over_bounds() -> [(&'static str, Vec<u8>); 2] {
         let over = Entry {
             at: at(3, 4),
             data: Data::Bytes(vec![7; change::BYTES_MAX + 1]),
@@ -723,12 +734,19 @@ mod tests {
             entries: vec![over],
             commit: 4,
         };
-        let over = message(body, None, Vec::new()).encode();
-        refused.push(("raft_append_entry_over_bytes_max", over));
-        for (name, want) in refused {
-            assert_eq!(inputs[name], want, "{name}");
-            assert_eq!(round_trip_message(inputs[name]), None, "{name}");
-        }
+        let entry = message(body, None, Vec::new()).encode();
+        let grants = u8::try_from(2 * VOTERS_MAX + 1).unwrap();
+        let grant = |voter| (key(voter), Some(Signature([7; 64])));
+        let over = Proof {
+            voters: (1..=grants).map(grant).collect(),
+            ..proof()
+        };
+        let body = Body::Heartbeat { commit: 4 };
+        let proof = message(body, Some(over), Vec::new()).encode();
+        [
+            ("raft_append_entry_over_bytes_max", entry),
+            ("raft_proof_over_grants_max", proof),
+        ]
     }
 
     /// The bytes of a mesh log record header.
