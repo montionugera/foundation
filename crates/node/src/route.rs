@@ -96,9 +96,9 @@ impl Places {
 
     /// The hold of `session` on its place: the place that its node key still holds,
     /// which keeps its age, else a new place. `None` when `member` holds for the peer.
-    /// Each place whose peer `member` now holds frees, and its sessions stay. At
-    /// its most places, the oldest place frees first, and each session that holds it closes
-    /// with `wire::session::REFUSED`.
+    /// Each place whose peer `member` now holds frees, and its sessions stay. At `max`
+    /// places, the oldest place frees first, and each session that holds it closes with
+    /// `wire::session::REFUSED`.
     pub(crate) fn take(
         &mut self,
         session: &Session,
@@ -191,7 +191,7 @@ async fn route(
         Some(Err(_)) => return,
         None => return reject(incoming),
     };
-    let Some(protocol) = first.as_deref().and_then(named) else {
+    let Some(protocol) = first.as_deref().and_then(header) else {
         return reject(incoming);
     };
     match protocol {
@@ -224,7 +224,7 @@ fn member(peer: Peer, mesh: Option<&Mesh>) -> bool {
 }
 
 /// The protocol that `message` names when it is a whole header, with no byte after it.
-fn named(message: &[u8]) -> Option<Protocol> {
+fn header(message: &[u8]) -> Option<Protocol> {
     match wire::header::decode(message) {
         Ok((protocol, [])) => Some(protocol),
         Ok(_) | Err(_) => None,
@@ -244,14 +244,14 @@ fn reject(incoming: Incoming) {
 mod tests {
     use wire::Protocol;
 
-    use super::named;
+    use super::header;
 
     /// A first message is a header only when it is the whole message.
     #[test]
     fn a_header_with_a_byte_after_it_names_no_protocol() {
         let mut message = wire::header::encode(Protocol::Mesh).to_vec();
-        assert_eq!(named(&message), Some(Protocol::Mesh));
+        assert_eq!(header(&message), Some(Protocol::Mesh));
         message.push(0);
-        assert_eq!(named(&message), None);
+        assert_eq!(header(&message), None);
     }
 }
