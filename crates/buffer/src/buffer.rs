@@ -413,6 +413,7 @@ impl Buffer {
             layout,
             commit,
         } = config;
+        // Held at once, as the first append of an empty entry in two parts holds them.
         let empty = [META_LEN, record::HEADER_LEN, 0, 0].map(|len| pool.alloc(len));
         for block in empty {
             drop(block?);
@@ -647,21 +648,18 @@ impl Buffer {
         if let Some(error) = &state.failed {
             return Err(Rejected::Files(error.clone()));
         }
-        let taken =
-            match state
-                .open
-                .push(&shared.pool, shared.block_max, &state.writer, batch)
-            {
-                Ok(taken) => taken,
-                Err(group::Rejected::Record) => {
-                    state.close_open();
-                    state
-                        .open
-                        .push(&shared.pool, shared.block_max, &state.writer, batch)
-                        .map_err(rejected)?
-                }
-                Err(other) => return Err(rejected(other)),
-            };
+        let (pool, block_max) = (&*shared.pool, shared.block_max);
+        let taken = match state.open.push(pool, block_max, &state.writer, batch) {
+            Ok(taken) => taken,
+            Err(group::Rejected::Record) => {
+                state.close_open();
+                state
+                    .open
+                    .push(pool, block_max, &state.writer, batch)
+                    .map_err(rejected)?
+            }
+            Err(other) => return Err(rejected(other)),
+        };
         for (slot, header) in state.open.entries(taken) {
             state
                 .logs
