@@ -162,6 +162,57 @@ fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
     });
 }
 
+/// A child that another thread starts while a create fails holds a copy of the file.
+#[test]
+#[expect(unsafe_code, reason = "a hook before exec is an OS call")]
+fn a_failed_create_keeps_no_blocks_while_a_child_holds_the_file() {
+    use std::io::{Read, Write};
+    use std::os::unix::process::CommandExt;
+
+    let disk = Small::new();
+    let mount = disk.mount();
+    let (forked, forked_in) = std::io::pipe().unwrap();
+    let (released_out, released) = std::io::pipe().unwrap();
+    let mut command = Command::new("true");
+    // SAFETY: the hook only reads and writes pipes, which is safe after a fork.
+    unsafe {
+        command.pre_exec(move || {
+            (&forked_in).write_all(&[0])?;
+            (&released_out).read_exact(&mut [0])
+        });
+    }
+    let (started, child) = std::sync::mpsc::channel();
+    let mut command = Some(command);
+    let threads = os::threads().unwrap();
+    let handle = threads.start("files", move || async move {
+        let starts = os::threads().unwrap();
+        seccomp::answer_calls(&[libc::SYS_unlinkat], move |_, _| {
+            if let Some(mut command) = command.take() {
+                let thread = starts.start("child", move || async move {
+                    assert!(command.status().unwrap().success());
+                });
+                (&forked).read_exact(&mut [0]).unwrap();
+                started.send(thread.unwrap()).unwrap();
+            }
+            None
+        });
+        let (files, thread) = os::files(&mount, &os::threads().unwrap(), "files")
+            .expect("the disk opens");
+        let files = Files::new(files);
+        let free = files.free().await.unwrap();
+        let mode = Mode::Create { len: free * 2 };
+        let error = files.open(Path::new("a"), mode).await.unwrap_err();
+        let after = files.free().await.unwrap();
+        (&released).write_all(&[0]).unwrap();
+        child.recv().unwrap().join().unwrap();
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(error, Error::Full { path: "a".into() });
+        assert_eq!(after, free);
+    });
+    assert_eq!(handle.unwrap().join(), Ok(()));
+}
+
 #[test]
 fn a_create_after_a_failed_create_gives_full_again() {
     run(|files, _| async move {
