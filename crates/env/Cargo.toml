@@ -12,5 +12,9 @@ types = { path = "../types" }
 [dev-dependencies]
 proptest.workspace = true
 
+[[bench]]
+name = "group"
+harness = false
+
 [lints]
 workspace = true
