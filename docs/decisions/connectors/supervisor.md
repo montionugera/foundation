@@ -27,7 +27,9 @@
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, questions
   1 and 2). The text from "A reader with a hold" to the #274 test is from
   `laptop.architect` (2026-10-11T07:34:36Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Each run
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343), and
+  "while its index keeps its key" is from `laptop.architect` (2026-10-12T20:35:29Z:
+  https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132165963). Each run
   gets a child of the caller's token, which the supervisor cancels once the run returns
   or its future drops, so each task that the run spawned to wait on it ends with the run
   (`laptop.architect-2`, 2026-10-08T17:58:15Z:
@@ -58,7 +60,7 @@
   because a node that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
   https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704; the
-  open from its names or its selector, 2026-10-12T20:24:56Z:
+  words of the data channel sentence, 2026-10-12T20:24:56Z:
   https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132012721). The
   lookup of these keys stays in `node`. Lost: `connector::status` gives the keys from
   the definitions, which makes `spec` a dependency of `connector` and of each kind for
