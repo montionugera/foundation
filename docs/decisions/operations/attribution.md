@@ -11,6 +11,7 @@
   (https://github.com/synnaxlabs/foundation/pull/2501#issuecomment-6134192187).
   Supersedes the ruling of `laptop.director` at 2026-10-07T17:48:20Z
   (https://github.com/synnaxlabs/foundation/issues/1472#issuecomment-6043565737) and
-  the sentence "#1472 already does the work at its cause" of its ruling at
-  2026-10-12T22:42:56Z
+  the sentence "#1472 already does the work at its cause: `cargo xtask attribution` in
+  a `PreToolUse` hook refuses the push, and `cargo xtask review` reads only the PR
+  body." of its ruling at 2026-10-12T22:42:56Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6134029772).
