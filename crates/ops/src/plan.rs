@@ -21,7 +21,7 @@ mod tests;
 ///
 /// # Errors
 ///
-/// As [`Files::read`], then [`Files::plan`].
+/// As [`Documents::read`], then [`Documents::plan`].
 ///
 /// # Panics
 ///
@@ -34,16 +34,16 @@ pub(crate) fn plan(
     front_ends: &FrontEnds,
     kinds: &connector::kind::Table,
 ) -> Result<(Output, config::plan::Plan), Error> {
-    Files::read(files, front_ends)?.plan(base, applied, members, kinds)
+    Documents::read(files, front_ends)?.plan(base, applied, members, kinds)
 }
 
 /// The config files of one plan, each read into its Document.
-pub(crate) struct Files {
+pub(crate) struct Documents {
     paths: Vec<PathBuf>,
     documents: Vec<Document>,
 }
 
-impl Files {
+impl Documents {
     /// Reads each of `files` with its front end. `Source(i)` is `files[i]`.
     ///
     /// # Errors
