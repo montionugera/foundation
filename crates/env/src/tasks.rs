@@ -2,10 +2,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::fmt;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
+use std::{fmt, iter};
 
 /// A task as a driver receives it.
 ///
@@ -69,17 +69,10 @@ impl Tasks {
     pub fn spawn(&self, task: impl Future<Output = ()> + 'static) {
         match &self.count {
             None => self.driver.spawn(Box::pin(task)),
-            Some(count) => {
-                let mut next = Some(&**count);
-                while let Some(group) = next {
-                    group.live.set(group.live.get().strict_add(1));
-                    next = group.parent.as_deref();
-                }
-                self.driver.spawn(Box::pin(Counted {
-                    task: Box::pin(task),
-                    _held: Held(Rc::clone(count)),
-                }));
-            }
+            Some(count) => self.driver.spawn(Box::pin(Counted {
+                task: Box::pin(task),
+                _held: Held::new(count),
+            })),
         }
     }
 }
@@ -187,21 +180,26 @@ impl<F: Future<Output = ()>> Future for Counted<F> {
 // Holds the task in its group and in each group that the group spawns through.
 struct Held(Rc<Count>);
 
+impl Held {
+    fn new(count: &Rc<Count>) -> Self {
+        for group in count.chain() {
+            group.live.set(group.live.get().strict_add(1));
+        }
+        Self(Rc::clone(count))
+    }
+}
+
 impl Drop for Held {
     fn drop(&mut self) {
         // Every count goes down before any wake, so a wake that panics leaves no count
         // too high.
-        let mut next = Some(&*self.0);
-        while let Some(group) = next {
+        for group in self.0.chain() {
             group.live.set(group.live.get().strict_sub(1));
-            next = group.parent.as_deref();
         }
-        let mut next = Some(&*self.0);
-        while let Some(group) = next {
+        for group in self.0.chain() {
             if group.live.get() == 0 {
                 group.waiting.take().into_values().for_each(Waker::wake);
             }
-            next = group.parent.as_deref();
         }
     }
 }
@@ -215,6 +213,13 @@ struct Count {
     waiting: RefCell<BTreeMap<u64, Waker>>,
     // The slot of the next `Ended`.
     slots: Cell<u64>,
+}
+
+impl Count {
+    // This count, then each parent.
+    fn chain(&self) -> impl Iterator<Item = &Self> {
+        iter::successors(Some(self), |count| count.parent.as_deref())
+    }
 }
 
 /// Ready once no task of a [`Group`] is left. [`Group::ended`] gives it. Its drop
