@@ -165,9 +165,13 @@
   #1451. An earlier round's `Breaker:` skip is taken as written, since a rebase can drop
   its range from the clone. An earlier round in the fixed format that does not parse
   fails. A red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the
-  head. The status is `success` on `merge_group`. Decided by the director on #1169
+  head. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
-  messages on #1193. A round comment fails when it does not start with its name line
+  messages on #1193. On `merge_group`, the check runs for the PR of the group, at the
+  head of that PR, and its result is the status of the group. A group whose ref names
+  no PR gets the status `error`. Decided by the director at 2026-10-12T16:16:53Z
+  (https://github.com/synnaxlabs/foundation/issues/2458). A round comment fails when it
+  does not start with its name line
   `**<session>** · <role>`, then `Quality: <n>/10` with `n` from 1 to 10, then a summary
   line. Stated by the director at 2026-10-08T01:47:11Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6050487121), and
