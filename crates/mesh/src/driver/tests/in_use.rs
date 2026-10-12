@@ -1739,6 +1739,58 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     );
 }
 
+/// The group stops while `keep` names v1, whose file part does not stop. A task that
+/// waits for `ended` holds the store, and so does `keep` until it ends.
+#[test]
+fn ended_waits_for_keep_when_the_group_stops_in_a_file_call() {
+    let a = create_subjects(&["plant.a"], 1);
+    let first = pointer(1, &a);
+    let mut between = 0;
+    for seed in 0..32 {
+        let mut sim = Sim::new(sim::Config {
+            seed,
+            ..sim::Config::default()
+        });
+        let node = sim.node(sim::node::Config::default());
+        let a = a.clone();
+        let (at, held) = sim
+            .run_on(&node, move |node, tasks| async move {
+                let config = config(&node, &tasks, 1, &[1], &[1]).await;
+                let store = Rc::clone(&config.store);
+                let mesh = Mesh::start(config).await.unwrap();
+                assert_eq!(commit(&mesh, base(), &a).await, first);
+                let stopped = super::fail_sync(&node);
+                let c = create_subjects(&["plant.c"], 1);
+                let settled = mesh.settle_spec(
+                    first,
+                    pointer(2, &c).root,
+                    BTreeSet::new(),
+                    [key(1)].into(),
+                    BTreeMap::new(),
+                );
+                assert_eq!(settled.await, Err(Error::Stopped(stopped)));
+                let (ended, at) = (mesh.ended(), mesh.used().pointer);
+                drop(mesh);
+                let held = Rc::new(Cell::new(None));
+                let seen = Rc::clone(&held);
+                tasks.spawn(async move {
+                    ended.await;
+                    seen.set(Some(Rc::strong_count(&store)));
+                });
+                node.clock().sleep(seconds(1)).await;
+                (at, held.get())
+            })
+            .unwrap();
+        assert_eq!(held, Some(1), "seed {seed}");
+        let made = listed(&mut sim, &node).contains(&name(first));
+        between += usize::from(made && at == Some(base()));
+    }
+    assert!(
+        between > 0,
+        "no stop came between the file of v1 and its use"
+    );
+}
+
 // `settle` writes `behind` for a read that fails.
 #[test]
 fn used_keeps_the_spec_at_the_stop_when_a_failed_read_ends_after_it() {
