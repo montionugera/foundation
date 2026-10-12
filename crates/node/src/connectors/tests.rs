@@ -1166,3 +1166,279 @@ fn a_change_before_the_first_run_counts_from_its_apply() {
     assert_eq!(missed, Vec::<&_>::new());
     assert!(runs.iter().any(|run| run.1 == Some(true)), "{runs:?}");
 }
+
+/// A hub on `node` in a region whose one member and voter is node 1, with the home of
+/// each index of `homes` at node 1, and the mesh.
+async fn breaker_regional(
+    node: &::sim::node::Node,
+    tasks: &env::tasks::Tasks,
+    homes: &[u128],
+) -> (hub::Hub, ::mesh::Mesh) {
+    use std::sync::OnceLock;
+    let key = types::node::Key::from_u128(1);
+    let private_key = types::ed25519::PrivateKey([2; 32]);
+    let at = std::net::SocketAddr::new(node.addresses()[0], 7000);
+    let card = ::mesh::card::Card {
+        name: name("plant.node1"),
+        public_key: private_key.public(),
+        seal_key: types::node::SealKey::new([9; 32]).unwrap(),
+        addresses: ::mesh::card::addresses::Addresses::new(vec![
+            transport::Address::Udp(at),
+        ])
+        .unwrap(),
+        version: 1,
+    };
+    let member = ::mesh::Member {
+        card: ::mesh::card::Signed::sign(key, card, &private_key),
+        admission: [0; 64],
+        ephemeral: None,
+        status: ::mesh::status::Status::new(BTreeMap::new()).unwrap(),
+    };
+    let founding = ::mesh::region::Founding {
+        prefix: "plant".parse().unwrap(),
+        members: vec![member],
+        voters: [key].into(),
+        definitions: BTreeMap::new(),
+        homes: homes
+            .iter()
+            .map(|&index| (types::channel::Key::from_u128(index), key))
+            .collect(),
+    };
+    let bound = transport::Port::bind(&node.net(), at).expect("a port");
+    let identity = crate::identity::Identity {
+        key,
+        private_key,
+        opener: secret::seal::Opener::from_bytes([3; 32]),
+    };
+    let endpoint = crate::Endpoint::new(
+        bound,
+        crate::Opening::Given(founding),
+        node.clock(),
+        node.entropy(),
+        node.net(),
+    );
+    let (driver, time) = clock::Clock::new(node.clock());
+    let wall = node.wall();
+    tasks.spawn(async move { driver.run(wall).await });
+    let (give, take) = crate::handoff::pair();
+    give.give(types::frame::key_set::Interner::new());
+    let (give, next) = crate::handoff::pair();
+    let config = block::Config::new(1 << 22).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let open = crate::Open {
+        shard: 0,
+        take,
+        give,
+        monotonic: node.clock(),
+        clock: time.clone(),
+        entropy: node.entropy(),
+        layout: ::buffer::Layout::new(64 << 20, crate::BODY_MAX).expect("a ring"),
+        failed: Arc::new(OnceLock::new()),
+        stop: crate::stop::Stop::default(),
+    };
+    let pool = Rc::new(block::Pool::new(config, memory));
+    let home = open.run(node.files(), pool, tasks.clone()).await;
+    let home = home.expect("the buffer opens");
+    let interner = next.await.expect("the open gives the interner");
+    let config = block::Config::new(1 << 20).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = Rc::new(block::Pool::new(config, memory));
+    let opened = endpoint.open(identity, node.files(), pool, tasks.clone());
+    let (transport, mesh) = opened.await;
+    let mesh = mesh.expect("the mesh opens").expect("a region");
+    let hub = hub::Hub::new(hub::Config {
+        home,
+        interner,
+        tasks: tasks.clone(),
+        node: key,
+        time,
+        entropy: node.entropy(),
+        region: Some(hub::Region {
+            mesh: mesh.clone(),
+            transport,
+        }),
+    });
+    (hub, mesh)
+}
+
+/// What a scene in the region of [`breaker_regional`] records: the starts and the
+/// frames got until 10 s.
+struct BreakerSeen {
+    starts: Events,
+    got: Events,
+}
+
+/// Applies `first` at 0 and `second` at 1 s, each with the channels of `data` when
+/// asked, in the region of [`breaker_regional`], where the status index of each
+/// connector has its home at the node and `plant.data.time` has none. Gives what the
+/// runs did until 10 s.
+fn breaker_in_region(
+    seed: u64,
+    first: (Vec<Placed>, Vec<(Name, Definition)>),
+    second: (Vec<Placed>, Vec<(Name, Definition)>),
+    dropped: Option<i64>,
+) -> BreakerSeen {
+    let mut sim = ::sim::Sim::new(::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    });
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let (starts, cancels, got) =
+            (Starts::default(), Starts::default(), Starts::default());
+        let kinds = kinds(None, &starts, &cancels, &got);
+        let (hub, _mesh) = breaker_regional(&node, &tasks, &[1, 101, 201, 902]).await;
+        let config = connector::supervisor::Config {
+            kinds: Arc::new(kinds),
+            clock: node.clock(),
+            entropy: node.entropy(),
+            net: node.net(),
+            tasks: tasks.clone(),
+            hub: hub.clone(),
+        };
+        let clock = node.clock();
+        let start = clock.now();
+        let mut runs = Some(Runs::new(config, name(NODE)));
+        for (at, (spec, channels)) in [(0, first), (1_000, second)] {
+            clock.sleep_until(start + ms(at)).await;
+            let mut definitions = definitions(&spec);
+            definitions.extend(channels);
+            hub.set_definitions(&definitions);
+            runs.as_mut().expect("runs").apply(&definitions);
+        }
+        if let Some(dropped) = dropped {
+            clock.sleep_until(start + ms(dropped)).await;
+            drop(runs.take());
+        }
+        clock.sleep_until(start + ms(10_000)).await;
+        drop(runs);
+        let since = |events: &Starts| {
+            let events = events.lock().expect("no panic");
+            let mut events: Events = events
+                .iter()
+                .map(|(connector, at, version)| (connector.clone(), *at - start, *version))
+                .collect();
+            events.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+            events
+        };
+        BreakerSeen {
+            starts: since(&starts),
+            got: since(&got),
+        }
+    });
+    run.expect("the run ends")
+}
+
+/// At 0, a `sink` whose first open waits for the home of `plant.data.time`, which the
+/// mesh never names. At 1 s, the spec removes the connector and adds a `quick`. The
+/// removal cancels the open, so the `quick` starts.
+#[test]
+fn breaker_a_removal_of_a_connector_whose_open_waits_for_a_home_frees_the_wait() {
+    for seed in 0..32 {
+        let first = (vec![("plant.a", "sink", NODE, 0)], data().to_vec());
+        let second = (vec![("plant.b", "quick", NODE, 0)], data().to_vec());
+        let seen = breaker_in_region(seed, first, second, None);
+        assert_eq!(seen.starts, [start("plant.b", 1_000, 0)], "seed {seed}");
+    }
+}
+
+/// A drop of the runs while the first open waits for a home ends the open.
+#[test]
+fn breaker_a_drop_while_the_first_open_waits_for_a_home_ends_it() {
+    for seed in 0..32 {
+        let first = (vec![("plant.a", "sink", NODE, 0)], data().to_vec());
+        let second = (vec![("plant.a", "sink", NODE, 0)], data().to_vec());
+        let seen = breaker_in_region(seed, first, second, Some(2_000));
+        assert_eq!(seen.starts, [], "seed {seed}");
+    }
+}
+
+/// `plant.data.value` (key 901) on the index `plant.other` (key 902), whose home is the
+/// node, and no `plant.data.time`.
+fn breaker_moved() -> Vec<(Name, Definition)> {
+    let index = types::channel::Key::from_u128(902);
+    let other = spec::channel::Channel {
+        key: index,
+        kind: spec::channel::Kind::Index {
+            error: None,
+            control: None,
+        },
+    };
+    let f64 = types::sample::Type::Scalar(types::sample::Scalar::F64);
+    let data = spec::channel::Data::new(
+        index,
+        None,
+        spec::data_type::DataType::Sample(f64),
+        None,
+    );
+    let value = spec::channel::Channel {
+        key: types::channel::Key::from_u128(901),
+        kind: spec::channel::Kind::Data(data.expect("no unit")),
+    };
+    vec![
+        (name("plant.other"), Definition::Channel(other)),
+        (name("plant.data.value"), Definition::Channel(value)),
+    ]
+}
+
+/// At 0, a `sink` whose first open waits for the home of `plant.data.time`, which the
+/// mesh never names. At 1 s, the spec moves `plant.data.value`, the one channel that
+/// the selector then matches, to an index whose home is the node, and adds a `quick`.
+/// The open must check its names again and open on the new index (the ruling on
+/// #2167), so the `sink` and the `quick` start.
+#[test]
+fn breaker_a_move_of_the_channel_of_an_open_that_waits_for_a_home_frees_the_wait() {
+    let held: Vec<(u64, Events)> = (0..32)
+        .map(|seed| {
+            let first = (vec![("plant.a", "sink", NODE, 0)], data().to_vec());
+            let second = (
+                vec![("plant.a", "sink", NODE, 0), ("plant.b", "quick", NODE, 0)],
+                breaker_moved(),
+            );
+            (seed, breaker_in_region(seed, first, second, None).starts)
+        })
+        .filter(|(_, starts)| {
+            *starts != [start("plant.a", 1_000, 0), start("plant.b", 1_000, 0)]
+        })
+        .collect();
+    assert_eq!(held, []);
+}
+
+/// Control: with the channel on the homed index from the start, the `sink` opens.
+#[test]
+fn breaker_control_an_open_on_the_moved_channel_opens() {
+    for seed in 0..32 {
+        let first = (vec![("plant.a", "sink", NODE, 0)], breaker_moved());
+        let second = (
+            vec![("plant.a", "sink", NODE, 0), ("plant.b", "quick", NODE, 0)],
+            breaker_moved(),
+        );
+        let seen = breaker_in_region(seed, first, second, None);
+        assert_eq!(
+            seen.starts,
+            [start("plant.a", 0, 0), start("plant.b", 1_000, 0)],
+            "seed {seed}"
+        );
+    }
+}
+
+/// At 0, a `sink` whose first open waits for the home of `plant.data.time`, which the
+/// mesh never names. At 1 s, the spec removes the channels of `plant.data`, so the
+/// selector of the `sink` matches no channel, and adds a `quick`. The open of the
+/// `sink` must fail with `Empty`, as a new open does (HUB SESSIONS, the ruling on
+/// #2167), so the `quick` starts.
+#[test]
+fn breaker_a_removal_of_the_channels_of_an_open_that_waits_for_a_home_frees_the_wait() {
+    let held: Vec<(u64, Events)> = (0..32)
+        .map(|seed| {
+            let first = (vec![("plant.a", "sink", NODE, 0)], data().to_vec());
+            let second = (
+                vec![("plant.a", "sink", NODE, 0), ("plant.b", "quick", NODE, 0)],
+                Vec::new(),
+            );
+            (seed, breaker_in_region(seed, first, second, None).starts)
+        })
+        .filter(|(_, starts)| *starts != [start("plant.b", 1_000, 0)])
+        .collect();
+    assert_eq!(held, []);
+}
