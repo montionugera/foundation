@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 use env::paths::{Error, Found};
+use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
 
 use crate::cases::{self, Host};
@@ -388,34 +389,29 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
             fs::rename(&next, &link).unwrap();
         }
     };
-    let other = race(swap, &link, |read| {
+    let other = race(swap, 5_000, &link, |read| {
         matches!(read, Ok(Found::File(_) | Found::Directory(_)))
     });
     assert_eq!(other, None);
 }
 
-/// `plant` is a directory, nothing, a file, or nothing, in turn, with no link.
+/// `plant` and `file` swap a directory and a file in one step.
 #[test]
 fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
     let scratch = Scratch::new();
-    let plant = scratch.0.join("plant");
+    let (plant, file) = (scratch.0.join("plant"), scratch.0.join("file"));
+    fs::create_dir(&plant).unwrap();
+    fs::write(&file, b"x").unwrap();
     let swap = || {
-        fs::create_dir(&plant).unwrap();
-        fs::remove_dir(&plant).unwrap();
-        fs::write(&plant, b"x").unwrap();
-        fs::remove_file(&plant).unwrap();
+        renameat_with(CWD, &plant, CWD, &file, RenameFlags::EXCHANGE).unwrap();
     };
-    let other = race(swap, &plant, |read| {
-        matches!(
-            read,
-            Ok(Found::File(_) | Found::Directory(_)) | Err(Error::NotFound)
-        )
+    let other = race(swap, 100_000, &plant, |read| {
+        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
     });
     assert_eq!(other, None);
 }
 
-/// A path through `/proc` names a directory that is removed before the read opens it.
-#[cfg(target_os = "linux")]
+/// A path through `/dev/fd` names a directory that is removed before the read opens it.
 #[test]
 fn a_read_of_a_removed_directory_lists_no_entries() {
     use std::os::fd::AsRawFd;
@@ -425,35 +421,36 @@ fn a_read_of_a_removed_directory_lists_no_entries() {
     #[expect(clippy::disallowed_methods, reason = "the test holds the directory")]
     let held = fs::File::open(&plant).unwrap();
     fs::remove_dir(&plant).unwrap();
-    let path = PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()));
+    let path = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
     assert_eq!(
         os::paths().read(&path, 1 << 12),
         Ok(Found::Directory(Vec::new()))
     );
 }
 
-/// Reads `path` until another thread has called `swap` [`CYCLES`] times or ended, and
+/// Reads `path` until another thread has called `swap` `cycles` times or ended, and
 /// gives the first read that `expected` refuses. The bound is on the swaps, not the
 /// reads, so a slow or busy host still races each read against many swaps.
 fn race(
     swap: impl Fn() + Sync,
+    cycles: usize,
     path: &Path,
     expected: impl Fn(&Result<Found, Error>) -> bool,
 ) -> Option<Result<Found, Error>> {
-    let (cycles, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
     thread::scope(|scope| {
         #[expect(clippy::disallowed_methods, reason = "the test races the read")]
         let swapper = scope.spawn(|| {
             while !stopped.load(Ordering::Relaxed) {
                 swap();
-                cycles.fetch_add(1, Ordering::Relaxed);
+                done.fetch_add(1, Ordering::Relaxed);
             }
         });
         let paths = os::paths();
         let mut other = None;
         // A panic in `swap` ends the swapper, and the scope then fails the test.
         while other.is_none()
-            && cycles.load(Ordering::Relaxed) < CYCLES
+            && done.load(Ordering::Relaxed) < cycles
             && !swapper.is_finished()
         {
             other = Some(paths.read(path, 1 << 12)).filter(|read| !expected(read));
@@ -462,5 +459,3 @@ fn race(
         other
     })
 }
-
-const CYCLES: usize = 5000;
