@@ -1739,8 +1739,9 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     );
 }
 
-/// The group stops while `keep` names v1, whose file part does not stop. A task that
-/// waits for `ended` holds the store, and so does `keep` until it ends.
+/// The group stops after the commit of v1, on some seeds while `keep` names v1,
+/// whose file part does not stop. A task that waits for `ended` holds the store,
+/// and so does `keep` until it ends.
 #[test]
 fn ended_waits_for_keep_when_the_group_stops_in_a_file_call() {
     let a = create_subjects(&["plant.a"], 1);
