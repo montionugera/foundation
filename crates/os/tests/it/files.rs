@@ -207,6 +207,9 @@ fn the_file_size_limit_test_passes_under_a_limit_that_its_parent_set() {
         .unwrap();
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{}: {error}", output.status);
+    // A name that matches no test also ends with success.
+    let ran = String::from_utf8_lossy(&output.stdout);
+    assert!(ran.contains("test result: ok. 1 passed"), "{ran}");
 }
 
 #[test]
