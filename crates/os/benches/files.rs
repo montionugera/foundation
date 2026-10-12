@@ -20,8 +20,8 @@ fn main() {
 /// A file `f` of `LEN` bytes in a directory of its own, and its disk.
 struct Setup {
     dir: PathBuf,
-    files: Option<Files>,
-    thread: Option<env::thread::Handle>,
+    files: Files,
+    thread: env::thread::Handle,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -43,25 +43,16 @@ impl Setup {
         });
         Self {
             dir,
-            files: Some(files),
-            thread: Some(thread),
+            files,
+            thread,
             runtime,
         }
     }
 
-    fn files(&self) -> &Files {
-        self.files
-            .as_ref()
-            .expect("the disk is open until the drop")
-    }
-}
-
-impl Drop for Setup {
-    fn drop(&mut self) {
-        drop(self.files.take());
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the I/O thread ends");
-        }
+    /// Closes the disk, joins its I/O thread, and removes the directory.
+    fn end(self) {
+        drop(self.files);
+        self.thread.join().expect("the I/O thread ends");
         std::fs::remove_dir_all(&self.dir).expect("the bench directory is removed");
     }
 }
@@ -77,7 +68,7 @@ fn write_at(bencher: Bencher<'_, '_>) {
     let parts: [Block; 1] = [unique.freeze()];
     let file = setup
         .runtime
-        .block_on(setup.files().open(Path::new("f"), Mode::Write))
+        .block_on(setup.files.open(Path::new("f"), Mode::Write))
         .expect("the file opens to write");
     let slots = LEN / PART as u64;
     bencher.counter(ItemsCount::new(CALLS)).bench_local(|| {
@@ -89,11 +80,12 @@ fn write_at(bencher: Bencher<'_, '_>) {
         });
     });
     setup.runtime.block_on(file.close());
+    setup.end();
 }
 
 fn open_close(bencher: Bencher<'_, '_>, mode: Mode, tag: &str) {
     let setup = Setup::new(tag);
-    let files = setup.files();
+    let files = &setup.files;
     bencher.counter(ItemsCount::new(CALLS)).bench_local(|| {
         setup.runtime.block_on(async {
             for _ in 0..CALLS {
@@ -102,6 +94,7 @@ fn open_close(bencher: Bencher<'_, '_>, mode: Mode, tag: &str) {
             }
         });
     });
+    setup.end();
 }
 
 /// One write open and its close, each awaited.
