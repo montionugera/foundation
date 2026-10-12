@@ -878,6 +878,54 @@ fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
     crate::panics::assert_joins(thread, crate::panics::panicked("files"));
 }
 
+/// An unlock that gives `EINVAL` is a broken invariant too: the close panics the I/O
+/// thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_einval_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EINVAL);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// A write open that another disk holds the lock of gives `Busy`, holds no lock, and so
+/// sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_busy_write_open_sends_no_unlock() {
+    let scratch = Scratch::new();
+    let (holder, holder_thread) = files(&scratch.0, "holder");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let held = runtime.block_on(create(&holder, "a", KIB));
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let opened = files.open(Path::new("a"), Mode::Write).await.map(drop);
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(opened, Err(Error::Busy { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+    runtime.block_on(held.close());
+    drop(holder);
+    holder_thread.join().unwrap();
+}
+
 /// A read handle holds no lock, so its close sends no unlock.
 #[cfg(target_os = "linux")]
 #[test]
