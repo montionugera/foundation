@@ -1,8 +1,7 @@
 //! The drop of `free` on a RAM disk of its own, on macOS. Each test starts `hdiutil`
-//! and `diskutil`, and a child process holds a copy of each descriptor, with its file
-//! locks, until its `exec`. So these tests run in a test binary of their own, and no
-//! test here locks a file again after it releases its lock. The root tests check this
-//! on Linux, on a filesystem of their own.
+//! and `diskutil`, and a child process keeps the room of each file that this process
+//! removes until its `exec`. So these tests run in a test binary of their own. The root
+//! tests check this on Linux, on a filesystem of their own.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]

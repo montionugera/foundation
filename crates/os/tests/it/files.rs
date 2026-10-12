@@ -879,8 +879,7 @@ async fn stalled<T>(
     started
 }
 
-/// Makes a FIFO at `path`. A child process, such as `mkfifo`, would hold the files of
-/// the tests on other threads open until it starts, and so keep their locks.
+/// Makes a FIFO at `path`.
 fn mkfifo(path: &Path) {
     #[cfg(target_os = "linux")]
     {

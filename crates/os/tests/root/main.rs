@@ -1,8 +1,6 @@
 //! `os` with `sudo`: files on a small filesystem that the test mounts, and a listener
 //! that an operator aborts. Only one CI step on a GitHub-hosted runner runs this
-//! target. Each test starts child processes, which hold copies of the file locks of the
-//! other tests until their `exec`. So no test here locks a file again after it releases
-//! its lock.
+//! target.
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 #![cfg(target_os = "linux")]
