@@ -611,8 +611,9 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el`, or NULL on a failure. */
-UA_Client *shim_client_new(UA_EventLoop *el) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
+ * or NULL on a failure. */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -622,6 +623,9 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
         UA_ClientConfig_clear(&config);
         return NULL;
     }
+    /* open62541 checks the chunks of a message that it sends and of one that it takes
+     * against this count, not against the count of the peer. */
+    config.localConnectionConfig.localMaxChunkCount = chunks;
     return UA_Client_newWithConfig(&config);
 }
 
@@ -661,12 +665,21 @@ UA_StatusCode shim_response_result(const void *response) {
 
 /* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. */
+ * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
+ * ends at its answer or at the close of the channel. */
 UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
-    return UA_Client_readValueAttribute_async(
+    /* open62541 takes the timeout hint of a request from the config, and makes 0
+     * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
+     * hint 0. */
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_UInt32 timeout = config->timeout;
+    config->timeout = 0;
+    UA_StatusCode status = UA_Client_readValueAttribute_async(
         client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+    config->timeout = timeout;
+    return status;
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no

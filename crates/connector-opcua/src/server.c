@@ -12,10 +12,10 @@
 #include <string.h>
 
 /* Gives a server on `el` with the minimal config, the one server URL
- * `opc.tcp://{host}:{port}`, and room for `sessions` sessions and secure channels, or
- * NULL on a failure. */
+ * `opc.tcp://{host}:{port}`, room for `sessions` sessions and secure channels, and at
+ * most `chunks` chunks in a message, or NULL on a failure. */
 UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
-                           UA_UInt16 sessions) {
+                           UA_UInt16 sessions, UA_UInt32 chunks) {
     UA_ServerConfig config;
     memset(&config, 0, sizeof(config));
     /* The loop of `shim_loop_new` owns its logger, which is not const. */
@@ -28,6 +28,7 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
     }
     config.maxSessions = sessions;
     config.maxSecureChannels = sessions;
+    config.tcpMaxChunks = chunks;
     /* The minimal config has the one server URL `opc.tcp://:{port}`. */
     UA_String *url = &config.serverUrls[0];
     UA_String_clear(url);
@@ -61,4 +62,31 @@ UA_StatusCode shim_server_add_double(UA_Server *server, UA_UInt16 namespace,
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
         UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "value"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the variable `node` of `namespace`, which holds a ByteString of
+ * `length` zero bytes, under the Objects folder. */
+UA_StatusCode shim_server_add_bytes(UA_Server *server, UA_UInt16 namespace,
+                                    UA_UInt32 node, size_t length) {
+    UA_ByteString bytes;
+    UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, length);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    memset(bytes.data, 0, length);
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&attributes.value, &bytes, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    attributes.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    status = UA_Server_addVariableNode(
+        server, UA_NODEID_NUMERIC(namespace, node),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "bytes"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+    UA_ByteString_clear(&bytes);
+    return status;
+}
+
+/* Sets the most chunks in a message of each later channel of `server`. */
+void shim_server_chunks(UA_Server *server, UA_UInt32 chunks) {
+    UA_Server_getConfig(server)->tcpMaxChunks = chunks;
 }

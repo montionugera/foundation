@@ -88,7 +88,8 @@ impl Mask {
 }
 
 /// What a reader gets: a frame and the entries it wants (M2). It reads as the frame of
-/// only those series. Making one copies nothing and takes no reference count.
+/// only those series, except through [`View::frame`]. Making one copies nothing and
+/// takes no reference count.
 #[derive(Clone, Copy, Debug)]
 pub struct View<'a> {
     frame: &'a Frame,
@@ -110,6 +111,12 @@ impl<'a> View<'a> {
             mask.set.get()
         );
         Self { frame, mask }
+    }
+
+    /// The whole frame, with the series that the mask leaves out.
+    #[must_use]
+    pub fn frame(&self) -> &'a Frame {
+        self.frame
     }
 
     /// The key set of the frame and the mask.
@@ -353,6 +360,7 @@ mod tests {
         assert_eq!(view.range(0), None);
         assert_eq!(view.range(1), frame.range(1));
         assert_eq!(view.range(1), Some(Range::default()));
+        assert!(std::ptr::eq(view.frame(), &raw const frame));
     }
 
     #[test]
