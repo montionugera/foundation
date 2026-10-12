@@ -33,11 +33,23 @@
   check in `Store::put` covers the puts of a peer, the chunks that a get stores, and
   local puts. The floor bounds what a peer may fill and is not a reservation: the room
   of the other puts in flight is not counted, so the overshoot is at most one chunk for
-  each put in flight. The check does not sync the directory, and `Files::remove` counts
-  the room of a removed file as used until `sync_dir` on its directory ends. So after a
-  put over a file of another length that stopped before its sync, the floor refuses a
-  put early by the room of that file, until the next put that stores a chunk
-  (`laptop.architect`, 2026-10-11T05:39:27Z:
+  each put in flight. A put is in flight for a check while its caller holds its future,
+  and also when its future drops after the `free` of that check started
+  (`laptop.architect`, 2026-10-11T16:58:32Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111434083;
+  2026-10-12T16:10:17Z:
+  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6128044346, which
+  narrows "A dropped put is not in flight" of 6111434083 to a put that dropped before
+  the `free` of the check started), as ENV SEAMS bounds the wait of `Files::free`
+  (`laptop.architect-2`, 2026-10-11T17:05:00Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387;
+  2026-10-12T15:52:54Z:
+  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370). The
+  check does not sync the directory, and `Files::remove` counts the room of a removed
+  file as used until `sync_dir` on its directory ends. So after a put over a file of
+  another length that stopped before its sync, the floor refuses a put early by the
+  room of that file, until the next put that stores a chunk (`laptop.architect`,
+  2026-10-11T05:39:27Z:
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105909022). `node`
   gives `node::Settings::floor_bytes`, 1 GiB by default (`laptop.architect-2`,
   2026-10-12T15:50:49Z:
