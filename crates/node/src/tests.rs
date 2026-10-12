@@ -2768,6 +2768,20 @@ mod port {
         (Transport::new(config, part).expect("a transport"), pool)
     }
 
+    /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
+    fn shard<F: Future<Output = ()> + 'static>(
+        host: &sim::node::Node,
+        act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
+    ) {
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = host.clone();
+        let started = host.shards().start(shard, move |tasks| act(own, tasks));
+        drop(started.expect("the peer starts"));
+    }
+
     /// A program's transport on `host`, at a free port, with its pool.
     fn program(
         host: &sim::node::Node,
@@ -4656,20 +4670,6 @@ mod port {
             assert_eq!(peer, Peer::Node(KEY.public()));
             assert_eq!(sent, transport::Error::Stopped { code });
             assert_eq!(read, Err(transport::Error::Reset { code }));
-        }
-
-        /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
-        fn shard<F: Future<Output = ()> + 'static>(
-            host: &sim::node::Node,
-            act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
-        ) {
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = host.clone();
-            let started = host.shards().start(shard, move |tasks| act(own, tasks));
-            drop(started.expect("the peer starts"));
         }
 
         /// `count` sessions that `program` dials to the node [`OWN`] at `at`, in order.

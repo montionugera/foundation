@@ -18,13 +18,7 @@ fn peer<F: Future<Output = ()> + 'static>(
     act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
 ) -> sim::node::Node {
     let host = sim.node(sim::node::Config::default());
-    let shard = env::shards::Config {
-        name: "peer".into(),
-        core: None,
-    };
-    let own = host.clone();
-    let started = host.shards().start(shard, move |tasks| act(own, tasks));
-    drop(started.expect("the peer starts"));
+    shard(&host, act);
     host
 }
 
