@@ -23,6 +23,10 @@
   https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453.
   Supersedes "no change to `env`" in
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337.
+  Amended (2026-10-12, #2214): a driver of `tasks` counts no task, and a part that
+  counts its tasks uses `Group`. Supersedes "a driver of `tasks` that counts tasks
+  passes each task to one of theirs" of the #2063 amendment. Approval owed of
+  `laptop.architect-2`.
   `clock::Clock`: monotonic time as `types::time::Monotonic`, and a `Sleep` future that
   resets without an allocation.
   `wall::Wall`: the OS wall clock, which only `clock` reads (a lint).
