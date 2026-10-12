@@ -1,9 +1,8 @@
 - **LARGE FRAME (#191)** The home refuses a write whose bodies no record of the ring
   holds, or with an entry whose parts, joined, pass `Buffer::block_max` of the shard's
-  buffer, on either path, with `Large`. The pool bound is on each entry's parts
-  joined, the home's header part included (#968). No seq moves and the home stores no
-  part of the frame. The waiting handoffs of the frame's indexes are
-  still recorded (HANDOFF RECORD). The writer splits the frame by samples or by indexes
+  buffer, on either path, with `Large`. The home's header part counts in the entry's
+  parts (#968). No seq moves and the home stores no part of the frame. The waiting
+  handoffs of the frame's indexes are still recorded (HANDOFF RECORD). The writer splits the frame by samples or by indexes
   and writes each part. The home never splits a frame, because a frame applies whole
   (B7). Each handoff goes in its own append, so a handoff never makes a frame large. The
   size is checked only when the bodies are appended, after the handoffs: a frame whose
