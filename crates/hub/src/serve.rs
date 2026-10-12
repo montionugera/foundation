@@ -480,7 +480,9 @@ impl<'s> Opening<'s> {
     }
 
     /// Checks that each of `keys` is known, on the index of the open, and not named
-    /// before, and adds it to the channels of the open.
+    /// before, and adds it to the channels of the open. It reads the definitions that
+    /// `recv` applied, and applies no spec itself: an apply could end the wait before
+    /// `extend`.
     fn check(&mut self, keys: keys::Iter<'_>) -> Result<(), Error> {
         let (state, from) = (self.state.borrow(), self.keys.len());
         for key in keys {
