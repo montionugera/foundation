@@ -2080,10 +2080,10 @@ mod tests {
         assert_eq!(record[HEADER..], expected);
     }
 
-    // A candidate of a founding set of 255 voters joins each late pre-vote into its
-    // proof, writes the proof of 255 grants, and opens its log again.
+    // The log holds only the proofs that this node wrote, so its decode bounds no
+    // grants: it opens a proof of 255 grants, one more than a message takes.
     #[test]
-    fn a_candidate_of_255_voters_opens_the_proof_it_wrote() {
+    fn the_log_opens_a_proof_of_more_grants_than_a_message_takes() {
         let keys: BTreeSet<node::Key> = (1..=255).map(node::Key::from_u128).collect();
         let config = raft::Config {
             key: key(1),
