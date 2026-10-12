@@ -94,17 +94,21 @@ where
         synced,
         pool,
         rules,
+        async |_| {},
         program,
     )
 }
 
-/// As [`serve_session`], on `wire`.
+/// As [`serve_session`], on `wire`, where the home gives its [`Test`] hub to `ready`
+/// once it accepted the session, and serves the session's streams after `ready`
+/// ends.
 pub(super) fn serve_session_on<G, P>(
     seed: u64,
     wire: sim::link::Config,
     synced: bool,
     pool: usize,
     rules: Option<access::Rules>,
+    ready: impl AsyncFnOnce(&Test) + Send + 'static,
     program: G,
 ) -> Home
 where
@@ -116,6 +120,7 @@ where
     let (kept, ended) = (Arc::clone(&served), Arc::clone(&closed));
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let (test, session, link) = accept(&node, &tasks, pool, synced, rules).await;
+        ready(&test).await;
         let accepted = Rc::new(Cell::new(0));
         serve_each(&session, &link, &tasks, &node.clock(), &kept, &accepted).await;
         *ended.lock().expect("not poisoned") = Some(session.closed().await);
@@ -202,7 +207,7 @@ fn run<H, P>(
 }
 
 /// Dials the home at `at` as an [`Agent`], runs `program`, and closes the session.
-async fn as_agent<P>(
+pub(super) async fn as_agent<P>(
     node: sim::node::Node,
     tasks: env::tasks::Tasks,
     at: Address,
@@ -500,7 +505,7 @@ fn stops_a_request_before_the_hello_is_admitted() {
     );
     assert_eq!(
         serve::Error::Unadmitted.to_string(),
-        "the program sent a request before the node admitted a hello"
+        "the program sent a request or a read before the node admitted a hello"
     );
 }
 
@@ -696,8 +701,8 @@ fn stops_a_request_whose_body_is_over_the_room_of_the_hub() {
     );
     assert_eq!(
         over.to_string(),
-        "a request body of 16777216 bytes does not fit under the cap of 33554432 \
-         bytes: the open requests of the hub hold 16777217 bytes"
+        "a body of 16777216 bytes does not fit under the cap of 33554432 bytes: the \
+         open requests and reads of the hub hold 16777217 bytes"
     );
 }
 
@@ -823,8 +828,8 @@ fn takes_a_request_of_another_subject_while_a_body_trickles() {
     );
     assert_eq!(
         over.to_string(),
-        "a request body of 1 bytes does not fit under the share of 16777216 bytes of \
-         subject ops.agent: its open requests hold 16777216 bytes"
+        "a body of 1 bytes does not fit under the share of 16777216 bytes of subject \
+         ops.agent: its open requests and reads hold 16777216 bytes"
     );
 }
 

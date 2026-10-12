@@ -9,7 +9,7 @@ use types::hello::Hello;
 use types::name::Name;
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::client::{Challenge, Request, Response, Signed};
+use wire::hub::client::{Challenge, Mode, Open, Read, Request, Response, Signed};
 
 use crate::net::{HOME, NODE, own_pool, public_key};
 
@@ -56,6 +56,27 @@ impl Stream {
         for chunk in body.chunks(1 << 16) {
             self.send(chunk).await;
         }
+    }
+
+    /// Sends a read of `open`, signed with `key` as a `kind`, and the open in one
+    /// message.
+    pub(crate) async fn read(
+        &mut self,
+        open: &Open,
+        kind: access::proof::Kind,
+        key: &PrivateKey,
+    ) {
+        let mut body = vec![0; open.encoded_len()];
+        open.encode(&mut body);
+        let signed = access::proof::signed(kind, CONNECTION, &body);
+        let read = Read {
+            length: u64::try_from(body.len()).expect("an open fits a u64"),
+            signature: Pair::new(key).sign(&signed),
+        };
+        let mut out = [0; Read::LEN];
+        read.encode(&mut out);
+        self.send(&out).await;
+        self.send(&body).await;
     }
 
     /// The next message from the node, `None` once it finished.
@@ -161,15 +182,23 @@ impl Agent {
 
     /// Opens a request stream and sends its header.
     pub(crate) async fn open(&self) -> Stream {
-        let mut stream = self.silent().await;
+        self.open_as(Class::Complete).await
+    }
+
+    /// Opens a stream of `class` and sends its header.
+    pub(crate) async fn open_as(&self, class: Class) -> Stream {
+        let mut stream = self.silent_as(class).await;
         stream.send(&wire::header::encode(Protocol::Hub)).await;
         stream
     }
 
     /// Opens a stream and sends nothing, so the node does not see it yet.
     pub(crate) async fn silent(&self) -> Stream {
-        let (sender, receiver) =
-            self.session.open(Class::Complete).await.expect("opens");
+        self.silent_as(Class::Complete).await
+    }
+
+    async fn silent_as(&self, class: Class) -> Stream {
+        let (sender, receiver) = self.session.open(class).await.expect("opens");
         Stream {
             pool: std::rc::Rc::clone(&self.pool),
             sender,
@@ -189,6 +218,23 @@ impl Agent {
     pub(crate) async fn unfinished(&self, length: u64, body: &[u8]) -> Stream {
         let mut stream = self.open().await;
         stream.request(length, body).await;
+        stream
+    }
+
+    /// Sends a read of `select` in `mode`, signed by the agent, on a new stream of the
+    /// class of `mode`. Leaves the stream open.
+    pub(crate) async fn read(&self, mode: Mode, select: &[&str]) -> Stream {
+        let class = match mode {
+            Mode::Latest => Class::Latest,
+            Mode::Complete => Class::Complete,
+        };
+        let mut stream = self.open_as(class).await;
+        let open = Open {
+            mode,
+            select: types::name::Selector::new(select.iter().copied())
+                .expect("a selector"),
+        };
+        stream.read(&open, access::proof::Kind::Read, &AGENT).await;
         stream
     }
 
