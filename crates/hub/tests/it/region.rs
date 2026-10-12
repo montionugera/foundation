@@ -461,6 +461,29 @@ fn a_reader_fails_when_its_one_channel_is_removed_while_it_waits_for_a_home() {
     });
 }
 
+/// A reader whose names match a channel that a spec in use adds on its index while it
+/// waits for the home opens on that channel too.
+#[test]
+fn a_reader_opens_on_a_channel_added_while_it_waits_for_a_home() {
+    run(45, |test| async move {
+        let names = ["value", "value-x"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        let mut added = channels();
+        added.insert(name("value-x"), definition(9, DataType::Sample(I64), 1));
+        test.set_spec(added).await;
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.set_home(TIME, NODE).await;
+        let mut reader = reading.await.expect("opens on value and value-x");
+        let mut writer = test.writer("a", &names).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (9, &[8])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 2, 9]);
+        assert_eq!(samples(&received, 9), [8]);
+    });
+}
+
 /// A reader of two channels on one index, one of which a spec in use removes while it
 /// waits for the home, opens on the other.
 #[test]
