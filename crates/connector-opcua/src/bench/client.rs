@@ -92,13 +92,13 @@ impl Server {
             rng: RefCell::new(rng),
         };
         let value = {
-            let mut serve = pin!(manager.drive(|_| {
+            let mut drive = pin!(manager.drive(|_| {
                 manager.events().run();
                 Poll::<()>::Pending
             }));
             let mut body = pin!(super::caught(body(&this)));
             poll_fn(|cx| {
-                assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
+                assert!(drive.as_mut().poll(cx).is_pending(), "it never ends");
                 body.as_mut().poll(cx)
             })
             .await
@@ -164,29 +164,35 @@ impl std::fmt::Debug for Client {
 mod tests {
     use std::net::SocketAddr;
 
-    use env::clock::Clock;
     use env::rng::Rng;
+    use sim::node::Node;
     use sim::{Sim, node};
     use types::time::Span;
 
     use super::super::caught;
-    use super::{PORT, Server};
+    use super::{DOUBLE, PORT, Server};
     use crate::peer::session;
 
-    /// Runs `body` in the scope of a server, with the clock of the scope, and gives
-    /// the error of the run as text.
+    /// Runs `body` on a node of a sim, and gives the error of the run as text.
     fn run<T: Send + 'static>(
-        body: impl AsyncFnOnce(&Server, Clock) -> T + Send + 'static,
+        body: impl AsyncFnOnce(Node) -> T + Send + 'static,
     ) -> Result<T, String> {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
-        sim.run_on(&node, move |node, _| async move {
-            let (address, clock) = (node.addresses()[0], node.clock());
-            let body = async |server: &Server| body(server, clock).await;
-            let rng = node.entropy().rng();
-            Server::scope(node.clock(), node.net(), address, rng, body).await
-        })
-        .map_err(|error| error.to_string())
+        sim.run_on(&node, move |node, _| body(node))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Runs `body` in the scope of a server on `node` with `double` as its value, and
+    /// a new `Rng` from the entropy of `node`.
+    async fn serve<T>(
+        node: &Node,
+        double: f64,
+        body: impl AsyncFnOnce(&Server) -> T,
+    ) -> T {
+        let (clock, net, address) = (node.clock(), node.net(), node.addresses()[0]);
+        let rng = node.entropy().rng();
+        Server::serve(clock, net, address, rng, double, body).await
     }
 
     /// The error of a run of seed 0 whose task panics with `message`.
@@ -201,44 +207,45 @@ mod tests {
         Span::from_nanos(count * 60 * 1_000_000_000)
     }
 
+    /// Connects a client, reads, and closes it.
+    async fn read(server: &Server) {
+        let mut client = server.connect().await;
+        client.read().await;
+        client.close().await;
+    }
+
     /// A scope closes after a panic in its body, also with a client that drops with the
     /// body before the close, so the next scope takes its port.
     #[test]
     fn a_scope_whose_body_panics_frees_its_port() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        sim.run_on(&node, move |node, _| async move {
-            let address = node.addresses()[0];
+        let result = run(async |node| {
             let body = async |server: &Server| {
                 let _client = server.connect().await;
                 panic!("the body panics");
             };
-            let rng = node.entropy().rng();
-            let scope = Server::scope(node.clock(), node.net(), address, rng, body);
-            let panic = caught(scope).await.expect_err("the body panics");
+            let panic = caught(serve(&node, DOUBLE, body))
+                .await
+                .expect_err("panics");
             assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
-            let body = async |server: &Server| {
-                let mut client = server.connect().await;
-                client.read().await;
-                client.close().await;
-            };
-            let rng = node.entropy().rng();
-            Server::scope(node.clock(), node.net(), address, rng, body).await;
-        })
-        .expect("the run ends");
+            serve(&node, DOUBLE, read).await;
+        });
+        assert_eq!(result, Ok(()));
     }
 
     /// The server has room for 4 sessions.
     #[test]
     fn a_fifth_client_of_a_scope_panics_with_its_status() {
-        let result = run(async |server: &Server, _| {
-            let mut clients = Vec::new();
-            for _ in 0..5 {
-                clients.push(server.connect().await);
-            }
-            for client in clients {
-                client.close().await;
-            }
+        let result = run(async |node| {
+            serve(&node, DOUBLE, async |server: &Server| {
+                let mut clients = Vec::new();
+                for _ in 0..5 {
+                    clients.push(server.connect().await);
+                }
+                for client in clients {
+                    client.close().await;
+                }
+            })
+            .await;
         });
         assert_eq!(result, panicked("a connect failed: BadTimeout"));
     }
@@ -248,12 +255,16 @@ mod tests {
     #[test]
     fn a_dropped_client_holds_its_session_until_it_times_out() {
         let fifth = |wait: Span| {
-            run(async move |server: &Server, clock: Clock| {
-                for _ in 0..4 {
-                    drop(server.connect().await);
-                }
-                clock.sleep(wait).await;
-                server.connect().await.close().await;
+            run(async move |node| {
+                let clock = node.clock();
+                serve(&node, DOUBLE, async |server: &Server| {
+                    for _ in 0..4 {
+                        drop(server.connect().await);
+                    }
+                    clock.sleep(wait).await;
+                    server.connect().await.close().await;
+                })
+                .await;
             })
         };
         let held = panicked("a connect failed: BadTooManySessions");
@@ -264,85 +275,63 @@ mod tests {
     /// The server closes a channel idle for 10 minutes.
     #[test]
     fn a_read_of_a_client_that_lost_its_channel_panics_with_its_status() {
-        let result = run(async |server: &Server, clock: Clock| {
-            let mut client = server.connect().await;
-            client.read().await;
-            clock.sleep(minutes(11)).await;
-            client.read().await;
-            client.close().await;
+        let result = run(async |node| {
+            let clock = node.clock();
+            serve(&node, DOUBLE, async |server: &Server| {
+                let mut client = server.connect().await;
+                client.read().await;
+                clock.sleep(minutes(11)).await;
+                client.read().await;
+                client.close().await;
+            })
+            .await;
         });
         assert_eq!(result, panicked("a read failed: BadSecureChannelClosed"));
     }
 
     #[test]
     fn a_second_scope_at_the_address_of_a_scope_panics() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        let result = sim.run_on(&node, move |node, _| async move {
-            let address = node.addresses()[0];
-            let (clock, net, second) = (node.clock(), node.net(), node.entropy().rng());
-            let body = async |_: &Server| {
-                Server::scope(clock, net, address, second, async |_: &Server| ()).await;
-            };
-            let rng = node.entropy().rng();
-            Server::scope(node.clock(), node.net(), address, rng, body).await;
+        let result = run(async |node| {
+            serve(&node, DOUBLE, async |_: &Server| {
+                serve(&node, DOUBLE, async |_: &Server| ()).await;
+            })
+            .await;
         });
         let free = "the port is free: AddressInUse { local: 10.0.0.1:4840 }";
-        assert_eq!(result.map_err(|error| error.to_string()), panicked(free));
+        assert_eq!(result, panicked(free));
     }
 
     #[test]
     fn a_read_of_another_value_panics_with_it() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        let result = sim.run_on(&node, move |node, _| async move {
-            let address = node.addresses()[0];
-            let body = async |server: &Server| {
-                let mut client = server.connect().await;
-                client.read().await;
-                client.close().await;
-            };
-            let rng = node.entropy().rng();
-            Server::serve(node.clock(), node.net(), address, rng, 2.5, body).await;
-        });
-        assert_eq!(
-            result.map_err(|error| error.to_string()),
-            panicked("read 2.5")
-        );
+        let result = run(async |node| serve(&node, 2.5, read).await);
+        assert_eq!(result, panicked("read 2.5"));
     }
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        sim.run_on(&node, move |node, _| async move {
-            let address = node.addresses()[0];
-            let body = async |server: &Server| {
+        let debug = run(async |node| {
+            serve(&node, DOUBLE, async |server: &Server| {
                 let mut client = server.connect().await;
                 client.read().await;
                 let debug = format!("{server:?} {client:?}");
                 client.close().await;
                 debug
-            };
-            let rng = node.entropy().rng();
-            let debug =
-                Server::scope(node.clock(), node.net(), address, rng, body).await;
-            let url = format!("opc.tcp://{address}:4840");
-            assert_eq!(
-                debug,
-                format!(r#"Server {{ url: "{url}", .. }} Client {{ .. }}"#)
-            );
-        })
-        .expect("the run ends");
+            })
+            .await
+        });
+        let url = "opc.tcp://10.0.0.1:4840";
+        let debug = debug.expect("the run ends");
+        assert_eq!(
+            debug,
+            format!(r#"Server {{ url: "{url}", .. }} Client {{ .. }}"#)
+        );
     }
 
     /// Gives the ids of a session of a peer in a scope of each start value: before
     /// the first connect, and after each of two connects. The server draws them from
     /// the random numbers that the last loop on this thread set.
     fn sessions(starts: [u64; 2]) -> Vec<[[[u8; 16]; 2]; 3]> {
-        let mut sim = Sim::new(sim::Config::default());
-        let node = sim.node(node::Config::default());
-        sim.run_on(&node, move |node, _| async move {
+        run(async move |node| {
             let address = node.addresses()[0];
             let (net, remote) = (node.net(), SocketAddr::new(address, PORT));
             let mut ids = Vec::new();
