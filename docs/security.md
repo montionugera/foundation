@@ -328,8 +328,10 @@ state on `main`.
   #393 (two CRC-valid fields stopped the node at open); the `area_16` and
   `below_tail_16` inputs hold the two fields of #393. The `carry` inputs hold a
   carry record (#160): one valid, one each with a count past the body, an unknown
-  path byte, and a carried tail below the path's tail, and one that continues the
-  chain only from the second header.
+  path byte, and a carried tail below the path's tail, one that continues the chain
+  only from the second header, one inside a data record, off the way, one that only
+  the older header reaches, one that passes the end of the area, and one longer than
+  the window.
 
 ### Device to connector
 
