@@ -962,7 +962,7 @@ mod tests {
     use super::*;
     use env::files::SECTOR;
     use proptest::prelude::*;
-    use std::{iter, mem, slice};
+    use std::{iter, mem};
 
     const BLOCKS: u64 = 16;
     const AREA: u64 = BLOCKS * 4096;
@@ -2676,65 +2676,52 @@ mod tests {
             )
         }
 
-        /// The chain values that `ring` made since `head`: of a wrap record, then
-        /// of the head.
-        fn chains(ring: &Ring, head: Position) -> Vec<u32> {
-            if ring.head == head {
-                return Vec::new();
-            }
-            let wrap = ring.live.back().and_then(|live| live.wrap);
-            wrap.map(|wrap| wrap.chain)
-                .into_iter()
-                .chain([ring.head.chain])
-                .collect()
+        /// Whether the bytes at `end` read as a record that follows its chain, so
+        /// that a walk goes on past `end`.
+        fn goes_on(ring: &Ring, end: Position) -> bool {
+            let place = index(end.offset % ring.layout.area);
+            record::read(&ring.area[place..], end.chain).is_some()
         }
 
         /// A crash leaves any subset of the sectors of the last write. The record
         /// is live when every byte it wrote is on disk, also from a lost sector
         /// whose old byte was the same; lost padding does not count. A flipped
-        /// bit in it drops it. Each chain value of the run is new, as a random
-        /// restart chain and a CRC make it: a torn record over an old record
-        /// sealed with the chain of the reopen would read as that record.
+        /// bit in it drops it. No bytes read as a record where a walk must end, as
+        /// a random restart chain and a CRC make it: else the walk reads them.
         fn keeps_the_last_record(
             layout: Layout,
             (ops, last, kept, damaged, flip, chain, after): Crash,
         ) -> Result<(), TestCaseError> {
             let mut ring = Ring::with(layout);
-            let mut made = vec![ring.head.chain];
-            for op in &ops {
-                let head = ring.head;
-                run(&mut ring, slice::from_ref(op));
-                made.extend(chains(&ring, head));
-            }
+            run(&mut ring, &ops);
             let before = ring.area.clone();
             let head = ring.head;
             let Ok(plan) = ring.append(&last) else {
                 return Err(TestCaseError::reject("the ring is full"));
             };
-            made.extend(chains(&ring, head));
-            made.push(chain);
-            let count = made.len();
-            made.sort_unstable();
-            made.dedup();
-            prop_assume!(made.len() == count, "a chain repeats");
             let written = ring.area.clone();
             for (sector, _) in kept.iter().enumerate().filter(|(_, kept)| !**kept) {
                 let bytes = sector * SECTOR..(sector + 1) * SECTOR;
                 ring.area[bytes.clone()].copy_from_slice(&before[bytes]);
             }
-            let whole = plan
-                .wrap
-                .map(|place| (place, HEADER_LEN))
-                .into_iter()
-                .chain([(plan.place, HEADER_LEN + last.len())])
-                .all(|(place, len)| {
-                    let bytes = index(place)..index(place) + len;
-                    ring.area[bytes.clone()] == written[bytes]
-                });
+            let wrote = |place: u64, len: usize| {
+                let bytes = index(place)..index(place) + len;
+                ring.area[bytes.clone()] == written[bytes]
+            };
+            let wrapped = plan.wrap.is_none_or(|place| wrote(place, HEADER_LEN));
+            let whole = wrapped && wrote(plan.place, HEADER_LEN + last.len());
             if whole && damaged {
                 let len = HEADER_LEN + last.len();
                 ring.area[index(plan.place) + flip.index(len)] ^= 1;
             }
+            let end = match (whole && !damaged, wrapped) {
+                (true, _) => ring.head,
+                (false, true) => {
+                    ring.live.back().and_then(|live| live.wrap).unwrap_or(head)
+                }
+                (false, false) => head,
+            };
+            prop_assume!(!goes_on(&ring, end), "old bytes read as a record");
             if !whole || damaged {
                 ring.live.pop_back();
             }
@@ -2743,22 +2730,25 @@ mod tests {
             prop_assume!(found.is_ok());
             prop_assert_eq!(found, Ok(expected.clone()));
             prop_assume!(ring.append(&after).is_ok());
+            prop_assume!(!goes_on(&ring, ring.head), "old bytes read as a record");
             expected.push(after);
             prop_assert_eq!(ring.walk().0, expected);
             Ok(())
         }
 
-        /// A reopen with chain 5 after one with chain 5, or with the chain value
-        /// after the old record `[7]`, puts the torn last record over the old
-        /// record `[8]` sealed with that chain, which the walk then reads.
+        /// Old bytes where the walk ends read as a record of the chain there: the
+        /// old record `[8]` after a reopen with chain 5 after one with chain 5, or
+        /// with the chain value after the old record `[7]`, and a record of the
+        /// chain of a later reopen inside an old body.
         #[test]
-        fn keeps_the_last_record_only_with_new_chains() {
+        fn keeps_the_last_record_only_where_old_bytes_end_the_walk() {
             use proptest::strategy::ValueTree;
             let fill = |ops: &mut Vec<Op>, body: u8, count: usize| {
                 for _ in 0..count {
                     ops.extend([Op::Append(vec![body]), Op::Release(3)]);
                 }
             };
+            let mut cases = Vec::new();
             let (_, after_seven) = record::header(5, Kind::Data, [[7u8].as_slice()]);
             for (before, then, last) in [(12, 13, 5), (11, 14, after_seven)] {
                 let mut ops = Vec::new();
@@ -2768,8 +2758,20 @@ mod tests {
                 fill(&mut ops, 8, 1);
                 fill(&mut ops, 6, then);
                 ops.push(Op::Reopen(last));
+                cases.push((ops, 14));
+            }
+            let reopen = 0xC0FF_EE11;
+            let (forged, _) = record::header(reopen, Kind::Data, [[42u8].as_slice()]);
+            let mut old = vec![3; ALIGN + 1];
+            old[ALIGN - HEADER_LEN..ALIGN].copy_from_slice(&forged);
+            old[ALIGN] = 42;
+            let mut ops = vec![Op::Append(old), Op::Release(3)];
+            fill(&mut ops, 8, 14);
+            ops.push(Op::Reopen(reopen));
+            cases.push((ops, 2));
+            for (ops, block) in cases {
                 let mut kept = vec![true; index(AREA) / SECTOR];
-                kept[14 * ALIGN / SECTOR] = false;
+                kept[block * ALIGN / SECTOR] = false;
                 let mut runner = proptest::test_runner::TestRunner::deterministic();
                 let flip = any::<prop::sample::Index>()
                     .new_tree(&mut runner)
@@ -2779,10 +2781,10 @@ mod tests {
                 let crash = (ops, body, kept, false, flip, 7, vec![10]);
                 let result = keeps_the_last_record(layout(), crash);
                 let Err(TestCaseError::Reject(reason)) = &result else {
-                    panic!("the case with chain {last:#x} runs: {result:?}");
+                    panic!("the case that loses block {block} runs: {result:?}");
                 };
                 assert!(
-                    reason.message().ends_with("a chain repeats"),
+                    reason.message().ends_with("old bytes read as a record"),
                     "a reject for another reason: {reason}"
                 );
             }
