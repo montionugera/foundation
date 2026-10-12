@@ -31,10 +31,9 @@ pub struct Scratch {
     groups: Vec<u32>,
 }
 
-/// Checks `draft`, a writer's frame of `set`, and splits it as a shard's write does:
-/// it encodes each raw series, walks the stamps of each group's index, and makes and
-/// drops the index frame of each group. Returns the bytes of the series of those
-/// frames.
+/// Checks `draft`, a writer's frame of `set`, and splits it: it encodes each raw
+/// series, walks every stamp of each group's index, then makes the index frame of each
+/// group and gives it to `index`. Returns the number of stamps walked.
 ///
 /// # Panics
 ///
@@ -45,23 +44,20 @@ pub fn split(
     pool: &block::Pool,
     set: &KeySet,
     draft: Draft,
+    mut index: impl FnMut(Draft),
 ) -> usize {
     let mut split = scratch.split.split(set, draft);
     scratch.groups.clear();
+    let mut walked = 0;
     while let Some((group, stamps)) = split.next() {
         let mut stamps = stamps.expect("each series fits its group's count");
         while let Some(vector) = stamps.next() {
-            vector.expect("an index that decodes");
+            walked += vector.expect("an index that decodes").len();
         }
         scratch.groups.push(group);
     }
-    let mut bytes = 0;
     for &group in &scratch.groups {
-        let mut frame = split.frame(pool, group).expect("room for an index frame");
-        bytes += frame
-            .iter_mut()
-            .map(|(_, series)| series.len())
-            .sum::<usize>();
+        index(split.frame(pool, group).expect("room for an index frame"));
     }
-    bytes
+    walked
 }

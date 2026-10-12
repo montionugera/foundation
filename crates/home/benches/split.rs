@@ -1,10 +1,10 @@
-//! The time to check and split a writer's frame as a shard's write does: encode each
-//! raw series or validate each encoded one, walk the stamps of the index, and make and
-//! drop the index frame. Frames of one group of 16 and 1000 series of `SAMPLES`
-//! samples, raw and encoded: each an `f32`, or a mix of scalars, an array, a matrix, a
-//! list, a string, and bytes. Before it times a case, the bench asserts that the index
-//! frame holds the bytes of each series encoded, and that a split with a warm scratch
-//! makes no heap allocation.
+//! The time to check and split a writer's frame: encode each raw series or validate
+//! each encoded one, walk the stamps of the index, and make and drop the index frame.
+//! Frames of one group of 16 and 1000 series of `SAMPLES` samples, raw and encoded:
+//! each an `f32`, or a mix of scalars, an array, a matrix, a list, a string, and bytes.
+//! Before it times a case, the bench asserts that the split walks each stamp, that the
+//! index frame holds the bytes of each series encoded, and that a split with a warm
+//! scratch makes no heap allocation.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -50,8 +50,8 @@ struct Case {
     set: Arc<KeySet>,
     /// The bytes of each series, by entry, in `form`.
     bytes: Vec<Vec<u8>>,
-    /// The encoded bytes of all series.
-    encoded: usize,
+    /// The bytes of each series, by entry, encoded.
+    encoded: Vec<Vec<u8>>,
 }
 
 impl fmt::Display for Case {
@@ -74,7 +74,7 @@ impl Case {
             index: key(0),
             data: &data,
         }]);
-        let (bytes, lens): (Vec<_>, Vec<_>) = set
+        let (bytes, encoded): (Vec<_>, Vec<_>) = set
             .entries()
             .iter()
             .enumerate()
@@ -87,10 +87,9 @@ impl Case {
                     values(channel.data_type)
                 };
                 let encoded = encode(channel.data_type, &raw);
-                let len = encoded.len();
                 match form {
-                    Form::Raw => (raw, len),
-                    Form::Encoded => (encoded, len),
+                    Form::Raw => (raw, encoded),
+                    Form::Encoded => (encoded.clone(), encoded),
                 }
             })
             .unzip();
@@ -100,7 +99,7 @@ impl Case {
             form,
             set,
             bytes,
-            encoded: lens.iter().sum(),
+            encoded,
         }
     }
 
@@ -119,7 +118,7 @@ impl Case {
 /// The raw values of `SAMPLES` samples of `data_type`. A variable sample has
 /// `VARIABLE` elements, ASCII in a `String`.
 fn values(data_type: Type) -> Vec<u8> {
-    let samples = usize::try_from(SAMPLES).expect("few");
+    let samples = to_usize(SAMPLES);
     let Some(variable) = codec::Variable::of(data_type) else {
         let len = samples * data_type.width().expect("a fixed width");
         return (0..len)
@@ -142,12 +141,16 @@ fn values(data_type: Type) -> Vec<u8> {
 /// `raw`, `SAMPLES` samples of `data_type`, encoded.
 fn encode(data_type: Type, raw: &[u8]) -> Vec<u8> {
     let mut out = vec![0; codec::max_len(data_type, raw.len())];
-    let count = usize::try_from(SAMPLES).expect("few");
+    let count = to_usize(SAMPLES);
     let len = codec::Encoder::new(data_type)
         .encode(count, raw, &mut out)
         .expect("values that fit the count");
     out.truncate(len);
     out
+}
+
+fn to_usize(n: u32) -> usize {
+    usize::try_from(n).expect("a u32 fits a usize")
 }
 
 fn cases() -> Vec<Case> {
@@ -170,19 +173,36 @@ fn cases() -> Vec<Case> {
 fn split(bencher: Bencher<'_, '_>, case: &Case) {
     let pool = block::Pool::heap(POOL);
     let mut scratch = Scratch::default();
-    let split = |scratch: &mut Scratch, draft| {
-        home::bench::split(scratch, &pool, &case.set, draft)
-    };
-    let encoded = split(&mut scratch, case.draft(&pool));
+    let mut checked = 0;
+    let walked = home::bench::split(
+        &mut scratch,
+        &pool,
+        &case.set,
+        case.draft(&pool),
+        |frame| {
+            for (entry, series) in frame.iter() {
+                assert_eq!(series, case.encoded[entry], "{case}: series {entry}");
+                checked += 1;
+            }
+        },
+    );
+    assert_eq!(walked, to_usize(SAMPLES), "{case}: the stamps walked");
     assert_eq!(
-        encoded, case.encoded,
-        "{case}: the bytes of the index frame"
+        checked, case.series,
+        "{case}: the series of the index frame"
     );
     let draft = case.draft(&pool);
-    let warm = ALLOCATOR.count(|| split(&mut scratch, draft));
-    assert_eq!(warm, (case.encoded, 0), "{case}: a warm split allocates");
+    let warm = ALLOCATOR
+        .count(|| home::bench::split(&mut scratch, &pool, &case.set, draft, drop));
+    assert_eq!(
+        warm,
+        (to_usize(SAMPLES), 0),
+        "{case}: a warm split allocates"
+    );
     bencher
         .counter(ItemsCount::new(case.series))
         .with_inputs(|| case.draft(&pool))
-        .bench_local_values(|draft| split(&mut scratch, draft));
+        .bench_local_values(|draft| {
+            home::bench::split(&mut scratch, &pool, &case.set, draft, drop)
+        });
 }

@@ -1,7 +1,8 @@
 - **STORED BENCH (#1547, 2026-10-07)** The cargo feature `sim` of `home`, off by
   default, adds `#[doc(hidden)] pub mod bench`: `entry` calls `stored::entry`, and
   `read` calls `stored::read` and gives each series' channel, type, and bytes. Only the
-  bench `benches/stored.rs` (`test = true`) uses it. `read` gives all three fields, so
+  benches `benches/stored.rs` and `benches/split.rs` (SPLIT BENCH), each `test = true`,
+  use it. `read` gives all three fields, so
   the compiler cannot skip a decode that production does, and the bench passes each item
   to `divan::black_box`. Run it with `cargo bench -p home --bench stored`. Lost: a copy
   of `stored` in the bench through `#[path]`, which breaks at its first `crate::` item,

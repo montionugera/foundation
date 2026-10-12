@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes `stored` to the `stored` bench, and `testing` to the tests of `home` and the
-# crates above it.
+# Exposes `stored` and `split` to the benches, and `testing` to the tests of `home` and
+# the crates above it.
 sim = []
 
 [dependencies]
