@@ -827,3 +827,34 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
     assert_eq!(after, before + 1);
 }
+
+/// A client read that opens after the mesh puts in use a spec that adds `added`, and
+/// before the spec task of the hub runs, opens on `added`.
+#[test]
+fn a_client_read_opens_on_a_channel_that_a_spec_in_use_adds() {
+    let (served, ()) = homeless(
+        318,
+        async |test| {
+            test.set_home(TIME, NODE).await;
+            test.pause.pause();
+            let mut added = channels();
+            added.insert(
+                name("added"),
+                super::definition(9, DataType::Sample(I64), 1),
+            );
+            test.set_spec(added).await;
+        },
+        |mut agent| async move {
+            agent.admit().await;
+            agent
+                .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
+                .await;
+            let mut stream = agent.read(Mode::Latest, &["added"]).await;
+            let (places, _, _) = opened(&mut stream, Mode::Latest).await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            drop(stream);
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(served.len(), 2, "{served:?}");
+}

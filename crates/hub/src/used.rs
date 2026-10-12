@@ -46,13 +46,18 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
                 return Poll::Ready(());
             };
             let mut state = state.borrow_mut();
-            let applied = state.applied.as_mut().expect("invariant: a region");
+            let regional = state.region.as_mut().expect("invariant: a region");
+            let applied = &mut regional.applied;
             applied.task.polled(cx);
             let next = pin!(applied.watch.next()).poll(cx);
             match next {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(_)) => return Poll::Ready(()),
-                Poll::Ready(Ok(spec)) => state.apply(&spec),
+                Poll::Ready(Ok(spec)) => {
+                    if applied.moved(&spec) {
+                        state.define(&*spec.definitions);
+                    }
+                }
             }
         }
     })

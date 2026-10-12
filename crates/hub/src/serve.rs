@@ -400,7 +400,6 @@ async fn open(
     if class != wanted {
         return Err(Error::Class(class));
     }
-    state.borrow_mut().catch_up();
     let mut opening = Opening::new(state);
     loop {
         let Some(message) = opening.recv(receiver).await? else {
@@ -462,6 +461,7 @@ struct Opening<'s> {
 impl<'s> Opening<'s> {
     fn new(state: &'s Rc<RefCell<State>>) -> Self {
         let mut borrowed = state.borrow_mut();
+        borrowed.catch_up();
         let key = borrowed.opened;
         borrowed.opened += 1;
         let ending = borrowed.opens.add(key, Box::default());

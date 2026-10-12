@@ -94,6 +94,13 @@ pub struct Region {
     pub transport: Rc<transport::Transport>,
 }
 
+/// The region of a hub, and the spec in use that the hub applied last.
+#[derive(Debug)]
+struct Regional {
+    region: Region,
+    applied: used::Applied,
+}
+
 /// The state of one shard's hub, which each session shares. No borrow of it lasts
 /// past a call or across an `.await`.
 #[derive(Debug)]
@@ -125,9 +132,7 @@ struct State {
     entropy: env::entropy::Entropy,
     /// Empty, so refusing each hello, until [`Hub::set_rules`] first runs.
     rules: access::Rules,
-    region: Option<Region>,
-    /// The spec that the hub applied last, with a region.
-    applied: Option<used::Applied>,
+    region: Option<Regional>,
     /// Where the hub spawns the task of each remote reader.
     tasks: env::tasks::Tasks,
     bodies: serve::client::Bodies,
@@ -157,11 +162,13 @@ impl Hub {
             region,
         } = config;
         let next = home.next_commit();
-        let used = region.as_ref().map(|region| region.mesh.used());
-        let applied = region
-            .as_ref()
-            .zip(used.as_ref())
-            .map(|(region, used)| used::Applied::new(region.mesh.watch_spec(), used));
+        let (region, used) = region
+            .map(|region| {
+                let used = region.mesh.used();
+                let applied = used::Applied::new(region.mesh.watch_spec(), &used);
+                (Regional { region, applied }, used)
+            })
+            .unzip();
         let state = Rc::new(RefCell::new(State {
             home,
             interner,
@@ -182,7 +189,6 @@ impl Hub {
             entropy,
             rules: access::Rules::default(),
             region,
-            applied,
             tasks: tasks.clone(),
             bodies: serve::client::Bodies::default(),
         }));
@@ -239,7 +245,6 @@ impl Hub {
         &self,
         config: writer::Config,
     ) -> Result<Writer, writer::Error> {
-        self.0.borrow_mut().catch_up();
         Writer::open(&self.0, config).await
     }
 
@@ -273,7 +278,6 @@ impl Hub {
         &self,
         config: reader::Config,
     ) -> Result<Reader, reader::Error> {
-        self.0.borrow_mut().catch_up();
         Reader::open(&self.0, config).await
     }
 
@@ -451,32 +455,21 @@ impl State {
                 _ => None,
             })
             .collect();
-        self.set(&checked(&channels));
-    }
-
-    /// Applies the spec that the region's mesh uses now. Does nothing with no region.
-    fn catch_up(&mut self) {
-        if let Some(region) = &self.region {
-            let spec = region.mesh.used();
-            self.apply(&spec);
-        }
-    }
-
-    /// Defines the channels of `spec`, unless its pointer is the one applied last.
-    fn apply(&mut self, spec: &::mesh::used::Spec) {
-        let applied = self.applied.as_mut().expect("invariant: a region");
-        if applied.moved(spec) {
-            self.define(&*spec.definitions);
-        }
-    }
-
-    /// Makes `channels` the defined channels, as [`Hub::set_definitions`] says.
-    fn set(&mut self, channels: &hash::Map<&Name, &spec::channel::Channel>) {
-        let removed = self.channels.set(channels);
+        let removed = self.channels.set(&checked(&channels));
         self.end(&removed.channels);
         for key in removed.indexes {
             let slot = self.interner.slots().index(key);
             self.home.shed(slot);
+        }
+    }
+
+    /// Applies the spec that the region's mesh uses now. Does nothing with no region.
+    fn catch_up(&mut self) {
+        if let Some(regional) = &mut self.region {
+            let spec = regional.region.mesh.used();
+            if regional.applied.moved(&spec) {
+                self.define(&*spec.definitions);
+            }
         }
     }
 
@@ -624,7 +617,10 @@ async fn homes(
             let (watch, node) = {
                 let state = state.borrow();
                 (
-                    state.region.as_ref().map(|region| region.mesh.watch(index)),
+                    state
+                        .region
+                        .as_ref()
+                        .map(|regional| regional.region.mesh.watch(index)),
                     state.node,
                 )
             };
