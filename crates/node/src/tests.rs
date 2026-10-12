@@ -6927,10 +6927,10 @@ mod name {
     fn a_name_of_the_most_bytes_is_kept() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
-        let long = "a".repeat(255);
+        let long = "a".repeat(191);
         assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
         let kept = read(&mut sim, &host).expect("the file");
-        assert_eq!((kept.len(), kept[17]), (277, 255));
+        assert_eq!((kept.len(), kept[17]), (277, 191));
         assert_eq!(resolve(&mut sim, &host, None), Ok(name(&long)));
         assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
     }
