@@ -173,9 +173,6 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     ]);
     let default = "system.posix_acl_default";
     setxattr(&scratch.0, default, &given, XattrFlags::empty()).unwrap();
-    os::paths().write(&path, b"new").unwrap();
-    let mut taken = [0; 64];
-    let len = getxattr(&path, access, &mut taken[..]).unwrap();
     let expected = list(&[
         (owner, read_write, unnamed),
         (named, read_write, 4242),
@@ -183,8 +180,13 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
         (mask, none, unnamed),
         (other, none, unnamed),
     ]);
-    assert_eq!(taken[..len], expected);
-    assert_eq!(mode(&path), 0o600);
+    let mut taken = [0; 64];
+    for path in [path, scratch.0.join("site.hcl")] {
+        os::paths().write(&path, b"new").unwrap();
+        let len = getxattr(&path, access, &mut taken[..]).unwrap();
+        assert_eq!(taken[..len], expected);
+        assert_eq!(mode(&path), 0o600);
+    }
     let tool = scratch.0.join("tool.hcl");
     let mut open = fs::OpenOptions::new();
     open.write(true).create_new(true).mode(0o666);
