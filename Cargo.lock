@@ -2473,6 +2473,7 @@ dependencies = [
  "comrak",
  "semver",
  "serde_json",
+ "syn 3.0.6",
 ]
 
 [[package]]
