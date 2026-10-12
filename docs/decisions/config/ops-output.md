@@ -121,3 +121,17 @@
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6072118033) and, for
   the contract with `mesh`, by `laptop.architect` (2026-10-09T00:57:47Z,
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6072065332).
+  The plan output also has `reserved`: each definition of the spec in use that
+  Foundation made, as `Reserved { name, kind }` with its label and its kind, in the
+  order of its tree key. `plan` leaves these out of its changes, since no file can hold
+  a reserved label (FIRST ADMIN). When the spec holds one, the text ends with one line
+  after the counts: `note: <n> definitions that Foundation made are not in the files:`
+  and the tree key of each, with `, ` between two, or `note: 1 definition that
+  Foundation made is not in the files:` and its tree key. A spec with none gives no
+  line and an empty `reserved`. The text and the field are item 4 of plan revision 1
+  of #1744, by `laptop.architect-2` (2026-10-08T06:01:36Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053458318), which
+  revision 3 moves to PR 2 (2026-10-10T03:30:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). That
+  item gives an example and no order rule. The order of the tree key is item 2 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6128358513.
