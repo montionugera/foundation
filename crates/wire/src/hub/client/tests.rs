@@ -578,7 +578,7 @@ fn gives_the_code_and_the_text_of_each_refusal() {
         (
             Refusal::NotHome,
             17,
-            "the home of the index of the read moved",
+            "the home of the index of the read is another node",
         ),
         (
             Refusal::Failed,

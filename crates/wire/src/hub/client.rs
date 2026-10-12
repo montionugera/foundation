@@ -97,7 +97,8 @@ pub enum Refusal {
     /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
     /// read was removed.
     Unknown,
-    /// [`NOT_HOME`]: the home of the index of a read moved.
+    /// [`NOT_HOME`]: the home of the index of a read is another node, at the open or
+    /// after a move.
     NotHome,
     /// [`FAILED`]: the reader of a read failed.
     Failed,
@@ -164,7 +165,7 @@ impl fmt::Display for Refusal {
             Self::Unknown => {
                 "the selector matches no channel, or a channel of the read was removed"
             }
-            Self::NotHome => "the home of the index of the read moved",
+            Self::NotHome => "the home of the index of the read is another node",
             Self::Failed => {
                 "the reader failed: the buffer or the mesh of the home of the index \
                  stopped, or the path from the node to that home failed"

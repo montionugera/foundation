@@ -1271,6 +1271,7 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             true,
             POOL,
             Some(rules()),
+            async |_| {},
             move |node, tasks, at| async move {
                 let config = block::Config::new(
                     u64::try_from(block::footprint(1 << 16))

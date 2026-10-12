@@ -14,10 +14,15 @@ pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
     pub(crate) fn new() -> Self {
+        Self::under(&std::env::temp_dir())
+    }
+
+    /// A scratch directory in `base`.
+    pub(crate) fn under(base: &Path) -> Self {
         let thread = std::thread::current();
         let test = thread.name().expect("invariant: libtest names the thread");
         let name = format!("foundation-os-{}-{test}", std::process::id());
-        let dir = std::env::temp_dir().join(name.replace("::", "-"));
+        let dir = base.join(name.replace("::", "-"));
         std::fs::create_dir(&dir).unwrap();
         // Clears a setgid bit that the directory takes from a setgid `TMPDIR`.
         std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();

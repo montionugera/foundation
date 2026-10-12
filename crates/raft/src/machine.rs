@@ -907,8 +907,9 @@ impl Raft {
         }
         // A leader elected under the committed configuration can overwrite a
         // configuration entry that is not committed yet.
-        let quorum =
-            |voters: &Voters| voters.quorum(|key| proof.voters.contains_key(&key));
+        let quorum = |voters: &Voters| {
+            voters.quorum(|key| proof.voters.contains_key(&key)).is_ok()
+        };
         if quorum(&self.voters) || quorum(&self.log.committed_voters()) {
             return unread(true);
         }
@@ -957,7 +958,9 @@ impl Raft {
                 && link.at.term < term
                 && votes.grant == Grant::Vote
                 && !link.change.voters.incoming.is_empty()
-                && trusted.quorum(|key| votes.voters.contains_key(&key));
+                && trusted
+                    .quorum(|key| votes.voters.contains_key(&key))
+                    .is_ok();
             if !elected {
                 return Verdict {
                     read,
@@ -1050,7 +1053,8 @@ impl Raft {
             self.election_elapsed = 0;
             let heard = self
                 .voters
-                .quorum(|key| key == self.key || self.peer(key).active);
+                .quorum(|key| key == self.key || self.peer(key).active)
+                .is_ok();
             // A removed node that answered nothing since the last check is released.
             let voters = &self.voters;
             self.peers
