@@ -16,11 +16,11 @@
   and 3; 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
   3, and 5). The reader open waits while the mesh names no home for the index that it
-  selects. A reader with a hold opens again at its held position, so it stays `Behind`
-  at each open within its hold, and each close starts the hold again (HOME NAMED
-  READERS). So a hold longer than the longest wait of the backoff never ends while the
-  node runs with that spec. The reader then gets no frame again until #274 reads from
-  disk (the test:
+  selects. A reader with a hold opens again at its held position while its index keeps
+  its key, so it stays `Behind` at each open within its hold, and each close starts the
+  hold again (HOME NAMED READERS). So a hold longer than the longest wait of the backoff
+  never ends while the node runs with that spec. The reader then gets no frame again
+  until #274 reads from disk (the test:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). The wait
   for a home, and that the supervisor does no more for a held reader before #274, are
   decided by `laptop.architect-2` (2026-10-11T07:34:44Z:
