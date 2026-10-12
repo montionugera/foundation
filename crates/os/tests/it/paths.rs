@@ -135,6 +135,63 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     assert_eq!(mode(&path), 0o600);
 }
 
+/// `os` sets no access control list.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files() {
+    use rustix::fs::{XattrFlags, getxattr, setxattr};
+    // The `posix_acl_xattr` form: a version, then a tag, the bits, and a user.
+    let list = |entries: &[(u16, u16, u32)]| {
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        for (tag, bits, user) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(bits.to_le_bytes());
+            bytes.extend(user.to_le_bytes());
+        }
+        bytes
+    };
+    let (owner, named, group, mask, other) = (0x01, 0x02, 0x04, 0x10, 0x20);
+    let (none, read, read_write, all, unnamed) = (0, 4, 6, 7, u32::MAX);
+    let scratch = Scratch::new();
+    let given = list(&[
+        (owner, all, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, all, unnamed),
+        (other, none, unnamed),
+    ]);
+    let default = "system.posix_acl_default";
+    setxattr(&scratch.0, default, &given, XattrFlags::empty()).unwrap();
+    let path = scratch.0.join("plant.hcl");
+    os::paths().write(&path, b"new").unwrap();
+    let mut taken = [0; 64];
+    let len = getxattr(&path, "system.posix_acl_access", &mut taken[..]).unwrap();
+    let expected = list(&[
+        (owner, read_write, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, none, unnamed),
+        (other, none, unnamed),
+    ]);
+    assert_eq!(taken[..len], expected);
+    assert_eq!(mode(&path), 0o600);
+    let tool = scratch.0.join("tool.hcl");
+    let mut open = fs::OpenOptions::new();
+    open.write(true).create_new(true).mode(0o666);
+    #[expect(clippy::disallowed_methods, reason = "the test makes a file as a tool")]
+    open.open(&tool).unwrap();
+    let len = getxattr(&tool, "system.posix_acl_access", &mut taken[..]).unwrap();
+    let expected = list(&[
+        (owner, read_write, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, read_write, unnamed),
+        (other, none, unnamed),
+    ]);
+    assert_eq!(taken[..len], expected);
+    assert_eq!(mode(&tool), 0o660);
+}
+
 #[test]
 fn a_write_on_a_path_that_ends_in_a_slash_keeps_the_files_inside() {
     let scratch = Scratch::new();
