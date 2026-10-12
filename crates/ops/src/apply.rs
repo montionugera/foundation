@@ -1,14 +1,11 @@
 //! Applies a plan file to the spec of the region.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use spec::definition::Definition;
 use types::channel;
-use types::name::Name;
 
 use crate::error::{self, Error};
 use crate::front_end;
@@ -25,7 +22,6 @@ mod tests;
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` when `path` is not UTF-8.
 /// - [`Error::Plan`] when `bytes` are not a plan.
-/// - [`Error::Behind`] when the node does not use the newest spec.
 /// - [`Error::Stopped`] when the group of `mesh` stopped.
 /// - Each error of [`apply`].
 pub(crate) async fn file(
@@ -39,22 +35,22 @@ pub(crate) async fn file(
         .to_str()
         .ok_or_else(|| Error::config(vec![front_end::not_utf8(path)], &[]))?;
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
-    let (pointer, applied) = used::spec(mesh).await?.newest()?;
-    let effect = apply(plan, pointer, &applied, mesh, kinds, key).await?;
+    let effect = apply(plan, used::spec(mesh).await?, mesh, kinds, key).await?;
     Ok(Applied {
         file: file.to_owned(),
         effect,
     })
 }
 
-/// Applies `plan` to the spec of `mesh`, which uses the spec at `pointer` with the
-/// definitions `applied`. A new channel gets its key from `key`, as
-/// [`config::plan::Plan::definitions`] states. `kinds` holds the connector kinds of the
-/// node that applies. The members are those of `mesh` at the apply.
+/// Applies `plan` to the spec of `mesh`, which uses `used`. A new channel gets its key
+/// from `key`, as [`config::plan::Plan::definitions`] states. `kinds` holds the
+/// connector kinds of the node that applies. The members are those of `mesh` at the
+/// apply.
 ///
 /// # Errors
 ///
-/// - [`Error::Stale`] when `pointer` is not the base of the plan, or when another
+/// - [`Error::Behind`] when the node does not use the newest spec.
+/// - [`Error::Stale`] when the spec in use is not the base of the plan, or when another
 ///   change applies first.
 /// - [`Error::Plan`] when the plan holds a change that `plan` does not make from the
 ///   spec at its base, such as one at a reserved label.
@@ -68,12 +64,12 @@ pub(crate) async fn file(
 /// and `Stale` when another change applies first, can come after a proposal.
 pub(crate) async fn apply(
     plan: config::plan::Plan,
-    pointer: spec::Pointer,
-    applied: &BTreeMap<Name, Definition>,
+    used: used::Spec,
     mesh: &mesh::Mesh,
     kinds: &connector::kind::Table,
     key: impl FnMut() -> channel::Key,
 ) -> Result<Effect, Error> {
+    let (pointer, applied) = used.newest()?;
     // `definitions` reads the definitions at the base, so the compare comes first.
     if pointer != plan.base {
         return Err(Error::Stale {
@@ -81,8 +77,8 @@ pub(crate) async fn apply(
             pointer,
         });
     }
-    let definitions = plan.definitions(applied, key).map_err(Error::Plan)?;
-    let counts = Counts::of(&plan, applied);
+    let definitions = plan.definitions(&applied, key).map_err(Error::Plan)?;
+    let counts = Counts::of(&plan, &applied);
     let homes = plan.homes.len();
     let pointer = if plan.changes.is_empty() && plan.homes.is_empty() {
         pointer
