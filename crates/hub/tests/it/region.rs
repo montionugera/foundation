@@ -25,9 +25,9 @@ use wire::hub::Mode;
 use super::definitions::{I32, write_i32};
 use super::serve::{Peer, session_in, stopped};
 use super::{
-    AREA, BODY_MAX, I64, NODE, POOL, SETTLE, TIME, TIME_B, Test, applied, channels,
-    config, definition, entry, keys, name, poll_once, reader, samples, unnamed,
-    without, write, write_series, writer, written,
+    AREA, BODY_MAX, I64, NODE, POOL, SETTLE, TIME, TIME_B, Test, VALUE, applied,
+    channels, config, definition, entry, keys, name, poll_once, reader, samples,
+    unnamed, without, write, write_series, writer, written,
 };
 use crate::net::{HOME, PEER, own_pool, public_key};
 
@@ -545,6 +545,26 @@ fn ends_the_spec_task_when_the_mesh_stops() {
         test.stop_mesh().await;
         test.clock.sleep(SETTLE).await;
         assert_eq!(test.ended.get(), 1, "the spec task ended");
+    });
+}
+
+/// The spec task applies the last spec in use when the group stops before its next
+/// poll, so a removal still ends the readers on the channel with no open.
+#[test]
+fn a_spec_in_use_just_before_the_mesh_stops_ends_the_readers_it_removes() {
+    run(39, |test| async move {
+        test.set_home(TIME, NODE).await;
+        let mut reader = test.reader(&["value"], reader::Mode::Complete).await;
+        test.clock.sleep(SETTLE).await;
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        test.stop_mesh().await;
+        test.pause.resume();
+        test.clock.sleep(SETTLE).await;
+        let Poll::Ready(ended) = poll_once(reader.next()) else {
+            panic!("the reader on a removed channel waits");
+        };
+        assert_eq!(ended.map(|_| ()), Err(Ended::Removed(VALUE)));
     });
 }
 

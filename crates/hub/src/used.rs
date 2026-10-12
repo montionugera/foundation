@@ -38,7 +38,7 @@ impl Applied {
 
 /// Applies the spec in use each time the watch in `state` gives one. It holds `state`
 /// only during a poll, so the first poll after the state drops ends it. It also ends
-/// when the group stops.
+/// when the group stops, after it applies the last spec in use.
 pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
     poll_fn(|cx| {
         loop {
@@ -49,11 +49,13 @@ pub(crate) async fn run(state: Weak<RefCell<super::State>>) {
             let regional = state.region.as_mut().expect("invariant: a region");
             let applied = &mut regional.applied;
             applied.task.polled(cx);
-            let next = pin!(applied.watch.next()).poll(cx);
-            match next {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(_)) => return Poll::Ready(()),
-                Poll::Ready(Ok(_)) => state.catch_up(),
+            let Poll::Ready(next) = pin!(applied.watch.next()).poll(cx) else {
+                return Poll::Pending;
+            };
+            // A spec can take effect just before the stop that the watch gives first.
+            state.catch_up();
+            if next.is_err() {
+                return Poll::Ready(());
             }
         }
     })
