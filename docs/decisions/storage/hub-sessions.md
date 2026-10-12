@@ -263,18 +263,20 @@
   and after the wait, and then carries the index and opens with no `await` between. So
   its index changes only at a removal, and it waits once. A key that a call changes
   before the open checks it is checked against the new definitions. While a local open
-  waits for the home, it is registered on each channel that its check gave and on their
-  indexes, as a served open is. A later spec in use that removes or changes one of them
-  wakes it at once. It then checks its names, or matches its selector, again, and waits
-  for the home of the index that the check gives. A moved channel then opens on its new
-  index. A writer whose name is gone fails with `Unknown`. A reader gets what an open at
-  that instant gets: its channels, `Empty`, or `ManyIndexes`. A spec that only adds a
-  channel wakes no open. When the home comes, a writer carries each index and opens with
-  no `await` between, because no channel of its check changed. A reader matches its
-  selector again, as an open at that instant does, so it also gets a channel that a spec
-  added on its index. It then carries the index and opens with no `await` between. A
-  served read selects by name and waits as a local reader does, so it follows the change
-  too (`laptop.architect`, 2026-10-09T05:24:32Z:
+  waits for the home, it is registered on each channel that its check gave, as a served
+  open is, and on no other index. A spec that removes an index removes or moves each
+  data channel on it, and the open takes nothing of an index but its key, which a rename
+  keeps. A later spec in use that removes or changes one of them wakes it at once. It
+  then checks its names, or matches its selector, again, and waits for the home of the
+  index that the check gives. A moved channel then opens on its new index. A writer
+  whose name is gone fails with `Unknown`. A reader gets what an open at that instant
+  gets: its channels, `Empty`, or `ManyIndexes`. A spec that only adds a channel wakes
+  no open. When the home comes, a writer carries each index and opens with no `await`
+  between, because no channel of its check changed. A reader matches its selector again,
+  as an open at that instant does, so it also gets a channel that a spec added on its
+  index. It then carries the index and opens with no `await` between. A served read
+  selects by name and waits as a local reader does, so it follows the change too
+  (`laptop.architect`, 2026-10-09T05:24:32Z:
   https://github.com/synnaxlabs/foundation/issues/2112#issuecomment-6074871156;
   2026-10-09T00:55:16Z:
   https://github.com/synnaxlabs/foundation/pull/2040#issuecomment-6072038723;
@@ -283,16 +285,24 @@
   2026-10-09T23:20:10Z:
   https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6090920229;
   2026-10-12T15:41:55Z:
-  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6127582652; and
+  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6127582652;
   2026-10-12T20:45:34Z:
-  https://github.com/synnaxlabs/foundation/pull/2491#issuecomment-6132311572). This
-  changes "After it waits for each index, the open (writer, reader, and served) runs
-  its check again" in the second comment: a served open and a local writer read their
-  removal in place of that check. The call checks the definitions before it changes
-  anything: two channels with one key or one name, or a data channel whose index is not
-  an index of the definitions, panic. This changes "A known key or name panics", "The
-  hub keeps the key, the sample type, and the index of each", and "The PR that defines
-  channels at each new spec decides what a known, renamed, or removed channel does" in
+  https://github.com/synnaxlabs/foundation/pull/2491#issuecomment-6132311572; and
+  2026-10-12T21:16:28Z:
+  https://github.com/synnaxlabs/foundation/pull/2491#issuecomment-6132751271). This
+  changes "After it waits for each index, the open (writer, reader, and served) runs its
+  check again" in the second comment: a served open and a local writer read their
+  removal in place of that check. It also changes "each channel and its index" in item 2
+  of https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6088904511. It
+  also changes "An open by name still checks its names again after the wait, and waits
+  again for a new index" in
+  https://github.com/synnaxlabs/foundation/issues/2112#issuecomment-6074871156: a local
+  writer checks its names again only after a wake. The call checks the definitions
+  before it changes anything: two channels with one key or one name, or a data channel
+  whose index is not an index of the definitions, panic. This changes "A known key or
+  name panics", "The hub keeps the key, the sample type, and the index of each", and
+  "The PR that defines channels at each new spec decides what a known, renamed, or
+  removed channel does" in
   https://github.com/synnaxlabs/foundation/issues/1917#issuecomment-6064624349. Lost: a
   session ends at its next call, under which a writer keeps the control of a removed
   index until it calls, and a reader that waits in `next` needs a wake anyway; and the
