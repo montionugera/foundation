@@ -57,9 +57,9 @@
   with `Spec::behind` set gives `ops.behind`, status 1, after the decode and before the
   base compare: the message names the newest pointer and one line for its `Cause`, and
   the fix is `Fix the cause, then plan again`. One private function of `ops` reads
-  `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`).
-  A call on that spec, the check that it is the newest, gives this error. This
-  supersedes the one function of item 1 of
+  `Mesh::spec` for each caller and gives the spec in use or the stop (`ops.stopped`). A
+  call on that spec, the check that it is the newest, gives this error. This supersedes
+  the one function of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, which also
   gives `ops.behind`. A plan whose base is not the spec in use, before the proposal or
   after another change applies first, is `ops.stale-plan`, status 1, fix `Plan again`.
