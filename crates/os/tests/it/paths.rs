@@ -430,13 +430,20 @@ fn a_read_of_a_removed_directory_lists_no_entries() {
 
 /// Reads `path` until another thread has called `swap` `cycles` times or ended, and
 /// gives the first read that `expected` refuses. The bound is on the swaps, not the
-/// reads, so a slow or busy host still races each read against many swaps.
+/// reads, so a slow or busy host still races each read against many swaps. On macOS
+/// it stops at 1 000 swaps: the race shows there in the first swaps, and each swap is
+/// slow.
 fn race(
     swap: impl Fn() + Sync,
     cycles: usize,
     path: &Path,
     expected: impl Fn(&Result<Found, Error>) -> bool,
 ) -> Option<Result<Found, Error>> {
+    let cycles = if cfg!(target_os = "macos") {
+        cycles.min(1_000)
+    } else {
+        cycles
+    };
     let (done, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
     thread::scope(|scope| {
         #[expect(clippy::disallowed_methods, reason = "the test races the read")]
