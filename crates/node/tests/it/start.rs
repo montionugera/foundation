@@ -1,6 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::rig::Rig;
+use crate::rig::{self, Rig};
 use crate::text;
 
 /// The exit status, the standard output, and the standard error of `output`.
@@ -47,6 +47,24 @@ fn a_data_directory_with_a_newline_prints_one_line() {
             ""
         )
     );
+    let data = rig.dir.join("a\nb");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test reads what the rig wrote to the disk"
+    )]
+    let kept = std::fs::read(data.join("data/budget")).expect("read the budget file");
+    assert_eq!(kept, rig::budget(rig::POOL, rig.disk));
+    // The disk budget bounds the length of each ring, not the other files of the node.
+    let entries =
+        std::fs::read_dir(data.join("data")).expect("read the data directory");
+    let rings = (entries.map(|entry| entry.expect("read an entry").file_name()))
+        .filter(|name| name.to_str().is_some_and(|name| name.starts_with("shard-")))
+        .map(|shard| {
+            let path = data.join("data").join(shard).join("ring");
+            std::fs::metadata(path).expect("read the ring").len()
+        })
+        .sum::<u64>();
+    assert!((1..=rig.disk).contains(&rings), "{rings} bytes of rings");
 }
 
 #[test]
@@ -605,6 +623,24 @@ fn a_node_whose_standard_output_nobody_reads_exits_0_at_sigterm() {
 }
 
 #[test]
+fn an_admin_key_that_holds_no_key_fails() {
+    let rig = Rig::new();
+    let data = rig.dir.join("foundation-data/data");
+    std::fs::create_dir_all(&data).expect("make the directory");
+    std::fs::write(data.join("admin.key"), [0xff; 54]).expect("write the admin key");
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "edge"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.failed]: the file `admin.key` in the data directory is not an \
+             admin key; restore it from a backup, or remove it to make a new admin\n\
+             fix: Fix the cause that the message states, then start the node again\n"
+        )
+    );
+}
+
+#[test]
 fn a_start_on_a_port_that_another_socket_holds_fails() {
     #[expect(
         clippy::disallowed_methods,
@@ -629,6 +665,48 @@ fn a_start_on_a_port_that_another_socket_holds_fails() {
 }
 
 #[test]
+fn a_start_at_a_multicast_ip_fails() {
+    let rig = Rig::new();
+    let listen = ["start", "--name", "edge", "--listen", "224.0.0.1:0"];
+    assert_eq!(
+        ended(&rig.run(&listen, b"")),
+        (
+            Some(1),
+            "",
+            "error[node.port]: cannot bind the node's port at 224.0.0.1:0: a \
+             multicast or broadcast IP is not an address of a host\n\
+             fix: Give `--listen` an address of this host with a port that is free \
+             and that this user can bind\n"
+        )
+    );
+}
+
+#[test]
+fn a_chunk_store_that_the_user_cannot_list_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    let blob = rig.dir.join("foundation-data/data/blob");
+    let mode = |mode| std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(&blob, mode(0o000)).expect("make it closed");
+    let output = rig.run(&["start"], b"");
+    std::fs::set_permissions(&blob, mode(0o755)).expect("make it open");
+    assert_eq!(
+        ended(&output),
+        (
+            Some(1),
+            "",
+            "error[node.data]: cannot write the data directory foundation-data: list \
+             of blob failed with OS error 13\n\
+             fix: Make foundation-data a directory that this user can write, and let \
+             it write each file in it, or give another directory with `--data`\n"
+        )
+    );
+}
+
+#[test]
 fn a_listen_that_is_no_socket_address_fails() {
     let rig = Rig::new();
     assert_eq!(
@@ -642,6 +720,29 @@ fn a_listen_that_is_no_socket_address_fails() {
              `foundation <operation> --help`\n"
         )
     );
+}
+
+#[test]
+fn a_start_with_another_name_after_the_name_file_is_gone_fails() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.stop();
+    std::fs::remove_file(rig.dir.join("foundation-data/data/name"))
+        .expect("remove the name file");
+    assert_eq!(
+        ended(&rig.run(&["start", "--name", "other"], b"")),
+        (
+            Some(1),
+            "",
+            "error[node.renamed]: the data directory foundation-data holds the node \
+             edge, not other\n\
+             fix: Give `--name edge`, or another data directory with `--data`\n"
+        )
+    );
+    rig.start_with(&[]);
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    rig.start();
+    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
 }
 
 #[test]

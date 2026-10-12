@@ -16,6 +16,8 @@ use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use spec::connector::Connector;
 use spec::definition::Definition;
+use types::authority::Authority;
+use types::frame::{Form, Label, Path};
 use types::name::Name;
 use types::time::{Monotonic, Span};
 
@@ -84,6 +86,116 @@ impl Kind for Hold {
     }
 }
 
+/// A kind whose run records its start, opens a writer of `plant.data.time` and
+/// `plant.data.value`, writes one frame at once, and holds the writer until the cancel.
+struct Source {
+    starts: Starts,
+}
+
+impl Kind for Source {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), 0);
+        self.starts.lock().expect("no panic").push(start);
+        let channels = vec![name("plant.data.time"), name("plant.data.value")];
+        let mut writer = ctx.writer(channels, Authority(1), None).await?;
+        let entries = writer.set().entries();
+        let entry = |key| {
+            let key = types::channel::Key::from_u128(key);
+            entries.iter().position(|entry| entry.key == key)
+        };
+        let (time, value) = (entry(900).expect("time"), entry(901).expect("value"));
+        let group = entries[time].group;
+        let mut series = [(time, 8), (value, 8)];
+        series.sort_unstable();
+        let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
+        let stamp = writer.now().nanos();
+        let time = draft.series_mut(time).expect("the index series");
+        time.copy_from_slice(&stamp.to_le_bytes());
+        let value = draft.series_mut(value).expect("the value series");
+        value.copy_from_slice(&1.0_f64.to_le_bytes());
+        draft.set_count(group, 1);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        let outcomes = outcomes.expect("the home takes it");
+        assert!(
+            matches!(outcomes, [hub::home::Outcome::Applied { .. }]),
+            "{outcomes:?}"
+        );
+        ctx.cancel().wait().await;
+        Ok(())
+    }
+}
+
+/// A kind that reads with `settings`, and records its start and each frame that its run
+/// gets, with the time.
+struct Sink {
+    settings: connector::reader::Settings,
+    starts: Starts,
+    got: Starts,
+}
+
+impl Kind for Sink {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels {
+            reader: Some(self.settings.clone()),
+            ..Channels::default()
+        })
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, mut ctx: Context<()>) -> Result<(), Error> {
+        let start = (ctx.name().to_string(), ctx.clock().now(), 0);
+        self.starts.lock().expect("no panic").push(start);
+        let mut reader = ctx.reader().expect("the reader of `check`");
+        let cancel = ctx.cancel().clone();
+        while let Some(Ok(_)) = cancel.race(reader.next()).await {
+            let got = (ctx.name().to_string(), ctx.clock().now(), 0);
+            self.got.lock().expect("no panic").push(got);
+        }
+        Ok(())
+    }
+}
+
+/// `config` with its tasks counted, and the count of its tasks that have not ended.
+fn count(
+    mut config: connector::supervisor::Config,
+) -> (connector::supervisor::Config, Rc<Cell<usize>>) {
+    let live = Rc::new(Cell::new(0));
+    config.tasks = env::tasks::Tasks::new(Counted {
+        tasks: config.tasks.clone(),
+        live: Rc::clone(&live),
+    });
+    (config, live)
+}
+
 /// Spawns on `tasks` and counts the tasks that have not ended.
 struct Counted {
     tasks: env::tasks::Tasks,
@@ -122,58 +234,81 @@ fn on(at: i64, spec: Vec<Placed>) -> Step {
     (ms(at), spec)
 }
 
-/// Each start of a run, or each cancel, with its time from the time the hub opened.
+/// Each start of a run, or each cancel, with its time from the time the hub opened, in
+/// order of time, then name.
 type Events = Vec<(String, Span, usize)>;
 
 /// Each start of a run until 10 s, as [`record`] gives it.
 fn starts(linger: Option<Span>, steps: Vec<Step>) -> Events {
-    record(linger, steps, None).starts
+    record(
+        steps,
+        Scene {
+            linger,
+            ..Scene::default()
+        },
+    )
+    .starts
 }
 
 /// What [`record`] gives.
 struct Recorded {
     starts: Events,
     cancels: Events,
+    /// Each frame that a run of `sink` got.
+    got: Events,
     /// The names that the runs hold after each step.
     held: Vec<Vec<String>>,
     /// The tasks of the supervisor that have not ended at each step, before its apply.
     live: Vec<usize>,
 }
 
-/// Applies each step at its time, with the kind `hold`, whose task ends `linger` after
-/// the cancel, the kind `quick`, whose task ends at the cancel, and the kind `brief`,
-/// whose run returns at once, and drops the runs at `dropped`, if given. Gives each
-/// start of a run and each cancel until 10 s, from the time the hub opened, in order
-/// of time, then of name: the sim polls the tasks that are ready at one instant in a
-/// random order.
-fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recorded {
-    let mut sim = ::sim::Sim::new(::sim::Config::default());
+/// When the hub of [`create`] gets its first mesh time.
+#[derive(Clone, Copy, Default)]
+enum Mesh {
+    /// At once.
+    #[default]
+    Synced,
+    /// This long after it opened.
+    Late(Span),
+}
+
+/// The options of [`record`].
+#[derive(Clone, Copy, Default)]
+struct Scene {
+    /// The seed of the simulation.
+    seed: u64,
+    /// The time that the task of `hold` ends after the cancel.
+    linger: Option<Span>,
+    mesh: Mesh,
+    /// The time to drop the runs at, in ms from the time the hub opened, if given.
+    dropped: Option<i64>,
+}
+
+/// Applies each step at its time, in `scene`, with the kind `hold`, the kind `quick`,
+/// whose task ends at the cancel, the kind `brief`, whose run returns at once, and the
+/// kinds `source`, a [`Source`], `sink`, a [`Sink`] of `plant.data.*`, and `void`, a
+/// [`Sink`] of a selector that matches no channel. Each spec also defines [`data`].
+/// Gives each start of a run, each cancel, and each frame got until 10 s, from the time
+/// the hub opened, in order of time, then of name: the sim polls the tasks that are
+/// ready at one instant in a random order.
+fn record(steps: Vec<Step>, scene: Scene) -> Recorded {
+    let Scene {
+        seed,
+        linger,
+        mesh,
+        dropped,
+    } = scene;
+    let config = ::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    };
+    let mut sim = ::sim::Sim::new(config);
     let node = sim.node(::sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let (starts, cancels) = (Starts::default(), Starts::default());
-        let hold = |linger, brief| Hold {
-            linger,
-            brief,
-            starts: Arc::clone(&starts),
-            cancels: Arc::clone(&cancels),
-        };
-        let kinds = Table::new()
-            .with("hold", hold(linger, false))
-            .with("quick", hold(Some(Span::ZERO), false))
-            .with("brief", hold(None, true));
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let mut config = testing::create_config(env, node.net(), kinds).await;
-        let counted = Rc::new(Cell::new(0));
-        config.tasks = env::tasks::Tasks::new(Counted {
-            tasks: config.tasks.clone(),
-            live: Rc::clone(&counted),
-        });
+        let (starts, cancels, got) =
+            (Starts::default(), Starts::default(), Starts::default());
+        let kinds = kinds(linger, &starts, &cancels, &got);
+        let (config, counted) = create(&node, &tasks, kinds, mesh).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
@@ -182,7 +317,8 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         for (at, spec) in steps {
             clock.sleep_until(start + at).await;
             live.push(counted.get());
-            let definitions = definitions(&spec);
+            let mut definitions = definitions(&spec);
+            definitions.extend(data());
             hub.set_definitions(&definitions);
             runs.apply(&definitions);
             names.push(runs.loops.keys().map(ToString::to_string).collect());
@@ -204,11 +340,59 @@ fn record(linger: Option<Span>, steps: Vec<Step>, dropped: Option<i64>) -> Recor
         Recorded {
             starts: since(&starts),
             cancels: since(&cancels),
+            got: since(&got),
             held: names,
             live,
         }
     });
     run.expect("the run ends")
+}
+
+/// The kinds of [`record`].
+fn kinds(
+    linger: Option<Span>,
+    starts: &Starts,
+    cancels: &Starts,
+    got: &Starts,
+) -> Table {
+    let hold = |linger, brief| Hold {
+        linger,
+        brief,
+        starts: Arc::clone(starts),
+        cancels: Arc::clone(cancels),
+    };
+    let sink = |select| Sink {
+        settings: settings(select),
+        starts: Arc::clone(starts),
+        got: Arc::clone(got),
+    };
+    let source = Source {
+        starts: Arc::clone(starts),
+    };
+    Table::new()
+        .with("hold", hold(linger, false))
+        .with("quick", hold(Some(Span::ZERO), false))
+        .with("brief", hold(None, true))
+        .with("source", source)
+        .with("sink", sink("plant.data.*"))
+        .with("void", sink("plant.none.*"))
+}
+
+/// The settings of a complete reader of the channels that `select` matches.
+fn settings(select: &str) -> connector::reader::Settings {
+    let select = Attribute {
+        key: "select".into(),
+        key_span: None,
+        value: Value {
+            kind: value::Kind::String(select.into()),
+            span: None,
+        },
+    };
+    let config = Document {
+        attributes: Map::new(vec![select]).expect("one key"),
+        blocks: Vec::new(),
+    };
+    connector::reader::read(&config, &[], &[]).expect("the reader settings")
 }
 
 /// The definitions of `spec`: each connector and its status channels.
@@ -225,6 +409,34 @@ fn definitions(spec: &[Placed]) -> BTreeMap<Name, Definition> {
         definitions.insert(connector, Definition::Connector(placed));
     }
     definitions
+}
+
+/// The definitions of `plant.data.time` (key 900), the index, and `plant.data.value`
+/// (key 901, `f64`).
+fn data() -> [(Name, Definition); 2] {
+    let index = types::channel::Key::from_u128(900);
+    let time = spec::channel::Channel {
+        key: index,
+        kind: spec::channel::Kind::Index {
+            error: None,
+            control: None,
+        },
+    };
+    let f64 = types::sample::Type::Scalar(types::sample::Scalar::F64);
+    let data = spec::channel::Data::new(
+        index,
+        None,
+        spec::data_type::DataType::Sample(f64),
+        None,
+    );
+    let value = spec::channel::Channel {
+        key: types::channel::Key::from_u128(901),
+        kind: spec::channel::Kind::Data(data.expect("no unit")),
+    };
+    [
+        (name("plant.data.time"), Definition::Channel(time)),
+        (name("plant.data.value"), Definition::Channel(value)),
+    ]
 }
 
 /// A config of the version `version`: a document with that many attributes.
@@ -349,7 +561,14 @@ fn an_addition_after_a_removal_that_ended_the_loop_starts_at_once() {
 #[test]
 fn a_drop_cancels_each_run() {
     let spec = vec![("plant.a", "hold", NODE, 0), ("plant.b", "quick", NODE, 0)];
-    let cancels = record(None, vec![on(0, spec)], Some(1_000)).cancels;
+    let cancels = record(
+        vec![on(0, spec)],
+        Scene {
+            dropped: Some(1_000),
+            ..Scene::default()
+        },
+    )
+    .cancels;
     assert_eq!(
         cancels,
         [start("plant.a", 1_000, 0), start("plant.b", 1_000, 0)]
@@ -368,7 +587,14 @@ fn an_apply_drops_each_removed_run_that_ended() {
         on(2_000, vec![]),
         on(5_000, vec![]),
     ];
-    let held = record(Some(ms(2_000)), steps, None).held;
+    let held = record(
+        steps,
+        Scene {
+            linger: Some(ms(2_000)),
+            ..Scene::default()
+        },
+    )
+    .held;
     let held_a = vec!["plant.a"];
     assert_eq!(held, [held_a.clone(), held_a.clone(), held_a, vec![]]);
 }
@@ -393,7 +619,7 @@ fn many_changes_while_the_old_run_holds_keep_one_future() {
         .zip((0..).step_by(50))
         .map(|(version, at)| on(at, vec![("plant.a", "hold", NODE, version)]))
         .collect();
-    let recorded = record(None, steps, None);
+    let recorded = record(steps, Scene::default());
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(100, 2);
@@ -410,7 +636,7 @@ fn changes_at_one_instant_keep_one_future() {
             on(at, vec![("plant.a", "hold", NODE, version)])
         })
         .collect();
-    let recorded = record(None, steps, None);
+    let recorded = record(steps, Scene::default());
     // The loop of the name and the task of its kind.
     let mut live = vec![0];
     live.resize(10, 2);
@@ -427,13 +653,14 @@ fn a_connector_whose_run_returned_starts_no_run_until_it_changes() {
 }
 
 /// A kind whose run records its start, spawns a task that ends `flush` after the
-/// cancel, opens a reader on `plant.data.**`, and holds the reader until the cancel.
-struct Select {
+/// cancel, opens a writer of `plant.data.time` and `plant.data.value`, and holds the
+/// writer until the cancel.
+struct Write {
     starts: Starts,
     flush: Span,
 }
 
-impl Kind for Select {
+impl Kind for Write {
     type Config = ();
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -460,84 +687,39 @@ impl Kind for Select {
             cancel.wait().await;
             clock.sleep(flush).await;
         });
-        let select = Attribute {
-            key: "select".into(),
-            key_span: None,
-            value: Value {
-                kind: value::Kind::String("plant.data.**".into()),
-                span: None,
-            },
-        };
-        let document = Document {
-            attributes: Map::new(vec![select]).expect("distinct keys"),
-            blocks: Vec::new(),
-        };
-        let settings = connector::reader::read(&document, &[], &[]).expect("settings");
-        let reader = ctx.reader(&settings).await?;
+        let channels = vec![name("plant.data.time"), name("plant.data.value")];
+        let writer = ctx.writer(channels, Authority(1), None).await?;
         ctx.cancel().wait().await;
-        drop(reader);
+        drop(writer);
         Ok(())
     }
 }
 
-/// The counts of the runs of a connector of [`Select`] at 4 s and 10 s. Its first run
-/// gets `Config`, since no channel matches. At 1 s, a spec change adds the channels
-/// that it selects, with the connector unchanged. At 5 s, an apply keeps the connector
+/// The counts of the runs of a connector of [`Write`] at 4 s and 10 s. Its first run
+/// gets `Config`, since no channel has its names. At 1 s, a spec change adds the
+/// channels, with the connector unchanged. At 5 s, an apply keeps the connector
 /// and its run.
-fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
+fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
     sim.run_on(&node, move |node, tasks| async move {
         let starts = Starts::default();
-        let select = Select {
+        let write = Write {
             starts: Arc::clone(&starts),
             flush,
         };
-        let kinds = Table::new().with("select", select);
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let kinds = Table::new().with("write", write);
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Synced).await;
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
         let mut runs = Runs::new(config, name(NODE));
-        let first = definitions(&[("plant.a", "select", NODE, 0)]);
+        let first = definitions(&[("plant.a", "write", NODE, 0)]);
         hub.set_definitions(&first);
         runs.apply(&first);
         clock.sleep_until(start + ms(1_000)).await;
         let mut second = first.clone();
-        let index = types::channel::Key::from_u128(900);
-        second.insert(
-            name("plant.data.time"),
-            Definition::Channel(spec::channel::Channel {
-                key: index,
-                kind: spec::channel::Kind::Index {
-                    error: None,
-                    control: None,
-                },
-            }),
-        );
-        let data = spec::channel::Data::new(
-            index,
-            None,
-            spec::data_type::DataType::Sample(types::sample::Type::Scalar(
-                types::sample::Scalar::F64,
-            )),
-            None,
-        )
-        .expect("data");
-        second.insert(
-            name("plant.data.value"),
-            Definition::Channel(spec::channel::Channel {
-                key: types::channel::Key::from_u128(901),
-                kind: spec::channel::Kind::Data(data),
-            }),
-        );
+        second.extend(data());
         hub.set_definitions(&second);
         runs.apply(&second);
         clock.sleep_until(start + ms(4_000)).await;
@@ -551,18 +733,18 @@ fn starts_of_select(flush: Span) -> Result<(usize, usize), ::sim::Error> {
     })
 }
 
-/// The spec change that adds the selected channels is the fix that `Config` names, so
+/// The spec change that adds the written channels is the fix that `Config` names, so
 /// the connector runs again.
 #[test]
-fn a_spec_change_that_adds_the_selected_channels_runs_the_connector_again() {
-    assert_eq!(starts_of_select(Span::ZERO), Ok((2, 2)));
+fn a_spec_change_that_adds_the_written_channels_runs_the_connector_again() {
+    assert_eq!(starts_of_write(Span::ZERO), Ok((2, 2)));
 }
 
 /// The task of the refused run ends at 2 s, so the spec change at 1 s comes before
 /// `run` returned `Config`. It still runs the connector again.
 #[test]
 fn a_spec_change_while_a_refused_run_ends_runs_the_connector_again() {
-    assert_eq!(starts_of_select(ms(2_000)), Ok((2, 2)));
+    assert_eq!(starts_of_write(ms(2_000)), Ok((2, 2)));
 }
 
 /// A node gets its first mesh time 1 s after its hub opened, and the spec that the
@@ -598,24 +780,10 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
                 cancels: Starts::default(),
             },
         );
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
         let clock = node.clock();
         let start = clock.now();
-        let hub = hub::testing::open_unsynced(env, ms(1_000)).await;
-        let config = connector::supervisor::Config {
-            kinds: Arc::new(kinds),
-            clock: clock.clone(),
-            entropy: node.entropy(),
-            net: node.net(),
-            tasks: tasks.clone(),
-            hub: hub.clone(),
-        };
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Late(ms(1_000))).await;
+        let hub = config.hub.clone();
         let runs =
             std::rc::Rc::new(std::cell::RefCell::new(Runs::new(config, name(NODE))));
         let mut placed = definitions(&[("plant.a", "quick", NODE, 0)]);
@@ -648,4 +816,353 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
         (removed.get().expect("the probe removed it"), started)
     });
     run.expect("the run ends")
+}
+
+/// The config of a supervisor on `node` with `kinds`, whose hub gets its first mesh
+/// time at `mesh`, and the count of its tasks that have not ended.
+async fn create(
+    node: &::sim::node::Node,
+    tasks: &env::tasks::Tasks,
+    kinds: Table,
+    mesh: Mesh,
+) -> (connector::supervisor::Config, Rc<Cell<usize>>) {
+    let env = hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks: tasks.clone(),
+    };
+    let hub = match mesh {
+        Mesh::Synced => hub::testing::open(env).await.0,
+        Mesh::Late(synced) => hub::testing::open_unsynced(env, synced).await,
+    };
+    count(connector::supervisor::Config {
+        kinds: Arc::new(kinds),
+        clock: node.clock(),
+        entropy: node.entropy(),
+        net: node.net(),
+        tasks: tasks.clone(),
+        hub,
+    })
+}
+
+/// The sorted names of the runs that got a frame, on each of 32 seeds.
+fn got_on_each_seed(steps: impl Fn() -> Vec<Step>) -> Vec<Vec<String>> {
+    (0..32)
+        .map(|seed| {
+            let got = record(
+                steps(),
+                Scene {
+                    seed,
+                    ..Scene::default()
+                },
+            )
+            .got;
+            let mut got: Vec<_> = got.into_iter().map(|(name, _, _)| name).collect();
+            got.sort_unstable();
+            got
+        })
+        .collect()
+}
+
+/// The out connector sorts before the in connector, so its loop is spawned first.
+#[test]
+fn an_out_connector_gets_the_first_frame_of_an_in_connector_of_its_apply() {
+    let spec = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    assert_eq!(got, vec![vec!["plant.a".to_owned()]; 32]);
+}
+
+/// The out connector sorts after the in connector, so its loop is spawned last.
+#[test]
+fn a_later_out_connector_gets_the_first_frame_of_an_in_connector_of_its_apply() {
+    let spec = vec![("plant.a", "source", NODE, 0), ("plant.c", "sink", NODE, 0)];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    assert_eq!(got, vec![vec!["plant.c".to_owned()]; 32]);
+}
+
+/// A later apply adds an in and an out connector while an out connector runs.
+#[test]
+fn each_out_connector_gets_the_first_frame_of_an_in_connector_of_a_later_apply() {
+    let first = vec![("plant.a", "sink", NODE, 0)];
+    let mut second = first.clone();
+    second.extend([("plant.b", "source", NODE, 0), ("plant.c", "sink", NODE, 0)]);
+    let got =
+        got_on_each_seed(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    let both = vec!["plant.a".to_owned(), "plant.c".to_owned()];
+    assert_eq!(got, vec![both; 32]);
+}
+
+/// Two applies with no await between them: the first adds the out connector, the
+/// second the in connector.
+#[test]
+fn an_out_connector_gets_the_first_frame_of_an_in_connector_of_the_next_apply() {
+    let first = vec![("plant.a", "sink", NODE, 0)];
+    let mut second = first.clone();
+    second.push(("plant.b", "source", NODE, 0));
+    let got = got_on_each_seed(|| vec![on(0, first.clone()), on(0, second.clone())]);
+    assert_eq!(got, vec![vec!["plant.a".to_owned()]; 32]);
+}
+
+/// Two out connectors and an in connector, so one open resolves while two are pending.
+#[test]
+fn each_out_connector_of_an_apply_gets_the_first_frame_of_its_in_connector() {
+    let spec = vec![
+        ("plant.a", "sink", NODE, 0),
+        ("plant.b", "source", NODE, 0),
+        ("plant.c", "sink", NODE, 0),
+    ];
+    let got = got_on_each_seed(|| vec![on(0, spec.clone())]);
+    let both = vec!["plant.a".to_owned(), "plant.c".to_owned()];
+    assert_eq!(got, vec![both; 32]);
+}
+
+/// The reader open of `void` fails, since its selector matches no channel.
+#[test]
+fn an_out_connector_whose_reader_open_failed_holds_no_run() {
+    let spec = vec![("plant.a", "void", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let recorded = record(vec![on(0, spec)], Scene::default());
+    assert_eq!(recorded.starts, [start("plant.b", 0, 0)]);
+    assert_eq!(recorded.got, []);
+}
+
+/// The open of `plant.a`, of no kind, resolves at once, and the first open of
+/// `plant.b` waits for the mesh time at 5 s. A removal of `plant.a` at 1 s ends its
+/// wait for that open, and its loop.
+#[test]
+fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let kinds = Table::new().with(
+            "quick",
+            Hold {
+                linger: Some(Span::ZERO),
+                brief: false,
+                starts: Starts::default(),
+                cancels: Starts::default(),
+            },
+        );
+        let clock = node.clock();
+        let start = clock.now();
+        let (config, live) = create(&node, &tasks, kinds, Mesh::Late(ms(5_000))).await;
+        let hub = config.hub.clone();
+        let mut runs = Runs::new(config, name(NODE));
+        let placed =
+            definitions(&[("plant.a", "none", NODE, 0), ("plant.b", "quick", NODE, 0)]);
+        hub.set_definitions(&placed);
+        runs.apply(&placed);
+        clock.sleep_until(start + ms(1_000)).await;
+        let before = live.get();
+        let kept = definitions(&[("plant.b", "quick", NODE, 0)]);
+        hub.set_definitions(&kept);
+        runs.apply(&kept);
+        clock.sleep_until(start + ms(2_000)).await;
+        let after = live.get();
+        drop(runs);
+        (before, after)
+    });
+    assert_eq!(run, Ok((2, 1)));
+}
+
+/// [`record`] on `seed`, on a hub whose first mesh time comes at 5 s.
+fn record_unsynced(seed: u64, steps: Vec<Step>) -> Recorded {
+    let mesh = Mesh::Late(ms(5_000));
+    record(
+        steps,
+        Scene {
+            seed,
+            mesh,
+            ..Scene::default()
+        },
+    )
+}
+
+/// The seeds of 0 to 31 on which no `sink` got a frame, with [`record_unsynced`].
+fn missed_unsynced(steps: impl Fn() -> Vec<Step>) -> Vec<u64> {
+    (0..32)
+        .filter(|&seed| record_unsynced(seed, steps()).got.is_empty())
+        .collect()
+}
+
+/// Both first opens wait for the mesh time at 5 s. At 1 s, a change of the in
+/// connector, whose first run has not started, keeps its share.
+#[test]
+fn a_change_before_the_first_run_keeps_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 1)];
+    assert_eq!(
+        missed_unsynced(|| vec![on(0, first.clone())]),
+        Vec::<u64>::new()
+    );
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_eq!(missed, Vec::<u64>::new());
+}
+
+/// As above, with a change of the out connector while its first open waits: the next
+/// open keeps the share, and holds the first run of the in connector.
+#[test]
+fn a_change_while_the_first_open_waits_keeps_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.a", "sink", NODE, 1), ("plant.b", "source", NODE, 0)];
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_eq!(missed, Vec::<u64>::new());
+}
+
+/// At 1 s, a removal of the out connector, whose first open waits for the mesh time at
+/// 5 s, frees its share, so the in connector runs.
+#[test]
+fn a_removal_before_the_first_run_frees_its_share() {
+    let first = vec![("plant.a", "sink", NODE, 0), ("plant.b", "source", NODE, 0)];
+    let second = vec![("plant.b", "source", NODE, 0)];
+    let starts: Vec<usize> = (0..32)
+        .map(|seed| {
+            let steps = vec![on(0, first.clone()), on(1_000, second.clone())];
+            record_unsynced(seed, steps).starts.len()
+        })
+        .collect();
+    assert_eq!(starts, vec![1; 32]);
+}
+
+/// At 0, a connector of no kind, whose open resolves at once, and a `sink`, whose first
+/// open waits for the mesh time at 5 s. At 1 s, the first becomes `to`, and `with`
+/// stays.
+fn missed_after_kind(to: &'static str, with: &'static str) -> Vec<u64> {
+    let first = vec![("plant.a", "none", NODE, 0), ("plant.b", with, NODE, 0)];
+    let second = vec![("plant.a", to, NODE, 0), ("plant.b", with, NODE, 0)];
+    missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())])
+}
+
+/// The first open of the connector of no kind resolved before the change, and its loop
+/// waits for the open of the `sink`. The `source` that the change gives still waits.
+#[test]
+fn a_change_after_the_first_open_resolved_keeps_the_wait() {
+    assert_eq!(missed_after_kind("source", "sink"), Vec::<u64>::new());
+}
+
+/// The `sink` that the change gives holds the first run of the `source`.
+#[test]
+fn a_change_after_the_first_open_resolved_holds_the_other_first_runs() {
+    assert_eq!(missed_after_kind("sink", "source"), Vec::<u64>::new());
+}
+
+/// A change of a connector whose first run started takes no share: the old task of
+/// `hold` lingers 2 s after the cancel, and the first run of an addition of that apply
+/// does not wait for it.
+#[test]
+fn a_change_after_the_first_run_takes_no_share() {
+    let first = vec![("plant.a", "hold", NODE, 0)];
+    let second = vec![("plant.a", "hold", NODE, 1), ("plant.b", "quick", NODE, 0)];
+    let steps = vec![on(0, first), on(1_000, second)];
+    assert_eq!(
+        starts(Some(ms(2_000)), steps),
+        [
+            start("plant.a", 0, 0),
+            start("plant.b", 1_000, 0),
+            start("plant.a", 3_000, 1),
+        ]
+    );
+}
+
+/// A name added again while the task of its first run lingers takes no share: the first
+/// run of an addition of that apply does not wait for it.
+#[test]
+fn an_addition_again_after_the_first_run_takes_no_share() {
+    let first = vec![("plant.a", "hold", NODE, 0)];
+    let third = vec![("plant.a", "hold", NODE, 0), ("plant.b", "quick", NODE, 0)];
+    let steps = vec![on(0, first), on(1_000, vec![]), on(1_500, third)];
+    assert_eq!(
+        starts(Some(ms(2_000)), steps),
+        [
+            start("plant.a", 0, 0),
+            start("plant.b", 1_500, 0),
+            start("plant.a", 3_000, 0),
+        ]
+    );
+}
+
+/// A connector of no kind runs alone at 0, so its first run starts. At 1 s, it becomes
+/// a `source`, and the apply adds a `sink`. The `source` does not wait for the first
+/// open of the `sink`, so on some seeds the `sink` misses the frame.
+#[test]
+fn a_change_after_the_first_run_waits_for_no_first_open() {
+    let first = vec![("plant.a", "none", NODE, 0)];
+    let second = vec![("plant.a", "source", NODE, 0), ("plant.b", "sink", NODE, 0)];
+    let missed =
+        missed_unsynced(|| vec![on(0, first.clone()), on(1_000, second.clone())]);
+    assert_ne!(missed, Vec::<u64>::new());
+}
+
+/// On `seed`, the sinks `plant.a` and `plant.c` and the source `plant.b` at 0, and at
+/// 5 s, the instant of the mesh time, after `yields` polls of other tasks, an apply that
+/// changes `plant.a`. Gives `None` when a run of `plant.a` or `plant.b` started before
+/// that apply returned, else whether `plant.a` got the frame of `plant.b`.
+fn change_at_the_mesh_time(seed: u64, yields: usize) -> Option<bool> {
+    let config = ::sim::Config {
+        seed,
+        ..::sim::Config::default()
+    };
+    let mut sim = ::sim::Sim::new(config);
+    let node = sim.node(::sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let (starts, got) = (Starts::default(), Starts::default());
+        let kinds = kinds(None, &starts, &Starts::default(), &got);
+        let (config, _) = create(&node, &tasks, kinds, Mesh::Late(ms(5_000))).await;
+        let clock = node.clock();
+        let start = clock.now();
+        let hub = config.hub.clone();
+        let mut runs = Runs::new(config, name(NODE));
+        let mut apply = |version| {
+            let spec = [
+                ("plant.a", "sink", NODE, version),
+                ("plant.b", "source", NODE, 0),
+                ("plant.c", "sink", NODE, 0),
+            ];
+            let mut definitions = definitions(&spec);
+            definitions.extend(data());
+            hub.set_definitions(&definitions);
+            runs.apply(&definitions);
+        };
+        apply(0);
+        clock.sleep_until(start + ms(5_000)).await;
+        for _ in 0..yields {
+            let mut yielded = false;
+            std::future::poll_fn(|cx| {
+                if yielded {
+                    return std::task::Poll::Ready(());
+                }
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            })
+            .await;
+        }
+        apply(1);
+        let early = (starts.lock().expect("no panic").iter())
+            .any(|(name, _, _)| name != "plant.c");
+        clock.sleep_until(start + ms(10_000)).await;
+        drop(runs);
+        let got = got.lock().expect("no panic");
+        let got = got.iter().any(|(name, _, _)| name == "plant.a");
+        (!early).then_some(got)
+    });
+    run.expect("the run ends")
+}
+
+/// Out `plant.a` and in `plant.b` can wait for the first open of `plant.c` when an
+/// apply changes `plant.a`. The share of the change counts from that apply.
+#[test]
+fn a_change_before_the_first_run_counts_from_its_apply() {
+    let mut runs = Vec::new();
+    for seed in 0..32 {
+        for yields in 0..8 {
+            runs.push(((seed, yields), change_at_the_mesh_time(seed, yields)));
+        }
+    }
+    let missed: Vec<_> = runs.iter().filter(|run| run.1 == Some(false)).collect();
+    assert_eq!(missed, Vec::<&_>::new());
+    assert!(runs.iter().any(|run| run.1 == Some(true)), "{runs:?}");
 }

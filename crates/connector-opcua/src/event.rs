@@ -21,7 +21,9 @@ pub(crate) struct Loop {
 
 impl Loop {
     /// Makes a loop whose time is `clock`. It sets the random values of open62541 on
-    /// this thread from `rng`, so a run on a simulated clock replays.
+    /// this thread from `rng`, so a run on a simulated clock replays. Each loop on this
+    /// thread then uses them, so give each loop on a thread an `rng` whose next value
+    /// differs.
     ///
     /// # Panics
     ///

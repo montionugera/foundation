@@ -16,9 +16,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1467#issuecomment-6051244793). The
   check reads the comment as GitHub does, by `comrak` (chosen by the person, as
   `laptop.monitor` relayed it at 2026-10-09T01:15:32Z,
-  https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6072253988), with the
-  spaces and tabs at the end of each line removed, and each tab in the spaces, tabs, and
-  `>` at the start of a line replaced by spaces to the next multiple of 4 columns: as
+  https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6072253988), with
+  each tab in the spaces, tabs, and `>` at the start of a line replaced by spaces to the
+  next multiple of 4 columns, and with the spaces and tabs at the end of a line kept: as
   CommonMark with the GitHub extensions tables, footnotes, task lists, and
   strikethrough. Each field and end line is read in the text that GitHub shows on its
   line: with its escapes and entities read, without the marks of emphasis and code
@@ -88,7 +88,10 @@
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6052414062,
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6052814147,
   https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053059328, and
-  https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053208426. A round
+  https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6053208426. The words
+  on the spaces and tabs at the end of a line: approved by the director at
+  2026-10-11T10:51:12Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108250288). A round
   comment posted before the cutoff `CUTOFF` in
   `xtask/src/review.rs` (2026-10-08T03:00:00Z) is checked as before, except that a
   paragraph that `comrak` places in the wrong lines fails. Otherwise an earlier
@@ -159,9 +162,85 @@
   https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385. Found by
   the director at 2026-10-07T14:50:33Z
   (https://github.com/synnaxlabs/foundation/pull/1193#issuecomment-6040535575), fixed by
-  #1451. An earlier round's skip is taken as written, since a rebase can drop its range
-  from the clone. An earlier round in the fixed format that does not parse fails. A
-  red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the head. The
-  status is `success` on `merge_group`. Decided by the director on #1169
+  #1451. An earlier round's `Breaker:` skip is taken as written, since a rebase can drop
+  its range from the clone. An earlier round in the fixed format that does not parse
+  fails. A red-team `oracle` PR also needs ``Director: approved at `<sha>` `` at the
+  head. The status is `success` on `merge_group`. Decided by the director on #1169
   (https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6032179989) and in
-  messages on #1193.
+  messages on #1193. A round comment fails when it does not start with its name line
+  `**<session>** · <role>`, then `Quality: <n>/10` with `n` from 1 to 10, then a summary
+  line. Stated by the director at 2026-10-08T01:47:11Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6050487121), and
+  ruled at 2026-10-11T10:03:22Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6107851789). The
+  check reads the lines of the top-level paragraphs with which the comment starts, as
+  GitHub shows them. It stops at the round heading and at the first block that is not a
+  paragraph, so a list, a quote, a code block, a table, or a heading between the three
+  lines fails the round. The first block of the comment is a paragraph that starts with
+  the session name in bold, then ` · `, then a role. The second line is the rating, with
+  nothing after it. The third line is not empty. A blank line between two of them
+  changes nothing. A session name, a role, or a summary line that holds only images and
+  the spaces between them is empty. An emoji name such as `:octocat:` is text to the
+  check, also one that GitHub shows as an image. Lost: a list of those names in the
+  check, since GitHub can change it. Ruled by the director at 2026-10-11T11:24:24Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108509497) and
+  2026-10-11T11:25:49Z
+  (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108520648).
+  Supersedes the sentence on an image of
+  https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6107851789
+  (2026-10-11T10:03:22Z). The check reads neither the session name nor the role against
+  a list. A round posted before the cutoff `RATING_CUTOFF` in `xtask/src/review.rs`
+  (2026-10-11T16:00:00Z) is checked as before, so that the new rule does not fail the
+  rounds that came before it. The cutoff is a fixed time: it stays when the rule merges
+  after it. A round that fails by this rule gets an edit of its round comment that adds
+  the lines, with the rating and the summary of its `reviewer` report as given. When
+  that report is lost, a new run of `reviewer` on the range of the round gives them, and
+  the edit says so. A later round that does not name `architecture` fails when its range
+  changes a file under `docs/decisions/`: one that the range adds, changes, or removes.
+  The check reads `docs/decisions/` in any case of its letters, since a file system that
+  folds case shows such a path as a decision. It folds only ASCII: a character such as
+  U+017F, which APFS reads as `s`, is not a letter of the path to the check. Lost: a
+  fold table in the check, since each file system has its own. Stated by the director at
+  2026-10-08T22:50:06Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6070608950), and
+  ruled at 2026-10-11T07:44:23Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591),
+  07:55:36Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6106884396),
+  08:19:09Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6107062843),
+  11:19:09Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108468045),
+  11:24:26Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108509702), and
+  12:05:01Z
+  (https://github.com/synnaxlabs/foundation/pull/2373#issuecomment-6108831770).
+  Supersedes the reviewers of a later round in ruling 2 of
+  https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
+  (2026-10-07T06:32:32Z). For this rule, a round comment after the first is a later
+  round, whatever its number, and so is a first round comment whose number is above 1.
+  Each later round is read, not only the last. The range from the last round to the head
+  is not read for a decision. The check reads it only for code (TEXT FIXES), and the
+  `review` skill gives a text fix in a decision no round. The range is read as that of a
+  round with `Breaker: skipped` is read, so a change of the base does not count. A
+  decision in which a merge of the base in the range resolves a conflict counts, and so
+  does one in which the tree of the start and the base has a conflict, each also when
+  the conflict leaves no markers or the range ends with the text of the base. So does a
+  path outside `docs/decisions/` that the start changes since its merge base with the
+  base, and that the tree of the start and the base moves into `docs/decisions/`, by the
+  rename detection of the merge. A range with a start or an end that names no commit of
+  the clone fails too, and so does an end that holds more than one newest base commit:
+  the `review` skill asks for a merge of the base after round 1, never a rebase. When
+  REVIEW TIERS does not already require `architecture`, the problem states the remedy
+  and ends with the cause, such as "Its range changes the decision
+  `docs/decisions/x.md`." A round posted before the cutoff `DECISION_CUTOFF` in
+  `xtask/src/review.rs` (2026-10-11T16:00:00Z) is checked as before, so that the new
+  rule does not fail the rounds that came before it. The cutoff is a fixed time: it
+  stays when the rule merges after it, and the rule for `.rs` files gets a cutoff of its
+  own. A round that fails by this rule gets a run of `architecture` on its range, or on
+  the whole PR when the clone cannot read the range, and then an edit of its round
+  comment that names `architecture` and adds its findings. One run on the whole PR
+  serves each such round of the PR, and each edit states the range of the run. The
+  director approves the text of this record. A PR that changes it, and no public item of
+  a crate and no dependency, needs no approval of an architect: `xtask` is on no
+  architect's list, and the review rule is the director's.

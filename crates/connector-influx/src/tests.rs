@@ -278,7 +278,9 @@ fn connector_run(config: Document) -> Result<(), Error> {
             .hub
             .set_definitions(status.iter().map(|(name, def)| (name, def)));
         Supervisor::new(inputs)
-            .run("influx", connector, &config, &cancel::Token::new())
+            .open("influx", connector, &config, &cancel::Token::new())
+            .await
+            .run()
             .await
     })
 }

@@ -18,9 +18,15 @@
   https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6094721967, and
   stated as more than `usize::MAX` bytes by `laptop.architect` (2026-10-10 09:23
   UTC): https://github.com/synnaxlabs/foundation/pull/2269#issuecomment-6096088015.
-  `Node::start` builds each `block::Config` after the port binds, and for an `Unfit`
-  starts no shard and gives `Error::Pool`. Decided by `laptop.architect` (2026-10-10
-  15:27 UTC):
+  `Node::start` builds each `block::Config` before any shard starts, and for an
+  `Unfit` starts no shard and gives `Error::Pool`. Decided by `laptop.architect`
+  (2026-10-10 15:27 UTC):
   https://github.com/synnaxlabs/foundation/pull/2269#issuecomment-6099086353, and
   `Error::Pool` approved by `laptop.architect-2` (2026-10-10 15:32 UTC):
   https://github.com/synnaxlabs/foundation/issues/1317#issuecomment-6099130173.
+  Shard 0 binds the port (NODE START), so `Error::Pool` wins over `Error::Port`. By
+  `laptop.architect-2` (#2438, 2026-10-11T20:43:59Z:
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113549763) and
+  `laptop.architect` (2026-10-11T20:45:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113562774), which
+  supersede "after the port binds" of the first link.

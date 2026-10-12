@@ -322,6 +322,35 @@
   (https://github.com/synnaxlabs/foundation/pull/2156#issuecomment-6086107940). `sim`
   gives each `Files` of a node as clones of one. Lost there: the wait in `Files`, which
   cannot see the end of a dropped call without a change to `Driver`.
+  Amended (2026-10-11T17:01:13Z, #1186): `Files::list` of a directory first waits for
+  each call on a path directly in the directory that a dropped future or a dropped
+  handle of the same `Files` and its clones left to run, so the names are as those
+  calls leave them. The rule does not cover a call on the directory itself, a call on
+  a path deeper in it, or a call whose future lives, also a `File::remove`, which the
+  caller can await. `Mode::Read`, `sync_dir`, and `create_dir` do not change. `os`
+  gives the wait by the order of its I/O queue, and `sim` by the end time of the list,
+  as for a write open. The caller is `mesh::log`, whose open listed a file that a
+  dropped remove then removed. Lost: a new call that waits for the dropped calls of a
+  directory, which each caller that opens a directory must know to make; a wait of
+  each call for each dropped call of the `Files`, which makes a write on one file wait
+  for a dropped create of another, and refuses a driver that runs the calls of two
+  files at one time; a second list in the caller on `NotFound`, which is a second
+  guard and misses a dropped create; a wait in a read open, which a read open of a
+  listed name does not need after the list waits. Decided by `laptop.architect-2`,
+  #1186, 2026-10-11T17:01:13Z
+  (https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6111458525).
+  Amended (2026-10-11T17:05:00Z, #1229): `Files::free` first waits for each call that a
+  dropped future or a dropped handle of the same `Files` and its clones left to run, on
+  each path, so the result is as those calls leave the disk. It does not wait for a
+  call whose future lives. `os` gives the wait by the order of its I/O queue, and `sim`
+  by the end time of the `free`, as for a write open. The caller is `blob`, whose floor
+  check read the free bytes before the create of a dropped put took its room. Lost: a
+  wait only for the dropped calls that change the free bytes, which is a longer rule
+  for a shorter wait that no caller needs; a count in `blob` of the room of each
+  dropped put, which cannot go down, because no result reaches a dropped future; a
+  create that takes a floor, which moves the rule of one caller into each driver.
+  Decided by `laptop.architect-2`, #1229, 2026-10-11T17:05:00Z
+  (https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387).
   Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
   driver gives `Full` syncs the directory of the path one time and opens again. It
   gives `Full` only when the second open does, and a `sync_dir` error as it is. It does

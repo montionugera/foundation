@@ -1,18 +1,19 @@
-- **NODE START (2026-10-08)** `foundation start` runs a node on a data directory until
-  SIGINT or SIGTERM, then exits 0. `ops` cannot depend on `node`, so `start` is a
-  `Command` variant beside `mcp`, not an entry of the operation table: like `mcp`, it
-  runs the process and is not an operation of a node. The help names it, and `foundation
-  docs` does not. `ops::cli` writes nothing for it and gives `Run::Start(Start { data,
-  json, name, listen })` to `main` in `node`. `--data` is `foundation-data` in the
-  working directory by default, so `cli` reads no environment. `start` has no MCP tool:
-  MCP acts on a running node. The first start on a data directory needs `--name`, and a
-  later one reads the name there (NODE NAME). Once the node has claimed the data
-  directory, a thread of `main` writes `Start::line`: `node edge runs in
-  foundation-data. Stop it with Ctrl-C.`, or `{"name":"edge","data":"foundation-data"}`
-  with `--json`. The line comes after the file `address` holds the address. `data` is
-  the path as given, not made absolute, so `cli` stays a function of its arguments. Each
-  form writes it lossily, as `Path::to_string_lossy` does. The text form also escapes it
-  as `Start::fail` does, each character but a quote as `char::escape_debug` does, so a
+- **NODE START (2026-10-08)** `foundation start` runs a node on a data directory until a
+  SIGINT or SIGTERM that reaches it, then exits 0. `ops` cannot depend on `node`, so
+  `start` is a `Command` variant beside `mcp`, not an entry of the operation table: like
+  `mcp`, it runs the process and is not an operation of a node. The help names it, and
+  `foundation docs` does not. `ops::cli` writes nothing for it and gives
+  `Run::Start(Start { data, json, name, listen })` to `main` in `node`. `--data` is
+  `foundation-data` in the working directory by default, so `cli` reads no environment.
+  `start` has no MCP tool: MCP acts on a running node. The first start on a data
+  directory needs `--name`, and a later one reads the name there (NODE NAME). Once the
+  node has claimed the data directory, a thread of `main` writes `Start::line`: `node
+  edge runs in foundation-data. Stop it with Ctrl-C.`, or
+  `{"name":"edge","data":"foundation-data"}` with `--json`. The line comes after the
+  file `address` holds the address. `data` is the path as given, not made absolute, so
+  `cli` stays a function of its arguments. Each form writes it lossily, as
+  `Path::to_string_lossy` does. The text form also escapes it as `Start::fail` does,
+  each character but a quote as `char::escape_debug` does, so a
   newline in it adds no line, and a backslash or a combining mark shows escaped. A
   literal `\n` in a path then reads apart from a newline, and the line matches the
   `node.data` message for the same path. Lost: the raw path in the text form, which a
@@ -102,6 +103,29 @@
   this user can bind". Lost: `node.failed`, which gives an agent no fix for a value that
   it gave. Decided by `laptop.architect-2` (2026-10-11T10:21:07Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108020871).
+  A `--listen` whose IP is multicast or the IPv4 broadcast IP, also as an IPv4-mapped
+  IPv6 address, binds on Linux, and no peer reaches a node at it. `node` refuses it
+  before the bind with `node::Error::Listen`, which is `node.port` with the same fix.
+  `node` does not refuse a subnet broadcast IP of an interface, which only the
+  interface table shows. Trigger: the first change that gives `node` the addresses of
+  the interfaces of its host. Lost: a refusal in `ops::cli` as `ops.argument`, which
+  leaves each other caller of `node::Config::listen` open; a refusal in the UDP bind
+  of `env::net`, where a connector that receives multicast binds such an IP;
+  `node::Error::Port` with an OS code that no OS call gave; a code of its own for the
+  same fix. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
+  Shard 0 claims the data directory before it binds the port. So a start on the data
+  directory of a node that runs is `node.busy` with each `--listen`, and a start during
+  the stop of that node never gets `node.port`, since the stop holds the lock until the
+  port is free. A start whose port does not bind leaves the lock file, the shard count,
+  and the name in the data directory, and opens no buffer. Lost: the bind before the
+  claim, where one cause has two codes by the value of `--listen`; the bind before the
+  claim with its error kept until after the claim, which can report a port that became
+  free in between. Decided by `laptop.architect-2` (2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754).
+  Supersedes the order of the bind in the doc of `Node::start` approved in
+  https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629
+  (2026-10-11T10:50:50Z).
   Shard 0 writes the file `address` in the data directory in place, after the mesh opens
   and before the port takes a session: the node's key, the public key of its transport,
   and the bound socket address, in one sector with a CRC32C. Its form is private to
@@ -138,3 +162,10 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
   2026-10-11T10:50:50Z, this text,
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
+  A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
+  choice of its parent, does not reach it (ENV SEAMS): a node that
+  `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
+  `laptop.architect-2` (2026-10-10T23:40:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164) and
+  reworded by it (2026-10-11T10:39:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).

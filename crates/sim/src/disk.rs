@@ -166,10 +166,10 @@ impl Disk {
         }
     }
 
-    /// Whether `path` has named file `inode`, which a hold keeps.
-    pub(crate) fn named_by(&self, inode: u64, path: &Path) -> bool {
+    /// Each normal path that has named file `inode`, which a hold keeps.
+    pub(crate) fn names(&self, inode: u64) -> impl Iterator<Item = &Path> {
         match self.inodes.get(&inode) {
-            Some(Inode::File(file)) => file.names.contains(&normal(path)),
+            Some(Inode::File(file)) => file.names.iter().map(PathBuf::as_path),
             _ => unreachable!("invariant: held file {inode} is there"),
         }
     }
@@ -487,14 +487,16 @@ impl Disk {
         self.log.push(change);
     }
 
-    /// Whether a [`Mode::Create`] open of `path` makes its file when the disk has
-    /// room: the open succeeds, and finds no entry or a file with no bytes.
-    pub(crate) fn makes(&self, path: &Path) -> bool {
-        match self.target(path, Mode::Create { len: 0 }) {
+    /// Whether a [`Mode::Create`] open of `path` with `len` bytes makes its file when
+    /// the disk has room: the open succeeds, and finds no entry, or a file with no
+    /// bytes that it gives bytes.
+    pub(crate) fn makes(&self, path: &Path, len: u64) -> bool {
+        match self.target(path, Mode::Create { len }) {
             Ok(Target::New { .. }) => true,
-            Ok(Target::File(inode)) => {
-                matches!(&self.inodes[&inode], Inode::File(file) if file.len == 0)
-            }
+            Ok(Target::File(inode)) => match &self.inodes[&inode] {
+                Inode::File(file) => len != 0 && file.len == 0,
+                Inode::Dir(_) => unreachable!("invariant: target {inode} is a file"),
+            },
             Err(_) => false,
         }
     }
@@ -896,7 +898,12 @@ mod tests {
             .map(|seed| {
                 let mut unsynced = Disk::new(1 << 20);
                 assert!(unsynced.create_dir(1, Path::new("d")).is_ok());
-                unsynced.crash(Crash::Power, &mut Rng::from_seed(seed))
+                let mut rng = Rng::from_seed(seed);
+                let kept = unsynced.crash(Crash::Power, &mut rng);
+                let mut once = Rng::from_seed(seed);
+                assert_eq!(kept, once.below(2));
+                assert_eq!(rng.next_u64(), once.next_u64());
+                kept
             })
             .collect();
         assert_eq!(kept, BTreeSet::from([0, 1]));

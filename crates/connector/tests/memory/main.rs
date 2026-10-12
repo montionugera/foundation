@@ -209,7 +209,12 @@ fn held(last: Last, pool: Pool) -> usize {
         }
         let supervisor = Supervisor::new(config);
         let (token, config) = (Token::new(), Document::default());
-        let mut run = pin!(supervisor.run("large", connector, &config, &token));
+        let mut run = pin!(
+            supervisor
+                .open("large", connector, &config, &token)
+                .await
+                .run()
+        );
         let mut sample = pin!(async {
             loop {
                 clock.sleep(Span::from_nanos(10_000_000)).await;
