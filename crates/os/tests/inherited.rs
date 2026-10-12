@@ -1,5 +1,5 @@
-//! A child holds a copy of each descriptor of this process until its `exec`. The test
-//! starts a child, so it runs in a test binary of its own.
+//! A child holds a copy of each descriptor of this process from its fork to its exec, or
+//! to its end.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
