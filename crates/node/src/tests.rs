@@ -86,6 +86,7 @@ fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block:
         listen: listen(host),
         region: Region::Absent,
         name: "edge".parse().expect("a name"),
+        settings: crate::Settings::default(),
     }
 }
 
@@ -406,7 +407,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -416,8 +417,10 @@ fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
         format!(
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
-             listen: {listen:?}, region: Absent, name: Name(\"edge\"), .. }}",
+             listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
+             settings: {settings:?}, .. }}",
             listen = config.listen,
+            settings = config.settings,
         )
     );
 }
@@ -2689,6 +2692,8 @@ mod port {
 
     use super::*;
 
+    mod settings;
+
     /// The key of the peer that dials the node.
     const CLIENT: PrivateKey = PrivateKey([1; 32]);
 
@@ -4440,8 +4445,9 @@ mod port {
                     opener: Opener::from_bytes(SEAL),
                 };
                 let (opening, clock) = (Opening::Given(region(&members)), own.clock());
+                let (entropy, settings) = (own.entropy(), crate::Settings::default());
                 let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -4452,7 +4458,7 @@ mod port {
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
                 let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
+                let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
                 let hub = ::hub::Hub::new(::hub::Config {
@@ -4469,8 +4475,15 @@ mod port {
                 });
                 hub.set_definitions(&region(&members).definitions);
                 let clock = own.clock();
-                let port =
-                    route::accept(transport, Some(mesh.clone()), hub, clock, tasks);
+                let port = route::accept(
+                    transport,
+                    Some(mesh.clone()),
+                    hub,
+                    clock,
+                    tasks,
+                    settings.header,
+                    settings.places_max,
+                );
                 let (mut port, mut act) = (pin!(port), pin!(act(mesh, own)));
                 poll_fn(|cx| {
                     let stopped = port.as_mut().poll(cx);
@@ -4745,6 +4758,43 @@ mod port {
             assert_eq!(after, vec![first, second]);
         }
 
+        /// Under a setting of 3 places, 3 programs hold each place. A new program
+        /// gets a session, and the session of the oldest closes with the code of a
+        /// refused session.
+        #[test]
+        fn the_oldest_place_frees_at_the_setting() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let settings = crate::Settings {
+                places_max: NonZeroUsize::new(3).unwrap(),
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 3).await;
+                let closed = closings(&held, &tasks);
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((held, new, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, closed) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(closed, vec![(0, refused())]);
+        }
+
         /// 256 programs fill the bound, then a member dials: it takes no place, so no
         /// session closes. The next program closes the oldest program, and the
         /// member's session stays.
@@ -4834,7 +4884,8 @@ mod port {
                 let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
                 let now = Peer::Node(CLIENT.public());
                 let joined = Cell::new(false);
-                let mut places = route::Places::default();
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
                 let (mut sessions, mut holds) = (Vec::new(), Vec::new());
                 for _ in 0..257 {
                     let session = transport.accept().await.expect("a session");
@@ -4880,7 +4931,8 @@ mod port {
             let seen = Arc::clone(&out);
             shard(&hosts[0], move |own, tasks| async move {
                 let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
-                let mut places = route::Places::default();
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
                 let left = transport.accept().await.expect("a session");
                 let hold = places.take(&left, |_| false);
                 let ended = transport.accept().await.expect("a session");
@@ -5678,6 +5730,41 @@ mod port {
             assert_eq!(node.join(), Err(Error::Mesh(error)));
         }
 
+        /// Under a floor setting of 64 GiB, on a disk of 64 GiB, the put of the first
+        /// founding chunk stops the node, and `join` gives the floor of the setting.
+        #[test]
+        fn a_founding_chunk_under_the_floor_setting_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let settings = crate::Settings {
+                floor_bytes: 64 << 30,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region),
+                settings,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 64 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
         /// A node whose chunk store holds each founding chunk starts again after
         /// another writer took the disk under 1 GiB free: the puts of its founding
         /// chunks take no new room.
@@ -5985,8 +6072,9 @@ mod port {
                 };
                 let definitions = founding.definitions.clone();
                 let (opening, clock) = (Opening::Given(founding), own.clock());
+                let (entropy, settings) = (own.entropy(), crate::Settings::default());
                 let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -5997,7 +6085,7 @@ mod port {
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
                 let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
+                let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
                 let hub = ::hub::Hub::new(::hub::Config {
@@ -6020,6 +6108,8 @@ mod port {
                     hub.clone(),
                     clock,
                     tasks,
+                    settings.header,
+                    settings.places_max,
                 );
                 let (mut port, mut act) =
                     (pin!(port), pin!(act(hub, mesh.clone(), own)));
