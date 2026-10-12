@@ -4,8 +4,8 @@ use super::*;
 
 /// A git repository in a fresh temporary directory. Each test ends with `remove`, so
 /// a test that fails leaves its directory.
-pub(in crate::review) struct Repo {
-    pub(in crate::review) dir: PathBuf,
+pub(crate) struct Repo {
+    pub(crate) dir: PathBuf,
 }
 
 impl Repo {
@@ -33,7 +33,7 @@ impl Repo {
         command
     }
 
-    pub(in crate::review) fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         let output = self.command().args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_string()
@@ -64,7 +64,7 @@ impl Repo {
 
     /// A repository with `main` at one commit and the branch `pr` one commit after
     /// it. Returns the repository and the commit on `pr`.
-    pub(in crate::review) fn with_pr(name: &str) -> (Self, String) {
+    pub(crate) fn with_pr(name: &str) -> (Self, String) {
         let repo = Self::new(name);
         let base = repo.commit("a.txt", "base\n");
         repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
@@ -125,7 +125,7 @@ impl Repo {
     /// # Panics
     ///
     /// When the removal fails.
-    pub(in crate::review) fn remove(self) {
+    pub(crate) fn remove(self) {
         if let Err(e) = std::fs::remove_dir_all(&self.dir) {
             panic!("remove {}: {e}", self.dir.display());
         }
