@@ -746,6 +746,30 @@ fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
 }
 
 #[test]
+fn refuses_a_channel_over_a_connector_of_a_subject_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let plc = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                   read \"yard.temp\" { node_id = \"x\" }\n}\n";
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", plc)];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let channel = "channel \"site.plc\" { kind = \"index\" }\n";
+        let files = [
+            ("people.hcl", &*people),
+            ("yard.hcl", YARD),
+            ("p.hcl", channel),
+        ];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let expected = denied("sam", "admin", "`site.plc`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+#[test]
 fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());

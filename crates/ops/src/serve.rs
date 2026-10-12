@@ -299,14 +299,19 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
     // A policy governs its whole region, the keys of a subject decide who acts as it,
     // a region record makes a region, and a connector reaches channels by `select`,
     // so `apply` on a subtree would reach each name of the region.
-    let governing = plan.changes.iter().filter_map(|(name, change)| {
-        let kind = match &change.new {
-            Some(entry) => Some(entry.definition.kind()),
-            None => spec.definitions().get(name).map(Definition::kind),
-        };
-        (kind != Some(Kind::Channel)).then_some(name)
+    let admin = plan.changes.iter().filter_map(|(name, change)| {
+        let stored = spec.definitions().get(name).map(Definition::kind);
+        let new = change.new.as_ref().map(|entry| entry.definition.kind());
+        // A connector and a channel share a key, so a change can turn one into the
+        // other.
+        let channel = matches!(
+            (stored, new),
+            (Some(Kind::Channel) | None, Some(Kind::Channel))
+                | (Some(Kind::Channel), None)
+        );
+        (!channel).then_some(name)
     });
-    check.names(Action::Admin, governing)?;
+    check.names(Action::Admin, admin)?;
     // The homes list each placed index, so a home with no grant drops with no error.
     plan.homes
         .retain(|index, _| check.allows(Action::Apply, index));
