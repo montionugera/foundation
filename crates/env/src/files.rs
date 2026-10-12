@@ -28,8 +28,8 @@ pub const SECTOR: usize = 512;
 /// A call whose future drops can still run, and then it ends as it would have. Where a
 /// call first waits for the calls that a dropped future or handle left to run, the wait
 /// is for a future or handle that dropped before the call started. A drop after that
-/// adds no wait. Await a call, or drop its future, before you start a call that must
-/// see its result.
+/// can add the wait or not. Await a call, or drop its future, before you start a call
+/// that must see its result.
 ///
 /// ```
 /// use std::path::Path;
