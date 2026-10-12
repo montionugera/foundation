@@ -189,11 +189,16 @@ struct Held(Rc<Count>);
 
 impl Drop for Held {
     fn drop(&mut self) {
+        // Every count goes down before any wake, so a wake that panics leaves no count
+        // too high.
         let mut next = Some(&*self.0);
         while let Some(group) = next {
-            let live = group.live.get().strict_sub(1);
-            group.live.set(live);
-            if live == 0 {
+            group.live.set(group.live.get().strict_sub(1));
+            next = group.parent.as_deref();
+        }
+        let mut next = Some(&*self.0);
+        while let Some(group) = next {
+            if group.live.get() == 0 {
                 group.waiting.take().into_values().for_each(Waker::wake);
             }
             next = group.parent.as_deref();
@@ -422,6 +427,30 @@ mod tests {
         kept.drop_task(0);
         assert_eq!(pending.get(), Some(true));
         assert_eq!(noop(&mut ended), Poll::Ready(()));
+    }
+
+    #[test]
+    fn a_panic_in_a_wake_of_an_inner_group_leaves_the_outer_count_right() {
+        struct Panics;
+        impl Wake for Panics {
+            fn wake(self: Arc<Self>) {
+                panic!("wake");
+            }
+        }
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        inner.tasks().spawn(std::future::pending());
+        let mut inner_ended = inner.ended();
+        assert_eq!(
+            poll(&mut inner_ended, &Waker::from(Arc::new(Panics))),
+            Poll::Pending
+        );
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            kept.drop_task(0);
+        }));
+        assert_eq!(dropped.unwrap_err().downcast_ref::<&str>(), Some(&"wake"));
+        assert_eq!(noop(&mut inner.ended()), Poll::Ready(()));
+        assert_eq!(noop(&mut outer.ended()), Poll::Ready(()));
     }
 
     #[test]
