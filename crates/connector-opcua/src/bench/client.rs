@@ -170,7 +170,7 @@ mod tests {
     use types::time::Span;
 
     use super::super::caught;
-    use super::{DOUBLE, PORT, Server};
+    use super::{PORT, Server};
     use crate::peer::session;
 
     /// Runs `body` on a node of a sim, and gives the error of the run as text.
@@ -183,16 +183,11 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    /// Runs `body` in the scope of a server on `node` with `double` as its value, and
-    /// a new `Rng` from the entropy of `node`.
-    async fn serve<T>(
-        node: &Node,
-        double: f64,
-        body: impl AsyncFnOnce(&Server) -> T,
-    ) -> T {
+    /// Runs `body` in the scope of a server on `node`, with a new `Rng` from the
+    /// entropy of `node`.
+    async fn scope<T>(node: &Node, body: impl AsyncFnOnce(&Server) -> T) -> T {
         let (clock, net, address) = (node.clock(), node.net(), node.addresses()[0]);
-        let rng = node.entropy().rng();
-        Server::serve(clock, net, address, rng, double, body).await
+        Server::scope(clock, net, address, node.entropy().rng(), body).await
     }
 
     /// The error of a run of seed 0 whose task panics with `message`.
@@ -214,45 +209,40 @@ mod tests {
         client.close().await;
     }
 
+    /// Runs a scope whose `body` panics with "the body panics", which the scope
+    /// resumes, then a scope at its address that connects, reads, and closes.
+    fn frees_its_port(body: impl AsyncFnOnce(&Server) + Send + 'static) {
+        let result = run(async |node| {
+            let panic = caught(scope(&node, body)).await.expect_err("panics");
+            assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
+            scope(&node, read).await;
+        });
+        assert_eq!(result, Ok(()));
+    }
+
     /// A scope closes after a panic in its body, also with a client that drops with the
     /// body before the close, so the next scope takes its port.
     #[test]
     fn a_scope_whose_body_panics_frees_its_port() {
-        let result = run(async |node| {
-            let body = async |server: &Server| {
-                let _client = server.connect().await;
-                panic!("the body panics");
-            };
-            let panic = caught(serve(&node, DOUBLE, body))
-                .await
-                .expect_err("panics");
-            assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
-            serve(&node, DOUBLE, read).await;
+        frees_its_port(async |server: &Server| {
+            let _client = server.connect().await;
+            panic!("the body panics");
         });
-        assert_eq!(result, Ok(()));
     }
 
     /// A body that panics when it is called, before it gives its future.
     #[test]
     fn a_scope_whose_body_panics_at_its_call_frees_its_port() {
-        let result = run(async |node| {
-            let body = |_: &Server| -> std::future::Ready<()> {
-                panic!("the body panics");
-            };
-            let panic = caught(serve(&node, DOUBLE, body))
-                .await
-                .expect_err("panics");
-            assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
-            serve(&node, DOUBLE, read).await;
+        frees_its_port(|_: &Server| -> std::future::Ready<()> {
+            panic!("the body panics");
         });
-        assert_eq!(result, Ok(()));
     }
 
     /// The server has room for 4 sessions.
     #[test]
     fn a_fifth_client_of_a_scope_panics_with_its_status() {
         let result = run(async |node| {
-            serve(&node, DOUBLE, async |server: &Server| {
+            scope(&node, async |server: &Server| {
                 let mut clients = Vec::new();
                 for _ in 0..5 {
                     clients.push(server.connect().await);
@@ -273,7 +263,7 @@ mod tests {
         let fifth = |wait: Span| {
             run(async move |node| {
                 let clock = node.clock();
-                serve(&node, DOUBLE, async |server: &Server| {
+                scope(&node, async |server: &Server| {
                     for _ in 0..4 {
                         drop(server.connect().await);
                     }
@@ -293,7 +283,7 @@ mod tests {
     fn a_read_of_a_client_that_lost_its_channel_panics_with_its_status() {
         let result = run(async |node| {
             let clock = node.clock();
-            serve(&node, DOUBLE, async |server: &Server| {
+            scope(&node, async |server: &Server| {
                 let mut client = server.connect().await;
                 client.read().await;
                 clock.sleep(minutes(11)).await;
@@ -308,8 +298,8 @@ mod tests {
     #[test]
     fn a_second_scope_at_the_address_of_a_scope_panics() {
         let result = run(async |node| {
-            serve(&node, DOUBLE, async |_: &Server| {
-                serve(&node, DOUBLE, async |_: &Server| ()).await;
+            scope(&node, async |_: &Server| {
+                scope(&node, async |_: &Server| ()).await;
             })
             .await;
         });
@@ -323,14 +313,17 @@ mod tests {
     /// test fails then.
     #[test]
     fn a_read_of_another_value_panics_with_it() {
-        let result = run(async |node| serve(&node, 2.5, read).await);
+        let result = run(async |node| {
+            let (clock, net, address) = (node.clock(), node.net(), node.addresses()[0]);
+            Server::serve(clock, net, address, node.entropy().rng(), 2.5, read).await;
+        });
         assert_eq!(result, panicked("read 2.5"));
     }
 
     #[test]
     fn a_client_reads_the_double_of_its_server() {
         let debug = run(async |node| {
-            serve(&node, DOUBLE, async |server: &Server| {
+            scope(&node, async |server: &Server| {
                 let mut client = server.connect().await;
                 client.read().await;
                 let debug = format!("{server:?} {client:?}");
