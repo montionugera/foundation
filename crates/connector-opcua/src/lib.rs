@@ -7,7 +7,10 @@ mod alloc;
 #[doc(hidden)]
 pub mod bench;
 #[cfg(feature = "open62541")]
-#[cfg_attr(not(test), expect(dead_code, reason = "the kind of #435 uses it"))]
+#[cfg_attr(
+    not(any(test, feature = "sim")),
+    expect(dead_code, reason = "only `bench` uses it until the kind of #435")
+)]
 mod client;
 #[cfg(feature = "open62541")]
 #[cfg_attr(not(test), expect(dead_code, reason = "the kind of #435 uses it"))]
@@ -39,6 +42,9 @@ mod server;
 
 #[cfg(test)]
 mod child;
+#[cfg(test)]
+#[cfg(feature = "open62541")]
+mod peer;
 
 // `build.rs` calls it, and a build script has no test harness.
 #[cfg(test)]

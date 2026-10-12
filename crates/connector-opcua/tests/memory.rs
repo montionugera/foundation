@@ -8,7 +8,7 @@
 
 use std::ffi::c_void;
 
-use connector_opcua::bench::Client;
+use connector_opcua::bench::{Client, client};
 use sim::Sim;
 
 #[global_allocator]
@@ -47,6 +47,7 @@ fn main() {
     the_drop_frees_the_client_its_loop_and_its_timers();
     each_function_writes_the_size_into_the_header();
     the_fuzz_round_trip_frees_each_value();
+    a_client_frees_what_it_holds();
 }
 
 fn c_allocates_through_the_global_allocator() {
@@ -84,9 +85,9 @@ fn c_allocates_through_the_global_allocator() {
 
 fn the_drop_frees_the_client_its_loop_and_its_timers() {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
+    let node = sim.node(sim::node::Config::default());
     let before = ALLOCATOR.held();
-    let client = Client::new(env::clock::Clock::clone(&clock), 100);
+    let client = Client::new(node.clock(), &mut node.entropy().rng(), 100);
     let held = ALLOCATOR.held().strict_sub(before);
     assert!(
         held > 100 * size_of::<usize>(),
@@ -129,4 +130,34 @@ fn the_fuzz_round_trip_frees_each_value() {
     let before = ALLOCATOR.held();
     connector_opcua::fuzz::decode(&data);
     assert_eq!(ALLOCATOR.held(), before, "the round trip freed each block");
+}
+
+/// Each cycle connects a client, reads, closes the client, and drops it. The first
+/// cycle also grows the memory of the sim and of the server, so the test compares the
+/// later cycles. A client that only drops leaves its session on the server until it
+/// times out, which the server holds.
+fn a_client_frees_what_it_holds() {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &client::Server| {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let mut client = server.connect().await;
+                client.read().await;
+                client.close().await;
+                held.push(ALLOCATOR.held());
+            }
+            held
+        };
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
+    };
+    let held = sim.run_on(&node, run).expect("the run ends");
+    assert_eq!(
+        held[2..],
+        [held[1]; 2],
+        "each held byte count after the first"
+    );
 }

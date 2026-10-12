@@ -114,6 +114,7 @@ const _: () = {
 };
 
 unsafe extern "C" {
+    pub(crate) fn UA_UInt32_random() -> u32;
     pub(crate) fn UA_DateTime_now() -> i64;
     pub(crate) fn UA_DateTime_nowMonotonic() -> i64;
     pub(crate) fn UA_DateTime_localTimeUtcOffset() -> i64;

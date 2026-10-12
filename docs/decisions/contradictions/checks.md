@@ -159,7 +159,7 @@ Conflict: r8 Q11 adds a `connector-status` kind, and r13 section 6.1 repeats it.
 and r12 I1 put the collector in `node`.
 Resolution: no `connector-status` crate. `node`'s collector pulls each layer-2 crate's
 values and writes `<node>.*` channels through a `hub` writer session. A connector's
-`Supervisor::run` writes its status, with the kind's counts through `Context::count`
+`Opened::run` writes its status, with the kind's counts through `Context::count`
 (CONNECTOR STATUS). The home writes only its companion samples
 (control channel, death records). Basis: BQ11b (later, user-locked).
 
