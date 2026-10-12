@@ -641,7 +641,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
         Err(Away::Remote(home)) => Some(home),
         Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
     };
-    // A call that only adds a channel ends no wait, and the selector can match it now.
+    // A spec that only adds a channel ends no wait, and the selector can match it now.
     let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
     assert_eq!(
         keys[found.index], index,

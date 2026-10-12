@@ -235,7 +235,7 @@ impl Hub {
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
     /// for one. A later spec in use that removes or changes one of its channels ends
-    /// that wait, and it opens on the names as they are then.
+    /// that wait, and it checks its names again.
     ///
     /// # Errors
     ///
