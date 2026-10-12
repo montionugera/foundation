@@ -4,11 +4,6 @@ use std::panic;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-#[path = "../common/panics.rs"]
-mod panics;
-
-pub(crate) use panics::{Armed, Bomb, assert_joins, panicked};
-
 /// A panic payload whose drop panics with a `Relay` of one less, until it is 0.
 pub(crate) struct Relay(pub(crate) usize);
 

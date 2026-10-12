@@ -742,7 +742,7 @@ fn files_syncs_the_holders_of_dir_and_its_data_at_each_call() {
         let holders = [root.clone(), dir.clone()];
         assert_eq!(*synced.lock().unwrap(), [holders.clone(), holders].concat());
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 /// A `dir` that the call made under a holder that it cannot sync is still not
@@ -796,7 +796,7 @@ fn files_whose_holder_sync_fails_gives_dir() {
         );
         assert!(matches!(found, os::Error::Dir(_)));
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 #[test]

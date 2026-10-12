@@ -11,7 +11,8 @@ use env::threads::Threads;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
-use crate::common::{Armed, Bomb, Relay, Relayed, Stuck, assert_joins, panicked};
+use crate::common::{Relay, Relayed, Stuck};
+use crate::panics::{Armed, Bomb, assert_joins, panicked};
 
 fn threads() -> Threads {
     os::threads().expect("the OS gives the cores of this process")

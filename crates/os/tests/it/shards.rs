@@ -13,7 +13,8 @@ use env::tasks::Tasks;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
-use crate::common::{Bomb, Relay, Relayed, Stuck, assert_joins, panicked};
+use crate::common::{Relay, Relayed, Stuck};
+use crate::panics::{Bomb, assert_joins, panicked};
 
 fn shards() -> Shards {
     os::shards().expect("the OS gives the cores of this process")

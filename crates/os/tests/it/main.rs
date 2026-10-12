@@ -20,6 +20,8 @@ mod kept;
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod net;
+#[path = "../common/panics.rs"]
+mod panics;
 #[cfg(target_os = "linux")]
 #[path = "../common/seccomp.rs"]
 mod seccomp;

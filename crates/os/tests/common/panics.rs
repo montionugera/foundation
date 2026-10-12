@@ -1,4 +1,4 @@
-//! Helpers for the tests of panics on shards and dedicated threads.
+//! Helpers for the tests of threads that end or panic.
 
 use std::pin::Pin;
 use std::sync::mpsc;
