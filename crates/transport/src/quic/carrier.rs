@@ -16,12 +16,12 @@ use block::Block;
 use env::clock::{Clock, Sleep};
 use env::net::Ecn;
 use env::net::udp::{self, Meta, Transmit};
+use env::tasks::{Ended, Group};
 use noq_proto::StreamId;
 use types::ed25519::PublicKey;
 use types::hash::Map;
 use types::time::{Monotonic, Span};
 
-use super::end::{End, Ended, Live};
 use super::stream::{Incoming, Receiver, Sender};
 use super::wait::{self, RETRY};
 use super::{Endpoint, Event, Setup, connection};
@@ -42,7 +42,12 @@ const DRAIN_MAX: Span = Span::from_nanos(3 * Span::SECOND.nanos());
 /// datagrams and runs its timers until the socket breaks, or until the carrier
 /// dropped and each connection drained, for at most [`DRAIN_MAX`] after each one
 /// ended. It stays on the thread that made it.
-pub(crate) struct Carrier(Rc<RefCell<State>>);
+pub(crate) struct Carrier {
+    state: Rc<RefCell<State>>,
+    /// Counts the task until it dropped. Not in `State`: the task would then hold the
+    /// `Tasks` of its shard, which holds the task.
+    group: Group,
+}
 
 impl Carrier {
     /// Starts an endpoint for `setup` on `part`, and spawns its task on
@@ -55,13 +60,11 @@ impl Carrier {
         } = part;
         let endpoint = Endpoint::new(&setup, index, sender.batch_max());
         let Setup { clock, tasks, .. } = setup;
-        let end = Rc::default();
-        let task = Live::new(&end);
+        let group = Group::new(tasks);
         let state = Rc::new(RefCell::new(State {
             endpoint,
             clock: clock.clone(),
             task: None,
-            end,
             sessions: BTreeMap::new(),
             accepted: Some(VecDeque::new()),
             accepting: Vec::new(),
@@ -69,9 +72,9 @@ impl Carrier {
             connects: 0,
             waits: wait::Queue::default(),
         }));
-        let task = Task::new(Rc::clone(&state), &clock, sender, receiver, task);
-        tasks.spawn(task.run());
-        Self(state)
+        let task = Task::new(Rc::clone(&state), &clock, sender, receiver);
+        group.tasks().spawn(task.run());
+        Self { state, group }
     }
 
     /// Dials `remote` and waits until it proves `peer`. The session may have ended
@@ -105,7 +108,7 @@ impl Carrier {
 
     /// What the carrier counted.
     pub(crate) fn status(&self) -> Status {
-        let state = self.0.borrow();
+        let state = self.state.borrow();
         Status {
             budget_waits: state.endpoint.budget_waits(),
             ..state.waits.status(state.clock.now())
@@ -114,13 +117,13 @@ impl Carrier {
 
     /// Resolves once the task dropped, and the socket with it.
     pub(crate) fn ended(&self) -> Ended {
-        Ended::new(&self.0.borrow().end)
+        self.group.ended()
     }
 
     /// A handle that dials and accepts on this carrier, and that does not keep it
     /// from its drop.
     pub(crate) fn handle(&self) -> Handle {
-        Handle(Rc::clone(&self.0))
+        Handle(Rc::clone(&self.state))
     }
 }
 
@@ -218,7 +221,7 @@ impl Drop for Carrier {
     /// code 0 each handshake in flight and each session that no caller accepted, and
     /// wakes each wait in [`Handle::poll_accept`].
     fn drop(&mut self) {
-        let mut state = self.0.borrow_mut();
+        let mut state = self.state.borrow_mut();
         let now = state.clock.now();
         state.endpoint.shut(now);
         for key in state.accepted.take().into_iter().flatten() {
@@ -236,8 +239,6 @@ struct State {
     clock: Clock,
     /// The waker of the task's last poll, or `None` once the task ended.
     task: Option<Waker>,
-    /// Whether the task dropped.
-    end: Rc<End>,
     /// Each connection that a [`Session`] holds or that no caller accepted yet.
     sessions: BTreeMap<connection::Key, Slot>,
     /// The connections peers dialed, in the order they connected, for
@@ -764,8 +765,6 @@ struct Task {
     /// When the task ends while a close still drains: [`DRAIN_MAX`] after a poll first
     /// saw the carrier dropped and each connection ended.
     cut: Option<Monotonic>,
-    /// Last, so that the socket has dropped when it wakes each [`Ended`].
-    _live: Live,
 }
 
 /// The timer that wakes the first read that waits for a block once each [`RETRY`].
@@ -781,7 +780,6 @@ impl Task {
         clock: &Clock,
         sender: udp::Sender,
         receiver: udp::Receiver,
-        live: Live,
     ) -> Self {
         Self {
             state,
@@ -792,7 +790,6 @@ impl Task {
                 armed: false,
             },
             cut: None,
-            _live: live,
         }
     }
 

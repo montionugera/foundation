@@ -30,3 +30,7 @@
   `pool.largest()`, which keeps the error and adds a case to each caller. Decided by
   `laptop.architect-2` (#1659, 2026-10-08T06:05:25Z):
   https://github.com/synnaxlabs/foundation/issues/1659#issuecomment-6053512557.
+  Amended (2026-10-12, #2214): `Transport::ended` returns `env::tasks::Ended`, and
+  `transport` exports no `Ended` of its own. The carrier's task spawns through one
+  `env::tasks::Group`. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454.

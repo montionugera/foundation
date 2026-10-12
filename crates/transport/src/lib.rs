@@ -83,7 +83,6 @@ pub use client::Client;
 pub use code::Code;
 pub use error::Error;
 pub use port::Port;
-pub use quic::Ended;
 pub use session::{Peer, Session};
 
 use table::Table;
@@ -265,7 +264,7 @@ impl Transport {
     /// }
     /// ```
     #[must_use]
-    pub fn ended(&self) -> Ended {
+    pub fn ended(&self) -> env::tasks::Ended {
         self.carrier.ended()
     }
 }
