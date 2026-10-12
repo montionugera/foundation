@@ -74,8 +74,9 @@ impl Drop for Pending {
 #[derive(Clone, PartialEq)]
 struct Placed {
     connector: Connector,
-    /// The keys of its status channels. A new key means that a spec the node did not
-    /// see removed the channel, also with an equal `connector`.
+    /// The keys of its status channels: its status index first, then each channel on
+    /// it. A new key means that a spec the node did not see removed the channel, also
+    /// with an equal `connector`.
     status: Vec<channel::Key>,
 }
 
