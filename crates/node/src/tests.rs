@@ -2706,23 +2706,23 @@ mod pool {
     /// purge twice.
     #[test]
     fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
-        let after = |span| move |at: Monotonic| at.checked_add(span).expect("in range");
         for phase in 0..10 {
             let phase = Span::from_nanos(phase * SECOND_NS);
-            let early = after(Span::from_nanos(10 * SECOND_NS - 1));
-            let held = kept(phase, move |_, returned| early(returned));
+            let early = Span::from_nanos(10 * SECOND_NS - 1);
+            let held = kept(phase, Since::Return, early);
             assert!(held, "the size keeps its pages at {phase:?}");
-            let late = after(Span::from_nanos(20 * SECOND_NS + 1));
-            let idle = !kept(phase, move |_, returned| late(returned));
+            let late = Span::from_nanos(20 * SECOND_NS + 1);
+            let idle = !kept(phase, Since::Return, late);
             assert!(idle, "the pages went back at {phase:?}");
         }
-        let early = after(Span::from_nanos(20 * SECOND_NS - 1));
-        let held = kept(Span::ZERO, move |start, _| early(start));
+        let early = Span::from_nanos(20 * SECOND_NS - 1);
+        let held = kept(Span::ZERO, Since::Start, early);
         assert!(held, "the size keeps its pages until 20 s after the start");
     }
 
     /// The timer runs from before the open of the buffer, whose reads take blocks of
-    /// 4 KiB, so that size goes back by 20 s and 1 ms after the start.
+    /// 4 KiB. The timer starts less than 1 ms after the start of the node, so that
+    /// size goes back by 20 s and 1 ms after it.
     #[test]
     fn a_size_that_the_open_of_the_buffer_used_goes_back_20_s_after_the_start() {
         let refused = frame::Error::Pool(block::Error::Refused { requested: 4056 });
@@ -2732,17 +2732,21 @@ mod pool {
         assert_eq!(late, Err(refused), "the pages of the size went back");
     }
 
-    /// Whether a block size keeps its pages at the instant that `at` gives from the
-    /// start of the node and the return of its last block. That block returns at
-    /// `phase` after the start, or at the open of the writer when it comes later.
-    /// The size keeps its pages when a take of its block succeeds while the memory
-    /// refuses. The memory shows a purge only through its next commit: while it
-    /// refuses, a commit of bytes that the system still holds succeeds, and a commit
-    /// of purged bytes gives `Refused`.
-    fn kept(
-        phase: Span,
-        at: impl FnOnce(Monotonic, Monotonic) -> Monotonic + Send + 'static,
-    ) -> bool {
+    /// The instant from which [`kept`] counts its wait.
+    enum Since {
+        /// The start of the node.
+        Start,
+        /// The return of the last block of the size.
+        Return,
+    }
+
+    /// Whether a block size keeps its pages `wait` after the instant `since`. The last
+    /// block of the size returns at `phase` after the start, or at the open of the
+    /// writer when it comes later. The size keeps its pages when a take of its block
+    /// succeeds while the memory refuses. The memory shows a purge only through its
+    /// next commit: while it refuses, a commit of bytes that the system still holds
+    /// succeeds, and a commit of purged bytes gives `Refused`.
+    fn kept(phase: Span, since: Since, wait: Span) -> bool {
         let (new, carved, again, later) = on_writer(4096, async move |rig| {
             let phase = rig.start.checked_add(phase).expect("in range");
             rig.clock.sleep_until(phase).await;
@@ -2752,7 +2756,13 @@ mod pool {
             let carved = rig.take();
             rig.switch.refuse();
             let again = rig.take();
-            rig.clock.sleep_until(at(rig.start, rig.clock.now())).await;
+            let base = match since {
+                Since::Start => rig.start,
+                Since::Return => rig.clock.now(),
+            };
+            rig.clock
+                .sleep_until(base.checked_add(wait).expect("in range"))
+                .await;
             let later = rig.take();
             rig.switch.allow();
             (new, carved, again, later)
