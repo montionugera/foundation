@@ -785,6 +785,53 @@ fn refuses_a_channel_over_a_connector_of_a_subject_with_no_admin_on_its_key() {
 }
 
 #[test]
+fn refuses_a_connector_over_a_channel_of_a_subject_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let channel = "channel \"site.plc\" { kind = \"index\" }\n";
+        let files = [
+            ("people.hcl", &*people),
+            ("yard.hcl", YARD),
+            ("p.hcl", channel),
+        ];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let plc = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                   read \"yard.temp\" { node_id = \"x\" }\n}\n";
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", plc)];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let expected = denied("sam", "admin", "`site.plc`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+/// A hand-made plan can remove a name that the spec does not hold, and the check
+/// refuses it before `Plan::definitions` reads the spec.
+#[test]
+fn refuses_a_removal_of_a_name_that_the_spec_does_not_hold_with_no_admin() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let site = site();
+        applied(&node, &[("people.hcl", &*people), ("site.hcl", &*site)]).await;
+        let version = mesh.pointer().version;
+        let placement = site.replace(SITE, "");
+        let files = [("people.hcl", &*people), ("p.hcl", &*placement)];
+        let plan = planned(&node, &files).await;
+        let mut plan = config::plan::Plan::decode(&plan).expect("a plan");
+        let change = plan.changes.remove(&name("site.time")).expect("a removal");
+        plan.changes.insert(name("site.ghost"), change);
+        let reply = serve(&node, &name("sam"), &apply_body(&plan.encode())).await;
+        let expected = denied("sam", "admin", "`site.ghost`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+#[test]
 fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
