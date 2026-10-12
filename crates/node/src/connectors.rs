@@ -159,20 +159,7 @@ impl Runs {
     /// key of a status channel is changed. The first run of a loop waits until no open
     /// of a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
-        let on = data(definitions);
-        let wanted: BTreeMap<&Name, Placed> = definitions
-            .iter()
-            .filter_map(|(name, definition)| match definition {
-                Definition::Connector(connector) if *connector.node() == self.node => {
-                    let placed = Placed {
-                        connector: connector.clone(),
-                        status: status(definitions, &on, name),
-                    };
-                    Some((name, placed))
-                }
-                _ => None,
-            })
-            .collect();
+        let wanted = self.wanted(definitions);
         self.loops.retain(|name, state| {
             let mut state = state.borrow_mut();
             if state.ended {
@@ -204,42 +191,54 @@ impl Runs {
                 .spawn(Box::pin(run(supervisor, opens, name, state)));
         }
     }
-}
 
-/// The keys of the data channels on each index channel of `definitions`, in their
-/// order.
-fn data(
-    definitions: &BTreeMap<Name, Definition>,
-) -> BTreeMap<channel::Key, Vec<channel::Key>> {
-    let mut on: BTreeMap<channel::Key, Vec<channel::Key>> = BTreeMap::new();
-    for definition in definitions.values() {
-        if let Definition::Channel(channel) = definition
-            && let Kind::Data(data) = &channel.kind
-        {
-            on.entry(*data.index()).or_default().push(channel.key);
+    /// The connectors of `definitions` on the node, each with the keys of its status
+    /// channels: its status index, then each channel on it, in their order.
+    fn wanted<'a>(
+        &self,
+        definitions: &'a BTreeMap<Name, Definition>,
+    ) -> BTreeMap<&'a Name, Placed> {
+        let mut wanted: BTreeMap<&Name, Placed> = definitions
+            .iter()
+            .filter_map(|(name, definition)| match definition {
+                Definition::Connector(connector) if *connector.node() == self.node => {
+                    let placed = Placed {
+                        connector: connector.clone(),
+                        status: index(definitions, name).into_iter().collect(),
+                    };
+                    Some((name, placed))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut on_index: BTreeMap<channel::Key, &mut Vec<channel::Key>> = wanted
+            .values_mut()
+            .filter_map(|placed| Some((*placed.status.first()?, &mut placed.status)))
+            .collect();
+        for definition in definitions.values() {
+            if let Definition::Channel(channel) = definition
+                && let Kind::Data(data) = &channel.kind
+                && let Some(status) = on_index.get_mut(data.index())
+            {
+                status.push(channel.key);
+            }
         }
+        wanted
     }
-    on
 }
 
-/// The keys of the status channels of the connector `name`: its status index, then
-/// each channel on it in `on`. Empty when the status names are refused or
-/// `definitions` has no channel at the name of the index; the open of the status
-/// session then fails.
-fn status(
+/// The key of the status index of the connector `name` in `definitions`. `None` when
+/// the status names are refused or `definitions` has no channel at the name of the
+/// index; the open of the status session then fails.
+fn index(
     definitions: &BTreeMap<Name, Definition>,
-    on: &BTreeMap<channel::Key, Vec<channel::Key>>,
     name: &Name,
-) -> Vec<channel::Key> {
-    let Ok((index, _)) = connector::status::channels(name, &[]) else {
-        return Vec::new();
-    };
-    let Some(Definition::Channel(index)) = definitions.get(&index) else {
-        return Vec::new();
-    };
-    let mut keys = vec![index.key];
-    keys.extend(on.get(&index.key).into_iter().flatten().copied());
-    keys
+) -> Option<channel::Key> {
+    let (index, _) = connector::status::channels(name, &[]).ok()?;
+    match definitions.get(&index)? {
+        Definition::Channel(index) => Some(index.key),
+        _ => None,
+    }
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its
