@@ -953,11 +953,171 @@ fn check_refuses_each_connector_that_the_kinds_refuse() {
     assert_eq!(problems(found.map(|()| unreachable())), expected);
 }
 
-/// Only an index that a connector implies takes the connector's place. A plan can
-/// define a status data name as an index, and it is placed as each index that the
-/// connector writes.
+/// The definitions of a spec on which `COUNTED` applied, on the node `n`.
+fn counted() -> BTreeMap<Name, Stored> {
+    let mut spec = Spec::create_empty();
+    spec.apply(&spec.plan(&[COUNTED], &["n"]).expect("no problems"));
+    spec.definitions()
+}
+
+/// The diagnostic of `check` for the status channel `channel` of `c` that the
+/// definitions lack or hold as another channel.
+fn implied(channel: &str) -> Problem {
+    (
+        "config.implied-channel",
+        None,
+        format!(
+            "the connector `c` implies the channel `{channel}`, so the spec must hold \
+             it as the connector gives it"
+        ),
+        "Make the plan file with `plan`".into(),
+    )
+}
+
+/// `plan::check` refuses definitions that leave out or change a status channel
+/// that a connector implies.
 #[test]
-fn check_places_an_index_at_a_status_data_name_as_one_that_the_connector_writes() {
+fn check_refuses_definitions_without_the_status_channels_of_a_connector() {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    config::plan::check(&definitions, &members, &kinds()).expect("no problems");
+    definitions
+        .remove(&name("c.status.state"))
+        .expect("implied");
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+#[test]
+fn check_refuses_a_status_channel_of_another_data_type() {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    let Some(Stored::Channel(channel)) = definitions.get_mut(&name("c.status.state"))
+    else {
+        panic!("the status channel `c.status.state`");
+    };
+    let spec::channel::Kind::Data(data) = &channel.kind else {
+        panic!("a data channel");
+    };
+    let data_type = DataType::Sample(Type::Scalar(Scalar::U64));
+    let data = Data::new(*data.index(), None, data_type, None).expect("no unit");
+    channel.kind = spec::channel::Kind::Data(data);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+#[test]
+fn check_refuses_a_status_channel_on_another_index() {
+    let members = BTreeSet::from([name("n")]);
+    let mut spec = Spec::create_empty();
+    let index = "channel \"a.time\" { kind = \"index\" }\n";
+    let text = format!("{COUNTED}{index}{}", placement("a", "\"a.time\"", "n"));
+    spec.apply(&spec.plan(&[&text], &["n"]).expect("no problems"));
+    let mut definitions = spec.definitions();
+    let Some(Stored::Channel(index)) = definitions.get(&name("a.time")) else {
+        panic!("the index `a.time`");
+    };
+    let index = index.key;
+    let Some(Stored::Channel(channel)) = definitions.get_mut(&name("c.status.state"))
+    else {
+        panic!("the status channel `c.status.state`");
+    };
+    let spec::channel::Kind::Data(data) = &channel.kind else {
+        panic!("a data channel");
+    };
+    let data_type = data.data_type().clone();
+    let data = Data::new(index, None, data_type, None).expect("no unit");
+    channel.kind = spec::channel::Kind::Data(data);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+/// The problems of `plan::check` on `counted` after `edit` of the kind of the
+/// status channel `channel`, with the key of `c.status.state`.
+fn edited(
+    channel: &str,
+    edit: impl FnOnce(&mut spec::channel::Kind<Key>, Key),
+) -> Vec<Problem> {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    let Some(Stored::Channel(state)) = definitions.get(&name("c.status.state")) else {
+        panic!("the status channel `c.status.state`");
+    };
+    let state = state.key;
+    let Some(Stored::Channel(stored)) = definitions.get_mut(&name(channel)) else {
+        panic!("the status channel `{channel}`");
+    };
+    edit(&mut stored.kind, state);
+    problems(
+        config::plan::check(&definitions, &members, &kinds()).map(|()| unreachable()),
+    )
+}
+
+/// `plan::check` refuses a status data channel with a unit.
+#[test]
+fn check_refuses_a_status_channel_with_a_unit() {
+    let found = edited("c.status.restarts", |kind, _| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let unit = Some(spec::unit::Unit::new("s").expect("a unit"));
+        let data_type = data.data_type().clone();
+        *data = Data::new(*data.index(), None, data_type, unit).expect("a number");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status data channel with a quality channel.
+#[test]
+fn check_refuses_a_status_channel_with_a_quality_channel() {
+    let found = edited("c.status.restarts", |kind, state| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let data_type = data.data_type().clone();
+        *data =
+            Data::new(*data.index(), Some(state), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status index with an error channel.
+#[test]
+fn check_refuses_a_status_index_with_an_error_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: Some(state),
+            control: None,
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
+/// `plan::check` refuses a status index with a control channel.
+#[test]
+fn check_refuses_a_status_index_with_a_control_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: None,
+            control: Some(state),
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
+/// An index at a status data name, with no other status channel, is refused at each
+/// status channel.
+#[test]
+fn check_refuses_an_index_at_a_status_data_name() {
     let text = format!("{COUNTED}{}", placement("c", "\"c\"", "n"));
     let entries = config::check(&documents(&[&text]), &kinds()).expect("entries");
     let mut definitions = made(&entries);
@@ -968,15 +1128,19 @@ fn check_places_an_index_at_a_status_data_name_as_one_that_the_connector_writes(
     definitions.insert(name("c.status.state"), index);
     let members = BTreeSet::from([name("n")]);
     let found = config::plan::check(&definitions, &members, &kinds());
-    let expected = (
-        "config.split-placement",
-        None,
-        "no placement selects the index `c.status.state`, but the placement `c` wins \
-         for the connector `c`"
-            .into(),
-        "Make the placement `c` win for the connector `c` and its indexes".into(),
+    let expected = [
+        "c.status.time",
+        "c.status.state",
+        "c.status.class",
+        "c.status.restarts",
+        "c.status.backoff",
+        "c.status.error",
+        "c.status.confirmed",
+    ];
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        expected.map(implied)
     );
-    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
 }
 
 /// A plan for `problems` to refuse, which a `check` that refuses never gives.
@@ -3202,6 +3366,66 @@ fn refuses_a_connector_that_writes_a_status_channel_of_another() {
     assert_eq!(found, [expected]);
 }
 
+/// A kind that writes a status channel of another twice, in any ASCII case, gives one
+/// problem.
+#[test]
+fn refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let writer = format!(
+            "connector \"d\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\", \"{second}\"]\n}}\n"
+        );
+        let documents = documents(&[COUNTED, &writer]);
+        let found = config::check(&documents, &kinds()).expect_err("problems");
+        let span = |document: &Document| document.blocks[0].labels[0].span;
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(&documents[1]),
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        assert_eq!(found, [expected], "second: {second}");
+    }
+}
+
+/// Two connectors that write one status channel of another each give one problem.
+#[test]
+fn refuses_each_connector_that_writes_one_status_channel_of_another() {
+    let writer = |key: &str| {
+        format!(
+            "connector \"{key}\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\"]\n}}\n"
+        )
+    };
+    let documents = documents(&[COUNTED, &writer("d"), &writer("e")]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = |at: &Document, key: &str| {
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(at),
+            format!(
+                "the connector `c` implies the channel `c.status.state`, so the \
+                 connector `{key}` cannot write it"
+            ),
+            format!("Write another channel from the connector `{key}`"),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        expected
+    };
+    let expected = [expected(&documents[1], "d"), expected(&documents[2], "e")];
+    assert_eq!(found, expected);
+}
+
 /// A kind cannot write a status channel of its own connector either.
 #[test]
 fn refuses_a_connector_that_writes_its_own_status_channel() {
@@ -3225,17 +3449,26 @@ fn refuses_a_connector_that_writes_its_own_status_channel() {
 }
 
 /// The definitions of `COUNTED`, with a connector `d` of the kind `writer` on `node`
-/// that writes `writes`.
-fn with_writer(node: &str, writes: &str) -> BTreeMap<Name, Stored> {
+/// that writes `writes`, and its status channels.
+fn with_writer(node: &str, writes: &[&str]) -> BTreeMap<Name, Stored> {
     let entries = config::check(&documents(&[COUNTED]), &kinds()).expect("entries");
     let mut definitions = made(&entries);
+    let writes: Vec<String> = writes.iter().map(|name| format!("{name:?}")).collect();
+    let writes = writes.join(", ");
     let text = format!(
         "connector \"d\" {{\n  kind = \"writer\"\n  node = \"{node}\"\n  \
-         writes = [\"{writes}\"]\n}}\n"
+         writes = [{writes}]\n}}\n"
     );
     let alone = config::check(&documents(&[&text]), &kinds()).expect("d alone");
-    let d = made(&alone).remove(&name("d")).expect("d");
-    definitions.insert(name("d"), d);
+    // `made` gives the same keys to both, so the keys of `d` move apart.
+    let apart = |key: Key| Key::from_u128(key.as_u128() + 1000);
+    for (name, mut definition) in made(&alone) {
+        if let Stored::Channel(channel) = &mut definition {
+            channel.key = apart(channel.key);
+            channel.kind = channel.kind.clone().map(apart);
+        }
+        definitions.insert(name, definition);
+    }
     definitions
 }
 
@@ -3244,7 +3477,7 @@ fn with_writer(node: &str, writes: &str) -> BTreeMap<Name, Stored> {
 fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
     let members = BTreeSet::from([name("n"), name("m")]);
     for node in ["m", "n"] {
-        let definitions = with_writer(node, "c.status.state");
+        let definitions = with_writer(node, &["c.status.state"]);
         let found = config::plan::check(&definitions, &members, &kinds());
         let expected = (
             "config.implied-channel",
@@ -3258,11 +3491,84 @@ fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
     }
 }
 
+/// A name that repeats stops `check` before the write of a status channel of another.
+#[test]
+fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", &["c.status.state"]);
+    let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
+        panic!("the status index");
+    };
+    let mut repeated = index.clone();
+    repeated.key = Key::from_u128(5000);
+    definitions.insert(name("C.status.time"), Stored::Channel(repeated));
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = (
+        "config.duplicate-name",
+        None,
+        "the name \"c.status.time\" repeats the earlier `channel` name \
+         \"C.status.time\""
+            .into(),
+        "Give each `channel` block a name that differs by more than case".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
+/// Stage 3 gives a write of a status channel of another before a missing status
+/// channel.
+#[test]
+fn check_gives_a_write_of_a_status_channel_before_a_missing_one() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", &["c.status.state"]);
+    definitions
+        .remove(&name("d.status.state"))
+        .expect("implied");
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let write = (
+        "config.implied-channel",
+        None,
+        "the connector `c` implies the channel `c.status.state`, so the connector \
+         `d` cannot write it"
+            .into(),
+        "Write another channel from the connector `d`".into(),
+    );
+    let missing = (
+        "config.implied-channel",
+        None,
+        "the connector `d` implies the channel `d.status.state`, so the spec must hold \
+         it as the connector gives it"
+            .into(),
+        "Make the plan file with `plan`".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [write, missing]);
+}
+
+/// A kind that writes a status channel of another twice, in any ASCII case, gives
+/// `check` one problem.
+#[test]
+fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let definitions = with_writer("n", &["c.status.state", second]);
+        let found = config::plan::check(&definitions, &members, &kinds());
+        let expected = (
+            "config.implied-channel",
+            None,
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        let found = problems(found.map(|()| unreachable()));
+        assert_eq!(found, [expected], "second: {second}");
+    }
+}
+
 /// A connector writes its status index, so a channel on that index that another
 /// connector writes on another node leaves the index with no one home.
 #[test]
 fn check_counts_a_connector_as_a_writer_of_its_status_index() {
-    let mut definitions = with_writer("m", "x");
+    let mut definitions = with_writer("m", &["x"]);
     let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
         panic!("the status index");
     };
