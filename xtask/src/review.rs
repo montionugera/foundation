@@ -15,6 +15,8 @@ use crate::{field, gh};
 mod history;
 
 use history::Place;
+#[cfg(test)]
+pub(crate) use history::tests::Repo;
 
 /// The first change of one kind in a range `<from>..<end>`, as a phrase, or `None`.
 type Change<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
@@ -165,7 +167,7 @@ struct Parsed {
 /// `head`. Reads the PR with `api` and the history of the repository at `root` with
 /// `git`, and prints each problem.
 ///
-/// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
+/// Exits 0 when the review is done, 1 when it is not, and 2 when `api` or `git` fails
 /// or the PR record lacks a field.
 pub(crate) fn run(root: &Path, pr: &str, head: &str, api: gh::Read<'_>) -> ExitCode {
     exit(fetch(pr, api).and_then(|record| problems_in(root, &record, head)))
