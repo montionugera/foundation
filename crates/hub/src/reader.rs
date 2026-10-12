@@ -623,7 +623,6 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     mut item: impl FnMut(&Name, &Channel) -> T,
 ) -> Result<(Matched<T>, Home), Error> {
     state.borrow_mut().catch_up();
-    let mut pending = Pending::new(state);
     let (index, homed) = loop {
         let (index, keys) = {
             let borrowed = state.borrow();
@@ -632,7 +631,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             let keys = defined.iter().map(|(_, channel)| channel.key());
             (index, keys.chain([index]).collect())
         };
-        pending.register(keys);
+        let pending = Pending::new(state, keys);
         if let Ok(homed) = pending.wait(crate::homes(state, &[index])).await {
             break (index, homed);
         }

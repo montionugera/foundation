@@ -20,31 +20,14 @@ pub(crate) struct Pending<'s> {
 }
 
 impl<'s> Pending<'s> {
-    /// An open registered on no channel.
-    pub(crate) fn new(state: &'s Rc<RefCell<State>>) -> Self {
+    /// An open registered on `keys`.
+    pub(crate) fn new(state: &'s Rc<RefCell<State>>, keys: Box<[Key]>) -> Self {
         let mut borrowed = state.borrow_mut();
         let key = borrowed.opened;
         borrowed.opened += 1;
-        let ending = borrowed.opens.add(key, Box::default());
+        let ending = borrowed.opens.add(key, keys);
         drop(borrowed);
         Self { state, key, ending }
-    }
-
-    /// Registers the open on `keys` alone, also after a change ended its wait.
-    pub(crate) fn register(&mut self, keys: Box<[Key]>) {
-        let mut state = self.state.borrow_mut();
-        state.opens.remove(self.key);
-        self.ending = state.opens.add(self.key, keys);
-    }
-
-    /// Adds `keys` to the channels that the open is registered on.
-    ///
-    /// # Panics
-    ///
-    /// When a change ended the wait and no [`Self::register`] came after it.
-    pub(crate) fn extend(&self, keys: &[Key]) {
-        let mut state = self.state.borrow_mut();
-        state.opens.keys_mut(self.key).extend_from_slice(keys);
     }
 
     /// Gives what `future` gives, or, at once, the first channel of the open that a
@@ -64,15 +47,6 @@ impl<'s> Pending<'s> {
             future.as_mut().poll(cx).map(Ok)
         })
         .await
-    }
-
-    /// Ends the registration, and gives its channels, in order.
-    ///
-    /// # Panics
-    ///
-    /// As [`Self::extend`].
-    pub(crate) fn into_keys(self) -> Vec<Key> {
-        self.state.borrow_mut().opens.take(self.key)
     }
 }
 
@@ -113,7 +87,7 @@ mod tests {
                 let state = hub.0.borrow();
                 (state.opens.0.len(), state.waiting.len())
             };
-            let opening = Pending::new(&hub.0);
+            let opening = Pending::new(&hub.0, Box::default());
             let cx = &mut Context::from_waker(Waker::noop());
             let waited = pin!(opening.wait(pending::<()>())).poll(cx);
             assert!(waited.is_pending());

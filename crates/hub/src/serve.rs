@@ -454,6 +454,8 @@ struct Opening<'s> {
     index: Option<channel::Key>,
     /// The position of the index in the keys checked.
     at: Option<usize>,
+    /// The keys checked, in order.
+    keys: Vec<channel::Key>,
     /// The keys checked, so a key listed twice is found.
     listed: BTreeSet<channel::Key>,
 }
@@ -463,9 +465,10 @@ impl<'s> Opening<'s> {
         state.borrow_mut().catch_up();
         Self {
             state,
-            pending: Pending::new(state),
+            pending: Pending::new(state, Box::default()),
             index: None,
             at: None,
+            keys: Vec::new(),
             listed: BTreeSet::new(),
         }
     }
@@ -480,29 +483,28 @@ impl<'s> Opening<'s> {
     /// Checks that each of `keys` is known, on the index of the open, and not named
     /// before, and adds it to the channels of the open.
     fn check(&mut self, keys: keys::Iter<'_>) -> Result<(), Error> {
-        let mut checked = Vec::new();
         let state = self.state.borrow();
         for key in keys {
             let of = state.channels.get(key).ok_or(Error::Unknown(key))?.index();
             if *self.index.get_or_insert(of) != of {
                 return Err(Error::ManyIndexes);
             }
-            if key == of {
-                self.at = Some(self.listed.len());
-            }
             if !self.listed.insert(key) {
                 return Err(Error::Repeated(key));
             }
-            checked.push(key);
+            if key == of {
+                self.at = Some(self.keys.len());
+            }
+            self.keys.push(key);
         }
         drop(state);
-        self.pending.extend(&checked);
+        self.pending = Pending::new(self.state, self.keys.as_slice().into());
         Ok(())
     }
 
     /// Ends the open, and gives the keys it checked, in order.
     fn into_keys(self) -> Vec<channel::Key> {
-        self.pending.into_keys()
+        self.keys
     }
 
     /// Waits until the mesh names this node the home of the index. Fails at once when
