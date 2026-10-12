@@ -352,13 +352,15 @@ impl SendBuffer {
         let held = self.held();
         let offset = self.offset();
         // Not `pop_front`: a second caller stops its inline in `ack`.
-        self.data = SendBufferData {
-            offset,
-            ..SendBufferData::default()
+        *self = Self {
+            data: SendBufferData {
+                offset,
+                ..SendBufferData::default()
+            },
+            unsent: offset,
+            acks: ArrayRangeSet::new(),
+            retransmits: ArrayRangeSet::new(),
         };
-        self.unsent = offset;
-        self.acks = ArrayRangeSet::new();
-        self.retransmits = ArrayRangeSet::new();
         held
     }
 
