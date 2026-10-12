@@ -292,10 +292,10 @@
   https://github.com/synnaxlabs/foundation/pull/2491#issuecomment-6132751271). This
   changes "After it waits for each index, the open (writer, reader, and served) runs its
   check again" in the second comment: a served open and a local writer read their
-  removal in place of that check. It also changes "each channel and its index" in item 2
-  of https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6088904511. It
-  also changes "An open by name still checks its names again after the wait, and waits
-  again for a new index" in
+  removal in place of that check. Supersedes "each channel and its index" in item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6088904511, and "An
+  open by name still checks its names again after the wait, and waits again for a new
+  index" in
   https://github.com/synnaxlabs/foundation/issues/2112#issuecomment-6074871156: a local
   writer checks its names again only after a wake. The call checks the definitions
   before it changes anything: two channels with one key or one name, or a data channel
