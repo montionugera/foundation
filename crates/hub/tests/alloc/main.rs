@@ -4,16 +4,28 @@
 //! The commit task is not counted. The home's `woken` after a commit, which that task
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
-//! a depth it reached before. An open of a reader of many channels copies no name.
-//! This binary has no test harness: the count covers each thread, and a harness
-//! allocates on its own thread at any time.
+//! a depth it reached before. An open of a reader of many channels copies no name. A
+//! client read makes as many allocations for each frame it relays as a HUB WIRE
+//! session. This binary has no test harness: the count covers each thread, and a
+//! harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[path = "../common/agent.rs"]
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
+mod agent;
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/net.rs"]
+mod net;
 #[path = "../common/node.rs"]
 mod node;
+#[path = "../common/peer.rs"]
+mod peer;
+mod relay;
+#[path = "../common/sessions.rs"]
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
+mod sessions;
 #[path = "../common/woken.rs"]
 mod woken;
 
@@ -28,6 +40,7 @@ use hub::reader::{self, Mode, Reader};
 use hub::writer::{self, Writer};
 use types::authority::Authority;
 use types::time::Span;
+use wire::hub::client;
 use woken::Woken;
 
 #[global_allocator]
@@ -295,6 +308,10 @@ fn main() {
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
         1,
         "the allocator counts"
+    );
+    relay::relays_a_frame_with_the_allocations_of_a_wire_session(client::Mode::Latest);
+    relay::relays_a_frame_with_the_allocations_of_a_wire_session(
+        client::Mode::Complete,
     );
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
