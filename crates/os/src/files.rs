@@ -301,10 +301,13 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error
         Mode::Create { len } if found == 0 && len != 0 => {
             allocate(&fd, len)
                 .and_then(|()| sync_all(&fd))
-                // The blocks are free once `fd` closes. A failed create leaves no file,
-                // so a later write open gives `NotFound`, not an empty file.
+                // A child process can hold a copy of `fd`, so the blocks are freed
+                // here, not at its close. A failed create leaves no file, so a later
+                // write open gives `NotFound`, not an empty file.
                 .or_else(|errno| {
-                    fs::unlinkat(data, path, AtFlags::empty()).and(Err(errno))
+                    fs::ftruncate(&fd, 0)
+                        .and_then(|()| fs::unlinkat(data, path, AtFlags::empty()))
+                        .and(Err(errno))
                 })
                 .map_err(&failed)?;
             Ok((fd, len))
