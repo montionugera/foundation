@@ -71,3 +71,18 @@
   `scripts/bench-host.sh` makes two passes of each commit, so its report alone gives no
   result. Until #2367 changes it, `laptop.monitor` makes the passes as in
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104945553.
+  Amended (2026-10-11): a result at or over the cost limit needs no rerun and no P1
+  judgment when each function that holds product code that its line runs in its timed
+  loop has the same instructions at both commits. The PR gives the compare of the two
+  bench binaries, built with the toolchain, the profile, and the flags of the run, with
+  the absolute addresses removed, and names the target and both commits. A function that
+  differs, also in one constant, keeps the rule above. Decided by `laptop.director`,
+  2026-10-11T15:58:29Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6110871216.
+  Amended (2026-10-11): each one-host quiet-host run builds both commits with
+  `-C panic=abort` beside the flags above, which is the panic strategy of the release
+  profile (R16-2), and its result names the flag. The CI bench job of #715 builds its
+  benches the same way. Decided by `laptop.director`, 2026-10-11T17:23:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111666626.
+  `scripts/bench-host.sh` does not pass the flag. Until #2367 adds it, `laptop.monitor`
+  adds it to the flags of each run.

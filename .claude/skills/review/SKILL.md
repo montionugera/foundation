@@ -44,9 +44,9 @@ to `laptop.architect`, which owns each contract between the two lists
 (`docs/factory.md`), and link its approval. When the PR changes a file in `docs/claude/`
 or another rule that `laptop.director` owns (`/direct`, "The bar"), and
 `laptop.director` is not its author, also send it to `laptop.director`, and link its
-approval on the `Public surface:` line. When the author of the PR is the crate's
-architect, the other architect gives each approval, OK, and ruling that this skill asks
-of the crate's architect.
+approval on the `Public surface:` line. When the crate's architect wrote a commit of the
+PR, the other architect gives each approval, OK, and ruling that this skill asks of the
+crate's architect.
 
 A PR that adds or changes code for an OS that CI does not run (LINUX CI in
 `docs/decisions/testing/linux-ci.md`), or states what its code does on that OS, links a
@@ -60,9 +60,13 @@ as the kill of its mutants, or changes a function that such an entry covers, the
 also tests one mutant made by hand in each function that the entry covers, and the PR
 links the run in which each one fails.
 
-When a new PR replaces one under review, close the old one first (`gh pr close <old>
---comment "Replaced by #<new>"`), and link its round comments in the new round 1
-comment.
+When a new PR replaces one under review, close the old one first
+(`gh pr close <old> --comment "Replaced by #<new>"`), and link its round comments in the
+first round comment of the new PR. When the head of the old PR is an ancestor of the
+head of the new one, each round, answer, and approval of the old PR counts for the new
+PR at its SHA, and the next round starts where the last round of the old PR ends. A
+close that waits for the person does not hold the new PR while the old PR is a draft and
+gets no push.
 
 The `reviewer`, `architecture`, and `breaker` agents each make their own worktree, so
 no two share a copy. Never give one another path: its permission check refuses every
@@ -80,23 +84,25 @@ command outside that worktree. Remove each worktree when its agent returns
    what goes wrong, and the fix. It links each test doc that the `reviewer` report names
    as the reason for a hand mutant (`docs/claude/testing.md`). It ends with four lines.
    First `Deferred:` and `none`, or the issue of each deferred finding, each with the
-   link to the architect's OK in a risk crate once it exists. A later round keeps each
-   deferral of the round before it. Then `Later steps:` and `none`, or each
-   later step that a round, an architect review, an architect's ruling, or an issue that
-   the PR closes names, each with the link to the open issue or the decisions entry that
-   holds it ("Done"). Then `Public surface:` and `none`, or each item that
-   `.claude/agents/architecture.md` defines for that line (the `architecture` report
-   names them, and in a round with no `architecture` agent the `reviewer` report names
-   those of its range) and each rule change that Round 1 sends to `laptop.director`,
-   each with the link to its approval once it exists. An approval holds for the text at
-   the SHA that it approves: after a commit or an edit of the PR body changes the item,
-   the line gives it `approval owed` in place of the link until a new approval exists.
-   A later round keeps each item of the round before it. Then `Hot path:` as the
-   `architecture` report gives it, or, in a round with no `architecture` agent, the
-   `reviewer` report. A report that comes after its round comment goes in a new round
-   comment, with its findings. Its range is `<head>..<head>`, so it also runs
-   `reviewer` and skips `breaker` (Round comment). The old round adds the reviewer to
-   its `Reviewers:` line, and links the new comment after its findings.
+   link to the architect's OK in a risk crate once it exists. In a PR that changes a
+   risk crate, the issue of a deferral that is not in a risk crate has the words
+   `not in a risk crate` after it. A later round keeps each deferral of the round before
+   it. Then `Later steps:` and `none`, or each later step that a round, an architect
+   review, an architect's ruling, or an issue that the PR closes names, each with the
+   link to the open issue or the decisions entry that holds it ("Done"). Then
+   `Public surface:` and `none`, or each item that `.claude/agents/architecture.md`
+   defines for that line (the `architecture` report names them, and in a round with no
+   `architecture` agent the `reviewer` report names those of its range) and each rule
+   change that Round 1 sends to `laptop.director`, each with the link to its approval
+   once it exists. An approval holds for the text at the SHA that it approves: after a
+   commit or an edit of the PR body changes the item, the line gives it `approval owed`
+   in place of the link until a new approval exists. A later round keeps each item of
+   the round before it. Then `Hot path:` as the `architecture` report gives it, or, in a
+   round with no `architecture` agent, the `reviewer` report. A report that comes after
+   its round comment goes in a new round comment, with its findings. Its range is
+   `<head>..<head>`, so it also runs `reviewer` and skips `breaker` (Round comment). The
+   old round adds the reviewer to its `Reviewers:` line, and links the new comment after
+   its findings.
 3. Fix each finding in this PR, or answer it on the PR. A deferral is an issue that
    states the item, linked in the answer, also when the code is already on `main` or
    another crate does the work. A finding whose fix is a small change in a crate or a
@@ -138,7 +144,8 @@ person who has not read the code:
    defect or a missing test on a failure path. 1: the wrong design.
 2. A summary of its code quality in 2 or 3 short sentences.
 
-A reviewer that did not write the PR gives both. An author never rates its own PR.
+A reviewer that wrote no commit of the PR gives both. A session never rates a PR that
+holds a commit that it wrote.
 
 ## Round comment
 
@@ -199,9 +206,10 @@ nothing checked again. So when round 1 led to fix commits:
 
 1. Run `reviewer` and `breaker` on the fix commits only (`<from>..<head sha>`, where
    `<from>` is the end of the range of the round before), with the round 1 comment and
-   each architect review attached. Add `architecture` when the range adds or changes a
-   public item, a variant of a public enum, or a sentence of a public doc or a decision
-   that states what a crate does. Only a range in which the check counts no code change
+   each architect review attached. Add `architecture` when the range adds, changes, or
+   removes a file under `docs/decisions/`, or, in a `.rs` file under `crates/*/src/`, a
+   public item, a variant of a public enum, a `//!` line, or a line of the doc comment
+   of a public item or variant. Only a range in which the check counts no code change
    (Round comment) skips `breaker`, and its round comment says so. The `reviewer` also
    gets each answer that changed no code, and checks it (`.claude/agents/reviewer.md`).
    The round comment puts each deferral that its report names on its `Deferred:` line.
