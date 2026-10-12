@@ -429,13 +429,10 @@ impl Buffer {
             layout,
             commit,
         } = config;
-        let block_max =
-            group::block_max(pool.budget(), pool.largest()).map_err(|min| {
-                Error::Budget {
-                    budget: pool.budget(),
-                    min,
-                }
-            })?;
+        let block_max = group::block_max(&pool).map_err(|min| Error::Budget {
+            budget: pool.budget(),
+            min,
+        })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let chain = random(&entropy);

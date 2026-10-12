@@ -18,19 +18,20 @@ use crate::wal::{Ends, Full, Layout, Limit, Plan, Writer};
 pub(crate) const META_LEN: usize = record::HEADER_LEN + entry::TABLE_MAX;
 const _: () = assert!(META_LEN <= 1 << 16, "the table fits one 64 KiB block");
 
-/// The most bytes of parts, joined, that one entry may have on a pool of `budget`
-/// whose largest block holds `largest`: the group's two blocks and the entry, in any
-/// split into two parts, fit the budget at once.
+/// The most bytes of parts, joined, that one entry may have on `pool`: the group's
+/// two blocks and the entry, in any split into two parts, fit its budget at once.
 ///
 /// # Errors
 ///
 /// The least budget that holds an entry of [`Layout::ENTRY_MAX_MIN`] bytes, when
-/// the pool does not.
-pub(crate) fn block_max(budget: usize, largest: usize) -> Result<usize, usize> {
+/// the budget of `pool` does not.
+pub(crate) fn block_max(pool: &Pool) -> Result<usize, usize> {
+    let (budget, largest) = (pool.budget(), pool.largest());
     let floor = Layout::ENTRY_MAX_MIN;
     let starts = class_starts(largest.max(floor));
-    if largest < floor || need(&starts, floor) > budget {
-        return Err(need(&starts, floor));
+    let min = need(&starts, floor);
+    if min > budget {
+        return Err(min);
     }
     let (mut low, mut high) = (floor, largest);
     while low < high {
@@ -495,14 +496,9 @@ mod tests {
     #[test]
     fn no_block_max_below_the_floor() {
         let min = need_of_every_split(Layout::ENTRY_MAX_MIN);
-        assert_eq!(block_max(min - 1, 1 << 16), Err(min));
-        assert_eq!(block_max(min, 1 << 16), Ok(4_096));
-        assert_eq!(block_max(usize::MAX, 4_031), Err(min));
-    }
-
-    #[test]
-    fn block_max_is_at_most_the_largest_block() {
-        assert_eq!(block_max(usize::MAX, 4_096), Ok(4_096));
+        assert_eq!(block_max(&pool(min - 1)), Err(min));
+        assert_eq!(block_max(&pool(min)), Ok(4_096));
+        assert_eq!(block_max(&pool(4_096)), Err(min));
     }
 
     proptest! {
@@ -513,7 +509,7 @@ mod tests {
         fn block_max_is_the_most_that_fits(budget in 62_272usize..=1 << 22) {
             let pool = pool(budget);
             let largest = pool.largest();
-            let max = block_max(budget, largest).expect("the floor fits");
+            let max = block_max(&pool).expect("the floor fits");
             let starts = class_starts(largest);
             prop_assert!(max <= largest);
             prop_assert!(need(&starts, max) <= budget);
@@ -541,7 +537,7 @@ mod tests {
         let entry = entry(header(1, Path::Live, 0), parts);
         let pushed = Group::default().push(
             &memory,
-            block_max(memory.budget(), memory.largest()).expect("the floor fits"),
+            block_max(&memory).expect("the floor fits"),
             &writer,
             &mut vec![entry],
         );
@@ -630,7 +626,7 @@ mod tests {
         }
 
         fn block_max(&self) -> usize {
-            block_max(self.pool.budget(), self.pool.largest()).expect("the floor fits")
+            block_max(&self.pool).expect("the floor fits")
         }
 
         fn push(&mut self, group: &mut Group, header: Header, parts: Parts) {
