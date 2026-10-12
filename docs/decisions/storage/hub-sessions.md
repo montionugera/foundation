@@ -290,10 +290,9 @@
   its check again" in the second comment: a served open and a local writer read their
   removal in place of that check. The call checks the definitions before it changes
   anything: two channels with one key or one name, or a data channel whose index is not
-  an index of the
-  definitions, panic. This changes "A known key or name panics", "The hub keeps the
-  key, the sample type, and the index of each", and "The PR that defines channels at
-  each new spec decides what a known, renamed, or removed channel does" in
+  an index of the definitions, panic. This changes "A known key or name panics", "The
+  hub keeps the key, the sample type, and the index of each", and "The PR that defines
+  channels at each new spec decides what a known, renamed, or removed channel does" in
   https://github.com/synnaxlabs/foundation/issues/1917#issuecomment-6064624349. Lost: a
   session ends at its next call, under which a writer keeps the control of a removed
   index until it calls, and a reader that waits in `next` needs a wake anyway; and the
