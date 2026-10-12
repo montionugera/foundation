@@ -1603,9 +1603,7 @@ impl Streams {
         bytes: usize,
     ) -> Result<(), Error> {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        if message.is_some() {
-            half.adopt();
-        }
+        half.adopt();
         let resumed = self.sending.resume(inner, half);
         half.check()?;
         if resumed.is_pending() {
