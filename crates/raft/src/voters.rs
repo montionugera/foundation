@@ -101,7 +101,7 @@ impl Voters {
         }
     }
 
-    /// Whether the nodes that `counted` accepts are a majority of each set.
+    /// Whether the nodes that `counted` accepts are a majority of each non-empty set.
     ///
     /// # Errors
     ///
