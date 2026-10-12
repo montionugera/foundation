@@ -677,8 +677,6 @@ impl Endpoint {
 
     /// For a write of `sender` that the size check refused: while the connection
     /// runs, the stream adopts the rest of a leaked write ([`Streams::adopt`]).
-    #[cold]
-    #[inline(never)]
     fn adopt(&mut self, now: Monotonic, sender: &Sender) {
         if sender.closed().is_some() {
             return;
