@@ -787,8 +787,7 @@ impl Cursor {
     }
 
     /// The largest window at the read position: the largest record, the rest of the
-    /// area,
-    /// or the rest of one lap.
+    /// area, or the rest of one lap.
     fn bound(&self) -> Window {
         let area = self.layout.area;
         let place = self.layout.place(self.at.offset);
