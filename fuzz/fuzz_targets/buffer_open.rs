@@ -123,12 +123,37 @@ fn word(image: &[u8], at: usize) -> u32 {
 mod header {
     use super::{BLOCK, word};
 
+    const MAGIC: &[u8] = b"FNDNRING";
     const TAIL_AT: usize = 22;
     const CHAIN_AT: usize = 30;
+    const SEQ_AT: usize = 34;
     /// The CRC, right after the fields.
     const CRC_AT: usize = 42;
     /// The CRC covers the first sector of a header block.
     const SECTOR: usize = 512;
+
+    /// The start of the header block that the open reads: the newer whole one by
+    /// its wrapped seq, the first on a tie, or none when neither is whole.
+    pub(super) fn read(image: &[u8]) -> Option<usize> {
+        let seq = |start: usize| {
+            let bytes = &image[start + SEQ_AT..start + SEQ_AT + 8];
+            u64::from_le_bytes(bytes.try_into().expect("invariant: eight bytes"))
+        };
+        match (whole(image, 0), whole(image, BLOCK)) {
+            (true, true) if seq(BLOCK).wrapping_sub(seq(0)).cast_signed() > 0 => {
+                Some(BLOCK)
+            }
+            (true, _) => Some(0),
+            (false, true) => Some(BLOCK),
+            (false, false) => None,
+        }
+    }
+
+    /// Whether the header block at `start` has the magic and a right CRC.
+    fn whole(image: &[u8], start: usize) -> bool {
+        image[start..].starts_with(MAGIC)
+            && word(image, start + CRC_AT) == crc(image, start)
+    }
 
     /// The tail offset.
     pub(super) fn tail(image: &[u8]) -> u64 {
@@ -154,9 +179,15 @@ mod header {
     pub(super) fn seal(image: &mut [u8], second: bool) {
         let start = if second { BLOCK } else { 0 };
         let at = start + CRC_AT;
-        let crc = crc32c::crc32c(&image[start..at]);
-        let crc = crc32c::crc32c_append(crc, &image[at + 4..start + SECTOR]);
+        let crc = crc(image, start);
         image[at..at + 4].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    /// The CRC of the header block at `start`, over its first sector less the CRC.
+    fn crc(image: &[u8], start: usize) -> u32 {
+        let at = start + CRC_AT;
+        let crc = crc32c::crc32c(&image[start..at]);
+        crc32c::crc32c_append(crc, &image[at + 4..start + SECTOR])
     }
 }
 
@@ -920,10 +951,11 @@ async fn edit(
         .collect();
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");
-    // The open may take the second header, so a way from it counts too.
-    let mut second = image.clone();
-    second.copy_within(BLOCK..2 * BLOCK, 0);
-    let carried = carries(&image) || carries(&second);
+    let carried = header::read(&image).is_some_and(|start| {
+        let mut read = image.clone();
+        read.copy_within(start..start + BLOCK, 0);
+        carries(&read)
+    });
     (Room::walked(&image, edits), carried)
 }
 
