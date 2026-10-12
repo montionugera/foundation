@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use env::shards::Config;
 use env::tasks::Tasks;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
@@ -267,6 +266,8 @@ fn a_name_with_a_nul_starts_and_panicked_keeps_the_whole_name() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use env::shards::Config;
+
     use super::*;
     use crate::common::affinity;
 
