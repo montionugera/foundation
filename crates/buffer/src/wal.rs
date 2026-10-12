@@ -962,7 +962,7 @@ mod tests {
     use super::*;
     use env::files::SECTOR;
     use proptest::prelude::*;
-    use std::{iter, mem};
+    use std::{iter, mem, slice};
 
     const BLOCKS: u64 = 16;
     const AREA: u64 = BLOCKS * 4096;
@@ -2693,7 +2693,15 @@ mod tests {
             (ops, last, kept, damaged, flip, chain, after): Crash,
         ) -> Result<(), TestCaseError> {
             let mut ring = Ring::with(layout);
-            run(&mut ring, &ops);
+            for op in &ops {
+                if matches!(op, Op::Reopen(_)) {
+                    prop_assume!(
+                        !goes_on(&ring, ring.head),
+                        "old bytes at the end of a reopen of the ops"
+                    );
+                }
+                run(&mut ring, slice::from_ref(op));
+            }
             let before = ring.area.clone();
             let head = ring.head;
             let Ok(plan) = ring.append(&last) else {
@@ -2721,7 +2729,7 @@ mod tests {
                 }
                 (false, false) => head,
             };
-            prop_assume!(!goes_on(&ring, end), "old bytes read as a record");
+            prop_assume!(!goes_on(&ring, end), "old bytes at the end of the reopen");
             if !whole || damaged {
                 ring.live.pop_back();
             }
@@ -2730,16 +2738,22 @@ mod tests {
             prop_assume!(found.is_ok());
             prop_assert_eq!(found, Ok(expected.clone()));
             prop_assume!(ring.append(&after).is_ok());
-            prop_assume!(!goes_on(&ring, ring.head), "old bytes read as a record");
+            prop_assume!(
+                !goes_on(&ring, ring.head),
+                "old bytes at the end of the record after"
+            );
             expected.push(after);
             prop_assert_eq!(ring.walk().0, expected);
             Ok(())
         }
 
-        /// Old bytes where the walk ends read as a record of the chain there: the
-        /// old record `[8]` after a reopen with chain 5 after one with chain 5, or
-        /// with the chain value after the old record `[7]`, and a record of the
-        /// chain of a later reopen inside an old body.
+        /// Old bytes where a walk ends read as a record of the chain there. A second
+        /// reopen with chain 5 puts the torn last record over the old record `[7]`,
+        /// sealed with 5, and a reopen with the chain value after `[7]` puts it over
+        /// the old record `[8]`. The chain of a later reopen seals a record in an old
+        /// body. A reopen of the ops reads `[7]` after the second reopen with chain 5,
+        /// and the chain value after `after` seals the old `[8]` after it. A torn
+        /// record after a whole wrap record runs: the walk ends at the area start.
         #[test]
         fn keeps_the_last_record_only_where_old_bytes_end_the_walk() {
             use proptest::strategy::ValueTree;
@@ -2748,6 +2762,7 @@ mod tests {
                     ops.extend([Op::Append(vec![body]), Op::Release(3)]);
                 }
             };
+            let torn = vec![9; ALIGN + 100];
             let mut cases = Vec::new();
             let (_, after_seven) = record::header(5, Kind::Data, [[7u8].as_slice()]);
             for (before, then, last) in [(12, 13, 5), (11, 14, after_seven)] {
@@ -2758,8 +2773,11 @@ mod tests {
                 fill(&mut ops, 8, 1);
                 fill(&mut ops, 6, then);
                 ops.push(Op::Reopen(last));
-                cases.push((ops, 14));
+                cases.push((ops, Some(14), torn.clone(), 7, Some("the reopen")));
             }
+            let mut ops = cases[0].0.clone();
+            ops.push(Op::Reopen(9));
+            cases.push((ops, None, vec![9], 11, Some("a reopen of the ops")));
             let reopen = 0xC0FF_EE11;
             let (forged, _) = record::header(reopen, Kind::Data, [[42u8].as_slice()]);
             let mut old = vec![3; ALIGN + 1];
@@ -2768,23 +2786,36 @@ mod tests {
             let mut ops = vec![Op::Append(old), Op::Release(3)];
             fill(&mut ops, 8, 14);
             ops.push(Op::Reopen(reopen));
-            cases.push((ops, 2));
-            for (ops, block) in cases {
+            cases.push((ops, Some(2), torn.clone(), 7, Some("the reopen")));
+            let mut ops = Vec::new();
+            fill(&mut ops, 8, 20);
+            cases.push((ops, None, vec![9], 0x77D9_AA89, Some("the record after")));
+            let mut ops = Vec::new();
+            fill(&mut ops, 8, 14);
+            cases.push((ops, Some(0), torn, 7, None));
+            for (ops, lost, last, chain, walk) in cases {
                 let mut kept = vec![true; index(AREA) / SECTOR];
-                kept[block * ALIGN / SECTOR] = false;
+                if let Some(block) = lost {
+                    kept[block * ALIGN / SECTOR] = false;
+                }
                 let mut runner = proptest::test_runner::TestRunner::deterministic();
                 let flip = any::<prop::sample::Index>()
                     .new_tree(&mut runner)
                     .expect("an index")
                     .current();
-                let body = vec![9; ALIGN + 100];
-                let crash = (ops, body, kept, false, flip, 7, vec![10]);
+                let crash = (ops, last, kept, false, flip, chain, vec![10]);
                 let result = keeps_the_last_record(layout(), crash);
+                let Some(walk) = walk else {
+                    assert!(result.is_ok(), "the case of a whole wrap: {result:?}");
+                    continue;
+                };
                 let Err(TestCaseError::Reject(reason)) = &result else {
-                    panic!("the case that loses block {block} runs: {result:?}");
+                    panic!("the case of {walk} runs: {result:?}");
                 };
                 assert!(
-                    reason.message().ends_with("old bytes read as a record"),
+                    reason
+                        .message()
+                        .ends_with(&format!("old bytes at the end of {walk}")),
                     "a reject for another reason: {reason}"
                 );
             }
