@@ -36,13 +36,17 @@
   2026-10-10 23:27 UTC:
   https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6103308877, which
   supersedes the parts-list clause of 6102910746; the copied stretch at the front of
-  each stream: `laptop.architect-2`, #2439, 2026-10-12T19:46:48Z:
+  each stream: `laptop.architect-2`, #2439, 2026-10-12 19:46 UTC:
   https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131444028, which
-  supersedes the bound of the sent data in 6064411384, and its free at a reset:
-  `laptop.architect`, #2439, 2026-10-12T19:49:55Z:
-  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131491757). A stream
-  ends at the last of its sends, at a peer stop, at a cancel that resets it, and at the
-  close of its connection by either side (the same 6103308877). Limits: the heap of
-  noq's copies of short writes is more than these bytes: each kept copy keeps its whole
-  allocation, and the queue slot and the shared header of each copy are not counted
-  (#2483).
+  supersedes the bound of the sent data in 6064411384; its free at a reset:
+  `laptop.architect-2`, #2361, 2026-10-11 17:39 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  stream ends at the last of its sends, at a peer stop, at a cancel that resets it, and
+  at the close of its connection by either side (the same 6103308877). Limits: the heap
+  of the sent data that noq keeps is more than these bytes: each kept copy of a short
+  write keeps its whole allocation, and the queue slot of each kept segment, the shared
+  header of each copy, and the owner box of each block that noq keeps a run of are not
+  counted (#2483). (`laptop.architect-2`, #2483, 2026-10-12 19:58 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2483#issuecomment-6131627109, and
+  #2439, 2026-10-12 20:05 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896).
