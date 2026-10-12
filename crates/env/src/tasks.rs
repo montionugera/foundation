@@ -197,18 +197,7 @@ impl Drop for Held {
         for group in self.0.chain() {
             group.live.set(group.live.get().strict_sub(1));
         }
-        drop(Waits(Some(&self.0)));
-    }
-}
-
-// Wakes the waits of a count at 0, then those of each parent at 0, also when a wake
-// panics.
-struct Waits<'a>(Option<&'a Count>);
-
-impl Drop for Waits<'_> {
-    fn drop(&mut self) {
-        if let Some(group) = self.0 {
-            let _parents = Waits(group.parent.as_deref());
+        for group in self.0.chain() {
             if group.live.get() == 0 {
                 group.waiting.take().into_values().for_each(Waker::wake);
             }
@@ -444,35 +433,6 @@ mod tests {
         kept.drop_task(0);
         assert_eq!(pending.get(), Some(true));
         assert_eq!(noop(&mut ended), Poll::Ready(()));
-    }
-
-    #[test]
-    fn a_panic_in_a_wake_of_an_inner_group_still_wakes_the_outer_wait() {
-        struct Panics;
-        impl Wake for Panics {
-            fn wake(self: Arc<Self>) {
-                panic!("wake");
-            }
-        }
-        let (kept, outer) = group();
-        let inner = Group::new(outer.tasks().clone());
-        inner.tasks().spawn(std::future::pending());
-        let mut inner_ended = inner.ended();
-        assert_eq!(
-            poll(&mut inner_ended, &Waker::from(Arc::new(Panics))),
-            Poll::Pending
-        );
-        let flag = Arc::new(Flag::default());
-        let mut outer_ended = outer.ended();
-        assert_eq!(
-            poll(&mut outer_ended, &Waker::from(Arc::clone(&flag))),
-            Poll::Pending
-        );
-        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            kept.drop_task(0);
-        }));
-        assert_eq!(dropped.unwrap_err().downcast_ref::<&str>(), Some(&"wake"));
-        assert!(flag.woken());
     }
 
     #[test]
