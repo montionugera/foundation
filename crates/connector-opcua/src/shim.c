@@ -670,7 +670,8 @@ UA_StatusCode shim_response_result(const void *response) {
 UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
-    /* open62541 takes the timeout of a request from the config, and 0 is 2^32 ms. */
+    /* open62541 takes the timeout hint of a request from the config, and makes 0 2^32
+     * ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the hint 0. */
     UA_ClientConfig *config = UA_Client_getConfig(client);
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
