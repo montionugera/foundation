@@ -141,6 +141,23 @@ fn a_first_start_with_a_reserved_name_fails_and_a_start_with_another_name_runs()
 }
 
 #[test]
+fn a_first_start_with_a_long_name_fails_and_a_start_with_191_bytes_runs() {
+    let mut rig = Rig::new();
+    let long = "a".repeat(192);
+    let failed = format!(
+        "error[node.long]: the name {long} is longer than 191 bytes, the most that \
+         leaves room for the name of each status channel of the node\n\
+         fix: Give a shorter name with `--name`\n"
+    );
+    let output = rig.run(&["start", "--name", &long], b"");
+    assert_eq!(ended(&output), (Some(1), "", failed.as_str()));
+    let name = "a".repeat(191);
+    rig.start_with(&["--name", &name]);
+    let runs = format!("node {name} runs in foundation-data. Stop it with Ctrl-C.\n");
+    assert_eq!(ended(&rig.stop()), (Some(0), runs.as_str(), ""));
+}
+
+#[test]
 fn a_first_start_with_no_name_fails() {
     let rig = Rig::new();
     assert_eq!(

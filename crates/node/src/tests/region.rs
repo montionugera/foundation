@@ -400,38 +400,43 @@ fn a_later_start_keeps_a_stored_member_with_no_status_keys() {
     assert_eq!(stored(&mut sim, &host), Some(given));
 }
 
-/// A node name of 239 bytes leaves no room for `.blob.corruptions` in a name of 255
-/// bytes, so the first start founds no region. A name of 238 bytes starts.
+/// A name of 192 bytes leaves no room for `.<status>` in a name of 255 bytes, so the
+/// start gives `Error::Long`, starts no shard, and keeps no name. A name of 191 bytes
+/// founds the region, and its member holds each status name.
 #[test]
-fn a_first_start_with_a_name_too_long_for_a_status_channel_stops() {
+fn a_name_longer_than_191_bytes_starts_no_shard() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    let name: types::name::Name = "a".repeat(239).parse().unwrap();
+    let long: types::name::Name = "a".repeat(192).parse().unwrap();
+    let (made, starts) = (listed(&mut sim, &host, ""), host.shard_starts());
     let node = Node::start(Config {
         region: Region::Stored,
-        name: name.clone(),
+        name: long.clone(),
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
     });
     assert_eq!(sim.run(), Ok(()));
-    let status: types::name::Name = "blob.corruptions".parse().unwrap();
-    let long = ::mesh::region::Unfit::Long { name, status };
-    let text = format!(
-        "the status channel {}.blob.corruptions is longer than 255 bytes",
-        "a".repeat(239)
+    let error = Error::Long { name: long };
+    assert_eq!(node.join(), Err(error.clone()));
+    assert_eq!(host.shard_starts(), starts);
+    assert_eq!(listed(&mut sim, &host, ""), made, "keeps no name");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the name {} is longer than 191 bytes, the most that leaves room for the \
+             name of each status channel of the node",
+            "a".repeat(192)
+        )
     );
-    assert_eq!(long.to_string(), text);
-    assert_eq!(node.join(), Err(Error::Mesh(::mesh::Error::Member(long))));
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = keyed(&mut sim, 2);
     let node = Node::start(Config {
         region: Region::Stored,
-        name: "a".repeat(238).parse().unwrap(),
+        name: "a".repeat(191).parse().unwrap(),
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(node.join(), Ok(()));
+    keys(&stored(&mut sim, &host).expect("a founding"));
 }
 
 /// A founding that does not read stops the node before it makes `admin.key`.

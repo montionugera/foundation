@@ -67,6 +67,17 @@ pub(crate) const TABLE: [Channel; 5] = [
     },
 ];
 
+/// The most bytes of a name of [`TABLE`], so `<node>.<status>` fits a name for each
+/// node name of at most [`crate::name::MAX_BYTES`].
+pub(crate) const MAX_BYTES: usize = 63;
+const _: () = {
+    let mut i = 0;
+    while i < TABLE.len() {
+        assert!(TABLE[i].name.len() <= MAX_BYTES, "a status name fits");
+        i += 1;
+    }
+};
+
 /// The name of each status channel of [`TABLE`], under the node's name. A node gives
 /// these in its founding and in its join request.
 pub(crate) fn names() -> BTreeSet<Name> {

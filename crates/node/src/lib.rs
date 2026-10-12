@@ -89,10 +89,10 @@ pub struct Config<M> {
     /// The node's name. The first start on a data directory keeps it in the file
     /// `name`. Get it with [`name`] before the start. A later start with another name
     /// than the stored one fails with [`Error::Renamed`], and a name with a reserved
-    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores a
-    /// founding with the node's card, that card holds the name too, and a start whose
-    /// file `name` is gone writes it again from the card. [`Node::join`] gives the
-    /// first failure.
+    /// segment ([`Error::Reserved`]) or of more than 191 bytes ([`Error::Long`]) starts
+    /// no shard. Once the data directory stores a founding with the node's card, that
+    /// card holds the name too, and a start whose file `name` is gone writes it again
+    /// from the card. [`Node::join`] gives the first failure.
     pub name: types::name::Name,
 }
 
@@ -212,9 +212,10 @@ impl Node {
     /// a shard's part of the pool budget gives a reservation of more than `usize::MAX`
     /// bytes ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
     /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
-    /// segment ([`Error::Reserved`]). A port that does not bind stops the node after
-    /// shard 0 claimed the data directory, and no buffer opens ([`Error::Port`]). Any
-    /// failure stops the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// segment ([`Error::Reserved`]) or more than 191 bytes ([`Error::Long`]). A port
+    /// that does not bind stops the node after shard 0 claimed the data directory, and
+    /// no buffer opens ([`Error::Port`]). Any failure stops the node, and
+    /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -226,6 +227,10 @@ impl Node {
         if config.name.reserved() {
             let name = config.name;
             return Self::failed(Error::Reserved { name }, regional);
+        }
+        if config.name.as_str().len() > name::MAX_BYTES {
+            let name = config.name;
+            return Self::failed(Error::Long { name }, regional);
         }
         if unreachable(config.listen.ip()) {
             let listen = config.listen;
@@ -412,25 +417,26 @@ impl Node {
     /// # Errors
     ///
     /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
-    /// [`Error::Listen`] for a [`Config::listen`] with a multicast IP or the IPv4
-    /// broadcast IP, [`Error::Disk`] for a disk budget that holds no ring on each
-    /// shard, [`Error::Pool`] for a part of the pool budget that needs a reservation of
-    /// more than `usize::MAX` bytes, [`Error::Start`] for a shard that could not start
-    /// or pin, or [`Error::Memory`] for a shard with no memory, else [`Error::Shards`]
-    /// or [`Error::Directory`] for a data directory that shard 0 could not claim, else
-    /// [`Error::Name`], [`Error::Renamed`], [`Error::Mesh`], [`Error::Key`], or
-    /// [`Error::Directory`] for a stored name that it could not read or a name it could
-    /// not keep, else [`Error::Port`] for a port that did not bind, else
-    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
-    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
-    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
-    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
-    /// [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored region or a
-    /// mesh that did not open, [`Error::Directory`] for a file `address` that shard 0
-    /// could not write, or [`Error::Transport`] or [`Error::Group`], whichever the node
-    /// sees stop first, else [`Error::Directory`] for a file `address` that shard 0
-    /// could not write empty, else [`Error::Panicked`] for the first shard by core that
-    /// panicked. Any failed shard stops the node.
+    /// [`Error::Long`] for a name of more than 191 bytes, [`Error::Listen`] for a
+    /// [`Config::listen`] with a multicast IP or the IPv4 broadcast IP, [`Error::Disk`]
+    /// for a disk budget that holds no ring on each shard, [`Error::Pool`] for a part
+    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
+    /// data directory that shard 0 could not claim, else [`Error::Name`],
+    /// [`Error::Renamed`], [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for
+    /// a stored name that it could not read or a name it could not keep, else
+    /// [`Error::Port`] for a port that did not bind, else [`Error::Buffer`] for the
+    /// first shard by core whose buffer, or the home over it, did not open,
+    /// [`Error::Budget`] or [`Error::Directory`] for a file `budget` that shard 0 could
+    /// not read or write, [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for
+    /// a key file that shard 0 could not read or write, [`Error::Blob`] for a chunk
+    /// store or [`Error::Mesh`] for a stored region or a mesh that did not open,
+    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
+    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
+    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
+    /// failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -1384,6 +1390,13 @@ pub enum Error {
         /// The name the start gave.
         name: types::name::Name,
     },
+    /// The start gave `name`, which is longer than 191 bytes: the most that leaves room
+    /// for the name of each status channel of a node, `<name>.<status>`. No shard
+    /// started, and the data directory keeps no such name.
+    Long {
+        /// The name the start gave.
+        name: types::name::Name,
+    },
     /// The file `budget` in the data directory does not hold budgets that a node
     /// wrote. The node does not write over it.
     Budget,
@@ -1415,6 +1428,7 @@ impl Error {
             | Self::Renamed { .. }
             | Self::Unnamed
             | Self::Reserved { .. }
+            | Self::Long { .. }
             | Self::Budget => None,
         }
     }
@@ -1492,6 +1506,12 @@ impl fmt::Display for Error {
                 f,
                 "the name {name} has a segment that starts with `@`, which is reserved \
                  for Foundation; give another name"
+            ),
+            Self::Long { name } => write!(
+                f,
+                "the name {name} is longer than {} bytes, the most that leaves room for \
+                 the name of each status channel of the node",
+                name::MAX_BYTES
             ),
             Self::Budget => f.write_str(
                 "the file `budget` in the data directory does not hold budgets that a \
