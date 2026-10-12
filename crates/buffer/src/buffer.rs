@@ -394,9 +394,10 @@ impl Buffer {
     /// [`Error::Files`], [`Error::Pool`], [`Error::Length`], [`Error::Missing`],
     /// [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`], [`Error::Unaligned`],
     /// and [`Error::Invalid`] as each says. [`Error::Full`] when the ring has no block
-    /// for its restart record. [`Error::Pool`] with `TooLarge` when a recovered entry
-    /// is over the largest block of `pool`, which a read must give it in: a larger pool
-    /// must open the ring.
+    /// for its restart record. [`Error::Pool`] when `pool` cannot hold the blocks of
+    /// an empty entry in two parts beside the blocks of a group, and with `TooLarge`
+    /// when a recovered entry is over the largest block of `pool`, which a read must
+    /// give it in: a larger pool must open the ring.
     ///
     /// # Panics
     ///
@@ -468,9 +469,10 @@ impl Buffer {
         &self.shared.pool
     }
 
-    /// The most bytes of parts, joined, that one entry may have ([`Limit::Block`]). An
-    /// entry at or under it, in one part or two, appends when no other block holds the
-    /// pool. It is at most the largest block of [`Buffer::pool`].
+    /// The most bytes of parts, joined, that one entry may have ([`Limit::Block`]). The
+    /// pool has room for an entry at or under it, in one part or two, when it commits
+    /// only the bytes of that entry's parts. It is at most the largest block of
+    /// [`Buffer::pool`].
     #[must_use]
     pub fn block_max(&self) -> usize {
         self.shared.block_max

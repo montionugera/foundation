@@ -4792,6 +4792,42 @@ fn an_entry_of_block_max_made_from_the_pool_of_the_buffer_appends() {
     });
 }
 
+/// The limit of `block_max`: a free block of a size with a block in use keeps its
+/// budget, so an entry at `block_max` gets `Exhausted` when the pool keeps a second
+/// block of the size of a part. After two purges the pool commits nothing, and the
+/// same entry appends.
+#[test]
+fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
+    run(206, |mut shard| async move {
+        let budget = u64::try_from(block::footprint(1 << 17)).expect("fits in u64");
+        let config = block::Config::new(budget).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let mut slots = Slots::new();
+        let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+        let pool = buffer.pool();
+        pool.purge();
+        pool.purge();
+        let lens = [57_345, buffer.block_max() - 57_345];
+        let a = slots.index(key(1));
+        let parts = parts_of(pool, &lens);
+        drop(pool.alloc(lens[1]).expect("a second block of the size"));
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        let exhausted = block::Error::Exhausted {
+            requested: 52_186,
+            available: 57_216,
+        };
+        assert_eq!(appended, Err(Rejected::Pool(exhausted)));
+        pool.purge();
+        pool.purge();
+        assert_eq!(pool.committed(), 0);
+        let parts = parts_of(pool, &lens);
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        assert_eq!(appended, Ok(()));
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+    });
+}
+
 /// An open fails with `Pool` when its pool cannot hold the blocks of an empty entry
 /// in two parts beside the blocks of a group.
 #[test]
@@ -4815,9 +4851,9 @@ fn an_open_fails_on_a_pool_that_holds_no_entry() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// On a fresh pool of any budget, an entry of `block_max` bytes in any split
-    /// into one or two parts made from that pool appends, and one byte more gets
-    /// `Limit::Block`.
+    /// On a pool of any budget that commits nothing before it takes the entry's
+    /// parts, an entry of `block_max` bytes in any split into one or two parts made
+    /// from that pool appends, and one byte more gets `Limit::Block`.
     #[test]
     fn block_max_bounds_an_entry_in_any_split(
         seed in any::<u64>(),
