@@ -59,7 +59,8 @@ impl Paths {
     }
 
     /// Writes `bytes` as the file at `path`, whole or not at all, in place of a file
-    /// that is there.
+    /// that is there. A link, a device, or a pipe at `path` takes the bytes in place,
+    /// so a failure or a second write at the same time can leave a part of them.
     ///
     /// # Errors
     ///
