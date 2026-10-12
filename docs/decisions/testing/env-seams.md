@@ -26,8 +26,10 @@
   Amended (2026-10-12, #2214): a driver of `tasks` does not count tasks to wait for
   them to end, and a part that waits for its tasks uses `Group`. A driver of a test may
   count the tasks it passes on, to check them. Supersedes "a driver of `tasks` that
-  counts tasks passes each task to one of theirs" of the #2063 amendment. Approval owed
-  of `laptop.architect-2`.
+  counts tasks passes each task to one of theirs" of the #2063 amendment
+  (https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6073808019).
+  `laptop.architect-2` (2026-10-12T23:44:03Z):
+  https://github.com/synnaxlabs/foundation/pull/2496#issuecomment-6134761989.
   `clock::Clock`: monotonic time as `types::time::Monotonic`, and a `Sleep` future that
   resets without an allocation.
   `wall::Wall`: the OS wall clock, which only `clock` reads (a lint).
