@@ -72,18 +72,10 @@ changed code line of a `.rs` file in the copy (trimmed, not empty and not starti
 `const`, a `use` line, or a field, gets a hand mutant: the line as the release has it,
 or no line when the release has none. The list names, for each hand mutant, the test
 outside the copy that kills it, or the build error that it gives. A changed code line
-with neither is a finding. A line that no crate of the workspace reaches can name a test
-of the copy in place of a test outside it, with the reason that no crate reaches it; the
-PR runs that test with the mutant, as the breaker does. When a crate of the workspace
-first reaches the line, such as `transport` with 0-RTT, a test outside the copy takes
-its place. Until #2474 runs the tests of each Rust copy on a PR that changes it, a later
-change of the copy that breaks one of these lines fails no check. Decided by
-laptop.architect-2, 2026-10-12T18:34:13Z:
-https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6130288471. The
-`breaker` of the PR runs each mutant on the list, and each hand mutant. The root
-`Cargo.toml` excludes `.claude`: cargo skips a workspace that excludes the path and
-looks further up, so cargo in a copy inside an agent worktree finds no workspace once
-the `Cargo.toml` of the main checkout holds this exclude.
+with neither is a finding. The `breaker` of the PR runs each mutant on the list, and
+each hand mutant. The root `Cargo.toml` excludes `.claude`: cargo skips a workspace that
+excludes the path and looks further up, so cargo in a copy inside an agent worktree
+finds no workspace once the `Cargo.toml` of the main checkout holds this exclude.
 Decided by laptop.architect-2, 2026-10-08T11:36:09Z:
 https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6058989337. Supersedes
 (b) of https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6058668724 and
@@ -95,9 +87,20 @@ https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6059938562.
 The hand mutant rule: decided by laptop.architect-2, 2026-10-08T12:05:01Z:
 https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6059458510. Supersedes
 the empty-list sentence of
-https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6058989337. A copy of
-a Rust crate is a path package, which `cargo deny` does not check against advisories,
-so the `Advisories of each patched release` step of the `deny` job in
+https://github.com/synnaxlabs/foundation/pull/1864#issuecomment-6058989337. The
+copy-test rule: decided by laptop.architect-2, 2026-10-12T18:50:37Z:
+https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6130553457. Supersedes
+https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6130288471. A line that
+no crate of the workspace reaches, or whose only effect stays in the inner state of the
+copy and changes nothing that a crate of the workspace gets from it (such as a queue
+entry that a later step skips), can name a test of the copy in place of a test outside
+it, with the reason; the PR runs that test with the mutant, as the breaker does. When a
+crate of the workspace first reaches such a line, such as `transport` with 0-RTT, or
+first gets the effect of such a line, a test outside the copy takes its place. Until
+#2474 runs the tests of each Rust copy on a PR that changes it, a later change of the
+copy that breaks one of these lines fails no check. A copy of a Rust crate is a path
+package, which `cargo deny` does not check against advisories, so the `Advisories of
+each patched release` step of the `deny` job in
 `.github/workflows/ci.yaml` checks its release (#1867).
 
 | Crate | Release | Change | Why |
