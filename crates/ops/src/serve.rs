@@ -227,8 +227,6 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Err
     // The homes list each placed index, so a home with no grant drops with no error.
     plan.homes
         .retain(|index, _| check.refused([index]).is_none());
-    let (pointer, applied) = spec.newest()?;
-    let (mesh, kinds) = (&node.mesh, &node.kinds);
-    let effect = apply::apply(plan, pointer, &applied, mesh, kinds, &node.key).await?;
+    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
     Ok(line(&Done { output: &effect }))
 }
