@@ -134,8 +134,8 @@
   of #1744, by `laptop.architect-2` (2026-10-08T06:01:36Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053458318), which
   revision 3 moves to PR 2 (2026-10-10T03:30:54Z,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). That
-  item gives an example and no order rule. The order of the tree key and the field
-  `key` wait for the ruling of `laptop.architect-2` on item 2 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6128358513 and on
-  round 1 of #2466.
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483). The
+  order of the tree key is the ruling of `laptop.architect-2` (2026-10-12T18:27:00Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130170904), which
+  supersedes the order of the example in item 4. The field `key` waits for the approval
+  of `laptop.architect-2` on round 1 of #2466.
