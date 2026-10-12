@@ -78,10 +78,10 @@ fn config(block: &Block) -> Document {
 pub(crate) struct Writes {
     /// The channels that its kind writes.
     channels: Vec<Name>,
-    /// The channels that it implies, by name.
-    implied: Vec<(Name, Kind<Name>)>,
     /// The status index that it implies.
     index: Name,
+    /// The status data channels that it implies, by name.
+    data: Vec<(Name, Kind<Name>)>,
     /// The span of the connector's label.
     label: Option<Span>,
 }
@@ -89,8 +89,18 @@ pub(crate) struct Writes {
 impl Writes {
     /// Each channel that it writes: those of its kind, then those it implies.
     pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
-        let implied = self.implied.iter().map(|(name, _)| name);
+        let implied = self.implied().map(|(name, _)| name);
         self.channels.iter().chain(implied)
+    }
+
+    /// Each channel that it implies, with its kind: the status index, then the data.
+    fn implied(&self) -> impl Iterator<Item = (&Name, Kind<Name>)> {
+        let index = Kind::Index {
+            error: None,
+            control: None,
+        };
+        let data = self.data.iter().map(|(name, kind)| (name, kind.clone()));
+        std::iter::once((&self.index, index)).chain(data)
     }
 
     /// The status index that it implies.
@@ -125,20 +135,16 @@ pub(crate) fn writes(
             "Shorten the name of the connector".into(),
         )
     })?;
-    let index = Kind::Index {
-        error: None,
-        control: None,
-    };
     let data = status.into_iter().map(|(name, sample)| {
         let data = Data::new(time.clone(), None, DataType::Sample(sample), None);
         let data = data.expect("invariant: a status channel has no unit");
         (name, Kind::Data(data))
     });
-    let implied = std::iter::once((time.clone(), index)).chain(data).collect();
+    let data = data.collect();
     Ok(Writes {
         channels: channels.writes,
-        implied,
         index: time,
+        data,
         label: at,
     })
 }
@@ -149,10 +155,10 @@ pub(crate) fn writes(
 pub(crate) fn imply(found: &mut Found<'_>) {
     for (connector, writes) in &found.writes {
         let at = writes.label;
-        for (channel, kind) in &writes.implied {
+        for (channel, kind) in writes.implied() {
             let lower = channel.as_str().to_ascii_lowercase();
             let Some(labels) = found.labels.get(lower.as_str()) else {
-                let definition = Definition::Channel(kind.clone());
+                let definition = Definition::Channel(kind);
                 let entry = Entry {
                     definition,
                     label_span: at,
@@ -184,7 +190,7 @@ pub(crate) fn imply(found: &mut Found<'_>) {
 pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic> {
     let mut implied = BTreeMap::new();
     for (connector, writes) in writes {
-        for (channel, _) in &writes.implied {
+        for (channel, _) in writes.implied() {
             let lower = channel.as_str().to_ascii_lowercase();
             let channel = Implied {
                 connector,
@@ -220,7 +226,7 @@ pub(crate) fn implied_definitions(
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for (connector, writes) in writes {
-        for (channel, kind) in &writes.implied {
+        for (channel, kind) in writes.implied() {
             let held = match definitions.get(channel) {
                 Some(definition::Definition::Channel(stored)) => {
                     // An edge to a key that is no channel is `None`, so it differs.
@@ -228,7 +234,7 @@ pub(crate) fn implied_definitions(
                         .kind
                         .clone()
                         .map(|key| names.get(&key).copied().cloned());
-                    edges == kind.clone().map(Some)
+                    edges == kind.map(Some)
                 }
                 _ => false,
             };
