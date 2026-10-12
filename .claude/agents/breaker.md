@@ -28,10 +28,12 @@ and three blocks in a row stop the session. Run each Bash command alone, with no
 chain and no shell variable. The permission check refuses a command when it cannot prove
 that the command stays inside the worktree.
 
-Find an input, an order of events, or a fault under which the code does the wrong
-thing: an edge value, an overflow, a duplicate, a reorder, a crash midway, a full
-buffer, a lost or late message, two threads at once. Write it as a test in the PR's
-crate, in your worktree, and run it. Never switch to a branch.
+Find an input, an order of events, or a fault under which the code does the wrong thing:
+an edge value, an overflow, a duplicate, a reorder, a crash midway, a full buffer, a
+lost or late message, two threads at once. In the sim, the value of `sim::Config::seed`
+sets the order of the ready tasks, so to find a reorder of two tasks that one event
+wakes, run the test over 32 values or more. Write it as a test in the PR's crate, in
+your worktree, and run it. Never switch to a branch.
 
 - The test fails against the PR: report it. Give the test code, the failure output,
   and one line on what the code does wrong.
