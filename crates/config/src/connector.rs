@@ -91,12 +91,13 @@ impl Writes {
         self.channels.iter().chain(implied)
     }
 
-    /// Each index that it implies.
-    pub(crate) fn indexes(&self) -> impl Iterator<Item = &Name> {
-        self.implied.iter().filter_map(|(name, kind)| match kind {
-            Kind::Index { .. } => Some(name),
-            Kind::Data(_) => None,
-        })
+    /// The status index that it implies.
+    pub(crate) fn index(&self) -> &Name {
+        let (time, _) = self
+            .implied
+            .first()
+            .expect("invariant: `writes` implies `time`");
+        time
     }
 }
 

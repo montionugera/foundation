@@ -556,12 +556,7 @@ fn indexes<'f>(
     let implied: BTreeMap<_, _> = model
         .connectors
         .iter()
-        .flat_map(|connector| {
-            connector
-                .writes
-                .indexes()
-                .map(move |index| (index, connector))
-        })
+        .map(|connector| (connector.writes.index(), connector))
         .collect();
     let mut indexes = BTreeMap::new();
     for &name in &model.indexes {
