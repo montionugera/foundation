@@ -22,11 +22,11 @@ fn a_read_that_spans_a_first_start_gives_the_name() {
     let (shards, threads) = (os::shards().unwrap(), os::threads().unwrap());
     let io = Rc::new(RefCell::new(Vec::new()));
     let (holds, held) = mpsc::channel();
-    let free_of_hold = Arc::new(AtomicBool::new(false));
+    let released = Arc::new(AtomicBool::new(false));
     let disk = Held {
         disk: files(&rig.dir, &threads, &io),
         holds,
-        free: Arc::clone(&free_of_hold),
+        released: Arc::clone(&released),
     };
     let (reads, read) = mpsc::channel();
     let reader = start(&shards, "reader", move |_| async move {
@@ -44,7 +44,7 @@ fn a_read_that_spans_a_first_start_gives_the_name() {
     wait(&serving);
     node.stop();
     assert_eq!(node.join(), Ok(()));
-    free_of_hold.store(true, Ordering::Release);
+    released.store(true, Ordering::Release);
     assert_eq!(wait(&read), Ok("edge".parse().unwrap()));
     reader.join().unwrap();
     assert_eq!(held.try_recv(), Err(mpsc::TryRecvError::Disconnected));
@@ -53,12 +53,12 @@ fn a_read_that_spans_a_first_start_gives_the_name() {
     }
 }
 
-/// A disk whose list of the directory `mesh` waits until `free` is set. Sends on
+/// A disk whose list of the directory `mesh` waits until `released` is set. Sends on
 /// `holds` at each such list.
 struct Held {
     disk: os::Disk,
     holds: mpsc::Sender<()>,
-    free: Arc<AtomicBool>,
+    released: Arc<AtomicBool>,
 }
 
 impl Driver for Held {
@@ -74,7 +74,7 @@ impl Driver for Held {
         Box::pin(async move {
             if dir == Path::new("mesh") {
                 self.holds.send(()).unwrap();
-                while !self.free.load(Ordering::Acquire) {
+                while !self.released.load(Ordering::Acquire) {
                     os::clock().sleep(Span::from_nanos(1_000_000)).await;
                 }
             }
