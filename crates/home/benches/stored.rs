@@ -10,8 +10,7 @@ use std::sync::Arc;
 use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::channel;
-use types::frame::key_set::{Group, Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
@@ -45,14 +44,7 @@ impl fmt::Display for Case {
 
 impl Case {
     fn new(name: &'static str, series: usize, types: &[Type]) -> Self {
-        let key = |n: usize| channel::Key::from_u128(u128::try_from(n).expect("few"));
-        let data: Vec<_> = (1..series)
-            .map(|n| (key(n), types[(n - 1) % types.len()]))
-            .collect();
-        let set = Interner::new().intern(&[Group {
-            index: key(0),
-            data: &data,
-        }]);
+        let set = common::set(series, types);
         Self { name, series, set }
     }
 
