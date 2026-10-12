@@ -808,6 +808,103 @@ fn refuses_a_connector_over_a_channel_of_a_subject_with_no_admin_on_its_key() {
     });
 }
 
+/// A connector under `site` that reads `yard.temp`, with six status channels.
+const PLC: &str = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                   read \"yard.temp\" { node_id = \"x\" }\n}\n";
+
+/// A plan file that holds the change `edit` of each stored status channel of
+/// `site.plc` for which `edit` gives true, made from a plan of `@admin` with
+/// `people`. Each change, before `edit`, makes its channel an index.
+async fn status_plan(
+    node: &Node,
+    mesh: &mesh::Mesh,
+    people: &str,
+    edit: impl Fn(&mut config::plan::Change, &Name) -> bool,
+) -> Vec<u8> {
+    let index = format!("{PLC}channel \"site.t\" {{ kind = \"index\" }}\n");
+    let files = [
+        ("people.hcl", people),
+        ("yard.hcl", YARD),
+        ("p.hcl", &*index),
+    ];
+    let plan = planned(node, &files).await;
+    let mut plan = config::plan::Plan::decode(&plan).expect("a plan");
+    let template = plan.changes.remove(&name("site.t")).expect("a change");
+    let spec = mesh.spec().await.expect("a spec");
+    for (channel, definition) in spec.definitions.iter() {
+        if channel.as_str().starts_with("site.plc.status.") {
+            let mut change = template.clone();
+            change.old = Some(types::digest::Digest::of(&definition.encode()));
+            if edit(&mut change, channel) {
+                plan.changes.insert(channel.clone(), change);
+            }
+        }
+    }
+    plan.homes.clear();
+    plan.encode()
+}
+
+/// The first line of the reply of `config.implied-channel` for each status channel
+/// of `site.plc` that `last` names by its last segment.
+fn unheld(last: &[&str]) -> Value {
+    let errors: Vec<Value> = last
+        .iter()
+        .map(|last| {
+            let message = format!(
+                "the connector `site.plc` implies the channel \
+                 `site.plc.status.{last}`, so the spec must hold it as the connector \
+                 gives it"
+            );
+            json!({
+                "code": "config.implied-channel",
+                "message": message,
+                "fix": "Make the plan file with `plan`",
+                "notes": [],
+            })
+        })
+        .collect();
+    json!({ "errors": errors, "status": 2 })
+}
+
+#[test]
+fn refuses_an_apply_that_removes_the_status_channels_of_a_connector() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let plan = status_plan(&node, &mesh, &people, |change, _| {
+            change.new = None;
+            true
+        })
+        .await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let all = ["time", "state", "class", "restarts", "backoff", "error"];
+        assert_eq!(split(&reply), (unheld(&all), &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
+#[test]
+fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let plan = status_plan(&node, &mesh, &people, |_, channel| {
+            *channel != name("site.plc.status.time")
+        })
+        .await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let data = ["state", "class", "restarts", "backoff", "error"];
+        assert_eq!(split(&reply), (unheld(&data), &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
 /// A hand-made plan can remove a name that the spec does not hold, and the check
 /// refuses it before `Plan::definitions` reads the spec.
 #[test]
