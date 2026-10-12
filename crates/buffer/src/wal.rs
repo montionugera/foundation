@@ -643,9 +643,9 @@ pub(crate) enum Step<'a> {
 }
 
 /// A record that follows the chain but that this version cannot read: a kind it
-/// does not know, a wrap, restart, or carry record of the wrong shape, or a record that
-/// ends past the end of the offsets. The ring is from another version or a defect
-/// wrote it.
+/// does not know, a body over `body_max`, a wrap, restart, or carry record of the
+/// wrong shape, or a record that ends past the end of the offsets. The ring is from
+/// another version or a defect wrote it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Invalid {
     pub(crate) offset: u64,
