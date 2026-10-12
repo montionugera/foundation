@@ -498,7 +498,7 @@ mod tests {
         let min = need_of_every_split(Layout::ENTRY_MAX_MIN);
         assert_eq!(block_max(&pool(min - 1)), Err(min));
         assert_eq!(block_max(&pool(min)), Ok(4_096));
-        assert_eq!(block_max(&pool(4_096)), Err(min));
+        assert_eq!(block_max(&pool(1_000)), Err(min));
     }
 
     proptest! {
