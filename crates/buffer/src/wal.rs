@@ -2677,8 +2677,9 @@ mod tests {
         }
 
         /// A crash leaves any subset of the sectors of the last write. The record
-        /// is live when every sector it wrote survives; lost padding does not
-        /// count. A flipped bit in it drops it.
+        /// is live when every byte it wrote is on disk, also from a lost sector
+        /// whose old byte was the same; lost padding does not count. A flipped
+        /// bit in it drops it.
         fn keeps_the_last_record(
             layout: Layout,
             (ops, last, kept, damaged, flip, chain, after): Crash,
@@ -2691,24 +2692,23 @@ mod tests {
             let Ok(plan) = ring.append(&last) else {
                 return Err(TestCaseError::reject("the ring is full"));
             };
-            let mut sectors = Vec::new();
-            for (place, len) in plan
-                .wrap
-                .map(|place| (place, HEADER_LEN))
-                .into_iter()
-                .chain([(plan.place, HEADER_LEN + last.len())])
-            {
-                let first = index(place) / SECTOR;
-                sectors.extend(first..=(index(place) + len - 1) / SECTOR);
-            }
+            let written = ring.area.clone();
             for (sector, _) in kept.iter().enumerate().filter(|(_, kept)| !**kept) {
                 let bytes = sector * SECTOR..(sector + 1) * SECTOR;
                 ring.area[bytes.clone()].copy_from_slice(&before[bytes]);
             }
-            let whole = sectors.iter().all(|sector| kept[*sector]);
+            let whole = plan
+                .wrap
+                .map(|place| (place, HEADER_LEN))
+                .into_iter()
+                .chain([(plan.place, HEADER_LEN + last.len())])
+                .all(|(place, len)| {
+                    let bytes = index(place)..index(place) + len;
+                    ring.area[bytes.clone()] == written[bytes]
+                });
             if whole && damaged {
-                let written = HEADER_LEN + last.len();
-                ring.area[index(plan.place) + flip.index(written)] ^= 1;
+                let len = HEADER_LEN + last.len();
+                ring.area[index(plan.place) + flip.index(len)] ^= 1;
             }
             if !whole || damaged {
                 ring.live.pop_back();
@@ -2786,14 +2786,14 @@ mod tests {
             }
 
             #[test]
-            fn keeps_a_last_record_only_when_its_sectors_survive(
+            fn keeps_a_last_record_only_when_its_bytes_survive(
                 crash in crash(layout()),
             ) {
                 keeps_the_last_record(layout(), crash)?;
             }
 
             #[test]
-            fn keeps_a_last_record_only_when_its_sectors_survive_on_the_recorded_ring(
+            fn keeps_a_last_record_only_when_its_bytes_survive_on_the_recorded_ring(
                 crash in crash(recorded()),
             ) {
                 keeps_the_last_record(recorded(), crash)?;
