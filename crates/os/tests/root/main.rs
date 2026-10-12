@@ -165,6 +165,10 @@ fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
 /// A child that another thread starts while a create fails holds a copy of the file.
 #[test]
 #[expect(unsafe_code, reason = "a hook before exec is an OS call")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the files thread waits for the child of the filter"
+)]
 fn a_failed_create_keeps_no_blocks_while_a_child_holds_the_file() {
     use std::io::{Read, Write};
     use std::os::unix::process::CommandExt;
