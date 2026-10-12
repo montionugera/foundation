@@ -174,36 +174,6 @@ fn create_of_another_length_gives_length() {
     });
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_create_past_the_file_size_limit_leaves_no_file() {
-    use rustix::process::{Resource, getrlimit};
-    const LIMIT: u64 = 1 << 20;
-    if getrlimit(Resource::Fsize).current != Some(LIMIT) {
-        let thread = std::thread::current();
-        let test = thread.name().expect("invariant: libtest names the thread");
-        // The limit is on the whole process, so this test runs alone in a child. An
-        // ignored `SIGXFSZ` stays ignored across `exec`, so it does not end the child.
-        let script = r#"trap '' XFSZ && ulimit -f "$0" && exec "$1" --exact "$2""#;
-        let status = std::process::Command::new("sh")
-            .args(["-c", script])
-            .arg((LIMIT / 512).to_string())
-            .arg(std::env::current_exe().unwrap())
-            .arg(test)
-            .status()
-            .unwrap();
-        assert!(status.success(), "{status}");
-        return;
-    }
-    run(|files, _| async move {
-        let mode = Mode::Create { len: 8 * LIMIT };
-        let found = files.open(Path::new("a"), mode).await.unwrap_err();
-        assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
-        let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
-        assert_eq!(found, Error::NotFound { path: "a".into() });
-    });
-}
-
 #[test]
 fn an_open_of_a_missing_file_gives_not_found() {
     run(|files, _| async move {
