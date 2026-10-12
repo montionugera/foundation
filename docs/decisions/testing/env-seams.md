@@ -483,3 +483,15 @@
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545, and, for
   a directory on another device than its holder, the sync of the holder at each call of
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6087061440.
+  Amended (2026-10-12T16:30:01Z, #1930): in `os`, a drop stops a file call until the I/O
+  queue takes the call. The queue takes it at a poll, when it has room and the task has
+  Tokio budget left, so a call that was polled can have no effect while the queue has
+  room. `os` keeps this: `env::files` gives a dropped call both outcomes. #1534 makes
+  `sim` give both for each dropped call that has not ended, by a coin, also after a
+  later call of the node ended. Lost: the send outside the Tokio budget, which closes
+  one of two ways to the same outcome, so `sim` must give it in each case, and which
+  ties the rule of `sim` to the queue of one driver; a test in `os` of the poll with no
+  budget, which pins an outcome that the contract only permits. Supersedes rule 2 of
+  https://github.com/synnaxlabs/foundation/pull/1462#issuecomment-6043752778. Decided by
+  `laptop.architect-2` (2026-10-12T16:30:01Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128368790).

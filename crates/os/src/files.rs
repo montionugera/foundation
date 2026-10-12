@@ -242,10 +242,11 @@ impl Queue {
         Ok((Self(jobs), thread))
     }
 
-    /// Runs `call` after every call that reached the queue before it. The future first
-    /// waits for room in the queue; after that, `call` runs also when the future drops.
-    /// This order makes a write open, a remove, a rename, a list, and a `free` wait for
-    /// each call that a drop left to run, as `env::files` requires.
+    /// Runs `call` after every call that the queue took before it. The queue takes
+    /// `call` when it has room and the task has Tokio budget left. After that, `call`
+    /// runs also when the future drops; before that, a drop stops it. This order makes
+    /// a write open, a remove, a rename, a list, and a `free` wait for each call that a
+    /// drop left to run, as `env::files` requires.
     ///
     /// # Panics
     ///
