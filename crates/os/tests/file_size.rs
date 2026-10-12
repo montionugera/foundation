@@ -1,5 +1,5 @@
-//! A create past the file size limit of the process. The limit is on the whole
-//! process, so this test runs in a test binary of its own.
+//! A create past the file size limit of the process. The limit and the action of
+//! `SIGXFSZ` are on the whole process, so this test runs in a test binary of its own.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
