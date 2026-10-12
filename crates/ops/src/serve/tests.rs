@@ -686,9 +686,12 @@ fn refuses_a_policy_of_a_subject_with_no_admin_on_its_key() {
             "retention \"site.wipe\" {\n  select = \"yard.*\"\n  keep = \"0s\"\n}\n";
         let away = "placement \"site.away\" {\n  select = \"yard.time\"\n  home = \
                     \"edge\"\n}\n";
+        let big =
+            "node_settings \"site.big\" {\n  select = \"**\"\n  disk = \"1GiB\"\n}\n";
         let cases = [
             (wipe, "`site.wipe.@retention`"),
             (away, "`site.away.@placement`"),
+            (big, "`site.big.@node_settings`"),
         ];
         for (text, key) in cases {
             let files = [
@@ -813,6 +816,27 @@ fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
             let expected = denied("sam", "apply", on);
             assert_eq!(split(&reply), (expected, &b""[..]), "{text}");
         }
+        assert_eq!(mesh.pointer().version, version);
+
+        // A change of a channel that `sam` may apply.
+        let own = SITE.replace("site.temp", "site.x");
+        let files = [
+            ("people.hcl", &*people),
+            ("yard.hcl", YARD),
+            ("s.hcl", &*own),
+        ];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let moved = own.replace("index = \"site.time\"", "index = \"yard.time\"");
+        let files = [
+            ("people.hcl", &*people),
+            ("yard.hcl", YARD),
+            ("s.hcl", &*moved),
+        ];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let expected = denied("sam", "apply", "`yard.time`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
         assert_eq!(mesh.pointer().version, version);
     });
 }
