@@ -851,6 +851,50 @@ fn a_close_whose_unlock_fails_closes_the_file() {
     crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
+/// An unlock that gives `EBADF` is a broken invariant: the close panics the I/O thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
+            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EBADF)
+        });
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// A read handle holds no lock, so its close sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_close_of_a_read_handle_sends_no_unlock() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.0.join("data")).unwrap();
+    std::fs::write(scratch.0.join("data/a"), b"").unwrap();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        crate::seccomp::answer_calls(&[libc::SYS_flock], |data, _| {
+            (data.args[1] == libc::LOCK_UN as u64).then_some(libc::EBADF)
+        });
+        let (files, thread) = files(&dir, "files");
+        let read = files.open(Path::new("a"), Mode::Read).await.unwrap();
+        read.close().await;
+        drop(files);
+        thread.join().unwrap();
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
 /// A remove that drops while it waits for room in the full queue of the I/O thread
 /// never runs.
 #[test]
