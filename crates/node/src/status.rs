@@ -67,7 +67,9 @@ pub(crate) const TABLE: [Channel; 5] = [
     },
 ];
 
-/// The most bytes of a name of [`TABLE`].
+/// The most bytes of a name of [`TABLE`]. Fixed: a larger value lowers
+/// [`crate::name::MAX_BYTES`], so a node with a name that an earlier release kept
+/// stops. A new status name must fit.
 pub(crate) const MAX_BYTES: usize = 63;
 const _: () = {
     let mut i = 0;
