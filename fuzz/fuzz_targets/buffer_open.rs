@@ -124,6 +124,7 @@ mod header {
     use super::{BLOCK, word};
 
     const MAGIC: &[u8] = b"FNDNRING";
+    const BODY_MAX_AT: usize = 18;
     const TAIL_AT: usize = 22;
     const CHAIN_AT: usize = 30;
     const SEQ_AT: usize = 34;
@@ -153,6 +154,11 @@ mod header {
     fn whole(image: &[u8], start: usize) -> bool {
         image[start..].starts_with(MAGIC)
             && word(image, start + CRC_AT) == crc(image, start)
+    }
+
+    /// The most bytes of a record body.
+    pub(super) fn body_max(image: &[u8]) -> usize {
+        usize::try_from(word(image, BODY_MAX_AT)).expect("invariant: a u32 fits")
     }
 
     /// The tail offset.
@@ -316,9 +322,9 @@ impl Room {
         }))
     }
 
-    /// The room an open finds in `image` after `edits`, from the records on the
-    /// way from the tail that are sealed. Unknown after an edit other than
-    /// `MoveTail`, whose records the open can read in other ways.
+    /// The room an open finds in `image` after `edits`, from the records that it
+    /// reads ([`read`]). Unknown after an edit other than `MoveTail`, whose records
+    /// the open can read in other ways.
     fn walked(image: &[u8], edits: &[Edit]) -> Self {
         if !edits
             .iter()
@@ -326,21 +332,9 @@ impl Room {
         {
             return Self(None);
         }
-        let way = walk(image);
         let tail = u128::from(header::tail(image));
         let (mut data, mut end) = (tail, tail);
-        for step in way.windows(2) {
-            let [(block, chain), (next, _)] = *step else {
-                unreachable!("a window of two")
-            };
-            if next > AREA_START + BLOCKS || !record::sealed(image, block, chain) {
-                break;
-            }
-            let blocks = if next > block {
-                next - block
-            } else {
-                next + BLOCKS - block
-            };
+        for (block, blocks) in read(image) {
             end += (blocks * BLOCK) as u128;
             if matches!(record::kind(image, block), record::DATA | record::CARRY) {
                 data = end;
@@ -628,6 +622,34 @@ fn walk(image: &[u8]) -> Vec<(usize, u32)> {
         block = next;
     }
     way
+}
+
+/// The records that the open reads on the way from the tail in the first header
+/// block: the block each starts at, and the blocks to the next. It ends before the
+/// first record that is not sealed or that passes the end of the area, the tail one
+/// lap later, or the largest record of the header's `body_max`.
+fn read(image: &[u8]) -> Vec<(usize, usize)> {
+    let largest = (record::HEAD + header::body_max(image)).div_ceil(BLOCK);
+    let mut lap = BLOCKS;
+    let mut read = Vec::new();
+    for step in walk(image).windows(2) {
+        let [(block, chain), (next, _)] = *step else {
+            unreachable!("a window of two")
+        };
+        let size = (record::HEAD + record::len(image, block)).div_ceil(BLOCK);
+        let bound = largest.min(AREA_START + BLOCKS - block).min(lap);
+        if size > bound || !record::sealed(image, block, chain) {
+            break;
+        }
+        let blocks = if next > block {
+            next - block
+        } else {
+            next + BLOCKS - block
+        };
+        lap = lap.saturating_sub(blocks);
+        read.push((block, blocks));
+    }
+    read
 }
 
 fn key(index: usize) -> channel::Key {
@@ -925,10 +947,7 @@ async fn edit(
         "the records of the build do not seal as written up to its last"
     );
     let written = image.clone();
-    let way = walk(&written);
-    let sealed =
-        |&&(block, chain): &&(usize, u32)| record::sealed(&written, block, chain);
-    for &(block, _) in way.iter().take_while(sealed) {
+    for (block, _) in read(&written) {
         apply(&mut image, &Edit::SealRecord { block });
         assert!(
             image == written,
@@ -959,13 +978,10 @@ async fn edit(
     (Room::walked(&image, edits), carried)
 }
 
-/// Whether a carry record continues the chain on the way from the tail in the first
-/// header block, before the first record that does not.
+/// Whether the open reads a carry record of `image` ([`read`]).
 fn carries(image: &[u8]) -> bool {
-    walk(image)
-        .windows(2)
-        .map(|step| step[0])
-        .take_while(|&(block, chain)| record::sealed(image, block, chain))
+    read(image)
+        .into_iter()
         .any(|(block, _)| record::kind(image, block) == record::CARRY)
 }
 
