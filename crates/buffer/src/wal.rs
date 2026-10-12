@@ -2753,7 +2753,9 @@ mod tests {
         /// the old record `[8]`. The chain of a later reopen seals a record in an old
         /// body. A reopen of the ops reads `[7]` after the second reopen with chain 5,
         /// and the chain value after `after` seals the old `[8]` after it. A torn
-        /// record after a whole wrap record runs: the walk ends at the area start.
+        /// record after a whole wrap record runs: the walk ends at the area start. A
+        /// torn wrap record ends the walk at the head, also when the record after it
+        /// is whole.
         #[test]
         fn keeps_the_last_record_only_where_old_bytes_end_the_walk() {
             use proptest::strategy::ValueTree;
@@ -2792,7 +2794,8 @@ mod tests {
             cases.push((ops, None, vec![9], 0x77D9_AA89, Some("the record after")));
             let mut ops = Vec::new();
             fill(&mut ops, 8, 14);
-            cases.push((ops, Some(0), torn, 7, None));
+            cases.push((ops.clone(), Some(0), torn.clone(), 7, None));
+            cases.push((ops, Some(15), torn, 7, None));
             for (ops, lost, last, chain, walk) in cases {
                 let mut kept = vec![true; index(AREA) / SECTOR];
                 if let Some(block) = lost {
@@ -2806,7 +2809,7 @@ mod tests {
                 let crash = (ops, last, kept, false, flip, chain, vec![10]);
                 let result = keeps_the_last_record(layout(), crash);
                 let Some(walk) = walk else {
-                    assert!(result.is_ok(), "the case of a whole wrap: {result:?}");
+                    assert!(result.is_ok(), "the case of a wrap: {result:?}");
                     continue;
                 };
                 let Err(TestCaseError::Reject(reason)) = &result else {
