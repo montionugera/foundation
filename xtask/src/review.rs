@@ -104,6 +104,9 @@ struct Record {
     labels: Vec<String>,
     files: Vec<String>,
     comments: Vec<Comment>,
+    /// Each issue or PR that a merge condition of the body names ([`conditions`]) and
+    /// that is open, in body order.
+    waits: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -273,6 +276,12 @@ fn problems(
             ));
         }
         problems.extend(unended(round, head, place(&round.end)?, code_change)?);
+    }
+    for n in &record.waits {
+        problems.push(format!(
+            "the PR body has `Merges after #{n}`, and #{n} is open. Run `review` again \
+             when it merges or closes."
+        ));
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -1138,16 +1147,34 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
     let pull = api(&path)?;
     let files = api(&format!("{path}/files"))?;
     let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
-    record_of(&pull, &files, &comments).map_err(|e| format!("PR {pr}: {e}"))
+    let open = |n| {
+        let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
+        let issue = issue.first().ok_or("gh returned no issue")?;
+        Ok(field::text(issue, "state")? == "open")
+    };
+    record_of(&pull, &files, &comments, &open).map_err(|e| format!("PR {pr}: {e}"))
 }
 
-/// The record from the `gh api` objects of a PR, its files, and its comments.
+/// The record from the `gh api` objects of a PR, its files, and its comments, where
+/// `open` gives whether an issue or PR is open.
 fn record_of(
     pull: &[Value],
     files: &[Value],
     comments: &[Value],
+    open: &dyn Fn(u64) -> Result<bool, String>,
 ) -> Result<Record, String> {
     let pull = pull.first().ok_or("gh returned no PR")?;
+    let body = if pull["body"].is_null() {
+        ""
+    } else {
+        field::text(pull, "body")?
+    };
+    let mut waits = Vec::new();
+    for n in conditions(body) {
+        if open(n)? {
+            waits.push(n);
+        }
+    }
     Ok(Record {
         branch: field::text(&pull["head"], "ref")?.to_string(),
         base: field::text(&pull["base"], "ref")?.to_string(),
@@ -1169,7 +1196,44 @@ fn record_of(
                 })
             })
             .collect::<Result<_, String>>()?,
+        waits,
     })
+}
+
+/// Each issue or PR that a merge condition of `body` names, one time each, in body
+/// order. A condition is `merges after` in each ASCII case, after no letter and no
+/// digit, then white space and `#<n>`, in a paragraph as GitHub shows it ([`texts`]),
+/// so not in a code block, a heading, or HTML. Only the issue right after the words
+/// counts.
+fn conditions(body: &str) -> Vec<u64> {
+    let body = normalized(body);
+    let arena = Arena::new();
+    let root = parse_document(&arena, &body, &options());
+    let mut found = Vec::new();
+    for node in root.descendants() {
+        if !matches!(node.data.borrow().value, NodeValue::Paragraph) {
+            continue;
+        }
+        let text = texts(node).join(" ").to_ascii_lowercase();
+        for (at, words) in text.match_indices("merges after #") {
+            if text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric)
+            {
+                continue;
+            }
+            let rest = &text[at + words.len()..];
+            let digits = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let n = rest[..digits].parse().ok();
+            if let Some(n) = n.filter(|n| !found.contains(n)) {
+                found.push(n);
+            }
+        }
+    }
+    found
 }
 
 /// `text` when it is a UTC time `YYYY-MM-DDTHH:MM:SSZ`, the form GitHub gives, in

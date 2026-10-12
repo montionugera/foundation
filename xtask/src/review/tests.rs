@@ -58,6 +58,7 @@ fn record(comments: Vec<Comment>) -> Record {
         labels: Vec::new(),
         files: FILES.iter().map(ToString::to_string).collect(),
         comments,
+        waits: Vec::new(),
     }
 }
 
@@ -1334,7 +1335,7 @@ fn names_the_pr_field_a_record_lacks() {
     use serde_json::json;
     let pull = [json!({ "head": { "ref": "a" }, "base": {}, "labels": [] })];
     assert_eq!(
-        record_of(&pull, &[], &[]).unwrap_err(),
+        record_of(&pull, &[], &[], &|_| Ok(false)).unwrap_err(),
         "JSON has no string field `ref`"
     );
     let pull =
@@ -1347,7 +1348,7 @@ fn names_the_pr_field_a_record_lacks() {
         })
     };
     let files = [json!({ "filename": "a.rs" })];
-    let read = record_of(&pull, &files, &[comment(CUTOFF)]).unwrap();
+    let read = record_of(&pull, &files, &[comment(CUTOFF)], &|_| Ok(false)).unwrap();
     assert_eq!((read.branch.as_str(), read.base.as_str()), ("a", "main"));
     assert_eq!(read.files, ["a.rs"]);
     assert_eq!(read.comments[0].author, BOT);
@@ -1360,7 +1361,7 @@ fn names_the_pr_field_a_record_lacks() {
         "2026-10-08T03:00:00+",
     ] {
         assert_eq!(
-            record_of(&pull, &files, &[comment(created)]).unwrap_err(),
+            record_of(&pull, &files, &[comment(created)], &|_| Ok(false)).unwrap_err(),
             format!(
                 "`created_at` is `{created}`, not a UTC time `YYYY-MM-DDTHH:MM:SSZ`"
             )
@@ -3026,4 +3027,137 @@ fn reads_the_decisions_only_of_a_later_round_with_no_architecture() {
     assert_eq!(check(vec![earlier]), Ok(Vec::new()));
     let later = bound(&clean(2, "reviewer, breaker", &range));
     assert_eq!(check(vec![later]), Err("git diff: bad".to_string()));
+}
+
+/// The problems of PR 1 with the body `body` and the last round of #1089, read through
+/// `fetch` with the states `states` of the issues it names (`open` or `closed`). An
+/// issue that `states` lacks fails its read.
+fn waiting(
+    body: &serde_json::Value,
+    states: &[(u64, &str)],
+) -> Result<Vec<String>, String> {
+    use serde_json::json;
+    let read = |path: &str| -> Result<Vec<Value>, String> {
+        let issue = path.strip_prefix("repos/{owner}/{repo}/issues/");
+        Ok(match path {
+            "repos/{owner}/{repo}/pulls/1" => vec![json!({
+                "head": { "ref": "a" },
+                "base": { "ref": "main" },
+                "labels": [],
+                "body": body,
+            })],
+            "repos/{owner}/{repo}/pulls/1/files" => {
+                FILES.iter().map(|f| json!({ "filename": f })).collect()
+            }
+            "repos/{owner}/{repo}/issues/1/comments" => vec![json!({
+                "user": { "login": BOT },
+                "body": ROUND,
+                "created_at": CUTOFF,
+            })],
+            _ => {
+                let n: u64 = issue.and_then(|n| n.parse().ok()).expect("an issue");
+                let state = states.iter().find(|(i, _)| *i == n).map(|(_, s)| *s);
+                let state = state.ok_or(format!("gh api {path}: HTTP 404"))?;
+                vec![json!({ "number": n, "state": state })]
+            }
+        })
+    };
+    fetch("1", &read).map(|record| check(&record))
+}
+
+/// The problem of an open issue `n` that the body names after `Merges after`.
+fn open(n: u64) -> String {
+    format!(
+        "the PR body has `Merges after #{n}`, and #{n} is open. Run `review` again \
+         when it merges or closes."
+    )
+}
+
+#[test]
+fn a_merge_after_an_open_pr_fails() {
+    let body = "Part of #1211.\n\nMerges after #2452: it needs `Busy`.".into();
+    assert_eq!(waiting(&body, &[(2452, "open")]), Ok(vec![open(2452)]));
+}
+
+#[test]
+fn a_merge_after_a_closed_issue_or_a_merged_pr_passes() {
+    for n in [2430, 2452] {
+        let body = format!("Merges after #{n}.").into();
+        assert_eq!(waiting(&body, &[(n, "closed")]), Ok(Vec::new()));
+    }
+}
+
+#[test]
+fn reads_the_words_in_each_ascii_case_and_across_a_line_break() {
+    for body in [
+        "merges after #2452",
+        "MERGES AFTER #2452",
+        "It merges\nafter\n#2452.",
+        "- **Merges after** #2452",
+        "> Merges after   #2452",
+        "(merges after #2452)",
+    ] {
+        assert_eq!(
+            waiting(&body.into(), &[(2452, "open")]),
+            Ok(vec![open(2452)]),
+            "{body:?}"
+        );
+    }
+}
+
+#[test]
+fn gives_one_problem_for_each_open_issue_in_body_order() {
+    let body = "Merges after #9. Merges after #2452 and #7.\n\n\
+                Merges after #12. Merges after #9."
+        .into();
+    let states = [(9, "open"), (2452, "closed"), (7, "open"), (12, "open")];
+    assert_eq!(waiting(&body, &states), Ok(vec![open(9), open(12)]));
+}
+
+#[test]
+fn reads_only_the_issue_right_after_the_words() {
+    for body in [
+        "Merges after #1869 (#1860).",
+        "Merges after #1869, which holds #7.",
+        "Merges after #1869abc #7.",
+    ] {
+        assert_eq!(
+            waiting(&body.into(), &[(1869, "closed")]),
+            Ok(Vec::new()),
+            "{body:?}"
+        );
+    }
+}
+
+#[test]
+fn reads_no_condition_that_github_does_not_show_as_text() {
+    for body in [
+        "```\nMerges after #2452\n```",
+        "    Merges after #2452",
+        "# Merges after #2452",
+        "<!-- Merges after #2452 -->",
+        "It emerges after #2452.",
+        "Merges after 2452, merges after GH-2452, merges after #, merges after.",
+        "Merges #2452 after.",
+    ] {
+        assert_eq!(waiting(&body.into(), &[]), Ok(Vec::new()), "{body:?}");
+    }
+}
+
+#[test]
+fn a_pr_with_no_body_passes() {
+    assert_eq!(waiting(&serde_json::Value::Null, &[]), Ok(Vec::new()));
+    assert_eq!(waiting(&"".into(), &[]), Ok(Vec::new()));
+}
+
+#[test]
+fn a_failed_read_of_the_issue_fails_the_check() {
+    assert_eq!(
+        waiting(&"Merges after #99999.".into(), &[]),
+        Err("PR 1: gh api repos/{owner}/{repo}/issues/99999: HTTP 404".to_string())
+    );
+    assert_eq!(
+        waiting(&serde_json::json!(7), &[]),
+        Err("PR 1: JSON has no string field `body`".to_string())
+    );
 }
