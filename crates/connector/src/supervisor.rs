@@ -3053,19 +3053,19 @@ mod tests {
     }
 
     /// A frame of `sample` at `stamp` for `writer`, which writes `plant.value` at
-    /// key `value` and its index.
+    /// key `key` and its index.
     fn draft_value(
         writer: &hub::writer::Writer,
         stamp: i64,
         sample: i64,
-        value: u128,
+        key: u128,
     ) -> frame::Draft {
         let entries = writer.set().entries();
         let entry = |key| {
             let key = channel::Key::from_u128(key);
             entries.iter().position(|entry| entry.key == key)
         };
-        let (time, value) = (entry(1).expect("time"), entry(value).expect("value"));
+        let (time, value) = (entry(1).expect("time"), entry(key).expect("value"));
         let group = entries[time].group;
         let mut series = [(time, 8), (value, 8)];
         series.sort_unstable();
@@ -3078,15 +3078,9 @@ mod tests {
         draft
     }
 
-    /// Defines `plant.time` (key 1), `plant.value` (key 2, `i64`), and the status
+    /// Defines `plant.time` (key 1), `plant.value` (key `key`, `i64`), and the status
     /// channels of `plant.write` on `hub`.
-    fn define(hub: &hub::Hub) {
-        define_value(hub, 2);
-    }
-
-    /// Defines `plant.time` (key 1), `plant.value` (key `value`, `i64`), and the
-    /// status channels of `plant.write` on `hub`.
-    fn define_value(hub: &hub::Hub, value: u128) {
+    fn define(hub: &hub::Hub, key: u128) {
         let time = Channel {
             key: channel::Key::from_u128(1),
             kind: spec::channel::Kind::Index {
@@ -3097,7 +3091,7 @@ mod tests {
         let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
         let data = Data::new(time.key, None, i64, None).expect("no unit");
         let value = Channel {
-            key: channel::Key::from_u128(value),
+            key: channel::Key::from_u128(key),
             kind: spec::channel::Kind::Data(data),
         };
         let (time, value) = (Definition::Channel(time), Definition::Channel(value));
@@ -3208,7 +3202,7 @@ mod tests {
         let got = run_on(|node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let write = Write::new(vec![30, 10, 20]);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
@@ -3288,7 +3282,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             tasks.spawn(beside(inputs.hub.clone(), node.clock()));
             let supervisor = Supervisor::new(inputs);
@@ -3339,7 +3333,7 @@ mod tests {
             });
             let kinds = Table::new().with("read", kind);
             let inputs = create_config(&node, tasks, kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let hub = inputs.hub.clone();
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3485,7 +3479,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let writes = vec![(ms(100), 7), (ms(300), 8)];
             tasks.spawn(write_at(inputs.hub.clone(), node.clock(), writes));
             let supervisor = Supervisor::new(inputs);
@@ -3716,7 +3710,7 @@ mod tests {
             },
             |hub, clock| async move {
                 clock.sleep(ms(100)).await;
-                define_value(&hub, 3);
+                define(&hub, 3);
                 clock.sleep(ms(1_500)).await;
                 let channels = vec![name("plant.value")];
                 let mut writer =
@@ -3786,7 +3780,7 @@ mod tests {
             },
             |hub, clock| async move {
                 clock.sleep(ms(100)).await;
-                define_value(&hub, 3);
+                define(&hub, 3);
             },
         );
         read.end.expect("ok");
@@ -3871,7 +3865,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3900,7 +3894,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3980,7 +3974,7 @@ mod tests {
         run_on(move |node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
             let mut other = None;
@@ -4030,7 +4024,7 @@ mod tests {
             move |tasks| async move {
                 let mut inputs =
                     create_config(&node, tasks, Table::new(), "plant.write").await;
-                define(&inputs.hub);
+                define(&inputs.hub, 2);
                 inputs.kinds = Arc::new(Table::new().with("write", write));
                 let supervisor = Supervisor::new(inputs);
                 let (name, token) = (name("plant.write"), Token::new());
@@ -4049,7 +4043,7 @@ mod tests {
         let (other, own) = sim
             .run_on(&node, |node, tasks| async move {
                 let (hub, _) = hub::testing::open(env(&node, tasks)).await;
-                define(&hub);
+                define(&hub, 2);
                 let other = write_as(&hub, "plant.other").await;
                 (other, write_as(&hub, "plant.write").await)
             })
