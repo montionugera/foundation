@@ -131,6 +131,7 @@ pub struct Raft {
     votes: Option<Proof>,
     election_ticks: u64,
     heartbeat_ticks: u64,
+    fits: fn(&Message) -> bool,
     term: Term,
     vote: Option<node::Key>,
     // The proof of `term`: see `Hard::proof`.
@@ -171,6 +172,7 @@ impl Raft {
             key,
             election_ticks,
             heartbeat_ticks,
+            fits,
         } = config;
         let Start {
             hard,
@@ -209,6 +211,7 @@ impl Raft {
             outbox: Vec::new(),
             election_ticks: u64::from(election_ticks),
             heartbeat_ticks: u64::from(heartbeat_ticks),
+            fits,
             term,
             vote,
             proof,
@@ -296,13 +299,11 @@ impl Raft {
         if let Some(hard) = &hard {
             self.given = hard.clone();
         }
-        let mut messages = std::mem::take(&mut self.outbox);
-        self.chain(&mut messages);
         Ready {
             hard,
             entries: self.log.take_unstable(),
             committed: self.log.take_committed(),
-            messages,
+            messages: std::mem::take(&mut self.outbox),
         }
     }
 
@@ -821,13 +822,14 @@ impl Raft {
         }
     }
 
-    // Sends each follower in `range` the entries from its `next` and the commit
-    // index, unless the leader waits for its reply. A node that a change removed
-    // gets entries only up to `removed_end`.
+    // Sends each follower in `range` the entries from its `next` that fit, and the
+    // commit index, unless the leader waits for its reply. A node that a change
+    // removed gets entries only up to `removed_end`.
     fn send_appends<R: RangeBounds<node::Key>>(&mut self, range: R) {
         let commit = self.log.committed();
         let removed_end = self.removed_end();
         let (key, term, votes) = (self.key, self.term, &self.votes);
+        let mut links = None;
         for (&to, peer) in self.peers.range_mut(range) {
             if peer.progress.paused() {
                 continue;
@@ -843,13 +845,15 @@ impl Raft {
                 removed_end
             };
             let entries = self.log.slice(next, end, BATCH);
-            let last = entries.last().map_or(prev.index, |entry| entry.at.index);
-            peer.progress.sent(last);
             let proof = match votes {
                 Some(votes) if !peer.answered => Some(votes.clone()),
                 _ => None,
             };
-            self.outbox.push(Message {
+            let chain = match proof {
+                Some(_) => links.get_or_insert_with(|| self.log.links(term)).clone(),
+                None => Vec::new(),
+            };
+            let mut message = Message {
                 from: key,
                 to,
                 term,
@@ -859,8 +863,13 @@ impl Raft {
                     commit,
                 },
                 proof,
-                chain: Vec::new(),
-            });
+                chain,
+            };
+            fit(self.fits, &mut message);
+            let entries = message.body.entries();
+            let last = entries.last().map_or(prev.index, |entry| entry.at.index);
+            peer.progress.sent(last);
+            self.outbox.push(message);
         }
     }
 
@@ -1312,43 +1321,63 @@ impl Raft {
 
     // Sends `body` to each peer, with `proof`.
     fn broadcast(&mut self, term: Term, body: &Body, proof: Option<&Proof>) {
+        let chain = self.chain(term, proof);
         for &to in self.peers.keys() {
-            self.outbox.push(Message {
+            let mut message = Message {
                 from: self.key,
                 to,
                 term,
                 body: body.clone(),
                 proof: proof.cloned(),
-                chain: Vec::new(),
-            });
+                chain: chain.clone(),
+            };
+            fit(self.fits, &mut message);
+            self.outbox.push(message);
         }
     }
 
     // Sends `body` to `to`, with `proof`.
     fn send(&mut self, to: node::Key, term: Term, body: Body, proof: Option<Proof>) {
-        self.outbox.push(Message {
+        let chain = self.chain(term, proof.as_ref());
+        let mut message = Message {
             from: self.key,
             to,
             term,
             body,
             proof,
-            chain: Vec::new(),
-        });
+            chain,
+        };
+        fit(self.fits, &mut message);
+        self.outbox.push(message);
     }
 
-    // Gives each message with a proof the chain of this node's configuration
-    // entries below its term.
-    fn chain(&self, messages: &mut [Message]) {
-        let mut chains: BTreeMap<Term, Vec<Link>> = BTreeMap::new();
-        for message in messages
-            .iter_mut()
-            .filter(|message| message.proof.is_some())
-        {
-            message.chain = chains
-                .entry(message.term)
-                .or_insert_with(|| self.log.links(message.term))
-                .clone();
+    // The chain of a message of `term`: this node's configuration entries below
+    // `term` when the message carries a proof, else none.
+    fn chain(&self, term: Term, proof: Option<&Proof>) -> Vec<Link> {
+        match proof {
+            Some(_) => self.log.links(term),
+            None => Vec::new(),
         }
+    }
+}
+
+// Drops what `message` can lose until it fits: the last entries of an append, down
+// to one with no proof and to none with a proof, then the oldest links.
+fn fit(fits: fn(&Message) -> bool, message: &mut Message) {
+    let least = usize::from(message.proof.is_none());
+    while !fits(message) {
+        if let Body::Append { entries, .. } = &mut message.body
+            && entries.len() > least
+        {
+            entries.pop();
+            continue;
+        }
+        assert!(
+            !message.chain.is_empty(),
+            "invariant: `Config::fits` holds an append of one entry with no proof, \
+             and each message with no entry and no link"
+        );
+        message.chain.remove(0);
     }
 }
 
@@ -1372,6 +1401,7 @@ mod tests {
         key: node::Key::from_u128(1),
         election_ticks: 10,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
 
     const GRANTED: Answer = Answer::Granted(None);
@@ -5126,6 +5156,79 @@ mod tests {
             raft.step(message(3, 2, Body::HeartbeatReply)).unwrap();
             tick_times(&mut raft, 10);
             assert_eq!(raft.role(), Role::Follower);
+        }
+    }
+
+    mod fit {
+        use super::*;
+
+        // The entry indexes and link indexes of `message`.
+        fn kept(message: &Message) -> (Vec<u64>, Vec<u64>) {
+            let Body::Append { entries, .. } = &message.body else {
+                panic!("not an append");
+            };
+            let entries = entries.iter().map(|entry| entry.at.index);
+            let links = message.chain.iter().map(|link| link.at.index);
+            (entries.collect(), links.collect())
+        }
+
+        fn size(message: &Message) -> usize {
+            let Body::Append { entries, .. } = &message.body else {
+                panic!("not an append");
+            };
+            entries.len() + message.chain.len()
+        }
+
+        // An append of entries 1 to 3 with links at 1 and 2, with a proof or not.
+        fn appended(proven: bool) -> Message {
+            let link = |index| Link {
+                at: position(1, index),
+                change: Change {
+                    voters: Voters::default(),
+                    votes: proof(Grant::Vote, 2, &[2, 3]),
+                    signature: None,
+                },
+            };
+            let body = append(position(1, 0), entries(&[(1, 1), (1, 2), (1, 3)]), 0);
+            Message {
+                chain: vec![link(1), link(2)],
+                ..if proven {
+                    message(2, 1, body)
+                } else {
+                    unproven(2, 1, body)
+                }
+            }
+        }
+
+        #[test]
+        fn an_append_with_no_proof_drops_its_last_entries() {
+            let mut message = appended(false);
+            message.chain.clear();
+            fit(|m| size(m) <= 2, &mut message);
+            assert_eq!(kept(&message), (vec![1, 2], vec![]));
+        }
+
+        #[test]
+        #[should_panic(expected = "invariant: `Config::fits` holds an append of one \
+                                   entry with no proof, and each message")]
+        fn an_append_with_no_proof_keeps_one_entry() {
+            let mut message = appended(false);
+            message.chain.clear();
+            fit(|m| size(m) == 0, &mut message);
+        }
+
+        #[test]
+        fn a_message_with_a_proof_drops_its_entries_then_its_oldest_links() {
+            let mut message = appended(true);
+            fit(|m| size(m) <= 1, &mut message);
+            assert_eq!(kept(&message), (vec![], vec![2]));
+        }
+
+        #[test]
+        fn a_message_that_fits_keeps_each_entry_and_link() {
+            let mut message = appended(true);
+            fit(|m| size(m) <= 5, &mut message);
+            assert_eq!(kept(&message), (vec![1, 2, 3], vec![1, 2]));
         }
     }
 }

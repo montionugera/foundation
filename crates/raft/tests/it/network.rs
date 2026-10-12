@@ -202,10 +202,20 @@ pub(crate) struct Network {
     proposed: u16,
     // The state of a splitmix64 generator for the ticks of `round`.
     random: u64,
+    fits: fn(&Message) -> bool,
 }
 
 impl Network {
     pub(crate) fn new(logs: &[Position], random: u64) -> Self {
+        Self::with_fits(logs, random, |_| true)
+    }
+
+    /// A network whose nodes send only messages that `fits` holds.
+    pub(crate) fn with_fits(
+        logs: &[Position],
+        random: u64,
+        fits: fn(&Message) -> bool,
+    ) -> Self {
         // A term with entries had a leader that a quorum voted for, so no node
         // starts below the highest term in the logs.
         let term = logs.iter().map(|last| last.term).max().unwrap_or_default();
@@ -246,6 +256,7 @@ impl Network {
             committed: Vec::new(),
             proposed: 0,
             random,
+            fits,
         };
         for node in 0..logs.len() {
             let raft = network.build(node);
@@ -305,6 +316,7 @@ impl Network {
             key: Self::key(node),
             election_ticks: ELECTION,
             heartbeat_ticks: HEARTBEAT,
+            fits: self.fits,
         };
         let disk = &self.disks[node];
         let start = Start {
@@ -531,6 +543,7 @@ impl Network {
                     message.body, message.term
                 );
                 Self::check_changes(at, &message);
+                self.check_fits(at, &message);
                 self.note(at, &message);
                 self.flight.push(message);
             }
@@ -692,6 +705,24 @@ impl Network {
                 "node {from} carries a wrong signature of {claim:?}"
             );
         }
+    }
+
+    // Each message fits, and an append with no proof carries an entry when the
+    // leader has one for its receiver.
+    fn check_fits(&self, at: usize, message: &Message) {
+        assert!((self.fits)(message), "node {at} sends {message:?}");
+        let Body::Append { prev, entries, .. } = &message.body else {
+            return;
+        };
+        let removed = !self.nodes[at].voters().contains(message.to);
+        let last = self.disks[at].last().index;
+        assert!(
+            message.proof.is_some()
+                || !entries.is_empty()
+                || prev.index == last
+                || removed,
+            "node {at} sends an append with no entry below its last index {last}"
+        );
     }
 
     // Each change an append carries holds votes.
