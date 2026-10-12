@@ -682,9 +682,10 @@ impl Open {
         }
     }
 
-    /// Opens the shard's buffer and gives its home and `guard` to `hold`, which drops
-    /// the home once `guard` completes, then returns once its ring has closed. A
-    /// failed open drops `guard`, which stops the node.
+    /// Starts the pool's purge timer, which ends with the shard, then opens the shard's
+    /// buffer and gives its home and `guard` to `hold`, which drops the home once
+    /// `guard` completes, then returns once its ring has closed. A failed open drops
+    /// `guard`, which stops the node.
     async fn keep(
         self,
         files: env::files::Files,
