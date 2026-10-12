@@ -381,6 +381,15 @@ impl Half {
         self.left() > 0
     }
 
+    /// Makes the rest of the message in hand the stream's ([`Rest::Pump`]) when it is
+    /// the caller's. A caller calls it on a new write, which shows that the write that
+    /// gave the rest never ended, as a leaked future.
+    fn adopt(&mut self) {
+        if self.rest == Rest::Caller {
+            self.rest = Rest::Pump;
+        }
+    }
+
     /// Ends the stream with `error`, which each later write and finish gives. The
     /// parts list gives back its capacity, which no later message can use.
     fn close(&mut self, error: Error) {
@@ -1169,30 +1178,19 @@ impl Sending {
         pushed
     }
 
-    /// Writes the rest of the message that `half` holds to `inner`. `Ready` once it
-    /// holds no message, and `Pending` while it holds one. `writing` says that the call
-    /// is a write that brings a new message. While the rest is the caller's, such a
-    /// call shows that the write that gave the rest never ended, as a leaked future,
-    /// and the rest becomes the stream's ([`Rest::Pump`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Half::check`].
+    /// Writes the rest of the message that `half` holds to `inner`, unless a reset or
+    /// a stop ended it. `Pending` while it holds part of a message that it writes, and
+    /// `Ready` else.
     fn resume(
         &mut self,
         inner: &mut noq_proto::Connection,
         half: &mut Half,
-        writing: bool,
-    ) -> Result<Poll<()>, Error> {
-        if writing && half.rest == Rest::Caller {
-            half.rest = Rest::Pump;
-        }
+    ) -> Poll<()> {
         half.notified = false;
-        half.check()?;
-        if half.holds() && self.write(inner, half, None).is_pending() {
-            return Ok(Poll::Pending);
+        if half.ended.is_none() && half.holds() {
+            return self.write(inner, half, None);
         }
-        Ok(Poll::Ready(()))
+        Poll::Ready(())
     }
 
     fn push(
@@ -1559,11 +1557,12 @@ impl Streams {
         bytes: usize,
     ) -> Result<Poll<()>, Error> {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        if self
-            .sending
-            .resume(inner, half, message.is_some())?
-            .is_pending()
-        {
+        if message.is_some() {
+            half.adopt();
+        }
+        let resumed = self.sending.resume(inner, half);
+        half.check()?;
+        if resumed.is_pending() {
             return Ok(Poll::Pending);
         }
         let Some(message) = message.take() else {
@@ -1579,12 +1578,9 @@ impl Streams {
     /// ([`Rest::Pump`]). A stream that a reset or a stop ended writes nothing.
     pub(super) fn adopt(&mut self, inner: &mut noq_proto::Connection, sender: &Sender) {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        match self.sending.resume(inner, half, true) {
-            Ok(_) | Err(Error::Reset { .. } | Error::Stopped { .. }) => {}
-            Err(error) => {
-                panic!("invariant: a reset or a stop ends a half, not {error}")
-            }
-        }
+        half.adopt();
+        // `pump` writes a rest that waits.
+        let _waits = self.sending.resume(inner, half).is_pending();
     }
 
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, then
@@ -1607,11 +1603,12 @@ impl Streams {
         bytes: usize,
     ) -> Result<(), Error> {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
-        if self
-            .sending
-            .resume(inner, half, message.is_some())?
-            .is_pending()
-        {
+        if message.is_some() {
+            half.adopt();
+        }
+        let resumed = self.sending.resume(inner, half);
+        half.check()?;
+        if resumed.is_pending() {
             return Ok(());
         }
         let Sending {
