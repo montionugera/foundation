@@ -58,6 +58,7 @@ fn record(comments: Vec<Comment>) -> Record {
         labels: Vec::new(),
         files: FILES.iter().map(ToString::to_string).collect(),
         comments,
+        body: String::new(),
     }
 }
 
@@ -1330,6 +1331,42 @@ fn fails_a_last_round_in_an_older_format() {
 }
 
 #[test]
+fn a_claude_attribution_line_in_the_pr_body_fails() {
+    let line = "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+    let signed = Record {
+        body: format!("## Description\n\nFixes a bug.\n\n{line}\n"),
+        ..record(vec![bot(ROUND)])
+    };
+    assert_eq!(
+        check(&signed),
+        vec![format!(
+            "the PR body has the line `{line}`, which Rule 1 of CLAUDE.md forbids. \
+             Remove it from the PR body, then run `review` again."
+        )]
+    );
+}
+
+#[test]
+fn reads_the_pr_body_and_a_null_body_as_empty() {
+    use serde_json::json;
+    let pull = |body| {
+        [json!({
+            "head": { "ref": "a" },
+            "base": { "ref": "main" },
+            "labels": [],
+            "body": body,
+        })]
+    };
+    let read = record_of(&pull(json!("Fixes #1.")), &[], &[]).unwrap();
+    assert_eq!(read.body, "Fixes #1.");
+    assert_eq!(record_of(&pull(json!(null)), &[], &[]).unwrap().body, "");
+    assert_eq!(
+        record_of(&pull(json!(1)), &[], &[]).unwrap_err(),
+        "JSON has no string field `body`"
+    );
+}
+
+#[test]
 fn names_the_pr_field_a_record_lacks() {
     use serde_json::json;
     let pull = [json!({ "head": { "ref": "a" }, "base": {}, "labels": [] })];
@@ -1349,6 +1386,7 @@ fn names_the_pr_field_a_record_lacks() {
     let files = [json!({ "filename": "a.rs" })];
     let read = record_of(&pull, &files, &[comment(CUTOFF)]).unwrap();
     assert_eq!((read.branch.as_str(), read.base.as_str()), ("a", "main"));
+    assert_eq!(read.body, "");
     assert_eq!(read.files, ["a.rs"]);
     assert_eq!(read.comments[0].author, BOT);
     assert_eq!(read.comments[0].created, CUTOFF);
