@@ -133,6 +133,15 @@ pub enum Error {
         /// The most voters that one set holds.
         most: usize,
     },
+    /// This node takes messages of at most `bytes_max` bytes: the smaller of its
+    /// transport's limit and its pool's largest block. Each member must take an append
+    /// of the largest record, `bytes_min` bytes.
+    Limit {
+        /// The bytes this node takes.
+        bytes_max: usize,
+        /// The bytes each member must take.
+        bytes_min: usize,
+    },
     /// `Config::founding` is not the region in the founding file of the mesh
     /// directory. Each field sets the state at version 0, so a node with another value
     /// applies the log to another state.
@@ -230,6 +239,14 @@ impl fmt::Display for Error {
                 f,
                 "the set holds {voters} voters, more than the {most} that one set can \
                  hold"
+            ),
+            Self::Limit {
+                bytes_max,
+                bytes_min,
+            } => write!(
+                f,
+                "this node takes messages of at most {bytes_max} bytes, below the \
+                 {bytes_min} bytes of an append of the largest record"
             ),
             Self::Founding { stored, given } => founded(f, stored, given),
             Self::Unfounded { path } => write!(
