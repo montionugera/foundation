@@ -95,3 +95,6 @@
   proof that the node makes also fits a message with no entry and no link. Decided by
   `laptop.architect`, 2026-10-12T20:38:56Z
   (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6132216407).
+  Supersedes point 3 of
+  https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823 for the
+  founding set.
