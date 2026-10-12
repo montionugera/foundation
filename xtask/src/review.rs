@@ -1203,8 +1203,8 @@ fn record_of(
 /// Each issue or PR that a merge condition of `body` names, one time each, in body
 /// order. A condition is `merges after` in each ASCII case, after no letter and no
 /// digit, then white space and `#<n>`, in a paragraph as GitHub shows it ([`texts`]),
-/// so not in a code block, a heading, or HTML. Only the issue right after the words
-/// counts.
+/// also of a list item or a block quote, and also in a code span. A code block, a
+/// heading, a table, and HTML hold none. Only the issue right after the words counts.
 fn conditions(body: &str) -> Vec<u64> {
     let body = normalized(body);
     let arena = Arena::new();

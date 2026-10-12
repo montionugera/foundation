@@ -3096,6 +3096,8 @@ fn reads_the_words_in_each_ascii_case_and_across_a_line_break() {
         "- **Merges after** #2452",
         "> Merges after   #2452",
         "(merges after #2452)",
+        "`Merges after #2452`",
+        "1. Merges after #2452",
     ] {
         assert_eq!(
             waiting(&body.into(), &[(2452, "open")]),
@@ -3136,6 +3138,7 @@ fn reads_no_condition_that_github_does_not_show_as_text() {
         "    Merges after #2452",
         "# Merges after #2452",
         "<!-- Merges after #2452 -->",
+        "| a |\n| - |\n| Merges after #2452 |",
         "It emerges after #2452.",
         "Merges after 2452, merges after GH-2452, merges after #, merges after.",
         "Merges #2452 after.",
