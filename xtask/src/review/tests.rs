@@ -3560,6 +3560,117 @@ fn a_later_steps_line_keeps_the_order_of_the_end_lines() {
     );
 }
 
+/// The problem of a round 3, posted at the cutoff of the later steps, that does not end
+/// with its `name:` line.
+fn unstepped(name: &str) -> Vec<String> {
+    vec![format!(
+        "review round 3 does not end with a `{name}:` line. End each round with its \
+         `Deferred:`, `Later steps:`, `Public surface:`, and `Hot path:` lines, in that \
+         order, in the format of .claude/skills/review/SKILL.md, \"Round comment\"."
+    )]
+}
+
+/// The problem of a round 3 with the later step `step` that has no link.
+fn unlinked_step(step: &str) -> Vec<String> {
+    vec![format!(
+        "review round 3 has a later step with no link on its `Later steps:` line: \
+         \"{step}\". Link the open issue that does it, or the `docs/decisions/` file \
+         that holds its trigger, in the text of the step. The check splits the steps \
+         at each `;` that is not in parentheses."
+    )]
+}
+
+/// `ROUND`, rated, with the `Later steps:` value `later`, posted at `created`.
+fn stepped_at(later: &str, created: &str) -> Comment {
+    let end = format!("Deferred: none\nLater steps: {later}\nPublic surface: none");
+    ended_at(&end, created)
+}
+
+#[test]
+fn a_round_from_the_cutoff_of_the_later_steps_ends_with_four_lines_in_order() {
+    let ended = |end: &str| check(&record(vec![ended_at(end, LATER_CUTOFF)]));
+    let [deferred, later, surface] = [
+        "Deferred: none",
+        "Later steps: none",
+        "Public surface: none",
+    ];
+    assert_eq!(
+        ended(&format!("{deferred}\n{later}\n{surface}")),
+        Vec::<String>::new()
+    );
+    for (end, name) in [
+        (format!("{deferred}\n{surface}"), "Later steps"),
+        (format!("{deferred}\n{surface}\n{later}"), "Later steps"),
+        (format!("{later}\n{deferred}\n{surface}"), "Deferred"),
+        (
+            format!("{deferred}\n{later}\n{later}\n{surface}"),
+            "Public surface",
+        ),
+        (format!("{deferred}\n{later}"), "Public surface"),
+    ] {
+        assert_eq!(ended(&end), unstepped(name), "{end}");
+    }
+    let before = "2026-10-13T11:59:59Z";
+    let old = check(&record(vec![ended_at(
+        &format!("{deferred}\n{surface}"),
+        before,
+    )]));
+    assert_eq!(old, Vec::<String>::new());
+}
+
+#[test]
+fn a_last_round_links_each_later_step() {
+    let steps = |later: &str| check(&record(vec![stepped_at(later, LATER_CUTOFF)]));
+    for linked in [
+        "none".to_string(),
+        "none.".to_string(),
+        "the rename, #99".to_string(),
+        "the rename,\nGH-99".to_string(),
+        "https://github.com/synnaxlabs/foundation/issues/99 does the rename"
+            .to_string(),
+        format!("the rename ({OK})"),
+        "the trigger in `docs/decisions/node/start.md`".to_string(),
+        "the rename (a; #99)".to_string(),
+        "the rename, #99; the rerun, #100".to_string(),
+        "#99;".to_string(),
+    ] {
+        assert_eq!(steps(&linked), Vec::<String>::new(), "{linked}");
+    }
+    for (later, step) in [
+        ("the rerun at the head", "the rerun at the head"),
+        ("the rename, #99; the rerun", "the rerun"),
+        ("the rerun; the rename, #99", "the rerun"),
+        (
+            "the rerun, trigger in NODE START",
+            "the rerun, trigger in NODE START",
+        ),
+        // GitHub shows a code span with no backticks.
+        ("the rename `a`; the rerun, #99", "the rename a"),
+        ("the rename `a; b` #99", "the rename a"),
+        ("the rename (a; b); #99", "the rename (a; b)"),
+        (
+            "[the rename](https://github.com/synnaxlabs/foundation/issues/99)",
+            "the rename",
+        ),
+    ] {
+        assert_eq!(steps(later), unlinked_step(step), "{later}");
+    }
+}
+
+#[test]
+fn only_the_last_round_from_the_cutoff_of_the_later_steps_links_its_steps() {
+    let before = "2026-10-13T11:59:59Z";
+    let unlinked = "the rerun at the head";
+    let old = stepped_at(unlinked, before);
+    assert_eq!(check(&record(vec![old])), Vec::<String>::new());
+    let earlier = stepped_at(unlinked, LATER_CUTOFF);
+    let last = stepped_at("the rerun, #99", LATER_CUTOFF);
+    assert_eq!(check(&record(vec![earlier, last])), Vec::<String>::new());
+    let earlier = stepped_at("the rerun, #99", LATER_CUTOFF);
+    let last = stepped_at(unlinked, LATER_CUTOFF);
+    assert_eq!(check(&record(vec![earlier, last])), unlinked_step(unlinked));
+}
+
 /// The `Public surface:` value of the last round of PR 2372, of 2026-10-11T10:48:34Z.
 const SURFACE_2372: &str = "\
     `crates/connector-opcua/src/server.rs:21-36` (`Server::start` takes `host` in \

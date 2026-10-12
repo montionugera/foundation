@@ -295,7 +295,8 @@
   reads `owed`, `departs from`, `GH-<n>`, `not in a risk crate`, and the path of a file
   under `crates/` in each ASCII case. Supersedes the words of goals 3 and 4 of
   https://github.com/synnaxlabs/foundation/issues/1211 that ask for a link for each
-  item. A `Later steps:` line after the first of the end lines is not read. A last round
+  item. In a round posted before `LATER_CUTOFF` (below), a `Later steps:` line after the
+  first of the end lines is not read. A last round
   posted before the cutoff `LINK_CUTOFF` in `xtask/src/review.rs` (2026-10-12T12:00:00Z)
   is checked as before, so that the rule does not fail the rounds that came before it.
   The cutoff is a fixed time: it stays when the rule merges after it. Stated by the
@@ -325,7 +326,26 @@
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133389460) and for
   each form in which comrak and GitHub link a bare URL in different ways at
   2026-10-12T22:18:56Z
-  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133655869). The
-  director approves the text of this record. A PR that changes it, and no public item of
-  a crate and no dependency, needs no approval of an architect: `xtask` is on no
+  (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133655869).
+  From the cutoff `LATER_CUTOFF` in `xtask/src/review.rs` (2026-10-13T12:00:00Z), a
+  round comment ends with four lines, in order: `Deferred:`, `Later steps:`,
+  `Public surface:`, and `Hot path:`. A round posted before it ends with the three other
+  lines, and the problem names the lines that the round needs. In the last round posted
+  at or after the cutoff, each later step links the open issue that does it, or the
+  decisions entry that holds its trigger: "review round 3 has a later step with no link
+  on its `Later steps:` line: "the rerun at the head". Link the open issue that does it,
+  or the `docs/decisions/` file that holds its trigger, in the text of the step. The
+  check splits the steps at each `;` that is not in parentheses." A step is the text
+  between two such `;` characters, trimmed, in the text that GitHub shows. An empty step
+  and the value `none` hold no step. A step is linked when an issue starts in it, as on
+  the `Deferred:` line, or when it holds `docs/decisions/`. The limits: the check does
+  not read whether the issue is open, or whether the issue or the file states the step;
+  a `;` in a code span splits a step, since GitHub shows a code span with no backticks;
+  and a record name such as `NODE START` is no link. Only the last round is checked for
+  links, since each later round keeps the steps of the round before it. Stated by the
+  director as goal 6 of https://github.com/synnaxlabs/foundation/issues/1211
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), with
+  the plan https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6134166601.
+  The director approves the text of this record. A PR that changes it, and no public
+  item of a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.

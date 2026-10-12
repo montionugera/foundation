@@ -76,10 +76,7 @@ impl Cause {
 }
 
 /// The names of the lines that end each round comment, in order.
-const END: [&str; 3] = ["Deferred", "Public surface", "Hot path"];
-
-/// The name of a line that the end lines may hold. The check reads no value of it.
-const LATER: &str = "Later steps";
+const END: [&str; 4] = ["Deferred", "Later steps", "Public surface", "Hot path"];
 
 /// The name of the line that lists the text fixes of a round.
 const FIXES: &str = "Text fixes";
@@ -102,6 +99,14 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// `Deferred:` and `Public surface:` lines, so that the rule does not fail the rounds
 /// that came before it.
 const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
+
+/// A round comment posted before this UTC time needs no `Later steps:` line, and the
+/// check reads none of its later steps, so that the rule does not fail the rounds that
+/// came before it.
+const LATER_CUTOFF: &str = "2026-10-13T12:00:00Z";
+
+/// The text that names the decisions entry that holds the trigger of a later step.
+const DECISIONS: &str = "docs/decisions/";
 
 /// The crates in which a deferral needs the OK of the architect. It must match the
 /// risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`.
@@ -181,6 +186,9 @@ struct Ends {
     deferred: String,
     /// The place in `deferred` of each [`BREAK`] that [`ends`] took out of it.
     breaks: Vec<usize>,
+    /// The value of the `Later steps:` line and the place in it of each [`BREAK`] that
+    /// [`ends`] took out of it, or `None` for a round posted before [`LATER_CUTOFF`].
+    later: Option<(String, Vec<usize>)>,
     /// The value of the `Public surface:` line.
     surface: String,
     /// The `Hot path:` line names a function, so the round requires `performance`.
@@ -366,9 +374,9 @@ fn unended(
 
 /// The problems with the links on the end lines of `round`, the last round of a PR
 /// that changes `files`: the first issue of its `Deferred:` line with no OK
-/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what its
-/// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
-/// [`LINK_CUTOFF`].
+/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), the first step of its
+/// `Later steps:` line with no link ([`untracked`]), and what its `Public surface:`
+/// line lacks ([`unapproved`]). None for a round posted before [`LINK_CUTOFF`].
 fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
     let bound = round.posted.as_str() >= LINK_CUTOFF;
     let Some(ends) = round.ends.as_ref().filter(|_| bound) else {
@@ -390,8 +398,19 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
                  {LINK}"
             )
         });
+    let later = ends.later.as_ref();
+    let step = later.and_then(|(later, breaks)| untracked(later, breaks));
+    let step = step.map(|step| {
+        format!(
+            "review round {number} has a later step with no link on its `Later steps:` \
+             line: \"{step}\". Link the open issue that does it, or the `{DECISIONS}` \
+             file that holds its trigger, in the text of the step. The check splits \
+             the steps at each `;` that is not in parentheses."
+        )
+    });
     problem
         .into_iter()
+        .chain(step)
         .chain(unapproved(number, &ends.surface))
         .collect()
 }
@@ -584,7 +603,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             )
         })?;
         let findings = count(number, findings.ok_or_else(|| missing("Findings"))?)?;
-        let tail = shown.end().map(|end| ends(end, number)).transpose()?;
+        let tail = shown.end().map(|end| ends(end, number, &comment.created));
         Ok(Round {
             number,
             reviewers: listed(reviewers.ok_or_else(|| missing("Reviewers"))?),
@@ -593,7 +612,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
             end: end.to_string(),
             findings,
             fixed: fixed(&shown),
-            ends: tail,
+            ends: tail.transpose()?,
             posted: comment.created.clone(),
         })
     };
@@ -675,41 +694,62 @@ fn quoted(line: &str) -> String {
     line.replace(IMAGE, "![]").replace(BREAK, "")
 }
 
-/// What the end lines `paragraph` of round `number` state. The paragraph must be the
-/// [`END`] lines in order and nothing else. A [`LATER`] line after the first line is
-/// not read.
-fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
-    let [deferred, surface, hot] = END;
-    let (values, read) = entries(paragraph, &[deferred, surface, hot, LATER]);
+/// What the end lines `paragraph` of round `number`, posted at `posted`, state. The
+/// paragraph must be the [`END`] lines in order and nothing else. In a round posted
+/// before [`LATER_CUTOFF`], the `Later steps:` line may be missing, and one after the
+/// first line is not read.
+fn ends(paragraph: &[String], number: u32, posted: &str) -> Result<Ends, String> {
+    let [deferred, later, surface, hot] = END;
+    let stepped = posted >= LATER_CUTOFF;
+    let names: &[&str] = if stepped {
+        &END
+    } else {
+        &[deferred, surface, hot]
+    };
+    let (values, read) = entries(paragraph, &END);
     let values = values
         .into_iter()
         .enumerate()
-        .filter(|(i, (name, _))| *i == 0 || *name != LATER)
+        .filter(|(i, (name, _))| stepped || *i == 0 || *name != later)
         .map(|(_, entry)| entry)
         .collect::<Vec<_>>();
-    for (i, name) in END.into_iter().enumerate() {
-        let found = values.get(i).map(|(found, _)| *found);
+    for (i, name) in names.iter().enumerate() {
+        let found = values.get(i).map(|(found, _)| found);
         if read < paragraph.len() || found != Some(name) {
+            let list: String = names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    if i + 1 < names.len() {
+                        format!("`{name}:`, ")
+                    } else {
+                        format!("and `{name}:`")
+                    }
+                })
+                .collect();
             return Err(format!(
                 "review round {number} does not end with a `{name}:` line. End each \
-                 round with its `{deferred}:`, `{surface}:`, and `{hot}:` lines, in \
-                 that order, {FORMAT}"
+                 round with its {list} lines, in that order, {FORMAT}"
             ));
         }
     }
-    let [(_, deferred), (_, surface), (_, hot)] =
-        <[_; 3]>::try_from(values).map_err(|values| {
-            let name = values[END.len()].0;
-            format!(
-                "review round {number} has a second `{name}:` line in its end lines."
-            )
-        })?;
-    let (deferred, breaks) = unbroken(&deferred);
+    if let Some((name, _)) = values.get(names.len()) {
+        return Err(format!(
+            "review round {number} has a second `{name}:` line in its end lines."
+        ));
+    }
+    let mut values = values.into_iter().map(|(_, value)| value);
+    let mut next = || values.next().unwrap_or_default();
+    let (deferred, breaks) = unbroken(&next());
+    let later = stepped.then(|| unbroken(&next()));
+    let surface = next().replace(BREAK, "");
+    let hot = stated(&next());
     Ok(Ends {
         deferred,
         breaks,
-        surface: surface.replace(BREAK, ""),
-        hot: stated(&hot),
+        later,
+        surface,
+        hot,
     })
 }
 
@@ -758,6 +798,38 @@ fn issues(value: &str, breaks: &[usize]) -> impl Iterator<Item = Range<usize>> {
         end = comment.or_else(|| issue(value, breaks, at))?;
         (comment.is_none() || first).then_some(at..end)
     })
+}
+
+/// The first step of `later`, the value of a `Later steps:` line with the places
+/// `breaks` ([`Ends::breaks`]), that has no link: no issue ([`issue`]) starts in it, and
+/// it does not hold [`DECISIONS`]. The steps are the parts of `later` between the `;`
+/// characters outside parentheses, trimmed. An empty part and the value
+/// `none` ([`stated`]) hold no step.
+fn untracked<'v>(later: &'v str, breaks: &[usize]) -> Option<&'v str> {
+    let mut steps = Vec::new();
+    let (mut start, mut depth) = (0, 0_usize);
+    for (at, c) in later.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => {
+                steps.push(start..at);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    steps.push(start..later.len());
+    let linked = |step: &Range<usize>| {
+        let text = &later[step.clone()];
+        let mut starts = text.char_indices().map(|(at, _)| step.start + at);
+        text.contains(DECISIONS) || starts.any(|at| issue(later, breaks, at).is_some())
+    };
+    let step = steps
+        .into_iter()
+        .find(|step| !later[step.clone()].trim().is_empty() && !linked(step));
+    step.filter(|_| stated(later))
+        .map(|step| later[step].trim())
 }
 
 /// The end of the issue that starts at `at` in `value`, a value with the places
@@ -865,7 +937,7 @@ fn numbered(path: &str) -> Option<&str> {
 /// Whether a round posted before [`CUTOFF`] names a hot path: a `Hot path:` line in
 /// `text` ([`Shown::text`]) has a value ([`stated`]).
 fn named(text: &[Vec<String>]) -> bool {
-    states(text.iter().map(Vec::as_slice), END[2])
+    states(text.iter().map(Vec::as_slice), END[3])
 }
 
 /// Whether a line of `paragraphs` starts with `name:` and has a value ([`stated`]).
