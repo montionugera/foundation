@@ -46,8 +46,9 @@ pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error
 
 /// The identity in `node.key` of `files`. When the file is not there and the data
 /// directory has no directory of a mesh, makes a new one at mesh time from `clock`,
-/// once it has mesh time, and from `entropy`, and publishes it. Call it under the lock of the data directory, after the claim has made the
-/// directory durable, so that a key that `publish` made is durable when it reads it.
+/// once it has mesh time, and from `entropy`, and publishes it. Call it under the lock
+/// of the data directory, after the claim has made the directory durable, so that a
+/// key that `publish` made is durable when it reads it.
 ///
 /// # Errors
 ///
