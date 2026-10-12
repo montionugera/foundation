@@ -78,8 +78,8 @@ const _: () = {
     }
 };
 
-/// The name of each status channel of [`TABLE`], under the node's name. A node gives
-/// these in its founding and in its join request.
+/// The name of each status channel of [`TABLE`], under the node's name. The member
+/// record of the node holds a key for each.
 pub(crate) fn names() -> BTreeSet<Name> {
     let name = |c: &Channel| c.name.parse().expect("invariant: a status name parses");
     TABLE.iter().map(name).collect()
