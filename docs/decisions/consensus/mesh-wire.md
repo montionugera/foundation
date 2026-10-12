@@ -91,3 +91,7 @@
   (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131749653), and the
   place of the bound 2026-10-12T20:18:47Z
   (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823).
+  `Mesh::start` refuses a set of more than 127 voters with `Error::Voters`, so that each
+  proof that the node makes also fits a message with no entry and no link. Decided by
+  `laptop.architect`, 2026-10-12T20:38:56Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6132216407).
