@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::rc::Rc;
 
 use super::*;
@@ -188,6 +189,29 @@ fn a_running_node_holds_its_keys_and_its_bound_address() {
         assert_eq!(dialed, Some(Ok(())), "port {port}, stored {stored}");
         assert_eq!(stop(&mut sim, node), Ok(()));
         assert_eq!(held(&mut sim, &host), None);
+    }
+}
+
+/// A node whose port binds at the unspecified IP serves: a program that dials the
+/// host's address at that port reaches it.
+#[test]
+fn a_node_at_the_unspecified_ip_serves() {
+    for ip in [
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    ] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = Node::start(Config {
+            listen: SocketAddr::new(ip, PORT),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let dialed = dial(&mut sim, of(&host, PORT));
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let dialed = dialed.lock().unwrap().take();
+        assert_eq!(dialed, Some(Ok(())), "{ip}");
+        assert_eq!(stop(&mut sim, node), Ok(()), "{ip}");
     }
 }
 

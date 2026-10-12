@@ -15,19 +15,22 @@
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6074718616).
   Supersedes "The supervisor stops; a spec change starts it again" of the plan on #338
   (https://github.com/synnaxlabs/foundation/issues/338#issuecomment-5994872059).
-  The class of a hub error that `kind::Context::reader` or `writer` gives: `Config`,
-  with one diagnostic with no span and the hub error's text, for an error that only a
-  spec change fixes: reader `Empty` (`connector.no-channel`) and `ManyIndexes`
+  The class of a hub error that the supervisor's open of a reader or
+  `kind::Context::writer` gives (the supervisor's open: `laptop.architect-2`,
+  2026-10-11T05:23:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 5):
+  `Config`, with one diagnostic with no span and the hub error's text, for an error that
+  only a spec change fixes: reader `Empty` (`connector.no-channel`) and `ManyIndexes`
   (`connector.many-indexes`); writer `Unknown` (`connector.unknown-channel`), `Empty`
   (`connector.no-channel`), and `Home` with a lease that is not longer than zero
   (`connector.lease`). `Retry`, with the hub error: `Remote` and `Mesh` of each, since
-  the home can move back, and a mesh that stops ends the run at the cancel after at
-  most one backoff. `Device` is for the device or the endpoint, never the hub. An error
-  that the open never gives panics with `invariant:`: writer `Home` `Unsynced`,
-  because `Hub::writer` waits for mesh time; reader `Unsynced`, because no run starts
-  before the node has mesh time, and mesh time stays once known; and reader
-  `Transport`, `Refused`, `Message`, and `Pool`, because a named reader opens only at
-  its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
+  the home can move back, and a mesh that stops ends the run at the cancel after at most
+  one backoff. `Device` is for the device or the endpoint, never the hub. An error that
+  the open never gives panics with `invariant:`: writer `Home` `Unsynced`, because
+  `Hub::writer` waits for mesh time; reader `Unsynced`, because the supervisor opens a
+  reader only after the status channels, which wait for mesh time, and mesh time stays
+  once known; and reader `Transport`, `Refused`, `Message`, and `Pool`, because a named
+  reader opens only at its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6102937379). The
   writer `Home` list and the codes: proposed in the plan on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104945733),

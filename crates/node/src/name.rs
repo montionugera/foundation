@@ -1,16 +1,20 @@
-//! The node's name, in the file `name` of the data directory.
+//! The node's name, in the file `name` of the data directory. The stored name is the
+//! one in the file, else the one in the node's card in the founding that the data
+//! directory stores.
 //!
 //! The file is 277 bytes: the tag, the length of the name in one byte, the name with
 //! zero bytes after it up to [`Name::MAX_BYTES`], and the CRC32C of those 273 bytes
 //! (little-endian), in one sector ([`crate::sector`]).
 
 use std::path::Path;
+use std::rc::Rc;
 
 use env::files::Files;
+use mesh::region::Founding;
 use types::name::Name;
 
-use crate::Error;
 use crate::sector::{self, Held};
+use crate::{Error, directory, identity};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";
@@ -24,6 +28,12 @@ const _: () = assert!(
     Name::MAX_BYTES <= u8::MAX as usize,
     "one byte holds the length"
 );
+/// The pool of the read of the founding. The claim reads it before the shard's buffer
+/// opens, and [`stored`] on no shard.
+const POOL: block::Config = match block::Config::new(64 << 10) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
 
 /// The name in the file `name` of `files`, or `None` when no node wrote one. Opens
 /// the file to read only, so it makes nothing and waits for no lock.
@@ -37,26 +47,94 @@ pub(crate) async fn read(files: &Files) -> Result<Option<Name>, Error> {
     decode(&held.map_err(Error::Directory)?)
 }
 
-/// Writes `name` to the file `name` of `files` and makes it durable, when the file is
-/// not there. Call it under the lock of the data directory, after the sync of the
-/// directory that the claim makes: a failed sync of an earlier start can leave a name
-/// that a read sees but a crash loses.
+/// The stored name of the node of `files`: the one in the file `name`, else the one in
+/// the node's card in the founding that the data directory stores, else `None` with
+/// no founding. Opens each file to read only, so it makes nothing and waits for no
+/// lock.
 ///
 /// # Errors
 ///
-/// [`Error::Renamed`] when the file holds another name, [`Error::Name`] for a file
-/// that a node did not write, and [`Error::Directory`] for a file call that fails.
-pub(crate) async fn keep(files: &Files, name: &Name) -> Result<(), Error> {
-    match read(files).await? {
-        None => sector::publish(files, Path::new(FILE), &encode(name))
-            .await
-            .map_err(Error::Directory),
-        Some(stored) if stored == *name => Ok(()),
-        Some(stored) => Err(Error::Renamed {
-            stored,
-            given: name.clone(),
-        }),
+/// With no file `name`: [`Error::Mesh`] for a founding that does not read,
+/// [`Error::Key`] for a file `node.key` that a node did not write, and
+/// [`Error::NoCard`] for a founding with no card of the key in `node.key` or with no
+/// `node.key`. [`Error::Name`] for a file `name` that a node did not write, and
+/// [`Error::Directory`] for a file call that fails.
+pub(crate) async fn stored(files: &Files) -> Result<Option<Name>, Error> {
+    match source(files).await? {
+        Source::File(stored) | Source::Card(stored) => Ok(Some(stored)),
+        Source::Nothing => Ok(None),
     }
+}
+
+/// Where the stored name is.
+enum Source {
+    File(Name),
+    Card(Name),
+    /// No file `name` and no founding.
+    Nothing,
+}
+
+/// The source of the stored name of the node of `files`, as [`stored`] gives it.
+async fn source(files: &Files) -> Result<Source, Error> {
+    if let Some(stored) = read(files).await? {
+        return Ok(Source::File(stored));
+    }
+    // The founding first: a first start makes `node.key` durable before it, so a read
+    // that sees the founding also sees the key. The key also with no founding, so that
+    // `Error::Key` comes before `Unnamed`.
+    let founding = founding(files).await?;
+    let key = identity::key(files).await?;
+    let Some(founding) = founding else {
+        return Ok(Source::Nothing);
+    };
+    let key = key.ok_or(Error::NoCard)?;
+    let mut members = founding.members.into_iter();
+    let member = members.find(|member| member.card.key() == key);
+    let member = member.ok_or(Error::NoCard)?;
+    Ok(Source::Card(member.card.card().name.clone()))
+}
+
+/// The founding that the data directory of `files` stores. Makes the pool of the read,
+/// whose reservation is over 2 MiB, only when the mesh's directory is there.
+async fn founding(files: &Files) -> Result<Option<Founding>, Error> {
+    let dir = directory::mesh();
+    if let Err(error) = files.list(&dir).await {
+        return match error {
+            env::files::Error::NotFound { .. } => Ok(None),
+            error => Err(Error::Directory(error)),
+        };
+    }
+    let pool = Rc::new(block::Pool::heap(POOL));
+    mesh::founding(files, &dir, pool).await.map_err(Error::Mesh)
+}
+
+/// Writes `name` to the file `name` of `files` and makes it durable, when the file is
+/// not there and the stored name ([`stored`]) is `name` or `None`. Call it under the
+/// lock of the data directory, after the sync of the directory that the claim makes: a
+/// failed sync of an earlier start can leave a name that a read sees but a crash loses.
+///
+/// # Errors
+///
+/// [`Error::Renamed`] when the stored name ([`stored`]) is another name, and each
+/// error of [`stored`].
+pub(crate) async fn keep(files: &Files, name: &Name) -> Result<(), Error> {
+    match source(files).await? {
+        Source::File(stored) => return same(stored, name),
+        Source::Card(stored) => same(stored, name)?,
+        Source::Nothing => {}
+    }
+    sector::publish(files, Path::new(FILE), &encode(name))
+        .await
+        .map_err(Error::Directory)
+}
+
+/// [`Error::Renamed`] when `stored` is not `given`.
+fn same(stored: Name, given: &Name) -> Result<(), Error> {
+    if stored == *given {
+        return Ok(());
+    }
+    let given = given.clone();
+    Err(Error::Renamed { stored, given })
 }
 
 /// The bytes of the file that holds `name`.

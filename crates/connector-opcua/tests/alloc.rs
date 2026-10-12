@@ -6,7 +6,11 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-use connector_opcua::bench::{Client, Manager};
+use std::future::{Future as _, poll_fn};
+use std::pin::pin;
+
+use connector_opcua::bench::{Client, Manager, client};
+use env::rng::Rng;
 use sim::Sim;
 use types::time::Span;
 
@@ -20,19 +24,21 @@ fn main() {
     the_fuzz_round_trip_allocates_for_each_step();
     a_failed_decode_stops_the_round_trip();
     a_read_through_the_manager_allocates_a_fixed_count();
+    a_read_of_a_client_allocates_a_fixed_count();
 }
 
-fn sim() -> (Sim, env::clock::Clock) {
+fn sim() -> (Sim, env::clock::Clock, Rng) {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
-    (sim, clock)
+    let node = sim.node(sim::node::Config::default());
+    (sim, node.clock(), node.entropy().rng())
 }
 
-/// The positive control: the copy allocates one entry for each timer.
+/// The positive control: the copy allocates one entry for each timer. The two loops
+/// live at once on this thread, so they take one `Rng`.
 fn the_count_holds_the_allocations_of_c() {
-    let ((_sim, none), (_other, timers)) = (sim(), sim());
-    let (none, base) = ALLOCATOR.count(|| Client::new(none, 0));
-    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, 100));
+    let ((_sim, none, mut rng), (_other, timers, _)) = (sim(), sim());
+    let (none, base) = ALLOCATOR.count(|| Client::new(none, &mut rng, 0));
+    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, &mut rng, 100));
     assert_eq!(count - base, 100, "the timers of 100 against 0 allocated");
     drop((none, timers));
 }
@@ -41,8 +47,9 @@ fn the_count_holds_the_allocations_of_c() {
 /// too. After each run, the timers wait 1 ms more.
 fn a_run_allocates_nothing() {
     for timers in [1, 100, 10_000] {
-        let (mut sim, clock) = sim();
-        let mut client = Client::new(env::clock::Clock::clone(&clock), timers);
+        let (mut sim, clock, mut rng) = sim();
+        let mut client =
+            Client::new(env::clock::Clock::clone(&clock), &mut rng, timers);
         for at in 1..=2000 {
             sim.run_for(Span::MILLISECOND).expect("the run has no task");
             let ((), count) = ALLOCATOR.count(|| client.run());
@@ -60,8 +67,8 @@ fn a_run_allocates_nothing() {
 const URI: &[u8] = b"urn:open62541.unconfigured.application";
 
 fn the_drop_frees_the_client() {
-    let (_sim, clock) = sim();
-    let client = Client::new(clock, 0);
+    let (_sim, clock, mut rng) = sim();
+    let client = Client::new(clock, &mut rng, 0);
     let ((), freed) = ALLOCATOR.freed_holding(URI, || drop(client));
     assert_eq!(freed, 1, "the drop freed the URI of the client");
 }
@@ -113,7 +120,8 @@ fn reads(idle: usize) -> Vec<[u64; 4]> {
             }
             counts
         };
-        Manager::scope(node.clock(), node.net(), address, idle, body).await
+        let rng = &mut node.entropy().rng();
+        Manager::scope(node.clock(), node.net(), address, idle, rng, body).await
     };
     sim.run_on(&node, run).expect("the run ends")
 }
@@ -129,4 +137,41 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
             assert_eq!(counts, [4, 5, 2, 0], "{idle} idle, read {read}");
         }
     }
+}
+
+/// The allocations in the polls of reads 2 to 100 of one client. The server runs on
+/// its own manager, outside the polls.
+fn client_reads() -> Vec<u64> {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &client::Server| {
+            let mut client = server.connect().await;
+            let mut counts = Vec::new();
+            for _ in 1..=100 {
+                let mut read = pin!(client.read());
+                let mut count = 0;
+                poll_fn(|cx| {
+                    let (poll, allocations) =
+                        ALLOCATOR.count(|| read.as_mut().poll(cx));
+                    count += allocations;
+                    poll
+                })
+                .await;
+                counts.push(count);
+            }
+            client.close().await;
+            counts.split_off(1)
+        };
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
+    };
+    sim.run_on(&node, run).expect("the run ends")
+}
+
+/// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
+/// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
+fn a_read_of_a_client_allocates_a_fixed_count() {
+    assert_eq!(client_reads(), [7; 99], "reads 2 to 100");
 }

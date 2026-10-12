@@ -427,6 +427,19 @@
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
+  `bench::client` gives a test server on its own manager, and clients of it that each
+  have their own manager, as the kind uses them. Each new loop sets the start value of
+  the generator of its thread again, from the next value of its `Rng`, and each loop on
+  that thread then draws from that one generator. So the caller gives each loop on a
+  thread an `Rng` whose next value differs: after the same start value, the generator
+  gives the same numbers again. Approved by `laptop.architect-2` at `c1285785f`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520,
+  2026-10-11 17:47 UTC). Lost: a `Loop::new` that mixes the next value with a draw from
+  the generator, so that equal values give different numbers. A run then depends on what
+  its thread drew before, so the same value does not give the same run, and the first
+  loop of a thread has no start value to draw from. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111912275,
+  2026-10-11 17:51 UTC).
   The logger of the loop writes each message of level warning and up to fd 2, and
   drops the lower levels: it formats the line into a stack buffer of 512 bytes with
   `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
@@ -542,8 +555,12 @@
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
   lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
   options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 needs the port before it builds the URL of its server: with the first
-  such owner, `Manager::listening` also gives the address of its listener. Also lost:
+  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
+  until a listen open takes it, and `Server::start` makes the URL of its server from
+  that port. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
   one constructor with an `Option<Listener>`, which a client gives as a literal `None`
   (`docs/claude/rust.md`; `laptop.director`,
   https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089322178, 2026-10-09
@@ -609,10 +626,14 @@
   `Server::close` panics before the stop when its manager does not hold the loop of
   the server: approved by `laptop.architect-2` at `d6d834286`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
-  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it
-  makes the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
+  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it makes
+  the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
-  2026-10-11 10:14 UTC). The one function: asked by `laptop.architect-2`
+  2026-10-11 10:14 UTC). `host` is a `&CStr`, so `start` has no panic for a NUL: decided
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes `host: &str` of that comment. The one function:
+  asked by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
   2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
   code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
@@ -632,3 +653,40 @@
   the server. That exception: approved by `laptop.architect-2` at `c9a61bcaf`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
   2026-10-11 10:14 UTC).
+  A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
+  Its `close` first waits for the answer to a CreateSession in flight, or for its
+  request timeout. The server refuses a CloseSession sent before that answer, since it
+  has no session token, and when the answer then comes, open62541 activates the session,
+  which the server keeps after the channel closes. Then `close` sends a CloseSession
+  with `UA_Client_disconnectAsync` and drives its manager until the channel is closed,
+  so a close with a CreateSession in flight can take two request timeouts. A client that
+  lost its channel sends no CloseSession, so its session stays on the server until it
+  times out (https://github.com/synnaxlabs/foundation/issues/2400). The wait works
+  around `src/client/ua_client_connect.c` of open62541: `UA_Client_disconnectAsync`
+  (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
+  and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.
+  Lost: a patch of the copy that defers the CloseSession until the CreateSession answer.
+  It waits for the same answer, so the close ends no sooner, and it changes the session
+  state machine of open62541, where LOCAL PATCHES asks for a hand mutant of each line
+  that it changes. When a new release replaces the copy, check whether it still sends
+  that CloseSession, and remove the wait when it does not. The drop of a
+  `client::Client` calls `shim_client_free`, which stops the loop, then deletes the
+  client. On a stopped loop, open62541 refuses the synchronous CloseSession of the
+  delete and does not wait for the channel to close, so the delete sends no
+  CloseSession, and the session stays on the server until it times out. Since the drop
+  stops the whole loop, the loop of a client holds no other client or server. Before a
+  run returns, the kind closes its client with `close`. A drop is only for a run whose
+  future drops or that panics, because each session that a drop leaves holds one of the
+  sessions of its server until then. A read keeps its answer in the client, which
+  outlives the delete that calls the callback of each read in flight, and the callback
+  drops the answer of a request that is not the read in flight. Lost: a drop that sends
+  the CloseSession. A delete on a started loop sends it in a synchronous call, and that
+  call waits for an answer that only a drive of the manager reads. Proposed in
+  https://github.com/synnaxlabs/foundation/pull/2397. Approved by `laptop.architect-2`,
+  with the rule for the kind and the lost design as its texts
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
+  2026-10-11 12:52 UTC). The wait for the CreateSession, its cause and bound, its lost
+  design, and the close of a client that lost its channel: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
+  2026-10-11 15:26 UTC).

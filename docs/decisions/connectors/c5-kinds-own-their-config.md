@@ -7,9 +7,15 @@
   (time only from samples and ctx), and outputs on the calculation's own index.
   Supersedes: r3 single-expression language, r3 first-input index, r8 JSON Schema
   check in `config`. The channels of a kind's `check` are from the mesh's side:
-  `reads` are the channels it reads from the mesh (commands for the device, or samples
-  it sends out), and `writes` the channels it writes to the mesh (samples from the
-  device) (`laptop.architect-2`, 2026-10-07T15:17:11Z:
+  `reader` holds the settings of the reader of the channels it reads from the mesh
+  (commands for the device, or samples it sends out), and `writes` the channels it
+  writes to the mesh (samples from the device) (`laptop.architect-2`,
+  2026-10-07T15:17:11Z:
   https://github.com/synnaxlabs/foundation/issues/1082#issuecomment-6040866688; item on
   #1731, 2026-10-08T06:24:16Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053789750).
+  `Channels::reader` gives the reader settings: a reader takes a selector, which the
+  hub matches at the open (`laptop.architect-2`, 2026-10-11T05:23:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, edit
+  1). Supersedes `reads`, a list of names that no code read, of
+  https://github.com/synnaxlabs/foundation/issues/1082#issuecomment-6040866688.

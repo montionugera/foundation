@@ -4,6 +4,9 @@
 #![cfg(test)]
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "../../../env/tests/common/paths.rs"]
+mod cases;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod clock;
 mod common;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -15,11 +18,16 @@ mod files;
 #[cfg(target_os = "macos")]
 mod free;
 #[cfg(target_os = "linux")]
+#[path = "../common/fsize.rs"]
+mod fsize;
+#[cfg(target_os = "linux")]
 mod kept;
 #[cfg(target_os = "linux")]
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paths;
 #[cfg(target_os = "linux")]
 #[path = "../common/seccomp.rs"]
 mod seccomp;

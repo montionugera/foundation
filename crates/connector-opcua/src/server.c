@@ -47,3 +47,18 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
         return NULL;
     return &description->discoveryUrls[index];
 }
+
+/* Adds to `server` the variable `node` of `namespace`, which holds the Double `value`,
+ * under the Objects folder. */
+UA_StatusCode shim_server_add_double(UA_Server *server, UA_UInt16 namespace,
+                                     UA_UInt32 node, UA_Double value) {
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&attributes.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    return UA_Server_addVariableNode(
+        server, UA_NODEID_NUMERIC(namespace, node),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "value"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+}

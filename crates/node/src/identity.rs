@@ -33,6 +33,17 @@ pub(crate) struct Identity {
     pub(crate) opener: Opener,
 }
 
+/// The node key in `node.key` of `files`, or `None` when the file is not there. Opens
+/// the file to read only, so it makes nothing and waits for no lock.
+///
+/// # Errors
+///
+/// [`Error::Key`] for a file that [`load`] did not write, and [`Error::Directory`]
+/// for a file call that fails.
+pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error> {
+    Ok(read(files).await?.map(|bytes| node_key(&bytes)))
+}
+
 /// The identity in `node.key` of `files`. When the file is not there, makes a new one
 /// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
 /// it. Call it under the lock of the data directory, after the claim has made the
@@ -47,9 +58,8 @@ pub(crate) async fn load(
     clock: &clock::Reader,
     entropy: &env::entropy::Entropy,
 ) -> Result<Identity, Error> {
-    let held = sector::read(files, Path::new(FILE), TAG).await;
-    match held.map_err(Error::Directory)? {
-        Held::Nothing => {
+    match read(files).await? {
+        None => {
             clock.reach(Stamp::from_nanos(i64::MIN)).await;
             let now = match clock.status() {
                 clock::Status::Synced(now) | clock::Status::Holdover(now, _) => {
@@ -63,7 +73,20 @@ pub(crate) async fn load(
             store(files, &identity).await?;
             Ok(identity)
         }
-        Held::Written(bytes) => Ok(fields(&bytes)),
+        Some(bytes) => Ok(fields(&bytes)),
+    }
+}
+
+/// The bytes of `node.key` in `files`, or `None` when the file is not there.
+///
+/// # Errors
+///
+/// As [`load`].
+async fn read(files: &Files) -> Result<Option<[u8; LEN]>, Error> {
+    let held = sector::read(files, Path::new(FILE), TAG).await;
+    match held.map_err(Error::Directory)? {
+        Held::Nothing => Ok(None),
+        Held::Written(bytes) => Ok(Some(bytes)),
         Held::Foreign => Err(Error::Key),
     }
 }
@@ -127,12 +150,16 @@ pub(crate) fn encode(identity: &Identity) -> [u8; LEN] {
     bytes
 }
 
+/// The node key in `bytes`, whatever its tag and checksum.
+fn node_key(bytes: &[u8; LEN]) -> types::node::Key {
+    let key = bytes[16..32].try_into().expect("invariant: 16 bytes");
+    types::node::Key::from_u128(u128::from_be_bytes(key))
+}
+
 /// The keys in `bytes`, whatever its tag and checksum.
 fn fields(bytes: &[u8; LEN]) -> Identity {
     Identity {
-        key: types::node::Key::from_u128(u128::from_be_bytes(
-            bytes[16..32].try_into().expect("invariant: 16 bytes"),
-        )),
+        key: node_key(bytes),
         private_key: PrivateKey(bytes[32..64].try_into().expect("invariant: 32 bytes")),
         opener: Opener::from_bytes(
             bytes[64..BODY].try_into().expect("invariant: 32 bytes"),

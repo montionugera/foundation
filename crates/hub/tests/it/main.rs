@@ -43,6 +43,7 @@ mod link;
 mod named;
 #[path = "../common/node.rs"]
 mod node;
+mod read;
 mod region;
 mod remote;
 mod serve;

@@ -21,6 +21,13 @@ pub(crate) fn flag(value: &Value, key: &str) -> Result<bool, String> {
     value[key].as_bool().ok_or_else(|| missing(key, "boolean"))
 }
 
+/// The unsigned integer field `key` of `value`.
+pub(crate) fn number(value: &Value, key: &str) -> Result<u64, String> {
+    value[key]
+        .as_u64()
+        .ok_or_else(|| missing(key, "unsigned integer"))
+}
+
 fn missing(key: &str, kind: &str) -> String {
     format!("JSON has no {kind} field `{key}`")
 }
@@ -31,7 +38,7 @@ mod tests {
     use serde_json::json;
 
     fn value() -> Value {
-        json!({ "name": "raft", "kind": ["test"], "test": false })
+        json!({ "name": "raft", "kind": ["test"], "test": false, "id": 7 })
     }
 
     #[test]
@@ -39,6 +46,7 @@ mod tests {
         assert_eq!(text(&value(), "name"), Ok("raft"));
         assert_eq!(list(&value(), "kind"), Ok(&[json!("test")][..]));
         assert_eq!(flag(&value(), "test"), Ok(false));
+        assert_eq!(number(&value(), "id"), Ok(7));
     }
 
     #[test]
@@ -54,6 +62,10 @@ mod tests {
         assert_eq!(
             flag(&value(), "name").unwrap_err(),
             "JSON has no boolean field `name`"
+        );
+        assert_eq!(
+            number(&value(), "test").unwrap_err(),
+            "JSON has no unsigned integer field `test`"
         );
     }
 }

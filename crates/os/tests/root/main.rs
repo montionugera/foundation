@@ -1,6 +1,6 @@
-//! `os` with `sudo`: files on a small filesystem that the test mounts, and a listener
-//! that an operator aborts. Only one CI step on a GitHub-hosted runner runs this
-//! target.
+//! `os` with `sudo`: files on a small filesystem that the test mounts, a listener
+//! that an operator aborts, and a write as root or in a directory that refuses a
+//! remove. Only one CI step on a GitHub-hosted runner runs this target.
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 #![cfg(target_os = "linux")]
@@ -11,10 +11,16 @@ use std::process::Command;
 
 use env::files::{Error, Files, Mode};
 
+#[path = "../common/mod.rs"]
+#[expect(dead_code, reason = "this binary only makes a scratch directory")]
+mod disk;
 #[path = "../it/free.rs"]
 mod free;
+#[path = "../common/fsize.rs"]
+mod fsize;
 #[path = "../it/kept.rs"]
 mod kept;
+mod paths;
 #[path = "../common/seccomp.rs"]
 mod seccomp;
 #[path = "../common/sockets.rs"]
@@ -139,7 +145,12 @@ fn files_of_a_mount_point_syncs_only_the_mount() {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    run(|files, _| async move { free::check(&files).await });
+    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
 }
 
 #[test]

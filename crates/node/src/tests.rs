@@ -1964,6 +1964,119 @@ mod lock {
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
     }
 
+    /// A second node at the port of a node that serves on the same data directory: the
+    /// claim comes before the bind, so the data directory refuses it.
+    #[test]
+    fn a_second_node_at_the_port_of_a_running_node_is_refused_by_the_lock() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let second = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        assert_eq!(second.join(), Err(busy()));
+        first.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(first.join(), Ok(()));
+    }
+
+    /// A stop at any point of the start or while the node serves, then a second node
+    /// at once at the same port: the stop holds the lock until the port is free, so
+    /// each node serves or finds the lock held, one of them claims, and no port fails
+    /// to bind.
+    #[test]
+    fn a_start_during_the_stop_of_a_node_at_its_port_never_fails_on_the_port() {
+        let mut seen = [false; 2];
+        let steps = (0..400).map(|step| Span::from_nanos(step * 5_000));
+        for after in steps.chain([Span::SECOND]) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let first = start_on(&host, 0);
+            assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
+            first.stop();
+            let second = start_on(&host, 0);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {after:?}");
+            second.stop();
+            assert_eq!(sim.run(), Ok(()), "at {after:?}");
+            let outcomes = [first, second].map(|node| {
+                let joined = node.join();
+                let outcome = [Ok(()), Err(busy())].iter().position(|o| *o == joined);
+                outcome.unwrap_or_else(|| panic!("at {after:?}: {joined:?}"))
+            });
+            assert_ne!(outcomes, [1, 1], "at {after:?}");
+            seen[outcomes[1]] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
+    /// Which of the stop of a node that serves and the start of a second node at its
+    /// port comes first.
+    #[derive(Clone, Copy)]
+    enum Order {
+        Stop,
+        Start,
+    }
+
+    /// Runs a node that serves and a second node at its port, with the second of
+    /// `order` 5 µs times `step` after the first. Returns whether the second node
+    /// served, and asserts that it gave `Err(busy())` when it did not.
+    fn second_served(order: Order, step: i64) -> bool {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        let delay = Span::from_nanos(step * 5_000);
+        let (second, probe) = match order {
+            Order::Stop => {
+                first.stop();
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                (second, probe)
+            }
+            Order::Start => {
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                first.stop();
+                (second, probe)
+            }
+        };
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        second.stop();
+        assert_eq!(sim.run(), Ok(()), "at {step}");
+        assert_eq!(first.join(), Ok(()), "at {step}");
+        let served = fate(&probe) == Fate::Ran;
+        let expected = if served { Ok(()) } else { Err(busy()) };
+        assert_eq!(second.join(), expected, "at {step}");
+        served
+    }
+
+    /// A node that serves stops, and a second node at its port starts at a step of
+    /// that stop: the second node finds the lock held or serves, and never fails on
+    /// the port.
+    #[test]
+    fn a_start_at_each_step_of_the_stop_of_a_node_at_its_port_never_fails_on_the_port()
+    {
+        let mut seen = [false; 2];
+        for step in 0..400 {
+            seen[usize::from(second_served(Order::Stop, step))] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
+    /// A second node starts at the port of a node that serves, and the first node
+    /// stops at a step of that start: the second node finds the lock held or serves,
+    /// and never fails on the port.
+    #[test]
+    fn a_stop_at_each_step_of_a_start_at_the_port_of_a_node_never_fails_on_the_port() {
+        let mut seen = [false; 2];
+        for step in 0..400 {
+            seen[usize::from(second_served(Order::Start, step))] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
     /// Two nodes that start at once on a new data directory: one claims it, and the
     /// other stops before it reads a name or opens a ring.
     #[test]
@@ -2917,9 +3030,9 @@ mod port {
         drop(held);
     }
 
-    /// The port binds before any shard's pool is built.
+    /// The pool check comes before the bind, which shard 0 does after its claim.
     #[test]
-    fn a_port_that_does_not_bind_wins_over_a_pool_reservation_past_usize_max() {
+    fn a_pool_reservation_past_usize_max_wins_over_a_port_that_does_not_bind() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 1);
         let listen = listen(&host);
@@ -2929,20 +3042,17 @@ mod port {
             recv_buffer_bytes: 1 << 16,
         };
         let held = host.net().udp(&udp).expect("the port binds");
-        let node =
-            Node::start(config(&host, Size::from_bytes(u64::MAX), Box::new(heap)));
+        let pool = Size::from_bytes(u64::MAX);
+        let node = Node::start(config(&host, pool, Box::new(heap)));
         assert_eq!(sim.run(), Ok(()));
-        let error = Error::Port {
-            listen,
-            error: env::net::Error::AddressInUse { local: listen },
-        };
-        assert_eq!(node.join(), Err(error));
+        assert_eq!(node.join(), Err(Error::Pool { pool, cores: 1 }));
         drop(held);
     }
 
-    /// A port that does not bind starts no shard, and `join` gives why.
+    /// A port that does not bind stops the node once shard 0 claimed the data
+    /// directory, and no buffer opens. A later start there at a free port serves.
     #[test]
-    fn a_port_that_does_not_bind_starts_no_shard() {
+    fn a_port_that_does_not_bind_opens_no_buffer() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         let listen = listen(&host);
@@ -2959,7 +3069,8 @@ mod port {
             error: env::net::Error::AddressInUse { local: listen },
         };
         assert_eq!(node.join(), Err(error.clone()));
-        assert_eq!(host.shard_starts().len(), 0);
+        let claimed = ["lock", "name", "shards-2"].map(PathBuf::from);
+        assert_eq!(listed(&mut sim, &host, ""), claimed);
         assert_eq!(
             error.to_string(),
             format!(
@@ -2967,6 +3078,101 @@ mod port {
             )
         );
         drop(held);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let probe = probe(&node);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        assert_eq!(fate(&probe), Fate::Ran);
+    }
+
+    /// A multicast IP or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address,
+    /// starts no shard and makes no file.
+    #[test]
+    fn a_listen_that_no_peer_reaches_starts_no_shard() {
+        let refused = [
+            "224.0.0.1:0",
+            "239.255.255.255:7000",
+            "255.255.255.255:0",
+            "[ff02::1]:0",
+            "[ff0e::1]:7000",
+            "[::ffff:224.0.0.1]:0",
+            "[::ffff:255.255.255.255]:0",
+        ];
+        for text in refused {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(Error::Listen { listen }), "{text}");
+            assert_eq!(host.shard_starts().len(), 0, "{text}");
+            assert_eq!(listed(&mut sim, &host, ""), Vec::<PathBuf>::new(), "{text}");
+        }
+        let listen = "[::ffff:224.0.0.1]:0".parse().expect("a socket address");
+        assert_eq!(
+            Error::Listen { listen }.to_string(),
+            "cannot bind the node's port at [::ffff:224.0.0.1]:0: a multicast or \
+             broadcast IP is not an address of a host"
+        );
+    }
+
+    /// An IP next to the refused ones goes to the bind.
+    #[test]
+    fn a_listen_next_to_a_refused_ip_goes_to_the_bind() {
+        let bound = [
+            "10.255.255.255:0",
+            "192.168.1.255:0",
+            "223.255.255.255:0",
+            "240.0.0.0:0",
+            "255.255.255.254:0",
+            "[feff::1]:0",
+            "[::ffff:223.255.255.255]:0",
+            "[::ffff:240.0.0.0]:0",
+        ];
+        for text in bound {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let error = env::net::Error::Io { code: 99 };
+            assert_eq!(node.join(), Err(Error::Port { listen, error }), "{text}");
+        }
+    }
+
+    /// The refused listen comes after a reserved name and before a disk budget that
+    /// holds no ring.
+    #[test]
+    fn a_refused_listen_comes_between_a_reserved_name_and_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let listen = "224.0.0.1:0".parse().expect("a socket address");
+        let small = || Config {
+            listen,
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk: Size::from_bytes(1),
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        };
+        let reserved: types::name::Name = "@x".parse().expect("a name");
+        let named = Node::start(Config {
+            name: reserved.clone(),
+            ..small()
+        });
+        let unnamed = Node::start(small());
+        assert_eq!(sim.run(), Ok(()));
+        let name = reserved;
+        assert_eq!(named.join(), Err(Error::Reserved { name }));
+        assert_eq!(unnamed.join(), Err(Error::Listen { listen }));
     }
 
     /// The node takes no session when a buffer does not open.
@@ -4002,7 +4208,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_452_501;
+        const WRITE: i64 = 1_793_725_638;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5265,7 +5471,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5275,7 +5481,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..2 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6487,41 +6693,46 @@ mod port {
         /// seq of the first frame that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = keyed(&mut sim, 2);
-            let founding = region(&[member(OWN, &KEY, &host)]);
-            let placed = connector("influx");
-            let (node, definitions) =
-                applied(&mut sim, &host, founding.clone(), placed.clone());
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let node = start(&host, founding);
-            assert_eq!(sim.run_for(TEN), Ok(()));
-            let read = read_status(&node, &definitions);
-            assert_eq!(sim.run_for(TEN), Ok(()));
-            let other = text("other", &[]);
-            let kept = format!("{placed}{other}");
-            let changed = kept.replace("influx:8086", "influx:8087");
-            for text in [kept, changed] {
-                node.operate(|ops| async move {
-                    apply(&ops, text).await;
+            for seed in 0..16 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
                 });
-                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                let host = keyed(&mut sim, 2);
+                let founding = region(&[member(OWN, &KEY, &host)]);
+                let placed = connector("influx");
+                let (node, definitions) =
+                    applied(&mut sim, &host, founding.clone(), placed.clone());
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let node = start(&host, founding);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let read = read_status(&node, &definitions);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let other = text("other", &[]);
+                let kept = format!("{placed}{other}");
+                let changed = kept.replace("influx:8086", "influx:8087");
+                for text in [kept, changed] {
+                    node.operate(|ops| async move {
+                        apply(&ops, text).await;
+                    });
+                    assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                }
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let read = read.lock().unwrap();
+                let runs = [
+                    (6, 0, 0),
+                    (7, 3, 1),
+                    (8, 2, 1),
+                    (9, 0, 0),
+                    (10, 3, 1),
+                    (11, 2, 1),
+                ];
+                assert_eq!(*read, runs, "seed {seed}");
             }
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            let read = read.lock().unwrap();
-            let runs = [
-                (6, 0, 0),
-                (7, 3, 1),
-                (8, 2, 1),
-                (9, 0, 0),
-                (10, 3, 1),
-                (11, 2, 1),
-            ];
-            assert_eq!(*read, runs);
         }
 
         /// A connector that an apply moves from another member to this node keeps its
@@ -6687,6 +6898,17 @@ mod name {
         assert_eq!(
             Error::Unnamed.to_string(),
             "the data directory holds no node name; give the node a name"
+        );
+    }
+
+    #[test]
+    fn the_text_of_no_card_states_the_two_ways_out() {
+        assert_eq!(
+            Error::NoCard.to_string(),
+            "the data directory stores a region and holds no file `name`, and the file \
+             `node.key` is not there or holds a key that the founding of the region \
+             does not hold; restore `node.key` from a backup of this node, or give \
+             another data directory"
         );
     }
 
@@ -7079,17 +7301,40 @@ mod name {
     /// later time, gives no name or the whole name.
     #[test]
     fn a_read_during_a_start_gives_no_name_or_the_name() {
-        for (seed, later) in (0..64).flat_map(|seed| [(seed, false), (seed, true)]) {
+        reads_during_a_start(&Region::Absent, 0..64);
+    }
+
+    /// As [`a_read_during_a_start_gives_no_name_or_the_name`], with a start that founds
+    /// a region.
+    #[test]
+    fn a_read_during_a_start_that_founds_a_region_gives_no_name_or_the_name() {
+        reads_during_a_start(&Region::Stored, 0..16);
+    }
+
+    /// Reads the name during a first and a later start with `region`, on each of
+    /// `seeds`, and checks that each read gives no name or the whole name.
+    fn reads_during_a_start(region: &Region, seeds: std::ops::Range<u64>) {
+        for (seed, later) in seeds.flat_map(|seed| [(seed, false), (seed, true)]) {
             for offset in (0..200_000).step_by(20_000) {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
+                let start = || {
+                    Node::start(Config {
+                        region: region.clone(),
+                        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                    })
+                };
                 if later {
-                    assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+                    let node = start();
+                    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+                    node.stop();
+                    assert_eq!(sim.run(), Ok(()));
+                    assert_eq!(node.join(), Ok(()));
                 }
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                let node = start();
                 assert_eq!(sim.run_for(Span::from_nanos(offset)), Ok(()));
                 let found = reads(&host, 400);
                 assert_eq!(sim.run_for(Span::SECOND), Ok(()));
@@ -7113,16 +7358,31 @@ mod name {
     /// whole name, and the whole name once each ring has opened.
     #[test]
     fn a_crash_during_the_first_start_leaves_no_name_or_the_whole_name() {
+        crashes_during_the_first_start(&Region::Absent, 0..8);
+    }
+
+    /// As [`a_crash_during_the_first_start_leaves_no_name_or_the_whole_name`], with a
+    /// start that founds a region.
+    #[test]
+    fn a_crash_during_a_first_start_that_founds_a_region_leaves_no_name_or_the_name() {
+        crashes_during_the_first_start(&Region::Stored, 0..4);
+    }
+
+    /// Crashes the first start with `region` every 25 µs, on each of `seeds`, and checks
+    /// the name that a read then gives.
+    fn crashes_during_the_first_start(region: &Region, seeds: std::ops::Range<u64>) {
         let crashes = [sim::Crash::Process, sim::Crash::Power];
-        for (seed, crash) in (0..8).flat_map(|seed| crashes.map(|crash| (seed, crash)))
-        {
+        for (seed, crash) in seeds.flat_map(|seed| crashes.map(|crash| (seed, crash))) {
             for after in (0..).step_by(25_000).map(Span::from_nanos) {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                let node = Node::start(Config {
+                    region: region.clone(),
+                    ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                });
                 let probe = probe(&node);
                 let run = sim.run_for(after);
                 assert_eq!(run, Ok(()), "seed {seed}: {crash:?} at {after:?}");

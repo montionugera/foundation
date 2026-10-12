@@ -118,11 +118,11 @@ struct Inbound {
 
 impl Remote {
     /// Opens a session of `mode` on the channels of `data`, each with its sample type,
-    /// and their index `index` at `home`, another node. Spawns the task of the
-    /// session, which dials the home, opens the session, and then takes its frames,
-    /// and waits until the home opened it. A removal of a channel during the open
-    /// ends the session at its first take. Returns the session and the slot of its
-    /// index.
+    /// and their index `index` at `home`, another node. `data` does not hold `index`.
+    /// Spawns the task of the session, which dials the home, opens the session, and
+    /// then takes its frames, and waits until the home opened it. A removal of a
+    /// channel during the open ends the session at its first take. Returns the session
+    /// and the slot of its index.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
@@ -133,12 +133,6 @@ impl Remote {
         let keys = data.iter().map(|&(key, _)| key).chain([index]).collect();
         let queue = Rc::new(RefCell::new(Queue::default()));
         state.borrow_mut().remotes.add(keys, &queue);
-        let mut held = hash::Set::default();
-        held.insert(index);
-        let data: Vec<_> = data
-            .into_iter()
-            .filter(|&(key, _)| held.insert(key))
-            .collect();
         let group = Group { index, data: &data };
         let set = state.borrow_mut().interner.intern(&[group]);
         let task = session(
