@@ -665,13 +665,14 @@ UA_StatusCode shim_response_result(const void *response) {
 
 /* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. The request times out only after 2^32 ms (49.7 days), so in practice it ends at
- * its answer or at the close of the channel. */
+ * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
+ * ends at its answer or at the close of the channel. */
 UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
-    /* open62541 takes the timeout hint of a request from the config, and makes 0 2^32
-     * ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the hint 0. */
+    /* open62541 takes the timeout hint of a request from the config, and makes 0
+     * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
+     * hint 0. */
     UA_ClientConfig *config = UA_Client_getConfig(client);
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
