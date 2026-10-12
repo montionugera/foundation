@@ -15,8 +15,6 @@ mod disk;
 mod entropy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod files;
-#[cfg(target_os = "macos")]
-mod free;
 #[cfg(target_os = "linux")]
 #[path = "../common/fsize.rs"]
 mod fsize;
@@ -26,6 +24,8 @@ mod kept;
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod net;
+#[path = "../common/panics.rs"]
+mod panics;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
 #[cfg(target_os = "linux")]
