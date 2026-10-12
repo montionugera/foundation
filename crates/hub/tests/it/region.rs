@@ -7,6 +7,7 @@ use std::path::Path;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use env::files::Operation;
 use hub::reader::Ended;
@@ -24,9 +25,9 @@ use wire::hub::Mode;
 use super::definitions::{I32, write_i32};
 use super::serve::{Peer, session_in, stopped};
 use super::{
-    AREA, BODY_MAX, I64, NODE, POOL, TIME, TIME_B, Test, applied, channels, config,
-    definition, entry, keys, name, poll_once, reader, samples, unnamed, without, write,
-    write_series, writer, written,
+    AREA, BODY_MAX, I64, NODE, POOL, SETTLE, TIME, TIME_B, Test, applied, channels,
+    config, definition, entry, keys, name, poll_once, reader, samples, unnamed,
+    without, write, write_series, writer, written,
 };
 use crate::net::{HOME, PEER, own_pool, public_key};
 
@@ -434,6 +435,107 @@ fn a_session_opens_on_the_new_key_of_a_channel_changed_while_it_waits_for_a_home
     });
 }
 
+/// Names this node the home of `time`, holds the hub's tasks, and puts `definitions`
+/// in use, so that only an open can apply the spec.
+async fn held_spec(test: &Test, definitions: BTreeMap<Name, Definition>) {
+    test.set_home(TIME, NODE).await;
+    test.pause.pause();
+    test.set_spec(definitions).await;
+}
+
+/// [`channels`] and `added`, a data channel on `time`.
+fn added() -> BTreeMap<Name, Definition> {
+    let mut added = channels();
+    added.insert(name("added"), definition(9, DataType::Sample(I64), 1));
+    added
+}
+
+#[test]
+fn opens_a_writer_at_once_on_a_channel_that_a_spec_in_use_adds() {
+    run(31, |test| async move {
+        held_spec(&test, added()).await;
+        let Poll::Ready(opened) = poll_once(test.hub.writer(config("a", &["added"])))
+        else {
+            panic!("the open waits");
+        };
+        opened.expect("opens");
+    });
+}
+
+#[test]
+fn opens_a_reader_at_once_on_a_channel_that_a_spec_in_use_adds() {
+    run(32, |test| async move {
+        held_spec(&test, added()).await;
+        let config = unnamed(&["added"], reader::Mode::Latest);
+        let Poll::Ready(opened) = poll_once(test.hub.reader(config)) else {
+            panic!("the open waits");
+        };
+        opened.expect("opens");
+    });
+}
+
+#[test]
+fn opens_no_writer_on_a_channel_that_a_spec_in_use_removes() {
+    run(33, |test| async move {
+        held_spec(&test, without(&["value"])).await;
+        let Poll::Ready(opened) = poll_once(test.hub.writer(config("a", &["value"])))
+        else {
+            panic!("the open waits");
+        };
+        let error = opened.expect_err("value was removed");
+        assert_eq!(error, writer::Error::Unknown(name("value")));
+    });
+}
+
+#[test]
+fn opens_no_reader_on_a_channel_that_a_spec_in_use_removes() {
+    run(34, |test| async move {
+        held_spec(&test, without(&["value"])).await;
+        let config = unnamed(&["value"], reader::Mode::Latest);
+        let Poll::Ready(opened) = poll_once(test.hub.reader(config)) else {
+            panic!("the open waits");
+        };
+        let error = opened.expect_err("value was removed");
+        assert_eq!(error, reader::Error::Empty);
+    });
+}
+
+#[test]
+#[should_panic(
+    expected = "a hub with a region takes its definitions from the region's mesh"
+)]
+fn set_definitions_on_a_hub_with_a_region_panics() {
+    run(35, |test| async move {
+        test.hub.set_definitions(&channels());
+    });
+}
+
+/// The spec task, as the commit and gate tasks, ends only once the hub and each
+/// session that outlives it drop.
+#[test]
+fn ends_the_spec_task_once_the_hub_and_each_session_drop() {
+    run(36, |test| async move {
+        test.set_home(TIME, NODE).await;
+        let reader = test.reader(&["value"], reader::Mode::Complete).await;
+        let writer = test.writer("a", &["value"]).await;
+        let Test {
+            clock,
+            commit,
+            hub,
+            ended,
+            region,
+            ..
+        } = test;
+        drop((hub, commit));
+        clock.sleep(SETTLE).await;
+        assert_eq!(ended.get(), 0, "the sessions hold the state");
+        drop((writer, reader));
+        clock.sleep(SETTLE).await;
+        assert_eq!(ended.get(), 3, "the commit, gate, and spec tasks ended");
+        drop(region);
+    });
+}
+
 #[test]
 fn a_writer_with_an_index_whose_home_is_another_node_does_not_open() {
     run(2, |test| async move {
@@ -680,6 +782,16 @@ fn stops_an_open_of_a_channel_removed_and_defined_again_while_it_waits_with_unkn
     });
     let removed = serve::Error::Removed(channel::Key::from_u128(2));
     assert_eq!(served, Some(Err(removed)));
+    assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
+}
+
+#[test]
+fn stops_a_served_open_on_a_channel_that_a_spec_in_use_removes_with_unknown() {
+    let (served, code) = served(37, |test, _| async move {
+        held_spec(&test, without(&["value"])).await;
+    });
+    let unknown = serve::Error::Unknown(channel::Key::from_u128(2));
+    assert_eq!(served, Some(Err(unknown)));
     assert_eq!(code, Some(Code(wire::hub::UNKNOWN)));
 }
 
