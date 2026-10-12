@@ -1876,6 +1876,26 @@ fn an_entry_past_the_last_seq_is_a_broken_invariant() {
     );
 }
 
+/// The ring file of a `Layout::fit` layout takes at most the given length, and less
+/// than one block under it.
+#[test]
+fn an_open_of_a_fit_layout_makes_a_file_of_at_most_its_length() {
+    let min = Layout::fit(0, BODY_MAX)
+        .expect_err("no ring in no bytes")
+        .min;
+    for len in [min, min + 1, min + 3 * BLOCK - 1, (1 << 30) + BLOCK / 2] {
+        run(187, move |shard| async move {
+            let ring = Layout::fit(len, BODY_MAX).expect("the length holds a ring");
+            let buffer = shard.open(ring, &mut Slots::new()).await;
+            drop(buffer.expect("opens"));
+            let file = shard.files.open(FilePath::new(RING), Mode::Read).await;
+            let file = file.expect("the ring opens").len();
+            assert!(file <= len, "a file of {file} bytes for {len}");
+            assert!(file > len - BLOCK, "a file of {file} bytes for {len}");
+        });
+    }
+}
+
 #[test]
 fn a_file_of_only_the_header_blocks_is_read_for_its_length() {
     run(107, |shard| async move {
