@@ -76,10 +76,12 @@
   `config::plan::check(definitions, members, kinds)` checks the definitions after the
   plan, with no span or note. It gives the first stage with problems:
   `config.private-key` for each string of a definition; then, together, what the kind
-  table refuses in the kind and config of each connector, `config.duplicate-name`, and
-  `config.subject-is-connector`; then `config.implied-channel` for each status channel
-  of a connector that the definitions lack or hold as another channel (STATUS PLACEMENT;
-  `laptop.architect-2`, 2026-10-12T21:39:19Z, item 2 of
+  table refuses in the kind and config of each connector, `config.long-name` for a
+  status name that is too long, `config.implied-channel` for each connector whose kind
+  writes a status channel, `config.duplicate-name`, and `config.subject-is-connector`;
+  then `config.implied-channel` for each status channel of a connector that the
+  definitions lack or hold as another channel (STATUS PLACEMENT; `laptop.architect-2`,
+  2026-10-12T21:39:19Z, item 2 of
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350; the reason
   of the stage, 2026-10-12T21:48:03Z,
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337); then
