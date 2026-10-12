@@ -2172,8 +2172,8 @@ fn fails_a_paragraph_that_comrak_places_in_the_wrong_lines() {
     );
 }
 
-/// GitHub shows the first footnote of each label to end, so a footnote inside another
-/// can hide the one that holds it, and comrak reads no reference to it.
+/// GitHub shows a footnote inside another as a footnote of its own, and comrak reads
+/// no reference to it.
 #[test]
 fn fails_a_round_with_a_footnote_inside_a_footnote() {
     let nested = |notes: &str| {
@@ -3262,8 +3262,8 @@ fn a_footnote_that_github_does_not_show_holds_no_condition() {
     assert_eq!(waiting(&body, &states), Ok(vec![open(2455)]));
 }
 
-/// GitHub shows the first footnote of each label to end, so a footnote inside another
-/// can hide the one that holds it, and comrak reads no reference to it.
+/// GitHub shows a footnote inside another as a footnote of its own, and comrak reads
+/// no reference to it.
 #[test]
 fn fails_the_run_on_a_footnote_inside_a_footnote_of_the_body() {
     let states = [(5, "open"), (6, "open"), (8, "open")];

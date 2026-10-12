@@ -57,8 +57,9 @@
   tab, then `]:`. It also fails when a span of text, as `comrak` reads it, holds `[^` on
   a line before the last line of its paragraph: GitHub can read a `]` on a later line as
   the end of a footnote reference and hide the text between them. It also fails when a
-  footnote, as `comrak` reads it, is inside another footnote: GitHub can then show the
-  inner one in place of the outer one, and `comrak` reads no reference to the inner one.
+  footnote, as `comrak` reads it, is inside another footnote: GitHub shows the inner one
+  as a footnote of its own, and can move text of the outer one into it, but `comrak`
+  reads no reference to the inner one.
   It also fails when `comrak` places the text of a paragraph before the last line of the
   paragraph, as it does after a link or an image with a line break after its text and
   after a link reference definition in the paragraph, since each line that it then gives
