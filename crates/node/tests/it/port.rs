@@ -123,6 +123,7 @@ fn start_node(
         listen,
         region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
+        settings: node::Settings::default(),
     })
 }
 

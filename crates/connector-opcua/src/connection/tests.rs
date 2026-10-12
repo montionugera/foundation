@@ -1009,7 +1009,9 @@ fn a_client_sends_hel_and_its_disconnect_ends_the_stream() {
         .run_on(&network.local.clone(), move |node, _| async move {
             let side = Side::new(&node);
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe { ffi::shim_client_new(side.events().raw()) };
+            let client = unsafe {
+                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
+            };
             assert!(!client.is_null());
             let url = CString::new(format!("opc.tcp://{remote}")).expect("no NUL");
             let url: *const c_char = url.as_ptr();
@@ -2569,7 +2571,7 @@ fn a_server_answers_hel_with_ack_and_its_shutdown_closes_each_connection() {
     assert_eq!(reads.error, None);
     assert!(reads.ended.is_some());
     let mut ack = b"ACKF".to_vec();
-    for field in [28_u32, 0, 1 << 16, 1 << 16, 1 << 29, 1 << 14] {
+    for field in [28_u32, 0, 1 << 16, 1 << 16, 1 << 29, 8] {
         ack.extend(field.to_le_bytes());
     }
     assert_eq!(reads.bytes(), ack);
@@ -2585,7 +2587,9 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
             // SAFETY: the server is deleted before `side` drops.
             let server = unsafe { Server::start(&side.manager, c"", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe { ffi::shim_client_new(side.events().raw()) };
+            let client = unsafe {
+                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
+            };
             assert!(!client.is_null());
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
@@ -2996,7 +3000,9 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             // SAFETY: the server is deleted before `side` drops.
             let server = unsafe { Server::start(&side.manager, c"", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe { ffi::shim_client_new(side.events().raw()) };
+            let client = unsafe {
+                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
+            };
             assert!(!client.is_null());
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
@@ -3049,7 +3055,9 @@ fn a_stopped_server_is_deleted_when_no_delayed_callback_waits() {
                 // SAFETY: the server is deleted before `side` drops.
                 let server = unsafe { Server::start(&side.manager, c"", 1) };
                 // SAFETY: the loop outlives the client, which the test deletes.
-                let client = unsafe { ffi::shim_client_new(side.events().raw()) };
+                let client = unsafe {
+                    ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
+                };
                 assert!(!client.is_null());
                 let url = c"opc.tcp://10.0.0.1:4840";
                 // SAFETY: the client lives, and copies the URL.

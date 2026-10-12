@@ -90,6 +90,7 @@ fn node(start: &Start) -> Result<(), Failure> {
         listen: start.listen,
         region: node::Region::Stored,
         name: known.name.clone(),
+        settings: node::Settings::default(),
     });
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
