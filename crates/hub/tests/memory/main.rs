@@ -84,7 +84,7 @@ fn holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap() {
             common::definitions(&[]),
         )
         .await;
-        let hub = common::hub_in(&node, tasks.clone(), Some(region), &[]).await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -307,7 +307,7 @@ fn holds_no_places_while_a_read_waits_for_its_home() {
         let region =
             region::open(&node, &tasks, Rc::clone(&transport), other, definitions)
                 .await;
-        let hub = common::hub_in(&node, tasks.clone(), Some(region), &wide).await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -365,7 +365,7 @@ fn holds_no_places_once_a_read_opens() {
     let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
-        let hub = common::hub_in(&node, tasks.clone(), None, &more).await;
+        let hub = common::hub_alone(&node, tasks.clone(), &more).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -420,7 +420,7 @@ fn defines_no_channel_again_at_an_open_of_the_spec_applied() {
         let region =
             region::open(&node, &tasks, Rc::new(transport), Vec::new(), definitions)
                 .await;
-        let hub = common::hub_in(&node, tasks, Some(region), &wide).await;
+        let hub = common::hub_in(&node, tasks, region).await;
         let mut open = pin!(hub.reader(reader::Config {
             select: Selector::new(["value"]).expect("a selector"),
             mode: Mode::Complete,

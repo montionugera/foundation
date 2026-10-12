@@ -29,20 +29,38 @@ pub(crate) async fn hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
     (hub, now.nanos())
 }
 
-/// A hub on a new shard of node 1 in `region`, or alone with no region, with mesh
-/// time, and with `time`, `value`, and each of `more`, an `i64` channel on `time`,
-/// defined. The founding of `region` must hold the [`definitions`] of `more`.
+/// A hub on a new shard of node 1 in `region`, with mesh time, which takes its
+/// definitions from the mesh of `region`.
 pub(crate) async fn hub_in(
     node: &sim::node::Node,
     tasks: Tasks,
-    region: Option<hub::Region>,
+    region: hub::Region,
+) -> Hub {
+    hub_on(node, tasks, Some(region)).await
+}
+
+/// A hub on a new shard of node 1 with no region, with mesh time, and with `time`,
+/// `value`, and each of `more`, an `i64` channel on `time`, defined.
+pub(crate) async fn hub_alone(
+    node: &sim::node::Node,
+    tasks: Tasks,
     more: &[Name],
 ) -> Hub {
-    let regional = region.is_some();
+    let hub = hub_on(node, tasks, None).await;
+    hub.set_definitions(&definitions(more));
+    hub
+}
+
+/// A hub on a new shard of node 1 in `region`, or with no region, with mesh time.
+async fn hub_on(
+    node: &sim::node::Node,
+    tasks: Tasks,
+    region: Option<hub::Region>,
+) -> Hub {
     let env = env(node, tasks);
     let (tasks, entropy) = (env.tasks.clone(), env.entropy.clone());
     let (home, interner, _, time) = home::testing::shard(env).await;
-    let hub = Hub::new(hub::Config {
+    Hub::new(hub::Config {
         home,
         interner,
         tasks,
@@ -50,11 +68,7 @@ pub(crate) async fn hub_in(
         time,
         entropy,
         region,
-    });
-    if !regional {
-        hub.set_definitions(&definitions(more));
-    }
-    hub
+    })
 }
 
 /// `time` with key 1, `value` with key 2, and each of `more`, from key 100 on, each
