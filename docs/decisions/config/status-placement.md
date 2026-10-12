@@ -23,15 +23,18 @@
   makes an error that no file can fix (`laptop.architect-2`, 2026-10-10T15:41:24Z,
   https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6099218399). The
   connector is a writer of each index that it implies (PLAN SURFACE).
-  `config::plan::check` refuses definitions that lack a status channel of a connector
-  or hold it as another channel, with `config.implied-channel` at no span, since a
-  plan file that `plan` did not make can hold such a change, and the connector then
-  cannot open its status. The check is a stage after that of the kind table and the
-  names, since it needs the table to take each connector, and no check of that stage
-  needs another to pass (PLAN FILE). Lost: a new code, since the rule is that of
-  `config.implied-channel`; and `Plan::definitions` filling in each status channel,
-  since the applied spec then differs from the plan file that the caller checked.
-  Decided by `laptop.architect-2` (#2256, 2026-10-12T21:39:19Z,
-  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350; the
-  reason of the stage, 2026-10-12T21:48:03Z,
-  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337).
+  `config::plan::check` refuses definitions that lack a status channel of a connector or
+  hold it as another channel, with `config.implied-channel` at no span, since a plan
+  file that `plan` did not make can hold such a change, and the connector then cannot
+  open its status. The check, and before it that of a kind that writes a status channel,
+  are a stage after that of the kind table and the names, since each needs the table to
+  take each connector, and no check of that stage needs another to pass (PLAN FILE).
+  Lost: a new code, since the rule is that of `config.implied-channel`; and
+  `Plan::definitions` filling in each status channel, since the applied spec then
+  differs from the plan file that the caller checked. Decided by `laptop.architect-2`
+  (#2256, 2026-10-12T21:39:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350; the reason
+  of the stage, 2026-10-12T21:48:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
+  of the write check, 2026-10-12T22:33:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580).
