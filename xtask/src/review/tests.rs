@@ -3196,6 +3196,7 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         (format!("#12 ({OK}), GH-13"), "GH-13".to_string()),
         (format!("#12 ({OK}), (gh-013)."), "gh-013".to_string()),
         (format!("#12 ({OK}),GH-13"), "GH-13".to_string()),
+        (format!("#12 ({OK}), éGH-13"), "GH-13".to_string()),
         ("GH-13".to_string(), "GH-13".to_string()),
         (at("a/b/issues/13"), at("a/b/issues/13")),
         (at("a/b/pull/13/files"), at("a/b/pull/13")),
@@ -3230,8 +3231,9 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         "the GH- and # marks, at https://github.com/a/b/issues/ and gh-x".to_string(),
         "https://gitlab.com/a/b/issues/13".to_string(),
         format!("#12 ({OK}), the high-13 line"),
-        format!("#12 ({OK}), éGH-13"),
         format!("#12 ({OK}), 1GH-13"),
+        format!("#12 ({OK}), _GH-13"),
+        format!("#12 ({OK}), x_GH-13"),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
     }
