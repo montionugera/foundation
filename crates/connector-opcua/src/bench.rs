@@ -115,8 +115,8 @@ const PORT: u16 = 4840;
 const CONNECT_TIMEOUT: Span = Span::from_nanos(60_000_000_000);
 
 /// A connection manager over `env::net` with a test server of open62541 and `idle + 1`
-/// clients, each with an activated session and the namespaces of the server, on its
-/// loop. The first client reads; the others send nothing.
+/// clients, each with an activated session, on its loop. The first client reads; the
+/// others send nothing.
 pub struct Manager {
     clients: Vec<NonNull<ffi::Client>>,
     server: Server,
@@ -327,8 +327,7 @@ impl Manager {
         assert!(ready.is_ready(), "a drive whose run is ready ends");
     }
 
-    /// Gives the count of clients with the namespaces of the server, which a client
-    /// reads after its session activates.
+    /// Gives the count of clients whose session is active.
     ///
     /// # Panics
     ///
@@ -336,10 +335,11 @@ impl Manager {
     fn connected(&self) -> usize {
         let connected = |client: &&NonNull<ffi::Client>| {
             // SAFETY: the client lives.
-            let status = unsafe { state(**client) }.status;
+            let State {
+                session, status, ..
+            } = unsafe { state(**client) };
             assert!(status == Status::GOOD, "a connect failed: {status:?}");
-            // SAFETY: the client lives.
-            unsafe { ffi::test::shim_client_namespaced(client.as_ptr()) }
+            session == ffi::Session::ACTIVATED
         };
         self.clients.iter().filter(connected).count()
     }
@@ -348,6 +348,7 @@ impl Manager {
 /// The state of the channel and the connect of a client of a [`Manager`].
 struct State {
     channel: ffi::Channel,
+    session: ffi::Session,
     /// The status of the connect.
     status: Status,
 }
@@ -358,21 +359,28 @@ struct State {
 ///
 /// `client` lives.
 unsafe fn state(client: NonNull<ffi::Client>) -> State {
-    let (mut channel, mut status) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+    let (mut channel, mut session) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+    let mut status = MaybeUninit::uninit();
     // SAFETY: the client lives.
     unsafe {
         ffi::UA_Client_getState(
             client.as_ptr(),
             channel.as_mut_ptr(),
-            ptr::null_mut(),
+            session.as_mut_ptr(),
             status.as_mut_ptr(),
         );
     }
-    // SAFETY: the call writes each output that is not null.
+    // SAFETY: the call writes each output.
     let channel = unsafe { channel.assume_init() };
     // SAFETY: as above.
+    let session = unsafe { session.assume_init() };
+    // SAFETY: as above.
     let status = Status(unsafe { status.assume_init() });
-    State { channel, status }
+    State {
+        channel,
+        session,
+        status,
+    }
 }
 
 impl std::fmt::Debug for Manager {
@@ -679,20 +687,6 @@ mod tests {
         });
     }
 
-    /// A client reads the namespaces after its session activates, and a scope waits for
-    /// them, so that its close cancels no read.
-    #[test]
-    fn a_scope_waits_for_the_namespaces_of_each_client() {
-        check(3, async |manager, _| {
-            for client in &manager.clients {
-                // SAFETY: the client lives.
-                let namespaced =
-                    unsafe { ffi::test::shim_client_namespaced(client.as_ptr()) };
-                assert!(namespaced, "{manager:?}");
-            }
-        });
-    }
-
     /// The stream of the connect opens after 200 s, and no request waits until then.
     #[test]
     #[should_panic(expected = "0 of 1 clients connected in 1m")]
@@ -759,7 +753,7 @@ mod tests {
         });
     }
 
-    /// The connect takes 4 ms on the default link. The node pauses for 61 s at 3.9 ms,
+    /// The connect takes 3.5 ms on the default link. The node pauses for 61 s at 3.4 ms,
     /// while the last answer is in flight, so the connect ends after 1m of `clock`.
     #[test]
     #[should_panic(expected = "clients connected in 1m")]
@@ -771,7 +765,7 @@ mod tests {
             let start = clock.now();
             let pauser = node.clone();
             tasks.spawn(async move {
-                clock.sleep_until(start + Span::from_nanos(3_900_000)).await;
+                clock.sleep_until(start + Span::from_nanos(3_400_000)).await;
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
@@ -819,15 +813,15 @@ mod tests {
         assert_eq!(message, "0 of 1 clients connected in 1m");
     }
 
-    /// With jitter, 10 of the 16 clients have their namespaces at 15.5 ms.
+    /// With jitter, 8 of the 16 clients have an active session at 13 ms.
     #[test]
     fn the_deadline_panic_gives_the_count_of_connected_clients() {
         let link = sim::link::Config {
             jitter: Span::from_nanos(1_000_000),
             ..sim::link::Config::default()
         };
-        let message = paused(link, 15, Span::from_nanos(15_500_000));
-        assert_eq!(message, "10 of 16 clients connected in 1m");
+        let message = paused(link, 15, Span::from_nanos(13_000_000));
+        assert_eq!(message, "8 of 16 clients connected in 1m");
     }
 
     #[test]

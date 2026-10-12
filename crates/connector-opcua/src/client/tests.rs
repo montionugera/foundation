@@ -482,3 +482,61 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
     assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
     took
 }
+
+/// A server adds a namespace after a client connects, and a Double in it. The client
+/// reads it, then a new client reads it.
+#[test]
+fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value() {
+    let (reads, _) = run(0, async |node| {
+        let mut rng = node.entropy().rng();
+        let local = SocketAddr::new(node.addresses()[0], PORT);
+        let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
+            .expect("the port is free");
+        // SAFETY: the close below deletes the server before the manager drops.
+        let server = unsafe { Server::start(&manager, c"", 4) };
+        server.add_double(VALUE, 1.5);
+        let url = format!("opc.tcp://{local}");
+        let reads = {
+            let mut server_drive = pin!(manager.drive(|_| {
+                manager.events().run();
+                Poll::<()>::Pending
+            }));
+            let mut body = pin!(async {
+                let (clock, net) = (node.clock(), node.net());
+                let mut client = Client::connect(clock, net, &mut rng, &url)
+                    .await
+                    .expect("the client connects");
+                let first = client.read(VALUE).await;
+                // SAFETY: the server lives, and copies the name.
+                let namespace = unsafe {
+                    ffi::test::UA_Server_addNamespace(
+                        server.raw(),
+                        c"urn:added".as_ptr(),
+                    )
+                };
+                let added = Node {
+                    namespace,
+                    key: 1000,
+                };
+                server.add_double(added, 2.5);
+                let second = client.read(added).await;
+                client.close().await;
+                let (clock, net) = (node.clock(), node.net());
+                let mut fresh = Client::connect(clock, net, &mut rng, &url)
+                    .await
+                    .expect("the client connects");
+                let third = fresh.read(added).await;
+                fresh.close().await;
+                (first, namespace, second, third)
+            });
+            poll_fn(|cx| {
+                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
+                body.as_mut().poll(cx)
+            })
+            .await
+        };
+        server.close(&manager).await;
+        reads
+    });
+    assert_eq!(reads, (Ok(1.5), 2, Ok(2.5), Ok(2.5)));
+}
