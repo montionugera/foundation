@@ -81,14 +81,13 @@ fn head(commit: &Value) -> Result<&str, String> {
 /// Whether the newest of the `mutants` check `runs` at `head` passed: `Ok` with the
 /// run, or `Err` with the reason.
 fn verdict(head: &str, runs: &[Value]) -> Result<String, String> {
-    let mut newest: Option<(u64, &Value)> = None;
-    for run in runs {
-        let id = field::number(run, "id")?;
-        if newest.is_none_or(|(key, _)| id > key) {
-            newest = Some((id, run));
-        }
-    }
-    let (_, run) = newest
+    let runs = runs
+        .iter()
+        .map(|run| Ok((field::number(run, "id")?, run)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let (_, run) = runs
+        .into_iter()
+        .max_by_key(|(id, _)| *id)
         .ok_or_else(|| format!("the head `{head}` has no `mutants` check run"))?;
     let url = field::text(run, "html_url")?;
     let named = format!("the newest `mutants` check run at the head `{head}` ({url})");

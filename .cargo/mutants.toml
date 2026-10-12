@@ -29,7 +29,10 @@ exclude_re = [
   'xtask/src/review\.rs:.*(replace run ->| in run$)',
   # Calls the GitHub API. The review workflow runs it on each PR: with no PR record,
   # the status is `error`.
-  'xtask/src/review\.rs:.*(replace gh ->| in gh$)',
+  'xtask/src/gh\.rs:.*(replace api ->| in api$)',
+  # Calls the GitHub API. The queue run of each PR runs them, and its log names the
+  # head that it read.
+  'xtask/src/queue\.rs:.*replace (review|mutants|head_of) ->',
   # Empty outside loom. The loom models fail when a marker is removed.
   'crates/block/src/sync\.rs:.*Track::(read|write)',
   # The stub is built only under loom, so no test of another build sees its mutant.
