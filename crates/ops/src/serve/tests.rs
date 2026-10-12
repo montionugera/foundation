@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,7 @@ use spec::definition::Definition;
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use super::serve;
+use super::{Reply, serve};
 use crate::Node;
 use crate::common::{
     NODE, PLANT, SITE, create_node, fail_sync, name, placed_site, solo,
@@ -35,6 +36,19 @@ const DENIED_FIX: &str =
     "Ask an admin of the region for an access policy that allows it";
 /// What `ops.denied` names for a request that names no definition.
 const NOTHING: &str = "a request that names no definition";
+
+/// The first line of the reply of `ops.large-reply`.
+fn large() -> Value {
+    let message = format!(
+        "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply holds"
+    );
+    refusal(
+        "ops.large-reply",
+        1,
+        &message,
+        "Plan and apply the change in smaller steps",
+    )
+}
 
 /// The subject of the first admin, which may do each action on each name.
 fn admin() -> Name {
@@ -669,19 +683,61 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
         assert!(split(&reply).0.get("output").is_some());
 
         let reply = serve(&node, &admin(), &wide_body(long, short + 1)).await;
-        let message = format!(
-            "the reply has {} bytes, and a reply holds at most {bound}",
-            bound + 1
-        );
-        let expected = refusal(
-            "ops.large-reply",
-            1,
-            &message,
-            "Plan and apply the change in smaller steps",
-        );
-        assert_eq!(split(&reply), (expected, &b""[..]));
+        assert_eq!(split(&reply), (large(), &b""[..]));
 
         let reply = serve(&node, &admin(), &plan_body(&[("site.hcl", &site())])).await;
         assert_eq!(split(&reply).0["output"]["added"], 3);
     });
+}
+
+#[test]
+fn refuses_the_reply_of_many_problems_at_a_long_path() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh);
+        let path = format!("{}.hcl", "x".repeat((64 << 10) - 4));
+        let text = "nope \"a\" {}\n".repeat(2_000);
+        let reply = serve(&node, &admin(), &plan_body(&[(&path, &text)])).await;
+        assert_eq!(split(&reply), (large(), &b""[..]));
+    });
+}
+
+/// A JSON list of `len` strings of 100 bytes, which counts each string it writes.
+struct Strings {
+    len: usize,
+    written: Cell<usize>,
+}
+
+impl serde::Serialize for Strings {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut list = serializer.serialize_seq(Some(self.len))?;
+        for _ in 0..self.len {
+            self.written.set(self.written.get() + 1);
+            list.serialize_element(&"x".repeat(98))?;
+        }
+        list.end()
+    }
+}
+
+#[test]
+fn stops_writing_a_reply_at_the_bound() {
+    let bound = usize::try_from(BODY_BYTES_MAX).expect("the bound fits");
+    // The JSON of each string is 101 bytes with its comma.
+    let fits = (bound - 2) / 101;
+    let strings = Strings {
+        len: fits,
+        written: Cell::new(0),
+    };
+    let reply = Reply::line(&strings).expect("a reply at the bound");
+    assert_eq!(reply.0.len(), fits * 101 + 2);
+    let strings = Strings {
+        len: 10 * fits,
+        written: Cell::new(0),
+    };
+    let error = Reply::line(&strings).err().expect("a reply over the bound");
+    assert_eq!(error.to_string(), large()["errors"][0]["message"]);
+    assert_eq!(strings.written.get(), fits + 1);
 }

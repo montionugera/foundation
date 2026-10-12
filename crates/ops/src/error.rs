@@ -1,17 +1,18 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
+use crate::front_end::File;
 
 const ARGUMENT: Code = Code::new("ops.argument");
 const UNKNOWN: Code = Code::new("ops.unknown-operation");
@@ -68,8 +69,8 @@ pub(crate) enum Error {
         action: Action,
         on: On,
     },
-    /// The reply of a node has `bytes` bytes, more than one reply holds.
-    LargeReply { bytes: usize },
+    /// The reply of a node has more bytes than one reply holds.
+    LargeReply,
 }
 
 /// The action that an operation on a node needs: the action of its name.
@@ -123,8 +124,8 @@ impl From<Action> for spec::access::Action {
 
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
-    /// at `paths`, by source.
-    pub(crate) fn config(diagnostics: Vec<Diagnostic>, paths: &[PathBuf]) -> Self {
+    /// at `paths`.
+    pub(crate) fn config(diagnostics: Vec<Diagnostic>, paths: &Paths) -> Self {
         Self::Config(
             diagnostics
                 .into_iter()
@@ -148,7 +149,7 @@ impl Error {
             | Self::Stopped(_)
             | Self::Request { .. }
             | Self::Denied { .. }
-            | Self::LargeReply { .. } => 1,
+            | Self::LargeReply => 1,
         }
     }
 
@@ -198,7 +199,7 @@ impl Error {
                 "Ask an admin of the region for an access policy that allows it"
                     .to_owned(),
             ),
-            Self::LargeReply { .. } => (
+            Self::LargeReply => (
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
             ),
@@ -253,20 +254,19 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
-    /// The problem of `diagnostic`, whose spans are in the files at `paths`, by
-    /// source.
-    pub(crate) fn of(diagnostic: Diagnostic, paths: &[PathBuf]) -> Self {
+    /// The problem of `diagnostic`, whose spans are in the files at `paths`.
+    pub(crate) fn of(diagnostic: Diagnostic, paths: &Paths) -> Self {
         Self {
             code: diagnostic.code.as_str().to_owned(),
             message: diagnostic.message,
             fix: diagnostic.fix,
-            place: diagnostic.span.map(|span| Place::of(span, paths)),
+            place: diagnostic.span.map(|span| paths.place(span)),
             notes: diagnostic
                 .notes
                 .into_iter()
                 .map(|note| Note {
                     text: note.text,
-                    place: Place::of(note.span, paths),
+                    place: paths.place(note.span),
                 })
                 .collect(),
         }
@@ -307,26 +307,53 @@ pub(crate) struct Note {
 pub(crate) struct Place {
     /// The exact path, as the user or a directory listing gave it. A path that is not
     /// UTF-8 gives `ops.path-not-utf8` instead.
-    pub(crate) file: String,
+    #[serde(serialize_with = "text", deserialize_with = "shared")]
+    #[schemars(with = "String")]
+    pub(crate) file: Arc<str>,
     /// The line, from 1.
     pub(crate) line: u32,
     /// The column, from 1, in Unicode scalar values.
     pub(crate) column: u32,
 }
 
-impl Place {
-    /// The start of `span`, in the file at `paths` of its source.
-    pub(crate) fn of(span: Span, paths: &[PathBuf]) -> Self {
+/// `file` as a JSON string.
+fn text<S: Serializer>(file: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(file)
+}
+
+/// A path from a JSON string.
+fn shared<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<str>, D::Error> {
+    String::deserialize(deserializer).map(Arc::from)
+}
+
+/// The path of each file of a plan, by source. Each place in a file shares its path,
+/// so the problems of a file do not repeat it in memory.
+#[derive(Default)]
+pub(crate) struct Paths(Vec<Option<Arc<str>>>);
+
+impl Paths {
+    /// The path of each of `files`, by source.
+    pub(crate) fn of(files: &[File]) -> Self {
+        Self(
+            files
+                .iter()
+                .map(|file| file.path.to_str().map(Arc::from))
+                .collect(),
+        )
+    }
+
+    /// The start of `span`, in the file of its source.
+    pub(crate) fn place(&self, span: Span) -> Place {
         let path = usize::try_from(span.source().0)
             .ok()
-            .and_then(|source| paths.get(source))
+            .and_then(|source| self.0.get(source))
             .expect("invariant: a span is in a file of the plan");
         let start = span.start();
-        Self {
-            file: path
-                .to_str()
-                .expect("invariant: `read` refuses a path that is not UTF-8")
-                .to_owned(),
+        Place {
+            file: Arc::clone(
+                path.as_ref()
+                    .expect("invariant: `read` refuses a path that is not UTF-8"),
+            ),
             line: start.line + 1,
             column: start.column + 1,
         }
@@ -401,10 +428,10 @@ impl fmt::Display for Error {
                     "no access policy gives `{subject}` the action `{action}` on {on}"
                 )
             }
-            Self::LargeReply { bytes } => write!(
+            Self::LargeReply => write!(
                 f,
-                "the reply has {bytes} bytes, and a reply holds at most \
-                 {BODY_BYTES_MAX}"
+                "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
+                 holds"
             ),
         }
     }

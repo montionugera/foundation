@@ -1,6 +1,7 @@
 //! Runs the request of a remote program on the node.
 
 use std::fmt;
+use std::io::{self, Write};
 
 use access::Rules;
 use serde::de::{self, Deserializer, IgnoredAny, MapAccess};
@@ -21,24 +22,74 @@ mod tests;
 /// the output of the operation, or its error with code, message, and fix. `body` is
 /// what [`cli`] sends. Call it only for a subject whose key the hub verified.
 ///
-/// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes. No `body` makes
-/// it panic. The reply holds `ops.bad-request` for a body that is no request of
-/// `plan` or `apply`, `ops.denied` for an action that no access policy gives
-/// `subject` and for a request that names no definition, and `ops.large-reply` in
-/// place of a reply over the bound. `apply` gives a home only to an index on which
-/// `subject` has `apply`, and drops each other home with no error.
+/// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
+/// writing a reply at that bound. No `body` makes it panic. The reply holds
+/// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
+/// for an action that no access policy gives `subject` and for a request that names
+/// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
+/// gives a home only to an index on which `subject` has `apply`, and drops each other
+/// home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
     let reply = match run(node, subject, body).await {
-        Ok(reply) => reply,
+        Ok(reply) => Ok(reply),
         Err(error) => failed(&error),
     };
-    let bytes = reply.len();
-    if u64::try_from(bytes).is_ok_and(|bytes| bytes <= BODY_BYTES_MAX) {
-        reply
-    } else {
-        failed(&Error::LargeReply { bytes })
+    reply.unwrap_or_else(|_large| large()).0
+}
+
+/// The reply of `ops.large-reply`.
+fn large() -> Reply {
+    failed(&Error::LargeReply).expect("invariant: the reply of `ops.large-reply` fits")
+}
+
+/// The bytes of a reply: at most `BODY_BYTES_MAX`.
+#[derive(Default)]
+struct Reply(Vec<u8>);
+
+impl Reply {
+    /// The reply of `head` as one line of JSON. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `LargeReply` when the line passes the bound.
+    fn line(head: &impl Serialize) -> Result<Self, Error> {
+        let mut reply = Self::default();
+        match serde_json::to_writer(&mut reply, head) {
+            Ok(()) => {}
+            Err(error) if error.is_io() => return Err(Error::LargeReply),
+            Err(error) => panic!("invariant: a reply is plain JSON data: {error}"),
+        }
+        reply.add(b"\n")?;
+        Ok(reply)
+    }
+
+    /// Adds `bytes` to the end.
+    ///
+    /// # Errors
+    ///
+    /// `LargeReply`, with no byte added, when the reply would pass the bound.
+    fn add(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let len = self.0.len().saturating_add(bytes.len());
+        if u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX) {
+            self.0.extend_from_slice(bytes);
+            Ok(())
+        } else {
+            Err(Error::LargeReply)
+        }
+    }
+}
+
+impl Write for Reply {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.add(bytes)
+            .map(|()| bytes.len())
+            .map_err(|_large| io::ErrorKind::FileTooLarge.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -111,17 +162,13 @@ struct Failed<'a> {
     status: u8,
 }
 
-/// `head` as one line of JSON.
-fn line(head: &impl Serialize) -> Vec<u8> {
-    let mut line =
-        serde_json::to_vec(head).expect("invariant: a reply is plain JSON data");
-    line.push(b'\n');
-    line
-}
-
 /// The reply that holds `error`.
-fn failed(error: &Error) -> Vec<u8> {
-    line(&Failed {
+///
+/// # Errors
+///
+/// `LargeReply` when the reply passes the bound.
+fn failed(error: &Error) -> Result<Reply, Error> {
+    Reply::line(&Failed {
         errors: &error.problems(),
         status: error.status(),
     })
@@ -134,8 +181,8 @@ fn bad(message: impl Into<String>) -> Error {
     }
 }
 
-/// The reply of the request `body` of `subject`, with no bound.
-async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Vec<u8>, Error> {
+/// The reply of the request `body` of `subject`.
+async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
     let Some(end) = body.iter().position(|byte| *byte == b'\n') else {
         return Err(bad("no newline ends the first line"));
     };
@@ -196,7 +243,7 @@ impl<'a> Check<'a> {
 }
 
 /// The reply of `plan` of `files`: its output, then the plan file.
-async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Error> {
+async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Error> {
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(&node.kinds)?;
     let spec = used::spec(&node.mesh).await?;
@@ -219,13 +266,13 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Vec<u8>, Er
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
-    let mut reply = line(&Done { output: &output });
-    reply.extend(plan.encode());
+    let mut reply = Reply::line(&Done { output: &output })?;
+    reply.add(&plan.encode())?;
     Ok(reply)
 }
 
 /// The reply of `apply` of the plan file `bytes`: its output.
-async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject, Action::Apply);
@@ -239,5 +286,5 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Vec<u8>, Err
         return Err(check.denied(On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
-    Ok(line(&Done { output: &effect }))
+    Reply::line(&Done { output: &effect })
 }

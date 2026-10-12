@@ -477,7 +477,7 @@ fn every() -> Vec<Error> {
             action: Action::Plan,
             on: On::Spec,
         },
-        Error::LargeReply { bytes: 0 },
+        Error::LargeReply,
     ]
 }
 
@@ -500,7 +500,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Stopped(_)
             | Error::Request { .. }
             | Error::Denied { .. }
-            | Error::LargeReply { .. }
+            | Error::LargeReply
             | Error::Config(_)
             | Error::Start(_) => {}
         }
@@ -1225,4 +1225,22 @@ mod serve {
             "{help}"
         );
     }
+}
+
+#[test]
+fn the_places_of_one_file_share_its_path() {
+    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\nnope \"b\" {}\n")]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(Error::Config(problems)) = read else {
+        panic!("two problems, not {read:?}");
+    };
+    let [a, b] = &problems[..] else {
+        panic!("two problems, not {problems:?}");
+    };
+    let (Some(a), Some(b)) = (&a.place, &b.place) else {
+        panic!("two places, not {problems:?}");
+    };
+    assert_eq!(&*a.file, "site.hcl");
+    assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }

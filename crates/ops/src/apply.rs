@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use types::channel;
 
-use crate::error::{self, Error};
+use crate::error::{self, Error, Paths};
 use crate::front_end;
 use crate::plan::{self, Counts};
 use crate::used;
@@ -31,9 +31,9 @@ pub(crate) async fn file(
     kinds: &connector::kind::Table,
     key: impl FnMut() -> channel::Key,
 ) -> Result<Applied, Error> {
-    let file = path
-        .to_str()
-        .ok_or_else(|| Error::config(vec![front_end::not_utf8(path)], &[]))?;
+    let file = path.to_str().ok_or_else(|| {
+        Error::config(vec![front_end::not_utf8(path)], &Paths::default())
+    })?;
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let effect = apply(plan, used::spec(mesh).await?, mesh, kinds, key).await?;
     Ok(Applied {
@@ -84,7 +84,7 @@ pub(crate) async fn apply(
         pointer
     } else {
         config::plan::check(&definitions, &mesh.names(), kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, &[]))?;
+            .map_err(|diagnostics| Error::config(diagnostics, &Paths::default()))?;
         mesh.apply(plan.base, definitions, plan.homes)
             .await
             .map_err(|error| match error {
