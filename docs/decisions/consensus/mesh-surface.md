@@ -224,5 +224,7 @@
   Amended (2026-10-12, #2224): `Mesh::ended` waits for each task that the mesh spawned.
   Its doc and this entry list no tasks, because a list goes stale when the mesh adds a
   task. Supersedes "the group's task and each task that sends" of the amendment of
-  2026-10-08 above. Decided by `laptop.architect` (2026-10-12T23:18:24Z:
+  2026-10-08 above (2026-10-08T04:00:49Z:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643). Decided
+  by `laptop.architect` (2026-10-12T23:18:24Z:
   https://github.com/synnaxlabs/foundation/pull/2506#issuecomment-6134467487).
