@@ -802,29 +802,28 @@ mod buffer {
         assert_eq!(node.join(), Ok(()));
     }
 
-    /// A shard's part of the budget must hold the block that its buffer's open
-    /// takes first. A shard that waits for the interner does not open after it.
+    /// A shard's part of the budget must hold the least budget of its buffer. A shard
+    /// that waits for the interner does not open after it.
     #[test]
     fn a_shard_part_too_small_for_the_buffer_stops_the_node() {
         let budget = Size::from_bytes(512 << 10);
         let mut run = start_with(7, 16, &[], budget, Box::new(heap));
         assert_eq!(run.sim.run(), Ok(()));
         let e = run.node.join().unwrap_err();
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         assert_eq!(
             e,
             Error::Buffer {
                 core: 0,
-                error: ::buffer::Error::Pool(pool),
+                error: ::buffer::Error::Budget {
+                    budget: 32_768,
+                    min: 62_272,
+                },
             }
         );
         assert_eq!(
             e.to_string(),
-            "cannot open the buffer of shard-0: the pool has no block: block of 52186 \
-             bytes is above the largest block of 28672 bytes"
+            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry \
+             of 4032 bytes: give it 62272 bytes or more"
         );
     }
 
@@ -7594,13 +7593,12 @@ mod budget {
     /// the next start can give other budgets.
     #[test]
     fn a_start_that_fails_before_each_buffer_opens_keeps_no_budgets() {
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         let buffer = Error::Buffer {
             core: 0,
-            error: ::buffer::Error::Pool(pool),
+            error: ::buffer::Error::Budget {
+                budget: 32_768,
+                min: 62_272,
+            },
         };
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
