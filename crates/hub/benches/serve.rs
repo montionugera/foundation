@@ -36,6 +36,8 @@ mod common;
 mod net;
 #[path = "../tests/common/node.rs"]
 mod node;
+#[path = "../tests/common/peer.rs"]
+mod peer;
 mod table;
 
 use std::ops::RangeInclusive;
@@ -55,7 +57,6 @@ use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use table::Line;
-use transport::stream::{Receiver, Sender};
 use transport::{Address, Class, Transport};
 use types::authority::Authority;
 use types::channel;
@@ -64,7 +65,7 @@ use types::frame::{Draft, Form};
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
 use wire::Protocol;
-use wire::hub::{FromHome, Mode, Open, Reader, keys};
+use wire::hub::{FromHome, Mode};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -394,10 +395,10 @@ async fn peer(
             Mode::Complete { .. } => Class::Complete,
         };
         let (mut sender, mut receiver) = session.open(class).await.expect("opens");
-        send(&pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
+        peer::send(&pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
         let keys = case.shape.read(base(turn, line));
         let mut reader =
-            open(&pool, &mut sender, &mut receiver, case.mode, &keys).await;
+            peer::open(&pool, &mut sender, &mut receiver, case.mode, &keys).await;
         progress.opened.fetch_add(1, Ordering::Relaxed);
         let (mut frames, mut messages) = (0, 0);
         while frames < RUN {
@@ -428,40 +429,6 @@ async fn peer(
     session.close(transport::Code(0));
     node.clock().sleep(STEP).await;
     progress.turn.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Sends the open of a session of `mode` on `keys`, and reads the reply.
-async fn open(
-    pool: &Pool,
-    sender: &mut Sender,
-    receiver: &mut Receiver,
-    mode: Mode,
-    keys: &[u128],
-) -> Reader {
-    let keys: Vec<_> = keys.iter().copied().map(channel::Key::from_u128).collect();
-    let open = Open {
-        mode,
-        channels: u32::try_from(keys.len()).expect("the keys fit a u32"),
-    };
-    let mut out = vec![0; open.encoded_len()];
-    open.encode(&mut out);
-    send(pool, sender, &out).await;
-    let mut out = vec![0; keys.len() * keys::LEN];
-    keys::encode(&keys, &mut out);
-    send(pool, sender, &out).await;
-    let mut reader = Reader::new(&open);
-    let opened = receiver.recv().await.expect("receives").expect("a reply");
-    assert!(
-        matches!(reader.decode(&opened), Ok(FromHome::Opened)),
-        "the home opens the session"
-    );
-    reader
-}
-
-async fn send(pool: &Pool, sender: &mut Sender, bytes: &[u8]) {
-    let mut block = pool.alloc(bytes.len()).expect("the pool has room");
-    block.copy_from_slice(bytes);
-    sender.send(block.freeze()).await.expect("sends");
 }
 
 /// One poll of `serving` with a waker that does nothing.
