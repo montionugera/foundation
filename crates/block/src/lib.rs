@@ -402,9 +402,8 @@ impl Pool {
     }
 
     /// Takes back the blocks that holders dropped, so that `alloc` can use them
-    /// again. `alloc` calls it when it has no free block; the owner shard may call it
-    /// from its loop to spread the cost.
-    pub fn reclaim(&self) {
+    /// again.
+    fn reclaim(&self) {
         let returned = &self.shared().returned;
         if returned.load(Relaxed) != NONE {
             self.take(returned.swap(NONE, Acquire));
