@@ -5618,20 +5618,20 @@ mod tests {
         // fits no message, and `raft` panics at its next `Vote`.
         #[test]
         fn refuses_a_founding_set_whose_pre_vote_proof_fits_no_message() {
-            fn private(id: u16) -> PrivateKey {
+            fn peer_private(id: u16) -> PrivateKey {
                 let mut bytes = [0x5a; 32];
                 bytes[..2].copy_from_slice(&id.to_le_bytes());
                 PrivateKey(bytes)
             }
-            fn key(id: u16) -> node::Key {
+            fn peer_key(id: u16) -> node::Key {
                 node::Key::from_u128(u128::from(id))
             }
-            fn member(id: u16) -> Member {
+            fn peer_member(id: u16) -> Member {
                 let mut card = common::member(1).card.card().clone();
                 card.name = format!("plant.node{id}").parse().unwrap();
-                card.public_key = private(id).public();
+                card.public_key = peer_private(id).public();
                 Member {
-                    card: card::Signed::sign(key(id), card, &private(id)),
+                    card: card::Signed::sign(peer_key(id), card, &peer_private(id)),
                     ..common::member(1)
                 }
             }
@@ -5639,8 +5639,8 @@ mod tests {
                 let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
                 let peers = 2..=629;
                 let founding = &mut config.founding;
-                founding.members.extend(peers.clone().map(member));
-                founding.voters.extend(peers.clone().map(key));
+                founding.members.extend(peers.clone().map(peer_member));
+                founding.voters.extend(peers.clone().map(peer_key));
                 let mesh = match Mesh::start(config).await {
                     Err(refused) => {
                         let most = message::VOTERS_MAX;
@@ -5654,7 +5654,7 @@ mod tests {
                     let answer = Answer::Granted(None);
                     let mut ready = Ready {
                         messages: vec![raft::Message {
-                            from: key(id),
+                            from: peer_key(id),
                             to: key(1),
                             term: sent.term,
                             body: Body::PreVoteReply { answer },
@@ -5663,9 +5663,12 @@ mod tests {
                         }],
                         ..Ready::default()
                     };
-                    Signer::new(key(id), &private(id)).sign(&mut ready);
+                    Signer::new(peer_key(id), &peer_private(id)).sign(&mut ready);
                     let granted = ready.messages.remove(0);
-                    assert_eq!(mesh.receive(private(id).public(), granted), Ok(()));
+                    assert_eq!(
+                        mesh.receive(peer_private(id).public(), granted),
+                        Ok(())
+                    );
                 }
                 panic!("the mesh started with 629 voters");
             });
