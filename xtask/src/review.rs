@@ -906,6 +906,7 @@ fn options() -> Options<'static> {
     extension.footnotes = true;
     extension.tasklist = true;
     extension.strikethrough = true;
+    extension.autolink = true;
     options.parse.leave_footnote_definitions = true;
     options
 }

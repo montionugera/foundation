@@ -3293,7 +3293,6 @@ fn an_issue_url_with_a_gh_repo_after_a_mark_or_an_ignorable_character_is_read() 
     assert_eq!(risk(vec![deferred(hidden)]), no_ok(comment));
     for name in [
         "https://github.com/a/\u{200B}gh-b/issues/13",
-        "https://github.com/a/&#8203;gh-b/issues/13",
         "https://github.com/a/\u{AD}gh-b/issues/13",
         "[https://github.com/a/**gh-b**/issues/13](https://x.io)",
     ] {
@@ -3303,18 +3302,25 @@ fn an_issue_url_with_a_gh_repo_after_a_mark_or_an_ignorable_character_is_read() 
 }
 
 #[test]
-fn a_comment_link_with_a_gh_name_after_a_mark_or_an_ignorable_character_is_an_ok() {
-    for ok in [
+fn a_comment_link_with_a_gh_name_after_an_ignorable_character_is_an_ok() {
+    let line = "#12 (https://github.com/\u{200B}gh-1/b/pull/1#issuecomment-2)";
+    assert_eq!(risk(vec![deferred(line)]), Vec::<String>::new());
+}
+
+/// GitHub links a bare URL up to the next space, and shows each mark in it as written.
+#[test]
+fn a_bare_url_shows_its_marks_as_written() {
+    for url in [
         "https://github.com/*gh-1*/b/pull/1#issuecomment-2",
-        "https://github.com/\u{200B}gh-1/b/pull/1#issuecomment-2",
+        "https://github.com/a/**b**/pull/1#issuecomment-2",
     ] {
-        let line = format!("#12 ({ok})");
-        assert_eq!(
-            risk(vec![deferred(&line)]),
-            Vec::<String>::new(),
-            "{line:?}"
-        );
+        let line = format!("#12 ({url})");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok("#12"), "{line:?}");
+        let line = format!("x ({url})");
+        assert_eq!(check(&record(vec![surfaced(&line)])), no_link(), "{line:?}");
     }
+    let line = format!("#12 ({OK}), https://github.com/a/&#8203;gh-b/issues/13");
+    assert_eq!(risk(vec![deferred(&line)]), no_ok("#8203"));
 }
 
 #[test]
