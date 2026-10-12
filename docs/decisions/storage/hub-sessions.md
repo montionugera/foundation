@@ -262,13 +262,25 @@
   removed index can get no home. It reads its removal before it checks each later key
   and after the wait, and then carries the index and opens with no `await` between. So
   its index changes only at a removal, and it waits once. A key that a call changes
-  before the open checks it is checked against the new definitions. A local open by name
-  checks its names again after it waits for the home, then carries each index and opens
-  with no `await` between, and when the check gives another index, it waits again
-  (`laptop.architect`, 2026-10-09T05:24:32Z:
+  before the open checks it is checked against the new definitions. A local open checks
+  its names, or matches its selector, again after it waits for the home, then carries
+  each index and opens with no `await` between. When the check gives another index, it
+  waits again. While it waits, it is registered on each channel that its check gave and
+  on their indexes, as a served open is. A call that removes or changes one of them
+  wakes it at once, and it checks again. A moved channel then opens on its new index. A
+  writer whose name is gone fails with `Unknown`. A reader gets what an open at that
+  instant gets: its channels, `Empty`, or `ManyIndexes`. A call that only adds a channel
+  wakes no open. A served read selects by name and waits as a local reader does, so it
+  follows the change too (`laptop.architect`, 2026-10-09T05:24:32Z:
   https://github.com/synnaxlabs/foundation/issues/2112#issuecomment-6074871156;
   2026-10-09T00:55:16Z:
-  https://github.com/synnaxlabs/foundation/pull/2040#issuecomment-6072038723). This
+  https://github.com/synnaxlabs/foundation/pull/2040#issuecomment-6072038723;
+  2026-10-09T20:41:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6088904511;
+  2026-10-09T23:20:10Z:
+  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6090920229; and
+  2026-10-12T15:41:55Z:
+  https://github.com/synnaxlabs/foundation/issues/2167#issuecomment-6127582652). This
   changes "After it waits for each index, the open (writer, reader, and served) runs
   its check again" in the second comment: a served open reads its removal in place of
   that check. The call checks the definitions before it changes anything: two channels

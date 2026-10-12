@@ -234,7 +234,8 @@ impl Hub {
 
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
-    /// for one.
+    /// for one. A call that removes or changes one of its channels ends that wait, and
+    /// it opens on the names as they are then.
     ///
     /// # Errors
     ///
@@ -250,12 +251,13 @@ impl Hub {
         Writer::open(&self.0, config).await
     }
 
-    /// Opens a reader session on the channels that `config.select` matches, which
-    /// share one index. While the mesh names no home for the index, it waits for one.
-    /// At the home of another node, each open reader holds one stream of the one
-    /// session to it, so it also waits while that home allows this node no more
-    /// streams, until another reader there drops. It gets each frame of the index, as
-    /// a view of only its channels and their index. An unnamed complete reader gets
+    /// Opens a reader session on the channels that `config.select` matches, which share
+    /// one index. While the mesh names no home for the index, it waits for one. A call
+    /// that removes or changes one of its channels ends that wait, and it matches the
+    /// selector again. At the home of another node, each open reader holds one stream
+    /// of the one session to it, so it also waits while that home allows this node no
+    /// more streams, until another reader there drops. It gets each frame of the index,
+    /// as a view of only its channels and their index. An unnamed complete reader gets
     /// each live frame written after the returned future resolves, until it misses one
     /// ([`reader::Mode::Complete`]). A named reader takes over the open session of its
     /// subject and name, which ends with [`reader::Ended::Replaced`], and a named
