@@ -40,6 +40,12 @@
 //! each acknowledgement, less one when the `send` gives noq-proto a slice of the block
 //! and the `send_parts` does not.
 //!
+//! The `dropped` line times the drop of a `send` that waits on its first poll with its
+//! message not taken, behind a message of a `try_send` that the stream holds. The
+//! `dropped taken` line times the drop of a `send` on a second stream, whose message
+//! the stream took and holds with no byte sent, as it waits its turn behind the first.
+//! Each times one drop at a time, so it holds the reads of the real clock per drop.
+//!
 //! A send reads the clock and wakes a task, so the control does both per block. The sim
 //! and `os` costs for both differ: on a Xeon 8488C, an `os` clock read costs about 7
 //! times a sim one, and an `os` wake about a quarter of a sim one. Compare a send with
@@ -375,6 +381,13 @@ fn main() {
                     sender.finish().expect("the stream finishes");
                 }
             }
+            for streams in [1, 2] {
+                let mut senders = open(&session, vec![Class::Complete; streams]).await;
+                lines.push(measure_drops(&pool, &mut senders));
+                for sender in &mut senders {
+                    sender.finish().expect("the stream finishes");
+                }
+            }
             session.close(Code(0));
             // A shard that ends drops its tasks, so give the close time to go out.
             clock.sleep(Span::MILLISECOND).await;
@@ -656,6 +669,62 @@ fn poll_control(
         waker.wake_by_ref();
     }
     nanos(Instant::now().duration_since(start))
+}
+
+/// Fills the stream of the first of `senders` with `try_send`, then times the drop of
+/// each of the sends of the rounds on the last, with no await in between, so the
+/// first stream holds its message. With two, the second stream takes each message.
+///
+/// # Panics
+///
+/// When a send does not wait on its first poll, as when a drop reset its stream.
+#[expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
+fn measure_drops(pool: &Pool, senders: &mut [Sender]) -> Measured {
+    let name = if senders.len() == 1 {
+        "dropped"
+    } else {
+        "dropped taken"
+    };
+    let first = senders.first_mut().expect("a sender");
+    while first.try_send(filled(pool, 1024)).expect("open").is_none() {}
+    let sender = senders.last_mut().expect("a sender");
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut figures = Vec::with_capacity(ROUNDS);
+    let mut allocations = 0;
+    for round in 0..WARMUP + ROUNDS {
+        let mut span = Duration::ZERO;
+        for _ in 0..SENDS {
+            let block = filled(pool, 64);
+            let mut sending = Box::pin(sender.send(block));
+            let polled = sending.as_mut().poll(&mut cx);
+            assert!(
+                polled.is_pending(),
+                "a send waits behind the try_send: {name}"
+            );
+            let (spent, counted) = ALLOCATOR.count(|| {
+                let start = Instant::now();
+                drop(sending);
+                start.elapsed()
+            });
+            span += spent;
+            if round >= WARMUP {
+                allocations += counted;
+            }
+        }
+        if round >= WARMUP {
+            figures.push(per(nanos(span)) / per(SENDS));
+        }
+    }
+    figures.sort_unstable_by(f64::total_cmp);
+    let sends = u64::try_from(ROUNDS * SENDS).expect("fits");
+    Measured {
+        name: name.to_owned(),
+        nanos: figures,
+        allocations,
+        polls: 0,
+        sends,
+        round: SENDS,
+    }
 }
 
 /// Opens a stream for each of `classes`.
