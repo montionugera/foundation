@@ -16,6 +16,7 @@ noq-proto = { path = "../patches/noq-proto" }
 noq-udp = { path = "../patches/noq-udp" }
 
 [dependencies]
+blob = { path = "../crates/blob" }
 block = { path = "../crates/block" }
 buffer = { path = "../crates/buffer" }
 codec = { path = "../crates/codec" }
@@ -182,6 +183,13 @@ bench = false
 [[bin]]
 name = "ops_mcp"
 path = "fuzz_targets/ops_mcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ops_serve"
+path = "fuzz_targets/ops_serve.rs"
 test = false
 doc = false
 bench = false

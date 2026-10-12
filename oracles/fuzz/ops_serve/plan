@@ -1,0 +1,1 @@
+{"plan":{"files":[{"path":"site.hcl","text":"channel \"site.time\" { kind = \"index\" }\nchannel \"site.temp\" {\n  data_type = \"f64\"\n  index = \"site.time\"\n}\nplacement \"p\" {\n  select = \"site.*\"\n  home = \"edge\"\n}\n"}]}}

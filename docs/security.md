@@ -443,6 +443,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
+| `ops_serve` | `ops::serve` on a request body, by the admin of a mesh with one member | A reply within `wire::hub::client::BODY_BYTES_MAX` whose first line is an output, or errors with status 1 or 2 and no bytes after it; the plan file of a `plan` reply decodes, and an `apply` of it gives an output |
 | `types_name` | `Name` | Prints as the text it was read from |
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
 | `types_stamp` | `Stamp` | Printed text reads back to the same value |
