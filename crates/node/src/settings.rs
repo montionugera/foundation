@@ -19,8 +19,8 @@ pub struct Settings {
     /// [`crate::Error::Transport`]. Default 30 s.
     pub idle: Span,
     /// The largest message of a stream. The transport takes the smaller of this and
-    /// the largest block of its pool. The smaller must be at least 1472 bytes, else
-    /// the node stops with [`crate::Error::Transport`]. Default 64 KiB.
+    /// the largest block of its pool. A value under 1472 bytes stops the node with
+    /// [`crate::Error::Transport`]. Default 64 KiB.
     pub message_bytes_max: NonZeroUsize,
     /// How long a stream may take to give its header before it is rejected. A span of
     /// zero or less rejects a stream whose header has not arrived when the node first
