@@ -17,26 +17,35 @@
   check of only the indexes with no home, with which the refusal depends on the state
   (`laptop.architect`, 2026-10-12T18:28:19Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130192057). The
-  rules are those of the base spec, so a plan that removes the subject's own policy
-  passes. The check runs before each other check that reads the spec in use
-  (`ops.behind`, `ops.stale-plan`), so a subject with no grant does not learn from
-  another error what the spec holds. An error of the files alone (`Documents::read`, the
-  names of `config::check`) comes before the check. A refusal is `ops.denied`, status 1,
-  with the fix `Ask an admin of the region for an access policy that allows it`. It
-  names a name only when the request holds it. For `plan`, it names the first name of
-  the files with no grant, in the order of the tree key. When only a name of the spec in
-  use has no grant, it names the action and no name. For `apply`, it names the first
-  changed name with no grant. `admin` is no part of the check: it governs a join ticket
-  and a forced takeover, and `apply` on the key of an access policy or a subject lets
-  its holder change it (K3; C8 has `plan` list access changes apart). #1213 checks the
-  `apply` names and the index of each home of the change record on each member and then
-  removes that check from `ops`. `plan` makes no change record, so its check stays in
-  `ops`. Decided by `laptop.architect` (2026-10-11T08:10:05Z,
+  rules are those of the spec in use, which is the base of each plan that applies, so a
+  plan that removes the subject's own policy passes. The check runs before each other
+  check that reads the spec in use (`ops.behind`, `ops.stale-plan`), so a subject with
+  no grant does not learn from another error what the spec holds. An error of the files
+  alone (`Documents::read`, the names of `config::check`) comes before the check. A
+  refusal is `ops.denied`, status 1, with the fix `Ask an admin of the region for an
+  access policy that allows it`. It names a name only when the request holds it. For
+  `plan`, it names the first name of the files with no grant, in the order of the tree
+  key. When only a name of the spec in use has no grant, it names the action and no
+  name. For `apply`, it names the first changed name with no grant. `admin` is no part
+  of the check: it governs a join ticket and a forced takeover, and `apply` on the key
+  of an access policy or a subject lets its holder change it (K3; C8 has `plan` list
+  access changes apart). #1213 checks the `apply` names and the index of each home of
+  the change record on each member and then removes that check from `ops`. `plan` makes
+  no change record, so its check stays in `ops`. Decided by `laptop.architect`
+  (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274), on
   decision 5 of plan revision 4
   (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
-  Limits: a request with no name to check passes for each subject that the hub admitted.
-  That is a `plan` with no files on a spec that holds only founding definitions, which
-  gives `0 to add`. The rules take the root prefix, since a node founds only a root
-  region. Trigger: the PR that lets a node found or join a region below the root gives
-  `serve` the prefix of that region.
+  A request with no name to check is refused for each subject, with `ops.denied` and no
+  name: an `apply` whose plan has no change and, after the drop, no home, and a `plan`
+  with no files on a spec in use with no compared name. Such a request changes nothing.
+  A node that uses no spec has no rules, so it refuses each request of a remote subject,
+  also of an admin. The local `plan` and `apply` on that node give `ops.behind`. Lost: a
+  pass, with which a subject with no grant learns the pointer in use; the action on the
+  whole region, because `access` gives the grant of one name, and a check of the whole
+  region would serve only this case; and `ops.behind` before the check, because its
+  cause names a key of the newest spec (`laptop.architect`, 2026-10-12T19:54:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131554034). Limits:
+  an admin gets the refusal too, with the fix to ask an admin. The rules take the root
+  prefix, since a node founds only a root region. Trigger: the PR that lets a node found
+  or join a region below the root gives `serve` the prefix of that region.

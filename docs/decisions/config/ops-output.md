@@ -112,12 +112,14 @@
   Supersedes the code, message, fix, and order of
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6060043966.
   The apply output is `Applied { file, pointer, added, changed, removed, homes }`, where
-  `homes` counts the homes that the plan lists. Its text is `Applied <file>: <a> added,
-  <c> changed, <r> removed, <h> homes listed.`, with each count of 0 left out and `1
-  home listed` for one home, and `no change` only for a plan with no change and no home.
-  The text without `homes` and the rule that leaves out a count of 0 are step 5 of the
-  plan https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6063695586.
-  `homes`, its text, and the `no change` rule decided by `laptop.architect-2`
+  `homes` counts the homes of the plan that the apply gives: each home that the plan
+  lists, and through `ops::serve` each home on whose index the subject has `apply`
+  (SERVE ACCESS). Its text is `Applied <file>: <a> added, <c> changed, <r> removed, <h>
+  homes listed.`, with each count of 0 left out and `1 home listed` for one home, and
+  `no change` only for a plan with no change and no home. The text without `homes` and
+  the rule that leaves out a count of 0 are step 5 of the plan
+  https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6063695586. `homes`,
+  its text, and the `no change` rule decided by `laptop.architect-2`
   (2026-10-09T00:42:24Z,
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071903259). The whole
   text approved by `laptop.architect-2` (2026-10-09T01:02:46Z,
@@ -164,9 +166,10 @@
   bound holds for the reply of an error too. `serve` reads the spec in use as the apply
   does, so a node that is behind gives `ops.behind` for `plan` too (later step of
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6071715327). The
-  form, the status of an error, `ops.denied`, and `ops.large-reply` are decisions 5 to 7
-  of plan revision 4, by `laptop.architect-2` (2026-10-11T07:10:55Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6071715327). A node
+  that uses no spec gives `ops.denied` to each remote subject instead (SERVE ACCESS).
+  The form, the status of an error, `ops.denied`, and `ops.large-reply` are decisions 5
+  to 7 of plan revision 4, by `laptop.architect-2` (2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913),
   approved for the contracts by `laptop.architect` (2026-10-11T08:10:05Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). The
