@@ -306,9 +306,9 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(OwnedFd, u64), Error
                 // here, not at its close. A failed create leaves no file, so a later
                 // write open gives `NotFound`, not an empty file.
                 .or_else(|errno| {
-                    fs::ftruncate(&fd, 0)
-                        .and_then(|()| fs::unlinkat(data, path, AtFlags::empty()))
-                        .and(Err(errno))
+                    let freed = fs::ftruncate(&fd, 0);
+                    fs::unlinkat(data, path, AtFlags::empty())?;
+                    freed.and(Err(errno))
                 })
                 .map_err(&failed)?;
             Ok((fd, len))
