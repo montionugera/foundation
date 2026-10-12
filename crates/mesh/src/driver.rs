@@ -34,7 +34,7 @@ use crate::claim::{self, Known, Signer};
 use crate::error::{self, Error, Stopped};
 use crate::log::{self, Log};
 use crate::member::Member;
-use crate::message::Message;
+use crate::message::{self, Message};
 use crate::region::{self, Refused, Request};
 use crate::status::{self, Status};
 pub use end::Ended;
@@ -1048,6 +1048,7 @@ fn follower(
         key,
         election_ticks: ELECTION_TICKS,
         heartbeat_ticks: HEARTBEAT_TICKS,
+        fits: message::fits,
     };
     Ok(Raft::new(fixed, start)?)
 }
@@ -2132,6 +2133,97 @@ mod tests {
         };
         let pointers: BTreeMap<_, _> = IDS.map(|id| (id, moved)).into();
         assert_eq!(cluster.board().pointers, pointers);
+    }
+
+    // Two changes from one base, each of the most chunks, are over 64 KiB together.
+    // The second is refused as stale.
+    #[test]
+    fn a_late_voter_gets_two_spec_changes_of_the_most_chunks() {
+        let mut cluster = Cluster::new(2);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let change = |byte: u8| Change::Spec {
+            base,
+            root: common::digest(byte),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| {
+                    let mut chunk = [byte; 32];
+                    let at = u16::try_from(at).unwrap();
+                    chunk[..2].copy_from_slice(&at.to_be_bytes());
+                    Digest(chunk)
+                })
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [change(1), change(2), home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        assert_eq!(cluster.board.lock().unwrap().led.len(), 3);
+        cluster.start_voter(3);
+        cluster.run(seconds(10));
+        let moved = Pointer {
+            version: 1,
+            root: common::digest(1),
+        };
+        let pointers: BTreeMap<_, _> = IDS.map(|id| (id, moved)).into();
+        assert_eq!(cluster.board().pointers, pointers);
+    }
+
+    // The pointer of each voter after a change of the most chunks and `homes` homes,
+    // then one of `chunks` chunks, when voter 3 starts after both commit.
+    fn late(homes: u128, chunks: usize) -> BTreeMap<u8, Pointer> {
+        let mut cluster = Cluster::new(3);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let first = Change::Spec {
+            base,
+            root: common::digest(1),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| Digest::of(&at.to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: (0..homes)
+                .map(|at| (channel::Key::from_u128(at.saturating_add(100)), key(2)))
+                .collect(),
+        };
+        let second = Change::Spec {
+            base: base.next(common::digest(1)),
+            root: common::digest(2),
+            chunks: (0..chunks)
+                .map(|at| Digest::of(&at.saturating_add(5000).to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [first, second, home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        cluster.start_voter(3);
+        cluster.run(seconds(60));
+        cluster.board().pointers
+    }
+
+    #[test]
+    fn a_late_voter_gets_a_change_of_the_most_homes_and_one_of_512_chunks() {
+        let moved = Pointer {
+            version: 2,
+            root: common::digest(2),
+        };
+        let most = u128::try_from(crate::change::HOMES_MAX).unwrap();
+        assert_eq!(late(most, 512), IDS.map(|id| (id, moved)).into());
     }
 
     #[test]

@@ -6,7 +6,9 @@
 
 use raft::{Data, Entry};
 
-use crate::bytes::{put_change, put_position, take, take_change, take_position};
+use crate::bytes::{
+    change_len, put_change, put_position, take, take_change, take_position,
+};
 
 const EMPTY: u8 = 0;
 const BYTES: u8 = 1;
@@ -21,6 +23,20 @@ pub(crate) fn encode(entries: &[Entry], out: &mut Vec<u8>) {
     for entry in entries {
         put_one(entry, out);
     }
+}
+
+/// The bytes that [`encode`] adds for `entries`, with 64 for each signature, also one
+/// not yet made.
+pub(crate) fn len(entries: &[Entry]) -> usize {
+    let data = |data: &Data| match data {
+        Data::Empty => 0,
+        Data::Bytes(bytes) => bytes.len().saturating_add(8),
+        Data::Voters(change) => change_len(change),
+    };
+    let lengths = entries
+        .iter()
+        .map(|entry| data(&entry.data).saturating_add(16 + 1));
+    lengths.fold(0, usize::saturating_add)
 }
 
 /// The entries that `bytes` is the byte form of, up to its end. `None` when it is not

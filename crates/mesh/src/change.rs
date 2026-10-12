@@ -108,6 +108,9 @@ pub(crate) const HOLDERS_MAX: usize = 64;
 /// 50 KiB.
 pub(crate) const HOMES_MAX: usize = 512;
 
+/// The most bytes of the byte form of a change: a `Spec` change at each bound.
+pub(crate) const RECORD_MAX: usize = 50_255;
+
 impl Change {
     /// Adds the one byte form of the change to `out`: a kind byte, then the body of
     /// that kind. Every number is little endian.
@@ -367,9 +370,11 @@ mod tests {
     use types::time::Span;
 
     use super::*;
+    use crate::card::Card;
+    use crate::card::addresses::Addresses;
     use crate::common::{
-        digest, encoded, home, index, join, key, name, options, public, spec,
-        status_bytes, ticket_change, with_status,
+        BEFORE_EXPIRY, digest, encoded, home, index, join, join_with, key, name,
+        options, private, public, spec, status_bytes, ticket_change, with_status,
     };
 
     #[test]
@@ -563,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_change_at_each_bound_fits_in_50_kib() {
+    fn a_spec_change_at_each_bound_is_record_max_bytes() {
         let mut change = many(CHUNKS_MAX);
         let Change::Spec { holders, homes, .. } = &mut change else {
             unreachable!()
@@ -572,7 +577,36 @@ mod tests {
             .map(node::Key::from_u128)
             .collect();
         *homes = homes_of(HOMES_MAX);
-        assert_eq!(encoded(&change).len(), 50_255);
+        assert_eq!(encoded(&change).len(), RECORD_MAX);
+    }
+
+    #[test]
+    fn the_largest_change_of_each_other_kind_is_below_record_max_bytes() {
+        // A name of 255 bytes that ends in `at`.
+        let long = |at: usize| name(&format!("{:a>255}", format!("b{at}")));
+        let relay = transport::Address::Relay {
+            node: public(2),
+            at: "[::1]:4000".parse().unwrap(),
+        };
+        let card = Card {
+            name: long(0),
+            public_key: public(3),
+            seal_key: types::node::SealKey::new([9; 32]).unwrap(),
+            addresses: Addresses::new(vec![relay; 32]).unwrap(),
+            version: u64::MAX,
+        };
+        let card = card::Signed::sign(key(3), card, &private(3));
+        let status = Status::new((0..64).map(|at| (long(at), index(9))).collect());
+        let join = join_with(&card, 7, BEFORE_EXPIRY, status.unwrap());
+        let mut options = options("a", true);
+        options.prefix = long(0);
+        let lengths = [
+            encoded(&home(u128::MAX, u128::MAX)).len(),
+            encoded(&Change::Join(Box::new(join))).len(),
+            encoded(&ticket_change(7, options)).len(),
+        ];
+        assert_eq!(lengths, [33, 19_601, 307]);
+        assert!(lengths.iter().all(|&length| length < RECORD_MAX));
     }
 
     /// A spec change with no chunk and `count` homes.

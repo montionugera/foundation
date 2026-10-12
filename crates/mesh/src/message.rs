@@ -7,11 +7,11 @@ use raft::{Answer, Body, Link, Position, Term};
 use types::node;
 
 use crate::bytes::{
-    put_change, put_count, put_key, put_optional_proof, put_position, put_signature,
-    take, take_bool, take_change, take_count, take_key, take_position, take_proof,
-    take_signature,
+    change_len, proof_len, put_change, put_count, put_key, put_optional_proof,
+    put_position, put_signature, take, take_bool, take_change, take_count, take_key,
+    take_position, take_proof, take_signature,
 };
-use crate::change::Change;
+use crate::change::{Change, RECORD_MAX};
 use crate::entry;
 
 const RAFT: u8 = 1;
@@ -29,6 +29,42 @@ const HEARTBEAT_REPLY: u8 = 6;
 const APPEND: u8 = 7;
 const APPEND_REPLY: u8 = 8;
 const APPEND_REJECT: u8 = 9;
+
+/// The bytes of an `Append` with no proof and no link, of one entry that holds a record
+/// of [`RECORD_MAX`] bytes. Each member takes a message of this size.
+pub(crate) const BYTES_MIN: usize = RECORD_MAX + 100;
+
+/// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
+/// `raft::Config::fits`.
+pub(crate) fn fits(message: &raft::Message) -> bool {
+    len(message) <= BYTES_MIN
+}
+
+// The bytes of the byte form of `Message::Raft(message)`, with 64 for each signature,
+// also one not yet made.
+fn len(message: &raft::Message) -> usize {
+    let proof = message.proof.as_ref().map_or(0, proof_len);
+    let links = message.chain.iter();
+    let chain = links.map(|link| change_len(&link.change).saturating_add(16));
+    let answer = |answer: &Answer| match answer {
+        Answer::Refused => 1,
+        Answer::Granted(_) => 1 + 64,
+    };
+    let body = match &message.body {
+        Body::PreVote { .. } | Body::Vote { .. } => 16,
+        Body::PreVoteReply { answer: a } | Body::VoteReply { answer: a } => answer(a),
+        Body::Heartbeat { .. }
+        | Body::AppendReply { .. }
+        | Body::AppendReject { .. } => 8,
+        Body::HeartbeatReply => 0,
+        Body::Append { entries, .. } => entry::len(entries).saturating_add(16 + 8),
+    };
+    let head = 1 + 16 + 16 + 8 + 1 + 8 + 1;
+    chain
+        .fold(head, usize::saturating_add)
+        .saturating_add(proof)
+        .saturating_add(body)
+}
 
 /// One message between two nodes of a region.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -466,6 +502,61 @@ mod tests {
         }
     }
 
+    // `proof` with no signature made.
+    fn unsigned_proof(proof: &mut Proof) {
+        for signature in proof.voters.values_mut() {
+            *signature = None;
+        }
+    }
+
+    fn unsigned_change(change: &mut raft::Change) {
+        unsigned_proof(&mut change.votes);
+        change.signature = None;
+    }
+
+    // `message` with no signature made, as `raft` gives it before `Ready::sign`.
+    fn unsigned(mut message: raft::Message) -> raft::Message {
+        message.proof.as_mut().map(unsigned_proof);
+        for link in &mut message.chain {
+            unsigned_change(&mut link.change);
+        }
+        match &mut message.body {
+            Body::PreVoteReply { answer } | Body::VoteReply { answer } => {
+                if let Answer::Granted(signature) = answer {
+                    *signature = None;
+                }
+            }
+            Body::Append { entries, .. } => {
+                for entry in entries {
+                    if let Data::Voters(change) = &mut entry.data {
+                        unsigned_change(change);
+                    }
+                }
+            }
+            Body::PreVote { .. }
+            | Body::Vote { .. }
+            | Body::Heartbeat { .. }
+            | Body::HeartbeatReply
+            | Body::AppendReply { .. }
+            | Body::AppendReject { .. } => {}
+        }
+        message
+    }
+
+    // The keys `from..to`.
+    fn keys_of(from: u128, to: u128) -> BTreeSet<node::Key> {
+        (from..to).map(node::Key::from_u128).collect()
+    }
+
+    // The votes of 254 voters for voter 0, none yet signed.
+    fn votes_of_254() -> Proof {
+        Proof {
+            grant: Grant::Vote,
+            candidate: key(0),
+            voters: keys_of(0, 254).into_iter().map(|key| (key, None)).collect(),
+        }
+    }
+
     /// A heartbeat of [`raft`] with `chain`.
     fn chained(chain: Vec<Link>) -> Message {
         Message::Raft(raft::Message {
@@ -752,7 +843,74 @@ mod tests {
         .encode();
     }
 
+    #[test]
+    fn an_append_of_one_record_of_record_max_bytes_is_bytes_min_bytes() {
+        let record = Entry {
+            at: at(1, 1),
+            data: Data::Bytes(vec![0; RECORD_MAX]),
+        };
+        let Message::Raft(mut message) = raft(Body::Append {
+            prev: at(0, 0),
+            entries: vec![record],
+            commit: 0,
+        }) else {
+            unreachable!()
+        };
+        assert_eq!(Message::Raft(message.clone()).encode().len(), BYTES_MIN);
+        assert!(fits(&message));
+        let Body::Append { entries, .. } = &mut message.body else {
+            unreachable!()
+        };
+        let Data::Bytes(bytes) = &mut entries[0].data else {
+            unreachable!()
+        };
+        bytes.push(0);
+        assert!(!fits(&message));
+    }
+
+    #[test]
+    fn a_joint_change_of_127_and_127_voters_and_its_largest_proof_fit() {
+        let change = raft::Change {
+            voters: Voters {
+                incoming: keys_of(0, 127),
+                outgoing: keys_of(127, 254),
+            },
+            votes: votes_of_254(),
+            signature: None,
+        };
+        let Message::Raft(append) = raft(Body::Append {
+            prev: at(0, 0),
+            entries: vec![Entry {
+                at: at(1, 1),
+                data: Data::Voters(change),
+            }],
+            commit: 0,
+        }) else {
+            unreachable!()
+        };
+        let reply = raft::Message {
+            proof: Some(votes_of_254()),
+            body: Body::VoteReply {
+                answer: Answer::Granted(None),
+            },
+            ..append.clone()
+        };
+        assert_eq!([len(&append), len(&reply)], [24_581, 20_461]);
+        assert!(fits(&append) && fits(&reply));
+    }
+
     proptest! {
+        #[test]
+        fn len_is_the_length_of_the_byte_form_also_with_no_signature_made(
+            message in a_message(),
+        ) {
+            if let Message::Raft(raft) = &message {
+                let length = message.encode().len();
+                prop_assert_eq!(len(raft), length);
+                prop_assert_eq!(len(&unsigned(raft.clone())), length);
+            }
+        }
+
         #[test]
         fn a_message_round_trips(message in a_message()) {
             prop_assert_eq!(Message::decode(&message.encode()), Some(message));
