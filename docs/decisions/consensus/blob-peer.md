@@ -31,7 +31,13 @@
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111434083):
   `Files::free` waits for the file call that it left to run (ENV SEAMS,
   `laptop.architect-2`, 2026-10-11T17:05:00Z:
-  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387). The
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387). A put
+  that drops after the `free` of a check started is in flight for that check. That
+  `free` can end before the file call of the put (ENV SEAMS, `laptop.architect-2`,
+  2026-10-12T15:52:54Z:
+  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370;
+  `laptop.architect`, 2026-10-12T16:10:17Z:
+  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6128044346). The
   check does not sync the directory, and `Files::remove` counts the room of a removed
   file as used until `sync_dir` on its directory ends. So after a put over a file of
   another length that stopped before its sync, the floor refuses a put early by the
