@@ -1038,7 +1038,8 @@ impl Serve {
     )]
     #[expect(
         clippy::too_many_lines,
-        reason = "shard 0's serve, whose parts each open from the one before"
+        reason = "shard 0's serve, whose parts each open from the one before; a longer \
+                  run answers the limit again"
     )]
     async fn run(
         self,

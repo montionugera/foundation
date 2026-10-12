@@ -294,7 +294,3 @@
   (2026-10-09 13:35 UTC), and the window that #1662 sizes of
   https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609
   (2026-10-07 23:41 UTC).
-  Amended (2026-10-12, #1662, by `laptop.director`, 18:21 UTC):
-  https://github.com/synnaxlabs/foundation/pull/2456#issuecomment-6130077832.
-  `Serve::run` keeps `#[expect(clippy::too_many_lines)]`. A PR that makes it longer
-  answers the limit of 70 lines again in its round.
