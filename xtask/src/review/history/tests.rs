@@ -120,6 +120,10 @@ impl Repo {
         History::new(&self.dir, "main").decision_change(from, end)
     }
 
+    fn surface_change(&self, from: &str, end: &str) -> Result<Option<String>, String> {
+        History::new(&self.dir, "main").surface_change(from, end)
+    }
+
     /// Removes the directory.
     ///
     /// # Panics
@@ -2767,5 +2771,278 @@ fn a_probe_line_in_a_decision_of_the_pr_is_no_move_into_the_decisions() {
         "docs/drafts/y.md"
     );
     assert_eq!(repo.decision_change(&start, &end), Ok(None));
+    repo.remove();
+}
+
+/// The phrase of a change to the public surface of `path`.
+fn item(path: &str) -> String {
+    format!("changes a `pub` item or its doc in `{path}`")
+}
+
+#[test]
+fn a_range_that_changes_a_pub_item_or_its_doc_changes_the_surface() {
+    let (repo, start) = Repo::with_pr("surface-item");
+    let lib = "crates/a/src/lib.rs";
+    let added = repo.commit(lib, "/// A.\npub fn a() {}\n");
+    assert_eq!(repo.surface_change(&start, &added), Ok(Some(item(lib))));
+    let doc = repo.commit(lib, "/// A, changed.\npub fn a() {}\n");
+    assert_eq!(repo.surface_change(&added, &doc), Ok(Some(item(lib))));
+    let body = repo.commit(lib, "/// A, changed.\npub fn a() {\n    b();\n}\n");
+    assert_eq!(repo.surface_change(&doc, &body), Ok(None));
+    let private =
+        repo.commit(lib, "/// A, changed.\npub fn a() {}\n\n/// B.\nfn b() {}\n");
+    assert_eq!(repo.surface_change(&body, &private), Ok(None));
+    let inner = "crates/a/src/b/c.rs";
+    let nested = repo.commit(inner, "pub struct C;\n");
+    assert_eq!(
+        repo.surface_change(&private, &nested),
+        Ok(Some(item(inner)))
+    );
+    repo.git(&["rm", "--quiet", lib]);
+    repo.git(&["commit", "--quiet", "-m", "remove"]);
+    assert_eq!(
+        repo.surface_change(&nested, &repo.head()),
+        Ok(Some(item(lib)))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_pub_item_outside_the_source_of_a_crate_changes_no_surface() {
+    let (repo, start) = Repo::with_pr("surface-outside");
+    for path in [
+        "crates/a/tests/it.rs",
+        "crates/a/benches/b.rs",
+        "crates/a/build.rs",
+        "crates/src/a.rs",
+        "crates/a/b/src/c.rs",
+        "crates/a/src/lib.txt",
+        "xtask/src/a.rs",
+        "src/a.rs",
+    ] {
+        repo.commit(path, "pub fn a() {}\n");
+    }
+    assert_eq!(repo.surface_change(&start, &repo.head()), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_source_file_that_is_not_rust_changes_the_surface() {
+    let (repo, start) = Repo::with_pr("surface-not-rust");
+    let lib = "crates/a/src/lib.rs";
+    let broken = repo.commit(lib, "fn a( {}\n");
+    assert_eq!(repo.surface_change(&start, &broken), Ok(Some(item(lib))));
+    let fixed = repo.commit(lib, "fn a() {}\n");
+    assert_eq!(repo.surface_change(&broken, &fixed), Ok(Some(item(lib))));
+    repo.remove();
+}
+
+#[test]
+fn a_symlink_or_a_submodule_at_a_source_file_changes_the_surface() {
+    let lib = "crates/a/src/lib.rs";
+    for mode in ["120000", "160000"] {
+        let (repo, from) = Repo::with_pr(&format!("surface-link-{mode}"));
+        let link = |object: &str| {
+            let info = format!("{mode},{object},{lib}");
+            repo.git(&["update-index", "--add", "--cacheinfo", &info]);
+            repo.git(&["commit", "--quiet", "-m", "link"]);
+            repo.head()
+        };
+        // A target that is a Rust file with no `pub` item.
+        std::fs::write(repo.dir.join("blob"), "fn a() {}").unwrap();
+        let first = repo.git(&["hash-object", "-w", "blob"]);
+        std::fs::write(repo.dir.join("blob"), "fn b() {}").unwrap();
+        let second = repo.git(&["hash-object", "-w", "blob"]);
+        let (first, second) = match mode {
+            "120000" => (first, second),
+            _ => (from.clone(), repo.git(&["rev-parse", "main"])),
+        };
+        let added = link(&first);
+        assert_eq!(
+            repo.surface_change(&from, &added),
+            Ok(Some(item(lib))),
+            "{mode}"
+        );
+        let moved = link(&second);
+        assert_eq!(
+            repo.surface_change(&added, &moved),
+            Ok(Some(item(lib))),
+            "{mode}"
+        );
+        repo.remove();
+    }
+}
+
+#[test]
+fn a_change_of_mode_alone_changes_no_surface() {
+    let (repo, _) = Repo::with_pr("surface-mode");
+    let lib = "crates/a/src/lib.rs";
+    let added = repo.commit(lib, "pub fn a() {}\n");
+    repo.git(&["update-index", "--chmod=+x", lib]);
+    repo.git(&["commit", "--quiet", "-m", "mode"]);
+    assert_eq!(repo.surface_change(&added, &repo.head()), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_merge_that_resolves_a_conflict_in_a_source_file_changes_the_surface() {
+    let repo = Repo::new("surface-item-conflict");
+    let lib = "crates/a/src/lib.rs";
+    let base = repo.commit(lib, "fn a() {}\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit(lib, "fn a() { pr(); }\n");
+    repo.advance_main(lib, "fn a() { base(); }\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit(lib, "fn a() { base(); }\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("resolves a conflict in `{lib}` in `{end}`")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_source_file_that_the_base_removes_and_the_range_keeps_changes_the_surface() {
+    let repo = Repo::new("surface-item-moddel");
+    let lib = "crates/a/src/lib.rs";
+    let base = repo.commit(lib, "pub fn a() {}\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit(lib, "pub fn a() {}\npub fn b() {}\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    repo.git(&["rm", "--quiet", lib]);
+    repo.git(&["commit", "--quiet", "-m", "rm"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit(lib, "pub fn a() {}\npub fn b() {}\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(format!("resolves a conflict in `{lib}` in `{end}`")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_source_file_conflict_of_the_start_and_the_base_changes_the_surface() {
+    let (repo, _) = Repo::with_pr("surface-item-closed");
+    let lib = "crates/a/src/lib.rs";
+    repo.advance_main(lib, "fn a() {}\n// old\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let start = repo.commit(lib, "fn a() {}\n// pr\n");
+    repo.commit(lib, "fn a() {}\n// old\n");
+    repo.advance_main(lib, "fn a() {}\n// base\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    assert_eq!(
+        repo.surface_change(&start, &repo.head()),
+        Ok(Some(format!(
+            "has a conflict in `{lib}` between its start and the base"
+        )))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_conflict_outside_a_source_file_changes_no_surface() {
+    let repo = Repo::new("surface-conflict-other");
+    let base = repo.commit("docs/x.md", "a doc\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["switch", "--quiet", "-c", "pr"]);
+    let start = repo.commit("docs/x.md", "the doc of the PR\n");
+    repo.advance_main("docs/x.md", "the doc of the base\n");
+    let merge = repo
+        .command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let end = repo.commit("docs/x.md", "the doc of the base\n");
+    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_pub_item_that_only_the_base_changes_changes_no_surface() {
+    let (repo, start) = Repo::with_pr("surface-item-base");
+    repo.advance_main("crates/a/src/lib.rs", "pub fn a() {}\n");
+    repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
+    let end = repo.commit("crates/b/src/lib.rs", "fn b() {}\n");
+    assert_eq!(repo.surface_change(&start, &end), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn names_the_first_path_of_two_surface_changes() {
+    let (repo, start) = Repo::with_pr("surface-first");
+    repo.commit("docs/decisions/x.md", "a rule\n");
+    repo.commit("crates/c/src/lib.rs", "pub fn c() {}\n");
+    repo.commit("crates/b/src/lib.rs", "pub fn b() {}\n");
+    let end = repo.commit("crates/a/src/lib.rs", "fn a() {}\n");
+    assert_eq!(
+        repo.surface_change(&start, &end),
+        Ok(Some(item("crates/b/src/lib.rs")))
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_source_path_in_another_case_changes_the_surface() {
+    let (repo, start) = Repo::with_pr("surface-case");
+    let lib = "Crates/A/SRC/Lib.RS";
+    let end = repo.commit(lib, "pub fn a() {}\n");
+    assert_eq!(
+        repo.git(&["ls-tree", "-r", "--name-only", &end]),
+        format!("{lib}\na.txt\nb.txt")
+    );
+    assert_eq!(repo.surface_change(&start, &end), Ok(Some(item(lib))));
+    repo.remove();
+}
+
+#[test]
+fn an_empty_range_changes_no_surface() {
+    let (repo, _) = Repo::with_pr("surface-empty");
+    let end = repo.commit("crates/a/src/lib.rs", "pub fn a() {}\n");
+    assert_eq!(repo.surface_change(&end, &end[..7]), Ok(None));
+    repo.remove();
+}
+
+#[test]
+fn a_surface_range_that_names_no_commit_counts() {
+    let (repo, end) = Repo::with_pr("surface-unnamed");
+    assert_eq!(
+        repo.surface_change("abc1234", &end),
+        Ok(Some("has `abc1234`, which names no commit".to_string()))
+    );
+    assert_eq!(
+        repo.surface_change(&end, "abc1234"),
+        Ok(Some("has `abc1234`, which names no commit".to_string()))
+    );
+    repo.remove();
+}
+
+#[test]
+fn text_of_the_pr_that_the_base_moves_into_a_source_file_changes_the_surface() {
+    let (repo, _) = Repo::with_pr("surface-move");
+    let (_, changed, end) = repo.move_on_main("docs/drafts/x.md", "crates/a/src/x.rs");
+    assert_eq!(repo.git(&["show", "--remerge-diff", "--format=", &end]), "");
+    assert_eq!(
+        repo.surface_change(&changed, &end),
+        Ok(Some(
+            "has `docs/drafts/x.md`, which the PR changes and the base moves into the \
+             source file `crates/a/src/x.rs`"
+                .to_string()
+        ))
+    );
     repo.remove();
 }

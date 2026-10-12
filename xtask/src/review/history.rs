@@ -5,6 +5,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use super::surface;
+
 /// The empty tree, the source of attributes for a merge, so no `.gitattributes` can
 /// pick a merge driver that hides a conflict.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -150,6 +152,67 @@ impl<'a> History<'a> {
             .map(|entry| String::from_utf8_lossy(&entry.path).into_owned())
             .find(|path| (DECISION.counts)(path));
         Ok(changed.map(|path| format!("changes the decision `{path}`")))
+    }
+
+    /// The first change of the public surface of a crate in the range `<from>..<end>`,
+    /// as a phrase, or `None`, also when the range is empty. A source file is a `.rs`
+    /// file under `crates/<crate>/src/`, at any depth, in any ASCII case of those
+    /// letters. One whose public surface differs at the two ends (`surface::changed`)
+    /// gives "changes a `pub` item or its doc in `<path>`". A file that an end does not
+    /// have has no public surface there. A source file that is a symlink or a submodule
+    /// at an end has no Rust text, so it counts.
+    ///
+    /// The range is read as `decision_change` reads it, with a source file in place of
+    /// a decision: a change of the base does not count, and the phrases are "resolves a
+    /// conflict in `<path>` in `<merge>`", "has a conflict in `<path>` between its
+    /// start and the base", "has `<old>`, which the PR changes and the base moves into
+    /// the source file `<new>`", "has `<text>`, which names no commit", and "holds the
+    /// base at more than one newest commit: `<commit>`, `<commit>`".
+    ///
+    /// # Errors
+    ///
+    /// A failed `git` command, also when the base ref does not exist.
+    pub(crate) fn surface_change(
+        &self,
+        from: &str,
+        end: &str,
+    ) -> Result<Option<String>, String> {
+        let (tree, end) = match self.range(from, end, &SOURCE)? {
+            Range::Empty => return Ok(None),
+            Range::Counted(phrase) => return Ok(Some(phrase)),
+            Range::Diff { tree, end } => (tree, end),
+        };
+        for entry in self.diff(&tree, &end)? {
+            let path = String::from_utf8_lossy(&entry.path);
+            if (SOURCE.counts)(&path) && self.surface_changed(&entry)? {
+                return Ok(Some(format!(
+                    "changes a `pub` item or its doc in `{path}`"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether `entry`, of a source file, changes the public surface of the file. A
+    /// file that does not exist has none.
+    fn surface_changed(&self, entry: &Entry) -> Result<bool, String> {
+        let text = |mode: &str, blob: &str| {
+            if absent(blob) {
+                return Ok(Some(String::new()));
+            }
+            // A submodule's blob is a commit and a symlink's blob is its target.
+            if [GITLINK, SYMLINK].contains(&mode) {
+                return Ok(None);
+            }
+            let text = self.output(&["cat-file", "blob", blob])?;
+            Ok::<_, String>(Some(String::from_utf8_lossy(&text).into_owned()))
+        };
+        let old = text(&entry.old_mode, &entry.old)?;
+        let new = text(&entry.new_mode, &entry.new)?;
+        Ok(match (old, new) {
+            (Some(old), Some(new)) => surface::changed(&old, &new),
+            _ => true,
+        })
     }
 
     /// The range `<from>..<end>`, as a rule that counts the paths of `kind` reads it.
@@ -797,6 +860,18 @@ const DECISION: Kind = Kind {
         start.is_some_and(|start| start.eq_ignore_ascii_case(decisions))
     },
     noun: "the decision ",
+};
+
+/// The source files of the crates: each `.rs` file under `crates/<crate>/src/`, at any
+/// depth, in any ASCII case of those letters, as [`DECISION`] reads its folder.
+const SOURCE: Kind = Kind {
+    counts: |path| {
+        let path = path.to_ascii_lowercase();
+        path.strip_prefix("crates/")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(_, rest)| rest.starts_with("src/") && rust_path(rest))
+    },
+    noun: "the source file ",
 };
 
 /// A file to write in a tree.
