@@ -3764,11 +3764,11 @@ mod tests {
                 let writer = ctx.writer(channels, Authority(1), None).await;
                 let mut writer = writer.expect("opens");
                 let first = got.lock().expect("no panic").is_empty();
-                let (value, sample) = if first { (2, 5) } else { (3, 7) };
+                let (key, sample) = if first { (2, 5) } else { (3, 7) };
                 if first {
                     ctx.clock().sleep(ms(200)).await;
                 }
-                let draft = draft_value(&writer, writer.now().nanos(), sample, value);
+                let draft = draft_value(&writer, writer.now().nanos(), sample, key);
                 let written = writer.write(Label::Path(Path::Live), draft);
                 let applied = |outcomes: &[_]| {
                     matches!(outcomes, [hub::home::Outcome::Applied { .. }])
