@@ -48,9 +48,9 @@ fn main() -> ExitCode {
         ["open62541", tag] => open62541::run(root, open62541::URL, tag),
         ["review", pr, head] => return review::run(root, pr, head),
         ["queue", "review", reference, group] => {
-            return queue::review(root, reference, group);
+            return queue::review(root, reference, group, &gh::api);
         }
-        ["queue", "mutants", group] => queue::mutants(group),
+        ["queue", "mutants", group] => queue::mutants(group, &gh::api),
         _ => {
             eprintln!(
                 "usage: cargo xtask <layers|globals|oracles|loom>\n       \

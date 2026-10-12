@@ -189,7 +189,7 @@ fn problems_in(
 }
 
 /// Prints each problem or the failure in `found`, and gives the exit code of `run`.
-fn exit(found: Result<Vec<String>, String>) -> ExitCode {
+pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
     match found {
         Ok(problems) if problems.is_empty() => ExitCode::SUCCESS,
         Ok(problems) => {

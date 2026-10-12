@@ -59,18 +59,82 @@ proptest! {
     }
 }
 
+/// A page of check runs, as GitHub gives it.
+fn page(runs: &[Value]) -> Value {
+    json!({ "total_count": runs.len(), "check_runs": runs })
+}
+
+/// A GitHub that holds the group commit `GROUP`, with the parents `parents`, and the
+/// check run `pages` at `HEAD`.
+fn github(
+    parents: &[&str],
+    pages: Vec<Value>,
+) -> impl Fn(&str) -> Result<Vec<Value>, String> {
+    let parents: Vec<Value> = parents.iter().map(|sha| json!({ "sha": sha })).collect();
+    move |path| match path {
+        "repos/{owner}/{repo}/commits/7a3039e97" => {
+            Ok(vec![json!({ "parents": parents })])
+        }
+        "repos/{owner}/{repo}/commits/652d62cd5/check-runs?check_name=mutants&filter=all" => {
+            Ok(pages.clone())
+        }
+        _ => Err(format!("gh api {path}: Not Found (HTTP 404)")),
+    }
+}
+
+/// The group commit of #2398.
+const GROUP: &str = "7a3039e97";
+
+/// The first parent of `GROUP`.
+const BASE: &str = "d34e69088";
+
+#[test]
+fn a_pr_number_past_u64_is_an_error() {
+    let reference = "gh-readonly-queue/main/pr-18446744073709551616-d34e6908";
+    assert_eq!(
+        pr(reference),
+        Err(format!(
+            "the PR number `18446744073709551616` of the queue ref `{reference}` is not \
+             a u64: number too large to fit in target type"
+        ))
+    );
+}
+
 #[test]
 fn the_head_is_the_second_parent() {
-    let commit = json!({ "parents": [{ "sha": "57fcf2050" }, { "sha": HEAD }] });
-    assert_eq!(head(&commit), Ok(HEAD));
+    assert_eq!(
+        head(GROUP, &github(&[BASE, HEAD], vec![])),
+        Ok(HEAD.to_string())
+    );
+}
+
+#[test]
+fn a_group_commit_in_pages_has_the_parents_of_its_first() {
+    let commit = json!({ "parents": [{ "sha": BASE }, { "sha": HEAD }] });
+    let pages = |_: &str| Ok(vec![commit.clone(), commit.clone()]);
+    assert_eq!(head(GROUP, &pages), Ok(HEAD.to_string()));
 }
 
 #[test]
 fn a_group_commit_with_one_parent_is_an_error() {
-    let commit = json!({ "parents": [{ "sha": "57fcf2050" }] });
     assert_eq!(
-        head(&commit),
-        Err("the group commit has no second parent".to_string())
+        head(GROUP, &github(&[BASE], vec![])),
+        Err("the group commit `7a3039e97` has no second parent".to_string())
+    );
+}
+
+#[test]
+fn a_group_that_github_does_not_give_once_is_an_error() {
+    assert_eq!(
+        head(GROUP, &|_: &str| Ok(vec![])),
+        Err("GitHub gave no commit `7a3039e97`".to_string())
+    );
+    assert_eq!(
+        head("e1e1e1e1e", &github(&[BASE, HEAD], vec![])),
+        Err(
+            "gh api repos/{owner}/{repo}/commits/e1e1e1e1e: Not Found (HTTP 404)"
+                .to_string()
+        )
     );
 }
 
@@ -78,7 +142,7 @@ fn a_group_commit_with_one_parent_is_an_error() {
 fn success_and_skipped_pass() {
     for conclusion in ["success", "skipped"] {
         assert_eq!(
-            verdict(HEAD, &[run(5, "completed", Some(conclusion))]),
+            verdict(HEAD, &[page(&[run(5, "completed", Some(conclusion))])]),
             Ok(format!(
                 "the newest `mutants` check run at the head `652d62cd5` \
                  (https://github.com/runs/5) ended in `{conclusion}`"
@@ -91,7 +155,7 @@ fn success_and_skipped_pass() {
 fn each_other_conclusion_fails() {
     for conclusion in ["failure", "cancelled", "timed_out", "neutral"] {
         assert_eq!(
-            verdict(HEAD, &[run(5, "completed", Some(conclusion))]),
+            verdict(HEAD, &[page(&[run(5, "completed", Some(conclusion))])]),
             Err(format!(
                 "the newest `mutants` check run at the head `652d62cd5` \
                  (https://github.com/runs/5) ended in `{conclusion}`"
@@ -104,7 +168,7 @@ fn each_other_conclusion_fails() {
 fn a_run_that_has_not_ended_fails() {
     for status in ["queued", "in_progress"] {
         assert_eq!(
-            verdict(HEAD, &[run(5, status, None)]),
+            verdict(HEAD, &[page(&[run(5, status, None)])]),
             Err(format!(
                 "the newest `mutants` check run at the head `652d62cd5` \
                  (https://github.com/runs/5) has not ended: it is `{status}`"
@@ -115,16 +179,18 @@ fn a_run_that_has_not_ended_fails() {
 
 #[test]
 fn no_run_fails() {
-    assert_eq!(
-        verdict(HEAD, &[]),
-        Err("the head `652d62cd5` has no `mutants` check run".to_string())
-    );
+    let failed = Err("the head `652d62cd5` has no `mutants` check run".to_string());
+    assert_eq!(verdict(HEAD, &[]), failed);
+    assert_eq!(verdict(HEAD, &[page(&[])]), failed);
 }
 
 #[test]
-fn the_newest_run_decides() {
-    let old = run(5, "completed", Some("success"));
-    let new = run(9, "completed", Some("failure"));
+fn the_newest_run_of_each_page_decides() {
+    let old = page(&[run(5, "completed", Some("success"))]);
+    let new = page(&[
+        run(7, "completed", Some("success")),
+        run(9, "completed", Some("failure")),
+    ]);
     let failed = Err("the newest `mutants` check run at the head `652d62cd5` \
          (https://github.com/runs/9) ended in `failure`"
         .to_string());
@@ -136,7 +202,41 @@ fn the_newest_run_decides() {
 fn a_run_with_no_id_is_an_error() {
     let run = json!({ "status": "completed", "conclusion": "success" });
     assert_eq!(
-        verdict(HEAD, &[run]),
+        verdict(HEAD, &[page(&[run])]),
         Err("JSON has no unsigned integer field `id`".to_string())
+    );
+}
+
+#[test]
+fn a_page_with_no_runs_is_an_error() {
+    assert_eq!(
+        verdict(HEAD, &[json!({ "message": "Not Found" })]),
+        Err("JSON has no array field `check_runs`".to_string())
+    );
+}
+
+#[test]
+fn the_queue_reads_the_runs_at_the_head_of_the_pr() {
+    let passed = page(&[run(5, "completed", Some("success"))]);
+    let failed = page(&[run(9, "completed", Some("failure"))]);
+    assert_eq!(
+        mutants(GROUP, &github(&[BASE, HEAD], vec![passed.clone()])),
+        Ok(())
+    );
+    assert_eq!(
+        mutants(GROUP, &github(&[BASE, HEAD], vec![passed, failed])),
+        Err(vec![
+            "the newest `mutants` check run at the head `652d62cd5` \
+             (https://github.com/runs/9) ended in `failure`"
+                .to_string()
+        ])
+    );
+    assert_eq!(
+        mutants(GROUP, &github(&[HEAD, BASE], vec![])),
+        Err(vec![
+            "gh api repos/{owner}/{repo}/commits/d34e69088/check-runs\
+             ?check_name=mutants&filter=all: Not Found (HTTP 404)"
+                .to_string()
+        ])
     );
 }

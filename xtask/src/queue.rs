@@ -5,40 +5,42 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::{field, gh, review};
+use crate::{field, review};
+
+/// Reads the GitHub API: the objects that `gh api --paginate` gives for a path
+/// (`gh::api`).
+pub(crate) type Api<'a> = &'a dyn Fn(&str) -> Result<Vec<Value>, String>;
 
 /// Runs the review check (`review::run`) for the PR that the queue ref `reference`
-/// names, at the head of that PR: the second parent of the group commit `group`. The
-/// repository at `root` must hold `group`. Returns the exit code of the review, or 2
-/// when the ref names no PR or GitHub cannot be read.
-pub(crate) fn review(root: &Path, reference: &str, group: &str) -> ExitCode {
-    let target = pr(reference).and_then(|pr| Ok((pr, head_of(group)?)));
-    match target {
+/// names, at the head of that PR: the second parent of the group commit `group`, read
+/// with `api`. The repository at `root` must hold `group`. Returns the exit code of the
+/// review, or 2 when the ref names no PR or GitHub cannot be read.
+pub(crate) fn review(
+    root: &Path,
+    reference: &str,
+    group: &str,
+    api: Api<'_>,
+) -> ExitCode {
+    match pr(reference).and_then(|pr| Ok((pr, head(group, api)?))) {
         Ok((pr, head)) => {
             eprintln!("The group `{group}` holds PR {pr} at its head `{head}`.");
             review::run(root, &pr.to_string(), &head)
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(2)
-        }
+        Err(e) => review::exit(Err(e)),
     }
 }
 
 /// Passes when the newest `mutants` check run at the head of the PR of the group
-/// commit `group` ended in `success` or `skipped`. Fails with the reason otherwise.
-pub(crate) fn mutants(group: &str) -> Result<(), Vec<String>> {
+/// commit `group`, read with `api`, ended in `success` or `skipped`. Fails with the
+/// reason otherwise.
+pub(crate) fn mutants(group: &str, api: Api<'_>) -> Result<(), Vec<String>> {
     let check = || {
-        let head = head_of(group)?;
-        let path = format!(
+        let head = head(group, api)?;
+        let pages = api(&format!(
             "repos/{{owner}}/{{repo}}/commits/{head}/check-runs\
              ?check_name=mutants&filter=all"
-        );
-        let mut runs = Vec::new();
-        for page in gh::api(&path)? {
-            runs.extend_from_slice(field::list(&page, "check_runs")?);
-        }
-        verdict(&head, &runs)
+        ))?;
+        verdict(&head, &pages)
     };
     let passed = check().map_err(|e| vec![e])?;
     eprintln!("{passed}");
@@ -51,40 +53,49 @@ fn pr(reference: &str) -> Result<u64, String> {
     let last = reference
         .rsplit_once('/')
         .map_or(reference, |(_, last)| last);
-    last.strip_prefix("pr-")
+    let number = last
+        .strip_prefix("pr-")
         .and_then(|rest| rest.split_once('-'))
-        .filter(|(number, _)| number.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|(number, _)| number.parse().ok())
+        .map(|(number, _)| number)
+        .filter(|number| {
+            !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+        })
         .ok_or_else(|| {
             format!(
                 "the queue ref `{reference}` names no PR: it does not end in \
                  `pr-<n>-<sha>`"
             )
-        })
+        })?;
+    number.parse().map_err(|e| {
+        format!(
+            "the PR number `{number}` of the queue ref `{reference}` is not a u64: {e}"
+        )
+    })
 }
 
-/// The head of the PR of the group commit `group`, read from GitHub.
-fn head_of(group: &str) -> Result<String, String> {
-    let commit = gh::api(&format!("repos/{{owner}}/{{repo}}/commits/{group}"))?;
-    let commit = commit.first().ok_or("GitHub gave no commit")?;
-    head(commit).map(str::to_string)
-}
-
-/// The head of the PR of a group commit: its second parent.
-fn head(commit: &Value) -> Result<&str, String> {
+/// The head of the PR of the group commit `group`, read with `api`: the second parent
+/// of the commit.
+fn head(group: &str, api: Api<'_>) -> Result<String, String> {
+    let commits = api(&format!("repos/{{owner}}/{{repo}}/commits/{group}"))?;
+    // A commit with more than 300 files comes in pages, each with the parents.
+    let commit = commits
+        .first()
+        .ok_or_else(|| format!("GitHub gave no commit `{group}`"))?;
     let parent = field::list(commit, "parents")?
         .get(1)
-        .ok_or("the group commit has no second parent")?;
-    field::text(parent, "sha")
+        .ok_or_else(|| format!("the group commit `{group}` has no second parent"))?;
+    field::text(parent, "sha").map(str::to_string)
 }
 
-/// Whether the newest of the `mutants` check `runs` at `head` passed: `Ok` with the
-/// run, or `Err` with the reason.
-fn verdict(head: &str, runs: &[Value]) -> Result<String, String> {
-    let runs = runs
-        .iter()
-        .map(|run| Ok((field::number(run, "id")?, run)))
-        .collect::<Result<Vec<_>, String>>()?;
+/// Whether the newest `mutants` check run at `head`, of those in the check run `pages`
+/// that GitHub gave, passed: `Ok` with the run, or `Err` with the reason.
+fn verdict(head: &str, pages: &[Value]) -> Result<String, String> {
+    let mut runs = Vec::new();
+    for page in pages {
+        for run in field::list(page, "check_runs")? {
+            runs.push((field::number(run, "id")?, run));
+        }
+    }
     let (_, run) = runs
         .into_iter()
         .max_by_key(|(id, _)| *id)
