@@ -167,7 +167,7 @@ fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
 #[expect(unsafe_code, reason = "a hook before exec is an OS call")]
 #[expect(
     clippy::disallowed_methods,
-    reason = "the files thread waits for the child of the filter"
+    reason = "the files thread waits for the thread that starts the child"
 )]
 fn a_failed_create_keeps_no_blocks_while_a_child_holds_the_file() {
     use std::io::{Read, Write};
@@ -208,7 +208,10 @@ fn a_failed_create_keeps_no_blocks_while_a_child_holds_the_file() {
         let error = files.open(Path::new("a"), mode).await.unwrap_err();
         let after = files.free().await.unwrap();
         (&released).write_all(&[0]).unwrap();
-        child.recv().unwrap().join().unwrap();
+        let spawner = child.recv_timeout(std::time::Duration::from_secs(10));
+        let spawner =
+            spawner.expect("the unlink of the failed create starts the child");
+        spawner.join().unwrap();
         drop(files);
         thread.join().unwrap();
         assert_eq!(error, Error::Full { path: "a".into() });
