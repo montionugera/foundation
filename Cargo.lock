@@ -897,6 +897,7 @@ dependencies = [
  "clock",
  "codec",
  "control",
+ "counting",
  "delivery",
  "divan",
  "env",
