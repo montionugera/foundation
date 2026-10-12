@@ -397,7 +397,8 @@ impl Endpoint {
             .map_or(0, |block| crate::stream::size(parts, block.len()));
         sender.check_open();
         if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
-            return self.adopt(now, sender, error);
+            self.adopt(now, sender);
+            return Err(error);
         }
         let key = sender.key().connection;
         self.streams(
@@ -433,7 +434,8 @@ impl Endpoint {
         let bytes = crate::stream::size(parts, message.len());
         sender.check_open();
         if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
-            return self.adopt(now, sender, error);
+            self.adopt(now, sender);
+            return Err(error);
         }
         let key = sender.key().connection;
         let mut message = Some(message);
@@ -673,25 +675,21 @@ impl Endpoint {
         sender
     }
 
-    /// Gives `refusal`, the error of the size check of a write of `sender`, in each
-    /// state of the stream and the connection. Before, while the connection runs,
-    /// the stream adopts the rest of a leaked write ([`Streams::adopt`]).
+    /// For a write of `sender` that the size check refused: while the connection
+    /// runs, the stream adopts the rest of a leaked write ([`Streams::adopt`]).
     #[cold]
     #[inline(never)]
-    fn adopt<T>(
-        &mut self,
-        now: Monotonic,
-        sender: &Sender,
-        refusal: Error,
-    ) -> Result<T, Error> {
+    fn adopt(&mut self, now: Monotonic, sender: &Sender) {
         if sender.closed().is_some() {
-            return Err(refusal);
+            return;
         }
         let key = sender.key().connection;
-        self.streams(now, key, None, |streams, inner, _, _| {
-            streams.adopt(inner, sender);
-            Err(refusal)
-        })
+        let connection = find(&mut self.connections, key);
+        let connection =
+            connection.expect("invariant: a connection drains only after it closed");
+        let Connection { inner, streams, .. } = connection;
+        streams.adopt(inner, sender);
+        self.drive(key.handle, self.instant(now));
     }
 
     /// Runs `call` on the streams of `key`'s connection with the pool and the event
