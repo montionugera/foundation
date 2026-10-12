@@ -563,15 +563,20 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6111675216
   (`laptop.architect-2`, 2026-10-11T20:23:25Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113352507).
-  A read goes through one open of its path: `os` lists a directory through the handle
-  of that open (`rustix::fs::Dir::new`), so a later rename or replace at the path does
-  not change what it reads. A directory that is removed after the open lists no
-  entries. Lost: `Dir::read_from`, which makes a second open through the handle; a
-  check of the device and inode after a second open by name, with a retry
-  (`laptop.architect-2`, 2026-10-12, #2481:
+  Amended (2026-10-12T19:51:51Z, #2481): a read goes through one open of its path: `os`
+  lists a directory through the handle of that open (`rustix::fs::Dir::new`), so a
+  later rename or replace at the path does not change what it reads. A directory that
+  is removed after the open lists no entries. Lost: `Dir::read_from`, which makes a
+  second open through the handle; a check of the device and inode after a second open
+  by name, with a retry (`laptop.architect-2`, 2026-10-12T19:51:51Z, #2481:
   https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237). The
   doc promises the one open, not what the open gives: on Linux 7.0 ext4, the kernel's
   open of a symbolic link that a rename swaps can give the directory that holds the
-  link (#2490). Lost: a path walk of our own, which copies the kernel's rules as a
-  second guard for a defect that is not ours (`laptop.architect-2`, 2026-10-12:
+  link (#2490). The test of a swap of a directory for a file checks only the variant of
+  the read, never which directory it lists. Lost: a path walk of our own, which copies
+  the kernel's rules as a second guard for a defect that is not ours; a check of the
+  device and inode after the open, with a retry, which cannot tell a swap from the
+  defect (`laptop.architect-2`, 2026-10-12T20:23:51Z:
   https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
+  Supersedes "It reads what `path` names at its open" of
+  https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237, item 2.
