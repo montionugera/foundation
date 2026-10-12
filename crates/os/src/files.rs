@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::IoSlice;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -124,7 +124,7 @@ impl env::files::Driver for Disk {
     fn sync_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
         self.call(dir, Operation::SyncDir, |data, dir| {
             fs::openat(data, at(dir), READ_DIR, fs::Mode::empty())
-                .and_then(|fd| sync_all(&fd))
+                .and_then(|fd| sync_all(fd.as_fd()))
         })
     }
 
@@ -151,12 +151,12 @@ impl File {
     fn call<T: Send + 'static>(
         &self,
         operation: Operation,
-        call: impl FnOnce(&OwnedFd) -> io::Result<T> + Send + 'static,
+        call: impl FnOnce(BorrowedFd<'_>) -> io::Result<T> + Send + 'static,
     ) -> Request<'_, T> {
         let (fd, path) = (Arc::clone(&self.fd), Arc::clone(&self.path.borrow()));
         Box::pin(
             self.queue
-                .run(move || call(&fd.fd).map_err(fail(&path, operation))),
+                .run(move || call(fd.as_fd()).map_err(fail(&path, operation))),
         )
     }
 }
@@ -186,7 +186,9 @@ impl Descriptor for File {
     fn rename<'a>(&'a self, from: &'a Path, to: &'a Path) -> Request<'a, ()> {
         let (fd, data) = (Arc::clone(&self.fd), Arc::clone(&self.data));
         let (old, new) = (from.to_path_buf(), to.to_path_buf());
-        let renamed = self.queue.run(move || rename(&fd.fd, &data, &old, &new));
+        let renamed = self
+            .queue
+            .run(move || rename(fd.as_fd(), &data, &old, &new));
         Box::pin(async move {
             renamed.await?;
             *self.path.borrow_mut() = Arc::from(to);
@@ -211,7 +213,7 @@ impl Descriptor for File {
         Box::pin(async move {
             queue
                 .run(move || {
-                    let removed = remove(&fd.fd, &data, &path);
+                    let removed = remove(fd.as_fd(), &data, &path);
                     drop(fd);
                     removed
                 })
@@ -266,11 +268,28 @@ impl Queue {
 
 /// The descriptor of an open file. Its drop releases the lock of a write open before
 /// it closes the descriptor: a `flock` lock lasts until each copy of the descriptor
-/// closes, and a child of the process holds a copy until its exec. An unlock that the
-/// filesystem fails, as NFS or a FUSE daemon can, leaves the lock to the close.
+/// closes, and a child of the process holds a copy from its fork to its exec, or to its
+/// end. An unlock that the filesystem fails, as NFS or a FUSE daemon can, leaves the
+/// lock to the close.
 struct Opened {
     fd: OwnedFd,
     locked: bool,
+}
+
+impl Opened {
+    /// Takes the exclusive lock of the file, or gives `WOULDBLOCK` when another
+    /// descriptor holds it.
+    fn lock(&mut self) -> io::Result<()> {
+        fs::flock(&self.fd, FlockOperation::NonBlockingLockExclusive)?;
+        self.locked = true;
+        Ok(())
+    }
+}
+
+impl AsFd for Opened {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
 }
 
 impl Drop for Opened {
@@ -300,7 +319,7 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
             locked: false,
         };
         if mode != Mode::Read {
-            match fs::flock(&fd.fd, FlockOperation::NonBlockingLockExclusive) {
+            match fd.lock() {
                 Err(Errno::WOULDBLOCK) => {
                     return Err(Error::Busy {
                         path: path.to_path_buf(),
@@ -308,9 +327,8 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
                 }
                 locked => locked.map_err(&failed)?,
             }
-            fd.locked = true;
         }
-        let stat = fs::fstat(&fd.fd).map_err(&failed)?;
+        let stat = fs::fstat(&fd).map_err(&failed)?;
         let flags = AtFlags::empty();
         if mode == Mode::Read || named(data, path, flags, &stat).map_err(&failed)? {
             break (fd, stat);
@@ -324,13 +342,13 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
         // Not atomic: a crash before `allocate` sets the length leaves an empty file,
         // which this allocates.
         Mode::Create { len } if found == 0 && len != 0 => {
-            allocate(&fd.fd, len)
-                .and_then(|()| sync_all(&fd.fd))
+            allocate(fd.as_fd(), len)
+                .and_then(|()| sync_all(fd.as_fd()))
                 // A child process can hold a copy of `fd`, so the blocks are freed
                 // here, not at its close. A failed create leaves no file, so a later
                 // write open gives `NotFound`, not an empty file.
                 .or_else(|errno| {
-                    let freed = fs::ftruncate(&fd.fd, 0);
+                    let freed = fs::ftruncate(&fd, 0);
                     fs::unlinkat(data, path, AtFlags::empty())?;
                     freed.and(Err(errno))
                 })
@@ -360,7 +378,7 @@ fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
     // `mkdirat` makes no entry on another device: that is a mount point, the mount's
     // to keep.
     if fs::fstat(&holder)?.st_dev == fs::fstat(&made)?.st_dev {
-        sync_all(&holder)?;
+        sync_all(holder.as_fd())?;
     }
     Ok(made)
 }
@@ -393,7 +411,7 @@ fn create_dir(data: &OwnedFd, dir: &Path) -> io::Result<()> {
 }
 
 /// Writes `parts` back to back at `offset`, in as many calls as the OS needs.
-fn write(fd: &OwnedFd, mut offset: u64, parts: &[Block]) -> io::Result<()> {
+fn write(fd: BorrowedFd<'_>, mut offset: u64, parts: &[Block]) -> io::Result<()> {
     let mut slices: Vec<IoSlice<'_>> =
         parts.iter().map(|part| IoSlice::new(part)).collect();
     let mut rest = &mut slices[..];
@@ -407,7 +425,7 @@ fn write(fd: &OwnedFd, mut offset: u64, parts: &[Block]) -> io::Result<()> {
 
 /// Fills `into` from `offset`. A file that something outside Foundation cut short
 /// gives `EIO`.
-fn read(fd: &OwnedFd, offset: u64, into: &mut [u8]) -> io::Result<()> {
+fn read(fd: BorrowedFd<'_>, offset: u64, into: &mut [u8]) -> io::Result<()> {
     let mut done = 0;
     while done < into.len() {
         match io::pread(fd, &mut into[done..], offset + done as u64)? {
@@ -419,7 +437,7 @@ fn read(fd: &OwnedFd, offset: u64, into: &mut [u8]) -> io::Result<()> {
 }
 
 /// Makes the bytes of `fd` durable, through the cache of the disk.
-fn sync_data(fd: &OwnedFd) -> io::Result<()> {
+fn sync_data(fd: BorrowedFd<'_>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     return fs::fdatasync(fd);
     #[cfg(target_os = "macos")]
@@ -427,7 +445,7 @@ fn sync_data(fd: &OwnedFd) -> io::Result<()> {
 }
 
 /// Makes the bytes and the metadata of `fd` durable, through the cache of the disk.
-fn sync_all(fd: &OwnedFd) -> io::Result<()> {
+fn sync_all(fd: BorrowedFd<'_>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     return fs::fsync(fd);
     #[cfg(target_os = "macos")]
@@ -437,7 +455,12 @@ fn sync_all(fd: &OwnedFd) -> io::Result<()> {
 /// Renames `from` to `to` when `from` names the file `fd`, with no replace. The I/O
 /// thread of a shard runs its calls in order, and each shard writes only its own
 /// directory, so nothing changes `from` between the check and the rename.
-fn rename(fd: &OwnedFd, data: &OwnedFd, from: &Path, to: &Path) -> Result<(), Error> {
+fn rename(
+    fd: BorrowedFd<'_>,
+    data: &OwnedFd,
+    from: &Path,
+    to: &Path,
+) -> Result<(), Error> {
     let failed = fail(from, Operation::Rename);
     check_named(fd, data, from, &failed)?;
     match fs::renameat_with(data, from, data, to, RenameFlags::NOREPLACE) {
@@ -449,7 +472,7 @@ fn rename(fd: &OwnedFd, data: &OwnedFd, from: &Path, to: &Path) -> Result<(), Er
 }
 
 /// Unlinks `path` when it names the file `fd`, as [`rename`] checks it.
-fn remove(fd: &OwnedFd, data: &OwnedFd, path: &Path) -> Result<(), Error> {
+fn remove(fd: BorrowedFd<'_>, data: &OwnedFd, path: &Path) -> Result<(), Error> {
     let failed = fail(path, Operation::Remove);
     check_named(fd, data, path, &failed)?;
     fs::unlinkat(data, path, AtFlags::empty()).map_err(&failed)
@@ -458,7 +481,7 @@ fn remove(fd: &OwnedFd, data: &OwnedFd, path: &Path) -> Result<(), Error> {
 /// `NotFound` from `failed` unless `path`, a link itself and not what it points at,
 /// names the file `fd`.
 fn check_named(
-    fd: &OwnedFd,
+    fd: BorrowedFd<'_>,
     data: &OwnedFd,
     path: &Path,
     failed: &impl Fn(Errno) -> Error,
@@ -490,7 +513,7 @@ fn named(
 
 /// Allocates the first `len` bytes of the empty file `fd` on disk, all or none, and
 /// sets its length to `len`.
-fn allocate(fd: &OwnedFd, len: u64) -> io::Result<()> {
+fn allocate(fd: BorrowedFd<'_>, len: u64) -> io::Result<()> {
     // The length stays 0 until each block is there, also after a crash. The first
     // `ftruncate` frees the blocks that such a crash left past the end.
     #[cfg(target_os = "linux")]
@@ -575,8 +598,8 @@ mod tests {
     fn a_sync_reaches_the_os() {
         let (pipe, _writer) = std::io::pipe().unwrap();
         let pipe = OwnedFd::from(pipe);
-        assert_eq!(sync_data(&pipe), Err(PIPE));
-        assert_eq!(sync_all(&pipe), Err(PIPE));
+        assert_eq!(sync_data(pipe.as_fd()), Err(PIPE));
+        assert_eq!(sync_all(pipe.as_fd()), Err(PIPE));
     }
 
     /// `/sys/fs/cgroup` is a mount point under sysfs, which cannot sync a directory.
@@ -589,7 +612,7 @@ mod tests {
         let device = |path: &str| fs::stat(path).unwrap().st_dev;
         assert_ne!(device("/sys/fs"), device("/sys/fs/cgroup"), "a mount point");
         let holder = fs::open("/sys/fs", READ_DIR, fs::Mode::empty()).unwrap();
-        assert_eq!(sync_all(&holder), Err(Errno::INVAL));
+        assert_eq!(sync_all(holder.as_fd()), Err(Errno::INVAL));
         make(fs::CWD, point).unwrap();
     }
 
