@@ -3640,8 +3640,8 @@ fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
     }
 }
 
-/// A carry body over `body_max` makes a record longer than the largest one of the
-/// layout. The walk cannot check such a record, of any kind, so it ends there.
+/// A carry body over `body_max` makes a record longer than the window of the layout.
+/// The walk cannot check such a record, of any kind, so it ends there.
 #[test]
 fn an_open_ends_at_a_carry_record_over_body_max() {
     run(162, |shard| async move {
@@ -3655,6 +3655,35 @@ fn an_open_ends_at_a_carry_record_over_body_max() {
         let buffer = buffer.expect("opens");
         let b = slots.index(key(2));
         assert_eq!(buffer.durable(b, Path::Live), tail(0, None));
+    });
+}
+
+/// The walk reads a record within its window, also one with a body over `body_max`.
+/// At a `body_max` of 4088 the window is two blocks, so a body of 4120 bytes fits it.
+#[test]
+fn an_open_takes_a_carry_body_over_body_max_within_the_window() {
+    run(162, |shard| async move {
+        let ring = layout(AREA, 4088);
+        {
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            for (first, stamp) in [(0, 30), (3, 60)] {
+                let parts = Parts::default();
+                buffer
+                    .append([entry(1, a, Path::Live, first, 3, Some(stamp), parts)])
+                    .expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+        }
+        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let body = carry_body(&tails);
+        assert!(body.len() > 4088, "a body of {} bytes", body.len());
+        shard.put_carry(3 * BLOCK, &body).await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let b = slots.index(key(2));
+        assert_eq!(buffer.durable(b, Path::Live), tail(4, None));
     });
 }
 
