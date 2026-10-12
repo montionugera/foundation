@@ -19,7 +19,7 @@ use crate::used;
 mod tests;
 
 /// Applies the plan in `bytes`, read from the plan file at `path`, to the spec of
-/// `mesh`, as [`planned`] does.
+/// `mesh`, as [`apply`] does.
 ///
 /// # Errors
 ///
@@ -27,8 +27,8 @@ mod tests;
 /// - [`Error::Plan`] when `bytes` are not a plan.
 /// - [`Error::Behind`] when the node does not use the newest spec.
 /// - [`Error::Stopped`] when the group of `mesh` stopped.
-/// - Each error of [`planned`].
-pub(crate) async fn apply(
+/// - Each error of [`apply`].
+pub(crate) async fn file(
     path: &Path,
     bytes: &[u8],
     mesh: &mesh::Mesh,
@@ -40,7 +40,7 @@ pub(crate) async fn apply(
         .ok_or_else(|| Error::config(vec![front_end::not_utf8(path)], &[]))?;
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let (pointer, applied) = used::spec(mesh).await?.newest()?;
-    let effect = planned(plan, pointer, &applied, mesh, kinds, key).await?;
+    let effect = apply(plan, pointer, &applied, mesh, kinds, key).await?;
     Ok(Applied {
         file: file.to_owned(),
         effect,
@@ -66,7 +66,7 @@ pub(crate) async fn apply(
 /// A plan with no change and no home proposes nothing and gives the spec in use, so
 /// it makes no other plan stale. No error changes the spec. Only `Apply`, `Stopped`,
 /// and `Stale` when another change applies first, can come after a proposal.
-pub(crate) async fn planned(
+pub(crate) async fn apply(
     plan: config::plan::Plan,
     pointer: spec::Pointer,
     applied: &BTreeMap<Name, Definition>,

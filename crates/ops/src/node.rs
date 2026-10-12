@@ -82,7 +82,7 @@ impl Node {
     ///
     /// The JSON error that `apply --json` writes.
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
-        apply::apply(path, bytes, &self.mesh, &self.kinds, &self.key)
+        apply::file(path, bytes, &self.mesh, &self.kinds, &self.key)
             .await
             .map(|applied| applied.json())
             .map_err(|e| e.json())
