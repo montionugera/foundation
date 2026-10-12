@@ -2755,7 +2755,8 @@ mod tests {
         /// and the chain value after `after` seals the old `[8]` after it. A torn
         /// record after a whole wrap record runs: the walk ends at the area start. A
         /// torn wrap record ends the walk at the head, also when the record after it
-        /// is whole.
+        /// is whole, and a second reopen with chain 5 puts a torn wrap record over
+        /// the old `[7]` at the head.
         #[test]
         fn keeps_the_last_record_only_where_old_bytes_end_the_walk() {
             use proptest::strategy::ValueTree;
@@ -2767,7 +2768,8 @@ mod tests {
             let torn = vec![9; ALIGN + 100];
             let mut cases = Vec::new();
             let (_, after_seven) = record::header(5, Kind::Data, [[7u8].as_slice()]);
-            for (before, then, last) in [(12, 13, 5), (11, 14, after_seven)] {
+            let reopens = [(12, 13, 5, 14), (11, 14, after_seven, 14), (13, 13, 5, 15)];
+            for (before, then, last, lost) in reopens {
                 let mut ops = Vec::new();
                 fill(&mut ops, 8, before);
                 ops.push(Op::Reopen(5));
@@ -2775,7 +2777,7 @@ mod tests {
                 fill(&mut ops, 8, 1);
                 fill(&mut ops, 6, then);
                 ops.push(Op::Reopen(last));
-                cases.push((ops, Some(14), torn.clone(), 7, Some("the reopen")));
+                cases.push((ops, Some(lost), torn.clone(), 7, Some("the reopen")));
             }
             let mut ops = cases[0].0.clone();
             ops.push(Op::Reopen(9));
