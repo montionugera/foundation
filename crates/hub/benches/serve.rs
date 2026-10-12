@@ -2,10 +2,11 @@
 //! sim transport. Run with `cargo bench -p hub --bench serve`.
 //!
 //! The home serves the sessions of two peer nodes, whose transports take messages of at
-//! most 1472 bytes and 64 KiB, and then the reads of a program. The bench holds the future of `Link::serve` and polls it
-//! by hand, so a timed poll is the home's work for the frames it sends. After each
-//! round of `FRAMES` frames, the bench waits until the peer has read each of them, so
-//! no timed poll waits on the transport. Each line gives ns per frame:
+//! most 1472 bytes and 64 KiB, and then the reads of a program. The bench holds the
+//! future of `Link::serve` and polls it by hand, so a timed poll is the home's work for
+//! the frames it sends. After each round of `FRAMES` frames, the bench waits until the
+//! peer has read each of them, so no timed poll waits on the transport. Each line gives
+//! ns per frame:
 //!
 //! - `timer`: an empty closure, the floor of each timed poll.
 //! - `narrow 1472`, `narrow 64k`: a latest session of 64 channels on one index, whose
