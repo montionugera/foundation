@@ -1,4 +1,5 @@
-//! Helpers for the tests of threads that end or panic.
+//! Helpers that the `it` and `aborts` tests share: the shards and threads of the OS,
+//! and the helpers of the tests of threads that end or panic.
 
 use std::pin::Pin;
 use std::sync::mpsc;
