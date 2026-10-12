@@ -4853,7 +4853,7 @@ fn an_entry_at_block_max_with_a_short_head_appends_after_an_open() {
 }
 
 /// An open fails with `Budget` when its pool holds no entry of
-/// `Layout::ENTRY_MAX_MIN` bytes beside the blocks of a group, and opens from `need`.
+/// `Layout::ENTRY_MAX_MIN` bytes beside the blocks of a group, and opens from `min`.
 #[test]
 fn an_open_fails_on_a_pool_that_holds_no_entry() {
     run(205, |mut shard| async move {
@@ -4865,7 +4865,7 @@ fn an_open_fails_on_a_pool_that_holds_no_entry() {
             error,
             Error::Budget {
                 budget: 62_271,
-                need: 62_272
+                min: 62_272
             }
         );
         assert_eq!(
@@ -4873,6 +4873,8 @@ fn an_open_fails_on_a_pool_that_holds_no_entry() {
             "a pool of 62271 bytes holds no entry of 4032 bytes: give it 62272 bytes \
              or more"
         );
+        let names = shard.files.list(FilePath::new("")).await.expect("lists");
+        assert_eq!(names, Vec::<PathBuf>::new());
         let config = block::Config::new(62_272).expect("the budget fits");
         shard.pool = Rc::new(Pool::heap(config));
         let opened = shard.open(least(600_000), &mut Slots::new()).await;

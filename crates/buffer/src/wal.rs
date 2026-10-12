@@ -143,8 +143,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The least [`entry_max`](Self::entry_max) of any layout: the bytes of parts
-    /// that one entry alone holds in a record at the smallest `body_max`.
+    /// The least [`entry_max`](Self::entry_max) of any layout and the least
+    /// [`Buffer::block_max`](crate::Buffer::block_max) of any buffer: the bytes of
+    /// parts that one entry alone holds in a record at the smallest `body_max`.
     pub const ENTRY_MAX_MIN: usize = BODY_MIN - entry::table_len(1);
 
     /// A ring of `area` bytes whose records hold a body of at most `body_max` bytes.

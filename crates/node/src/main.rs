@@ -826,7 +826,7 @@ mod tests {
     fn a_pool_under_the_least_budget_is_a_pool_budget_that_gives_too_little() {
         let small = buffer::Error::Budget {
             budget: 32_768,
-            need: 62_272,
+            min: 62_272,
         };
         assert_eq!(
             buffer_failure(Size::MEBIBYTE, Origin::Quarter, small),

@@ -813,7 +813,7 @@ mod buffer {
                 core: 0,
                 error: ::buffer::Error::Budget {
                     budget: 32_768,
-                    need: 62_272,
+                    min: 62_272,
                 },
             }
         );
@@ -7436,7 +7436,7 @@ mod budget {
             core: 0,
             error: ::buffer::Error::Budget {
                 budget: 32_768,
-                need: 62_272,
+                min: 62_272,
             },
         };
         let disk = Error::Disk {

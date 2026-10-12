@@ -76,13 +76,13 @@ pub enum Error {
     /// The pool has no block for a header, a recovery read, the restart record, a
     /// recovered entry, or a read.
     Pool(block::Error),
-    /// The pool's budget holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside
-    /// the blocks of a group.
+    /// The budget of the pool holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside
+    /// the blocks of a group. A pool of `min` bytes or more opens the ring.
     Budget {
         /// The budget of the pool.
         budget: usize,
-        /// The least budget that opens a ring.
-        need: usize,
+        /// The least budget that opens the ring.
+        min: usize,
     },
     /// A file call failed.
     Files(files::Error),
@@ -126,9 +126,9 @@ impl fmt::Display for Error {
                  bytes and {free} are free"
             ),
             Self::Pool(error) => write!(f, "the pool has no block: {error}"),
-            Self::Budget { budget, need } => write!(
+            Self::Budget { budget, min } => write!(
                 f,
-                "a pool of {budget} bytes holds no entry of {} bytes: give it {need} \
+                "a pool of {budget} bytes holds no entry of {} bytes: give it {min} \
                  bytes or more",
                 Layout::ENTRY_MAX_MIN
             ),
@@ -405,10 +405,12 @@ impl Buffer {
     ///
     /// # Errors
     ///
-    /// [`Error::Files`], [`Error::Pool`], [`Error::Budget`], [`Error::Length`],
-    /// [`Error::Missing`], [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`],
-    /// [`Error::Unaligned`], and [`Error::Invalid`] as each says. [`Error::Full`] when
-    /// the ring has no block for its restart record. [`Error::Pool`] with `TooLarge`
+    /// [`Error::Files`], [`Error::Pool`], [`Error::Length`], [`Error::Missing`],
+    /// [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`], [`Error::Unaligned`],
+    /// and [`Error::Invalid`] as each says. [`Error::Budget`] when the budget of `pool`
+    /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
+    /// No file changes. [`Error::Full`] when the ring has no block for its restart
+    /// record. [`Error::Pool`] with `TooLarge`
     /// when a recovered entry is over the largest block of `pool`, which a read must
     /// give it in: a larger pool must open the ring.
     ///
@@ -431,7 +433,7 @@ impl Buffer {
             .filter(|&max| max >= Layout::ENTRY_MAX_MIN)
             .ok_or(Error::Budget {
                 budget: pool.budget(),
-                need: group::budget(Layout::ENTRY_MAX_MIN),
+                min: group::budget(Layout::ENTRY_MAX_MIN),
             })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
