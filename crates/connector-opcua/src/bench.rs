@@ -45,7 +45,8 @@ impl Client {
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(clock, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let client = unsafe { ffi::shim_client_new(events.raw()) };
+        let client =
+            unsafe { ffi::shim_client_new(events.raw(), crate::client::CHUNKS) };
         let raw = NonNull::new(client).expect("open62541 refused the client");
         let mut client = Self { raw, events };
         client.run();
@@ -192,7 +193,9 @@ impl Manager {
         let clients = (0..=idle)
             .map(|_| {
                 // SAFETY: the loop outlives the client, which `close` deletes.
-                let client = unsafe { ffi::shim_client_new(events.raw()) };
+                let client = unsafe {
+                    ffi::shim_client_new(events.raw(), crate::client::CHUNKS)
+                };
                 let client = NonNull::new(client).expect("open62541 refused a client");
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {

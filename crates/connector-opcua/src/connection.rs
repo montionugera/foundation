@@ -40,7 +40,7 @@ const READ_BYTES: usize = 1 << 16;
 /// open62541 allocates each at most at the send buffer size of its channel. Sends wait
 /// from one pass to the next, and longer while a stream is full, so an owner keeps the
 /// chunks of its messages in flight at most this.
-const SENDS: usize = 256;
+pub(crate) const SENDS: usize = 256;
 
 /// The most sends that one write takes.
 const PARTS: usize = 16;

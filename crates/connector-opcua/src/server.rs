@@ -41,7 +41,13 @@ impl Server {
         let events = manager.events().raw();
         // SAFETY: the loop outlives the server, as the caller ensures.
         let raw = unsafe {
-            ffi::test::shim_server_new(events, port, host.as_ptr(), sessions)
+            ffi::test::shim_server_new(
+                events,
+                port,
+                host.as_ptr(),
+                sessions,
+                crate::client::CHUNKS,
+            )
         };
         let raw = NonNull::new(raw).expect("open62541 refused the server");
         // SAFETY: the server lives.
@@ -66,6 +72,33 @@ impl Server {
             )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    #[cfg(test)]
+    pub(crate) fn add_bytes(&self, node: crate::client::Node, length: usize) {
+        // SAFETY: the server lives.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_bytes(
+                self.raw(),
+                node.namespace,
+                node.key,
+                length,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Sets the most chunks in a message of each later channel of the server, with 0 as
+    /// the default of open62541, 16384.
+    #[cfg(test)]
+    pub(crate) fn set_chunks(&self, chunks: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_chunks(self.raw(), chunks) };
     }
 
     /// Gives the server, for a call that reads or changes it.

@@ -12,7 +12,7 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Answer, Client, Node, answer};
+use super::{Answer, CHUNKS, Client, Node, READS, answer};
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::server::Server;
@@ -26,6 +26,21 @@ const VALUE: Node = Node {
     key: 1000,
 };
 
+/// A `ByteString` whose answer needs [`CHUNKS`] chunks, from [`read_large`].
+const FITS: Node = Node {
+    namespace: 1,
+    key: 1002,
+};
+
+/// A `ByteString` whose answer needs more than [`CHUNKS`] chunks, from [`read_large`].
+const PAST: Node = Node {
+    namespace: 1,
+    key: 1003,
+};
+
+/// The size of a chunk, the send buffer size of a channel.
+const CHUNK: usize = 1 << 16;
+
 /// The current time of the server, a `DateTime`.
 const TIME: Node = Node {
     namespace: 0,
@@ -33,7 +48,9 @@ const TIME: Node = Node {
 };
 
 /// The side of a client in a run of [`serve`].
-struct Peer {
+struct Peer<'s> {
+    /// The test server.
+    server: &'s Server,
     clock: Clock,
     net: Net,
     rng: Rng,
@@ -45,7 +62,7 @@ struct Peer {
     paused: Rc<Cell<bool>>,
 }
 
-impl Peer {
+impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
         Client::connect(clock, net, &mut self.rng, url).await
@@ -80,7 +97,7 @@ fn run<T: Send + 'static>(
 async fn serve<T>(
     node: &node::Node,
     sessions: u16,
-    body: impl AsyncFnOnce(Peer) -> T,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
@@ -91,6 +108,7 @@ async fn serve<T>(
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
     server.add_double(VALUE, value);
     let peer = Peer {
+        server: &server,
         clock: node.clock(),
         net: node.net(),
         rng,
@@ -242,6 +260,106 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
     );
 }
 
+/// Starts `count` reads of `client`, each polled once and then dropped.
+async fn drop_reads(client: &mut Client, count: u16) {
+    for _ in 0..count {
+        let mut read = pin!(client.read(VALUE));
+        poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
+            Poll::Ready(())
+        })
+        .await;
+    }
+}
+
+/// Without the bound on the reads in flight, the server answers the 257 requests of
+/// the reads and the connect in one pass, and its 257th send closes the channel.
+#[test]
+fn a_read_after_255_dropped_reads_gives_the_value() {
+    let ((read, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            drop_reads(&mut client, 255).await;
+            let read = client.read(VALUE).await;
+            client.close().await;
+            (read, peer.value)
+        })
+        .await
+    });
+    assert_eq!(read, Ok(value));
+}
+
+/// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
+/// Gives its answer and the time it took.
+fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            drop_reads(&mut client, dropped).await;
+            peer.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+            let start = peer.clock.now();
+            let read = client.read(VALUE).await;
+            let took = peer.clock.now() - start;
+            peer.paused.set(false);
+            client.close().await;
+            (read, took)
+        })
+        .await
+    });
+    out
+}
+
+/// Below the bound, a read times out at its own request timeout. At the bound, it first
+/// waits for the dropped reads to time out, 3 s to 4 s after its start, so it ends 3 s
+/// to 4 s later.
+#[test]
+fn a_read_at_the_bound_waits_for_a_dropped_read_to_end() {
+    let (below, below_took) = read_after(READS - 1);
+    let (at, at_took) = read_after(READS);
+    assert_eq!(
+        (below, at),
+        (Err(Status::BAD_TIMEOUT), Err(Status::BAD_TIMEOUT))
+    );
+    let own = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
+    assert!(own.contains(&below_took), "{below_took:?}");
+    let waits = Span::from_nanos(8_000_000_000)..=Span::from_nanos(10_000_000_000);
+    assert!(waits.contains(&at_took), "{at_took:?}");
+}
+
+/// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
+/// a message.
+fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
+    let (reads, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let fits = usize::try_from(CHUNKS - 1).expect("fits") * CHUNK;
+            peer.server.add_bytes(FITS, fits);
+            peer.server.add_bytes(PAST, fits + 2 * CHUNK);
+            peer.server.set_chunks(chunks);
+            let mut client = peer.connected().await;
+            let reads = (client.read(FITS).await, client.read(PAST).await);
+            client.close().await;
+            reads
+        })
+        .await
+    });
+    reads
+}
+
+/// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
+/// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
+/// error that closes the channel. A server that sends it makes the client close the
+/// channel at the chunk past the bound.
+#[test]
+fn an_answer_of_more_chunks_than_the_bound_fails() {
+    let large = (
+        Err(Status::BAD_TYPE_MISMATCH),
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+    );
+    assert_eq!(read_large(CHUNKS), large);
+    assert_eq!(read_large(0), large);
+}
+
 /// A drop of a client with an active session ends, and calls the callback of each
 /// read in flight, so the answer of a client must outlive its delete. The server then
 /// closes. The test reads through C on the private client, since `read` borrows the
@@ -265,6 +383,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
                 )
             });
             assert_eq!(status, Status::GOOD);
+            outside.pending.set(1);
             outside.request.set(Some(request));
             drop(client);
             outside.value.take()

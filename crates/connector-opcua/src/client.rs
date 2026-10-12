@@ -14,11 +14,23 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
 
-use crate::connection::Manager;
+use crate::connection::{Manager, SENDS};
 use crate::ffi::{self, Status};
 
 #[cfg(test)]
 mod tests;
+
+/// The most reads of a client in flight. A read past it waits until one ends.
+const READS: u16 = 16;
+
+/// The most chunks in a message that a client sends or takes, and that the test server
+/// sends.
+pub(crate) const CHUNKS: u32 = 8;
+
+const _: () = assert!(
+    READS as usize * CHUNKS as usize <= SENDS / 2,
+    "the other half of the sends of a connection is for the requests of open62541"
+);
 
 /// A numeric node of an OPC UA server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +61,8 @@ struct Answer {
     /// request, which is a read whose future dropped.
     request: Cell<Option<u32>>,
     value: Cell<Option<Result<f64, Status>>>,
+    /// The reads that open62541 took and has not called back, at most [`READS`].
+    pending: Cell<u16>,
 }
 
 impl Client {
@@ -77,7 +91,7 @@ impl Client {
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
+        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
         let this = Self {
             raw,
@@ -116,13 +130,27 @@ impl Client {
         }
     }
 
-    /// Reads the Value of `node`, a scalar Double.
+    /// Reads the Value of `node`, a scalar Double. When 16 reads whose futures dropped
+    /// are in flight, it first waits until one of them ends, which takes at most the
+    /// request timeout.
     ///
     /// # Errors
     ///
     /// The status of open62541 when it refuses the request, the status of the answer
     /// or of its value, or `BadTypeMismatch` when the value is not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
+        if self.answer.pending.get() == READS {
+            self.connections
+                .drive(|_| {
+                    self.connections.events().run();
+                    if self.answer.pending.get() < READS {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+        }
         let mut request = 0;
         // SAFETY: the client lives, and `answer` outlives it.
         let status = Status(unsafe {
@@ -138,7 +166,10 @@ impl Client {
         if status != Status::GOOD {
             return Err(status);
         }
+        self.answer.pending.set(self.answer.pending.get() + 1);
         self.answer.request.set(Some(request));
+        // It can hold the answer of a read whose future dropped after the callback.
+        self.answer.value.set(None);
         self.connections
             .drive(|_| {
                 self.connections.events().run();
@@ -231,6 +262,7 @@ unsafe extern "C" fn answer(
 ) {
     // SAFETY: the client that holds the answer lives.
     let answer = unsafe { &*data.cast_const().cast::<Answer>() };
+    answer.pending.set(answer.pending.get() - 1);
     if answer.request.get() != Some(request) {
         return;
     }

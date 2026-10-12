@@ -389,7 +389,7 @@ unsafe extern "C" {
         length: usize,
     );
 
-    pub(crate) fn shim_client_new(el: *mut EventLoop) -> *mut Client;
+    pub(crate) fn shim_client_new(el: *mut EventLoop, chunks: u32) -> *mut Client;
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);

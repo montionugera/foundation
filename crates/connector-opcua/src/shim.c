@@ -611,8 +611,9 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el`, or NULL on a failure. */
-UA_Client *shim_client_new(UA_EventLoop *el) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
+ * or NULL on a failure. */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -622,6 +623,9 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
         UA_ClientConfig_clear(&config);
         return NULL;
     }
+    /* open62541 checks the chunks of a message that it sends and of one that it takes
+     * against this count, not against the count of the peer. */
+    config.localConnectionConfig.localMaxChunkCount = chunks;
     return UA_Client_newWithConfig(&config);
 }
 
