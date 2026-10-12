@@ -29,23 +29,23 @@
   voter bound of
   https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6059660161. The sum
   of 33 869 bytes: `laptop.architect`, 2026-10-08T12:46:52Z
-  (https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6060184527). Before
-  #1231 counts peers as holders, the rule of a majority of each half moves to
-  `raft::Voters::quorum` (#1875). Every member refuses, at apply, a change whose
-  holders are not a majority of each half of the voters as of the entry
-  (`Refused::Quorum`): the voters of the last `Voters` entry at or before it, or the
-  founding voters. So a `Voters` entry between the propose and the commit cannot leave
-  the pointer at chunks that no majority holds. The record lists only the chunks that
-  the base tree lacks, so the rule also needs the chunks of the base on a majority after
-  a change of voters (#1231). Every member applies a change whose base is the pointer,
-  and refuses one whose base is not (`Refused::Stale`), so after a change from one base
-  moves the pointer, each later change from that base gives `Stale`. The state machine
-  never reads chunks and never runs a check: a committed spec with problems moves the
-  pointer, and the node keeps the last spec it used (#1741). The pointer before the
-  first change is version 0 at the root of the tree of `Config::founding.definitions`.
-  No BQ12 signature check on the change in this milestone (#1213). The pointer is
-  `spec::Pointer`, and `mesh` has no pointer type of its own (#1887; `laptop.architect`,
-  2026-10-08T13:26:52Z,
+  (https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6060184527). The rule
+  of a majority of each half is `raft::Voters::quorum` (#1875), the commit rule of
+  `raft`, so an empty half needs no holder. Every member refuses, at apply, a change
+  whose holders are not a majority of each half of the voters as of the entry
+  (`Refused::Quorum`, from `raft::NoMajority`): the voters of the last `Voters` entry
+  at or before it, or the founding voters. So a `Voters` entry between the propose and
+  the commit cannot leave the pointer at chunks that no majority holds. The record
+  lists only the chunks that the base tree lacks, so the rule also needs the chunks of
+  the base on a majority after a change of voters (#1231). Every member applies a change
+  whose base is the pointer, and refuses one whose base is not (`Refused::Stale`), so
+  after a change from one base moves the pointer, each later change from that base gives
+  `Stale`. The state machine never reads chunks and never runs a check: a committed spec
+  with problems moves the pointer, and the node keeps the last spec it used (#1741). The
+  pointer before the first change is version 0 at the root of the tree of
+  `Config::founding.definitions`. No BQ12 signature check on the change in this
+  milestone (#1213). The pointer is `spec::Pointer`, and `mesh` has no pointer type of
+  its own (#1887; `laptop.architect`, 2026-10-08T13:26:52Z,
   https://github.com/synnaxlabs/foundation/pull/1886#issuecomment-6060906734, and the
   removal at 2026-10-08T16:04:51Z,
   https://github.com/synnaxlabs/foundation/pull/1913#issuecomment-6063975359). This

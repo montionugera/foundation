@@ -767,11 +767,6 @@ mod tests {
         }
     }
 
-    // The check of a spec change's holders, as `State::apply` makes it.
-    fn quorum(voters: &Voters, holders: &BTreeSet<node::Key>) -> Result<(), Refused> {
-        Ok(voters.quorum(|key| holders.contains(&key))?)
-    }
-
     #[test]
     fn holders_are_a_quorum_only_as_a_majority_of_each_half() {
         let short = |held, voters| Err(Refused::Quorum { held, voters });
@@ -787,8 +782,15 @@ mod tests {
             (voters(&[1, 2, 3], &[1, 2]), keys(&[1, 2]), Ok(())),
         ];
         for (voters, holders, expected) in cases {
-            let quorum = quorum(&voters, &holders);
-            assert_eq!(quorum, expected, "{voters:?} {holders:?}");
+            let mut state = state();
+            state.set_voters(voters.clone());
+            let mut change = spec(0, 1, 2, &[]);
+            let Change::Spec { holders: held, .. } = &mut change else {
+                unreachable!()
+            };
+            *held = holders.clone();
+            let applied = state.apply(change).map(drop);
+            assert_eq!(applied, expected, "{voters:?} {holders:?}");
         }
         assert_eq!(
             Refused::Quorum { held: 1, voters: 2 }.to_string(),
@@ -1561,25 +1563,6 @@ mod tests {
                     let _applied = state.apply(step);
                 }
             }
-        }
-
-        // More holders never lose a quorum, and every voter is one.
-        #[test]
-        fn more_holders_keep_a_quorum(
-            incoming in prop::collection::btree_set(0..6_u8, 1..5),
-            outgoing in prop::collection::btree_set(0..6_u8, 0..5),
-            holders in prop::collection::btree_set(0..6_u8, 0..6),
-            more in prop::collection::btree_set(0..6_u8, 0..6),
-        ) {
-            let voters = Voters {
-                incoming: keys(&incoming),
-                outgoing: keys(&outgoing),
-            };
-            let all = keys(holders.union(&more));
-            if quorum(&voters, &keys(&holders)).is_ok() {
-                prop_assert_eq!(quorum(&voters, &all), Ok(()));
-            }
-            prop_assert_eq!(quorum(&voters, &keys(incoming.union(&outgoing))), Ok(()));
         }
 
         // The applied state is the last home that each index was given.

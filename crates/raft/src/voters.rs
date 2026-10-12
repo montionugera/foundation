@@ -251,6 +251,26 @@ mod tests {
             let expected = short(&voters.incoming).or_else(|| short(&voters.outgoing));
             prop_assert_eq!(quorum, expected.map_or(Ok(()), Err));
         }
+
+        // More counted nodes never lose a quorum, and every voter is one.
+        #[test]
+        fn more_counted_nodes_keep_a_quorum(
+            incoming in prop::collection::btree_set(0..6_u8, 0..5),
+            outgoing in prop::collection::btree_set(0..6_u8, 0..5),
+            counted in prop::collection::btree_set(0..6_u8, 0..6),
+            more in prop::collection::btree_set(0..6_u8, 0..6),
+        ) {
+            let voters = Voters {
+                incoming: keys(&incoming),
+                outgoing: keys(&outgoing),
+            };
+            let all = keys(&counted.union(&more).copied().collect());
+            let counted = keys(&counted);
+            if voters.quorum(|key| counted.contains(&key)).is_ok() {
+                prop_assert_eq!(voters.quorum(|key| all.contains(&key)), Ok(()));
+            }
+            prop_assert_eq!(voters.quorum(|key| voters.contains(key)), Ok(()));
+        }
     }
 
     #[test]

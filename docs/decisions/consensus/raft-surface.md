@@ -169,7 +169,11 @@
   ask it at a refusal and keeps no copy of the configurations (#1105, #1762).
   `Voters::contains` and `Voters::nodes` are public. Decided by `laptop.architect`,
   2026-10-08T03:04:33Z:
-  https://github.com/synnaxlabs/foundation/pull/1762#issuecomment-6051316777. After
+  https://github.com/synnaxlabs/foundation/pull/1762#issuecomment-6051316777.
+  `Voters::quorum` and `NoMajority` are public: `mesh` checks the holders of a spec
+  change with the commit rule of `raft` (#1875). Decided by `laptop.architect`,
+  2026-10-08T11:53:51Z, item 4:
+  https://github.com/synnaxlabs/foundation/pull/1872#issuecomment-6059278643. After
   compaction, a snapshot also carries the nodes that the configurations it replaces
   held or removed, so the answer survives a trim (#253; `laptop.architect`,
   2026-10-08T03:41:50Z:
