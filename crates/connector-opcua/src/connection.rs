@@ -20,7 +20,7 @@ use std::task::{Context, Poll, Waker};
 use env::clock::{Clock, Sleep};
 use env::net::{self, Listener, Net, Tcp, tcp};
 use env::rng::Rng;
-use types::time::Span;
+use types::time::{Monotonic, Span};
 
 use crate::event::Loop;
 use crate::ffi::{self, Bytes, Status};
@@ -181,8 +181,33 @@ impl Manager {
     /// other.
     pub(crate) async fn drive<T>(
         &self,
-        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> T {
+        self.drive_to(None, run)
+            .await
+            .expect("invariant: a drive with no deadline ends only with a value")
+    }
+
+    /// Drives as [`Manager::drive`] does, but gives `None` when the clock reaches
+    /// `deadline` before `run` gives a value.
+    ///
+    /// # Panics
+    ///
+    /// When another drive of the manager runs.
+    pub(crate) async fn drive_until<T>(
+        &self,
+        deadline: Monotonic,
+        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+    ) -> Option<T> {
+        self.drive_to(Some(deadline), run).await
+    }
+
+    /// The drive of [`Manager::drive`] and [`Manager::drive_until`].
+    async fn drive_to<T>(
+        &self,
+        deadline: Option<Monotonic>,
+        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+    ) -> Option<T> {
         let state = self.state();
         assert!(
             !state.held.replace(true),
@@ -204,18 +229,25 @@ impl Manager {
                     if state.accepted.get().is_some() {
                         cx.waker().wake_by_ref();
                     }
-                    break poll;
+                    break poll.map(Some);
                 }
                 if moved {
                     continue;
                 }
-                let Some(next) = self.events.next() else {
+                let next = match (self.events.next(), deadline) {
+                    (Some(next), Some(deadline)) => Some(next.min(deadline)),
+                    (next, deadline) => next.or(deadline),
+                };
+                let Some(next) = next else {
                     break Poll::Pending;
                 };
                 let timer = sleep.get_or_insert_with(|| state.clock.sleep_until(next));
                 timer.reset(next);
                 if Pin::new(timer).poll(cx).is_pending() {
                     break Poll::Pending;
+                }
+                if deadline == Some(next) {
+                    break Poll::Ready(None);
                 }
             }
         })

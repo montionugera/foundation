@@ -4,12 +4,10 @@
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
-use std::future::Future as _;
-use std::pin::{Pin, pin};
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
-use env::clock::{Clock, Sleep};
+use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
@@ -49,8 +47,6 @@ pub(crate) struct Client {
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
-    /// The deadline of a read, kept so that a read allocates no timer.
-    deadline: Sleep,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -101,31 +97,29 @@ impl Client {
         let this = Self {
             raw,
             reads: Box::default(),
-            deadline: clock.sleep(timeout),
             clock,
             timeout,
             connections,
         };
-        let mut deadline = pin!(this.clock.sleep(this.timeout));
+        let deadline = this.clock.now() + this.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
         let connected = this
             .connections
-            .drive(|cx| {
+            .drive_until(deadline, |_| {
                 this.connections.events().run();
                 let state = this.state();
                 if state.status != Status::GOOD {
                     Poll::Ready(Err(state.status))
                 } else if state.session == ffi::Session::ACTIVATED {
                     Poll::Ready(Ok(()))
-                } else if deadline.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Err(Status::BAD_TIMEOUT))
                 } else {
                     Poll::Pending
                 }
             })
-            .await;
+            .await
+            .unwrap_or(Err(Status::BAD_TIMEOUT));
         match connected {
             Ok(()) => Ok(this),
             Err(status) => {
@@ -146,21 +140,19 @@ impl Client {
     /// the status of the answer or of its value, or `BadTypeMismatch` when the value is
     /// not a scalar Double.
     pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
-        let deadline = &mut self.deadline;
-        deadline.reset(self.clock.now() + self.timeout);
+        let deadline = self.clock.now() + self.timeout;
         if self.reads.pending.get() == READS {
             self.connections
-                .drive(|cx| {
+                .drive_until(deadline, |_| {
                     self.connections.events().run();
                     if self.reads.pending.get() < READS {
-                        Poll::Ready(Ok(()))
-                    } else if Pin::new(&mut *deadline).poll(cx).is_ready() {
-                        Poll::Ready(Err(Status::BAD_TIMEOUT))
+                        Poll::Ready(())
                     } else {
                         Poll::Pending
                     }
                 })
-                .await?;
+                .await
+                .ok_or(Status::BAD_TIMEOUT)?;
         }
         let mut request = 0;
         // SAFETY: the client lives, and `reads` outlives it.
@@ -181,19 +173,17 @@ impl Client {
         self.reads.request.set(Some(request));
         // It can hold the answer of a read whose future dropped after the callback.
         self.reads.value.set(None);
-        self.connections
-            .drive(|cx| {
+        let answer = self
+            .connections
+            .drive_until(deadline, |_| {
                 self.connections.events().run();
-                if let Some(value) = self.reads.value.take() {
-                    Poll::Ready(value)
-                } else if Pin::new(&mut *deadline).poll(cx).is_ready() {
-                    self.reads.request.set(None);
-                    Poll::Ready(Err(Status::BAD_TIMEOUT))
-                } else {
-                    Poll::Pending
-                }
+                self.reads.value.take().map_or(Poll::Pending, Poll::Ready)
             })
-            .await
+            .await;
+        answer.unwrap_or_else(|| {
+            self.reads.request.set(None);
+            Err(Status::BAD_TIMEOUT)
+        })
     }
 
     /// Closes the session and the connection of the client, and waits until the
