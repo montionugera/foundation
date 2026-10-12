@@ -101,6 +101,15 @@ fn a_pr_number_past_u64_is_an_error() {
 }
 
 #[test]
+fn a_ref_that_names_no_pr_exits_2() {
+    let offline = |path: &str| Err(format!("gh api {path}: offline"));
+    assert_eq!(
+        review(Path::new("."), "refs/heads/main", GROUP, &offline),
+        ExitCode::from(2)
+    );
+}
+
+#[test]
 fn the_head_is_the_second_parent() {
     assert_eq!(
         head(GROUP, &github(&[BASE, HEAD], vec![])),

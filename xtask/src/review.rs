@@ -162,13 +162,13 @@ struct Parsed {
 /// ends at `head` or at a commit on its first-parent chain after which each merge is
 /// a clean merge of the base and the range to `head` changes no code, finds nothing,
 /// and names each required reviewer, and, for a red-team PR, the director approved
-/// `head`. Reads the PR with `gh` and the history of the repository at `root` with
+/// `head`. Reads the PR with `api` and the history of the repository at `root` with
 /// `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `gh` or `git` fails
 /// or the PR record lacks a field.
-pub(crate) fn run(root: &Path, pr: &str, head: &str) -> ExitCode {
-    exit(fetch(pr).and_then(|record| problems_in(root, &record, head)))
+pub(crate) fn run(root: &Path, pr: &str, head: &str, api: gh::Read<'_>) -> ExitCode {
+    exit(fetch(pr, api).and_then(|record| problems_in(root, &record, head)))
 }
 
 /// The problems with the review in `record` at `head` ([`problems`]), read with the
@@ -1130,12 +1130,12 @@ fn stated(value: &str) -> bool {
     first.strip_suffix([',', '.', ';']).unwrap_or(&first) != "none"
 }
 
-/// Reads the record of PR `pr` with `gh`, in the repository that `gh` resolves.
-fn fetch(pr: &str) -> Result<Record, String> {
+/// Reads the record of PR `pr` with `api`.
+fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
     let path = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
-    let pull = gh::api(&path)?;
-    let files = gh::api(&format!("{path}/files"))?;
-    let comments = gh::api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
+    let pull = api(&path)?;
+    let files = api(&format!("{path}/files"))?;
+    let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
     record_of(&pull, &files, &comments).map_err(|e| format!("PR {pr}: {e}"))
 }
 

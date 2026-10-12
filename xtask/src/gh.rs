@@ -4,6 +4,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
+/// A reader of the GitHub API with the contract of [`api`], which tests replace.
+pub(crate) type Read<'a> = &'a dyn Fn(&str) -> Result<Vec<Value>, String>;
+
 /// Each object that `gh api --paginate` returns for `path`: the items of each page
 /// of a list, or the one object.
 pub(crate) fn api(path: &str) -> Result<Vec<Value>, String> {

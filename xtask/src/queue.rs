@@ -5,11 +5,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::{field, review};
-
-/// Reads the GitHub API: the objects that `gh api --paginate` gives for a path
-/// (`gh::api`).
-pub(crate) type Api<'a> = &'a dyn Fn(&str) -> Result<Vec<Value>, String>;
+use crate::{field, gh, review};
 
 /// Runs the review check (`review::run`) for the PR that the queue ref `reference`
 /// names, at the head of that PR: the second parent of the group commit `group`, read
@@ -19,12 +15,12 @@ pub(crate) fn review(
     root: &Path,
     reference: &str,
     group: &str,
-    api: Api<'_>,
+    api: gh::Read<'_>,
 ) -> ExitCode {
     match pr(reference).and_then(|pr| Ok((pr, head(group, api)?))) {
         Ok((pr, head)) => {
             eprintln!("The group `{group}` holds PR {pr} at its head `{head}`.");
-            review::run(root, &pr.to_string(), &head)
+            review::run(root, &pr.to_string(), &head, api)
         }
         Err(e) => review::exit(Err(e)),
     }
@@ -33,7 +29,7 @@ pub(crate) fn review(
 /// Passes when the newest `mutants` check run at the head of the PR of the group
 /// commit `group`, read with `api`, ended in `success` or `skipped`. Fails with the
 /// reason otherwise.
-pub(crate) fn mutants(group: &str, api: Api<'_>) -> Result<(), Vec<String>> {
+pub(crate) fn mutants(group: &str, api: gh::Read<'_>) -> Result<(), Vec<String>> {
     let check = || {
         let head = head(group, api)?;
         let pages = api(&format!(
@@ -75,7 +71,7 @@ fn pr(reference: &str) -> Result<u64, String> {
 
 /// The head of the PR of the group commit `group`, read with `api`: the second parent
 /// of the commit.
-fn head(group: &str, api: Api<'_>) -> Result<String, String> {
+fn head(group: &str, api: gh::Read<'_>) -> Result<String, String> {
     let commits = api(&format!("repos/{{owner}}/{{repo}}/commits/{group}"))?;
     // A commit with more than 300 files comes in pages, each with the parents.
     let commit = commits

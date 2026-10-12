@@ -30,9 +30,6 @@ exclude_re = [
   # Calls the GitHub API. The review workflow runs it on each PR: with no PR record,
   # the status is `error`.
   'xtask/src/gh\.rs:.*(replace api ->| in api$)',
-  # Calls `review::run`, which reads the GitHub API. The queue run of each PR runs it,
-  # and its log names the head that it read.
-  'xtask/src/queue\.rs:.*(replace review ->| in review$)',
   # Empty outside loom. The loom models fail when a marker is removed.
   'crates/block/src/sync\.rs:.*Track::(read|write)',
   # The stub is built only under loom, so no test of another build sees its mutant.
