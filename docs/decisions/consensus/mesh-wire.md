@@ -85,7 +85,9 @@
   large message into parts and the receiver joins them, because nothing bounds what the
   receiver holds before it decodes. Decided by `laptop.architect`, 2026-10-12T18:29:52Z
   (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
-  The decode of a proof refuses more than 254 grants, the two sets of a joint
-  configuration of 127 voters each, so that each proof that `raft` keeps fits a message
-  with no entry and no link. Decided by `laptop.architect`, 2026-10-12T20:07:11Z
-  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131749653).
+  The decode of the proof of a message refuses more than 254 grants, the two sets of a
+  joint configuration of 127 voters each, so that each proof that `raft` keeps fits a
+  message with no entry and no link. Decided by `laptop.architect`, 2026-10-12T20:07:11Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131749653), and the
+  place of the bound 2026-10-12T20:18:47Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823).

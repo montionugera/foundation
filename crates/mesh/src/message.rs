@@ -37,6 +37,13 @@ pub(crate) const BYTES_MIN: usize = APPEND_HEAD + entry::BYTES_MAX;
 // The bytes of an `Append` with no entry, no proof, and no link.
 const APPEND_HEAD: usize = 75;
 
+/// The most voters of one set of a configuration. A joint change of two such sets,
+/// with a proof of each of their grants, fits a message of [`BYTES_MIN`] bytes.
+pub(crate) const VOTERS_MAX: usize = 127;
+
+// The grants of the two sets of a joint configuration.
+const GRANTS_MAX: usize = 2 * VOTERS_MAX;
+
 /// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
 /// `raft::Config::fits`.
 pub(crate) fn fits(message: &raft::Message) -> bool {
@@ -132,8 +139,9 @@ impl Message {
     }
 
     /// The message that `bytes` is the byte form of, or `None` when it is the byte
-    /// form of no message or of an `Append` with an entry of more than
-    /// [`entry::BYTES_MAX`] bytes.
+    /// form of no message, of an `Append` with an entry of more than
+    /// [`entry::BYTES_MAX`] bytes, or of a proof of more grants than two sets of
+    /// [`VOTERS_MAX`] voters.
     pub(crate) fn decode(mut bytes: &[u8]) -> Option<Self> {
         let bytes = &mut bytes;
         let message = match u8::from_le_bytes(take(bytes)?) {
@@ -142,7 +150,11 @@ impl Message {
                 let to = take_key(bytes)?;
                 let term = Term(u64::from_le_bytes(take(bytes)?));
                 let proof = if take_bool(bytes)? {
-                    Some(take_proof(bytes)?)
+                    let proof = take_proof(bytes)?;
+                    if proof.voters.len() > GRANTS_MAX {
+                        return None;
+                    }
+                    Some(proof)
                 } else {
                     None
                 };
@@ -318,7 +330,6 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
-    use crate::bytes::VOTERS_MAX;
     use crate::change;
     use crate::common::{at, key};
 

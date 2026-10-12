@@ -191,14 +191,6 @@ pub(crate) fn take_rising<K: Ord + Clone>(
     Some(())
 }
 
-/// The most voters of one set of a configuration. A joint change of two such sets,
-/// with a proof of each of their grants, fits a message of
-/// [`message::BYTES_MIN`](crate::message::BYTES_MIN) bytes.
-pub(crate) const VOTERS_MAX: usize = 127;
-
-// The grants of the two sets of a joint configuration.
-const GRANTS_MAX: usize = 2 * VOTERS_MAX;
-
 pub(crate) const ABSENT: u8 = 0;
 pub(crate) const PRESENT: u8 = 1;
 pub(crate) const PRE_VOTE: u8 = 0;
@@ -326,9 +318,7 @@ pub(crate) fn take_bool(bytes: &mut &[u8]) -> Option<bool> {
     }
 }
 
-/// Takes what [`put_proof`] gives. `None` when the voters are not in rising order, or
-/// when they are more than the two sets of a joint configuration of [`VOTERS_MAX`]
-/// voters each.
+/// Takes what [`put_proof`] gives. `None` when the voters are not in rising order.
 pub(crate) fn take_proof(bytes: &mut &[u8]) -> Option<Proof> {
     let grant = match u8::from_le_bytes(take(bytes)?) {
         PRE_VOTE => Grant::PreVote,
@@ -341,7 +331,7 @@ pub(crate) fn take_proof(bytes: &mut &[u8]) -> Option<Proof> {
         voters.insert(voter, Some(take_signature(bytes)?));
         Some(())
     })?;
-    (voters.len() <= GRANTS_MAX).then_some(Proof {
+    Some(Proof {
         grant,
         candidate,
         voters,
