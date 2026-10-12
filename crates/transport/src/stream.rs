@@ -1346,11 +1346,16 @@ mod tests {
         assert_eq!(sim.run(), Ok(()));
     }
 
+    /// The call of a `Sender` that a test gives a message to.
+    enum Call {
+        Send,
+        TrySend,
+    }
+
     /// Leaks a `send` of a message that the window cuts, waits `wait`, then gives a
-    /// too large message to `send`, or to `try_send` when `tried`. The peer reads
-    /// each cut message whole.
+    /// too large message to `call`. The peer reads each cut message whole.
     fn too_large_behind_a_leaked_send(
-        tried: bool,
+        call: Call,
         wait: Span,
     ) -> Result<(), sim::Error> {
         let bodies = Arc::new(AtomicUsize::new(0));
@@ -1384,10 +1389,11 @@ mod tests {
                     bytes: MESSAGE_BYTES_MAX + 1,
                     bytes_max: MESSAGE_BYTES_MAX,
                 };
-                if tried {
-                    assert_eq!(bytes(sender.try_send(over)), Err(large));
-                } else {
-                    assert_eq!(sender.send(over).await, Err(large));
+                match call {
+                    Call::TrySend => {
+                        assert_eq!(bytes(sender.try_send(over)), Err(large));
+                    }
+                    Call::Send => assert_eq!(sender.send(over).await, Err(large)),
                 }
                 let closed = Error::PeerClosed { code: Code(4) };
                 assert_eq!(side.session.closed().await, closed);
@@ -1415,12 +1421,18 @@ mod tests {
 
     #[test]
     fn a_too_large_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
-        assert_eq!(too_large_behind_a_leaked_send(false, Span::ZERO), Ok(()));
+        assert_eq!(
+            too_large_behind_a_leaked_send(Call::Send, Span::ZERO),
+            Ok(())
+        );
     }
 
     #[test]
     fn a_too_large_try_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
-        assert_eq!(too_large_behind_a_leaked_send(true, Span::ZERO), Ok(()));
+        assert_eq!(
+            too_large_behind_a_leaked_send(Call::TrySend, Span::ZERO),
+            Ok(())
+        );
     }
 
     /// The stream got the `Writable` of the leaked send, so `pump` does not write the
@@ -1428,7 +1440,7 @@ mod tests {
     #[test]
     fn a_too_large_send_after_the_writable_of_a_leaked_send_writes_its_rest() {
         let wait = spans(Span::MILLISECOND, 200);
-        assert_eq!(too_large_behind_a_leaked_send(false, wait), Ok(()));
+        assert_eq!(too_large_behind_a_leaked_send(Call::Send, wait), Ok(()));
     }
 
     /// Leaks a `send` of a message that the window cuts, gives a too large message
