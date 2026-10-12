@@ -5,8 +5,9 @@ use std::fmt;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-/// A global allocator that counts the bytes it holds, so a test can bound the memory
-/// of a structure. It counts no allocations: to assert that code does not allocate,
+/// A global allocator that counts the bytes it holds and the bytes it gave out, so a
+/// test can bound the memory of a structure and the bytes that code allocates. It
+/// counts no allocations: to assert that code does not allocate,
 /// use [`Allocator`](crate::Allocator).
 ///
 /// Each allocation that grows the count, [`Self::peak`], and [`Self::reset_peak`] take
@@ -36,6 +37,7 @@ impl Bytes {
             counts: Counts {
                 held: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
+                allocated: AtomicUsize::new(0),
                 locked: AtomicBool::new(false),
             },
         }
@@ -56,6 +58,16 @@ impl Bytes {
     #[must_use]
     pub fn peak(&self) -> usize {
         self.counts.peak()
+    }
+
+    /// The bytes of every block that this allocator gave out after it started, on every
+    /// thread, freed or not. A `realloc` that grows a block counts the bytes it adds, as
+    /// [`Self::held`] does. It never goes down, so a test takes the difference of two
+    /// reads. As the global allocator, read it in a binary with no test harness, like
+    /// [`Self::held`].
+    #[must_use]
+    pub fn allocated(&self) -> usize {
+        self.counts.allocated()
     }
 
     /// Starts a new window of [`Self::peak`] at the bytes held now.
@@ -91,6 +103,8 @@ struct Counts<W, F> {
     /// The most bytes held since the last reset. Only a holder of `locked` reads or
     /// writes it, so it is never under a `held` that a growth set.
     peak: W,
+    /// The bytes given out in all.
+    allocated: W,
     locked: F,
 }
 
@@ -103,6 +117,10 @@ impl<W: Word, F: Flag> Counts<W, F> {
         self.under_lock(|| self.peak.load(Relaxed))
     }
 
+    fn allocated(&self) -> usize {
+        self.allocated.load(Relaxed)
+    }
+
     fn reset_peak(&self) {
         self.under_lock(|| self.peak.store(self.held(), Relaxed));
     }
@@ -112,6 +130,7 @@ impl<W: Word, F: Flag> Counts<W, F> {
             let held = self.held.fetch_add(size, Relaxed) + size;
             self.peak.fetch_max(held, Relaxed);
         });
+        self.allocated.fetch_add(size, Relaxed);
     }
 
     fn shrink(&self, size: usize) {
@@ -140,6 +159,7 @@ impl<W: Word, F: Flag> fmt::Debug for Counts<W, F> {
         f.debug_struct("Bytes")
             .field("held", &self.held())
             .field("peak", &self.peak())
+            .field("allocated", &self.allocated())
             .finish()
     }
 }
@@ -496,10 +516,72 @@ mod tests {
     }
 
     #[test]
+    fn gives_out_the_size_of_an_allocation_and_keeps_it_after_its_free() {
+        let bytes = Bytes::new();
+        let ptr = filled(&bytes);
+        assert_eq!(bytes.allocated(), 64);
+        free(&bytes, ptr, LAYOUT);
+        // SAFETY: the layout is not empty.
+        let zeroed = unsafe { bytes.alloc_zeroed(LAYOUT) };
+        assert!(!zeroed.is_null(), "the system has no memory for 64 bytes");
+        free(&bytes, zeroed, LAYOUT);
+        assert_eq!((bytes.held(), bytes.allocated()), (0, 128));
+    }
+
+    #[test]
+    fn gives_out_the_growth_of_a_reallocation_and_nothing_for_one_that_shrinks() {
+        let bytes = Bytes::new();
+        let ptr = filled(&bytes);
+        // SAFETY: `bytes` returned `ptr` for `LAYOUT`, and 200 rounded up to the
+        // alignment does not pass `isize::MAX`.
+        let ptr = unsafe { bytes.realloc(ptr, LAYOUT, 200) };
+        assert!(!ptr.is_null(), "the system has no memory for 200 bytes");
+        assert_eq!(bytes.allocated(), 200);
+        // SAFETY: `bytes` returned `ptr` for 200 bytes, and 8 is not zero.
+        let ptr = unsafe { bytes.realloc(ptr, sized(200), 8) };
+        assert!(!ptr.is_null(), "the system has no memory for 8 bytes");
+        assert_eq!(bytes.allocated(), 200);
+        free(&bytes, ptr, sized(8));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri stops at an allocation it cannot make")]
+    fn gives_out_nothing_for_a_failed_allocation_or_reallocation() {
+        let bytes = Bytes::new();
+        let huge = isize::MAX.unsigned_abs() & !7;
+        let layout = Layout::from_size_align(huge, 8)
+            .expect("invariant: `isize::MAX` rounded down to 8 is a layout");
+        // SAFETY: the layout is not empty.
+        let ptr = unsafe { bytes.alloc(layout) };
+        assert_eq!((ptr, bytes.allocated()), (std::ptr::null_mut(), 0));
+        // SAFETY: the layout is not empty.
+        let ptr = unsafe { bytes.alloc_zeroed(layout) };
+        assert_eq!((ptr, bytes.allocated()), (std::ptr::null_mut(), 0));
+        let ptr = filled(&bytes);
+        // SAFETY: `bytes` returned `ptr` for `LAYOUT`, and `huge` rounded up to the
+        // alignment does not pass `isize::MAX`.
+        let failed = unsafe { bytes.realloc(ptr, LAYOUT, huge) };
+        assert_eq!((failed, bytes.allocated()), (std::ptr::null_mut(), 64));
+        free(&bytes, ptr, LAYOUT);
+    }
+
+    #[test]
+    fn keeps_the_bytes_given_out_over_a_reset_of_the_peak() {
+        let bytes = Bytes::new();
+        let ptr = filled(&bytes);
+        free(&bytes, ptr, LAYOUT);
+        bytes.reset_peak();
+        assert_eq!((bytes.peak(), bytes.allocated()), (0, 64));
+    }
+
+    #[test]
     fn shows_the_bytes_held() {
         let bytes = Bytes::default();
         let ptr = filled(&bytes);
-        assert_eq!(format!("{bytes:?}"), "Bytes { held: 64, peak: 64 }");
+        assert_eq!(
+            format!("{bytes:?}"),
+            "Bytes { held: 64, peak: 64, allocated: 64 }"
+        );
         free(&bytes, ptr, LAYOUT);
     }
 }
@@ -518,20 +600,26 @@ mod model {
         Counts {
             held: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            allocated: AtomicUsize::new(0),
             locked: AtomicBool::new(false),
         }
     }
 
-    /// The two numbers of the `Debug` output of `counts`: held, then peak.
+    /// The first two numbers of the `Debug` output of `counts`: held, then peak.
     fn shown(counts: &Counts<AtomicUsize, AtomicBool>) -> (usize, usize) {
         let shown = format!("{counts:?}");
         let mut numbers = shown
             .split(|c: char| !c.is_ascii_digit())
             .filter(|number| !number.is_empty())
             .map(|number| number.parse().expect("invariant: a run of digits"));
-        match (numbers.next(), numbers.next(), numbers.next()) {
-            (Some(held), Some(peak), None) => (held, peak),
-            _ => panic!("`{shown}` does not show two counts"),
+        match (
+            numbers.next(),
+            numbers.next(),
+            numbers.next(),
+            numbers.next(),
+        ) {
+            (Some(held), Some(peak), Some(_), None) => (held, peak),
+            _ => panic!("`{shown}` does not show three counts"),
         }
     }
 
