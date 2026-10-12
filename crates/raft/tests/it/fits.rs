@@ -247,6 +247,16 @@ fn three_voters_elect_a_leader_after_a_change_in_each_of_3_terms() {
         .map(|entry| entry.at)
         .collect();
     assert_eq!(links.len(), 6);
+    let all: Vec<Link> = ran.committed[&key(1)]
+        .iter()
+        .filter_map(|entry| match &entry.data {
+            Data::Voters(change) => Some(Link {
+                at: entry.at,
+                change: change.clone(),
+            }),
+            Data::Empty | Data::Bytes(_) => None,
+        })
+        .collect();
 
     let ran = &mut Ran::default();
     let elected = elect(&mut nodes, &others(leader), ran);
@@ -259,6 +269,11 @@ fn three_voters_elect_a_leader_after_a_change_in_each_of_3_terms() {
     let chain: Vec<Position> = vote.chain.iter().map(|link| link.at).collect();
     assert!(chain.len() < links.len(), "{chain:?}");
     assert!(links.ends_with(&chain), "{chain:?} of {links:?}");
+    assert!(!chain.is_empty(), "{vote:?}");
+    let dropped = &all[all.len() - chain.len() - 1];
+    let mut longer = vote.clone();
+    longer.chain.insert(0, dropped.clone());
+    assert!(!fits_1472(&longer), "{} bytes", bytes(&longer));
 
     let at = nodes
         .get_mut(&key(elected))
