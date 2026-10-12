@@ -3047,12 +3047,25 @@ mod tests {
         stamp: i64,
         sample: i64,
     ) -> Vec<hub::home::Outcome> {
+        let draft = draft_value(writer, stamp, sample, 2);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        outcomes.expect("the home takes it").to_vec()
+    }
+
+    /// A frame of `sample` at `stamp` for `writer`, which writes `plant.value` at
+    /// key `value` and its index.
+    fn draft_value(
+        writer: &hub::writer::Writer,
+        stamp: i64,
+        sample: i64,
+        value: u128,
+    ) -> frame::Draft {
         let entries = writer.set().entries();
         let entry = |key| {
             let key = channel::Key::from_u128(key);
             entries.iter().position(|entry| entry.key == key)
         };
-        let (time, value) = (entry(1).expect("time"), entry(2).expect("value"));
+        let (time, value) = (entry(1).expect("time"), entry(value).expect("value"));
         let group = entries[time].group;
         let mut series = [(time, 8), (value, 8)];
         series.sort_unstable();
@@ -3062,13 +3075,18 @@ mod tests {
         let value = draft.series_mut(value).expect("the value series");
         value.copy_from_slice(&sample.to_le_bytes());
         draft.set_count(group, 1);
-        let outcomes = writer.write(Label::Path(Path::Live), draft);
-        outcomes.expect("the home takes it").to_vec()
+        draft
     }
 
     /// Defines `plant.time` (key 1), `plant.value` (key 2, `i64`), and the status
     /// channels of `plant.write` on `hub`.
     fn define(hub: &hub::Hub) {
+        define_value(hub, 2);
+    }
+
+    /// Defines `plant.time` (key 1), `plant.value` (key `value`, `i64`), and the
+    /// status channels of `plant.write` on `hub`.
+    fn define_value(hub: &hub::Hub, value: u128) {
         let time = Channel {
             key: channel::Key::from_u128(1),
             kind: spec::channel::Kind::Index {
@@ -3079,7 +3097,7 @@ mod tests {
         let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
         let data = Data::new(time.key, None, i64, None).expect("no unit");
         let value = Channel {
-            key: channel::Key::from_u128(2),
+            key: channel::Key::from_u128(value),
             kind: spec::channel::Kind::Data(data),
         };
         let (time, value) = (Definition::Channel(time), Definition::Channel(value));
@@ -3674,6 +3692,129 @@ mod tests {
             ],
             "{:?}",
             read.statuses
+        );
+    }
+
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// reader ends, the run returns `Retry`, and the reader of the restart reads key 3.
+    #[test]
+    fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await;
+                let mut got = got.lock().expect("no panic");
+                match next {
+                    Ok(received) => got.push(Ok(series(&received, 3))),
+                    Err(ended) => {
+                        got.push(Err(ended));
+                        return Err(Error::Retry("removed".into()));
+                    }
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define_value(&hub, 3);
+                clock.sleep(ms(1_500)).await;
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                let draft = draft_value(&writer, writer.now().nanos(), 7, 3);
+                let outcomes = writer.write(Label::Path(Path::Live), draft);
+                outcomes.expect("the home takes it");
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
+        assert_eq!(read.got, [Err(removed), Ok(vec![7])]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+            "{:?}",
+            read.statuses
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, "removed"),
+                (wait, "removed"),
+                (Span::ZERO, "removed"),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
+        );
+    }
+
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// write of the run gives `Removed`, the run returns `Retry`, and the writer of
+    /// the restart writes key 3. Lost: the frame of the refused write, and each sample
+    /// until the restart, after the first wait of the backoff.
+    #[test]
+    fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            None,
+            |ctx, got| async move {
+                let channels = vec![name("plant.value")];
+                let writer = ctx.writer(channels, Authority(1), None).await;
+                let mut writer = writer.expect("opens");
+                let first = got.lock().expect("no panic").is_empty();
+                let (value, sample) = if first { (2, 5) } else { (3, 7) };
+                if first {
+                    ctx.clock().sleep(ms(200)).await;
+                }
+                let draft = draft_value(&writer, writer.now().nanos(), sample, value);
+                let written = writer.write(Label::Path(Path::Live), draft);
+                let written = written.map(<[_]>::len);
+                let failed = written.is_err();
+                got.lock().expect("no panic").push(written);
+                if failed {
+                    return Err(Error::Retry("removed".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define_value(&hub, 3);
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
+        assert_eq!(read.got, [Err(removed), Ok(1)]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, "removed"),
+                (wait, "removed"),
+                (Span::ZERO, "removed"),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
         );
     }
 
