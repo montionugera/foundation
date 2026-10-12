@@ -23,6 +23,8 @@ mod node;
 #[path = "../common/peer.rs"]
 mod peer;
 mod relay;
+#[path = "../common/serving.rs"]
+mod serving;
 #[path = "../common/sessions.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
 mod sessions;

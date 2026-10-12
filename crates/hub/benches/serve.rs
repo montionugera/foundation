@@ -44,6 +44,8 @@ mod net;
 mod node;
 #[path = "../tests/common/peer.rs"]
 mod peer;
+#[path = "../tests/common/serving.rs"]
+mod serving;
 #[expect(dead_code, reason = "the bench uses only some of the helpers")]
 #[path = "../tests/common/sessions.rs"]
 mod sessions;
@@ -51,31 +53,29 @@ mod table;
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll, Waker};
 
 use agent::Agent;
 use block::{Heap, Pool};
 use common::name;
 use env::tasks::Tasks;
 use hub::writer::{self, Writer};
-use hub::{Hub, Link, Served, serve};
+use hub::{Hub, Link, Served};
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use table::Line;
-use transport::stream::{Incoming, Receiver};
-use transport::{Address, Class, Transport};
+use transport::stream::Receiver;
+use transport::{Address, Transport};
 use types::authority::Authority;
 use types::channel;
 use types::frame::key_set::Interner;
 use types::frame::{Draft, Form};
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
-use wire::Protocol;
 use wire::hub::{Mode, client};
 
 #[global_allocator]
@@ -341,19 +341,15 @@ async fn bench(
     let mut timer = Line::new("timer", FRAMES);
     let mut lines = Vec::new();
     for (turn, (end, cases)) in PEERS.into_iter().enumerate() {
-        let (session, remote, mut first) = accept(&transport, &hub, &tasks, end).await;
+        let (session, remote) = accept(&transport, &hub, &tasks, end).await;
         for (at, case) in cases.iter().enumerate() {
-            let incoming = match first.take() {
-                Some(incoming) => incoming,
-                None => net::stream(&session).await,
-            };
-            let mut serving = pin!(remote.serve(incoming));
+            let mut serving = pin!(remote.serve(net::stream(&session).await));
             let mut line = Line::new(case.name, FRAMES);
             let configs = configs(base(turn, at), case.shape);
             let mut writer = hub.writer(configs[0].clone()).await.expect("opens");
             let opened = progress.opened.load(Ordering::Relaxed);
             while progress.opened.load(Ordering::Relaxed) == opened {
-                poll(serving.as_mut());
+                serving::poll(serving.as_mut());
                 node.clock().sleep(STEP).await;
             }
             for round in 0..WARMUP + ROUNDS {
@@ -371,7 +367,10 @@ async fn bench(
                             common::write(&mut writer, frame);
                             timer.add(table::timed(&ALLOCATOR, || ()).1);
                             line.add(
-                                table::timed(&ALLOCATOR, || poll(serving.as_mut())).1,
+                                table::timed(&ALLOCATOR, || {
+                                    serving::poll(serving.as_mut());
+                                })
+                                .1,
                             );
                         }
                     }
@@ -383,7 +382,12 @@ async fn bench(
                             timer.add(table::timed(&ALLOCATOR, || ()).1);
                         }
                         node.clock().sleep(common::SETTLE).await;
-                        line.add(table::timed(&ALLOCATOR, || poll(serving.as_mut())).1);
+                        line.add(
+                            table::timed(&ALLOCATOR, || {
+                                serving::poll(serving.as_mut());
+                            })
+                            .1,
+                        );
                     }
                 }
                 read(&node, &progress, frames).await;
@@ -399,24 +403,20 @@ async fn bench(
     (timer, lines)
 }
 
-/// Accepts the session of the peer of `end`, and gives it, its link, and the stream of
-/// its first line. A task serves a program's first stream, its hello, so each line of
-/// a program takes a new stream.
+/// Accepts the session of the peer of `end`, and gives it and its link.
 async fn accept(
     transport: &Transport,
     hub: &Hub,
     tasks: &Tasks,
     end: End,
-) -> (transport::Session, Link, Option<Incoming>) {
-    let (session, incoming) = net::accept(transport).await;
-    let link = hub.link(session.clone());
+) -> (transport::Session, Link) {
     match end {
-        End::Wire(_) => (session, link, Some(incoming)),
-        End::Client => {
-            let hello = link.clone();
-            tasks.spawn(async move { drop(hello.serve(incoming).await) });
-            (session, link, None)
+        End::Wire(_) => {
+            let session = transport.accept().await.expect("a session");
+            let link = hub.link(session.clone());
+            (session, link)
         }
+        End::Client => serving::program(transport, hub, tasks).await,
     }
 }
 
@@ -453,15 +453,9 @@ async fn peer(
         .await
         .expect("dials");
     for (line, case) in PEERS[turn].1.iter().enumerate() {
-        let class = match case.mode {
-            Mode::Latest => Class::Latest,
-            Mode::Complete { .. } => Class::Complete,
-        };
-        let (mut sender, mut receiver) = session.open(class).await.expect("opens");
-        peer::send(&pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
         let keys = case.shape.read(base(turn, line));
-        let reader =
-            peer::open(&pool, &mut sender, &mut receiver, case.mode, &keys).await;
+        let (mut sender, mut receiver, reader) =
+            peer::open(&pool, &session, case.mode, &keys).await;
         progress.opened.fetch_add(1, Ordering::Relaxed);
         take(&mut receiver, reader, case, progress).await;
         sender.finish().expect("finishes");
@@ -533,18 +527,6 @@ async fn take(
             case.name
         );
         progress.frames.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// One poll of `serving` with a waker that does nothing.
-///
-/// # Panics
-///
-/// When the session ends.
-fn poll(serving: Pin<&mut impl Future<Output = Result<Served, serve::Error>>>) {
-    let mut cx = Context::from_waker(Waker::noop());
-    if let Poll::Ready(served) = serving.poll(&mut cx) {
-        panic!("the session ended: {served:?}");
     }
 }
 

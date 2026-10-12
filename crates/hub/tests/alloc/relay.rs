@@ -1,22 +1,20 @@
 //! A client read against a HUB WIRE session of the same channels at one home.
 
 use std::net::SocketAddr;
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::{Context, Poll, Waker};
 
 use env::tasks::Tasks;
-use hub::{Served, serve, writer};
+use hub::writer;
+use transport::Address;
 use transport::stream::Receiver;
-use transport::{Address, Class};
 use types::authority::Authority;
 use types::time::Span;
-use wire::Protocol;
 use wire::hub::client::Mode;
 
 use crate::agent::{Agent, SUBJECT};
-use crate::{ALLOCATOR, COUNTED, WARM, common, net, peer, sessions};
+use crate::{ALLOCATOR, COUNTED, WARM, common, net, peer, serving, sessions};
 
 /// The longest wait for the readers to take a frame.
 const TAKE: Span = Span::SECOND;
@@ -78,10 +76,7 @@ async fn serve(
     let transport = net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
     let (hub, now) = common::hub(&node, tasks.clone()).await;
     hub.set_rules(sessions::rules());
-    let (program, hello) = net::accept(&transport).await;
-    let link = hub.link(program.clone());
-    let served = link.clone();
-    tasks.spawn(async move { drop(served.serve(hello).await) });
+    let (program, link) = serving::program(&transport, &hub, &tasks).await;
     let mut client = pin!(link.serve(net::stream(&program).await));
     let (other, incoming) = net::accept(&transport).await;
     let remote = hub.link(other);
@@ -94,8 +89,8 @@ async fn serve(
     };
     let mut writer = hub.writer(config).await.expect("opens");
     while progress.opened.load(Ordering::Relaxed) < 2 {
-        poll(client.as_mut());
-        poll(wire.as_mut());
+        serving::poll(client.as_mut());
+        serving::poll(wire.as_mut());
         node.clock().sleep(Span::MILLISECOND).await;
     }
     for n in 0..WARM + COUNTED {
@@ -103,7 +98,7 @@ async fn serve(
         common::write(&mut writer, draft);
         node.clock().sleep(SPACING).await;
         let counts = [client.as_mut(), wire.as_mut()]
-            .map(|serving| ALLOCATOR.count(|| poll(serving)).1);
+            .map(|serving| ALLOCATOR.count(|| serving::poll(serving)).1);
         taken(&node, &progress, n).await;
         if n >= WARM {
             assert_eq!(counts[0], counts[1], "frame {n} of a {mode:?} read");
@@ -165,18 +160,14 @@ async fn session(
         .dial(net::public_key(&net::HOME), &[at])
         .await
         .expect("dials");
-    let (class, mode) = match mode {
-        Mode::Latest => (Class::Latest, wire::hub::Mode::Latest),
-        Mode::Complete => (
-            Class::Complete,
-            wire::hub::Mode::Complete {
-                limit_bytes: 1 << 40,
-            },
-        ),
+    let mode = match mode {
+        Mode::Latest => wire::hub::Mode::Latest,
+        Mode::Complete => wire::hub::Mode::Complete {
+            limit_bytes: 1 << 40,
+        },
     };
-    let (mut sender, mut receiver) = session.open(class).await.expect("opens");
-    peer::send(&pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
-    let reader = peer::open(&pool, &mut sender, &mut receiver, mode, &[1, 2]).await;
+    let (_sender, mut receiver, reader) =
+        peer::open(&pool, &session, mode, &[1, 2]).await;
     progress.opened.fetch_add(1, Ordering::Relaxed);
     take(&mut receiver, reader, &progress.wire).await;
 }
@@ -191,17 +182,5 @@ async fn take(
     for _ in 0..WARM + COUNTED {
         peer::frame(receiver, &mut reader).await;
         taken.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// One poll with a waker that does nothing.
-///
-/// # Panics
-///
-/// When the read ends.
-fn poll(serving: Pin<&mut impl Future<Output = Result<Served, serve::Error>>>) {
-    let mut cx = Context::from_waker(Waker::noop());
-    if let Poll::Ready(served) = serving.poll(&mut cx) {
-        panic!("the read ended: {served:?}");
     }
 }

@@ -2,18 +2,27 @@
 //! one. The frames of a client read come in the same messages.
 
 use block::Pool;
+use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::channel;
+use wire::Protocol;
 use wire::hub::{FromHome, Mode, Open, Reader, keys};
 
-/// Sends the open of a session of `mode` on `keys`, and reads the reply.
+/// Opens a stream of the class of `mode` on `session`, sends the header and the open of
+/// a session of `mode` on `keys`, and reads the reply. Gives the stream and the decoder
+/// of its frames.
 pub(crate) async fn open(
     pool: &Pool,
-    sender: &mut Sender,
-    receiver: &mut Receiver,
+    session: &transport::Session,
     mode: Mode,
     keys: &[u128],
-) -> Reader {
+) -> (Sender, Receiver, Reader) {
+    let class = match mode {
+        Mode::Latest => Class::Latest,
+        Mode::Complete { .. } => Class::Complete,
+    };
+    let (mut sender, mut receiver) = session.open(class).await.expect("opens");
+    send(pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
     let keys: Vec<_> = keys.iter().copied().map(channel::Key::from_u128).collect();
     let open = Open {
         mode,
@@ -21,17 +30,17 @@ pub(crate) async fn open(
     };
     let mut out = vec![0; open.encoded_len()];
     open.encode(&mut out);
-    send(pool, sender, &out).await;
+    send(pool, &mut sender, &out).await;
     let mut out = vec![0; keys.len() * keys::LEN];
     keys::encode(&keys, &mut out);
-    send(pool, sender, &out).await;
+    send(pool, &mut sender, &out).await;
     let mut reader = Reader::new(&open);
     let opened = receiver.recv().await.expect("receives").expect("a reply");
     assert!(
         matches!(reader.decode(&opened), Ok(FromHome::Opened)),
         "the home opens the session"
     );
-    reader
+    (sender, receiver, reader)
 }
 
 /// Reads the messages of one whole frame from `receiver` with `reader`, and gives how
@@ -53,7 +62,7 @@ pub(crate) async fn frame(receiver: &mut Receiver, reader: &mut Reader) -> usize
 }
 
 /// Sends `bytes` in one message.
-pub(crate) async fn send(pool: &Pool, sender: &mut Sender, bytes: &[u8]) {
+async fn send(pool: &Pool, sender: &mut Sender, bytes: &[u8]) {
     let mut block = pool.alloc(bytes.len()).expect("the pool has room");
     block.copy_from_slice(bytes);
     sender.send(block.freeze()).await.expect("sends");
