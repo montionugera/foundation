@@ -10,7 +10,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{Action, Error, Problem};
 use crate::front_end::File;
-use crate::operation::{Empty, TABLE};
+use crate::operation::Empty;
 use crate::plan::Documents;
 use crate::{Node, apply, used};
 
@@ -22,10 +22,9 @@ mod tests;
 /// what [`cli`] sends. Call it only for a subject whose key the hub verified.
 ///
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes. No `body` makes
-/// it panic. The reply holds `ops.bad-request` for a body that is no request,
-/// `ops.unknown-operation` for an operation that the table does not hold,
-/// `ops.denied` for an action that no access policy gives `subject`, and
-/// `ops.large-reply` in place of a reply over the bound.
+/// it panic. The reply holds `ops.bad-request` for a body that is no request of
+/// `plan` or `apply`, `ops.denied` for an action that no access policy gives
+/// `subject`, and `ops.large-reply` in place of a reply over the bound.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -146,13 +145,9 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Vec<u8>, Error>
         }
         Request::Plan(Plan { files }) => plan(node, subject, &files).await,
         Request::Apply => apply(node, subject, rest).await,
-        Request::Other(name) if TABLE.iter().any(|spec| spec.name == name) => Err(bad(
-            format!("the operation `{name}` does not run on a node"),
-        )),
-        Request::Other(name) => Err(Error::Unknown {
-            name,
-            closest: None,
-        }),
+        Request::Other(name) => Err(bad(format!(
+            "the operation `{name}` does not run on a node"
+        ))),
     }
 }
 

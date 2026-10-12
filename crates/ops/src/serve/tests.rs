@@ -245,12 +245,7 @@ fn refuses_an_operation_that_the_table_does_not_hold() {
     solo(|_, mesh| async move {
         let node = create_node(mesh);
         let reply = serve(&node, &admin(), b"{\"export\":{\"to\":1}}\n").await;
-        let expected = refusal(
-            "ops.unknown-operation",
-            2,
-            "no operation is named `export`",
-            "Use a name from `foundation docs`",
-        );
+        let expected = bad("the operation `export` does not run on a node");
         assert_eq!(split(&reply), (expected, &b""[..]));
     });
 }
