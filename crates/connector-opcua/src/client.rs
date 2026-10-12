@@ -54,9 +54,9 @@ pub(crate) struct Client {
 /// The reads of a client in flight, shared with the callback.
 #[derive(Default)]
 struct Reads {
-    /// The request of the last read that open62541 took, until it times out. The
-    /// callback drops the answer of another request, and `read` clears the answer of a
-    /// last read whose future dropped.
+    /// The request of the last read that open62541 took. The callback drops the answer
+    /// of another request, and `read` clears the late answer of a last read that timed
+    /// out or whose future dropped.
     request: Cell<Option<u32>>,
     value: Cell<Option<Result<f64, Status>>>,
     /// The reads that open62541 took and has not called back, at most [`READS`].
@@ -173,7 +173,7 @@ impl Client {
         }
         self.reads.pending.set(self.reads.pending.get() + 1);
         self.reads.request.set(Some(request));
-        // It can hold the answer of a read whose future dropped after the callback.
+        // It can hold the late answer of the last read.
         self.reads.value.set(None);
         let answer = self
             .connections
@@ -182,10 +182,7 @@ impl Client {
                 self.reads.value.take().map_or(Poll::Pending, Poll::Ready)
             })
             .await;
-        answer.unwrap_or_else(|| {
-            self.reads.request.set(None);
-            Err(Status::BAD_TIMEOUT)
-        })
+        answer.unwrap_or(Err(Status::BAD_TIMEOUT))
     }
 
     /// Closes the session and the connection of the client, and waits until the
