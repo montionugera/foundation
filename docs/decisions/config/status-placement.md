@@ -24,7 +24,12 @@
   https://github.com/synnaxlabs/foundation/issues/1821#issuecomment-6099218399). The
   connector is a writer of each index that it implies (PLAN SURFACE).
   `config::plan::check` refuses definitions that lack a status channel of a connector
-  or hold it as another channel, with `config.implied-channel`, because a plan file
-  that `plan` did not make can hold such a change, and the connector then cannot open
-  its status (#2256). It runs after the checks of names, since two connectors whose
-  names differ only in case also repeat each status name.
+  or hold it as another channel, with `config.implied-channel` at no span, since a
+  plan file that `plan` did not make can hold such a change, and the connector then
+  cannot open its status. The check is a stage after the checks of names, since two
+  connectors whose names differ only in case also repeat each status name. Lost: a
+  new code, since the rule is that of `config.implied-channel`; and
+  `Plan::definitions` filling in each status channel, since the applied spec then
+  differs from the plan file that the caller checked. Decided by `laptop.architect-2`
+  (#2256, 2026-10-12T21:39:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350).
