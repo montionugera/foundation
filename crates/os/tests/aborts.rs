@@ -1,7 +1,7 @@
 //! Panics on shards and dedicated threads that abort the process. Each test runs in a
 //! child process, and a child holds a copy of each descriptor of the process until its
 //! `exec`, with the locks of the open files. So these tests run in a test binary of
-//! their own, apart from the tests that open files.
+//! their own, apart from the tests that release a lock and take it again.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
