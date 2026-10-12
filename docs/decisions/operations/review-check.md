@@ -244,3 +244,18 @@
   director approves the text of this record. A PR that changes it, and no public item of
   a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
+  The check also fails while a merge condition of the PR body names an open issue or
+  PR, with one problem for each such issue, in body order: "the PR body has `Merges
+  after #2452`, and #2452 is open. Run `review` again when it merges or closes." A
+  condition is `merges after` in each ASCII case, after no letter and no digit, then
+  white space and `#<n>`, in a paragraph as GitHub shows it, so not in a code block, a
+  heading, or HTML. A merged PR is closed. The check reads the state of each issue
+  through `gh` at the time of the run, so the rule has no cutoff, and a failed read
+  fails the run with the error of `gh`. The limits: only the issue right after the
+  words counts, so `Merges after #1869 (#1860)` names only #1869. A `GH-<n>`, a URL,
+  and `holds for #<n>` are not read, although the `review` skill ("Done") also asks
+  that each condition that an answer states is met. Stated by the director as goal 8 at
+  2026-10-08T20:25:39Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), and
+  put next at 2026-10-12T20:40:08Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6132233750).
