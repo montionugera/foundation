@@ -11,7 +11,7 @@ use crate::bytes::{
     put_position, put_signature, take, take_bool, take_change, take_count, take_key,
     take_position, take_proof, take_signature,
 };
-use crate::change::{self, Change};
+use crate::change::Change;
 use crate::entry;
 
 const RAFT: u8 = 1;
@@ -30,13 +30,12 @@ const APPEND: u8 = 7;
 const APPEND_REPLY: u8 = 8;
 const APPEND_REJECT: u8 = 9;
 
-/// The bytes of an `Append` with no proof and no link, of one entry that holds a record
-/// of [`change::BYTES_MAX`] bytes. Each member takes a message of this size.
-pub(crate) const BYTES_MIN: usize = change::BYTES_MAX + 100;
+/// The bytes of an `Append` with no proof and no link, of one entry of
+/// [`entry::BYTES_MAX`] bytes. Each member takes a message of this size.
+pub(crate) const BYTES_MIN: usize = APPEND_HEAD + entry::BYTES_MAX;
 
-// The bytes of an entry that holds a record of `change::BYTES_MAX` bytes: its
-// position, its kind, the length, and the record.
-const ENTRY_MAX: usize = 16 + 1 + 8 + change::BYTES_MAX;
+// The bytes of an `Append` with no entry, no proof, and no link.
+const APPEND_HEAD: usize = 75;
 
 /// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
 /// `raft::Config::fits`.
@@ -133,8 +132,8 @@ impl Message {
     }
 
     /// The message that `bytes` is the byte form of, or `None` when it is the byte
-    /// form of no message or of an `Append` with an entry that holds more than a
-    /// record of [`change::BYTES_MAX`] bytes.
+    /// form of no message or of an `Append` with an entry of more than
+    /// [`entry::BYTES_MAX`] bytes.
     pub(crate) fn decode(mut bytes: &[u8]) -> Option<Self> {
         let bytes = &mut bytes;
         let message = match u8::from_le_bytes(take(bytes)?) {
@@ -262,7 +261,7 @@ fn take_body(bytes: &mut &[u8]) -> Option<Body> {
             let commit = u64::from_le_bytes(take(bytes)?);
             let entries = entry::decode(std::mem::take(bytes))?;
             // `raft` must fit each entry in an `Append` alone.
-            let alone = |entry| entry::len(std::slice::from_ref(entry)) <= ENTRY_MAX;
+            let alone = |one| entry::len(std::slice::from_ref(one)) <= entry::BYTES_MAX;
             if !entries.iter().all(alone) {
                 return None;
             }
@@ -319,6 +318,7 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
+    use crate::change;
     use crate::common::{at, key};
 
     fn a_position() -> impl Strategy<Value = Position> {
@@ -899,9 +899,7 @@ mod tests {
         };
         // The bytes of the change: the message less its head, the entry's position, and
         // its kind.
-        let bytes = |voters| {
-            append(voters).encode().len() - (BYTES_MIN - change::BYTES_MAX - 8)
-        };
+        let bytes = |voters| append(voters).encode().len() - (APPEND_HEAD + 16 + 1);
         let most = 1 + u128::try_from(change::BYTES_MAX - bytes(1)).unwrap() / 16;
         assert_eq!(bytes(most), change::BYTES_MAX - 6);
         assert_eq!(bytes(most + 1), change::BYTES_MAX + 10);
