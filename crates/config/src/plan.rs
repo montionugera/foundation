@@ -100,11 +100,11 @@ pub fn plan(
 /// 1. `config.private-key` for each string of a definition that holds a private key.
 /// 2. The diagnostics of `kinds` for each connector whose kind or config it refuses,
 ///    and `config.long-name` for each with a status name that is too long, then
-///    `config.implied-channel` for each connector whose kind writes a status channel,
 ///    `config.duplicate-name`, whose earlier name is the first in name order, and
 ///    `config.subject-is-connector`.
-/// 3. `config.implied-channel` for each status channel of a connector that
-///    `definitions` lack or hold as another channel.
+/// 3. `config.implied-channel` for each status channel that the kind of a connector
+///    writes, then for each status channel of a connector that `definitions` lack or
+///    hold as another channel.
 /// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
@@ -137,7 +137,6 @@ fn problems(
     }
     let mut diagnostics = Vec::new();
     let writes = writes(definitions, kinds, &mut diagnostics);
-    diagnostics.extend(connector::implied_writes(&writes));
     diagnostics.extend(duplicate::in_definitions(definitions));
     diagnostics.extend(subject::not_connectors(definitions));
     if !diagnostics.is_empty() {
@@ -150,6 +149,7 @@ fn problems(
             _ => None,
         })
         .collect();
+    diagnostics.extend(connector::implied_writes(&writes));
     diagnostics.extend(connector::implied_definitions(definitions, &names, &writes));
     if !diagnostics.is_empty() {
         return diagnostics;

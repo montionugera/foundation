@@ -3429,6 +3429,29 @@ fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
     }
 }
 
+/// A name that repeats stops `check` before the write of a status channel of another.
+#[test]
+fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", "c.status.state");
+    let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
+        panic!("the status index");
+    };
+    let mut repeated = index.clone();
+    repeated.key = Key::from_u128(5000);
+    definitions.insert(name("C.status.time"), Stored::Channel(repeated));
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = (
+        "config.duplicate-name",
+        None,
+        "the name \"c.status.time\" repeats the earlier `channel` name \
+         \"C.status.time\""
+            .into(),
+        "Give each `channel` block a name that differs by more than case".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
 /// A connector writes its status index, so a channel on that index that another
 /// connector writes on another node leaves the index with no one home.
 #[test]
