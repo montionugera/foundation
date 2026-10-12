@@ -177,6 +177,8 @@ struct Round {
 struct Ends {
     /// The value of the `Deferred:` line.
     deferred: String,
+    /// The place in `deferred` of each [`BREAK`] that [`ends`] took out of it.
+    breaks: Vec<usize>,
     /// The value of the `Public surface:` line.
     surface: String,
     /// The `Hot path:` line names a function, so the round requires `performance`.
@@ -376,13 +378,15 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let problem = unokayed(&ends.deferred).filter(|_| risky).map(|issue| {
-        format!(
-            "review round {number} defers to {issue} with no link to the OK of the \
+    let problem = unokayed(&ends.deferred, &ends.breaks)
+        .filter(|_| risky)
+        .map(|issue| {
+            format!(
+                "review round {number} defers to {issue} with no link to the OK of the \
              architect after it on its `Deferred:` line. Add the link, or the words \
              `{UNRISKY}` after the issue when its work is in no risk crate. {LINK}"
-        )
-    });
+            )
+        });
     problem
         .into_iter()
         .chain(unapproved(number, &ends.surface))
@@ -658,8 +662,8 @@ fn blank(line: &str) -> bool {
 }
 
 /// The character that [`texts`] puts before a `GH-` that starts a text node or follows
-/// an ignorable character, so that [`issue`] reads it as an issue. No text of a line
-/// holds it, since it is [`ignorable`].
+/// an ignorable character. [`ends`] takes it out of the end lines and keeps its places
+/// for [`issue`]. No text of a line holds it, since it is [`ignorable`].
 const BREAK: char = '\u{FFF7}';
 
 /// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
@@ -697,21 +701,36 @@ fn ends(paragraph: &[String], number: u32) -> Result<Ends, String> {
                 "review round {number} has a second `{name}:` line in its end lines."
             )
         })?;
+    let (deferred, breaks) = unbroken(&deferred);
     Ok(Ends {
         deferred,
-        surface,
+        breaks,
+        surface: surface.replace(BREAK, ""),
         hot: stated(&hot),
     })
 }
 
-/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line, with
-/// no OK: no comment link ([`links`]) starts after its start, and the words
-/// [`UNRISKY`] are not between it and the next issue. A comment link that is an issue
-/// is no OK of itself.
-fn unokayed(deferred: &str) -> Option<String> {
+/// `value` with no [`BREAK`], and the place in it of each `BREAK` that `value` held.
+fn unbroken(value: &str) -> (String, Vec<usize>) {
+    let mut text = String::with_capacity(value.len());
+    let mut breaks = Vec::new();
+    for (i, part) in value.split(BREAK).enumerate() {
+        if i > 0 {
+            breaks.push(text.len());
+        }
+        text.push_str(part);
+    }
+    (text, breaks)
+}
+
+/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with
+/// the places `breaks` ([`Ends::breaks`]), with no OK: no comment link ([`links`])
+/// starts after its start, and the words [`UNRISKY`] are not between it and the next
+/// issue. A comment link that is an issue is no OK of itself.
+fn unokayed(deferred: &str, breaks: &[usize]) -> Option<String> {
     let lower = deferred.to_ascii_lowercase();
     let ok = links(deferred).last();
-    let mut issues = issues(deferred).peekable();
+    let mut issues = issues(deferred, breaks).peekable();
     while let Some(issue) = issues.next() {
         let next = issues.peek().map_or(deferred.len(), |next| next.start);
         let okayed = ok.is_some_and(|ok| ok > issue.start);
@@ -722,11 +741,11 @@ fn unokayed(deferred: &str) -> Option<String> {
     None
 }
 
-/// The place of each issue in `value`, the value of a `Deferred:` line, in order: each
-/// issue ([`issue`]), and a comment link ([`link`]) with no issue before it, which
-/// names the deferral by its comment. No issue starts in a comment link or in another
-/// issue.
-fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
+/// The place of each issue in `value`, the value of a `Deferred:` line with the places
+/// `breaks`, in order: each issue ([`issue`]), and a comment link ([`link`]) with no
+/// issue before it, which names the deferral by its comment. No issue starts in a
+/// comment link or in another issue.
+fn issues(value: &str, breaks: &[usize]) -> impl Iterator<Item = Range<usize>> {
     let mut end = 0;
     value.char_indices().filter_map(move |(at, _)| {
         if at < end {
@@ -734,23 +753,25 @@ fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
         }
         let comment = link(value, at);
         let first = end == 0;
-        end = comment.or_else(|| issue(value, at))?;
+        end = comment.or_else(|| issue(value, breaks, at))?;
         (comment.is_none() || first).then_some(at..end)
     })
 }
 
-/// The end of the issue that starts at `at` in `value`: `#`, or `GH-` in each ASCII
-/// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]). A
-/// `GH-` starts `value` or follows a character that is no ASCII letter, no ASCII digit,
-/// and no `_`, such as a [`BREAK`], as GitHub reads it. The start of a comment link ([`link`]) is such a URL
+/// The end of the issue that starts at `at` in `value`, a value with the places
+/// `breaks` ([`Ends::breaks`]): `#`, or `GH-` in each ASCII case, and the digits after
+/// it, or the URL of an issue or a PR ([`numbered`]). A `GH-` starts `value`, is at a
+/// place of `breaks`, or follows a character that is no ASCII letter, no ASCII digit,
+/// and no `_`, as GitHub reads it. The start of a comment link ([`link`]) is such a URL
 /// too, so [`issues`] asks `link` first.
-fn issue(value: &str, at: usize) -> Option<usize> {
+fn issue(value: &str, breaks: &[usize], at: usize) -> Option<usize> {
     let text = &value[at..];
     let before = value[..at].chars().next_back();
+    let free = before.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
     let gh = text
         .split_at_checked(3)
         .filter(|(gh, _)| gh.eq_ignore_ascii_case("gh-"))
-        .filter(|_| before.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')));
+        .filter(|_| free || breaks.contains(&at));
     let number = text.strip_prefix('#').or(gh.map(|(_, number)| number));
     let url = text.strip_prefix(HOST);
     let rest = number
@@ -1114,10 +1135,10 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 /// The lines of text of `paragraph` as GitHub shows them: its text and code spans
-/// ([`shown`]), each link as its text and not
-/// its target, each footnote reference as its number, each image as [`IMAGE`] in
-/// place of its text and line breaks, and each run of white space as one space,
-/// trimmed. A character that looks like another stays itself.
+/// ([`shown`]), each link as its text and not its target, each footnote reference as
+/// its number, each image as [`IMAGE`] in place of its text and line breaks, and each
+/// run of white space as one space, trimmed. A character that looks like another stays
+/// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut fresh = true;

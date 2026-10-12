@@ -1250,6 +1250,14 @@ fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
              digit found in string"
         ]
     );
+    let round = ROUND.replace("Findings: none", "Findings: **x**gh-1");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec![
+            "review round 3 has `Findings: xgh-1`, not a count or `none`: invalid \
+             digit found in string"
+        ]
+    );
     let round = ROUND.replace("`38cba24f..c77c67d7`", "c77c67d7![](x)");
     assert_eq!(
         check(&record(vec![bot(&round)])),
@@ -3263,8 +3271,44 @@ fn a_gh_name_after_a_mark_or_an_ignorable_character_is_an_issue() {
         let line = format!("#12 ({OK}), {name}");
         assert_eq!(risk(vec![deferred(&line)]), no_ok("GH-13"), "{line:?}");
     }
+    for name in ["**x**gh-13", "x\u{200B}gh-13"] {
+        let line = format!("#12 ({OK}), {name}");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok("gh-13"), "{line:?}");
+    }
     for name in ["xGH-13", "**xGH-13**"] {
         let line = format!("#12 ({OK}), {name}");
+        assert_eq!(
+            risk(vec![deferred(&line)]),
+            Vec::<String>::new(),
+            "{line:?}"
+        );
+    }
+}
+
+#[test]
+fn an_issue_url_with_a_gh_repo_after_a_mark_or_an_ignorable_character_is_read() {
+    let url = "https://github.com/a/gh-b/issues/13";
+    let comment = "https://github.com/a/gh-b/pull/1#issuecomment-2";
+    let hidden = "https://github.com/a/\u{200B}gh-b/pull/1#issuecomment-2";
+    assert_eq!(risk(vec![deferred(hidden)]), no_ok(comment));
+    for name in [
+        "https://github.com/a/\u{200B}gh-b/issues/13",
+        "https://github.com/a/&#8203;gh-b/issues/13",
+        "https://github.com/a/\u{AD}gh-b/issues/13",
+        "[https://github.com/a/**gh-b**/issues/13](https://x.io)",
+    ] {
+        let line = format!("#12 ({OK}), {name}");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok(url), "{line:?}");
+    }
+}
+
+#[test]
+fn a_comment_link_with_a_gh_name_after_a_mark_or_an_ignorable_character_is_an_ok() {
+    for ok in [
+        "https://github.com/*gh-1*/b/pull/1#issuecomment-2",
+        "https://github.com/\u{200B}gh-1/b/pull/1#issuecomment-2",
+    ] {
+        let line = format!("#12 ({ok})");
         assert_eq!(
             risk(vec![deferred(&line)]),
             Vec::<String>::new(),
