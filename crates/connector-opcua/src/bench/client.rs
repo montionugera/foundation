@@ -96,7 +96,7 @@ impl Server {
                 manager.events().run();
                 Poll::<()>::Pending
             }));
-            let mut body = pin!(super::caught(body(&this)));
+            let mut body = pin!(super::caught(async { body(&this).await }));
             poll_fn(|cx| {
                 assert!(drive.as_mut().poll(cx).is_pending(), "it never ends");
                 body.as_mut().poll(cx)
@@ -221,6 +221,22 @@ mod tests {
         let result = run(async |node| {
             let body = async |server: &Server| {
                 let _client = server.connect().await;
+                panic!("the body panics");
+            };
+            let panic = caught(serve(&node, DOUBLE, body))
+                .await
+                .expect_err("panics");
+            assert_eq!(panic.downcast_ref(), Some(&"the body panics"));
+            serve(&node, DOUBLE, read).await;
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    /// A body that panics when it is called, before it gives its future.
+    #[test]
+    fn a_scope_whose_body_panics_at_its_call_frees_its_port() {
+        let result = run(async |node| {
+            let body = |_: &Server| -> std::future::Ready<()> {
                 panic!("the body panics");
             };
             let panic = caught(serve(&node, DOUBLE, body))
