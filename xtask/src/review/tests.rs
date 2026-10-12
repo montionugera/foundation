@@ -2078,27 +2078,35 @@ fn an_old_round_reads_the_first_footnote_of_a_label_with_a_reference() {
 }
 
 #[test]
-fn an_old_round_with_a_footnote_inside_a_footnote_hides_each_footnote_with_no_reference()
- {
-    // GitHub shows only `Confirmed a finding.` (`gh api markdown`).
-    let round = old(
-        "## Review round 1\n\nConfirmed a finding.\n\n[^z]: Hot path: `send`\n\n\
-         [^c]: y\n\n    [^d]: z",
-    );
-    assert_eq!(
-        check(&record(vec![round, bot(ROUND)])),
-        Vec::<String>::new()
-    );
-    let fields = |notes: &str| {
-        old(&format!(
-            "## Review round 1\n\n{notes}Reviewers: reviewer, breaker\nRange: `a..b`\n\
-             Findings: 2\n\nHot path: `send`"
-        ))
-    };
-    assert_eq!(
-        check(&record(vec![fields("[^a]: x\n\n    [^b]: y\n\n")])),
-        check(&record(vec![fields("")]))
-    );
+fn fails_an_old_round_with_a_footnote_inside_a_footnote() {
+    // GitHub shows `[^b]` as a footnote of its own, which comrak does not read, and
+    // hides `[^z]` (`gh api markdown`).
+    for (text, line) in [
+        (
+            "Confirmed a finding [^a] [^b].\n\n[^a]: x\n\n    [^b]: Hot path: `send`",
+            "[^b]: Hot path: `send`",
+        ),
+        (
+            "Confirmed a finding [^b].\n\n[^a]: x\n\n    [^b]: Hot path: `send`",
+            "[^b]: Hot path: `send`",
+        ),
+        (
+            "Confirmed a finding.\n\n[^z]: Hot path: `send`\n\n[^c]: y\n\n    [^d]: z",
+            "[^d]: z",
+        ),
+    ] {
+        let round = old(&format!("## Review round 1\n\n{text}"));
+        assert_eq!(
+            check(&record(vec![round, bot(ROUND)])),
+            vec![format!(
+                "review round 1 has a footnote inside a footnote, which the check \
+                 cannot read as GitHub shows it, in the line `{line}`. Move it out of \
+                 the other footnote, in the format of .claude/skills/review/SKILL.md, \
+                 \"Round comment\"."
+            )],
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -2244,7 +2252,7 @@ fn fails_a_round_with_a_footnote_inside_a_footnote() {
     assert_eq!(nested(flat), Vec::<String>::new());
     let before =
         ROUND.replace("weakening.\n\n", "weakening.\n\n[^a]: x\n\n    [^b]: y\n\n");
-    assert_eq!(check(&record(vec![old(&before)])), Vec::<String>::new());
+    assert_eq!(check(&record(vec![old(&before)])), vec![problem]);
 }
 
 #[test]

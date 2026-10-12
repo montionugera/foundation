@@ -480,7 +480,7 @@ fn round(comment: &Comment) -> Option<Parsed> {
     let hiding = shown
         .hiding
         .iter()
-        .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced));
+        .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced | Cause::Nested));
     let number = &quoted(shown.number.as_deref()?);
     let text = &shown.text;
     let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
@@ -871,7 +871,8 @@ fn append_notes<'n>(root: &'n AstNode<'n>) {
 }
 
 /// The line of the first footnote definition of `root` inside another one. GitHub
-/// shows it as a footnote of its own, and comrak reads no reference to it.
+/// shows it as a footnote of its own, and comrak reads no reference to it. Call it
+/// before [`footnotes`], which detaches the footnote that holds it.
 fn nested<'n>(root: &'n AstNode<'n>) -> Option<usize> {
     let note = |n: &AstNode<'_>| {
         matches!(n.data.borrow().value, NodeValue::FootnoteDefinition(_))
@@ -1214,7 +1215,21 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
         } else {
             field::text(pull, "body")?
         };
-        let mut record = Record {
+        let waits = match conditions(body) {
+            Ok(found) => {
+                let mut open = Vec::new();
+                for n in found {
+                    let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
+                    let issue = issue.first().ok_or("gh returned no issue")?;
+                    if field::text(issue, "state")? == "open" {
+                        open.push(n);
+                    }
+                }
+                Ok(open)
+            }
+            Err(problem) => Err(problem),
+        };
+        Ok(Record {
             branch: field::text(&pull["head"], "ref")?.to_string(),
             base: field::text(&pull["base"], "ref")?.to_string(),
             labels: field::list(pull, "labels")?
@@ -1235,20 +1250,8 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
                     })
                 })
                 .collect::<Result<_, String>>()?,
-            waits: conditions(body),
-        };
-        if let Ok(waits) = &mut record.waits {
-            let mut open = Vec::new();
-            for n in waits.drain(..) {
-                let issue = api(&format!("repos/{{owner}}/{{repo}}/issues/{n}"))?;
-                let issue = issue.first().ok_or("gh returned no issue")?;
-                if field::text(issue, "state")? == "open" {
-                    open.push(n);
-                }
-            }
-            *waits = open;
-        }
-        Ok(record)
+            waits,
+        })
     };
     read().map_err(|e| format!("PR {pr}: {e}"))
 }

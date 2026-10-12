@@ -59,21 +59,21 @@
   the end of a footnote reference and hide the text between them. It also fails when a
   footnote, as `comrak` reads it, is inside another footnote: GitHub shows the inner one
   as a footnote of its own, and can move text of the outer one into it, but `comrak`
-  reads no reference to the inner one.
-  It also fails when `comrak` places the text of a paragraph before the last line of the
-  paragraph, as it does after a link or an image with a line break after its text and
-  after a link reference definition in the paragraph, since each line that it then gives
-  is wrong. The message names the first line with one of these causes, or the first line
-  of the paragraph. A round comment that fails by these rules gets an edit that puts the
-  line in a code span, or that writes each link and image on one line and puts a blank
-  line after each link reference definition, or that moves each footnote out of another
-  footnote, and the cutoff stays. A paragraph that `comrak` places in the wrong lines
-  fails in any round, also in one posted before the cutoff, since the check cannot read
-  it. In an old round, a `Hot path:` line, or a `Reviewers:` line of a round that does
-  not parse, counts where GitHub shows it at the start of a line of text of a paragraph,
-  at any depth and any indent, except in a paragraph that `comrak` places in the wrong
-  lines. A line of a code block or an HTML block does not count. Changed by
-  https://github.com/synnaxlabs/foundation/issues/1783,
+  reads no reference to the inner one. It also fails when `comrak` places the text of a
+  paragraph before the last line of the paragraph, as it does after a link or an image
+  with a line break after its text and after a link reference definition in the
+  paragraph, since each line that it then gives is wrong. The message names the first
+  line with one of these causes, or the first line of the paragraph. A round comment
+  that fails by these rules gets an edit that puts the line in a code span, or that
+  writes each link and image on one line and puts a blank line after each link reference
+  definition, or that moves each footnote out of another footnote, and the cutoff stays.
+  A paragraph that `comrak` places in the wrong lines, and a footnote inside another
+  footnote, fail in any round, also in one posted before the cutoff, since the check
+  cannot read them. In an old round, a `Hot path:` line, or a `Reviewers:` line of a
+  round that does not parse, counts where GitHub shows it at the start of a line of text
+  of a paragraph, at any depth and any indent, except in a paragraph that `comrak`
+  places in the wrong lines. A line of a code block or an HTML block does not count.
+  Changed by https://github.com/synnaxlabs/foundation/issues/1783,
   https://github.com/synnaxlabs/foundation/issues/2037, and
   https://github.com/synnaxlabs/foundation/issues/2050, with the rulings of the director
   at 2026-10-08T21:47:24Z
@@ -83,7 +83,10 @@
   2026-10-09T03:40:52Z
   (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6073795680), approved
   by the director at 2026-10-09T05:20:36Z
-  (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6074829060).
+  (https://github.com/synnaxlabs/foundation/pull/1999#issuecomment-6074829060). The
+  failure on a footnote inside another footnote: ruled by the director at
+  2026-10-12T23:07:13Z
+  (https://github.com/synnaxlabs/foundation/pull/2495#issuecomment-6134334707).
   Supersedes the footnote label rule of
   https://github.com/synnaxlabs/foundation/issues/2037#issuecomment-6071274522
   (2026-10-08T23:46:02Z), since `comrak` reads footnote labels as GitHub does.
@@ -98,10 +101,10 @@
   (https://github.com/synnaxlabs/foundation/pull/2383#issuecomment-6108250288). A round
   comment posted before the cutoff `CUTOFF` in
   `xtask/src/review.rs` (2026-10-08T03:00:00Z) is checked as before, except that a
-  paragraph that `comrak` places in the wrong lines fails. Otherwise an earlier
-  free-form round passes, and it needs no end lines. A `Hot path:` line that counts,
-  as stated above, and names a function still needs `performance`. Decided by the
-  director at 2026-10-08T02:44:00Z
+  paragraph that `comrak` places in the wrong lines, and a footnote inside another
+  footnote, fail. Otherwise an earlier free-form round passes, and it needs no end
+  lines. A `Hot path:` line that counts, as stated above, and names a function still
+  needs `performance`. Decided by the director at 2026-10-08T02:44:00Z
   (https://github.com/synnaxlabs/foundation/pull/1752#issuecomment-6051099968).
   Supersedes the reviewers of a later round in ruling 2 of
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
@@ -256,17 +259,19 @@
   or a block quote counts, and so does a code span: an example such as
   `Merges after #2452` in the PR body fails while #2452 is open. A code block, a
   heading, a table, and HTML do not count. A PR body with a footnote inside another
-  footnote, as `comrak` reads it, fails the run with the line of the inner one, as a
+  footnote, as `comrak` reads it, gives one problem with the line of the inner one, as a
   round comment does. A merged PR is closed. The check reads the state of each issue
   through `gh` at the time of the run, so the rule has no cutoff, and a failed read
   fails the run with the error of `gh`. The limits: only the issue right after the words
   counts, so `Merges after #1869 (#1860)` names only #1869. The check reads only the PR
   body, and in it no `GH-<n>`, no URL, and no `holds for #<n>`, although the `review`
   skill ("Done") asks that each condition that the PR body or an answer states is met.
-  Stated by the director as goal 8 at 2026-10-08T20:25:39Z
+  The failure of a PR body with a footnote inside another footnote: ruled by the
+  director at 2026-10-12T23:07:13Z
+  (https://github.com/synnaxlabs/foundation/pull/2495#issuecomment-6134334707). Stated
+  by the director as goal 8 at 2026-10-08T20:25:39Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), put
   next at 2026-10-12T20:40:08Z
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6132233750), and
-  ruled for a code span, a list item, a block quote, and a table at
-  2026-10-12T21:23:35Z
+  ruled for a code span, a list item, a block quote, and a table at 2026-10-12T21:23:35Z
   (https://github.com/synnaxlabs/foundation/pull/2495#issuecomment-6132866182).
