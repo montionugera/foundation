@@ -86,11 +86,15 @@ fn set(ids: &[u8]) -> BTreeSet<node::Key> {
 }
 
 fn node(id: u8) -> Raft {
+    node_with(id, fits_1472)
+}
+
+fn node_with(id: u8, fits: fn(&Message) -> bool) -> Raft {
     let config = Config {
         key: key(id),
         election_ticks: ELECTION,
         heartbeat_ticks: 1,
-        fits: fits_1472,
+        fits,
     };
     let start = Start {
         hard: Hard::default(),
@@ -162,6 +166,36 @@ fn elect(nodes: &mut BTreeMap<node::Key, Raft>, side: &[u8], ran: &mut Ran) -> u
         }
     }
     panic!("no node of {side:?} leads");
+}
+
+// The entries of `message`, none when it is not an append.
+fn entries(message: &Message) -> &[Entry] {
+    match &message.body {
+        Body::Append { entries, .. } => entries,
+        _ => &[],
+    }
+}
+
+// The indexes of the entries of each append that `ran` sent to `to`.
+fn appended(ran: &Ran, to: u8) -> Vec<Vec<u64>> {
+    let appends = ran
+        .sent
+        .iter()
+        .filter(|message| message.to == key(to))
+        .filter(|message| matches!(message.body, Body::Append { .. }));
+    let indexes = |message| entries(message).iter().map(|entry| entry.at.index);
+    appends.map(|message| indexes(message).collect()).collect()
+}
+
+// Three nodes that `fits`, with node 1 the leader of term 1 and each node at index 1.
+fn led(fits: fn(&Message) -> bool) -> (BTreeMap<node::Key, Raft>, Ran) {
+    let mut nodes: BTreeMap<node::Key, Raft> =
+        (1..=3).map(|id| (key(id), node_with(id, fits))).collect();
+    let mut ran = Ran::default();
+    nodes.get_mut(&key(1)).unwrap().campaign();
+    run_among(&mut nodes, &[1, 2, 3], &mut ran);
+    assert_eq!(nodes[&key(1)].role(), Role::Leader);
+    (nodes, ran)
 }
 
 // The voters other than `id`.
@@ -243,6 +277,89 @@ fn three_voters_elect_a_leader_after_a_change_in_each_of_3_terms() {
             "node {id}"
         );
     }
+}
+
+#[test]
+fn an_append_with_no_proof_drops_its_last_entries() {
+    let (mut nodes, mut ran) = led(|message| entries(message).len() <= 2);
+    let leader = nodes.get_mut(&key(1)).unwrap();
+    for data in 0..3 {
+        leader.propose(vec![data]).unwrap();
+    }
+    run_among(&mut nodes, &[1, 2], &mut ran);
+    // The reject of node 3 sends the leader back to index 2.
+    let ran = &mut Ran::default();
+    nodes.get_mut(&key(1)).unwrap().tick(0);
+    run_among(&mut nodes, &[1, 2, 3], ran);
+    let full = appended(ran, 3)
+        .into_iter()
+        .filter(|indexes| !indexes.is_empty());
+    assert_eq!(full.collect::<Vec<_>>(), [vec![2, 3], vec![4]]);
+    let unproven = ran.sent.iter().all(|message| message.proof.is_none());
+    assert!(unproven, "{:?}", ran.sent);
+}
+
+#[test]
+fn a_peer_that_lost_appends_of_one_entry_rejects_once() {
+    let (mut nodes, mut ran) = led(|message| entries(message).len() <= 1);
+    let leader = nodes.get_mut(&key(1)).unwrap();
+    for data in 0..5 {
+        leader.propose(vec![data]).unwrap();
+    }
+    run_among(&mut nodes, &[1, 2], &mut ran);
+    for tick in 0..u64::from(ELECTION) {
+        nodes.get_mut(&key(1)).unwrap().tick(tick);
+        run_among(&mut nodes, &[1, 2, 3], &mut ran);
+    }
+    let rejects = ran
+        .sent
+        .iter()
+        .filter(|message| matches!(message.body, Body::AppendReject { .. }));
+    assert_eq!(rejects.count(), 1);
+    let committed = ran.committed[&key(3)].last().map(|entry| entry.at.index);
+    assert_eq!(committed, Some(6));
+}
+
+#[test]
+#[should_panic(
+    expected = "invariant: `Config::fits` holds an append of one entry with \
+                           no proof, and each message with no entry and no link; to \
+                           Key(2), term Term(1), 1 entries, no proof"
+)]
+fn a_leader_whose_fits_refuses_an_append_of_one_entry_panics() {
+    let unproven =
+        |message: &Message| message.proof.is_some() || entries(message).is_empty();
+    let (mut nodes, _) = led(unproven);
+    nodes.get_mut(&key(1)).unwrap().propose(vec![7]).unwrap();
+    drop(nodes.get_mut(&key(1)).unwrap().ready());
+}
+
+#[test]
+fn a_message_with_a_proof_drops_its_entries_and_keeps_its_chain() {
+    let proven =
+        |message: &Message| message.proof.is_none() || entries(message).is_empty();
+    let (mut nodes, mut ran) = led(proven);
+    let leader = nodes.get_mut(&key(1)).unwrap();
+    leader.propose_voters(set(&[1, 2, 3])).unwrap();
+    run_among(&mut nodes, &[1, 2, 3], &mut ran);
+    let ran = &mut Ran::default();
+    let elected = elect(&mut nodes, &[2, 3], ran);
+    let leader = nodes.get_mut(&key(elected)).unwrap();
+    leader.propose(vec![7]).unwrap();
+    run_among(&mut nodes, &[elected], ran);
+    let append = ran
+        .sent
+        .iter()
+        .find(|message| matches!(message.body, Body::Append { .. }))
+        .unwrap();
+    assert!(append.proof.is_some(), "{append:?}");
+    assert_eq!(entries(append), []);
+    let chain: Vec<Position> = append.chain.iter().map(|link| link.at).collect();
+    let at = |index| Position {
+        term: Term(1),
+        index,
+    };
+    assert_eq!(chain, [at(2), at(3)]);
 }
 
 proptest! {

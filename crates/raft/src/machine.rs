@@ -1375,7 +1375,16 @@ fn fit(fits: fn(&Message) -> bool, message: &mut Message) {
         assert!(
             !message.chain.is_empty(),
             "invariant: `Config::fits` holds an append of one entry with no proof, \
-             and each message with no entry and no link"
+             and each message with no entry and no link; to {:?}, term {:?}, {} \
+             entries, {}",
+            message.to,
+            message.term,
+            message.body.entries().len(),
+            if message.proof.is_some() {
+                "a proof"
+            } else {
+                "no proof"
+            },
         );
         message.chain.remove(0);
     }
@@ -5156,79 +5165,6 @@ mod tests {
             raft.step(message(3, 2, Body::HeartbeatReply)).unwrap();
             tick_times(&mut raft, 10);
             assert_eq!(raft.role(), Role::Follower);
-        }
-    }
-
-    mod fit {
-        use super::*;
-
-        // The entry indexes and link indexes of `message`.
-        fn kept(message: &Message) -> (Vec<u64>, Vec<u64>) {
-            let Body::Append { entries, .. } = &message.body else {
-                panic!("not an append");
-            };
-            let entries = entries.iter().map(|entry| entry.at.index);
-            let links = message.chain.iter().map(|link| link.at.index);
-            (entries.collect(), links.collect())
-        }
-
-        fn size(message: &Message) -> usize {
-            let Body::Append { entries, .. } = &message.body else {
-                panic!("not an append");
-            };
-            entries.len() + message.chain.len()
-        }
-
-        // An append of entries 1 to 3 with links at 1 and 2, with a proof or not.
-        fn appended(proven: bool) -> Message {
-            let link = |index| Link {
-                at: position(1, index),
-                change: Change {
-                    voters: Voters::default(),
-                    votes: proof(Grant::Vote, 2, &[2, 3]),
-                    signature: None,
-                },
-            };
-            let body = append(position(1, 0), entries(&[(1, 1), (1, 2), (1, 3)]), 0);
-            Message {
-                chain: vec![link(1), link(2)],
-                ..if proven {
-                    message(2, 1, body)
-                } else {
-                    unproven(2, 1, body)
-                }
-            }
-        }
-
-        #[test]
-        fn an_append_with_no_proof_drops_its_last_entries() {
-            let mut message = appended(false);
-            message.chain.clear();
-            fit(|m| size(m) <= 2, &mut message);
-            assert_eq!(kept(&message), (vec![1, 2], vec![]));
-        }
-
-        #[test]
-        #[should_panic(expected = "invariant: `Config::fits` holds an append of one \
-                                   entry with no proof, and each message")]
-        fn an_append_with_no_proof_keeps_one_entry() {
-            let mut message = appended(false);
-            message.chain.clear();
-            fit(|m| size(m) == 0, &mut message);
-        }
-
-        #[test]
-        fn a_message_with_a_proof_drops_its_entries_then_its_oldest_links() {
-            let mut message = appended(true);
-            fit(|m| size(m) <= 1, &mut message);
-            assert_eq!(kept(&message), (vec![], vec![2]));
-        }
-
-        #[test]
-        fn a_message_that_fits_keeps_each_entry_and_link() {
-            let mut message = appended(true);
-            fit(|m| size(m) <= 5, &mut message);
-            assert_eq!(kept(&message), (vec![1, 2, 3], vec![1, 2]));
         }
     }
 }
