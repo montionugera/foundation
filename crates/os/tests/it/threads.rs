@@ -7,16 +7,11 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
-use env::threads::Threads;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
 use crate::common::{Relay, Relayed, Stuck};
-use crate::panics::{Armed, Bomb, assert_joins, panicked};
-
-fn threads() -> Threads {
-    os::threads().expect("the OS gives the cores of this process")
-}
+use crate::panics::{Armed, Bomb, assert_joins, panicked, threads};
 
 #[test]
 fn a_thread_runs_its_body_to_completion_and_joins() {

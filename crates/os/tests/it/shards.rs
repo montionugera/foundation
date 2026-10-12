@@ -8,24 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use env::shards::{Config, Shards};
+use env::shards::Config;
 use env::tasks::Tasks;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
 use crate::common::{Relay, Relayed, Stuck};
-use crate::panics::{Bomb, assert_joins, panicked};
-
-fn shards() -> Shards {
-    os::shards().expect("the OS gives the cores of this process")
-}
-
-fn config(name: &str) -> Config {
-    Config {
-        name: name.into(),
-        core: None,
-    }
-}
+use crate::panics::{Bomb, assert_joins, config, panicked, shards};
 
 /// A flag that a [`Dropped`] sets.
 fn flag() -> Arc<AtomicBool> {

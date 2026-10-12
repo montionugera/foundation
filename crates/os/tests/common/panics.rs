@@ -5,7 +5,9 @@ use std::sync::mpsc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use env::shards::{Config, Shards};
 use env::thread::{Handle, Panicked};
+use env::threads::Threads;
 
 /// Asserts that `handle` joins with `outcome` in ten seconds, so a thread that does not
 /// end fails its test and does not hang the run.
@@ -15,6 +17,21 @@ pub(crate) fn assert_joins(handle: Handle, outcome: Result<(), Panicked>) {
     std::thread::spawn(move || done.send(handle.join()));
     let joined = joined.recv_timeout(Duration::from_secs(10));
     assert_eq!(joined, Ok(outcome), "the thread ends in ten seconds");
+}
+
+pub(crate) fn shards() -> Shards {
+    os::shards().expect("the OS gives the cores of this process")
+}
+
+pub(crate) fn config(name: &str) -> Config {
+    Config {
+        name: name.into(),
+        core: None,
+    }
+}
+
+pub(crate) fn threads() -> Threads {
+    os::threads().expect("the OS gives the cores of this process")
 }
 
 pub(crate) fn panicked(name: &str) -> Result<(), Panicked> {

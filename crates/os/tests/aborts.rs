@@ -42,22 +42,10 @@ fn assert_aborts(child: impl FnOnce()) {
 mod shards {
     use std::future::pending;
 
-    use env::shards::{Config, Shards};
     use env::tasks::Tasks;
 
     use super::assert_aborts;
-    use crate::panics::{Armed, Bomb, assert_joins, panicked};
-
-    fn shards() -> Shards {
-        os::shards().expect("the OS gives the cores of this process")
-    }
-
-    fn config(name: &str) -> Config {
-        Config {
-            name: name.into(),
-            core: None,
-        }
-    }
+    use crate::panics::{Armed, Bomb, assert_joins, config, panicked, shards};
 
     #[test]
     fn a_panic_in_the_poll_and_then_the_drop_of_a_tokio_task_aborts_the_process() {
@@ -105,14 +93,8 @@ mod shards {
 mod threads {
     use std::future::pending;
 
-    use env::threads::Threads;
-
     use super::assert_aborts;
-    use crate::panics::{Armed, Bomb, assert_joins, panicked};
-
-    fn threads() -> Threads {
-        os::threads().expect("the OS gives the cores of this process")
-    }
+    use crate::panics::{Armed, Bomb, assert_joins, panicked, threads};
 
     #[test]
     fn a_panic_in_the_poll_and_then_the_drop_of_a_tokio_task_aborts_the_process() {
