@@ -48,9 +48,10 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If the port is taken, or if open62541 refuses the server or a step of its
-    /// close. A panic of the start or of the close leaks the manager and the server
-    /// that it made by then, and a panic of the close replaces a panic of `body`.
+    /// If the port is taken, or if open62541 refuses the server, its Double, a run of
+    /// its loop, or a step of its close. A panic other than one of `body` leaks the
+    /// manager and the server that it made by then, and a panic of the close replaces
+    /// a panic of `body`.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
