@@ -3770,7 +3770,10 @@ mod tests {
                 }
                 let draft = draft_value(&writer, writer.now().nanos(), sample, value);
                 let written = writer.write(Label::Path(Path::Live), draft);
-                let written = written.map(<[_]>::len);
+                let applied = |outcomes: &[_]| {
+                    matches!(outcomes, [hub::home::Outcome::Applied { .. }])
+                };
+                let written = written.map(applied);
                 let failed = written.is_err();
                 got.lock().expect("no panic").push(written);
                 if failed {
@@ -3785,7 +3788,7 @@ mod tests {
         );
         read.end.expect("ok");
         let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
-        assert_eq!(read.got, [Err(removed), Ok(1)]);
+        assert_eq!(read.got, [Err(removed), Ok(true)]);
         assert_eq!(
             states(&read.statuses),
             [
