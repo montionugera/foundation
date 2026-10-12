@@ -81,7 +81,7 @@ pub(crate) struct Writes {
     /// The status index that it implies.
     index: Name,
     /// The status data channels that it implies, by name.
-    data: Vec<(Name, Kind<Name>)>,
+    data: Vec<(Name, Data<Name>)>,
     /// The span of the connector's label.
     label: Option<Span>,
 }
@@ -89,7 +89,8 @@ pub(crate) struct Writes {
 impl Writes {
     /// Each channel that it writes: those of its kind, then those it implies.
     pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
-        let implied = self.implied().map(|(name, _)| name);
+        let data = self.data.iter().map(|(name, _)| name);
+        let implied = std::iter::once(&self.index).chain(data);
         self.channels.iter().chain(implied)
     }
 
@@ -99,7 +100,10 @@ impl Writes {
             error: None,
             control: None,
         };
-        let data = self.data.iter().map(|(name, kind)| (name, kind.clone()));
+        let data = self
+            .data
+            .iter()
+            .map(|(name, data)| (name, Kind::Data(data.clone())));
         std::iter::once((&self.index, index)).chain(data)
     }
 
@@ -138,7 +142,7 @@ pub(crate) fn writes(
     let data = status.into_iter().map(|(name, sample)| {
         let data = Data::new(time.clone(), None, DataType::Sample(sample), None);
         let data = data.expect("invariant: a status channel has no unit");
-        (name, Kind::Data(data))
+        (name, data)
     });
     let data = data.collect();
     Ok(Writes {
