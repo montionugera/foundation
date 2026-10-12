@@ -435,6 +435,20 @@ mod tests {
     }
 
     #[test]
+    fn the_last_task_of_a_group_made_on_another_group_wakes_each_wait() {
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        inner.tasks().spawn(std::future::pending());
+        let flags = [Arc::new(Flag::default()), Arc::new(Flag::default())];
+        let mut waits = [outer.ended(), inner.ended()];
+        for (ended, flag) in waits.iter_mut().zip(&flags) {
+            assert_eq!(poll(ended, &Waker::from(Arc::clone(flag))), Poll::Pending);
+        }
+        kept.drop_task(0);
+        assert!(flags.iter().all(|flag| flag.woken()));
+    }
+
+    #[test]
     fn a_panic_in_a_wake_of_an_inner_group_leaves_the_outer_count_right() {
         struct Panics;
         impl Wake for Panics {
