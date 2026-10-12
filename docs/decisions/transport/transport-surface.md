@@ -34,3 +34,6 @@
   `transport` exports no `Ended` of its own. The carrier's task spawns through one
   `env::tasks::Group`. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
   https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454.
+  Supersedes the `pub struct Ended` of
+  https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072912165
+  (`laptop.architect`, 2026-10-09T02:19:10Z).
