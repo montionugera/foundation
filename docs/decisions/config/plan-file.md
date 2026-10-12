@@ -79,7 +79,9 @@
   table refuses in the kind and config of each connector, `config.duplicate-name`, and
   `config.subject-is-connector`; then `config.implied-channel` for each status channel
   of a connector that the definitions lack or hold as another channel (STATUS
-  PLACEMENT); then `config.unplaced`, `config.connector-home`,
+  PLACEMENT; `laptop.architect-2`, 2026-10-12T21:39:19Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350); then
+  `config.unplaced`, `config.connector-home`,
   `config.split-placement`, `config.writer-nodes`, and `config.unknown-node`.
   `spec::access::Policy::new` refuses an empty `allow`, so `Plan::decode` refuses it.
   The `ops` apply calls `check` after `definitions` and before `Mesh::apply`, with the
