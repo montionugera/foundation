@@ -89,9 +89,13 @@ pub(crate) struct Writes {
 impl Writes {
     /// Each channel that it writes: those of its kind, then those it implies.
     pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
+        self.channels.iter().chain(self.implied_names())
+    }
+
+    /// Each channel that it implies: the status index, then the data.
+    fn implied_names(&self) -> impl Iterator<Item = &Name> {
         let data = self.data.iter().map(|(name, _)| name);
-        let implied = std::iter::once(&self.index).chain(data);
-        self.channels.iter().chain(implied)
+        std::iter::once(&self.index).chain(data)
     }
 
     /// Each channel that it implies, with its kind: the status index, then the data.
@@ -194,7 +198,7 @@ pub(crate) fn imply(found: &mut Found<'_>) {
 pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic> {
     let mut implied = BTreeMap::new();
     for (connector, writes) in writes {
-        for (channel, _) in writes.implied() {
+        for channel in writes.implied_names() {
             let lower = channel.as_str().to_ascii_lowercase();
             let channel = Implied {
                 connector,
