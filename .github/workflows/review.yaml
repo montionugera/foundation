@@ -82,8 +82,9 @@ jobs:
             -f description="$description" \
             -f target_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
       # A run that fails or ends before the post above would leave `pending`, which
-      # holds a queue group until its timeout. On a PR, a cancelled run has a newer run
-      # that posts to the same head.
+      # holds a queue group until its timeout. On a PR, a run that a newer run cancels
+      # leaves the status to that run, and a run that hangs or that a person cancels
+      # leaves `pending` until a new run.
       - if: >-
           env.TARGET != '' &&
           (failure() || (cancelled() && github.event_name == 'merge_group'))
