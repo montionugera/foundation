@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use access::Rules;
 use serde::de::{self, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
-use spec::definition::Kind;
+use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
@@ -28,9 +28,10 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
 /// for an action that no access policy gives `subject` and for a request that names
 /// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// also needs `admin` on the key of each definition other than a channel or a
-/// connector that the plan adds, changes, or removes. It gives a home only to an index
-/// on which `subject` has `apply`, and drops each other home with no error.
+/// also needs `apply` on the channel at each edge of each channel that the plan adds
+/// or changes, and `admin` on the key of each definition other than a channel that the
+/// plan adds, changes, or removes. It gives a home only to an index on which `subject`
+/// has `apply`, and drops each other home with no error.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -285,13 +286,25 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
     check.names(Action::Apply, plan.changes.keys())?;
+    let edges = plan.changes.values().filter_map(|change| {
+        match &change.new.as_ref()?.definition {
+            config::Definition::Channel(kind) => Some(kind),
+            _ => None,
+        }
+    });
+    check.names(
+        Action::Apply,
+        edges.flat_map(|kind| kind.edges().map(|(_, to)| to)),
+    )?;
     // A policy governs its whole region, the keys of a subject decide who acts as it,
-    // and a region record makes a region, so `apply` on a subtree would reach each
-    // name of the region.
-    let governing = plan.changes.keys().filter(|name| {
-        [Kind::Channel, Kind::Connector]
-            .iter()
-            .all(|kind| kind.label(name).is_none())
+    // a region record makes a region, and a connector reaches channels by `select`,
+    // so `apply` on a subtree would reach each name of the region.
+    let governing = plan.changes.iter().filter_map(|(name, change)| {
+        let kind = match &change.new {
+            Some(entry) => Some(entry.definition.kind()),
+            None => spec.definitions().get(name).map(Definition::kind),
+        };
+        (kind != Some(Kind::Channel)).then_some(name)
     });
     check.names(Action::Admin, governing)?;
     // The homes list each placed index, so a home with no grant drops with no error.

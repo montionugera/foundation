@@ -434,6 +434,19 @@ fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
         assert_eq!(head["output"]["added"], 2, "{head}");
         assert_eq!(head["output"]["homes"], 1, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
+
+        // A removal of a channel needs `apply` alone.
+        let time = "channel \"site.time\" { kind = \"index\" }\n";
+        let files = [
+            ("people.hcl", &*people),
+            ("p.hcl", &placement),
+            ("t.hcl", time),
+        ];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let (head, _) = split(&reply);
+        assert_eq!(head["output"]["removed"], 1, "{head}");
+        assert_eq!(mesh.pointer().version, version + 2);
     });
 }
 
@@ -690,6 +703,81 @@ fn refuses_a_policy_of_a_subject_with_no_admin_on_its_key() {
             assert_eq!(head["output"]["added"], 1, "{head}");
             assert_eq!(mesh.pointer().version, version + 1);
         }
+    });
+}
+
+/// A yard on which `sam` has no grant: an index, two data channels on it, and a
+/// placement that homes each index on `edge`.
+const YARD: &str = "channel \"yard.time\" { kind = \"index\" }\nchannel \"yard.temp\" \
+                    {\n  data_type = \"f64\"\n  index = \"yard.time\"\n}\nchannel \
+                    \"yard.ctl\" {\n  data_type = \"f64\"\n  index = \
+                    \"yard.time\"\n}\nplacement \"yard.home\" {\n  select = \"**\"\n  \
+                    home = \"edge\"\n}\n";
+
+#[test]
+fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people), ("yard.hcl", YARD)]).await;
+        let version = mesh.pointer().version;
+        // The connector writes `yard.temp`, on which `sam` has no grant.
+        let plc = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                   read \"yard.temp\" { node_id = \"x\" }\n}\n";
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", plc)];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let expected = denied("sam", "admin", "`site.plc`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+
+        let admin =
+            people.replace("allow = [plan, apply]", "allow = [plan, apply, admin]");
+        applied(&node, &[("people.hcl", &admin), ("yard.hcl", YARD)]).await;
+        let version = mesh.pointer().version;
+        let files = [("people.hcl", &*admin), ("yard.hcl", YARD), ("p.hcl", plc)];
+        let plan = planned(&node, &files).await;
+        let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+        let (head, _) = split(&reply);
+        // The connector and its six status channels.
+        assert_eq!(head["output"]["added"], 7, "{head}");
+        assert_eq!(mesh.pointer().version, version + 1);
+    });
+}
+
+#[test]
+fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people), ("yard.hcl", YARD)]).await;
+        let version = mesh.pointer().version;
+        let x = "channel \"site.x\" {\n  data_type = \"f64\"\n  index = \
+                 \"yard.time\"\n}\n";
+        let time = "channel \"site.time\" {\n  kind = \"index\"\n  control = \
+                    \"yard.ctl\"\n}\n";
+        // `sam` has no `admin` on the policy, and the edge check comes first.
+        let wipe = format!(
+            "{time}retention \"site.wipe\" {{\n  select = \"site.*\"\n  keep = \
+             \"0s\"\n}}\n"
+        );
+        let cases = [
+            (x, "`yard.time`"),
+            (time, "`yard.ctl`"),
+            (&*wipe, "`yard.ctl`"),
+        ];
+        for (text, on) in cases {
+            let files = [
+                ("people.hcl", &*people),
+                ("yard.hcl", YARD),
+                ("s.hcl", text),
+            ];
+            let plan = planned(&node, &files).await;
+            let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
+            let expected = denied("sam", "apply", on);
+            assert_eq!(split(&reply), (expected, &b""[..]), "{text}");
+        }
+        assert_eq!(mesh.pointer().version, version);
     });
 }
 

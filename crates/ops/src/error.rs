@@ -74,7 +74,7 @@ pub(crate) enum Error {
 }
 
 /// An action that an operation on a node needs: the action of its name, and `Admin`
-/// on a changed key of a definition other than a channel or a connector.
+/// on a changed key of a definition other than a channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Plan,
