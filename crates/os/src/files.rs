@@ -266,7 +266,8 @@ impl Queue {
 
 /// The descriptor of an open file. Its drop releases the lock of a write open before
 /// it closes the descriptor: a `flock` lock lasts until each copy of the descriptor
-/// closes, and a child of the process holds a copy until its exec.
+/// closes, and a child of the process holds a copy until its exec. An unlock that the
+/// filesystem fails, as NFS or a FUSE daemon can, leaves the lock to the close.
 struct Opened {
     fd: OwnedFd,
     locked: bool,
@@ -275,7 +276,8 @@ struct Opened {
 impl Drop for Opened {
     fn drop(&mut self) {
         if self.locked
-            && let Err(e) = fs::flock(&self.fd, FlockOperation::Unlock)
+            && let Err(e @ (Errno::BADF | Errno::INVAL)) =
+                fs::flock(&self.fd, FlockOperation::Unlock)
         {
             panic!("invariant: the lock of {:?} is released: {e:?}", self.fd);
         }
