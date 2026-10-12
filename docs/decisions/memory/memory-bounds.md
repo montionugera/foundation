@@ -21,9 +21,9 @@
   sizes given back stay given back, and a later allocation may succeed (#475, #542).
   Outside the pool budget, each QUIC connection holds on the heap: the sent data that
   noq keeps (STREAM WIRE says how long), at most `window_bytes` (`send_window`) plus,
-  for each stream, the copied stretch at its front, which noq frees only once the peer
-  acknowledges each byte of it, or the stream resets, at most the peer's
-  `message_bytes_max`; the rest of each copied stretch that noq has not taken, at most
+  for each stream, the copied stretch at its front, at most the peer's
+  `message_bytes_max`, which noq frees only once the peer acknowledges each byte of it,
+  or the stream resets; the rest of each copied stretch that noq has not taken, at most
   the peer's window (the send budget); the stretch buffer of `send_parts`, under twice
   the peer's `message_bytes_max`; and the parts list of each sending stream, 24 bytes
   for each part of its capacity, at least 4 parts once it keeps one, which grows by
@@ -38,6 +38,11 @@
   supersedes the parts-list clause of 6102910746; the copied stretch at the front of
   each stream: `laptop.architect-2`, #2439, 2026-10-12T19:46:48Z:
   https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131444028, which
-  supersedes the bound of the sent data in 6064411384). A stream ends at the last of its
-  sends, at a peer stop, at a cancel that resets it, and at the close of its connection
-  by either side (the same 6103308877).
+  supersedes the bound of the sent data in 6064411384, and its free at a reset:
+  `laptop.architect`, #2439, 2026-10-12T19:49:55Z:
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131491757). A stream
+  ends at the last of its sends, at a peer stop, at a cancel that resets it, and at the
+  close of its connection by either side (the same 6103308877). Limits: the heap of
+  noq's copies of short writes is more than these bytes: each kept copy keeps its whole
+  allocation, and the queue slot and the shared header of each copy are not counted
+  (#2483).
