@@ -42,7 +42,7 @@ fn a_write_as_root_takes_no_owner_group_or_bits_of_the_file_it_replaces() {
 
 /// A directory with the append-only attribute takes new files and refuses each
 /// remove. The size limit is a value of the process, so the write runs alone in a
-/// child, which a limit of its own marks.
+/// child that ignores `SIGXFSZ`. The limit of 1 GiB of that child refuses no write.
 #[test]
 fn a_write_past_the_size_limit_gives_the_error_of_a_remove_that_fails() {
     fsize::under(1 << 30, || {
