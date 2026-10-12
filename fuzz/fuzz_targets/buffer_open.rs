@@ -924,8 +924,7 @@ fn tails(buffer: &Buffer, slots: &[Slot]) -> Vec<Tail> {
 }
 
 /// Applies the edits to the ring file. Gives the room an open then finds, and
-/// whether a carry record on the way from the tail of the header block that the open
-/// reads continues the chain.
+/// whether the open takes a carry record ([`carries`]).
 async fn edit(
     file: &File,
     pool: &Rc<Pool>,
@@ -996,8 +995,7 @@ fn carries(image: &[u8]) -> bool {
 /// edit can put a tail at `u64::MAX`, a precondition of `append`, so such a ring is
 /// not checked.
 ///
-/// `carried` says whether a block of the ring holds a carry record that continues
-/// the chain on the way from the tail of the header block that the open reads.
+/// `carried` says whether the open takes a carry record of the ring ([`carries`]).
 async fn check(
     shard: &Shard,
     input: &Input,
