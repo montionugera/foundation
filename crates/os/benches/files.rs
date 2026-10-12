@@ -1,5 +1,6 @@
-//! The cost of a call of an `os::files` handle on the real disk, and of a write open
-//! and its close, which takes and releases the lock of the file.
+//! The cost of a call of an `os::files` handle on the real disk, of a write open and
+//! its close, which take and release the lock of the file, and of a read open and its
+//! close, which take no lock.
 
 use std::path::{Path, PathBuf};
 
