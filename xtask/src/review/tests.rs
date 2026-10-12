@@ -3219,6 +3219,13 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
             format!("(https://x.io/?{})", at("a/b/pull/13#issuecomment-2")),
             at("a/b/pull/13"),
         ),
+        (
+            format!("#12 ({OK}), {}", at("gh-1/b/issues")),
+            "gh-1".to_string(),
+        ),
+        (format!("#12 ({OK}), #13_"), "#13".to_string()),
+        (format!("#12 ({OK}), #13abc"), "#13".to_string()),
+        (format!("#12 ({OK}), `&#8203;`"), "#8203".to_string()),
         (format!("#12{OK} not in a risk crate"), "#12".to_string()),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), no_ok(&issue), "{line}");
@@ -3234,6 +3241,7 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         format!("#12 ({OK}), 1GH-13"),
         format!("#12 ({OK}), _GH-13"),
         format!("#12 ({OK}), x_GH-13"),
+        "synnaxlabs/foundation/issues/13".to_string(),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
     }
