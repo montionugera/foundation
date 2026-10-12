@@ -135,28 +135,31 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     assert_eq!(mode(&path), 0o600);
 }
 
+/// The `posix_acl_xattr` form of `entries`: a version, then a tag, the bits, and a user
+/// for each.
+#[cfg(target_os = "linux")]
+fn access_list(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+    let mut bytes = 2u32.to_le_bytes().to_vec();
+    for (tag, bits, user) in entries {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend(bits.to_le_bytes());
+        bytes.extend(user.to_le_bytes());
+    }
+    bytes
+}
+
 /// `os` sets no access control list.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files() {
     use rustix::fs::{XattrFlags, getxattr, setxattr};
-    // The `posix_acl_xattr` form: a version, then a tag, the bits, and a user.
-    let list = |entries: &[(u16, u16, u32)]| {
-        let mut bytes = 2u32.to_le_bytes().to_vec();
-        for (tag, bits, user) in entries {
-            bytes.extend(tag.to_le_bytes());
-            bytes.extend(bits.to_le_bytes());
-            bytes.extend(user.to_le_bytes());
-        }
-        bytes
-    };
     let (owner, named, group, mask, other) = (0x01, 0x02, 0x04, 0x10, 0x20);
     let (none, read, read_write, all, unnamed) = (0, 4, 6, 7, u32::MAX);
     let scratch = Scratch::new();
     let path = scratch.0.join("plant.hcl");
     fs::write(&path, b"old").unwrap();
     let access = "system.posix_acl_access";
-    let old = list(&[
+    let old = access_list(&[
         (owner, read_write, unnamed),
         (named, read, 4343),
         (group, none, unnamed),
@@ -164,7 +167,18 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
         (other, none, unnamed),
     ]);
     setxattr(&path, access, &old, XattrFlags::empty()).unwrap();
-    let given = list(&[
+    // A list of only the mode bits is stored as no list.
+    let bare = scratch.0.join("bare.hcl");
+    fs::write(&bare, b"old").unwrap();
+    let mode_only = access_list(&[
+        (owner, read_write, unnamed),
+        (group, none, unnamed),
+        (other, none, unnamed),
+    ]);
+    setxattr(&bare, access, &mode_only, XattrFlags::empty()).unwrap();
+    let mut taken = [0; 64];
+    assert_eq!(getxattr(&bare, access, &mut taken[..]), Err(Errno::NODATA));
+    let given = access_list(&[
         (owner, all, unnamed),
         (named, read_write, 4242),
         (group, read, unnamed),
@@ -173,15 +187,14 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     ]);
     let default = "system.posix_acl_default";
     setxattr(&scratch.0, default, &given, XattrFlags::empty()).unwrap();
-    let expected = list(&[
+    let expected = access_list(&[
         (owner, read_write, unnamed),
         (named, read_write, 4242),
         (group, read, unnamed),
         (mask, none, unnamed),
         (other, none, unnamed),
     ]);
-    let mut taken = [0; 64];
-    for path in [path, scratch.0.join("site.hcl")] {
+    for path in [path, bare, scratch.0.join("site.hcl")] {
         os::paths().write(&path, b"new").unwrap();
         let len = getxattr(&path, access, &mut taken[..]).unwrap();
         assert_eq!(taken[..len], expected);
@@ -193,7 +206,7 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     #[expect(clippy::disallowed_methods, reason = "the test makes a file as a tool")]
     open.open(&tool).unwrap();
     let len = getxattr(&tool, access, &mut taken[..]).unwrap();
-    let expected = list(&[
+    let expected = access_list(&[
         (owner, read_write, unnamed),
         (named, read_write, 4242),
         (group, read, unnamed),
