@@ -192,6 +192,11 @@ impl<C> Context<C> {
     /// Opens a writer session on `channels` as this connector: the session's subject
     /// is the connector's name.
     ///
+    /// When a write gives [`hub::writer::Failure::Removed`], return [`Error::Retry`]:
+    /// the next run opens its writer by name, so a channel that the spec defined again
+    /// with a new key is written. The frame of that write is lost, and so is each
+    /// sample of the device until the next run opens its writer.
+    ///
     /// # Errors
     ///
     /// [`Error::Config`] with one diagnostic and no span, for a writer that only a
@@ -199,11 +204,6 @@ impl<C> Context<C> {
     /// `connector.no-channel` for no name, and `connector.lease` for a lease that is
     /// not longer than zero. [`Error::Retry`] with the hub's error when the home of an
     /// index is another node, or the mesh stopped.
-    ///
-    /// When a write gives [`hub::writer::Failure::Removed`], return [`Error::Retry`]:
-    /// the next run opens its writer by name, so a channel that the spec defined again
-    /// with a new key is written. The frame of that write is lost, and so is each
-    /// sample of the device until the next run opens its writer.
     ///
     /// # Panics
     ///
