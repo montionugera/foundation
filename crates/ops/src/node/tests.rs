@@ -1,42 +1,21 @@
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use connector::kind::Table;
 use document::diagnostic::{Code, Diagnostic};
 use document::{Position, Span};
 use mesh::Mesh;
 use serde_json::{Value, json};
-use types::channel::Key;
 
-use super::Node;
 use crate::apply::{Applied, Effect};
-use crate::common::{NODE, PLANT, Reader, fail_sync, front_ends, placed_site, solo};
+use crate::common::{
+    NODE, PLANT, create_node, create_node_reading, fail_sync, front_ends, kinds,
+    placed_site, solo,
+};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 use crate::plan::{self, Counts};
 use crate::used;
 
-/// The node of `mesh`, whose channel keys count from 1.
-fn create_node(mesh: Mesh) -> Node {
-    create_node_reading(mesh, front_ends())
-}
-
-/// The node of `mesh` that reads with `front_ends`, whose channel keys count from 1.
-fn create_node_reading(mesh: Mesh, front_ends: FrontEnds) -> Node {
-    let made = Cell::new(0);
-    let key = move || {
-        made.set(made.get() + 1);
-        Key::from_u128(made.get())
-    };
-    Node::new(mesh, key, front_ends, Arc::new(kinds()))
-}
-
 const REFUSED: Code = Code::new("test.refused");
-
-fn kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
-}
 
 /// The JSON output of `plan::plan` of `files` on `mesh`.
 async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> Value {

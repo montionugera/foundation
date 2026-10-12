@@ -22,8 +22,8 @@ use types::name::{Name, Prefix};
 
 use super::{Applied, Effect, apply};
 use crate::common::{
-    ADMIN, NODE, PLANT, Reader, fail_sync, files, founded, front_ends, keys, name,
-    placed_site, solo,
+    ADMIN, NODE, PLANT, Reader, fail_sync, files, founded, front_ends, keys, kinds,
+    name, placed_site, solo,
 };
 use crate::error::Error;
 use crate::plan::{self, Counts, Output, plan};
@@ -49,11 +49,6 @@ async fn plan_among(
         &kinds(),
     )
     .expect("a plan")
-}
-
-/// The kinds of the connectors of the fixtures.
-fn kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
 }
 
 fn path() -> &'static Path {

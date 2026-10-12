@@ -1,13 +1,15 @@
 //! Fixtures that the tests of `plan`, `apply`, and `Node` share.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use connector::cancel;
-use connector::kind::{self, Channels, Context};
+use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::files::{self, Operation};
@@ -26,6 +28,7 @@ use types::name::{Name, Prefix};
 use types::node::{self, SealKey};
 use types::time::Span;
 
+use crate::Node;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
 pub(crate) const PLANT: &str =
@@ -80,6 +83,26 @@ pub(crate) fn front_ends() -> FrontEnds {
             read: config_hcl::read,
         },
     )
+}
+
+/// The kinds of the connectors of the fixtures.
+pub(crate) fn kinds() -> Table {
+    Table::new().with("influx", Reader).with("opcua", Reader)
+}
+
+/// The node of `mesh`, whose channel keys count from 1.
+pub(crate) fn create_node(mesh: Mesh) -> Node {
+    create_node_reading(mesh, front_ends())
+}
+
+/// The node of `mesh` that reads with `front_ends`, whose channel keys count from 1.
+pub(crate) fn create_node_reading(mesh: Mesh, front_ends: FrontEnds) -> Node {
+    let made = Cell::new(0);
+    let key = move || {
+        made.set(made.get() + 1);
+        Key::from_u128(made.get())
+    };
+    Node::new(mesh, key, front_ends, Arc::new(kinds()))
 }
 
 pub(crate) fn name(text: &str) -> Name {
