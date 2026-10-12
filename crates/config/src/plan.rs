@@ -103,7 +103,9 @@ pub fn plan(
 ///    `config.implied-channel` for each connector whose kind writes a status channel,
 ///    `config.duplicate-name`, whose earlier name is the first in name order, and
 ///    `config.subject-is-connector`.
-/// 3. Each problem of the rules of [`plan`] from `config.unplaced` to
+/// 3. `config.implied-channel` for each status channel of a connector that
+///    `definitions` lack or hold as another channel.
+/// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
     definitions: &BTreeMap<Name, definition::Definition>,
@@ -138,6 +140,10 @@ fn problems(
     diagnostics.extend(connector::implied_writes(&writes));
     diagnostics.extend(duplicate::in_definitions(definitions));
     diagnostics.extend(subject::not_connectors(definitions));
+    if !diagnostics.is_empty() {
+        return diagnostics;
+    }
+    diagnostics.extend(connector::implied_definitions(definitions, &writes));
     if !diagnostics.is_empty() {
         return diagnostics;
     }

@@ -210,6 +210,47 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
     diagnostics
 }
 
+/// The `config.implied-channel` diagnostic of each channel that a connector of
+/// `writes` implies and that `definitions`, the definitions of a spec, lack or hold
+/// as another channel.
+pub(crate) fn implied_definitions(
+    definitions: &BTreeMap<Name, definition::Definition>,
+    writes: &BTreeMap<Name, Writes>,
+) -> Vec<Diagnostic> {
+    let names: BTreeMap<_, _> = definitions
+        .iter()
+        .filter_map(|(name, definition)| match definition {
+            definition::Definition::Channel(channel) => Some((channel.key, name)),
+            _ => None,
+        })
+        .collect();
+    let mut diagnostics = Vec::new();
+    for (connector, writes) in writes {
+        for (channel, kind) in &writes.implied {
+            let held = match definitions.get(channel) {
+                Some(definition::Definition::Channel(stored)) => {
+                    let name = |key| names.get(&key).map(|name| Name::clone(name));
+                    stored.kind.clone().map(name) == kind.clone().map(Some)
+                }
+                _ => false,
+            };
+            if !held {
+                let implied = Implied {
+                    connector,
+                    channel,
+                    label: writes.label,
+                };
+                diagnostics.push(implied.refuse(
+                    None,
+                    "the spec must hold it as the connector gives it",
+                    "Make the plan file with `plan`".into(),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
 /// A channel that a connector implies.
 struct Implied<'a> {
     connector: &'a Name,
