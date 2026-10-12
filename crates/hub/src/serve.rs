@@ -462,7 +462,6 @@ struct Opening<'s> {
 
 impl<'s> Opening<'s> {
     fn new(state: &'s Rc<RefCell<State>>) -> Self {
-        state.borrow_mut().catch_up();
         Self {
             state,
             pending: Pending::new(state, Vec::new()),
