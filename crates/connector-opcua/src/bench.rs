@@ -753,8 +753,9 @@ mod tests {
         });
     }
 
-    /// The connect takes 3.5 ms on the default link. The node pauses for 61 s at 3.4 ms,
-    /// while the last answer is in flight, so the connect ends after 1m of `clock`.
+    /// The connect takes 3.5 ms on the default link. The node pauses for 61 s at
+    /// 3.4 ms, while the last answer is in flight, so the connect ends after 1m of
+    /// `clock`.
     #[test]
     #[should_panic(expected = "clients connected in 1m")]
     fn a_scope_whose_connect_ends_after_its_deadline_in_a_pause_panics() {
