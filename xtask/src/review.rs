@@ -657,10 +657,15 @@ fn blank(line: &str) -> bool {
     line.chars().all(|c| c == IMAGE || c == ' ')
 }
 
+/// The character that [`texts`] puts before a `GH-` that starts a text node or follows
+/// an ignorable character, so that [`issue`] reads it as an issue. No text of a line
+/// holds it, since it is [`ignorable`].
+const BREAK: char = '\u{FFF7}';
+
 /// `line`, a line of [`texts`], as a [`Round`] and a problem hold it: each image is
-/// `![]`, since [`IMAGE`] shows as nothing.
+/// `![]`, since [`IMAGE`] shows as nothing, and with no [`BREAK`].
 fn quoted(line: &str) -> String {
-    line.replace(IMAGE, "![]")
+    line.replace(IMAGE, "![]").replace(BREAK, "")
 }
 
 /// What the end lines `paragraph` of round `number` state. The paragraph must be the
@@ -737,7 +742,7 @@ fn issues(value: &str) -> impl Iterator<Item = Range<usize>> {
 /// The end of the issue that starts at `at` in `value`: `#`, or `GH-` in each ASCII
 /// case, and the digits after it, or the URL of an issue or a PR ([`numbered`]). A
 /// `GH-` starts `value` or follows a character that is no ASCII letter, no ASCII digit,
-/// and no `_`, as GitHub reads it. The start of a comment link ([`link`]) is such a URL
+/// and no `_`, such as a [`BREAK`], as GitHub reads it. The start of a comment link ([`link`]) is such a URL
 /// too, so [`issues`] asks `link` first.
 fn issue(value: &str, at: usize) -> Option<usize> {
     let text = &value[at..];
@@ -1108,8 +1113,8 @@ fn same(a: &str, b: &str) -> bool {
         .any(|n| matches!(n.data.borrow().value, NodeValue::FootnoteReference(_)))
 }
 
-/// The lines of text of `paragraph` as GitHub shows them: its text and code spans with
-/// no invisible character (Unicode default ignorable), each link as its text and not
+/// The lines of text of `paragraph` as GitHub shows them: its text and code spans
+/// ([`shown`]), each link as its text and not
 /// its target, each footnote reference as its number, each image as [`IMAGE`] in
 /// place of its text and line breaks, and each run of white space as one space,
 /// trimmed. A character that looks like another stays itself.
@@ -1118,8 +1123,6 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
     let mut fresh = true;
     let image =
         |node: &'n AstNode<'n>| matches!(node.data.borrow().value, NodeValue::Image(_));
-    let shown =
-        |text: &str| text.chars().filter(|&c| !ignorable(c)).collect::<String>();
     for span in paragraph.descendants().skip(1) {
         if span.ancestors().skip(1).any(image) {
             continue;
@@ -1148,6 +1151,23 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
         .iter()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
+}
+
+/// `text`, a text node or a code span, as GitHub shows it: with no invisible character
+/// (Unicode default ignorable), and with [`BREAK`] before each `GH-`, in each ASCII
+/// case, that starts it or follows an invisible character.
+fn shown(text: &str) -> String {
+    let mut shown = String::new();
+    for part in text.split(ignorable) {
+        if part
+            .get(..3)
+            .is_some_and(|gh| gh.eq_ignore_ascii_case("gh-"))
+        {
+            shown.push(BREAK);
+        }
+        shown.push_str(part);
+    }
+    shown
 }
 
 /// Whether `c` is a Unicode default ignorable code point, which shows as nothing.

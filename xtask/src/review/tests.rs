@@ -3226,6 +3226,7 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         (format!("#12 ({OK}), #13_"), "#13".to_string()),
         (format!("#12 ({OK}), #13abc"), "#13".to_string()),
         (format!("#12 ({OK}), `&#8203;`"), "#8203".to_string()),
+        (format!("#12 ({OK}), @GH-13"), "GH-13".to_string()),
         (format!("#12{OK} not in a risk crate"), "#12".to_string()),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), no_ok(&issue), "{line}");
@@ -3244,6 +3245,31 @@ fn a_deferred_issue_is_a_number_sign_a_gh_name_or_the_url_of_an_issue() {
         "synnaxlabs/foundation/issues/13".to_string(),
     ] {
         assert_eq!(risk(vec![deferred(&line)]), Vec::<String>::new(), "{line}");
+    }
+}
+
+#[test]
+fn a_gh_name_after_a_mark_or_an_ignorable_character_is_an_issue() {
+    for name in [
+        "**x**GH-13",
+        "*x*GH-13",
+        "`x`GH-13",
+        "~~x~~GH-13",
+        "[x](https://x.io)GH-13",
+        "x&#8203;GH-13",
+        "x\u{200B}GH-13",
+        "x\u{AD}GH-13",
+    ] {
+        let line = format!("#12 ({OK}), {name}");
+        assert_eq!(risk(vec![deferred(&line)]), no_ok("GH-13"), "{line:?}");
+    }
+    for name in ["xGH-13", "**xGH-13**"] {
+        let line = format!("#12 ({OK}), {name}");
+        assert_eq!(
+            risk(vec![deferred(&line)]),
+            Vec::<String>::new(),
+            "{line:?}"
+        );
     }
 }
 
