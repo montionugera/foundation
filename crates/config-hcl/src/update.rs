@@ -757,26 +757,6 @@ mod tests {
             .zip(want.chars())
             .find(|((_, a), b)| a != b)
             .map_or(out.len().min(want.len()), |((i, _), _)| i);
-        let Some((marker, body)) = want
-            .get(start..)
-            .and_then(|rest| rest.strip_prefix("<<"))
-            .and_then(|h| h.split_once('\n'))
-        else {
-            return false;
-        };
-        let lines = format!("\n{body}");
-        let closer = format!("\n{marker}");
-        let Some(tail) = lines.match_indices(&closer).find_map(|(i, _)| {
-            let tail = lines.get(i..)?.strip_prefix(&closer)?;
-            tail.split('\n').next()?.trim().is_empty().then_some(tail)
-        }) else {
-            return false;
-        };
-        let tail = tail
-            .strip_suffix("\r\n")
-            .or_else(|| tail.strip_suffix('\n'))
-            .filter(|t| !t.contains('\n'))
-            .unwrap_or(tail);
         let values = |text: &str| {
             let document = read(Source(0), text).ok()?;
             let spans = document.attributes.iter().filter_map(|attribute| {
@@ -787,25 +767,39 @@ mod tests {
             });
             Some(spans.collect::<Vec<_>>())
         };
-        let end = text.trim_end().len();
+        let ended = text.trim_end().len();
         let Some(key) = values(text)
             .into_iter()
             .flatten()
-            .find_map(|(key, _, last)| (last == end).then_some(key))
+            .find_map(|(key, _, last)| (last == ended).then_some(key))
         else {
             return false;
         };
-        values(out)
-            .into_iter()
-            .flatten()
-            .find_map(|(other, first, last)| {
-                (other == key && first == start).then_some(last)
-            })
-            .is_some_and(|last| {
-                out.get(start..last)
-                    .is_some_and(|value| !value.contains('\n'))
-                    && out.get(last..) == Some(tail)
-            })
+        // The end of the value of `key` that starts at `start`.
+        let end = |text: &str| {
+            values(text)
+                .into_iter()
+                .flatten()
+                .find_map(|(other, first, last)| {
+                    (other == key && first == start).then_some(last)
+                })
+        };
+        let (Some(last), Some(closer)) = (end(out), end(want)) else {
+            return false;
+        };
+        // A heredoc's span ends after its marker and the spaces after it.
+        let heredoc = want.get(start..closer).unwrap_or_default();
+        let spaces = heredoc.trim_end_matches(lex::space).len();
+        let spaces = heredoc.get(spaces..).unwrap_or_default();
+        let rest = match want.get(closer..) {
+            Some("\n" | "\r\n") => "",
+            rest => rest.unwrap_or_default(),
+        };
+        heredoc.starts_with("<<")
+            && out
+                .get(start..last)
+                .is_some_and(|value| !value.contains('\n'))
+            && out.get(last..) == Some(&format!("{spaces}{rest}"))
     }
 
     proptest! {
@@ -1156,6 +1150,8 @@ mod tests {
             !quoted_at_end("a = 1", out, ended),
             "line end after the closer"
         );
+        let want = "a = 2\n";
+        assert!(!quoted_at_end("a = 1", "a = \"x\\n\"", want), "no heredoc");
         let want = "b {\na = 1\n}\nc = <<EOT\nx\nEOT\n";
         let out = "b {\na = 1\n}\nc = \"x\\n\"";
         assert!(
