@@ -28,8 +28,9 @@ impl Applied {
         }
     }
 
-    /// Keeps the pointer of `spec`, and gives whether it is not the one applied last.
-    pub(crate) fn moved(&mut self, spec: &::mesh::used::Spec) -> bool {
+    /// Keeps the pointer of `spec`, and gives whether it differs from the one kept
+    /// before.
+    pub(crate) fn advance(&mut self, spec: &::mesh::used::Spec) -> bool {
         let moved = self.pointer != spec.pointer;
         self.pointer = spec.pointer;
         moved
