@@ -118,18 +118,23 @@
   directory of a node that runs is `node.busy` with each `--listen` that goes to the
   bind, and such a start during the stop of that node never gets `node.port`, since the
   stop holds the lock until the port is free. A `--listen` that `node` refuses by its
-  value is `node.port` there too: `node` checks each value of its config before a shard
-  starts, so that start makes no file. A start whose port does not bind leaves the lock
-  file, the shard count, and the name in the data directory, and opens no buffer. Lost:
-  the bind before the claim, where one cause has two codes by the value of `--listen`;
-  the bind before the claim with its error kept until after the claim, which can report
-  a port that became free in between; the refusal of a value after the claim, which
-  starts the shards and leaves the lock file, the shard count, and the name in a new
-  data directory for a value that never serves. Decided by `laptop.architect-2`
+  value is `node.port` there too: `node` checks it before a shard starts, as it checks
+  the name and the bounds of the budgets that the doc of `Node::start` names, so that
+  start makes no file. A value of `node::Config::settings` that the transport refuses,
+  and a part of the pool budget that the buffer refuses, come after the claim (NODE
+  PORT, NODE SETTINGS). A start whose port does not bind leaves the lock file, the shard
+  count, and the name in the data directory, and opens no buffer. Lost: the bind before
+  the claim, where one cause has two codes by the value of `--listen`; the bind before
+  the claim with its error kept until after the claim, which can report a port that
+  became free in between; the refusal of such a `--listen` after the claim, which starts
+  the shards and leaves the lock file, the shard count, and the name in a new data
+  directory for a value that never serves. Decided by `laptop.architect-2`
   (2026-10-11T15:33:00Z,
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754; a value
   that `node` refuses, 2026-10-12T15:37:03Z:
-  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6127496580).
+  https://github.com/synnaxlabs/foundation/issues/2443#issuecomment-6127496580; the
+  checks before and after the claim, 2026-10-12T21:12:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2457#issuecomment-6132697370).
   Supersedes "is `node.busy` with each `--listen`" and "a start during the stop of that
   node never gets `node.port`" of
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754.
