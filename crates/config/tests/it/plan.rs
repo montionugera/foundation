@@ -1041,6 +1041,79 @@ fn check_refuses_a_status_channel_on_another_index() {
     );
 }
 
+/// The problems of `plan::check` on `counted` after `edit` of the kind of the
+/// status channel `channel`, with the key of `c.status.state`.
+fn edited(
+    channel: &str,
+    edit: impl FnOnce(&mut spec::channel::Kind<Key>, Key),
+) -> Vec<Problem> {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    let Some(Stored::Channel(state)) = definitions.get(&name("c.status.state")) else {
+        panic!("the status channel `c.status.state`");
+    };
+    let state = state.key;
+    let Some(Stored::Channel(stored)) = definitions.get_mut(&name(channel)) else {
+        panic!("the status channel `{channel}`");
+    };
+    edit(&mut stored.kind, state);
+    problems(
+        config::plan::check(&definitions, &members, &kinds()).map(|()| unreachable()),
+    )
+}
+
+/// `plan::check` refuses a status data channel with a unit.
+#[test]
+fn check_refuses_a_status_channel_with_a_unit() {
+    let found = edited("c.status.restarts", |kind, _| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let unit = Some(spec::unit::Unit::new("s").expect("a unit"));
+        let data_type = data.data_type().clone();
+        *data = Data::new(*data.index(), None, data_type, unit).expect("a number");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status data channel with a quality channel.
+#[test]
+fn check_refuses_a_status_channel_with_a_quality_channel() {
+    let found = edited("c.status.restarts", |kind, state| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let data_type = data.data_type().clone();
+        *data =
+            Data::new(*data.index(), Some(state), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status index with an error channel.
+#[test]
+fn check_refuses_a_status_index_with_an_error_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: Some(state),
+            control: None,
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
+/// `plan::check` refuses a status index with a control channel.
+#[test]
+fn check_refuses_a_status_index_with_a_control_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: None,
+            control: Some(state),
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
 /// An index at a status data name, with no other status channel, is refused at each
 /// status channel.
 #[test]
