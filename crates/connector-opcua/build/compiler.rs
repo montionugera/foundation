@@ -76,6 +76,8 @@ pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     }
     // `shim.c` builds its event loop on the copy's timer, which has no public header.
     shim.include(copy.join("arch/common"));
+    // A test compiles `shim.c` from its standard input, so `shim.h` is on the path.
+    shim.include(SRC);
     for source in sources.lines() {
         library.file(copy.join(source));
     }

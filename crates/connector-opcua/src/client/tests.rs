@@ -500,15 +500,11 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             let client = peer.connected().await;
             let outside = Reads::default();
             let mut request = 0;
-            let (namespace, number, name, length) = ffi::node(&VALUE);
             // SAFETY: the client lives, and `outside` outlives it.
             let status = Status(unsafe {
                 ffi::shim_client_read(
                     client.raw.as_ptr(),
-                    namespace,
-                    number,
-                    name,
-                    length,
+                    (&VALUE).into(),
                     answer,
                     std::ptr::from_ref(&outside).cast_mut().cast(),
                     &raw mut request,

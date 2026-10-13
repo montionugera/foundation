@@ -63,17 +63,9 @@ impl Server {
     ///
     /// If open62541 refuses the node.
     pub(crate) fn add_double(&self, node: &Node, value: f64) {
-        let (namespace, number, name, length) = ffi::node(node);
         // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_double(
-                self.raw(),
-                namespace,
-                number,
-                name,
-                length,
-                value,
-            )
+            ffi::test::shim_server_add_double(self.raw(), node.into(), value)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
@@ -85,17 +77,9 @@ impl Server {
     /// If open62541 refuses the node.
     #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
-        let (namespace, number, name, length) = ffi::node(node);
         // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_bytes(
-                self.raw(),
-                namespace,
-                number,
-                name,
-                length,
-                size,
-            )
+            ffi::test::shim_server_add_bytes(self.raw(), node.into(), size)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
