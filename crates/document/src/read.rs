@@ -1,7 +1,9 @@
 //! Readers for the values that kinds and `config` share, so a value reads the same in
 //! every block.
 
+use std::fmt;
 use std::slice;
+use std::str::FromStr;
 
 use types::name::{Error, Name, Selector};
 use types::{byte, time};
@@ -30,20 +32,34 @@ const REPEATED_BLOCK: Code = Code::new("document.repeated-block");
 /// A `document.bad-size` diagnostic at the value's span when the value is not a
 /// string, or when `byte::Size` refuses its text.
 pub fn size(value: &Value) -> Result<byte::Size, Diagnostic> {
-    let bad = |message: String, fix: String| {
-        Diagnostic::new(BAD_SIZE, value.span, message, fix)
-    };
+    parse(value, BAD_SIZE, "byte size", "200GiB", size_fix)
+}
+
+/// Reads `value` as a string that `T` reads. When the value is not a string, it gives a
+/// diagnostic with `code` that names `noun` and quotes `example`. When `T` refuses the
+/// text, it gives one with the fix that `fix` gives for the text and the error.
+fn parse<T>(
+    value: &Value,
+    code: Code,
+    noun: &str,
+    example: &str,
+    fix: impl FnOnce(&str, T::Err) -> String,
+) -> Result<T, Diagnostic>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
     let Kind::String(text) = &value.kind else {
-        return Err(bad(
-            format!("a byte size is a string, not {}", value.kind.noun()),
-            "Write a string such as \"200GiB\"".into(),
+        return Err(Diagnostic::new(
+            code,
+            value.span,
+            format!("a {noun} is a string, not {}", value.kind.noun()),
+            format!("Write a string such as {example:?}"),
         ));
     };
-    text.parse::<byte::Size>().map_err(|error| {
-        bad(
-            format!("cannot read the byte size {text:?}: {error}"),
-            size_fix(text, error),
-        )
+    text.parse().map_err(|error| {
+        let message = format!("cannot read the {noun} {text:?}: {error}");
+        Diagnostic::new(code, value.span, message, fix(text, error))
     })
 }
 
@@ -90,21 +106,8 @@ fn size_fix(text: &str, error: byte::Error) -> String {
 /// string or `time::Span` refuses its text, and a `document.negative-span`
 /// diagnostic there when the span is below zero.
 pub fn span(value: &Value) -> Result<time::Span, Diagnostic> {
-    let bad = |message: String, fix: String| {
-        Diagnostic::new(BAD_SPAN, value.span, message, fix)
-    };
-    let Kind::String(text) = &value.kind else {
-        return Err(bad(
-            format!("a span is a string, not {}", value.kind.noun()),
-            "Write a string such as \"3d\"".into(),
-        ));
-    };
-    let read = text.parse::<time::Span>().map_err(|error| {
-        bad(
-            format!("cannot read the span {text:?}: {error}"),
-            span_fix(error),
-        )
-    })?;
+    let read: time::Span =
+        parse(value, BAD_SPAN, "span", "3d", |_, error| span_fix(error))?;
     if read < time::Span::ZERO {
         return Err(Diagnostic::new(
             NEGATIVE_SPAN,
@@ -143,21 +146,7 @@ fn span_fix(error: time::Error) -> String {
 /// A `document.bad-rate` diagnostic at the value's span when the value is not a
 /// string, or when `time::Rate` refuses its text.
 pub fn rate(value: &Value) -> Result<time::Rate, Diagnostic> {
-    let bad = |message: String, fix: String| {
-        Diagnostic::new(BAD_RATE, value.span, message, fix)
-    };
-    let Kind::String(text) = &value.kind else {
-        return Err(bad(
-            format!("a rate is a string, not {}", value.kind.noun()),
-            "Write a string such as \"10Hz\"".into(),
-        ));
-    };
-    text.parse().map_err(|error| {
-        bad(
-            format!("cannot read the rate {text:?}: {error}"),
-            rate_fix(error),
-        )
-    })
+    parse(value, BAD_RATE, "rate", "10Hz", |_, error| rate_fix(error))
 }
 
 /// The fix for `error`, with each rate quoted as the file writes it.
