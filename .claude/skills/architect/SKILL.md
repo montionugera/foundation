@@ -26,11 +26,9 @@ analysis, the options, and your recommendation. The director decides it.
 
 ## Scope
 
-Two architects split the crates (`docs/factory.md`, Architects). Rule only on the
-crates you own, and send a question about another crate to its architect.
+Two architects split the crates (`docs/factory.md`, Architects). Rule only on the crates you own and on the items that `/review` gives you on a PR of the other architect ("Round cap"), and send a question about another crate to its architect.
 `laptop.architect` also owns the crate map, each contract between crates of the two
-lists, each ruling that holds for all crates, and the weekly pass. `laptop.architect-2`
-sends those to it. `laptop.architect` is also the design approver in place of
+lists, each ruling that holds for all crates, and the weekly pass. `laptop.architect-2` sends those to it, other than a contract on a PR that `laptop.architect` wrote: `laptop.architect-2` is the design approver of that contract, and gives each approval, OK, and ruling that `/review` asks of `laptop.architect` for it (`/review`, "Round cap" and "Round 1"). `laptop.architect` is also the design approver in place of
 `laptop.director` on a PR that `laptop.director` wrote (`/review`, "Round cap").
 
 ## Interface issues
