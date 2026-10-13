@@ -126,14 +126,7 @@ async fn read(
             break;
         };
         let values = read.map_err(|status| device(Failure::Read(status)))?;
-        let values = Values::new(values).map_err(|(at, status)| {
-            device(Failure::Value {
-                channel: reads[at].channel.clone(),
-                node: reads[at].node.clone(),
-                status,
-            })
-        })?;
-        frames.write(values, stamp)?;
+        frames.write(reads, values, stamp)?;
     }
     Ok(())
 }
@@ -158,15 +151,15 @@ pub async fn writes(
     mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
-    let values = vec![Ok(1.0); ctx.config().reads.len()];
+    let reads = &ctx.config().reads;
+    let values = vec![Ok(1.0); reads.len()];
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
         let ((), stamp) = frames.request(future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
-            let values = Values::new(&values).expect("each value is good");
-            written = frames.write(values, stamp);
+            written = frames.write(reads, &values, stamp);
         }));
         written?;
     }
@@ -264,18 +257,31 @@ impl Frames {
         self.stamps.request(&self.out.writer, request).await
     }
 
-    /// Writes one frame of `values`, in the order of the reads, at `stamp`. A group
-    /// that the home refuses as `Backwards` is written again once, after the stamp
-    /// that the refusal gives.
+    /// Writes one frame of `values`, the values of `reads` in order, at `stamp`. A
+    /// group that the home refuses as `Backwards` is written again once, after the
+    /// stamp that the refusal gives.
     ///
     /// # Errors
     ///
-    /// As [`Out::send`].
+    /// [`Error::Device`] when a value is a bad status, with no write. As
+    /// [`Out::send`].
     ///
     /// # Panics
     ///
     /// When the home refuses a group as `Backwards` again.
-    fn write(&mut self, values: Values<'_>, stamp: Stamp) -> Result<(), Error> {
+    fn write(
+        &mut self,
+        reads: &[Read],
+        values: &[Result<f64, Status>],
+        stamp: Stamp,
+    ) -> Result<(), Error> {
+        let values = Values::new(values).map_err(|(at, status)| {
+            device(Failure::Value {
+                channel: reads[at].channel.clone(),
+                node: reads[at].node.clone(),
+                status,
+            })
+        })?;
         let Self {
             layout,
             out,
