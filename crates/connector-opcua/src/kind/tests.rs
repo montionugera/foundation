@@ -893,6 +893,10 @@ fn stamps_each_frame_within_its_read() {
     }
 }
 
+/// Builds `Values` past `Values::new`, which no call of the crate can do:
+/// `Frames::write` gives `Error::Device` for a bad value before each send, so no
+/// caller or peer sees the panic of `get`. This test is the only kill of a `get`
+/// that gives a value for a bad read in place of the panic.
 #[test]
 #[should_panic(
     expected = "invariant: read 2 is BadNotFound, which `Values::new` refuses"
