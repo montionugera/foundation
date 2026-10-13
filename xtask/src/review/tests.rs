@@ -4068,3 +4068,32 @@ fn a_merge_check_after_round_3_does_not_hide_a_deferral_of_round_3_with_no_ok() 
     let check = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
     assert_eq!(risk(vec![deferred("#12"), check]), no_ok("#12"));
 }
+
+#[test]
+fn a_first_round_comment_numbered_2_names_a_missing_architecture_once() {
+    let record = record(vec![bound(&clean(2, "reviewer, breaker", "a..b"))]);
+    assert_eq!(
+        problems(
+            &record,
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|_, _| Ok(None),
+            &|_, _| Ok(Some(CHANGE.to_string()))
+        ),
+        Ok(vec![
+            "review round 2 names no architecture, which this round requires."
+                .to_string()
+        ])
+    );
+}
+
+#[test]
+fn a_first_round_comment_numbered_2_may_not_skip_breaker() {
+    let round = ROUND
+        .replace("## Review round 3", "## Review round 2")
+        .replace("Reviewers: reviewer", "Reviewers: reviewer, architecture");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["review round 2 names no breaker, which this round requires.".to_string()]
+    );
+}
