@@ -1,6 +1,7 @@
 //! A connector of the `opcua` kind that reads Double variables of the sim server on
-//! one sim node, with a measure of each poll of its run, for the `alloc` test and the
-//! `kind` bench.
+//! one sim node, with a measure of each poll of its run, and one that writes the
+//! frames of its reads with no server, with a measure of each write. For the `alloc`
+//! test and the `kind` bench.
 
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
@@ -11,10 +12,10 @@ use std::task::Poll;
 
 use connector::cancel::Token;
 use connector::kind::{self, Channels, Context, Error, Table};
-use connector::supervisor::Supervisor;
+use connector::supervisor::{self, Supervisor};
 use connector::testing;
 use connector_opcua::Config;
-use connector_opcua::sim::{Variables, serve};
+use connector_opcua::sim::{Served, Variables, serve};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use document::value::{self, Value};
@@ -80,48 +81,29 @@ fn name(text: &str) -> Name {
 }
 
 /// Runs a connector at 10 Hz that reads `nodes` Double variables of the sim server,
-/// for `count` ticks and two more. Gives, for each of the first `count` reads, the sum
-/// of what `measure` gives for the polls of the run within half a period of the
-/// answer of the server.
-/// `measure` calls the poll that it gets once.
+/// for `count` ticks and two more, and gives what `measure` gives for its polls: for
+/// the run start (the open of its writer, its frames, its connect, and its first
+/// request), and for each of the first `count` reads. `measure` calls the poll that it
+/// gets once.
 ///
 /// # Panics
 ///
 /// If the run ends with an error, or the server answered fewer than `count` reads.
-pub(crate) fn ticks(
+pub(crate) fn run(
     nodes: usize,
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
-) -> Vec<u64> {
+) -> Measures {
     let polls = Polls::default();
     let kind = Measured {
         measure,
         polls: Arc::clone(&polls),
     };
-    let texts: Vec<String> = (1..=nodes).map(|n| format!("ns=2;i={n}")).collect();
+    let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let kinds = Table::new().with("opcua", kind);
-        let inputs = testing::create_config(env, node.net(), kinds).await;
-        let plc = name("plant.plc");
-        let counts = ["in", "missed", "lost"].map(name);
-        let first = channel::Key::from_u128(1_000_000);
-        let mut definitions = testing::create_status(&plc, &counts, first);
-        definitions.push((name("plant.time"), index(1)));
-        let channels = (2..).take(nodes).map(|key| (format!("plant.v{key}"), key));
-        let channels: Vec<_> = channels.collect();
-        definitions.extend(channels.iter().map(|(text, key)| (name(text), data(*key))));
-        inputs
-            .hub
-            .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+        let inputs = inputs(&node, &tasks, kind, nodes).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
@@ -132,9 +114,7 @@ pub(crate) fn ticks(
             serve(clock, net, listener, &mut rng, &answers, until.wait()).await;
         });
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
-        let reads = channels.iter().zip(&texts);
-        let reads = reads.map(|((channel, _), node)| (channel.as_str(), node.as_str()));
-        let config = config(&address, reads);
+        let config = config(&address, nodes);
         let (token, clock) = (Token::new(), node.clock());
         let canceller = token.clone();
         let ticks = i64::try_from(count + 2).expect("a count");
@@ -143,7 +123,7 @@ pub(crate) fn ticks(
             canceller.cancel();
         });
         let supervisor = Supervisor::new(inputs);
-        let open = supervisor.open("opcua", plc, &config, &token);
+        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         stop.cancel();
         serving.ended().await;
@@ -153,15 +133,66 @@ pub(crate) fn ticks(
     let (result, served) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
     assert!(served.len() >= count, "{} reads served", served.len());
-    let polls = polls.lock().expect("no panic under the lock");
+    sums(
+        &polls.lock().expect("no panic under the lock"),
+        &served[..count],
+    )
+}
+
+/// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
+/// `plant.plc`, a connector that reads `nodes` nodes: its status, the index
+/// `plant.time` of key 1, and an `f64` channel of key 2 on for each read.
+async fn inputs(
+    node: &sim::node::Node,
+    tasks: &env::tasks::Tasks,
+    kind: impl kind::Kind,
+    nodes: usize,
+) -> supervisor::Config {
+    let env = hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks: tasks.clone(),
+    };
+    let kinds = Table::new().with("opcua", kind);
+    let inputs = testing::create_config(env, node.net(), kinds).await;
+    let counts = ["in", "missed", "lost"].map(name);
+    let first = channel::Key::from_u128(1_000_000);
+    let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
+    definitions.push((name("plant.time"), index(1)));
+    let reads = (2..).take(nodes).map(|key| (name(&read(key).0), data(key)));
+    definitions.extend(reads);
+    inputs
+        .hub
+        .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+    inputs
+}
+
+/// What a measure gives for the polls of a run of the `opcua` kind.
+pub(crate) struct Measures {
+    /// The sum for the polls before the first answer of the server.
+    pub(crate) start: u64,
+    /// For each read, the sum for the polls within half a period of its answer.
+    pub(crate) ticks: Vec<u64>,
+}
+
+/// The sums of the values of `polls`: before the first of `served`, and within half
+/// a period of each of `served`.
+fn sums(polls: &[(Monotonic, u64)], served: &[Served]) -> Measures {
     let half = PERIOD.nanos() / 2;
     let near = |at: Monotonic, read: Monotonic| (at - read).nanos().abs() < half;
-    (served.iter().take(count))
+    let start = polls.iter().take_while(|(at, _)| *at < served[0].time);
+    let ticks = (served.iter())
         .map(|read| {
             let polls = polls.iter().filter(|(at, _)| near(*at, read.time));
             polls.map(|(_, value)| value).sum()
         })
-        .collect()
+        .collect();
+    Measures {
+        start: start.map(|(_, value)| value).sum(),
+        ticks,
+    }
 }
 
 /// The definition of an index of `key`.
@@ -195,18 +226,21 @@ fn attribute(key: &str, kind: value::Kind) -> Attribute {
     }
 }
 
-/// The config of a connector of `address` at 10 Hz with a `read` block of each
-/// channel and node of `reads`.
-fn config<'a>(
-    address: &str,
-    reads: impl Iterator<Item = (&'a str, &'a str)>,
-) -> Document {
+/// The channel of `key` and the node that it reads: `plant.v<key>` and
+/// `ns=2;i=<key - 1>`.
+fn read(key: u128) -> (String, String) {
+    (format!("plant.v{key}"), format!("ns=2;i={}", key - 1))
+}
+
+/// The config of a connector of `address` at 10 Hz that reads `nodes` nodes, from
+/// `ns=2;i=1` into the channel of key 2 on.
+pub(crate) fn config(address: &str, nodes: usize) -> Document {
     let text = |text: &str| value::Kind::String(text.into());
     let attributes = vec![
         attribute("address", text(address)),
         attribute("rate", text("10Hz")),
     ];
-    let blocks = reads.map(|(channel, node)| Block {
+    let blocks = (2..).take(nodes).map(read).map(|(channel, node)| Block {
         keyword: "read".into(),
         keyword_span: None,
         labels: vec![document::Label {
@@ -214,7 +248,7 @@ fn config<'a>(
             span: None,
         }],
         body: Document {
-            attributes: Map::new(vec![attribute("node_id", text(node))])
+            attributes: Map::new(vec![attribute("node_id", text(&node))])
                 .expect("one key"),
             blocks: Vec::new(),
         },
