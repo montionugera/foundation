@@ -289,7 +289,7 @@ impl<C> Context<C> {
         let get = self.inputs.secrets.get(name).await;
         get.map_err(|error| {
             let name = name.clone();
-            Error::Retry(Box::new(Secret { name, error }))
+            Error::Retry(Box::new(Unread { name, error }))
         })
     }
 
@@ -425,18 +425,18 @@ const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
 /// A secret that the store did not give.
 #[derive(Debug)]
-struct Secret {
+struct Unread {
     name: Name,
     error: secret::store::Error,
 }
 
-impl fmt::Display for Secret {
+impl fmt::Display for Unread {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "the secret {}: {}", self.name, self.error)
     }
 }
 
-impl std::error::Error for Secret {
+impl std::error::Error for Unread {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.error)
     }
