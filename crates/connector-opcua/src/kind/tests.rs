@@ -34,7 +34,7 @@ const B: &str = "ns=3;i=7";
 const C: &str = "ns=2;s=Dip";
 
 /// The data channels of [`Setup::three`].
-const ABC: &[&str] = &["plant.a", "plant.b", "plant.c"];
+const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
@@ -675,7 +675,7 @@ fn names_the_read_of_a_bad_status_past_the_first() {
 fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let lead = ms(500);
     let outcome = run(Setup::three(), move |scene| async move {
-        drop(write_ahead(&scene.hub, ABC, &[(1, lead)]).await);
+        drop(write_ahead(&scene.hub, DATA, &[(1, lead)]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -738,7 +738,7 @@ fn refuses_a_read_past_one_message_of_the_server() {
 #[test]
 fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, ABC, &[(1, Span::ZERO)]).await;
+        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |_| async move { drop(rival) });
         scene.supervise(ms(2_050)).await
     });
@@ -751,7 +751,7 @@ fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
 #[test]
 fn counts_the_samples_of_a_frame_for_which_the_pool_has_no_room() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
+        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
@@ -803,7 +803,7 @@ fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
         setup.channels[3] = ("plant.c", data(4, 10, F64));
         let outcome = run(setup, move |scene| async move {
             let leads = [(1, ms(one)), (10, ms(ten))];
-            drop(write_ahead(&scene.hub, ABC, &leads).await);
+            drop(write_ahead(&scene.hub, DATA, &leads).await);
             scene.supervise(ms(1_050)).await
         });
         assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -840,7 +840,7 @@ fn writes_only_the_refused_second_group_again() {
 #[test]
 fn counts_the_samples_of_a_frame_that_the_home_loses() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
+        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let mut held = fill(&rival);
             drop(held.pop());
@@ -864,7 +864,7 @@ fn stamps_each_frame_within_its_read() {
     let offset = Arc::new(AtomicI64::new(0));
     let mesh = Arc::clone(&offset);
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
+        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
         let monotonic = i64::try_from(scene.node.clock().now().0).expect("small");
         mesh.store(rival.now().nanos() - monotonic, Ordering::Relaxed);
         drop(rival);
