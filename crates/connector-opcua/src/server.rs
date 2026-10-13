@@ -5,6 +5,7 @@
 use std::ffi::CStr;
 use std::future::poll_fn;
 use std::mem::ManuallyDrop;
+use std::panic::{self, AssertUnwindSafe};
 use std::pin::pin;
 use std::ptr::NonNull;
 use std::task::Poll;
@@ -111,7 +112,7 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the node.
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
     pub(crate) fn add_double(&self, node: &Node, value: f64) {
         let (namespace, number, name, length) = parts(node);
         // SAFETY: the server lives, and it copies the name of `node`.
@@ -133,7 +134,7 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the node.
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(feature = "sim")]
     pub(crate) fn add_source(
         &mut self,
@@ -168,7 +169,7 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the node.
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
         let (namespace, number, name, length) = parts(node);
@@ -200,13 +201,14 @@ impl Server {
     }
 
     /// Starts a server on `manager` with an empty host and room for `sessions`
-    /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives `manager`
-    /// until `until` completes, closes the server as [`Server::close`] does, drops
-    /// `manager`, and gives the output of `until`.
+    /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives
+    /// `manager` until `until` completes, closes the server as [`Server::close`] does,
+    /// drops `manager`, and gives the output of `until`.
     ///
     /// # Panics
     ///
-    /// As [`Server::start`] and [`Server::close`] do. A panic leaks the server and
+    /// As [`Server::start`] and [`Server::close`] do. A panic of `add` closes the
+    /// server and drops `manager` before it goes on. Another panic leaks the server and
     /// `manager`.
     pub(crate) async fn serve<T>(
         manager: Manager,
@@ -215,10 +217,15 @@ impl Server {
         until: impl Future<Output = T>,
     ) -> T {
         let manager = ManuallyDrop::new(manager);
-        // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks both.
+        // SAFETY: each close below deletes the server before the manager drops. A
+        // panic out of `start`, the drive, `until`, or a close, and a drop of this
+        // future, leak both.
         let mut server = unsafe { Self::start(&manager, c"", sessions) };
-        add(&mut server);
+        if let Err(panic) = panic::catch_unwind(AssertUnwindSafe(|| add(&mut server))) {
+            server.close(&manager).await;
+            drop(ManuallyDrop::into_inner(manager));
+            panic::resume_unwind(panic);
+        }
         let out = {
             let mut drive = pin!(manager.drive(|_| {
                 manager.events().run();
@@ -303,3 +310,6 @@ fn parts(node: &Node) -> (u16, u32, *const u8, usize) {
     );
     ffi::node(node)
 }
+
+#[cfg(test)]
+mod tests;

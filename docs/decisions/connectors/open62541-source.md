@@ -517,10 +517,14 @@
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
   listen connection after an accept.
   A server listens on the listener that `Manager::listening` binds on the socket address
-  that its owner gives, with the options of each stream of the manager. Each accepted
-  stream is a new connection that gets `ESTABLISHED`, with the context of the listen
-  connection at the accept. A drive accepts at most one stream between two runs of the
-  loop, as the POSIX manager accepts one for each run
+  that its owner gives, with the options of each stream of the manager. The server of
+  `sim::serve` listens on the listener that the caller of `sim::serve` binds, with the
+  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Approved by
+  `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257). Each
+  accepted stream is a new connection that gets `ESTABLISHED`, with the context of the
+  listen connection at the accept. A drive accepts at most one stream between two runs
+  of the loop, as the POSIX manager accepts one for each run
   (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541 needs that run: at
   the limit, `purgeFirstChannelWithoutSession`
   (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
@@ -553,11 +557,12 @@
   2026-10-10 03:05 UTC). Lost for the listener: the open of the listen binds it from its
   parameters. `address` is a host name and `Net::listen` takes a socket address, so the
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
-  lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
-  options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
-  until a listen open takes it, and `Server::start` makes the URL of its server from
-  that port. Decided by `laptop.architect-2`
+  lost, for a server other than that of `sim::serve`: the owner binds the listener and
+  gives it to `Manager::listening`, so the stream options hold only when the owner binds
+  with the options of the manager. An owner that binds port 0 reads its port from
+  `Manager::port`, which gives the port of the listener until a listen open takes it,
+  and `Server::start` makes the URL of its server from that port. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
   2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
@@ -567,7 +572,8 @@
   21:10 UTC), and one with an enum argument, a new type that holds one value. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286,
-  2026-10-09 20:26 UTC). The two constructors: decided by `laptop.architect-2`
+  2026-10-09 20:26 UTC). The two constructors `new` and `listening`: decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505,
   2026-10-09 21:12 UTC), after the ruling of `laptop.director`. Supersedes the one
   constructor of
@@ -576,7 +582,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
   2026-10-10 03:15 UTC). Supersedes "the listener that its owner gives" of
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286 and
-  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The third
+  constructor, `Manager::accepting`, takes the listener that the caller of `sim::serve`
+  binds, with the options of that bind. The streams of the test server need not have the
+  options of the client, so the cost of a second copy of the options is accepted for
+  `sim::serve`. Supersedes the bind in `Manager::listening` of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582 for
+  `sim::serve`: approved by `laptop.architect-2` (2026-10-13T02:23:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136822544). The
   parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
   2026-10-09 21:25 UTC).

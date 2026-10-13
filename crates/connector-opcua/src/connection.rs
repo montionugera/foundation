@@ -169,8 +169,8 @@ impl Manager {
         &self.events
     }
 
-    /// Gives the port of the listener of [`Manager::listening`], until a listen open
-    /// takes it.
+    /// Gives the port of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], until a listen open takes it.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn port(&self) -> Option<u16> {
         let listener = self.state().listener.take();
