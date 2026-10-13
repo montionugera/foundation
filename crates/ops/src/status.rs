@@ -304,7 +304,7 @@ impl Output {
     /// that does not tell whether the node places a connector.
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
-            return "No connector of this node that you can read.\n".to_owned();
+            return "You can read no connector on this node.\n".to_owned();
         }
         let count = |status: &Status, name: &str| {
             let value = status.counts.as_ref().and_then(|counts| counts.get(name));

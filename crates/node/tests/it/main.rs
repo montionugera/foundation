@@ -144,11 +144,7 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
-        (
-            Some(0),
-            "No connector of this node that you can read.\n",
-            ""
-        )
+        (Some(0), "You can read no connector on this node.\n", "")
     );
 }
 
