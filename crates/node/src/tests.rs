@@ -2863,6 +2863,7 @@ mod port {
 
     use super::*;
 
+    mod client;
     mod settings;
 
     /// The key of the peer that dials the node.
