@@ -86,6 +86,21 @@ fn a_refusal_at_the_last_instant_panics() {
     Stamps::default().after(Stamp::from_nanos(i64::MAX));
 }
 
+#[test]
+#[should_panic(expected = "refusal under the last stamp: 9 ns < 10 ns")]
+fn a_refusal_under_the_last_stamp_panics() {
+    let mut stamps = Stamps::default();
+    stamps.next(Stamp::from_nanos(10));
+    stamps.after(Stamp::from_nanos(9));
+}
+
+#[test]
+fn a_refusal_at_the_last_stamp_is_stamped_after_it() {
+    let mut stamps = Stamps::default();
+    stamps.next(Stamp::from_nanos(10));
+    assert_eq!(stamps.after(Stamp::from_nanos(10)), Stamp::from_nanos(11));
+}
+
 /// A call of [`Stamps`]: a stamp at some time, or a refusal whose stamp before is
 /// some time after the last stamp.
 #[derive(Clone, Debug)]

@@ -40,8 +40,17 @@ impl Stamps {
     ///
     /// # Panics
     ///
-    /// When `before` is `i64::MAX` ns.
+    /// When `before` is under the last stamp, which no refusal gives, or is
+    /// `i64::MAX` ns.
     pub fn after(&mut self, before: Stamp) -> Stamp {
+        if let Some(last) = self.last {
+            assert!(
+                before >= last,
+                "refusal under the last stamp: {} ns < {} ns",
+                before.nanos(),
+                last.nanos()
+            );
+        }
         let stamp = before + Span::NANOSECOND;
         self.last = Some(stamp);
         stamp
