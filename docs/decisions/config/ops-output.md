@@ -242,8 +242,8 @@
   `plan`, `apply`, and `status` take `--data <dir>`, the data directory of the node, by
   default `foundation-data`, as `start` does (#2526). This supersedes "run on the node
   of `foundation-data`" above and in the doc of `cli` of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. Each fix
-  of a reach names the directory `{dir}` that the command gives. The fix of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In the
+  fixes below, `{dir}` is the data directory that the command gives. The fix of
   `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>` on
   its first start, or give `--data` the data directory of a node that runs``, which
   supersedes "with no `--data`" above, decision 7 of
