@@ -101,12 +101,18 @@ impl Opcua {
     pub(super) fn serve(&mut self) -> SocketAddr {
         let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
         let address = listener.local();
-        let (variables, clock) =
-            (Variables::clone(&self.variables), self.clock.clone());
+        let (variables, clock, zero) = (
+            Variables::clone(&self.variables),
+            self.clock.clone(),
+            self.zero,
+        );
         let server = Server::start("OPC UA server", move |_, token| async move {
             let mut rng = os::entropy().rng();
             let net = os::net();
-            serve(clock, net, listener, &mut rng, &variables, token.wait()).await;
+            let read = clock.clone();
+            let wall = move || zero + (read.now() - Monotonic(0));
+            let until = token.wait();
+            serve(clock, wall, net, listener, &mut rng, &variables, until).await;
         });
         self.server = Some(server);
         address

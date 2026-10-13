@@ -65,6 +65,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let mut served = node.entropy().rng();
         serve(
             node.clock(),
+            event::Time::monotonic(node.clock()).wall,
             node.net(),
             listener,
             &mut served,
@@ -89,6 +90,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let again = listen(&node);
         serve(
             node.clock(),
+            event::Time::monotonic(node.clock()).wall,
             node.net(),
             again,
             &mut served,
@@ -141,6 +143,7 @@ fn a_server_has_room_for_4_sessions() {
         let mut served = node.entropy().rng();
         serve(
             node.clock(),
+            event::Time::monotonic(node.clock()).wall,
             node.net(),
             listener,
             &mut served,
@@ -164,6 +167,7 @@ fn a_server_panics_on_a_variable_of_the_number_0() {
         let variables = Variables::new(&[SPIKE, "ns=3;i=0"]);
         serve(
             node.clock(),
+            event::Time::monotonic(node.clock()).wall,
             node.net(),
             listen(&node),
             &mut rng,

@@ -310,11 +310,17 @@ impl Scene {
     fn serve(&self) {
         let listener = listen(&self.node);
         let (stop, group) = (Token::new(), Group::new(self.tasks.clone()));
-        let (clock, net) = (self.node.clock(), self.node.net());
+        let (clock, net, node) = (self.node.clock(), self.node.net(), self.node.wall());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a simulated device reads the wall time of its node"
+        )]
+        let wall = move || node.now().time;
         let (variables, until) = (self.variables.clone(), stop.clone());
         let mut rng = self.node.entropy().rng();
         group.tasks().spawn(async move {
-            serve(clock, net, listener, &mut rng, &variables, until.wait()).await;
+            let until = until.wait();
+            serve(clock, wall, net, listener, &mut rng, &variables, until).await;
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
@@ -573,6 +579,18 @@ fn fill(writer: &Writer) -> Vec<Draft> {
         );
     }
     held
+}
+
+/// The server gives the wall time of the node, so the client finds the time of each
+/// channel token near its own only when its loop reads the mesh time of the node.
+#[test]
+fn the_loop_of_the_kind_reads_the_mesh_time_of_its_node() {
+    let name = "kind::tests::writes_one_stamp_in_each_index_of_a_frame";
+    let output = crate::child::output(name, &[]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stderr.contains("CreatedAt"), "{stderr}");
 }
 
 #[test]

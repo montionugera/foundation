@@ -130,10 +130,17 @@ pub(crate) fn run(
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
         let (clock, net, listener) = (node.clock(), node.net(), listen(&node));
+        let wall = node.wall();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a simulated device reads the wall time of its node"
+        )]
+        let wall = move || wall.now().time;
         let (answers, until) = (variables.clone(), stop.clone());
         let mut rng = node.entropy().rng();
         serving.tasks().spawn(async move {
-            serve(clock, net, listener, &mut rng, &answers, until.wait()).await;
+            let until = until.wait();
+            serve(clock, wall, net, listener, &mut rng, &answers, until).await;
         });
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let config = config(&address, nodes);

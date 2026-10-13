@@ -10,7 +10,7 @@ use env::clock::Clock;
 use env::net::{Listener, Net};
 use env::rng::Rng;
 use types::quality::Quality;
-use types::time::Monotonic;
+use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
 use crate::event;
@@ -136,9 +136,11 @@ pub struct Served {
 
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
 /// then closes the server. It adds each namespace from 2 to the highest of
-/// `variables`. Each stream of the server has the options of `listener`. Call it on a
-/// thread that `env` started. A drop of the future while it waits, after a poll that
-/// gives `Pending`, leaks the server and can keep the port of `listener` bound.
+/// `variables`. Each stream of the server has the options of `listener`. `wall` gives
+/// the wall time of the server, which a client compares with the time of each channel
+/// token: give the wall time of the client's node. Call it on a thread that `env`
+/// started. A drop of the future while it waits, after a poll that gives `Pending`,
+/// leaks the server and can keep the port of `listener` bound.
 ///
 /// # Panics
 ///
@@ -151,13 +153,17 @@ pub struct Served {
 /// stops as the Rust allocator does when it has no memory.
 pub async fn serve(
     clock: Clock,
+    wall: impl Fn() -> Stamp + 'static,
     net: Net,
     listener: Listener,
     rng: &mut Rng,
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let time = event::Time::monotonic(Clock::clone(&clock));
+    let time = event::Time {
+        clock: Clock::clone(&clock),
+        wall: Box::new(wall),
+    };
     let manager = Manager::accepting(time, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
