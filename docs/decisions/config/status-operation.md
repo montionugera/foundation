@@ -18,17 +18,16 @@
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
   with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest
-  frame holds no status is `unknown` too. So is a connector whose status channels
-  the hub does not define yet, as `follow` defines the hub before the runs, and one
-  whose status channels an apply removes during the read. When the reader of a
-  connector does not open or ends for another cause, `status` fails with
-  `ops.channel-read`, which names the connector and gives
-  the text of the hub. `status` needs `read` on each status channel of a connector
-  through the `Check` of `plan` and `apply`, and leaves out each connector without it.
-  When the node places a connector and the subject reads none, it gives `ops.denied`
-  with `On::Nothing`. A node that places no connector gives `ops.denied` with
-  `On::Nothing` too, also with no spec in use, as SERVE ACCESS refuses a request with no
-  name to check (`laptop.architect`,
+  frame holds no status is `unknown` too. So is a connector whose status channels the
+  hub does not define yet, as `follow` defines the hub before the runs, and one whose
+  status channels an apply removes during the read. When the reader of a connector does
+  not open or ends for another cause, `status` fails with `ops.channel-read`, which
+  names the connector and gives the text of the hub. `status` needs `read` on each
+  status channel of a connector through the `Check` of `plan` and `apply`, and leaves
+  out each connector without it. When the node places a connector and the subject reads
+  none, it gives `ops.denied` with `On::Nothing`. A node that places no connector gives
+  `ops.denied` with `On::Nothing` too, also with no spec in use, as SERVE ACCESS refuses
+  a request with no name to check (`laptop.architect`,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724, which
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
@@ -63,5 +62,5 @@
   removed channel: `laptop.architect-2` (2026-10-13T03:01:14Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102, item 1,
   which supersedes item 2 of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for
-  those two cases).
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
+  two cases).
