@@ -81,7 +81,7 @@ impl Source {
                 "Write a name with no `=` and no NUL, such as `env(\"INFLUX_TOKEN\")`",
             )),
             "env" => Ok(Self::Env(text.to_string())),
-            "file" if !absolute(text) => Err(refuse(
+            "file" if !allowed(text) => Err(refuse(
                 "the argument of `file` is not an absolute path with no `..` and no NUL"
                     .into(),
                 "Write the whole path from the root, such as \
@@ -92,15 +92,17 @@ impl Source {
                 .parse()
                 .map(Self::Secret)
                 .map_err(|error: types::name::Error| {
-                    let fix = match error {
+                    let message = match error {
                         types::name::Error::Segment { .. } => {
-                            "Write segments of ASCII letters, digits, `_`, and `-`, \
-                             each after an optional leading `@`, joined by `.`, \
-                             such as `secret(\"plant.influx_token\")`"
+                            "a segment of the argument of `secret` is not valid"
                         }
-                        error => error.fix(),
+                        types::name::Error::Wildcard { .. } => {
+                            "the argument of `secret` holds a wildcard, which a name \
+                             never does"
+                        }
+                        _ => "the argument of `secret` is not a valid name",
                     };
-                    refuse("the argument of `secret` is not a valid name".into(), fix)
+                    refuse(message.into(), error.fix())
                 }),
         }
     }
@@ -112,7 +114,7 @@ const FIX: &str =
 
 /// Whether `text` starts with `/`, has no NUL, and has no `..` segment, split on `/`
 /// and `\`. The same text rule holds on every host.
-fn absolute(text: &str) -> bool {
+fn allowed(text: &str) -> bool {
     text.starts_with('/')
         && !text.contains('\0')
         && !text.split(['/', '\\']).any(|segment| segment == "..")

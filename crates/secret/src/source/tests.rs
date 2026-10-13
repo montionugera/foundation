@@ -183,9 +183,20 @@ fn refuses_a_relative_path_or_one_with_a_parent_segment_or_nul() {
 fn refuses_a_bad_secret_name() {
     refused(
         &call("secret", vec![string("plant..token")]),
-        "the argument of `secret` is not a valid name",
-        "Write segments of ASCII letters, digits, `_`, and `-`, each after an optional \
-         leading `@`, joined by `.`, such as `secret(\"plant.influx_token\")`",
+        "a segment of the argument of `secret` is not valid",
+        types::name::Error::Segment {
+            input: String::new(),
+            segment: String::new(),
+        }
+        .fix(),
+    );
+    refused(
+        &call("secret", vec![string("plant.*")]),
+        "the argument of `secret` holds a wildcard, which a name never does",
+        types::name::Error::Wildcard {
+            input: String::new(),
+        }
+        .fix(),
     );
     refused(
         &call("secret", vec![string("")]),
