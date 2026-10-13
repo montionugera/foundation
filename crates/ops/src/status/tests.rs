@@ -101,6 +101,35 @@ fn gives_unknown_while_the_hub_lacks_one_status_channel_of_the_spec() {
 }
 
 #[test]
+fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        let steady = supervise(&fixture, &node, &["site.a"]).await;
+        applied(&fixture, &node, &connector("site.a", "wide", "edge")).await;
+        steady.cancel();
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [{
+            "name": "site.a",
+            "kind": "wide",
+            "state": "running",
+            "address": "opc.tcp://site.a:4840",
+            "restarts": 0,
+            "counts": { "confirmed": 0, "extra": 0, "in": 0 },
+            "error": null,
+        }]}});
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
 fn escapes_a_newline_in_the_text_of_an_error() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
@@ -170,8 +199,8 @@ async fn applied_alone(node: &Node, text: &str) {
 }
 
 /// Runs a supervisor of each connector `names` of the spec of `node`, as the node
-/// does, until the run ends.
-async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
+/// does, until the run ends. Gives the token that cancels each run.
+async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::Token {
     let supervisor = Supervisor::new(supervisor::Config {
         kinds: Arc::new(kinds()),
         clock: fixture.sim.clock(),
@@ -181,6 +210,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
         hub: fixture.hub.clone(),
     });
     let spec = node.mesh().spec().await.expect("a spec");
+    let cancel = cancel::Token::new();
     for connector in names {
         let Some(Definition::Connector(placed)) =
             spec.definitions.get(&name(connector))
@@ -188,10 +218,13 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
             panic!("the spec holds the connector {connector}");
         };
         let (kind, config) = (placed.kind().to_string(), placed.config().document());
-        let (supervisor, config, connector) =
-            (supervisor.clone(), config.clone(), name(connector));
+        let (supervisor, config, connector, cancel) = (
+            supervisor.clone(),
+            config.clone(),
+            name(connector),
+            cancel.clone(),
+        );
         fixture.tasks.spawn(async move {
-            let cancel = cancel::Token::new();
             let opened = supervisor.open(&kind, connector, &config, &cancel).await;
             opened
                 .run()
@@ -204,6 +237,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
         .clock()
         .sleep(Span::from_nanos(3 * Span::SECOND.nanos()))
         .await;
+    cancel
 }
 
 /// Writes one frame of the channel `index` and of each channel `name` on it with the
