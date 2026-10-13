@@ -23,15 +23,15 @@
   `ops::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
-  `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
-  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot use
-  the data directory as it is": each `os::Error::Dir` whatever its errno, and each
-  `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
-  `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
-  `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
-  {error}", and its fix "Make {data} a directory that this user can write, and let it
-  write each file in it, or give another directory with `--data`". The fix also covers a
-  missing parent (`ENOENT`) and a file in its place (`ENOTDIR`). Decided by
+  `node.name`, `node.reserved`, `node.long` (NODE NAME), `node.budget`, `node.disk`,
+  `node.memory` (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this
+  user cannot use the data directory as it is": each `os::Error::Dir` whatever its
+  errno, and each `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS`
+  that `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`,
+  `Blob`, `Mesh`, or `Group` error. Its message is "cannot write the data directory
+  {data}: {error}", and its fix "Make {data} a directory that this user can write, and
+  let it write each file in it, or give another directory with `--data`". The fix also
+  covers a missing parent (`ENOENT`) and a file in its place (`ENOTDIR`). Decided by
   `laptop.architect-2` (2026-10-10T22:20:07Z,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069).
   Supersedes the cause list and the fix of
