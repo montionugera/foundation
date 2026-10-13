@@ -1043,11 +1043,11 @@ fn a_round_3_that_ends_off_the_first_parent_chain_asks_to_correct_its_range() {
     assert_eq!(
         check(&reviewed(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at 0badc0de, which is not a commit on the first-parent \
-             chain of the head {HEAD}, or a merge of a branch other than the base \
-             follows it. Correct the range of the round comment when it names the \
-             wrong commit. Else bring the reviewed commits back onto that chain, and make \
-             each merge after them a merge of the base."
+            "review round 3 ends at 0badc0de, which is not a commit on the \
+             first-parent chain of the head {HEAD}, or a merge of a branch other than \
+             the base follows it. Correct the range of the round comment when it names \
+             the wrong commit. Else bring the reviewed commits back onto that chain, \
+             and make each merge after them a merge of the base."
         )]
     );
 }
@@ -4172,8 +4172,8 @@ fn a_rebase_after_round_3_fails_after_a_round_3_comment_at_the_head() {
             "review round 3 ends at {three}, which is not a commit on the first-parent \
              chain of the head {head}, or a merge of a branch other than the base \
              follows it. Correct the range of the round comment when it names the \
-             wrong commit. Else bring the reviewed commits back onto that chain, and make \
-             each merge after them a merge of the base."
+             wrong commit. Else bring the reviewed commits back onto that chain, and \
+             make each merge after them a merge of the base."
         )]
     );
     repo.remove();
@@ -4202,11 +4202,11 @@ fn a_round_3_whose_first_end_names_no_commit_fails_after_a_round_3_at_the_head()
     assert_eq!(
         check_at(&repo, &record),
         vec![format!(
-            "review round 3 ends at 0badc0de, which is not a commit on the first-parent \
-             chain of the head {head}, or a merge of a branch other than the base \
-             follows it. Correct the range of the round comment when it names the \
-             wrong commit. Else bring the reviewed commits back onto that chain, and make \
-             each merge after them a merge of the base."
+            "review round 3 ends at 0badc0de, which is not a commit on the \
+             first-parent chain of the head {head}, or a merge of a branch other than \
+             the base follows it. Correct the range of the round comment when it names \
+             the wrong commit. Else bring the reviewed commits back onto that chain, \
+             and make each merge after them a merge of the base."
         )]
     );
     repo.remove();
