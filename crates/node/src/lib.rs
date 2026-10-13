@@ -1112,10 +1112,14 @@ impl Serve {
                     region,
                 });
                 let parts = mesh.as_ref().map(|mesh| {
+                    let member = mesh.member(key);
+                    let member =
+                        member.expect("invariant: a mesh opens only on a member");
+                    let name = member.card.card().name.clone();
                     let kinds = Arc::new(kinds());
                     let ops = operations(
                         mesh,
-                        key,
+                        name.clone(),
                         hub.clone(),
                         clock.clone(),
                         &time,
@@ -1130,7 +1134,7 @@ impl Serve {
                         tasks: tasks.clone(),
                         hub: hub.clone(),
                     };
-                    (ops, (mesh, runs(mesh, key, config)))
+                    (ops, (mesh, connectors::Runs::new(config, name)))
                 });
                 let (ops, runs) = parts.unzip();
                 let group = follow(runs, hub.clone()).await;
@@ -1193,11 +1197,11 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh`, as the node `key` of it with `hub` and `clock`, with the
+/// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
 /// connector kinds `kinds`, whose keys [`channel_key`] makes.
 fn operations(
     mesh: &mesh::Mesh,
-    key: types::node::Key,
+    name: types::name::Name,
     hub: hub::Hub,
     clock: env::clock::Clock,
     time: &clock::Reader,
@@ -1212,24 +1216,9 @@ fn operations(
             read: config_hcl::read,
         },
     );
-    let member = mesh.member(key);
-    let member = member.expect("invariant: a mesh opens only on a member");
-    let name = member.card.card().name.clone();
     let node =
         ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
     Rc::new(node)
-}
-
-/// The runs of the connectors that the spec in use places on the node `key` of
-/// `mesh`, on a supervisor made from `config`.
-fn runs(
-    mesh: &mesh::Mesh,
-    key: types::node::Key,
-    config: connector::supervisor::Config,
-) -> connectors::Runs {
-    let member = mesh.member(key);
-    let member = member.expect("invariant: a mesh opens only on a member");
-    connectors::Runs::new(config, member.card.card().name.clone())
 }
 
 /// The connector kinds of this binary.
