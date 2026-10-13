@@ -336,6 +336,25 @@ fn refuses_a_bucket_with_no_org() {
 }
 
 #[test]
+fn refuses_an_org_with_no_database_or_bucket() {
+    let config = plus(
+        without(influx(), "database"),
+        &[(62, "org", string("acme"))],
+    );
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![Diagnostic::new(
+            Code::new("document.missing-attribute"),
+            None,
+            "the connector has no `database` or `bucket`".into(),
+            "Add a `bucket` attribute and an `org` attribute, such as \"plant\", or a \
+             `database` attribute for InfluxDB 1"
+                .into(),
+        )])
+    );
+}
+
+#[test]
 fn refuses_a_bucket_and_an_org_that_are_empty_or_not_strings() {
     let config = with(bucket(), "bucket", &string(""));
     let config = with(config, "org", &Value::Integer(1));
