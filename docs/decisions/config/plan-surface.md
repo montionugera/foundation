@@ -44,6 +44,8 @@
   a test (no result changes, so no test can fail). By `laptop.architect-2` (#2468 round
   8, 2026-10-13T01:21:52Z:
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6136011417).
+  Supersedes the writer clause of
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855.
   `config.unknown-node` is at each node that a connector or a placement names and that
   `members` does not hold, and the fix names a member that is equal to it without case.
   `config.writer-nodes` is at the `node` of the first connector, in name order, on a
