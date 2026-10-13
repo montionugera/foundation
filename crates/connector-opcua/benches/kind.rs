@@ -15,8 +15,9 @@ mod kind;
 
 /// The node counts of the reads of a tick.
 const COUNTS: [usize; 2] = [1, 256];
-/// The ticks or writes before the timed ones: tick 1 connects, and the writer of hub
-/// allocates in some of the first 19 writes.
+/// The ticks or writes before the timed ones. Tick 1 connects. In its first two commits
+/// of 10 ms, at a write each 1 ms, the buffer of the test home grows the `Vec`s of its
+/// groups, and after them it reuses each group with its capacity.
 const WARMUP: usize = 20;
 const TICKS: usize = 1000;
 /// The node counts of a run start and of a parse. A frame of 1,000 nodes fits the
