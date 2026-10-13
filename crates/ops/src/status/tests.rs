@@ -20,7 +20,7 @@ use types::sample::Type;
 use types::time::Span;
 
 use super::{Class, Failure, Output, State, Status};
-use crate::common::{Fixture, SAM, founded, front_ends, name, solo};
+use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
 use crate::{Failure as Lost, Node, Run};
 
@@ -451,12 +451,7 @@ async fn cli(node: &Node, paths: &Paths, args: &[&str]) -> (Run, String, String)
             Ok::<_, Lost>(serve(node, &name("@admin"), body).await)
         })
     };
-    let args = ["foundation"].iter().chain(args).map(Into::into);
-    let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let input = std::io::empty();
-    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
-    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
-    (run, text(output), text(errors))
+    common::cli(paths, args, reach).await
 }
 
 #[test]

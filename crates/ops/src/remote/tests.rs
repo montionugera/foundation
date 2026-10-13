@@ -7,7 +7,7 @@ use serde_json::json;
 
 use super::{apply, most, plan, status};
 use crate::apply::Applied;
-use crate::common::{create_node, name, placed_site, solo};
+use crate::common::{self, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
 use crate::front_end::File;
 use crate::operation::DATA;
@@ -120,12 +120,7 @@ impl Remote {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        let args = ["foundation"].iter().chain(args).map(Into::into);
-        let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let input = std::io::empty();
-        let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
-        let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
-        (run, text(output), text(errors))
+        common::cli(paths, args, reach).await
     }
 
     /// The count of calls of `reach`, and of requests.
