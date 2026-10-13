@@ -133,14 +133,16 @@ impl Logs {
     }
 
     /// One commit that the oldest holder bounds, as a commit that trims. It appends
-    /// and syncs one data entry of each index but the first, which syncs one each `period`
-    /// commits. Then it takes the idle tails before the record, at most one per
-    /// index, and hides the records before the oldest holder.
-    pub fn trim(&mut self, period: u32) {
+    /// and syncs one data entry of each index but the last, which syncs one each
+    /// `period` commits, so its item is the last of its record. Then it takes the
+    /// idle tails before the record, at most one per index, and hides the records
+    /// before the oldest holder, or before the record `held` commits back, as a
+    /// read that holds it, when that one is older.
+    pub fn trim(&mut self, period: u32, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
-        let skip = usize::from(!slow);
-        for (slot, header) in self.headers.iter_mut().skip(skip) {
+        let synced = self.headers.len() - usize::from(!slow);
+        for (slot, header) in self.headers.iter_mut().take(synced) {
             self.inner.append(*slot, header).expect("entries in order");
             self.inner
                 .sync(*slot, header, self.offset)
@@ -151,7 +153,8 @@ impl Logs {
         self.inner
             .idle(self.offset, self.headers.len(), &mut self.tails);
         let kept = self.inner.kept().expect("a path has a synced entry");
-        self.inner.hide(kept);
+        let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
+        self.inner.hide(kept.min(read));
         self.offset += BLOCK;
     }
 }
@@ -214,24 +217,37 @@ mod tests {
         }
     }
 
-    /// The first index syncs each third commit, so a trim keeps the records from its
+    /// The last index syncs each third commit, so a trim keeps the records from its
     /// holder on, and its tail is idle once for each holder.
     #[test]
     fn a_trim_keeps_the_records_after_the_holder_of_the_slow_index() {
         let mut logs = Logs::new(2);
         let mut idle = Vec::new();
         for _ in 0..7 {
-            logs.trim(3);
+            logs.trim(3, 0);
             idle.push(logs.tails.len());
         }
         assert_eq!(idle, [0, 1, 0, 0, 1, 0, 0]);
-        let first: Vec<_> = logs.inner.runs(Slot::new(0), Path::Live).collect();
-        let second = logs.inner.runs(Slot::new(1), Path::Live).count();
+        let first: Vec<_> = logs.inner.runs(Slot::new(1), Path::Live).collect();
+        let second = logs.inner.runs(Slot::new(0), Path::Live).count();
         assert_eq!(
             first.iter().map(|run| run.offset).collect::<Vec<_>>(),
             [7 * BLOCK]
         );
         assert_eq!(second, 1);
-        assert_eq!(logs.inner.durable(Slot::new(0), Path::Live).seq, 3);
+        assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
+    }
+
+    /// A read holds the record two commits back, so the runs of the records after it
+    /// stay.
+    #[test]
+    fn a_trim_keeps_the_records_from_the_one_a_read_holds() {
+        let mut logs = Logs::new(2);
+        for _ in 0..7 {
+            logs.trim(3, 2);
+        }
+        let runs = logs.inner.runs(Slot::new(0), Path::Live);
+        let offsets: Vec<u64> = runs.map(|run| run.offset).collect();
+        assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 }

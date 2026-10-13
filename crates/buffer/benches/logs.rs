@@ -50,14 +50,29 @@ fn append(bencher: Bencher<'_, '_>, indexes: u32) {
         .bench_local(|| logs.append());
 }
 
-/// One index syncs each 64th commit, so 64 records of items stay before its holder.
+/// One index syncs each 64th commit, so the records after its holder stay.
 #[divan::bench(args = [64, 256])]
 fn trim(bencher: Bencher<'_, '_>, indexes: u32) {
-    let mut logs = Logs::new(indexes);
-    for _ in 0..128 {
-        logs.trim(64);
-    }
+    let mut logs = trimmed(indexes, 0);
     bencher
         .counter(count(indexes))
-        .bench_local(|| logs.trim(64));
+        .bench_local(|| logs.trim(64, 0));
+}
+
+/// As `trim`, while a read holds the record 64 commits back, so no trim passes the
+/// items before the oldest holder.
+#[divan::bench(args = [64, 256])]
+fn trim_held(bencher: Bencher<'_, '_>, indexes: u32) {
+    let mut logs = trimmed(indexes, 64);
+    bencher
+        .counter(count(indexes))
+        .bench_local(|| logs.trim(64, 64));
+}
+
+fn trimmed(indexes: u32, held: u64) -> Logs {
+    let mut logs = Logs::new(indexes);
+    for _ in 0..128 {
+        logs.trim(64, held);
+    }
+    logs
 }
