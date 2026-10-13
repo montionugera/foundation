@@ -103,6 +103,15 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// that came before it.
 const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
+/// A round comment posted before this UTC time, when the round cap reached `main`, may
+/// have any number, since the rules on `main` ran its rounds.
+const ROUNDS_CUTOFF: &str = "2026-10-13T20:12:19Z";
+
+/// The most review rounds that a PR gets. A last round of this number or above may
+/// have findings and may end before a commit that changes code, since no round follows
+/// it. It must match REVIEW ROUNDS in `docs/decisions/operations/review-rounds.md`.
+const ROUNDS: u32 = 3;
+
 /// The crates in which a deferral needs the OK of the architect. It must match the
 /// risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`.
 const RISK: [&str; 10] = [
@@ -208,11 +217,11 @@ struct Parsed {
 }
 
 /// Checks that the review of PR `pr` is done at commit `head`: its last round comment
-/// ends at `head` or at a commit on its first-parent chain after which each merge is
-/// a clean merge of the base and the range to `head` changes no code, finds nothing,
-/// and names each required reviewer, and, for a red-team PR, the director approved
-/// `head`. Reads the PR with `api` and the history of the repository at `root` with
-/// `git`, and prints each problem.
+/// names each required reviewer and ends at `head` or at a commit on its first-parent
+/// chain after which each merge is a clean merge of the base, below round [`ROUNDS`]
+/// it finds nothing and the range to `head` changes no code, and, for a red-team PR,
+/// the director approved `head`. Reads the PR with `api` and the history of the
+/// repository at `root` with `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `api` or `git` fails
 /// or the PR record lacks a field.
@@ -254,21 +263,15 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
     }
 }
 
-/// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must find nothing and end at `head`, or
-/// at a commit on its first-parent chain after which each merge is a clean merge of
-/// the base and the range to `head` changes no code, with a `Text fixes:` line when a
-/// commit that is not a merge follows it. `place` gives where a commit (a SHA or its
-/// prefix) is from `head` (`History::place`). A later round may skip `breaker` when
-/// the range of the last round changes no code; an earlier round's skip is taken as
-/// written. `code_change` gives the first code change in a range, with a merge of the
-/// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
-/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
-/// `decision_change` gives a phrase for its range (`History::decision_change`). For
-/// that rule, a round comment after the first is a later round, whatever its number,
-/// and so is a first round comment whose number is above 1. The last round, when
-/// posted at or after `LINK_CUTOFF`, must link the OK of each deferral of a PR that
-/// changes a risk crate, and an approval of its public surface ([`unlinked`]).
+/// The problems with the review in `record` at `head`. Each round comment must have a
+/// number that [`misnumbered`] allows and name the reviewers that [`unnamed`] requires.
+/// The last round is each round comment with the number of the last one. Below
+/// [`ROUNDS`], it may have no findings ([`unfixed`]). Its last comment must end as
+/// [`unended`] says, and its links are read by [`unlinked`]. A red-team PR labeled
+/// `oracle` needs the director's approval at `head`. `place` gives where a commit (a
+/// SHA or its prefix) is from `head` (`History::place`). `code_change` and
+/// `decision_change` give the first change to code or to a decision in a range, as a
+/// phrase, or `None` (`History::code_change`, `History::decision_change`).
 fn problems(
     record: &Record,
     head: &str,
@@ -289,18 +292,21 @@ fn problems(
              {FORMAT}"
         ));
     }
+    let mut before: Option<u32> = None;
     for (i, parsed) in rounds.iter().enumerate() {
         let last = i + 1 == rounds.len();
         match &parsed.round {
             Ok(round) => {
-                let later = i > 0 || round.number > 1;
+                let number = round.number;
+                problems.extend(misnumbered(round, before));
+                before = Some(number);
                 problems.extend(unnamed(
                     round,
                     &record.files,
+                    i == 0,
                     last,
                     code_change,
-                    (later && round.posted.as_str() >= DECISION_CUTOFF)
-                        .then_some(decision_change),
+                    decision_change,
                 )?);
             }
             Err(e) => {
@@ -315,15 +321,22 @@ fn problems(
         round: Ok(round), ..
     }) = rounds.last()
     {
-        if round.findings > 0 {
-            problems.push(format!(
-                "review round {} has findings ({}). Fix or answer them, then run \
-                 another round.",
-                round.number, round.findings
-            ));
-        }
-        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
-        problems.extend(unlinked(round, &record.files));
+        // The comments of the last round, which ends where the first of them ends.
+        let comments: Vec<&Round> = rounds
+            .iter()
+            .filter_map(|p| p.round.as_ref().ok())
+            .filter(|r| r.number == round.number)
+            .collect();
+        problems.extend(unfixed(&comments));
+        problems.extend(unended(
+            round,
+            &comments[0].end,
+            head,
+            place,
+            code_change,
+            decision_change,
+        )?);
+        problems.extend(unlinked(&comments, &record.files));
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -333,16 +346,110 @@ fn problems(
     Ok(problems)
 }
 
-/// The problem with the end of the last round, `round`, at `head`, where `place` is
-/// where its end is from `head`, or `None`.
+/// The problem when `comments`, the round comments of the last round, have findings
+/// below round [`ROUNDS`], or `None`.
+fn unfixed(comments: &[&Round]) -> Option<String> {
+    let number = comments.first()?.number;
+    let findings = comments
+        .iter()
+        .fold(0u32, |sum, r| sum.saturating_add(r.findings));
+    (findings > 0 && number < ROUNDS).then(|| {
+        format!(
+            "review round {number} has findings ({findings}). Fix or answer them, then \
+             run another round."
+        )
+    })
+}
+
+/// The problems with the number of `round`, after a round comment numbered `before`,
+/// or the first on its PR when `before` is `None`: from `ROUNDS_CUTOFF` it may not
+/// skip a number ([`skipped`]) or go above [`ROUNDS`] ([`uncapped`]).
+fn misnumbered(round: &Round, before: Option<u32>) -> Vec<String> {
+    if round.posted.as_str() < ROUNDS_CUTOFF {
+        return Vec::new();
+    }
+    let number = round.number;
+    [skipped(number, before), uncapped(number, before)]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// The problem when a round comment numbered `number` follows one numbered `before`
+/// by more than 1, or `None`.
+fn skipped(number: u32, before: Option<u32>) -> Option<String> {
+    let before = before?;
+    (number > before.saturating_add(1)).then(|| {
+        format!(
+            "review round {number} follows review round {before}. Number each round \
+             comment 1 above the round comment before it, or the same for a comment \
+             that only holds a late report or only checks a merge of the base that is \
+             not clean, or a merge and the commits that fix what it broke."
+        )
+    })
+}
+
+/// The problem when a round comment numbered `number` is above [`ROUNDS`] and above
+/// `before`, the number of the round comment before it, or is the first on its PR
+/// when `before` is `None`, or `None`.
+fn uncapped(number: u32, before: Option<u32>) -> Option<String> {
+    let Some(before) = before else {
+        return (number > ROUNDS).then(|| {
+            format!(
+                "review round {number} is the first round comment on the PR. Number it \
+                 {ROUNDS} or less: only a PR that replaces another before round \
+                 {ROUNDS} continues its count."
+            )
+        });
+    };
+    (number > ROUNDS && number > before).then(|| {
+        format!(
+            "review round {number} follows review round {before}. After round \
+             {ROUNDS}, number each round comment the same as the round comment before \
+             it."
+        )
+    })
+}
+
+/// The problem with the end of `round`, the last round comment, at `head`, where
+/// `place` gives where an end is from `head`, or `None`. An end that is
+/// [`Place::Off`] or [`Place::Unclean`] is a problem. From round [`ROUNDS`], so is a
+/// [`Place::Off`] `start`, the end of the first comment of the round, and a change to
+/// a decision from `start` to `head` (`decision_change`), when the `Public surface:`
+/// line of `round` names no item.
 fn unended(
     round: &Round,
+    start: &str,
     head: &str,
-    place: Place,
+    place: &dyn Fn(&str) -> Result<Place, String>,
     code_change: Change<'_>,
+    decision_change: Change<'_>,
 ) -> Result<Option<String>, String> {
-    let (number, end) = (round.number, &round.end);
-    if place == Place::Off {
+    let (number, end) = (round.number, round.end.as_str());
+    let at = place(end)?;
+    if number >= ROUNDS {
+        let first = if start == end { at } else { place(start)? };
+        let off = [(start, first), (end, at)]
+            .into_iter()
+            .find(|&(_, at)| at == Place::Off);
+        if let Some((end, _)) = off {
+            return Ok(Some(format!(
+                "review round {number} ends at {end}, which is not a commit on the \
+                 first-parent chain of the head {head}, or a merge of a branch other \
+                 than the base follows it. Correct the range of the round comment when \
+                 it names the wrong commit. Else bring the reviewed commits back onto \
+                 that chain, and make each merge after them a merge of the base."
+            )));
+        }
+    }
+    if at == Place::Unclean && number >= ROUNDS {
+        return Ok(Some(format!(
+            "review round {number} ends at {end}, not at the head {head}. Post a round \
+             comment numbered {number} that checks the merge of the base that is not \
+             clean, and ends at the head."
+        )));
+    }
+    if matches!(at, Place::Off | Place::Unclean) {
         return Ok(Some(format!(
             "review round {number} ends at {end}, not at the head {head}. A commit \
              after the round needs a new round; only a clean merge of the base, or a \
@@ -350,13 +457,26 @@ fn unended(
              does not."
         )));
     }
+    if number >= ROUNDS {
+        if round.ends.as_ref().is_some_and(|e| stated(&e.surface)) {
+            return Ok(None);
+        }
+        return Ok(decision_change(start, head)?.map(|change| {
+            format!(
+                "review round {number} ends at `{start}`, and the range from it to the \
+                 head `{head}` {change}. Add the change to the `Public surface:` line \
+                 of the round, with its approval (REVIEW ROUNDS in \
+                 `docs/decisions/operations/review-rounds.md`)."
+            )
+        }));
+    }
     if let Some(change) = code_change(end, head)? {
         return Ok(Some(format!(
             "review round {number} ends at `{end}`, and the range from it to the head \
              `{head}` {change}. A commit that changes code needs a new round."
         )));
     }
-    Ok((place == Place::Before && !round.fixed).then(|| {
+    Ok((at == Place::Before && !round.fixed).then(|| {
         format!(
             "review round {number} ends at `{end}`, not at the head `{head}`, and has \
              no `Text fixes:` line."
@@ -364,58 +484,79 @@ fn unended(
     }))
 }
 
-/// The problems with the links on the end lines of `round`, the last round of a PR
-/// that changes `files`: the first issue of its `Deferred:` line with no OK
-/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what its
-/// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
-/// [`LINK_CUTOFF`].
-fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
-    let bound = round.posted.as_str() >= LINK_CUTOFF;
-    let Some(ends) = round.ends.as_ref().filter(|_| bound) else {
-        return Vec::new();
-    };
-    let number = round.number;
+/// The problems with the links on the end lines of `comments`, the round comments of
+/// the last round of a PR that changes `files`: the first issue of a `Deferred:` line
+/// that has its OK ([`deferrals`]) on no line of `comments`, when a file is in a risk
+/// crate ([`RISK`]), and what the `Public surface:` line of the last comment lacks
+/// ([`unapproved`]). None for a comment posted before [`LINK_CUTOFF`].
+fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
+    fn ends(round: &Round) -> Option<(u32, &Ends)> {
+        let bound = round.posted.as_str() >= LINK_CUTOFF;
+        round
+            .ends
+            .as_ref()
+            .filter(|_| bound)
+            .map(|ends| (round.number, ends))
+    }
     let risky = files.iter().any(|file| {
         let file = file.to_ascii_lowercase();
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let problem = unokayed(&ends.deferred, &ends.breaks)
+    let lines: Vec<_> = comments
+        .iter()
+        .copied()
+        .filter_map(ends)
         .filter(|_| risky)
-        .map(|issue| {
+        .map(|(number, ends)| (number, deferrals(&ends.deferred, &ends.breaks)))
+        .collect();
+    let okayed: BTreeSet<&str> = lines
+        .iter()
+        .flat_map(|(_, line)| {
+            line.iter().filter(|(_, ok)| *ok).map(|(issue, _)| *issue)
+        })
+        .collect();
+    let unokayed = lines.iter().filter_map(|(number, line)| {
+        let mut unokayed = line
+            .iter()
+            .filter(|(issue, ok)| !ok && !okayed.contains(issue));
+        unokayed.next().map(|(issue, _)| {
             format!(
                 "review round {number} defers to {issue} with no link to the OK of the \
                  architect after it on its `Deferred:` line. Add the link, or the \
                  words `{UNRISKY}` after the issue when its work is in no risk crate. \
                  {LINK}"
             )
-        });
-    problem
-        .into_iter()
-        .chain(unapproved(number, &ends.surface))
-        .collect()
+        })
+    });
+    let last = comments.last().copied().and_then(ends);
+    let unapproved = last.and_then(|(number, ends)| unapproved(number, &ends.surface));
+    unokayed.chain(unapproved).collect()
 }
 
-/// The problems with the reviewers that `round` names for a PR that changes `files`.
-/// A later round may skip `breaker` when its range changes no code, which only the
-/// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must be on the head's chain. A
-/// round with a `decision_change` requires `architecture` too when that gives a phrase
-/// for its range. When `required` does not already ask for `architecture`, its problem
-/// gives the remedy, then the phrase.
+/// The problems with the reviewers that `round`, the `first` round comment on its PR
+/// when true, names for a PR that changes `files`. A round comment after the first may
+/// skip `breaker` when its range changes no code, which only the `last` round checks
+/// with `code_change`: a rebase can drop the range of an earlier round from the clone,
+/// but the last round's end must be on the head's chain. A round comment posted at or
+/// after `DECISION_CUTOFF`, after the first or numbered above 1, requires
+/// `architecture` too when `decision_change` gives a phrase for its range. When
+/// `required` does not already ask for `architecture`, its problem gives the remedy,
+/// then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
+    first: bool,
     last: bool,
     code_change: Change<'_>,
-    decision_change: Option<Change<'_>>,
+    decision_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
-    let mut missing: Vec<&str> = required(round, files)
+    let mut missing: Vec<&str> = required(round, files, first)
         .into_iter()
         .filter(|name| !round.reviewers.contains(*name))
         .collect();
-    if round.number > 1 && round.breakerless && missing.contains(&"breaker") {
+    if !first && round.breakerless && missing.contains(&"breaker") {
         missing.retain(|name| *name != "breaker");
         if last && let Some(change) = code_change(&round.from, &round.end)? {
             problems.push(format!(
@@ -433,7 +574,9 @@ fn unnamed(
     }
     if !round.reviewers.contains("architecture")
         && !missing.contains(&"architecture")
-        && let Some(decision_change) = decision_change
+        // A first comment numbered above 1 continues the count of the PR it replaces.
+        && (!first || round.number > 1)
+        && round.posted.as_str() >= DECISION_CUTOFF
         && let Some(change) = decision_change(&round.from, &round.end)?
     {
         problems.push(format!(
@@ -447,14 +590,15 @@ fn unnamed(
     Ok(problems)
 }
 
-/// The reviewers that `round` must name for a PR that changes `files`, by REVIEW
-/// TIERS in `docs/decisions/operations/review-tiers.md`: on round 1, `reviewer`, plus
-/// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
-/// `breaker` for a code PR; and `performance` when the round names a hot path.
-fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
+/// The reviewers that `round` must name for a PR that changes `files`, by REVIEW TIERS
+/// in `docs/decisions/operations/review-tiers.md`: on the `first` round comment,
+/// `reviewer`, plus `architecture` and `breaker` for a code PR; on a round comment
+/// after the `first`, `reviewer`, plus `breaker` for a code PR; and `performance` when
+/// the round names a hot path.
+fn required(round: &Round, files: &[String], first: bool) -> Vec<&'static str> {
     let code = files.iter().any(|f| tiered(f));
     let mut required = vec!["reviewer"];
-    if code && round.number <= 1 {
+    if code && first {
         required.push("architecture");
     }
     if code {
@@ -725,22 +869,25 @@ fn unbroken(value: &str) -> (String, Vec<usize>) {
     (text, breaks)
 }
 
-/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with
-/// the places `breaks` ([`Ends::breaks`]), with no OK: no comment link ([`links`])
-/// starts after its start, and the words [`UNRISKY`] are not between it and the next
-/// issue. A comment link that is an issue is no OK of itself.
-fn unokayed(deferred: &str, breaks: &[usize]) -> Option<String> {
+/// Each issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with the
+/// places `breaks` ([`Ends::breaks`]), in order, and whether it has an OK: a comment
+/// link ([`links`]) starts after its start, or the words [`UNRISKY`] are between it and
+/// the next issue. A comment link that is an issue is no OK of itself.
+fn deferrals<'a>(deferred: &'a str, breaks: &[usize]) -> Vec<(&'a str, bool)> {
     let lower = deferred.to_ascii_lowercase();
     let ok = links(deferred).last();
-    let mut issues = issues(deferred, breaks).peekable();
-    while let Some(issue) = issues.next() {
-        let next = issues.peek().map_or(deferred.len(), |next| next.start);
-        let okayed = ok.is_some_and(|ok| ok > issue.start);
-        if !okayed && !lower[issue.end..next].contains(UNRISKY) {
-            return Some(deferred[issue].to_string());
-        }
-    }
-    None
+    let issues: Vec<_> = issues(deferred, breaks).collect();
+    let nexts = issues.iter().skip(1).map(|next| next.start);
+    let nexts = nexts.chain(std::iter::once(deferred.len()));
+    issues
+        .iter()
+        .zip(nexts)
+        .map(|(issue, next)| {
+            let okayed = ok.is_some_and(|ok| ok > issue.start)
+                || lower[issue.end..next].contains(UNRISKY);
+            (&deferred[issue.clone()], okayed)
+        })
+        .collect()
 }
 
 /// The place of each issue in `value`, the value of a `Deferred:` line with the places
