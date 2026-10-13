@@ -4,8 +4,9 @@ use std::ffi::c_void;
 
 use super::{
     connector_opcua_calloc as calloc, connector_opcua_free as free,
-    connector_opcua_malloc as malloc, connector_opcua_realloc as realloc,
+    connector_opcua_malloc as malloc, connector_opcua_realloc as realloc, exhausted,
 };
+use crate::child;
 
 /// Asserts that `ptr` is a block for C, aligned to 16.
 fn assert_aligned(ptr: *mut c_void) {
@@ -213,4 +214,30 @@ fn asan_reports_a_write_before_a_block() {
             "{name}: {stderr}"
         );
     }
+}
+
+/// Stops the process through `exhausted` in a child process, and does nothing outside
+/// one.
+#[test]
+fn exhausts() {
+    if child::running() {
+        exhausted();
+    }
+}
+
+/// No test reaches a caller of `exhausted`: a constructor of `shim.c` gives NULL only
+/// when the global allocator fails, and an allocator that fails on demand is a mutable
+/// global.
+#[test]
+#[cfg(unix)]
+fn exhausted_aborts_with_the_size_of_a_header() {
+    use std::os::unix::process::ExitStatusExt;
+    const SIGABRT: i32 = 6;
+    let output = child::output("alloc::tests::exhausts", &[]);
+    assert_eq!(output.status.signal(), Some(SIGABRT));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "memory allocation of 16 bytes failed\nnote: run with `RUST_BACKTRACE=1` \
+         environment variable to display a backtrace\n"
+    );
 }
