@@ -55,16 +55,16 @@
   #1028 checks each open of the hub, this check moves there. Deferred to
   https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
   `--json` (https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141794585),
-  and MCP. The client reader of #1749 does not replace this form. Lost: `serve` replies
-  with the text, so that `--json` and MCP each need a second reply; `status` asks the
-  supervisors, a second source of status with its own access check. Decided by
-  `laptop.architect-2` (2026-10-13T00:58:53Z,
+  and MCP. The client reader of #1749 does not replace the request `{"status": {}}`.
+  Lost: `serve` replies with the text, so that `--json` and MCP each need a second
+  reply; `status` asks the supervisors, a second source of status with its own access
+  check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the text
-  and the JSON, 2026-10-08T06:29:21Z, that comment). The one form, `read` on each
-  channel that `status` reads, and no `next` until the deferred time of the next
-  restart: `laptop.architect-2` (2026-10-13T01:00:07Z,
+  and the JSON, 2026-10-08T06:29:21Z, that comment). The one request `{"status": {}}`
+  for the CLI and MCP, `read` on each channel that `status` reads, and no `next` until
+  the deferred time of the next restart: `laptop.architect-2` (2026-10-13T01:00:07Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). The
   reader by the channels of the spec in use, in place of a reader of
   `<connector>.status.*`: `laptop.architect-2` (2026-10-13T01:52:03Z,
