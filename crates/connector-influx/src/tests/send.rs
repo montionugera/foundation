@@ -420,6 +420,13 @@ fn acks_a_batch_after_its_204() {
 /// request with 500 and a frame of one sample time goes before frames of `rows` sample
 /// times each, written while that request is in flight.
 fn lines_of_each_request(rows: &[usize]) -> Vec<usize> {
+    let rows: Vec<_> = rows.iter().map(|&count| (count, 1.0)).collect();
+    lines_of_each_request_of(&rows)
+}
+
+/// As [`lines_of_each_request`], with each `(count, value)` of `rows` a frame of
+/// `count` sample times at which each channel holds `value`.
+fn lines_of_each_request_of(rows: &[(usize, f64)]) -> Vec<usize> {
     let rows = rows.to_vec();
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
@@ -436,9 +443,9 @@ fn lines_of_each_request(rows: &[usize]) -> Vec<usize> {
             1,
             "the first request is in flight"
         );
-        for count in rows {
+        for (count, value) in rows {
             first += 10_000;
-            write(&mut writer, first, &vec![(1.0, 2.0); count]);
+            write(&mut writer, first, &vec![(value, value); count]);
         }
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
@@ -457,6 +464,21 @@ fn reads_no_frame_into_a_batch_of_5000_lines_or_more() {
     assert_eq!(
         lines_of_each_request(&[2_500, 2_499, 1, 3_000, 2_000]),
         [1, 1, 5_000, 5_000]
+    );
+}
+
+/// A sample time at which each value is NaN gives no line, so it does not count
+/// toward the 5,000 lines of a full batch.
+#[test]
+fn counts_no_line_toward_a_full_batch_for_a_sample_time_of_only_nan() {
+    assert_eq!(
+        lines_of_each_request_of(&[
+            (2_500, f64::NAN),
+            (2_500, f64::NAN),
+            (1, 1.0),
+            (1, 1.0)
+        ]),
+        [1, 1, 2]
     );
 }
 

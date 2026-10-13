@@ -6,7 +6,8 @@
 //! `FRAMES` frames to one batch with `Batch::add`, then takes its body with
 //! `Batch::take`, as the send loop does for one request. Only these two calls are
 //! timed. The figures are per frame: the ns of each round, at percentiles over the
-//! rounds, the ns for each sample of a channel at p50, and the allocations.
+//! rounds, the ns for each sample of a channel at p50, and the allocations. It checks
+//! that `Batch::add` makes no allocation after the warm-up rounds.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -129,6 +130,10 @@ async fn bench(
         let (taken, (ns, allocs)) = timed(|| batch.take());
         body = taken.expect("a batch").0.len();
         if round >= WARMUP {
+            assert_eq!(
+                figures.1, 0,
+                "{channels} x {samples}: add allocates nothing"
+            );
             nanos.push((figures.0 + ns) / u64::try_from(FRAMES).expect("few"));
             allocations += figures.1 + allocs;
         }
