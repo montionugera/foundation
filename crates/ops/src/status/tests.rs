@@ -90,6 +90,51 @@ fn kinds() -> Table {
         .with("steady", Steady)
         .with("failing", Failing)
         .with("forging", Forging)
+        .with("wide", Wide)
+}
+
+/// A kind that names the counts of [`counts`] and `extra`.
+struct Wide;
+
+impl kind::Kind for Wide {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        let mut channels = counts();
+        channels.counts.push(name("extra"));
+        Ok(channels)
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
+        context.cancel().wait().await;
+        Ok(())
+    }
+}
+
+#[test]
+fn gives_unknown_while_the_hub_lacks_one_status_channel_of_the_spec() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        applied_alone(&node, &connector("site.a", "wide", "edge")).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
 }
 
 /// A kind whose run ends with a device error whose text, from the device, holds a

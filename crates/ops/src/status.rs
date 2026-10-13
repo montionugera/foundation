@@ -96,20 +96,22 @@ impl Placed<'_> {
         self.channels.iter().map(|(name, _)| *name)
     }
 
-    /// Whether each channel of `received` has the key and the sample type that the
-    /// spec gives its name. The frame holds its index, so this checks the index too.
+    /// Whether the channels of `received` are the status channels of the spec, each
+    /// with the key and the sample type that the spec gives its name. The frame holds
+    /// its index, so this checks the index too.
     fn defines(&self, received: &Received<'_>) -> bool {
-        let set = received.set();
-        received.view().iter().all(|(entry, _)| {
-            let found = &set.entries()[entry];
-            let name = received.name(entry);
-            let mut defined = self.channels.iter();
-            defined
-                .find(|(defined, _)| defined.as_str() == name)
-                .is_some_and(|(_, channel)| {
-                    channel.key == found.key && sample(channel) == found.data_type
-                })
-        })
+        let (set, view) = (received.set(), received.view());
+        view.iter().count() == self.channels.len()
+            && view.iter().all(|(entry, _)| {
+                let found = &set.entries()[entry];
+                let name = received.name(entry);
+                let mut defined = self.channels.iter();
+                defined
+                    .find(|(defined, _)| defined.as_str() == name)
+                    .is_some_and(|(_, channel)| {
+                        channel.key == found.key && sample(channel) == found.data_type
+                    })
+            })
     }
 }
 
