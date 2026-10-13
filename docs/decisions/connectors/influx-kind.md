@@ -21,9 +21,9 @@
   ONE NODE (the goal of https://github.com/synnaxlabs/foundation/issues/2583). Each
   is a string of 1 to 4,096 bytes (`influx.bad-database`, `influx.bad-bucket`,
   `influx.bad-org`), so the query of the write URI holds both names when each byte is
-  encoded. A `database` with a `bucket` is `influx.two-targets`, and with an `org`
-  `influx.org-with-database`. No target, or a `bucket` with no `org`, is
-  `document.missing-attribute`. A `database` is written with
+  encoded. A `database` with a `bucket` is `influx.two-targets`, and an `org` with a
+  `database` is `influx.org-with-database`. No target, or a `bucket` with no `org`,
+  is `document.missing-attribute`. A `database` is written with
   `POST /write?db=<database>&precision=ns`, and a `bucket` with
   `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
   InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in

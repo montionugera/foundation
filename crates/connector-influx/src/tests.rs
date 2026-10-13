@@ -200,7 +200,7 @@ fn with(mut config: Document, key: &str, value: &Value) -> Document {
 fn refuses_a_database_that_is_empty_or_not_a_string() {
     for (database, message) in [
         (string(""), "the database name is empty"),
-        (Value::Integer(1), "a database is a string, not an integer"),
+        (Value::Integer(1), "`database` is a string, not an integer"),
     ] {
         assert_eq!(
             Kind.parse(&with(influx(), "database", &database)),
@@ -352,7 +352,7 @@ fn refuses_a_bucket_and_an_org_that_are_empty_or_not_strings() {
             refused(
                 "influx.bad-org",
                 63,
-                "an org is a string, not an integer",
+                "`org` is a string, not an integer",
                 "Write the name of an InfluxDB org of at most 4096 bytes, such as \
                  \"plant\"",
             ),

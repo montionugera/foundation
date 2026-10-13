@@ -198,8 +198,7 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
             "Remove it, or write a `bucket` in place of the `database`".into(),
         )]),
         (Some(database), None, None) => {
-            let database =
-                name(&database.value, BAD_DATABASE, "database", "a database");
+            let database = name(&database.value, BAD_DATABASE, "database");
             database.map(Target::Database).map_err(|error| vec![error])
         }
         (None, None, _) => Err(vec![read::missing(
@@ -211,13 +210,13 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
                 .into(),
         )]),
         (None, Some(bucket), _) => {
-            let bucket = name(&bucket.value, BAD_BUCKET, "bucket", "a bucket");
+            let bucket = name(&bucket.value, BAD_BUCKET, "bucket");
             let org = read::required(
                 config,
                 kind::NOUN,
                 None,
                 "org",
-                |value| name(value, BAD_ORG, "org", "an org"),
+                |value| name(value, BAD_ORG, "org"),
                 "Add an `org` attribute with the InfluxDB organization, such as \
                  \"plant\". InfluxDB 3 takes any name"
                     .into(),
@@ -233,13 +232,8 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
 }
 
 /// Reads the name of an InfluxDB `noun`, such as a database: a string of 1 to
-/// [`NAME_MAX`] bytes. `a_noun` is the noun with its article.
-fn name(
-    value: &Value,
-    code: Code,
-    noun: &str,
-    a_noun: &str,
-) -> Result<String, Diagnostic> {
+/// [`NAME_MAX`] bytes.
+fn name(value: &Value, code: Code, noun: &str) -> Result<String, Diagnostic> {
     let bad = |message: String| {
         Diagnostic::new(
             code,
@@ -260,7 +254,7 @@ fn name(
             text.len()
         ))),
         value::Kind::String(text) => Ok(text.to_string()),
-        kind => Err(bad(format!("{a_noun} is a string, not {}", kind.noun()))),
+        kind => Err(bad(format!("`{noun}` is a string, not {}", kind.noun()))),
     }
 }
 
