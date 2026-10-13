@@ -486,9 +486,9 @@ fn unended(
 
 /// The problems with the links on the end lines of `comments`, the round comments of
 /// the last round of a PR that changes `files`: the first issue of a `Deferred:` line
-/// with no OK ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what the
-/// `Public surface:` line of the last comment lacks ([`unapproved`]). None for a
-/// comment posted before [`LINK_CUTOFF`].
+/// that has its OK ([`deferrals`]) on no line of `comments`, when a file is in a risk
+/// crate ([`RISK`]), and what the `Public surface:` line of the last comment lacks
+/// ([`unapproved`]). None for a comment posted before [`LINK_CUTOFF`].
 fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
     fn ends(round: &Round) -> Option<(u32, &Ends)> {
         let bound = round.posted.as_str() >= LINK_CUTOFF;
@@ -503,9 +503,24 @@ fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let deferrals = comments.iter().copied().filter_map(ends).filter(|_| risky);
-    let unokayed = deferrals.filter_map(|(number, ends)| {
-        unokayed(&ends.deferred, &ends.breaks).map(|issue| {
+    let lines: Vec<_> = comments
+        .iter()
+        .copied()
+        .filter_map(ends)
+        .filter(|_| risky)
+        .map(|(number, ends)| (number, deferrals(&ends.deferred, &ends.breaks)))
+        .collect();
+    let okayed: BTreeSet<&str> = lines
+        .iter()
+        .flat_map(|(_, line)| {
+            line.iter().filter(|(_, ok)| *ok).map(|(issue, _)| *issue)
+        })
+        .collect();
+    let unokayed = lines.iter().filter_map(|(number, line)| {
+        let mut unokayed = line
+            .iter()
+            .filter(|(issue, ok)| !ok && !okayed.contains(issue));
+        unokayed.next().map(|(issue, _)| {
             format!(
                 "review round {number} defers to {issue} with no link to the OK of the \
                  architect after it on its `Deferred:` line. Add the link, or the \
@@ -854,22 +869,25 @@ fn unbroken(value: &str) -> (String, Vec<usize>) {
     (text, breaks)
 }
 
-/// The first issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with
-/// the places `breaks` ([`Ends::breaks`]), with no OK: no comment link ([`links`])
-/// starts after its start, and the words [`UNRISKY`] are not between it and the next
-/// issue. A comment link that is an issue is no OK of itself.
-fn unokayed(deferred: &str, breaks: &[usize]) -> Option<String> {
+/// Each issue ([`issues`]) of `deferred`, the value of a `Deferred:` line with the
+/// places `breaks` ([`Ends::breaks`]), in order, and whether it has an OK: a comment
+/// link ([`links`]) starts after its start, or the words [`UNRISKY`] are between it and
+/// the next issue. A comment link that is an issue is no OK of itself.
+fn deferrals<'a>(deferred: &'a str, breaks: &[usize]) -> Vec<(&'a str, bool)> {
     let lower = deferred.to_ascii_lowercase();
     let ok = links(deferred).last();
-    let mut issues = issues(deferred, breaks).peekable();
-    while let Some(issue) = issues.next() {
-        let next = issues.peek().map_or(deferred.len(), |next| next.start);
-        let okayed = ok.is_some_and(|ok| ok > issue.start);
-        if !okayed && !lower[issue.end..next].contains(UNRISKY) {
-            return Some(deferred[issue].to_string());
-        }
-    }
-    None
+    let issues: Vec<_> = issues(deferred, breaks).collect();
+    let nexts = issues.iter().skip(1).map(|next| next.start);
+    let nexts = nexts.chain(std::iter::once(deferred.len()));
+    issues
+        .iter()
+        .zip(nexts)
+        .map(|(issue, next)| {
+            let okayed = ok.is_some_and(|ok| ok > issue.start)
+                || lower[issue.end..next].contains(UNRISKY);
+            (&deferred[issue.clone()], okayed)
+        })
+        .collect()
 }
 
 /// The place of each issue in `value`, the value of a `Deferred:` line with the places

@@ -143,7 +143,8 @@
   checks a merge does not move the end of the round (REVIEW ROUNDS), and because REVIEW
   ROUNDS has the author add each such change to that line with its approval. Each other
   problem of that round stays: the reviewers that it requires, the OK of each deferral
-  in a risk crate on the `Deferred:` line of each of its round comments, the approvals
+  in a risk crate, after the issue on the `Deferred:` line of one of its round comments,
+  the approvals
   of its `Public surface:` line, and the director's approval of a red-team PR labeled
   `oracle`. The check does not check that each finding of that round has its fix commit
   or its deferral, or that each commit after it that changes code fixes a defect of that

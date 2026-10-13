@@ -4102,6 +4102,15 @@ fn a_merge_check_after_round_3_does_not_hide_a_deferral_of_round_3_with_no_ok() 
 }
 
 #[test]
+fn a_deferral_of_the_last_round_needs_its_ok_on_one_comment_of_the_round() {
+    let linked = || deferred(&format!("#12 ({OK})"));
+    assert_eq!(risk(vec![deferred("#12"), linked()]), Vec::<String>::new());
+    assert_eq!(risk(vec![linked(), deferred("#12")]), Vec::<String>::new());
+    let other = deferred(&format!("#13 ({OK})"));
+    assert_eq!(risk(vec![deferred("#12"), other]), no_ok("#12"));
+}
+
+#[test]
 fn a_first_round_comment_numbered_2_names_a_missing_architecture_once() {
     let record = record(vec![bound(&clean(2, "reviewer, breaker", "a..b"))]);
     assert_eq!(
