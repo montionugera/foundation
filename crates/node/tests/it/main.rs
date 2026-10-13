@@ -87,6 +87,30 @@ fn plan_and_apply_run_on_the_node() {
     );
 }
 
+/// `status` reaches the running node, which refuses it while it places no connector.
+#[test]
+fn status_runs_on_the_node() {
+    let mut rig = Rig::new();
+    rig.start();
+    let output = rig.run(&["status"], b"");
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (
+            Some(1),
+            "",
+            concat!(
+                "error[ops.denied]: no access policy gives `@admin` the action `read` ",
+                "on a request that names no definition\n",
+                "fix: Ask an admin of the region for an access policy that allows it\n",
+            )
+        )
+    );
+}
+
 #[test]
 fn mcp_answers_each_request_on_its_own_line_until_input_closes() {
     let input = concat!(
