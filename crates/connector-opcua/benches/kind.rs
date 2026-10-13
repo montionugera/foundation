@@ -28,8 +28,9 @@ fn main() {
     println!("ns per tick over {TICKS} ticks");
     println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
     for nodes in COUNTS {
-        let (_, ticks) = kind::ticks(nodes, WARMUP + TICKS, time);
-        let mut ticks = ticks[WARMUP..].to_vec();
+        let mut ticks = kind::run(nodes, WARMUP + TICKS, time)
+            .ticks
+            .split_off(WARMUP);
         ticks.sort_unstable();
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
         println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
@@ -37,30 +38,31 @@ fn main() {
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");
     println!("{:<10} {:>10} {:>10}", "nodes", "start p50", "parse p50");
     for nodes in STARTS {
-        let starts = (0..RUNS).map(|_| kind::ticks(nodes, 1, time).0);
-        let texts: Vec<_> = (1..=nodes)
-            .map(|n| (format!("plant.v{n}"), format!("ns=2;i={n}")))
-            .collect();
-        let reads = texts.iter().map(|(channel, node)| (&**channel, &**node));
-        let config = kind::config("opc.tcp://plc:4840", reads);
+        let starts = (0..RUNS).map(|_| kind::run(nodes, 1, time).start);
+        let config = kind::config("opc.tcp://plc:4840", nodes);
         let parses = (0..PARSES).map(|_| {
-            let start = Instant::now();
-            let parsed = connector_opcua::Kind::default().parse(&config);
-            let nanos = Instant::now().duration_since(start).as_nanos();
-            assert!(parsed.is_ok(), "the config parses");
-            u64::try_from(nanos).expect("a parse takes under 2^64 ns")
+            let mut parsed = None;
+            let nanos = time(&mut || {
+                parsed = Some(connector_opcua::Kind::default().parse(&config));
+            });
+            let errors = parsed.and_then(Result::err);
+            assert!(
+                errors.is_none(),
+                "the config of {nodes} reads parses: {errors:?}"
+            );
+            nanos
         });
         let (start, parse) = (median(starts.collect()), median(parses.collect()));
         println!("{nodes:<10} {start:>10} {parse:>10}");
     }
 }
 
-/// The ns of `poll`.
-fn time(poll: &mut dyn FnMut()) -> u64 {
+/// The ns of `work`.
+fn time(work: &mut dyn FnMut()) -> u64 {
     let start = Instant::now();
-    poll();
+    work();
     let nanos = Instant::now().duration_since(start).as_nanos();
-    u64::try_from(nanos).expect("a poll takes under 2^64 ns")
+    u64::try_from(nanos).expect("the work takes under 2^64 ns")
 }
 
 fn median(mut values: Vec<u64>) -> u64 {
