@@ -59,12 +59,11 @@
   https://github.com/synnaxlabs/foundation/pull/2545#issuecomment-6138748015): with a
   mesh, it goes to the hub's link of the session, and `node` answers each
   `Served::Request` with `ops::serve` for the subject of its hello, then `Reply::send`;
-  with no mesh, it is still rejected. Shard 0 gives its hub the access rules of the
-  root region of the spec in use, and of each later spec, the first before it takes
-  the first session. At the
-  stop, each session and stream future drops, then the mesh, and shard 0 waits for the
-  mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and before
-  `Node::join` returns, so a restart at once opens the log:
+  with no mesh, it is still rejected. Shard 0 gives its hub the access rules of the root
+  region of the spec in use, and of each later spec, the first before it takes the first
+  session. At the stop, each session and stream future drops, then the mesh, and shard 0
+  waits for the mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and
+  before `Node::join` returns, so a restart at once opens the log:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051658475. For a
   node with a mesh, this supersedes the stop order of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.

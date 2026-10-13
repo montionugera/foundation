@@ -135,11 +135,10 @@ state on `main`.
   region has the peer's public key, once, at the header (NODE PORT). With a region, it
   gives a client's to the hub too, which admits the client by its hello against the
   access rules of the root region of the spec in use, and of each later spec; `node`
-  answers each request that the hub verified
-  with `ops::serve`. With no region, it rejects a client's. `node` stops and resets
-  each other stream until its protocol
-  has a server. It reads no datagram yet (#1661). It admits each member of the region to
-  a session, and gives other peers at most 256 places by default
+  answers each request that the hub verified with `ops::serve`. With no region, it
+  rejects a client's. `node` stops and resets each other stream until its protocol has a
+  server. It reads no datagram yet (#1661). It admits each member of the region to a
+  session, and gives other peers at most 256 places by default
   (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
   for the key of a node. At the bound, the oldest place frees for the new peer, and its
   sessions close unless its peer is now a member. So a peer outside the region keeps its
