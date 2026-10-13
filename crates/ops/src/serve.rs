@@ -15,7 +15,6 @@ use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::apply::Effect;
 use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
@@ -281,30 +280,15 @@ pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
     Ok((output, plan))
 }
 
-/// The output of the reply `body` of [`serve`] to a request of `apply`.
-///
-/// # Errors
-///
-/// Each error of [`alone`].
-pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
-    alone(body, "apply")
-}
-
-/// The output of the reply `body` of [`serve`] to a request of `status`.
-///
-/// # Errors
-///
-/// Each error of [`alone`].
-pub(crate) fn status_reply(body: &[u8]) -> Result<status::Output, Error> {
-    alone(body, "status")
-}
-
 /// The output of the reply `body` of [`serve`] to a request of `operation`.
 ///
 /// # Errors
 ///
 /// Each error of [`answer`], and [`Error::Reply`] when bytes follow the output.
-fn alone<T: DeserializeOwned>(body: &[u8], operation: &str) -> Result<T, Error> {
+pub(crate) fn reply<T: DeserializeOwned>(
+    body: &[u8],
+    operation: &str,
+) -> Result<T, Error> {
     let (output, rest) = answer(body)?;
     if !rest.is_empty() {
         return Err(bad_reply(format!(

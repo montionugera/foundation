@@ -82,7 +82,7 @@ where
 /// - [`Error::Read`] when the plan file does not read.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::apply_reply`].
+/// - Each error of [`serve::reply`].
 pub(crate) async fn apply<C>(
     plan: &Path,
     paths: &Paths,
@@ -97,7 +97,7 @@ where
     };
     let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes)?, reach).await?;
-    let effect = serve::apply_reply(&reply)?;
+    let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
         file: name.to_owned(),
         effect,
@@ -109,7 +109,7 @@ where
 /// # Errors
 ///
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::status_reply`].
+/// - Each error of [`serve::reply`].
 pub(crate) async fn status<C>(
     reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
 ) -> Result<status::Output, Error>
@@ -117,7 +117,7 @@ where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
     let reply = request(serve::STATUS_REQUEST, reach).await?;
-    serve::status_reply(&reply)
+    serve::reply(&reply, "status")
 }
 
 /// The most bytes that one request holds.
