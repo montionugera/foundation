@@ -13,6 +13,8 @@ use spec::definition::Definition;
 use types::authority::Authority;
 use types::channel::Key;
 use types::frame::{Form, Label, Path as Stream};
+use types::name::Name;
+use types::sample::Type;
 use types::time::Span;
 
 use super::{Class, Failure, Output, State, Status};
@@ -563,41 +565,57 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
     });
 }
 
+/// The status channels of `site.a` of `steady` but the index, with the sample type of
+/// each.
+fn status_channels() -> Vec<(Name, Type)> {
+    let counts = [name("in"), name("confirmed")];
+    let channels = connector::status::channels(&name("site.a"), &counts);
+    channels.expect("short status names").1
+}
+
 /// The text of user channels with the status names of `site.a` of `steady`, each data
-/// channel on the index `index`, and `state` of the type `state`.
+/// channel on the index `index`, and `site.a.status.state` of the type `state`.
 fn user_status(index: &str, state: &str) -> String {
-    let on = |last: &str, data_type: &str| {
+    let on = |(channel, sample): (Name, Type)| {
+        let sample = sample.to_string();
+        let data_type = if channel.as_str() == "site.a.status.state" {
+            state
+        } else {
+            &sample
+        };
         format!(
-            "channel \"site.a.status.{last}\" {{\n  data_type = \"{data_type}\"\n  \
+            "channel \"{channel}\" {{\n  data_type = \"{data_type}\"\n  \
              index = \"{index}\"\n}}\n"
         )
     };
-    [
-        format!("channel \"{index}\" {{ kind = \"index\" }}\n"),
-        on("state", state),
-        on("class", "u8"),
-        on("restarts", "u64"),
-        on("backoff", "duration"),
-        on("error", "string"),
-        on("in", "u64"),
-        on("confirmed", "u64"),
-        EDGE.to_owned(),
-    ]
-    .concat()
+    let index = format!("channel \"{index}\" {{ kind = \"index\" }}\n");
+    let channels = status_channels().into_iter().map(on);
+    std::iter::once(index)
+        .chain(channels)
+        .chain([EDGE.to_owned()])
+        .collect()
 }
 
-/// A sample of each data channel of [`user_status`], with `state` as the sample of
-/// `state`.
-fn user_samples(state: &[u8]) -> [(&'static str, &[u8]); 7] {
-    [
-        ("site.a.status.state", state),
-        ("site.a.status.class", &[0]),
-        ("site.a.status.restarts", &[0; 8]),
-        ("site.a.status.backoff", &[0; 8]),
-        ("site.a.status.error", &[0; 4]),
-        ("site.a.status.in", &[0; 8]),
-        ("site.a.status.confirmed", &[0; 8]),
-    ]
+/// Writes one frame of `index` and each data channel of [`user_status`], with `state`
+/// as the sample of `site.a.status.state` and zeros for each other.
+async fn write_user(fixture: &Fixture, index: &str, state: &[u8]) {
+    let samples: Vec<_> = status_channels()
+        .into_iter()
+        .map(|(channel, sample)| {
+            let bytes = if channel.as_str() == "site.a.status.state" {
+                state.to_vec()
+            } else {
+                // Four zeros are one empty text.
+                vec![0; sample.width().unwrap_or(4)]
+            };
+            (channel, bytes)
+        })
+        .collect();
+    let samples: Vec<_> = samples
+        .iter()
+        .map(|(channel, bytes)| (channel.as_str(), &bytes[..]))
+        .collect();
+    write(fixture, index, &samples).await;
 }
 
 #[test]
@@ -606,7 +624,7 @@ fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
         let node = create_node(&fixture, mesh);
         let old = user_status("site.a.status.time", "uuid");
         applied(&fixture, &node, &old).await;
-        write(&fixture, "site.a.status.time", &user_samples(&[7; 16])).await;
+        write_user(&fixture, "site.a.status.time", &[7; 16]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
@@ -641,7 +659,7 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status()
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &user_status("x.time", "u8")).await;
-        write(&fixture, "x.time", &user_samples(&[0])).await;
+        write_user(&fixture, "x.time", &[0]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
