@@ -22,11 +22,10 @@
   hub does not hold as the spec defines them yet (no channel, a key, a sample type, or
   an index of another spec), as `follow` defines the hub before the runs, and one whose
   status channels an apply removes during the read. A frame of a channel that `config`
-  carries over with its key and definition into a status channel is the status until
-  the supervisor writes its first frame
-  (https://github.com/synnaxlabs/foundation/issues/2531).
-  When the reader of a connector does
-  not open or ends for another cause, `status` fails with `ops.channel-read`, which
+  carries over with its key and definition into a status channel is the status until the
+  supervisor writes its first frame
+  (https://github.com/synnaxlabs/foundation/issues/2531). When the reader of a connector
+  does not open or ends for another cause, `status` fails with `ops.channel-read`, which
   names the connector and gives the text of the hub. `status` needs `read` on each
   status channel of a connector through the `Check` of `plan` and `apply`, and leaves
   out each connector without it. When the node places a connector and the subject reads
@@ -73,9 +72,8 @@
   `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102).
-  That check
-  finds another key, sample type, or index under a status name, and the gap of a
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102). That
+  check finds another key, sample type, or index under a status name, and the gap of a
   channel that `config` carries over: `laptop.architect-2` (2026-10-13T03:32:04Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137583351, which
   corrects the scope of
