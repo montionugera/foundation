@@ -3901,14 +3901,6 @@ fn a_first_round_comment_numbered_2_of_a_code_pr_requires_architecture() {
 /// `round` posted at the cutoff of the round numbers.
 fn numbered(round: &str) -> Comment {
     Comment {
-        created: NUMBER_CUTOFF.to_string(),
-        ..bot(&rated(round))
-    }
-}
-
-/// `round` posted at the cutoff of the round cap.
-fn uncapped(round: &str) -> Comment {
-    Comment {
         created: ROUNDS_CUTOFF.to_string(),
         ..bot(&rated(round))
     }
@@ -3931,21 +3923,21 @@ fn fails_a_round_comment_numbered_more_than_1_above_the_one_before_it() {
 fn fails_a_round_comment_numbered_above_3_and_above_the_one_before_it() {
     let fourth = ROUND.replace("## Review round 3", "## Review round 4");
     assert_eq!(
-        check(&reviewed(vec![uncapped(ROUND), uncapped(&fourth)])),
+        check(&reviewed(vec![numbered(ROUND), numbered(&fourth)])),
         vec![
             "review round 4 follows review round 3. After round 3, number each round \
              comment the same as the round comment before it."
         ]
     );
     assert_eq!(
-        check(&reviewed(vec![uncapped(ROUND), uncapped(ROUND)])),
+        check(&reviewed(vec![numbered(ROUND), numbered(ROUND)])),
         Vec::<String>::new()
     );
     assert_eq!(
         check(&reviewed(vec![
-            uncapped(ROUND),
+            numbered(ROUND),
             bot(&fourth),
-            uncapped(&fourth)
+            numbered(&fourth)
         ])),
         Vec::<String>::new()
     );
@@ -3956,18 +3948,18 @@ fn fails_a_first_round_comment_numbered_above_3() {
     let fourth = later("reviewer, architecture, breaker")
         .replace("## Review round 3", "## Review round 4");
     assert_eq!(
-        check(&record(vec![uncapped(&fourth)])),
+        check(&record(vec![numbered(&fourth)])),
         vec![
             "review round 4 is the first round comment on the PR. Number it 3 or less: \
              only a PR that replaces another before round 3 continues its count."
         ]
     );
     let third = later("reviewer, architecture, breaker");
-    assert_eq!(check(&record(vec![uncapped(&third)])), Vec::<String>::new());
+    assert_eq!(check(&record(vec![numbered(&third)])), Vec::<String>::new());
 }
 
 #[test]
-fn passes_round_comments_above_3_posted_before_the_cutoff_of_the_round_cap() {
+fn passes_round_comments_above_3_posted_before_the_cutoff_of_the_round_numbers() {
     let fourth = later("reviewer, architecture, breaker")
         .replace("## Review round 3", "## Review round 4");
     let fifth = fourth.replace("## Review round 4", "## Review round 5");

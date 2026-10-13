@@ -103,12 +103,8 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// that came before it.
 const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
-/// A round comment posted before this UTC time may have any number, so that the rule
-/// does not fail the rounds that came before it.
-const NUMBER_CUTOFF: &str = "2026-10-14T00:00:00Z";
-
 /// A round comment posted before this UTC time, when the round cap reached `main`, may
-/// have a number above [`ROUNDS`], since the rules on `main` ran its rounds.
+/// have any number, since the rules on `main` ran its rounds.
 const ROUNDS_CUTOFF: &str = "9999-12-31T23:59:59Z";
 
 /// The most review rounds that a PR gets. A last round of this number or above may
@@ -371,15 +367,17 @@ fn found(rounds: &[Parsed], number: u32) -> u32 {
 }
 
 /// The problems with the number of `round`, after a round comment numbered `before`,
-/// or the first on its PR when `before` is `None`: from `NUMBER_CUTOFF` it may not skip
-/// a number ([`skipped`]), and from `ROUNDS_CUTOFF` it may not go above [`ROUNDS`]
-/// ([`uncapped`]).
+/// or the first on its PR when `before` is `None`: from `ROUNDS_CUTOFF` it may not
+/// skip a number ([`skipped`]) or go above [`ROUNDS`] ([`uncapped`]).
 fn misnumbered(round: &Round, before: Option<u32>) -> Vec<String> {
-    let posted = round.posted.as_str();
+    if round.posted.as_str() < ROUNDS_CUTOFF {
+        return Vec::new();
+    }
     let number = round.number;
-    let skip = (posted >= NUMBER_CUTOFF).then(|| skipped(number, before));
-    let cap = (posted >= ROUNDS_CUTOFF).then(|| uncapped(number, before));
-    skip.into_iter().chain(cap).flatten().collect()
+    [skipped(number, before), uncapped(number, before)]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The problem when a round comment numbered `number` follows one numbered `before`
