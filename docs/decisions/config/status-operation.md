@@ -3,7 +3,7 @@
   replies `{"output": <Output>}`. `ops::status::Output` derives `Serialize`,
   `Deserialize`, and `JsonSchema`, and gives its terminal text with `text()`: a table of
   connector, kind, state, address, in, and confirmed, then a line `<name>: <class>
-  error: <text>` for each connector with an error. The CLI makes it a `Response`
+  error: <text>` for each connector with an error. The column `in` gives the count `in`: the samples that the connector read and the home applied (`laptop.architect-2`, 2026-10-13T04:35:20Z, https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099). The CLI makes it a `Response`
   variant, as #1744 does for `plan::Output` (OPS OUTPUT). `--json` and the MCP tool
   later give the same value, with no change to the operation, the type, or the reply.
   The connectors are each connector of the spec in use whose `node` is this node, in
