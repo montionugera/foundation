@@ -1,5 +1,7 @@
 //! The config of one `opcua` connector, read from its document.
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::ffi::CString;
 
 use connector::kind;
@@ -130,7 +132,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                 .into(),
         ));
     }
-    let mut channels: Vec<(Name, &Block)> = Vec::with_capacity(blocks.len());
+    let mut channels: BTreeMap<Name, &Block> = BTreeMap::new();
     let mut reads = Vec::with_capacity(blocks.len());
     for block in blocks {
         let fix = "Name the channel of the block, such as `read \"plant.spike\"`";
@@ -150,17 +152,20 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
         let node = node.map_err(|error| diagnostics.push(error));
         diagnostics.extend(read::unknown(&block.body, OF, &["node_id"], &[]));
         let Ok(channel) = channel else { continue };
-        if let Some((_, first)) = channels.iter().find(|(old, _)| *old == channel) {
-            diagnostics.push(repeated(&channel, block, first));
-            continue;
+        match channels.entry(channel) {
+            Entry::Occupied(first) => {
+                diagnostics.push(repeated(first.key(), block, first.get()));
+            }
+            Entry::Vacant(slot) => {
+                if let Ok(node) = node {
+                    reads.push(Read {
+                        channel: slot.key().clone(),
+                        node,
+                    });
+                }
+                slot.insert(block);
+            }
         }
-        if let Ok(node) = node {
-            reads.push(Read {
-                channel: channel.clone(),
-                node,
-            });
-        }
-        channels.push((channel, block));
     }
     reads
 }
