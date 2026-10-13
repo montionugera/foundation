@@ -177,14 +177,18 @@ unsafe extern "C" {
     pub(crate) fn shim_server_add_double(
         server: *mut Server,
         namespace: u16,
-        node: u32,
+        number: u32,
+        name: *const u8,
+        length: usize,
         value: f64,
     ) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
         namespace: u16,
-        node: u32,
+        number: u32,
+        name: *const u8,
         length: usize,
+        size: usize,
     ) -> u32;
     pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;

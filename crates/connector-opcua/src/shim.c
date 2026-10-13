@@ -663,11 +663,24 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
+/* Gives the node of `namespace` with the name of `length` bytes at `name`, which it
+ * borrows, or with the number `number` when `name` is NULL. */
+UA_NodeId shim_node(UA_UInt16 namespace, UA_UInt32 number, const UA_Byte *name,
+                    size_t length) {
+    if(name == NULL)
+        return UA_NODEID_NUMERIC(namespace, number);
+    UA_NodeId node = {namespace, UA_NODEIDTYPE_STRING, {.string = {0}}};
+    node.identifier.string.length = length;
+    node.identifier.string.data = (UA_Byte *)(uintptr_t)name;
+    return node;
+}
+
+/* Asks `client` for the Value of the node of `shim_node`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
  * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
  * ends at its answer or at the close of the channel. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
+UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 number,
+                               const UA_Byte *name, size_t length,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
     /* open62541 takes the timeout hint of a request from the config, and makes 0
@@ -677,7 +690,7 @@ UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
     UA_StatusCode status = UA_Client_readValueAttribute_async(
-        client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+        client, shim_node(namespace, number, name, length), callback, data, request);
     config->timeout = timeout;
     return status;
 }

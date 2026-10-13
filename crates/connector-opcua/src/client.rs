@@ -14,6 +14,7 @@ use types::time::Span;
 
 use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::ffi::{self, Status};
+use crate::node::Node;
 
 #[cfg(test)]
 mod tests;
@@ -25,13 +26,6 @@ const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
     "the other half of the sends of a connection is for the requests of open62541"
 );
-
-/// A numeric node of an OPC UA server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Node {
-    pub(crate) namespace: u16,
-    pub(crate) key: u32,
-}
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
@@ -141,7 +135,7 @@ impl Client {
     /// after that timeout, its wait included, the status of open62541 when it refuses
     /// the request, the status of the answer or of its value, or `BadTypeMismatch` when
     /// the value is not a scalar Double.
-    pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
+    pub(crate) async fn read(&mut self, node: &Node) -> Result<f64, Status> {
         let deadline = self.clock.now() + self.timeout;
         if self.reads.pending.get() == READS {
             self.connections
@@ -157,12 +151,16 @@ impl Client {
                 .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
         }
         let mut request = 0;
-        // SAFETY: the client lives, and `reads` outlives it.
+        let (namespace, number, name, length) = ffi::node(node);
+        // SAFETY: the client lives, `reads` outlives it, and open62541 encodes the
+        // request before it returns, so it keeps no pointer to the name of `node`.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
-                node.namespace,
-                node.key,
+                namespace,
+                number,
+                name,
+                length,
                 answer,
                 ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                 &raw mut request,

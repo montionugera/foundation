@@ -36,6 +36,11 @@ pub mod fuzz;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod link;
+#[cfg_attr(
+    not(any(test, feature = "sim")),
+    expect(dead_code, reason = "only `bench` uses it until the kind of #435")
+)]
+mod node;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod server;

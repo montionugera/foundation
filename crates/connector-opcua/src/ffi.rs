@@ -6,6 +6,15 @@
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::mem::offset_of;
+use std::ptr;
+
+/// Gives the arguments of `shim_node` for `node`, whose name they borrow.
+pub(crate) fn node(node: &crate::node::Node) -> (u16, u32, *const u8, usize) {
+    match &node.key {
+        crate::node::Key::Number(number) => (node.namespace, *number, ptr::null(), 0),
+        crate::node::Key::Name(name) => (node.namespace, 0, name.as_ptr(), name.len()),
+    }
+}
 
 /// An open62541 status code.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -409,7 +418,9 @@ unsafe extern "C" {
     pub(crate) fn shim_client_read(
         client: *mut Client,
         namespace: u16,
-        node: u32,
+        number: u32,
+        name: *const u8,
+        length: usize,
         callback: Read,
         data: *mut c_void,
         request: *mut u32,

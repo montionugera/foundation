@@ -15,13 +15,13 @@ use env::net::Net;
 use env::rng::Rng;
 
 use super::PORT;
-use crate::client::Node;
 use crate::connection;
+use crate::node::{Key, Node};
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {
     namespace: 1,
-    key: 1000,
+    key: Key::Number(1000),
 };
 /// The value of [`VALUE`].
 const DOUBLE: f64 = 1.5;
@@ -69,7 +69,7 @@ impl Server {
         // SAFETY: the close below deletes the server before the manager drops, and a
         // panic leaks the manager.
         let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(VALUE, DOUBLE);
+        server.add_double(&VALUE, DOUBLE);
         let this = Self {
             clock,
             net,
@@ -126,7 +126,7 @@ impl Client {
     ///
     /// If the read fails, with its status, or gives another value.
     pub async fn read(&mut self) {
-        match self.0.read(VALUE).await {
+        match self.0.read(&VALUE).await {
             Ok(value) => assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}"),
             Err(status) => panic!("a read failed: {status:?}"),
         }

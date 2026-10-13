@@ -49,36 +49,42 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* Adds to `server` the variable `node` of `namespace`, which holds the Double `value`,
- * under the Objects folder. */
+/* In `shim.c`. */
+UA_NodeId shim_node(UA_UInt16 namespace, UA_UInt32 number, const UA_Byte *name,
+                    size_t length);
+
+/* Adds to `server` the variable of `shim_node`, which holds the Double `value`, under
+ * the Objects folder. */
 UA_StatusCode shim_server_add_double(UA_Server *server, UA_UInt16 namespace,
-                                     UA_UInt32 node, UA_Double value) {
+                                     UA_UInt32 number, const UA_Byte *name,
+                                     size_t length, UA_Double value) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
     UA_Variant_setScalar(&attributes.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
     attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     return UA_Server_addVariableNode(
-        server, UA_NODEID_NUMERIC(namespace, node),
+        server, shim_node(namespace, number, name, length),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
         UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "value"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
 }
 
-/* Adds to `server` the variable `node` of `namespace`, which holds a ByteString of
- * `length` zero bytes, under the Objects folder. */
+/* Adds to `server` the variable of `shim_node`, which holds a ByteString of `size`
+ * zero bytes, under the Objects folder. */
 UA_StatusCode shim_server_add_bytes(UA_Server *server, UA_UInt16 namespace,
-                                    UA_UInt32 node, size_t length) {
+                                    UA_UInt32 number, const UA_Byte *name,
+                                    size_t length, size_t size) {
     UA_ByteString bytes;
-    UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, length);
+    UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, size);
     if(status != UA_STATUSCODE_GOOD)
         return status;
-    memset(bytes.data, 0, length);
+    memset(bytes.data, 0, size);
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
     UA_Variant_setScalar(&attributes.value, &bytes, &UA_TYPES[UA_TYPES_BYTESTRING]);
     attributes.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     status = UA_Server_addVariableNode(
-        server, UA_NODEID_NUMERIC(namespace, node),
+        server, shim_node(namespace, number, name, length),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
         UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "bytes"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
