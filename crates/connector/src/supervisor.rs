@@ -1072,9 +1072,9 @@ mod tests {
         assert_eq!(texts, ["", "busy", "busy", "busy", "", ""]);
     }
 
-    /// A kind that reads the secret `plant.token` at the start of its run, then
+    /// A kind that reads the secret of its name at the start of its run, then
     /// returns.
-    struct Locked;
+    struct Locked(&'static str);
 
     impl Kind for Locked {
         type Config = ();
@@ -1095,7 +1095,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
-            let value = ctx.secret(&name("plant.token")).await?;
+            let value = ctx.secret(&name(self.0)).await?;
             assert_eq!(value.expose(), b"t");
             Ok(())
         }
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn heals_a_run_when_the_missing_secret_is_written() {
         let (result, statuses) = run_on(|node, tasks| async move {
-            let kinds = Table::new().with("locked", Locked);
+            let kinds = Table::new().with("locked", Locked("plant.token"));
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.locked").await;
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
@@ -1130,6 +1130,34 @@ mod tests {
         let missing = "the secret plant.token: the store has no value: write it to the \
                        file /data/secrets/plant.token";
         assert_eq!(texts, ["", missing, missing, missing, "", ""]);
+    }
+
+    #[test]
+    fn ends_a_run_whose_secret_name_the_store_cannot_hold_without_a_restart() {
+        let (result, statuses) = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("locked", Locked("plant.Token"));
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(ms(10_000)).await;
+            (result, statuses.borrow().clone())
+        });
+        let message = "the secret plant.Token has a name that the store cannot hold";
+        let fix = "Rename the secret in lowercase letters, since the file store holds \
+                   no name with a capital letter";
+        let code = Code::new("connector.bad-secret-name");
+        let bad = Diagnostic::new(code, None, message.into(), fix.into());
+        assert_eq!(config_errors(result), [bad]);
+        assert_eq!(states(&statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let shown = format!("{message}. {fix}");
+        assert_eq!(texts, ["", &shown, &shown]);
     }
 
     #[test]
