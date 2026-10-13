@@ -140,10 +140,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
         let steady = supervise(&fixture, &node, &["site.a"]).await;
         applied(&fixture, &node, &connector("site.a", "wide", "edge")).await;
         steady.cancel();
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, rest) = status(&node, "@admin").await;
-        let waited = clock.now() - start;
+        let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
         assert!(
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
@@ -176,10 +173,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
         let wide = supervise(&fixture, &node, &["site.a"]).await;
         applied(&fixture, &node, &connector("site.a", "shifted", "edge")).await;
         wide.cancel();
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, rest) = status(&node, "@admin").await;
-        let waited = clock.now() - start;
+        let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
         assert!(
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
@@ -391,6 +385,18 @@ async fn status(node: &Node, subject: &str) -> (Value, Vec<u8>) {
     (head, reply[end + 1..].to_vec())
 }
 
+/// The reply of [`status`], and the time of the simulated clock that it waited.
+async fn timed_status(
+    fixture: &Fixture,
+    node: &Node,
+    subject: &str,
+) -> (Value, Vec<u8>, Span) {
+    let clock = fixture.sim.clock();
+    let start = clock.now();
+    let (head, rest) = status(node, subject).await;
+    (head, rest, clock.now() - start)
+}
+
 /// The status of `name` of `kind` with no frame of its status.
 fn unknown(name: &str, kind: &str) -> Value {
     json!({
@@ -494,10 +500,8 @@ fn waits_one_second_in_all_for_connectors_that_no_supervisor_started() {
             .map(|name| connector(name, "steady", "edge"))
             .collect();
         applied(&fixture, &node, &text.concat()).await;
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, _) = status(&node, "@admin").await;
-        assert_eq!(clock.now() - start, Span::SECOND);
+        let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
+        assert_eq!(waited, Span::SECOND);
         let connectors: Vec<_> =
             names.iter().map(|name| unknown(name, "steady")).collect();
         assert_eq!(head, json!({ "output": { "connectors": connectors } }));
@@ -514,11 +518,11 @@ fn replies_once_each_connector_gave_its_frame() {
         ];
         applied(&fixture, &node, &text.concat()).await;
         supervise(&fixture, &node, &["site.a", "site.b"]).await;
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, _) = status(&node, "@admin").await;
-        let waited = clock.now() - start;
-        assert!(waited < Span::MILLISECOND, "waited {waited:?}");
+        let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
+        assert!(
+            waited < Span::MILLISECOND,
+            "the reply waited {waited}, not under 1 ms"
+        );
         let states = head["output"]["connectors"]
             .as_array()
             .expect("a list")
@@ -535,10 +539,7 @@ fn gives_unknown_for_a_frame_with_no_status() {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
         write_user(&fixture, "site.a.status.time", &[9]).await;
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, _) = status(&node, "@admin").await;
-        let waited = clock.now() - start;
+        let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
         assert!(
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
@@ -717,10 +718,8 @@ fn waits_one_second_from_the_request_also_while_the_node_reads_a_new_spec() {
         });
         let text: Vec<_> = std::iter::once(a).chain(extra).collect();
         applied_alone(&node, &text.concat()).await;
-        let clock = fixture.sim.clock();
-        let start = clock.now();
-        let (head, _) = status(&node, "@admin").await;
-        assert_eq!(clock.now() - start, Span::SECOND);
+        let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
+        assert_eq!(waited, Span::SECOND);
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
         assert_eq!(head, expected);
