@@ -32,8 +32,15 @@ fn main() {
 /// is a file, so only git knows where these are.
 fn watch_refs() {
     if git(&["rev-parse", "--show-ref-format"]).as_deref() == Some("reftable") {
-        // `HEAD` and each ref file are stubs: git writes each ref change here.
+        // `HEAD` and each ref file are stubs. The stack of a worktree holds its `HEAD`,
+        // and the common stack holds each branch.
         watch(&git_path("reftable"));
+        let common = git(&["rev-parse", "--git-common-dir"]).expect("a git folder");
+        watch(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(common)
+                .join("reftable"),
+        );
         return;
     }
     watch(&git_path("HEAD"));

@@ -184,6 +184,23 @@ fn a_commit_and_a_switch_in_a_worktree_rebuild() {
     }
 }
 
+/// Git refuses each other move of a branch that a worktree has checked out.
+#[test]
+fn an_update_of_the_ref_of_a_worktree_from_another_rebuilds() {
+    for (name, init) in [
+        ("moved", &[][..]),
+        ("reftable-moved", &["--ref-format=reftable"]),
+    ] {
+        let root = create_probe(name, init);
+        let worktree = create_worktree(&root);
+        let first = git(&worktree, &["rev-parse", "HEAD"]);
+        assert_eq!(built(&worktree), first, "{name}");
+        let second = commit(&root);
+        git(&root, &["update-ref", "refs/heads/other", &second]);
+        assert_eq!(built(&worktree), second, "{name}");
+    }
+}
+
 #[test]
 fn a_broken_ref_stops_the_build() {
     let root = create_probe("broken", &[]);
