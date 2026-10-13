@@ -624,14 +624,25 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     config.logging = &loop_of(el)->logger;
     config.eventLoop = el;
     config.externalEventLoop = true;
-    if(UA_ClientConfig_setDefault(&config) != UA_STATUSCODE_GOOD) {
+    /* open62541 ignores a failed copy of the application URI and leaves it empty. */
+    if(UA_ClientConfig_setDefault(&config) != UA_STATUSCODE_GOOD ||
+       !config.clientDescription.applicationUri.data) {
         UA_ClientConfig_clear(&config);
         return NULL;
     }
     /* open62541 checks the chunks of a message that it sends and of one that it takes
      * against this count, not against the count of the peer. */
     config.localConnectionConfig.localMaxChunkCount = chunks;
-    return UA_Client_newWithConfig(&config);
+    UA_Client *client = UA_Client_newWithConfig(&config);
+    /* open62541 ignores a failed copy of the URI of namespace 0 and leaves it empty. */
+    UA_String ns0 = UA_STRING_STATIC("http://opcfoundation.org/UA/");
+    UA_UInt16 index;
+    if(client &&
+       UA_Client_getNamespaceIndex(client, ns0, &index) != UA_STATUSCODE_GOOD) {
+        UA_Client_delete(client);
+        return NULL;
+    }
+    return client;
 }
 
 /* Gives the timeout of the requests of `client`, in ms. */
