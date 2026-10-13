@@ -5,14 +5,10 @@ use codec::Variable;
 use document::diagnostic::{Code, Diagnostic};
 use hub::Hub;
 use hub::reader::{Config, Mode};
-use spec::channel::{Channel, Data, Kind};
-use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::authority::Authority;
-use types::channel;
 use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
-use types::sample::{Scalar, Type};
 use types::time::Span;
 
 use super::Reading;
@@ -47,30 +43,16 @@ enum Column {
 
 /// The reading of the newest frame of a `Latest` reader of `select`, after a test
 /// does `steps` to the status channels of `plant.modbus`, whose kind names the count
-/// `in`. With `extra`, the spec also has `plant.modbus.status.extra` of that type on
-/// the status index.
-fn read(
-    steps: Vec<Step>,
-    select: &'static [&'static str],
-    extra: Option<Type>,
-) -> Option<Reading> {
+/// `in`.
+fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
     run_on(move |node, tasks| async move {
         let (hub, _) = hub::testing::open(env(&node, tasks)).await;
         let connector = name("plant.modbus");
         let counts = vec![name("in")];
-        let mut definitions: BTreeMap<Name, Definition> =
+        let definitions: BTreeMap<Name, Definition> =
             create_status(&connector, &counts, STATUS)
                 .into_iter()
                 .collect();
-        if let Some(extra) = extra {
-            let data = Data::new(STATUS, None, DataType::Sample(extra), None);
-            let channel = Channel {
-                key: channel::Key::from_u128(STATUS.as_u128() + 50),
-                kind: Kind::Data(data.expect("the data of a channel")),
-            };
-            let extra = name("plant.modbus.status.extra");
-            definitions.insert(extra, Definition::Channel(channel));
-        }
         hub.set_definitions(definitions.iter());
         let clock = node.clock();
         let opened =
@@ -203,42 +185,36 @@ const ALL: &[&str] = &["plant.modbus.status.*"];
 const NO_BACKOFF: &[&str] = &[ALL[0], "!plant.modbus.status.backoff"];
 const NO_RESTARTS: &[&str] = &[ALL[0], "!plant.modbus.status.restarts"];
 const NO_ERROR: &[&str] = &[ALL[0], "!plant.modbus.status.error"];
-const U64: Type = Type::Scalar(Scalar::U64);
-
 #[test]
 fn reads_a_running_connector_and_its_counts() {
-    let got = read(vec![Step::Start, Step::Count(7)], ALL, None);
+    let got = read(vec![Step::Start, Step::Count(7)], ALL);
     assert_eq!(got, Some(reading(State::Running, 0, None, 7)));
 }
 
 #[test]
 fn reads_the_error_of_a_run_that_ends() {
-    let got = read(vec![Step::Start, device()], ALL, None);
+    let got = read(vec![Step::Start, device()], ALL);
     let want = reading(State::Ending, 0, Some((Class::Device, "busy")), 0);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn reads_a_connector_that_restarts() {
-    let got = read(vec![Step::Start, device(), Step::Wait], ALL, None);
+    let got = read(vec![Step::Start, device(), Step::Wait], ALL);
     let want = reading(State::Restarting, 0, Some((Class::Device, "busy")), 0);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn reads_the_restarts_and_keeps_the_last_error_after_a_restart() {
-    let got = read(
-        vec![Step::Start, device(), Step::Wait, Step::Start],
-        ALL,
-        None,
-    );
+    let got = read(vec![Step::Start, device(), Step::Wait, Step::Start], ALL);
     let want = reading(State::Running, 1, Some((Class::Device, "busy")), 0);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn reads_a_stopped_connector_whose_last_run_returned_ok() {
-    let got = read(vec![Step::Start, Step::End(Ok(())), Step::Stop], ALL, None);
+    let got = read(vec![Step::Start, Step::End(Ok(())), Step::Stop], ALL);
     assert_eq!(got, Some(reading(State::Stopped, 0, None, 0)));
 }
 
@@ -252,41 +228,19 @@ fn reads_the_class_of_a_config_and_a_retry_error() {
     );
     let text = bad.to_string();
     let config = Step::End(Err(kind::Error::Config(vec![bad])));
-    let got = read(vec![Step::Start, config], ALL, None);
+    let got = read(vec![Step::Start, config], ALL);
     let want = reading(State::Ending, 0, Some((Class::Config, &text)), 0);
     assert_eq!(got, Some(want));
     let retry = Step::End(Err(kind::Error::Retry("again".into())));
-    let got = read(vec![Step::Start, retry], ALL, None);
+    let got = read(vec![Step::Start, retry], ALL);
     let want = reading(State::Ending, 0, Some((Class::Retry, "again")), 0);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn gives_none_for_a_frame_with_no_channel_of_the_supervisor() {
-    let got = read(vec![Step::Start], &["plant.modbus.status.in"], None);
+    let got = read(vec![Step::Start], &["plant.modbus.status.in"]);
     assert_eq!(got, None);
-}
-
-#[test]
-fn reads_a_u64_channel_of_the_spec_on_the_status_index_as_a_count() {
-    let mut columns = columns([2, 0, 0, 0, 0], "");
-    columns.push(("extra", Column::Numbers(vec![5])));
-    let got = read(vec![Step::Program(columns)], ALL, Some(U64));
-    let mut want = reading(State::Stopped, 0, None, 0);
-    want.counts.insert(name("extra"), 5);
-    assert_eq!(got, Some(want));
-}
-
-#[test]
-fn skips_a_wide_channel_of_the_spec_on_the_status_index() {
-    let wide = Type::Array {
-        element: Scalar::F64,
-        len: 4,
-    };
-    let mut columns = columns([2, 0, 0, 0, 0], "");
-    columns.push(("extra", Column::Numbers(vec![7])));
-    let got = read(vec![Step::Program(columns)], ALL, Some(wide));
-    assert_eq!(got, Some(reading(State::Stopped, 0, None, 0)));
 }
 
 /// A frame of the supervisor's channels and `in`, as [`columns`] gives them.
@@ -310,20 +264,20 @@ fn columns(values: [u64; 5], error: &'static str) -> Vec<(&'static str, Column)>
 
 #[test]
 fn reads_a_frame_that_a_program_writes() {
-    let got = read(vec![frame([1, 3, 2, 9, 4], "again")], ALL, None);
+    let got = read(vec![frame([1, 3, 2, 9, 4], "again")], ALL);
     let want = reading(State::Restarting, 2, Some((Class::Retry, "again")), 4);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn gives_none_for_a_value_that_no_state_has() {
-    let got = read(vec![frame([4, 0, 0, 0, 0], "")], ALL, None);
+    let got = read(vec![frame([4, 0, 0, 0, 0], "")], ALL);
     assert_eq!(got, None);
 }
 
 #[test]
 fn gives_none_for_a_value_that_no_class_has() {
-    let got = read(vec![frame([0, 4, 0, 0, 0], "busy")], ALL, None);
+    let got = read(vec![frame([0, 4, 0, 0, 0], "busy")], ALL);
     assert_eq!(got, None);
 }
 
@@ -336,31 +290,31 @@ fn reads_the_newest_of_many_samples() {
         ("in", Column::Numbers(vec![1, 9])),
         ("error", Column::Texts(vec!["", "busy"])),
     ]);
-    let got = read(vec![step], ALL, None);
+    let got = read(vec![step], ALL);
     let want = reading(State::Stopped, 3, Some((Class::Device, "busy")), 9);
     assert_eq!(got, Some(want));
 }
 
 #[test]
 fn reads_a_frame_with_no_backoff() {
-    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_BACKOFF, None);
+    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_BACKOFF);
     assert_eq!(got, Some(reading(State::Stopped, 1, None, 6)));
 }
 
 #[test]
 fn gives_none_for_a_frame_with_no_restarts() {
-    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_RESTARTS, None);
+    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_RESTARTS);
     assert_eq!(got, None);
 }
 
 #[test]
 fn gives_none_for_a_class_with_no_error() {
-    let got = read(vec![frame([3, 2, 0, 0, 0], "busy")], NO_ERROR, None);
+    let got = read(vec![frame([3, 2, 0, 0, 0], "busy")], NO_ERROR);
     assert_eq!(got, None);
 }
 
 #[test]
 fn reads_no_error_for_class_0_with_no_error() {
-    let got = read(vec![frame([0, 0, 0, 0, 3], "")], NO_ERROR, None);
+    let got = read(vec![frame([0, 0, 0, 0, 3], "")], NO_ERROR);
     assert_eq!(got, Some(reading(State::Running, 0, None, 3)));
 }

@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use codec::Variable;
 use hub::reader::Received;
 use types::name::Name;
-use types::sample::{Scalar, Type};
+use types::sample::Type;
 
-use super::{Class, State, TIME, last};
+use super::{Class, State, TIME, segment};
 
 #[cfg(test)]
 mod tests;
@@ -27,9 +27,9 @@ pub struct Reading {
 }
 
 impl Reading {
-    /// The newest status in `received`, a frame of a reader that selects
-    /// `<connector>.status.*`. A count is each `u64` channel that the supervisor does
-    /// not write. Returns `None` when the frame holds no sample of `state`, `class`,
+    /// The newest status in `received`, a frame of a reader of the status channels of
+    /// one connector: their index and each channel on it. A count is each channel that
+    /// the supervisor does not write. Returns `None` when the frame holds no sample of `state`, `class`,
     /// or `restarts`, a value of `state` or `class` that no state or class has, or a
     /// class with no sample of `error`.
     ///
@@ -63,7 +63,7 @@ struct Samples {
 
 impl Samples {
     /// The newest samples in `received`, each channel by the last segment of its name.
-    /// Each `u64` channel that the supervisor does not write is a count.
+    /// Each channel that the supervisor does not write is a count.
     ///
     /// # Panics
     ///
@@ -79,25 +79,24 @@ impl Samples {
         };
         for (entry, bytes) in view.iter() {
             let name = received.name(entry);
-            let segment = name.rsplit('.').next().unwrap_or(name);
+            let last = name.rsplit_once('.').map_or(name, |(_, last)| last);
             let entry = &set.entries()[entry];
             let range = view.range(entry.group);
             let count = range.expect("invariant: a view holds each index").count;
             let sample = || newest(entry.data_type, count, bytes);
-            match segment {
-                TIME | last::BACKOFF => {}
-                last::STATE => samples.state = Some(number(&sample())),
-                last::CLASS => samples.class = Some(number(&sample())),
-                last::RESTARTS => samples.restarts = Some(number(&sample())),
-                last::ERROR => {
+            match last {
+                TIME | segment::BACKOFF => {}
+                segment::STATE => samples.state = Some(number(&sample())),
+                segment::CLASS => samples.class = Some(number(&sample())),
+                segment::RESTARTS => samples.restarts = Some(number(&sample())),
+                segment::ERROR => {
                     let text = String::from_utf8(sample());
                     samples.text = Some(text.expect("invariant: decode checks UTF-8"));
                 }
-                _ if entry.data_type == Type::Scalar(Scalar::U64) => {
-                    let name = segment.parse().expect("invariant: a segment of a name");
+                _ => {
+                    let name = last.parse().expect("invariant: a segment of a name");
                     samples.counts.insert(name, number(&sample()));
                 }
-                _ => {}
             }
         }
         samples

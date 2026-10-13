@@ -42,15 +42,15 @@ const TIME: &str = "time";
 /// The channels that the supervisor writes, with the sample type of each. `error`
 /// is last, so it is entry [`ERROR`] of a frame.
 const SUPERVISOR: [(&str, Type); 5] = [
-    (last::STATE, Type::Scalar(Scalar::U8)),
-    (last::CLASS, Type::Scalar(Scalar::U8)),
-    (last::RESTARTS, Type::Scalar(Scalar::U64)),
-    (last::BACKOFF, Type::Scalar(Scalar::Span)),
-    (last::ERROR, Type::String),
+    (segment::STATE, Type::Scalar(Scalar::U8)),
+    (segment::CLASS, Type::Scalar(Scalar::U8)),
+    (segment::RESTARTS, Type::Scalar(Scalar::U64)),
+    (segment::BACKOFF, Type::Scalar(Scalar::Span)),
+    (segment::ERROR, Type::String),
 ];
 
 /// The last segment of the name of each channel that the supervisor writes.
-mod last {
+mod segment {
     pub(super) const STATE: &str = "state";
     pub(super) const CLASS: &str = "class";
     pub(super) const RESTARTS: &str = "restarts";

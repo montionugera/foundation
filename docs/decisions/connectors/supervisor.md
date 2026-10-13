@@ -340,6 +340,8 @@
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088037219, items 1
   to 3). A reader of the status uses the public `status::State`, `status::Class`, and
   `status::Reading`, and `Reading::of(received)` reads the newest status from a frame
-  of a reader of `<connector>.status.*`, each channel by the last segment of its name
-  (`laptop.architect-2`, 2026-10-13T01:10:40Z:
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057).
+  of a reader of the status index and each channel on it, each channel by the last
+  segment of its name (`laptop.architect-2`, 2026-10-13T01:10:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057). Each
+  channel on the status index that the supervisor does not write is a count, because
+  `config` refuses a channel that points at a channel that a connector implies.
