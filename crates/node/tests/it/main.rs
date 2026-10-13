@@ -20,21 +20,38 @@ fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("UTF-8")
 }
 
+/// The commit of `HEAD` that `git` reads here, or `None` when it fails.
+fn head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| text(&output.stdout).trim().to_owned())
+}
+
 #[test]
 fn an_operation_prints_its_output_and_exits_0() {
-    let output = Rig::new().run(&["version"], b"");
-    assert_eq!(
-        (
-            output.status.code(),
-            text(&output.stdout),
-            text(&output.stderr)
-        ),
-        (
-            Some(0),
-            format!("{}\n", env!("CARGO_PKG_VERSION")).as_str(),
-            ""
-        )
-    );
+    let commit = head();
+    let short = commit.as_deref().map_or("unknown", |commit| &commit[..12]);
+    let line = format!("{} ({short})\n", env!("CARGO_PKG_VERSION"));
+    for args in [&["version"][..], &["--version"]] {
+        let output = Rig::new().run(args, b"");
+        assert_eq!(
+            (
+                output.status.code(),
+                text(&output.stdout),
+                text(&output.stderr)
+            ),
+            (Some(0), line.as_str(), ""),
+            "{args:?}"
+        );
+    }
+    let output = Rig::new().run(&["version", "--json"], b"");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(json["commit"].as_str(), commit.as_deref());
 }
 
 #[test]

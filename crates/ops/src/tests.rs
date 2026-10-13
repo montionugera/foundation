@@ -194,15 +194,57 @@ fn json_output_parses_back_to_the_typed_output() {
 }
 
 #[test]
-fn version_prints_the_crate_version() {
-    let version = env!("CARGO_PKG_VERSION");
-    let text = cli(&["version"]);
-    assert_eq!(
-        (text.status, text.stdout.as_str()),
-        (0, format!("{version}\n").as_str())
-    );
+fn version_prints_the_crate_version_and_the_commit() {
     let json = cli(&["version", "--json"]);
-    assert_eq!(json.stdout, format!("{{\"version\":\"{version}\"}}\n"));
+    let output: Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(
+        output,
+        json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("FOUNDATION_COMMIT"),
+        })
+    );
+    let commit = option_env!("FOUNDATION_COMMIT").map_or("unknown", |c| &c[..12]);
+    let line = format!("{} ({commit})\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!((cli(&["version"]).stdout, json.status), (line, 0));
+}
+
+#[test]
+fn the_version_flag_runs_the_operation_version() {
+    for (flag, operation) in [
+        (&["--version"][..], &["version"][..]),
+        (&["--version", "--json"], &["version", "--json"]),
+        (&["-V"], &["version"]),
+    ] {
+        assert_eq!(cli(flag), cli(operation), "{flag:?}");
+    }
+}
+
+#[test]
+fn version_writes_twelve_digits_of_the_commit_or_unknown() {
+    let commit = "8e29d7d536cd11b8243439baa91128f6ed9ee497";
+    let output = |commit: Option<&str>| {
+        Response::Version(operation::Version {
+            version: "0.0.0".to_owned(),
+            commit: commit.map(str::to_owned),
+        })
+    };
+    let built = output(Some(commit));
+    assert_eq!(
+        (built.text(), built.json()),
+        (
+            "0.0.0 (8e29d7d536cd)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": commit })
+        )
+    );
+    let unknown = output(None);
+    assert_eq!(
+        (unknown.text(), unknown.json()),
+        (
+            "0.0.0 (unknown)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": null })
+        )
+    );
 }
 
 #[test]
