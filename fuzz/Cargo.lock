@@ -320,6 +320,7 @@ dependencies = [
  "hub",
  "hyper",
  "loom",
+ "spec",
  "types",
 ]
 
@@ -327,9 +328,12 @@ dependencies = [
 name = "connector-influx"
 version = "0.0.0"
 dependencies = [
+ "bytes",
+ "codec",
  "connector",
  "document",
  "http",
+ "hub",
  "types",
  "unicode-properties",
 ]
@@ -346,8 +350,12 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "block",
  "cc",
+ "connector",
+ "document",
  "env",
+ "hub",
  "types",
 ]
 
@@ -866,6 +874,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",
@@ -873,6 +882,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-opcua",
  "crc32c",
  "document",
  "env",
@@ -956,6 +966,7 @@ dependencies = [
  "connector",
  "document",
  "env",
+ "hub",
  "mesh",
  "schemars",
  "serde",

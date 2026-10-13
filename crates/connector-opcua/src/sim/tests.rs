@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
@@ -36,7 +37,8 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
     let node = sim.node(node::Config::default());
     sim.run_on(&node, move |node, _| async move {
         let listener = listen(&node);
-        let url = format!("opc.tcp://{}", listener.local());
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
         let mut rng = node.entropy().rng();
         let variables = Variables::new(&[SPIKE, DIP]);
         let (clock, spike) = (node.clock(), SPIKE.parse::<Node>().expect("a node"));
@@ -50,7 +52,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             for quality in [Quality::GOOD, BAD] {
                 variables.change(quality);
                 let before = clock.now();
-                reads.push(client.read(&spike).await);
+                reads.push(client.read_one(&spike).await);
                 times.push((before, clock.now()));
             }
             client.close().await;
@@ -99,7 +101,8 @@ fn a_server_has_room_for_4_sessions() {
     let node = sim.node(node::Config::default());
     sim.run_on(&node, move |node, _| async move {
         let listener = listen(&node);
-        let url = format!("opc.tcp://{}", listener.local());
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
         let mut rng = node.entropy().rng();
         let variables = Variables::new(&[SPIKE]);
         let spike = SPIKE.parse::<Node>().expect("a node");
@@ -112,7 +115,7 @@ fn a_server_has_room_for_4_sessions() {
                 clients.push(connect.await.expect("connect"));
             }
             for client in &mut clients {
-                reads.push(client.read(&spike).await);
+                reads.push(client.read_one(&spike).await);
             }
             let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
             fifth = connect.await.err();

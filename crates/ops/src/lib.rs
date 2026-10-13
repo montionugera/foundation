@@ -7,6 +7,7 @@ use std::path::Path;
 
 use env::paths::Paths;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 mod apply;
@@ -21,6 +22,7 @@ mod plan;
 mod remote;
 mod serve;
 mod start;
+mod status;
 #[cfg(test)]
 mod tests;
 mod used;
@@ -54,10 +56,11 @@ pub enum Run {
 /// gets an Invalid Request error. A closed `output` ends the run with no error,
 /// because its reader has left.
 ///
-/// `plan` and `apply` run on the node of `foundation-data`. Each reads the files it
-/// names through `paths`, calls `reach` with that data directory once, and calls
-/// what it gives with the body of one request. A [`Failure`] of either is the error
-/// of the command, with status 1. `start` and the other operations call neither.
+/// `plan`, `apply`, and `status` run on the node of `foundation-data`. Each reads the
+/// files it names through `paths`, calls `reach` with that data directory once, and
+/// calls what it gives with the body of one request. A [`Failure`] of either is the
+/// error of the command, with status 1. `start` and the other operations call
+/// neither.
 ///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.
@@ -75,28 +78,35 @@ where
     let args: Vec<OsString> = args.into_iter().collect();
     // Read before parsing, so an argument error also honors `--json`.
     let json = json(&args);
-    let render = |value: Value, text: String| {
-        if json { format!("{value}\n") } else { text }
-    };
     let done = match operation::parse(&args, json) {
         Ok(Parsed::Start(start)) => return Run::Start(start),
         Ok(Parsed::Run(request)) => {
             let response = request.run();
-            write(&mut output, &render(response.json(), response.text()))
+            write(
+                &mut output,
+                &render(json, &response.json(), || response.text()),
+            )
         }
-        Ok(Parsed::Help(text)) => {
-            write(&mut output, &render(json!({ "help": text }), text.clone()))
-        }
+        Ok(Parsed::Help(text)) => write(
+            &mut output,
+            &render(json, &json!({ "help": text }), || text.clone()),
+        ),
         Ok(Parsed::Plan { files, out }) => {
             match remote::plan(&files, out.as_deref(), paths, reach).await {
                 Ok(planned) => {
-                    write(&mut output, &render(planned.json(), planned.text()))
+                    write(&mut output, &render(json, &planned, || planned.text()))
                 }
                 Err(error) => Err(Stop::Failed(error)),
             }
         }
         Ok(Parsed::Apply { plan }) => match remote::apply(&plan, paths, reach).await {
-            Ok(applied) => write(&mut output, &render(applied.json(), applied.text())),
+            Ok(applied) => {
+                write(&mut output, &render(json, &applied, || applied.text()))
+            }
+            Err(error) => Err(Stop::Failed(error)),
+        },
+        Ok(Parsed::Status) => match remote::status(reach).await {
+            Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
             Err(error) => Err(Stop::Failed(error)),
         },
         Ok(Parsed::Mcp) => mcp::serve(input, &mut output),
@@ -148,6 +158,24 @@ enum Stop {
 impl From<Error> for Stop {
     fn from(error: Error) -> Self {
         Self::Failed(error)
+    }
+}
+
+/// `output` as JSON.
+pub(crate) fn value(output: &impl Serialize) -> Value {
+    serde_json::to_value(output).expect("invariant: an output is plain JSON data")
+}
+
+/// `output` as one line of JSON when `json`, else `text()`.
+fn render(
+    json: bool,
+    output: &impl Serialize,
+    text: impl FnOnce() -> String,
+) -> String {
+    if json {
+        format!("{}\n", value(output))
+    } else {
+        text()
     }
 }
 

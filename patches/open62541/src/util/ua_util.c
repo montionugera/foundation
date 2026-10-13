@@ -113,11 +113,13 @@ size_t
 UA_readNumberWithBase(const UA_Byte *buf, size_t buflen, UA_UInt32 *number, UA_Byte base) {
     UA_assert(buf);
     UA_assert(number);
-    u32 n = 0;
+    u64 n = 0;
     size_t progress = 0;
-    /* read numbers until the end or a non-number character appears */
+    /* read numbers until the end, a non-number character, or a digit that
+     * overflows the number */
     while(progress < buflen) {
         u8 c = buf[progress];
+        u64 last = n;
         if(c >= '0' && c <= '9' && c <= '0' + (base-1))
            n = (n * base) + c - '0';
         else if(base > 9 && c >= 'a' && c <= 'z' && c <= 'a' + (base-11))
@@ -126,9 +128,13 @@ UA_readNumberWithBase(const UA_Byte *buf, size_t buflen, UA_UInt32 *number, UA_B
            n = (n * base) + c-'A' + 10;
         else
            break;
+        if(n > UA_UINT32_MAX) {
+           n = last;
+           break;
+        }
         ++progress;
     }
-    *number = n;
+    *number = (u32)n;
     return progress;
 }
 

@@ -499,6 +499,12 @@ fn keys(received: &Received<'_>) -> Vec<u128> {
     present.map(channel::Key::as_u128).collect()
 }
 
+/// The name of each channel of the view of `received`, in entry order.
+fn names<'a>(received: &Received<'a>) -> Vec<&'a str> {
+    let view = received.view();
+    view.iter().map(|(entry, _)| received.name(entry)).collect()
+}
+
 /// Writes frame `n` of a run from `now`: 1000 samples per series, with values that
 /// do not compress.
 fn write_wide(writer: &mut Writer, now: i64, n: i64) {
@@ -680,6 +686,96 @@ fn gives_a_reader_each_channel_that_its_selector_matches() {
         assert_eq!(keys(&received), [1, 2, 5]);
         assert_eq!(samples(&received, 2), [7]);
         assert_eq!(samples(&received, 5), [9]);
+    });
+}
+
+#[test]
+fn gives_the_name_of_each_channel_of_the_view_with_the_index() {
+    run(43, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 2 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_outside_the_view() {
+    run(44, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(entry(received.set(), 5));
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 3 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_past_the_set() {
+    run(47, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(received.set().entries().len());
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 1 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_whose_place_a_key_set_before_held() {
+    run(48, |test| async move {
+        let mut reader = test.reader(&["value-c"], Mode::Complete).await;
+        let mut first = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut first, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        drop(first);
+        let received = reader.next().await.expect("a frame");
+        let held = entry(received.set(), 5);
+        assert_eq!(names(&received), ["time", "value-c"]);
+        let mut second = test.writer("b", &["value"]).await;
+        write_series(&mut second, &[(1, &[now + 1]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time"]);
+        let _name = received.name(held);
+    });
+}
+
+#[test]
+fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
+    run(45, |test| async move {
+        let config = reader::Config {
+            name: Some(name("named")),
+            ..unnamed(&["value"], Mode::Complete)
+        };
+        let mut reader = test.hub.reader(config).await.expect("opens");
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+fn gives_a_channel_defined_again_at_a_new_key_its_name_at_the_new_open() {
+    run(46, |test| async move {
+        let mut changed = channels();
+        changed.insert(name("value"), definition(9, DataType::Sample(I64), 1));
+        test.hub.set_definitions(&changed);
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (9, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 9]);
+        assert_eq!(names(&received), ["time", "value"]);
     });
 }
 

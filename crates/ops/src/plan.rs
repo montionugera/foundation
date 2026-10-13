@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use document::{Document, Span};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use spec::definition::Definition;
 use types::name::Name;
 
@@ -134,11 +133,6 @@ pub(crate) struct Output {
 }
 
 impl Output {
-    /// The output as JSON.
-    pub(crate) fn json(&self) -> Value {
-        serde_json::to_value(self).expect("invariant: an output is plain JSON data")
-    }
-
     /// One line for each change, with a `key` line under it for each fingerprint, then
     /// the counts, then one `note` line with the tree key of each definition that
     /// Foundation made, when the spec holds one.

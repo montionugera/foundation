@@ -3020,7 +3020,7 @@ unsafe extern "C" fn created(
     response: *mut c_void,
 ) {
     // SAFETY: open62541 gives a response.
-    let result = unsafe { ffi::test::shim_response_result(response) };
+    let result = unsafe { ffi::shim_response_result(response) };
     // SAFETY: the test gives a live cell.
     unsafe { (*data.cast::<Cell<u32>>()).set(result) };
 }

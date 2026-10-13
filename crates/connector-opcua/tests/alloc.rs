@@ -1,8 +1,9 @@
 //! One run of the open62541 event loop with due timers allocates nothing, in C or in
 //! Rust, and the fuzz round trip makes a fixed count of allocations, and none after a
 //! decode that fails. A read through the connection manager makes a fixed count of
-//! allocations, and a drive with nothing ready makes none. The count covers each
-//! thread, so this binary has no test harness.
+//! allocations, and a drive with nothing ready makes none. A tick of the `opcua` kind
+//! allocates only what its read allocates. The count covers each thread, so this
+//! binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -10,6 +11,9 @@ use std::future::{Future as _, poll_fn};
 use std::pin::pin;
 
 use connector_opcua::bench::{Client, Manager, client};
+#[path = "common/kind.rs"]
+#[expect(dead_code, reason = "this binary measures only the ticks")]
+mod kind;
 use env::rng::Rng;
 use sim::Sim;
 use types::time::Span;
@@ -25,6 +29,7 @@ fn main() {
     a_failed_decode_stops_the_round_trip();
     a_read_through_the_manager_allocates_a_fixed_count();
     a_read_of_a_client_allocates_a_fixed_count();
+    a_tick_of_the_kind_allocates_what_its_read_allocates();
 }
 
 fn sim() -> (Sim, env::clock::Clock, Rng) {
@@ -134,20 +139,20 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
     for idle in [0, 15] {
         for (at, counts) in reads(idle).into_iter().enumerate() {
             let read = at + 2;
-            assert_eq!(counts, [4, 5, 2, 0], "{idle} idle, read {read}");
+            assert_eq!(counts, [3, 5, 2, 0], "{idle} idle, read {read}");
         }
     }
 }
 
-/// The allocations in the polls of reads 2 to 100 of `variable` by one client. The
-/// server runs on its own manager, outside the polls.
-fn client_reads(variable: client::Variable) -> Vec<u64> {
+/// The allocations in the polls of reads 2 to 100 of `count` copies of `variable` by
+/// one client. The server runs on its own manager, outside the polls.
+fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
         let body = async |server: &client::Server| {
-            let mut client = server.connect().await;
+            let mut client = server.connect(count).await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
                 let mut read = pin!(client.read(variable));
@@ -170,14 +175,36 @@ fn client_reads(variable: client::Variable) -> Vec<u64> {
     sim.run_on(&node, run).expect("the run ends")
 }
 
-/// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
-/// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
+/// As through the manager, the ask allocates 3 and the answer allocates 1 for its
+/// results array and 1 for the value of each node. Each read is a new drive, whose
+/// sleep until the next timer of the loop allocates 1 more. The client swaps two
+/// buffers of values, and read 2 is the first to fill the second. The sim net
+/// allocates one more for each segment of 1460 bytes past the first: the ask of 64
+/// names takes 2.
 fn a_read_of_a_client_allocates_a_fixed_count() {
-    for variable in [client::Variable::Number, client::Variable::Name] {
+    let cases = [
+        (client::Variable::Number, 1, 6),
+        (client::Variable::Name, 1, 6),
+        (client::Variable::Number, 64, 69),
+        (client::Variable::Name, 64, 70),
+    ];
+    for (variable, count, each) in cases {
+        let mut counts = vec![each + 1];
+        counts.extend([each; 98]);
         assert_eq!(
-            client_reads(variable),
-            [7; 99],
-            "reads 2 to 100 of {variable:?}"
+            client_reads(variable, count),
+            counts,
+            "reads 2 to 100 of {count} of {variable:?}"
         );
+    }
+}
+
+/// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
+/// allocates for its count of nodes, and nothing more: the frame and its write
+/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
+    for (nodes, read) in [(1, 6), (64, 69)] {
+        let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
+        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
     }
 }

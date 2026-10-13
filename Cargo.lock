@@ -427,6 +427,7 @@ name = "connector-influx"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "codec",
  "connector",
  "connector-influx",
  "counting",
@@ -438,6 +439,7 @@ dependencies = [
  "influxdb-line-protocol",
  "proptest",
  "sim",
+ "spec",
  "types",
  "unicode-properties",
 ]
@@ -465,13 +467,19 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "block",
  "cc",
+ "codec",
+ "connector",
  "connector-opcua",
  "counting",
  "divan",
+ "document",
  "env",
+ "hub",
  "proptest",
  "sim",
+ "spec",
  "types",
 ]
 
@@ -1163,6 +1171,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",
@@ -1189,6 +1198,8 @@ dependencies = [
  "os",
  "proptest",
  "secret",
+ "serde",
+ "serde_json",
  "sim",
  "spec",
  "transport",
@@ -1318,6 +1329,7 @@ dependencies = [
  "counting",
  "document",
  "env",
+ "hub",
  "mesh",
  "schemars",
  "serde",

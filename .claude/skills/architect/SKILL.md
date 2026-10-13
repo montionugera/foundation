@@ -41,6 +41,8 @@ For each `interface` issue (the proposed signature and the reason):
 2. Inside the locked decisions: approve it on the issue with the exact signature, or
    refuse it with the reason. The crate's builder makes the change.
 3. A change to a locked decision, a contract, or an oracle: ask the person (Records).
+   A design decision (`CLAUDE.md`, "The person decides the design"): never decide it.
+   Write your recommendation on the issue, and send the link to `laptop.monitor`.
 4. After it merges, file an issue for each crate that must follow, and send the links to
    `laptop.coordinator`.
 

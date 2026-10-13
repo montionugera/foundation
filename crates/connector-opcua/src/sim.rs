@@ -80,6 +80,20 @@ impl Variables {
         state.quality = quality;
     }
 
+    /// Sets the value of the variable of `text` in [`Variables::new`].
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn set(&self, text: &str, value: f64) {
+        let mut state = self.state();
+        let variable = state.variables.iter_mut().find(|v| v.text == text);
+        variable
+            .unwrap_or_else(|| panic!("no variable {text:?}"))
+            .value = value;
+    }
+
     /// Each read that a server answered, by the text of its node in
     /// [`Variables::new`], in the order of the answers.
     #[must_use]
@@ -129,6 +143,11 @@ pub struct Served {
 ///
 /// If open62541 refuses the server, a namespace, a variable, or a step of the close.
 /// If a variable has the number 0, which open62541 would serve at a free number.
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the loop or the connection manager: the process
+/// stops as the Rust allocator does when it has no memory.
 pub async fn serve(
     clock: Clock,
     net: Net,
