@@ -207,9 +207,10 @@ struct Log {
     /// record with an entry of the path, or a carry record with its tail. `None`
     /// before the first synced entry.
     holder: Option<u64>,
-    /// The seq at which the first synced entry starts, or the seq of the carried
-    /// tail that came first.
-    origin: u64,
+    /// The seq at which the first synced entry starts. `None` before it, and when a
+    /// carried tail came first: its count is then exact, and no trim passed an
+    /// entry after it.
+    origin: Option<u64>,
 }
 
 impl Log {
@@ -222,7 +223,7 @@ impl Log {
             empty: 0,
             runs: VecDeque::new(),
             holder: None,
-            origin: 0,
+            origin: None,
         }
     }
 
@@ -257,7 +258,7 @@ impl Log {
         let start = self.end();
         self.durable.advance(header)?;
         if self.holder.is_none() {
-            self.origin = header.first;
+            self.origin = Some(header.first);
         }
         self.empty = start.after(header.first, header.len).given;
         if let Some(holder) = self.holder {
@@ -543,7 +544,6 @@ impl Logs {
             log.empty = carried.given;
             log.appended_empty = carried.given;
             log.holder = Some(offset);
-            log.origin = carried.seq;
             self.paths.insert(key, log);
             self.hold(offset, slot, carried.path);
             return Ok(());
@@ -564,7 +564,7 @@ impl Logs {
         let stamp = log.durable.stamp;
         let passed = carried.given.checked_sub(end.given).filter(|&passed| {
             carried.seq == end.seq
-                && (passed == 0 || log.origin == end.seq)
+                && (passed == 0 || log.origin == Some(end.seq))
                 && stamp.is_none_or(|_| carried.stamp == stamp)
         });
         let Some(passed) = passed else {
@@ -1543,6 +1543,39 @@ mod tests {
                 .expect("appends past the carried end");
             assert!(logs.paths[&(slot(1), Path::Live)].queued());
             assert_eq!(logs.kept(), Some(12288));
+        }
+
+        /// A carried tail at seq 3 came first, so its count is exact: a later one
+        /// with more entries with no samples than the walk met is a wrong shape.
+        #[test]
+        fn refuses_more_entries_with_no_samples_after_a_carried_tail_came_first() {
+            let mut logs = Logs::default();
+            logs.carry(slot(1), &carried(3, 1, None), 4096)
+                .expect("a new path");
+            let header = header(1, Path::Live, 3, 0, None);
+            logs.append(slot(1), &header).expect("appends");
+            logs.sync(slot(1), &header, 8192).expect("syncs");
+            let before = logs.clone();
+            let tail = carried(3, 3, None);
+            let invalid = logs.carry(slot(1), &tail, 12288);
+            let carried_to = Invalid::Carried {
+                carried: tail,
+                end: mark(3, 2),
+                stamp: None,
+            };
+            assert_eq!(invalid, Err(carried_to));
+            assert_eq!(logs, before);
+            let mut logs = Logs::default();
+            logs.carry(slot(1), &carried(3, 1, None), 4096)
+                .expect("a new path");
+            let tail = carried(3, 2, None);
+            let invalid = logs.carry(slot(1), &tail, 8192);
+            let carried_to = Invalid::Carried {
+                carried: tail,
+                end: mark(3, 1),
+                stamp: None,
+            };
+            assert_eq!(invalid, Err(carried_to));
         }
 
         /// The walk met an entry with no samples at seq 3, then one at seq 5.

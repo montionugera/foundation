@@ -3729,17 +3729,20 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
 /// A trim passed the record with the first entry with no samples that index 1 has at
 /// seq 3, and kept a record with two more. A carry record after the kept ones gives
 /// the count of them all. Each case: the seqs of the entries with no samples of each
-/// record, the carried count, and whether the open takes it. A carried count below
-/// the walked one, or above it while a walked entry is not one at the carried seq, is
-/// a wrong shape.
+/// record, the count of a carry record at seq 3 in place of the first kept record,
+/// the carried count, and whether the open takes it. A carried count below the walked
+/// one, above it while a walked entry is not one at the carried seq, or above it
+/// after a carry record that came first, is a wrong shape.
 #[test]
 fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
-    let cases: [(&[&[u64]], u64, bool); 3] = [
-        (&[&[3], &[3, 3]], 3, true),
-        (&[&[3], &[3, 3]], 1, false),
-        (&[&[3], &[3, 3], &[4]], 2, false),
+    type Records = &'static [&'static [u64]];
+    let cases: [(Records, Option<u64>, u64, bool); 4] = [
+        (&[&[3], &[3, 3]], None, 3, true),
+        (&[&[3], &[3, 3]], None, 1, false),
+        (&[&[3], &[3, 3], &[4]], None, 2, false),
+        (&[&[3], &[3], &[3]], Some(1), 3, false),
     ];
-    for (records, given, taken) in cases {
+    for (records, first, given, taken) in cases {
         run(188, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3755,6 +3758,13 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             }
             drop(buffer);
             let carry = BLOCK * u64::try_from(records.len() + 1).expect("few records");
+            if let Some(first) = first {
+                let carried = carried(1, 3, first, Some(30));
+                shard.put_carry(2 * BLOCK, &carry_body(&[carried])).await;
+                for offset in (3 * BLOCK..carry).step_by(to_usize(BLOCK)) {
+                    shard.seal(offset).await;
+                }
+            }
             let seq = *records.concat().last().expect("an entry");
             let carried = carried(1, seq, given, Some(30));
             shard.put_carry(carry, &carry_body(&[carried])).await;
