@@ -128,16 +128,13 @@ fn reach_whose_read_of_address_fails_gives_the_file_error() {
 fn reach_with_a_pool_too_small_for_a_transport_gives_transport() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
-    let reached = reached(&mut sim, &host, 1024);
-    assert!(
-        matches!(
-            reached,
-            Err(client::Error::Transport(transport::Error::Config {
-                field: "pool",
-                ..
-            }))
-        ),
-        "{reached:?}"
+    let error = transport::Error::Config {
+        field: "pool",
+        rule: "must hold a message of at least 1472 bytes",
+    };
+    assert_eq!(
+        reached(&mut sim, &host, 1024),
+        Err(client::Error::Transport(error))
     );
 }
 
