@@ -536,14 +536,13 @@
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137828742), because
   `cli` runs on a shard of the command line. Supersedes "never to a shard" of item 3 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274. `os`
-  writes a file beside the
-  path and renames it over the path. `sim` keeps one tree in memory for each node, apart
-  from its disk, where a directory is there while a file is under it, and
-  `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes `env::files` for
-  the user's files (that seam is one directory, refuses an absolute path and `..`, and
-  starts a thread for each directory); a trait in `ops` that `main` implements (its real
-  half would reach the OS outside `os`). Decided by `laptop.architect-2` (2026-10-11
-  07:10 UTC, plan revision 4, decision 4,
+  writes a file beside the path and renames it over the path. `sim` keeps one tree in
+  memory for each node, apart from its disk, where a directory is there while a file is
+  under it, and `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes
+  `env::files` for the user's files (that seam is one directory, refuses an absolute
+  path and `..`, and starts a thread for each directory); a trait in `ops` that `main`
+  implements (its real half would reach the OS outside `os`). Decided by
+  `laptop.architect-2` (2026-10-11 07:10 UTC, plan revision 4, decision 4,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913), with
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
