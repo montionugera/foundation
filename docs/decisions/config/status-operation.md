@@ -68,14 +68,12 @@
   which supersedes item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
   two cases). `unknown` also for a hub that holds a channel of another spec under a
-  status name or lacks a status channel of the spec, found by the name, the key, and the
-  sample type of each channel of the frame, its index too, by the count of its channels,
+  status name or lacks a status channel of the spec, found by the key and the sample type of each channel of the frame, its index too, by the count of its channels,
   and by `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102 and
-  supersedes, for `ManyIndexes`, its third bullet and item 2 of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). That
+  supersedes, for `ManyIndexes`, its third bullet and item 2 of https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). The reader selects the names of the spec, and `config` never gives a key to a second name, so the key also fixes the name: `laptop.architect-2` (2026-10-13T04:33:01Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6138289687, which supersedes the name of item 1 of https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). That
   check finds another key, sample type, or index under a status name, but not a channel
   that `config` carries over with its key and definition (the gap above):
   `laptop.architect-2` (2026-10-13T03:32:04Z,
