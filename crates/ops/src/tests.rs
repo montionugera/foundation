@@ -365,6 +365,13 @@ fn help_for_a_name_that_is_not_a_command_is_unknown_and_help_of_help_is_help() {
              fix: Use `version`, the closest name\n"
         )
     );
+    assert_eq!(
+        cli(&["help", "zzz"]),
+        failed(
+            "error[ops.unknown-operation]: no operation is named `zzz`\n\
+             fix: Use a name from `foundation --help`\n"
+        )
+    );
     let help = cli(&["help", "help"]);
     assert_eq!(help.status, 0);
     assert_eq!(help, cli(&["help", "--help"]));
