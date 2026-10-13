@@ -638,8 +638,7 @@ fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
 }
 
 #[test]
-fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status()
-{
+fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let old = "channel \"x.time\" { kind = \"index\" }\n\
