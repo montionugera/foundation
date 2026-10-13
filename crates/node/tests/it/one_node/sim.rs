@@ -41,17 +41,24 @@ const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
 #[derive(Debug)]
 pub(super) struct Opcua {
     variables: Variables,
-    /// The clock of the server, and the wall time at its `Monotonic(0)`.
-    clock: Option<(Clock, Stamp)>,
-    /// The token that stops the shard that serves, and that shard.
-    serving: Option<(Token, Handle)>,
+    serving: Option<Serving>,
+}
+
+/// The server of [`Opcua::serve`].
+#[derive(Debug)]
+struct Serving {
+    clock: Clock,
+    /// The wall time at `Monotonic(0)` of `clock`.
+    zero: Stamp,
+    /// The token that stops `shard`.
+    stop: Token,
+    shard: Handle,
 }
 
 impl Default for Opcua {
     fn default() -> Self {
         Self {
             variables: Variables::new(&NODES),
-            clock: None,
             serving: None,
         }
     }
@@ -92,7 +99,6 @@ impl Opcua {
         )]
         let time = wall.now().time;
         let zero = time - Span::from_nanos(clock.now().0.cast_signed());
-        self.clock = Some((Clock::clone(&clock), zero));
         let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let listen = Listen {
             local,
@@ -103,20 +109,25 @@ impl Opcua {
             .unwrap_or_else(|error| panic!("listen on {local}: {error}"));
         let address = listener.local();
         let (stop, variables) = (Token::new(), Variables::clone(&self.variables));
-        let stopped = stop.clone();
+        let (stopped, moved) = (stop.clone(), Clock::clone(&clock));
         let shard = start("opcua", move |_| async move {
             let mut rng = os::entropy().rng();
             let net = os::net();
-            serve(clock, net, listener, &mut rng, &variables, stopped.wait()).await;
+            serve(moved, net, listener, &mut rng, &variables, stopped.wait()).await;
         });
-        self.serving = Some((stop, shard));
+        self.serving = Some(Serving {
+            clock,
+            zero,
+            stop,
+            shard,
+        });
         address
     }
 
     /// Changes each variable `ticks` times at 10 Hz, each change with the status
     /// `quality`, and returns after the last change.
     pub(super) fn change(&self, ticks: usize, quality: Quality) {
-        let (clock, _) = self.clock.as_ref().expect("it serves");
+        let clock = &self.serving.as_ref().expect("it serves").clock;
         let mut at = clock.now();
         for _ in 0..ticks {
             at = at + TICK;
@@ -133,9 +144,9 @@ impl Opcua {
     /// Each read that the server answered, by node id, in order: the value and status
     /// of the answer, at the time of the answer.
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
-        let (_, zero) = self.clock.as_ref().expect("it serves");
+        let zero = self.serving.as_ref().expect("it serves").zero;
         let sample = |served: &Served| Sample {
-            time: *zero + Span::from_nanos(served.time.0.cast_signed()),
+            time: zero + Span::from_nanos(served.time.0.cast_signed()),
             value: served.value,
             quality: Some(served.quality),
         };
@@ -149,7 +160,7 @@ impl Drop for Opcua {
     fn drop(&mut self) {
         // While the thread panics, a join can block and a second panic aborts the
         // test binary.
-        if let Some((stop, shard)) = self.serving.take() {
+        if let Some(Serving { stop, shard, .. }) = self.serving.take() {
             stop.cancel();
             if !std::thread::panicking() {
                 shard
