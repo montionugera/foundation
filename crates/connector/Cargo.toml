@@ -47,5 +47,10 @@ name = "run"
 harness = false
 test = true
 
+[[bench]]
+name = "stamp"
+harness = false
+test = true
+
 [lints]
 workspace = true

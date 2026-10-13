@@ -415,7 +415,7 @@ mod tests {
     const BAD: Code = Code::new("test.bad");
 
     /// What one run of [`Script`] does.
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     enum Step {
         /// Returns `Ok` at once.
         Done,
@@ -441,6 +441,23 @@ mod tests {
         /// Spawns a task that ends the span after the cancel, then returns a config
         /// error at once.
         Refuse(Span),
+        /// Returns the end of a reader with `?`.
+        Ended(hub::reader::Ended),
+        /// Returns a failed write with `?`.
+        Failed(hub::writer::Failure),
+        /// Shows the error `refused`, waits the span, shows it again, waits the span,
+        /// clears it twice, waits the span, then returns `Ok`.
+        Show(Span),
+        /// Shows the error `refused`, then returns a device error at once.
+        ShowEnd,
+        /// Shows an error of 1,100 bytes, waits the span, then returns `Ok`.
+        ShowWide(Span),
+        /// Clears the error, waits the span, then returns `Ok`.
+        Clear(Span),
+        /// Lends its context to a task that shows the error `late`, or clears the
+        /// error when `cleared`, at the cancel of the run. Then returns `Ok` at once,
+        /// or a device error when `failed`.
+        Late { failed: bool, cleared: bool },
     }
 
     /// When each run started and ended.
@@ -480,6 +497,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
+            let ctx = Rc::new(ctx);
             assert_eq!(ctx.name().as_str(), "plant.script");
             let clock = ctx.clock();
             let index = {
@@ -492,45 +510,108 @@ mod tests {
                 .lock()
                 .expect("no panic under the lock")
                 .pop_front();
-            let out = match step {
-                Some(Step::Done) => Ok(()),
-                Some(Step::Device(span)) => {
-                    clock.sleep(span).await;
-                    Err(Error::Device("no reply".into()))
-                }
-                Some(Step::Config) => Err(Error::Config(vec![bad()])),
-                Some(Step::Configs) => Err(Error::Config(vec![bad(), worse()])),
-                Some(Step::Retry) => Err(Error::Retry("busy".into())),
-                Some(Step::Long) => Err(Error::Device(long().into())),
-                Some(Step::Wide) => Err(Error::Device("a".repeat(1_100).into())),
-                Some(Step::Abort) => {
-                    ctx.cancel().cancel();
-                    Err(Error::Device("stopped its parts".into()))
-                }
-                Some(Step::Linger(span)) => {
-                    ctx.cancel().wait().await;
-                    clock.sleep(span).await;
-                    Err(Error::Device("stopped late".into()))
-                }
-                Some(Step::Hold(span)) => {
-                    hold(&ctx, span);
-                    Err(Error::Device("left a task".into()))
-                }
-                Some(Step::Refuse(span)) => {
-                    hold(&ctx, span);
-                    Err(Error::Config(vec![bad()]))
-                }
-                None => {
-                    ctx.cancel().wait().await;
-                    Ok(())
-                }
-            };
+            let out = play(&ctx, step).await;
             let mut runs = self.runs.lock().expect("no panic under the lock");
             if let Some(run) = runs.get_mut(index) {
                 run.1 = Some(clock.now());
             }
             out
         }
+    }
+
+    /// Runs `step` of a `Script`, or waits for the cancel when it is `None`.
+    async fn play(lent: &Rc<Context<bool>>, step: Option<Step>) -> Result<(), Error> {
+        let ctx: &Context<bool> = lent;
+        let clock = ctx.clock();
+        match step {
+            Some(Step::Done) => Ok(()),
+            Some(Step::Device(span)) => {
+                clock.sleep(span).await;
+                Err(Error::Device("no reply".into()))
+            }
+            Some(Step::Config) => Err(Error::Config(vec![bad()])),
+            Some(Step::Configs) => Err(Error::Config(vec![bad(), worse()])),
+            Some(Step::Retry) => Err(Error::Retry("busy".into())),
+            Some(Step::Long) => Err(Error::Device(long().into())),
+            Some(Step::Wide) => Err(Error::Device("a".repeat(1_100).into())),
+            Some(Step::Abort) => {
+                ctx.cancel().cancel();
+                Err(Error::Device("stopped its parts".into()))
+            }
+            Some(Step::Linger(span)) => {
+                ctx.cancel().wait().await;
+                clock.sleep(span).await;
+                Err(Error::Device("stopped late".into()))
+            }
+            Some(Step::Hold(span)) => {
+                hold(ctx, span);
+                Err(Error::Device("left a task".into()))
+            }
+            Some(Step::Refuse(span)) => {
+                hold(ctx, span);
+                Err(Error::Config(vec![bad()]))
+            }
+            Some(Step::Ended(ended)) => returned(ended),
+            Some(Step::Failed(failure)) => returned(failure),
+            Some(Step::Show(span)) => {
+                ctx.error(&"refused");
+                clock.sleep(span).await;
+                ctx.error(&"refused");
+                clock.sleep(span).await;
+                ctx.clear_error();
+                ctx.clear_error();
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::ShowEnd) => {
+                ctx.error(&"refused");
+                Err(Error::Device("no reply".into()))
+            }
+            Some(Step::ShowWide(span)) => {
+                ctx.error(&"a".repeat(1_100));
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::Clear(span)) => {
+                ctx.clear_error();
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::Late { failed, cleared }) => show_late(lent, failed, cleared),
+            None => {
+                ctx.cancel().wait().await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Runs [`Step::Late`].
+    fn show_late(
+        lent: &Rc<Context<bool>>,
+        failed: bool,
+        cleared: bool,
+    ) -> Result<(), Error> {
+        let late = Rc::clone(lent);
+        lent.tasks().spawn(async move {
+            late.cancel().wait().await;
+            if cleared {
+                late.clear_error();
+            } else {
+                late.error(&"late");
+            }
+        });
+        if failed {
+            return Err(Error::Device("no reply".into()));
+        }
+        Ok(())
+    }
+
+    /// Returns `end` with `?`, as a kind does.
+    fn returned<E>(end: E) -> Result<(), Error>
+    where
+        Error: From<E>,
+    {
+        Err(end)?
     }
 
     /// Spawns a task of the run that ends `span` after the run's cancel.
@@ -835,6 +916,126 @@ mod tests {
     }
 
     #[test]
+    fn writes_the_error_that_a_run_shows_and_its_clear() {
+        let steps = vec![Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((at, _, text), state)| (*at, state, text.as_str()))
+            .collect();
+        let want = [
+            (Span::ZERO, (0, 0, 0), ""),
+            (ms(1_000), (0, 3, 0), "refused"),
+            (ms(4_000), (0, 0, 0), ""),
+            (ms(6_000), (3, 0, 0), ""),
+            (Span::from_nanos(ms(6_000).nanos() + 1), (2, 0, 0), ""),
+        ];
+        assert_eq!(got, want);
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn writes_the_end_of_a_run_in_place_of_the_error_it_showed() {
+        let steps = vec![Step::ShowEnd];
+        let out = supervise("script", steps, config(), Cancel::After(ms(500)));
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["", "no reply", "no reply", "no reply"]);
+        let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
+        assert_eq!(classes, [0, 2, 2, 2]);
+    }
+
+    #[test]
+    fn writes_the_error_that_a_restart_shows_again() {
+        let steps = vec![Step::ShowEnd, Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        let want = [
+            "", "no reply", "no reply", "no reply", "refused", "", "", "",
+        ];
+        assert_eq!(texts, want);
+    }
+
+    #[test]
+    fn cuts_a_long_error_that_a_run_shows_to_1024_bytes() {
+        let steps = vec![Step::ShowWide(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (states(&out.statuses).into_iter())
+            .zip(&out.statuses)
+            .map(|(state, (_, _, text))| (state, text.as_str()))
+            .collect();
+        assert_eq!(got[1], ((0, 3, 0), "a".repeat(1_024).as_str()));
+    }
+
+    #[test]
+    fn writes_a_clear_status_when_a_restart_clears_the_end_before_it() {
+        let steps = vec![Step::ShowEnd, Step::Clear(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (states(&out.statuses).into_iter())
+            .zip(&out.statuses)
+            .map(|(state, (at, _, text))| (*at, state, text.as_str()))
+            .collect();
+        let restart = got[3].0;
+        let cleared = Span::from_nanos(restart.nanos() + ms(1_000).nanos());
+        let want = [(restart, (0, 2, 1), "no reply"), (cleared, (0, 0, 1), "")];
+        assert_eq!(got[3..5], want);
+    }
+
+    /// The state, the class, and the text of each status that a run of `late`, a
+    /// [`Step::Late`], gives, cancelled at `cancel`.
+    fn supervise_late(late: Step, cancel: Span) -> Vec<((i64, i64, i64), String)> {
+        let out = supervise("script", vec![late], config(), Cancel::After(cancel));
+        out.result.expect("ok after a cancel");
+        (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((_, _, text), state)| (state, text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn keeps_the_ok_end_when_a_task_shows_an_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 0, 0), String::new()),
+            ((2, 0, 0), String::new()),
+        ];
+        let late = Step::Late {
+            failed: false,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(500)), want);
+    }
+
+    #[test]
+    fn keeps_the_device_end_when_a_task_shows_an_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
+        ];
+        let late = Step::Late {
+            failed: true,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
+    }
+
+    #[test]
+    fn keeps_the_device_end_when_a_task_clears_the_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
+        ];
+        let late = Step::Late {
+            failed: true,
+            cleared: true,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
+    }
+
+    #[test]
     fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =
             refuse_the_last_wait(vec![Step::Hold(ms(2_000))], Span::ZERO);
@@ -1023,6 +1224,56 @@ mod tests {
             (2, 0, 1),
         ];
         assert_eq!(states(&out.statuses), want);
+    }
+
+    /// A kind returns each end of a session with `?`, and the status gives its class
+    /// and its text.
+    #[test]
+    fn writes_the_class_of_each_end_that_a_kind_returns() {
+        use hub::home::Error as Home;
+        use hub::reader::Ended;
+        use hub::writer::Failure;
+        let key = channel::Key::from_u128(2);
+        let full = || env::files::Error::Full {
+            path: "buffer".into(),
+        };
+        let ended = |ended: Ended| (ended.to_string(), Step::Ended(ended));
+        let failed = |failure: Failure| (failure.to_string(), Step::Failed(failure));
+        let retries = [
+            ended(Ended::Behind),
+            ended(Ended::Removed(key)),
+            ended(Ended::Replaced),
+            ended(Ended::Buffer(full())),
+            failed(Failure::Removed(key)),
+            failed(Failure::Home(Home::Full)),
+            failed(Failure::Home(Home::Disk(full()))),
+        ];
+        let retry = [
+            (0, 0, 0),
+            (3, 3, 0),
+            (1, 3, 0),
+            (0, 3, 1),
+            (3, 0, 1),
+            (2, 0, 1),
+        ];
+        for (text, step) in retries {
+            let steps = vec![step, Step::Done];
+            let out = supervise("script", steps, config(), Cancel::Never);
+            assert_eq!(states(&out.statuses), retry, "{text}");
+            assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text.as_str()));
+        }
+        let (_, large) = failed(Failure::Home(Home::Large));
+        let out = supervise("script", vec![large], config(), Cancel::Never);
+        assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let text = "the frame is too large for one write: split it. Give the connector \
+                    fewer channels";
+        assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
+        let want = unplaced(
+            "connector.large-frame",
+            "the frame is too large for one write: split it",
+            "Give the connector fewer channels",
+        );
+        assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
     }
 
     #[test]
@@ -1734,7 +1985,7 @@ mod tests {
     fn starts_the_backoff_again_after_a_long_run() {
         let mut steps = vec![Step::Device(Span::ZERO); 8];
         steps.push(Step::Device(Span::MINUTE));
-        steps.extend([Step::Device(Span::ZERO); 3]);
+        steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
         let out = supervise("script", steps, config(), Cancel::Never);
         out.result.expect("ok");
@@ -1751,7 +2002,7 @@ mod tests {
     fn counts_no_wait_for_the_tasks_toward_a_long_run() {
         let mut steps = vec![Step::Device(Span::ZERO); 8];
         steps.push(Step::Hold(ms(61_000)));
-        steps.extend([Step::Device(Span::ZERO); 3]);
+        steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
         let out = supervise("script", steps, config(), Cancel::Never);
         out.result.expect("ok");
@@ -2329,6 +2580,49 @@ mod tests {
         (Span::from_nanos(3_000_000_001), 2, 7),
     ];
 
+    /// A kind with the count `samples`. Its run takes frames from the shard's pool
+    /// until it has no room, sets the count to 7, fills the pool again at 900 ms, and
+    /// at 1 s, after the flush gets no block for its frame, gives the frames back and
+    /// returns `Ok`.
+    fn hog_to_flush() -> impl Kind<Config = ()> {
+        counted(|ctx: Context<()>| async move {
+            let channels =
+                ["state", "class", "restarts", "backoff", "error", "samples"]
+                    .map(|c| name(&format!("plant.tally.status.{c}")))
+                    .into();
+            let writer = ctx.writer(channels, Authority(1), None).await;
+            let writer = writer.expect("the writer opens");
+            let mut held = fill(&writer);
+            ctx.count("samples").set(7);
+            ctx.clock().sleep(ms(900)).await;
+            held.extend(fill(&writer));
+            ctx.clock().sleep(ms(100)).await;
+            // The flush at 1 s runs after this task wakes at 1 s, so yield once.
+            let mut flushed = false;
+            poll_fn(|cx| {
+                if flushed {
+                    return Poll::Ready(());
+                }
+                flushed = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+            drop(held);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stamps_a_frame_after_the_stamp_of_a_frame_with_no_block() {
+        let want = [
+            (Span::ZERO, 0, 0),
+            (Span::from_nanos(1_000_000_001), 3, 7),
+            (Span::from_nanos(1_000_000_002), 2, 7),
+        ];
+        assert_eq!(hogged_by(hog_to_flush()), want);
+    }
+
     /// Takes frames of one sample for each channel of `writer` from the shard's pool
     /// until the pool has no room for a frame of any size up to 2 KiB, so that no
     /// status frame and no copy of it in the home gets a block. `writer` has `error`,
@@ -2448,7 +2742,12 @@ mod tests {
 
     /// The time, `state`, and count of each status frame of `hog(full)`.
     fn hogged(full: bool) -> Vec<(Span, i64, i64)> {
-        let statuses = tally(hog(full));
+        hogged_by(hog(full))
+    }
+
+    /// The time, `state`, and count of each status frame of `kind`.
+    fn hogged_by(kind: impl Kind + 'static) -> Vec<(Span, i64, i64)> {
+        let statuses = tally(kind);
         statuses
             .iter()
             .map(|(at, samples, _)| (*at, samples[0], samples[4]))
@@ -3636,7 +3935,8 @@ mod tests {
     }
 
     /// One spec change removes `plant.value` and defines it again at key 3. The
-    /// reader ends, the run returns `Retry`, and the reader of the restart reads key 3.
+    /// reader ends, the run returns the end with `?`, which is `Retry`, and the reader
+    /// of the restart reads key 3.
     #[test]
     fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
         let read = read_through(
@@ -3644,14 +3944,11 @@ mod tests {
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
                 let next = reader.next().await;
-                let mut got = got.lock().expect("no panic");
-                match next {
-                    Ok(received) => got.push(Ok(series(&received, 3))),
-                    Err(ended) => {
-                        got.push(Err(ended));
-                        return Err(Error::Retry("removed".into()));
-                    }
-                }
+                let read = next.as_ref().map(|received| series(received, 3));
+                got.lock()
+                    .expect("no panic")
+                    .push(read.map_err(Clone::clone));
+                let _received = next?;
                 Ok(())
             },
             |hub, clock| async move {
@@ -3668,6 +3965,7 @@ mod tests {
         );
         read.end.expect("ok");
         let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
+        let text = removed.to_string();
         assert_eq!(read.got, [Err(removed), Ok(vec![7])]);
         assert_eq!(
             states(&read.statuses),
@@ -3688,9 +3986,9 @@ mod tests {
             errors(&read.statuses),
             [
                 (Span::ZERO, ""),
-                (Span::ZERO, "removed"),
-                (wait, "removed"),
-                (Span::ZERO, "removed"),
+                (Span::ZERO, text.as_str()),
+                (wait, text.as_str()),
+                (Span::ZERO, text.as_str()),
                 (Span::ZERO, ""),
                 (Span::ZERO, "")
             ],
@@ -3698,9 +3996,10 @@ mod tests {
     }
 
     /// One spec change removes `plant.value` and defines it again at key 3. The
-    /// write of the run gives `Removed`, the run returns `Retry`, and the writer of
-    /// the restart writes key 3. Lost: the frame of the refused write, and each sample
-    /// until the restart, after the first wait of the backoff.
+    /// write of the run gives `Removed`, the run returns it with `?`, which is
+    /// `Retry`, and the writer of the restart writes key 3. Lost: the frame of the
+    /// refused write, and each sample until the restart, after the first wait of the
+    /// backoff.
     #[test]
     fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
         let read = read_through(
@@ -3719,12 +4018,11 @@ mod tests {
                 let applied = |outcomes: &[_]| {
                     matches!(outcomes, [hub::home::Outcome::Applied { .. }])
                 };
-                let written = written.map(applied);
-                let failed = written.is_err();
-                got.lock().expect("no panic").push(written);
-                if failed {
-                    return Err(Error::Retry("removed".into()));
-                }
+                let got_written = written.as_deref().map(applied);
+                got.lock()
+                    .expect("no panic")
+                    .push(got_written.map_err(Clone::clone));
+                let _outcomes = written?;
                 Ok(())
             },
             |hub, clock| async move {
@@ -3734,6 +4032,7 @@ mod tests {
         );
         read.end.expect("ok");
         let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
+        let text = removed.to_string();
         assert_eq!(read.got, [Err(removed), Ok(true)]);
         assert_eq!(
             states(&read.statuses),
@@ -3752,9 +4051,9 @@ mod tests {
             errors(&read.statuses),
             [
                 (Span::ZERO, ""),
-                (Span::ZERO, "removed"),
-                (wait, "removed"),
-                (Span::ZERO, "removed"),
+                (Span::ZERO, text.as_str()),
+                (wait, text.as_str()),
+                (Span::ZERO, text.as_str()),
                 (Span::ZERO, ""),
                 (Span::ZERO, "")
             ],

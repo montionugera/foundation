@@ -5,12 +5,14 @@
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
 //! a depth it reached before. An open of a reader of many channels makes no
-//! allocation for each channel.
+//! allocation for each channel. The names of a reader make no allocation at a change
+//! to a key set no larger than one before.
 //! This binary has no test harness: the count covers each thread, and a harness
 //! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../common/node.rs"]
@@ -18,6 +20,7 @@ mod node;
 #[path = "../common/woken.rs"]
 mod woken;
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
@@ -55,6 +58,25 @@ fn read(reader: &mut Reader) -> u64 {
         (0..2).any(|_| match pin!(reader.next()).poll(context) {
             Poll::Ready(received) => received.is_ok(),
             Poll::Pending => false,
+        })
+    });
+    assert!(taken, "a committed frame waits for the reader");
+    allocations
+}
+
+/// Takes the next frame of `reader`, as [`read`] does, and gives the name of each entry
+/// of its view, with the allocations of both.
+fn read_named(reader: &mut Reader) -> u64 {
+    let (taken, allocations) = ALLOCATOR.count(|| {
+        let context = &mut Context::from_waker(Waker::noop());
+        (0..2).any(|_| match pin!(reader.next()).poll(context) {
+            Poll::Ready(Ok(received)) => {
+                for (entry, _) in received.view().iter() {
+                    black_box(received.name(entry));
+                }
+                true
+            }
+            Poll::Ready(Err(_)) | Poll::Pending => false,
         })
     });
     assert!(taken, "a committed frame waits for the reader");
@@ -172,13 +194,67 @@ fn open_of_a_reader_of_many_channels() {
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
         let more: Vec<_> = (0..MANY).map(|n| name(&format!("w.{n}"))).collect();
-        let hub = common::hub_in(&node, tasks, None, &more).await;
+        let hub = common::hub_alone(&node, tasks, &more).await;
         let _first = open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
         let (_second, allocations) =
             open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
         assert!(
             allocations < MANY,
             "an open of {MANY} channels made {allocations} allocations"
+        );
+    })
+    .expect("the run ends");
+}
+
+/// The `next` of a reader at each change between a large key set and a small one. The
+/// first two frames get no name, and make no places. Then each frame gets a name for
+/// each entry of its view: the places allocate at the first large key set, and then
+/// never again.
+fn next_at_each_change_of_key_set() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let more: Vec<_> = (0..64).map(|n| name(&format!("w.{n}"))).collect();
+        let hub = common::hub_alone(&node, tasks, &more).await;
+        let mut reader = hub
+            .reader(unnamed(&["value"], Mode::Complete))
+            .await
+            .expect("opens");
+        let large: Vec<_> = [name("time"), name("value")]
+            .into_iter()
+            .chain(more.iter().cloned())
+            .collect();
+        let small = vec![name("time"), name("value")];
+        let mut counts = Vec::new();
+        let mut now = 1_000_000;
+        for n in 0..8 {
+            let channels = if n % 2 == 0 {
+                large.clone()
+            } else {
+                small.clone()
+            };
+            let config = writer::Config {
+                subject: name("a"),
+                authority: Authority(1),
+                lease: None,
+                channels,
+            };
+            let mut writer = hub.writer(config).await.expect("opens");
+            now = writer.now().nanos().max(now + 1);
+            write(&mut writer, now);
+            node.clock().sleep(SETTLE).await;
+            counts.push(if n < 2 {
+                read(&mut reader)
+            } else {
+                read_named(&mut reader)
+            });
+            drop(writer);
+            node.clock().sleep(SETTLE).await;
+        }
+        assert_eq!(
+            counts,
+            [4, 1, 5, 1, 4, 1, 4, 1],
+            "allocations of each `next` and its names: {counts:?}"
         );
     })
     .expect("the run ends");
@@ -302,6 +378,7 @@ fn main() {
     woken_of_a_reader_that_falls_behind_again();
     woken_of_a_reader_whose_frame_waits_for_credit();
     open_of_a_reader_of_many_channels();
+    next_at_each_change_of_key_set();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {

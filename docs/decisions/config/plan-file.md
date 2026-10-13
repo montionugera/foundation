@@ -88,7 +88,8 @@
   of the stage, 2026-10-12T21:48:03Z,
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
   of the write check, 2026-10-12T22:33:22Z,
-  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580); then
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580), then
+  for each other channel with an edge to a status channel (STATUS PLACEMENT); then
   `config.unplaced`, `config.connector-home`, `config.split-placement`,
   `config.writer-nodes`, and `config.unknown-node`.
   `spec::access::Policy::new` refuses an empty `allow`, so `Plan::decode` refuses it.

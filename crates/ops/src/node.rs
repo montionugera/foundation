@@ -16,10 +16,10 @@ mod tests;
 /// The handles that the operations on one node use. `node` builds one on shard 0,
 /// where the mesh of the node runs. It is not `Send`.
 pub struct Node {
-    mesh: mesh::Mesh,
-    key: Box<dyn Fn() -> channel::Key>,
-    front_ends: FrontEnds,
-    kinds: Arc<connector::kind::Table>,
+    pub(crate) mesh: mesh::Mesh,
+    pub(crate) key: Box<dyn Fn() -> channel::Key>,
+    pub(crate) front_ends: FrontEnds,
+    pub(crate) kinds: Arc<connector::kind::Table>,
 }
 
 impl Node {

@@ -1,4 +1,5 @@
-//! Region `plant`, whose one voter is the node of a hub under test.
+//! The region of the hub tests, at the root prefix, whose one voter is the node of a
+//! hub under test.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -7,8 +8,10 @@ use env::tasks::Tasks;
 use mesh::Member;
 use mesh::card::addresses::Addresses;
 use mesh::card::{self, Card};
+use spec::definition::Definition;
 use transport::{Address, Transport};
 use types::ed25519::PrivateKey;
+use types::name::{Name, Prefix};
 use types::node::SealKey;
 
 use crate::net::{HOME, NODE, PEER, own_pool, public_key};
@@ -16,13 +19,15 @@ use crate::net::{HOME, NODE, PEER, own_pool, public_key};
 /// The other member of the region, which is not a voter.
 pub(crate) const OTHER: types::node::Key = types::node::Key::from_u128(2);
 
-/// Region `plant` at [`NODE`] over `transport`, whose one voter is [`NODE`] and whose
-/// other member is [`OTHER`] at `other`.
+/// The region at [`NODE`] over `transport`, whose one voter is [`NODE`], whose
+/// other member is [`OTHER`] at `other`, and whose founding spec holds `definitions`.
+/// At the root prefix, it governs each name.
 pub(crate) async fn open(
     node: &sim::node::Node,
     tasks: &Tasks,
     transport: Rc<Transport>,
     other: Vec<Address>,
+    definitions: BTreeMap<Name, Definition>,
 ) -> hub::Region {
     let pool = own_pool();
     let store = blob::Store::open(blob::Config {
@@ -37,10 +42,10 @@ pub(crate) async fn open(
         key: NODE,
         private_key: HOME,
         founding: mesh::region::Founding {
-            prefix: "plant".parse().expect("a prefix"),
+            prefix: Prefix::ROOT,
             members: vec![member(NODE, &HOME, Vec::new()), member(OTHER, &PEER, other)],
             voters: [NODE].into(),
-            definitions: BTreeMap::new(),
+            definitions,
             homes: BTreeMap::new(),
         },
         files: node.files(),
@@ -56,7 +61,7 @@ pub(crate) async fn open(
     hub::Region { mesh, transport }
 }
 
-/// The member `key` of region `plant` at `addresses`.
+/// The member `key` of the region at `addresses`.
 fn member(
     key: types::node::Key,
     private_key: &PrivateKey,

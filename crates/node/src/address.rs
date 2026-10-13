@@ -9,16 +9,15 @@
 //! ([`crate::sector`]). For IPv4, the other 12 bytes of the IP, the flow info, and the
 //! scope are zero.
 
-use std::net::SocketAddr;
-#[cfg(any(test, feature = "sim"))]
-use std::net::{SocketAddrV4, SocketAddrV6};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::Path;
 use std::pin::Pin;
 
 use env::files::{File, Files, Mode};
 use types::ed25519::PublicKey;
 
-use crate::{Error, sector};
+use crate::Error;
+use crate::sector::{self, Held};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "address";
@@ -40,7 +39,7 @@ pub(crate) struct Address {
     pub(crate) bound: SocketAddr,
 }
 
-/// Where a program dials `port`: its UDP socket, as it is bound.
+/// Where `port` is bound: its UDP socket.
 pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
     let udp = port
         .addresses()
@@ -139,10 +138,24 @@ pub(crate) fn decode(bytes: &[u8; LEN]) -> Option<Address> {
     }
 }
 
+/// The address in the file of `files`, or `None` when the file holds no address of a
+/// node: it is not there, or a node did not write it whole. Opens it to read only, so
+/// it makes nothing and waits for no lock.
+///
+/// # Errors
+///
+/// The error of each file call that fails, except [`env::files::Error::NotFound`].
+pub(crate) async fn read(files: &Files) -> Result<Option<Address>, env::files::Error> {
+    let held = sector::read::<LEN>(files, Path::new(FILE), TAG).await?;
+    Ok(match held {
+        Held::Written(bytes) => fields(&bytes),
+        Held::Nothing | Held::Foreign => None,
+    })
+}
+
 /// The address in `bytes`, whatever its tag and checksum, or `None` for a public key
 /// of small order, a family that is not 4 or 6, or an IPv4 address with a byte that
 /// is not zero after its 4, in its flow info, or in its scope.
-#[cfg(any(test, feature = "sim"))]
 fn fields(bytes: &[u8; LEN]) -> Option<Address> {
     let word = |at: usize| {
         u32::from_be_bytes(bytes[at..at + 4].try_into().expect("invariant: 4 bytes"))
