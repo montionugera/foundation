@@ -82,6 +82,7 @@ pub(crate) struct Failure {
 pub(crate) enum Class {
     Config,
     Device,
+    /// A run ended with `kind::Error::Retry`, or the running kind shows the error.
     Retry,
 }
 
