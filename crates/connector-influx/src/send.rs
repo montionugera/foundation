@@ -16,6 +16,13 @@ use types::time::Span;
 use crate::batch::{Batch, Taken};
 use crate::{CONFIRMED, Config, Target};
 
+/// The longest name of a database, bucket, or org, in bytes.
+pub(crate) const NAME_MAX: usize = 4_096;
+const _: () = assert!(
+    "/api/v2/write?org=&bucket=&precision=ns".len() + 2 * 3 * NAME_MAX <= 65_534,
+    "the longest write path, two names with each byte percent-encoded, fits in the \
+     65,534 bytes that `http` takes"
+);
 /// The longest a write request may take.
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
@@ -152,7 +159,10 @@ fn write_uri(address: &Uri, target: &Target) -> Uri {
     }
     path.push_str("&precision=ns");
     let mut parts = address.clone().into_parts();
-    parts.path_and_query = Some(path.parse().expect("invariant: an encoded query"));
+    parts.path_and_query = Some(
+        path.parse()
+            .expect("invariant: names of at most NAME_MAX bytes fit in a query"),
+    );
     Uri::from_parts(parts).expect("invariant: an address with a path is a URI")
 }
 

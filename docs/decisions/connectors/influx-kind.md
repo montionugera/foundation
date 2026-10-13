@@ -33,8 +33,10 @@
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949), and
   the plan that `laptop.architect-2` approved on 2026-10-13T16:53:54Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150691934),
-  and its review of the target with no token
-  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155556749).
+  its review of #2610 on 2026-10-13T21:26:57Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155556749), and its
+  approval of the bound of 4,096 bytes on 2026-10-13T21:36:41Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155716038).
   The kind also reads `measurement`, a name that `line::Measurement::new` takes other
   than `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its
   settings and no written channel. `run` writes each frame of the reader to the write

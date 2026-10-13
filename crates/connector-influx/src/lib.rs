@@ -37,9 +37,6 @@ const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
 const BAD_ORG: Code = Code::new("influx.bad-org");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
-/// The longest name of a database, bucket, or org, in bytes. Two names, each byte
-/// percent-encoded, fit in the query of a write URI.
-const NAME_MAX: usize = 4_096;
 /// The keys of the config, other than the reader settings.
 const KEYS: [&str; 5] = ["address", "database", "bucket", "org", "measurement"];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
@@ -232,26 +229,24 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
 }
 
 /// Reads the name of an InfluxDB `noun`, such as a database: a string of 1 to
-/// [`NAME_MAX`] bytes.
+/// [`send::NAME_MAX`] bytes.
 fn name(value: &Value, code: Code, noun: &str) -> Result<String, Diagnostic> {
     let bad = |message: String| {
         Diagnostic::new(
             code,
             value.span,
             message,
-            format!(
-                "Write the name of an InfluxDB {noun} of at most {NAME_MAX} bytes, \
-                 such as \"plant\""
-            ),
+            format!("Write the name of an InfluxDB {noun}, such as \"plant\""),
         )
     };
     match &value.kind {
         value::Kind::String(text) if text.is_empty() => {
             Err(bad(format!("the {noun} name is empty")))
         }
-        value::Kind::String(text) if text.len() > NAME_MAX => Err(bad(format!(
-            "the {noun} name has {} bytes, over {NAME_MAX}",
-            text.len()
+        value::Kind::String(text) if text.len() > send::NAME_MAX => Err(bad(format!(
+            "the {noun} name has {} bytes, over {}",
+            text.len(),
+            send::NAME_MAX
         ))),
         value::Kind::String(text) => Ok(text.to_string()),
         kind => Err(bad(format!("`{noun}` is a string, not {}", kind.noun()))),

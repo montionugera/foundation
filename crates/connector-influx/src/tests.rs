@@ -208,8 +208,7 @@ fn refuses_a_database_that_is_empty_or_not_a_string() {
                 "influx.bad-database",
                 15,
                 message,
-                "Write the name of an InfluxDB database of at most 4096 bytes, such as \
-                 \"plant\"",
+                "Write the name of an InfluxDB database, such as \"plant\"",
             )]),
             "{database:?}"
         );
@@ -218,24 +217,22 @@ fn refuses_a_database_that_is_empty_or_not_a_string() {
 
 #[test]
 fn refuses_a_name_over_4096_bytes() {
-    let over = string(&"a".repeat(4_097));
-    for (config, key, code, offset) in [
-        (influx(), "database", "influx.bad-database", 15),
-        (bucket(), "bucket", "influx.bad-bucket", 61),
-        (bucket(), "org", "influx.bad-org", 63),
-    ] {
-        assert_eq!(
-            Kind.parse(&with(config, key, &over)),
-            Err(vec![refused(
-                code,
-                offset,
-                &format!("the {key} name has 4097 bytes, over 4096"),
-                &format!(
-                    "Write the name of an InfluxDB {key} of at most 4096 bytes, such \
-                     as \"plant\""
-                ),
-            )]),
-        );
+    for (over, bytes) in [("a".repeat(4_097), 4_097), ("é".repeat(2_049), 4_098)] {
+        for (config, key, code, offset) in [
+            (influx(), "database", "influx.bad-database", 15),
+            (bucket(), "bucket", "influx.bad-bucket", 61),
+            (bucket(), "org", "influx.bad-org", 63),
+        ] {
+            assert_eq!(
+                Kind.parse(&with(config, key, &string(&over))),
+                Err(vec![refused(
+                    code,
+                    offset,
+                    &format!("the {key} name has {bytes} bytes, over 4096"),
+                    &format!("Write the name of an InfluxDB {key}, such as \"plant\""),
+                )]),
+            );
+        }
     }
     let longest = string(&"a".repeat(4_096));
     let parsed = Kind.parse(&with(influx(), "database", &longest));
@@ -365,15 +362,13 @@ fn refuses_a_bucket_and_an_org_that_are_empty_or_not_strings() {
                 "influx.bad-bucket",
                 61,
                 "the bucket name is empty",
-                "Write the name of an InfluxDB bucket of at most 4096 bytes, such as \
-                 \"plant\"",
+                "Write the name of an InfluxDB bucket, such as \"plant\"",
             ),
             refused(
                 "influx.bad-org",
                 63,
                 "`org` is a string, not an integer",
-                "Write the name of an InfluxDB org of at most 4096 bytes, such as \
-                 \"plant\"",
+                "Write the name of an InfluxDB org, such as \"plant\"",
             ),
         ])
     );
