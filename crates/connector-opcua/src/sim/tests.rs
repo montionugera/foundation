@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
 
 use ::sim::{Sim, node};
+use env::net::{Listener, tcp};
 use types::quality::Quality;
 
-use super::{Served, Server, Variables};
+use super::{Served, Variables, serve};
 use crate::client::Client;
+use crate::connection::OPTIONS;
 use crate::ffi::Status;
 use crate::node::Node;
 
@@ -12,41 +14,52 @@ const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
 const BAD: Quality = Quality(0x8000_0000);
 
+/// Binds a listener of `node` on its port 4840.
+fn listen(node: &node::Node) -> Listener {
+    let local = SocketAddr::new(node.addresses()[0], 4840);
+    let listen = tcp::Listen {
+        local,
+        backlog: 4,
+        options: OPTIONS,
+    };
+    node.net().listen(&listen).expect("the port is free")
+}
+
 #[test]
 fn a_server_answers_each_read_with_its_variable_and_records_it() {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     sim.run_on(&node, move |node, _| async move {
-        let local = SocketAddr::new(node.addresses()[0], 4840);
+        let listener = listen(&node);
+        let url = format!("opc.tcp://{}", listener.local());
         let mut rng = node.entropy().rng();
         let variables = Variables::new(&[SPIKE, DIP]);
-        let server =
-            Server::listen(node.clock(), node.net(), local, &mut rng, &variables)
-                .expect("the port is free");
-        assert_eq!(server.local(), local);
-        assert_eq!(
-            format!("{server:?}"),
-            format!("Server {{ local: {local}, .. }}")
-        );
         let (clock, spike) = (node.clock(), SPIKE.parse::<Node>().expect("a node"));
         let mut times = Vec::new();
         let mut reads = Vec::new();
-        server
-            .serve(async {
-                let url = format!("opc.tcp://{local}");
-                let mut client =
-                    (Client::connect(node.clock(), node.net(), &mut rng, &url))
-                        .await
-                        .expect("connect");
-                for quality in [Quality::GOOD, BAD] {
-                    variables.change(quality);
-                    let before = clock.now();
-                    reads.push(client.read(&spike).await);
-                    times.push((before, clock.now()));
-                }
-                client.close().await;
-            })
-            .await;
+        let until = async {
+            let mut client =
+                (Client::connect(node.clock(), node.net(), &mut rng, &url))
+                    .await
+                    .expect("connect");
+            for quality in [Quality::GOOD, BAD] {
+                variables.change(quality);
+                let before = clock.now();
+                reads.push(client.read(&spike).await);
+                times.push((before, clock.now()));
+            }
+            client.close().await;
+        };
+        let mut served = node.entropy().rng();
+        serve(
+            node.clock(),
+            node.net(),
+            listener,
+            &mut served,
+            &variables,
+            until,
+        )
+        .await;
         assert_eq!(reads, [Ok(1.0), Err(Status(BAD.0))]);
         let record = variables.served();
         assert_eq!(record[DIP], []);
@@ -61,14 +74,44 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
                 "{time:?} in {before:?}..{after:?}"
             );
         }
-        let again =
-            Server::listen(node.clock(), node.net(), local, &mut rng, &variables);
-        again
-            .expect("a served server frees its port")
-            .serve(async {})
-            .await;
+        let again = listen(&node);
+        serve(
+            node.clock(),
+            node.net(),
+            again,
+            &mut served,
+            &variables,
+            async {},
+        )
+        .await;
     })
     .expect("the run ends");
+}
+
+#[test]
+fn a_server_panics_on_a_variable_of_the_number_0() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, move |node, _| async move {
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE, "ns=3;i=0"]);
+        serve(
+            node.clock(),
+            node.net(),
+            listen(&node),
+            &mut rng,
+            &variables,
+            async {},
+        )
+        .await;
+    });
+    let Err(::sim::Error::Panicked { message, .. }) = run else {
+        panic!("the serve panics: {run:?}");
+    };
+    assert_eq!(
+        message,
+        "ns=3;i=0: open62541 adds a node of the number 0 at a free number"
+    );
 }
 
 #[test]
