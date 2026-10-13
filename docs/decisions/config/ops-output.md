@@ -250,12 +250,10 @@
   data directory of a node that runs``, which supersedes "with no `--data`" above,
   decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
-  `{dir}` that is a file is also `node.not-running`, with the message `no node runs in
-  {dir}, which is not a directory`, and so is a directory `{dir}` whose `{dir}/data` is
-  a file, with the message `no node runs in {dir}, because {dir}/data is not a
-  directory`. Both have the fix ``Give `--data` the data directory of a node that
-  runs``, which supersedes `node.unreadable` for them, "a directory that does not open"
-  of decision 3 of
+  `{dir}` that is a file, or whose `{dir}/data` is a file, is also `node.not-running`,
+  with the message `no node runs in {dir}, which is not a data directory` and the fix
+  ``Give `--data` the data directory of a node that runs``, which supersedes
+  `node.unreadable` for it, "a directory that does not open" of decision 3 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913. The fix
   of `node.unanswered` is ``Start the node again with `foundation start --data {dir}`
   ``, which supersedes its fix of that decision 3. The fix of `node.session` is `Fix the
@@ -269,6 +267,9 @@
   (2026-10-13T21:30:55Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024; the fix
   of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
-  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894; and the
-  texts that name `{dir}` at 2026-10-13T21:52:28Z,
-  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155978119).
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894; the texts
+  that name `{dir}` at 2026-10-13T21:52:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155978119; and the
+  quotes of `{dir}` and the text of a `{dir}` that is no data directory at
+  2026-10-13T22:10:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6156250837).
