@@ -244,9 +244,9 @@
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432), which
   supersedes "at once" of rule 3 for it. Until the first call of a run, `class` and
   `error` keep the end of the last run, so a kind that wants a clear status clears it at
-  its start. The same value again writes nothing. The end of the run replaces both, and
-  a call after the run returned, from a task of the run, shows nothing (decided by the
-  `connector` builder on #2535). When a
+  its start. The same value again writes nothing. The end of the run replaces both. A
+  call after the run returned shows nothing (`laptop.architect-2`, 2026-10-13T04:01:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
   run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
   when the call returns

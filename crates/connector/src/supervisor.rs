@@ -947,8 +947,8 @@ mod tests {
     }
 
     /// The state, the class, and the text of each status that a `Late` run gives,
-    /// cancelled at 500 ms.
-    fn supervise_late(device: bool) -> Vec<((i64, i64, i64), String)> {
+    /// cancelled at `cancel`.
+    fn supervise_late(device: bool, cancel: Span) -> Vec<((i64, i64, i64), String)> {
         let statuses = run_on(move |node, tasks| async move {
             let kinds = Table::new().with("script", Late { device });
             let inputs =
@@ -960,7 +960,7 @@ mod tests {
             let canceller = token.clone();
             let sleeper = clock.clone();
             tasks.spawn(async move {
-                sleeper.sleep(ms(500)).await;
+                sleeper.sleep(cancel).await;
                 canceller.cancel();
             });
             let name = "plant.script".parse().expect("a valid name");
@@ -980,23 +980,24 @@ mod tests {
     }
 
     #[test]
-    fn writes_no_error_that_a_task_shows_after_an_ok_end() {
+    fn keeps_the_ok_end_when_a_task_shows_an_error_after_it() {
         let want = [
             ((0, 0, 0), String::new()),
             ((3, 0, 0), String::new()),
             ((2, 0, 0), String::new()),
         ];
-        assert_eq!(supervise_late(false), want);
+        assert_eq!(supervise_late(false, ms(500)), want);
     }
 
     #[test]
-    fn writes_no_error_that_a_task_shows_after_a_device_end() {
+    fn keeps_the_device_end_when_a_task_shows_an_error_after_it() {
         let want = [
             ((0, 0, 0), String::new()),
             ((3, 2, 0), "no reply".to_owned()),
             ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
         ];
-        assert_eq!(supervise_late(true)[..3], want);
+        assert_eq!(supervise_late(true, ms(5_000))[..4], want);
     }
 
     #[test]
