@@ -77,17 +77,22 @@ to focus on the 'guts' the internals while ONE NODE work should be focused on de
 APIs and connectors.", 2026-10-08T02:45:18Z,
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6051113411).
 
-Amendment (2026-10-13): until the new sessions start, each session works on ONE NODE to
-make the current node production grade: better connector infrastructure, CLIs that are
-intuitive, and better performance and reliability, with the common parts that make the
-next connector production grade with little work. The ONE NODE PRs in flight finish. The
-person decided ("Ok, so here's what I want to focus on. Instead of diong store and
-forward, we are giong to defer that. What we are going to work on doing is making the
-current ONE NODE infrastructure as production grade and high quality. That is improving
-connector infrastructure, making the CLIs actually intuitive, improving system
-perforfmance reliability. If we wanted to ship the current ONE NODE set up to
-production, and builda ll of the relevant componentry to make it easier to build other
-production grade connectors what would it be? We should use all of the remainin
-gsessions in that extended effort, ten we will continue STORE AND FORWARD once we have
-the new sessions"), relayed by `laptop.monitor` at 2026-10-13T20:47:30Z:
-https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233.
+Amendment (2026-10-13): until the new sessions start, each session works on ONE NODE. It
+makes the current node production grade, with better connector infrastructure, CLIs that
+are intuitive, and better performance and reliability. It sets up the common parts that
+make more connectors easier and better to build later, and it improves the developer
+experience. The ONE NODE PRs in flight finish. The person decided ("Ok, so here's what I
+want to focus on. Instead of diong store and forward, we are giong to defer that. What
+we are going to work on doing is making the current ONE NODE infrastructure as
+production grade and high quality. That is improving connector infrastructure, making
+the CLIs actually intuitive, improving system perforfmance reliability. If we wanted to
+ship the current ONE NODE set up to production, and builda ll of the relevant
+componentry to make it easier to build other production grade connectors what would it
+be? We should use all of the remainin gsessions in that extended effort, ten we will
+continue STORE AND FORWARD once we have the new sessions"), relayed by `laptop.monitor`
+at 2026-10-13T20:47:30Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233, and
+widened the scope ("It's not jus tproduction gaps, its also what we can set up to make
+additional connector infrastructure easier/better to build in the future, and dx
+experiences we can improve upon"), relayed by `laptop.monitor` at 2026-10-13T20:49:30Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154948753.
