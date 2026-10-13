@@ -165,8 +165,8 @@ impl Manager {
     ///
     /// # Aborts
     ///
-    /// When open62541 cannot allocate the loop, the connection manager, or a client,
-    /// as [`alloc::exhausted`] says.
+    /// When open62541 cannot allocate the loop, the connection manager, a client, or
+    /// the Read request of the time of the server, as [`alloc::exhausted`] says.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
