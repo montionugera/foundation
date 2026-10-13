@@ -9,14 +9,16 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
-  writes the `text()` of the reply, as it does for `plan` (`laptop.architect`,
+  writes the `text()` of the reply, or its JSON with `--json`, as it does for `plan` (`laptop.architect-2`,
+  2026-10-13T08:31:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758, which
+  supersedes "read-only in the operation table" of item 1 and "is a variant of `Response`" of item 2 of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; the text approved by `laptop.architect`,
   2026-10-13T08:24:06Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442056, and
   `laptop.architect-2`, 2026-10-13T08:24:09Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842, which
-  supersede "is a variant of `Response`" of item 2 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119).
-  `--json` and the MCP tool later give the same value, with no change to the operation,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842).
+  The MCP tool later gives the same value, with no change to the operation,
   the type, or the reply. The connectors are each connector of the spec in use whose
   `node` is this node, in name order. For each, `serve` opens a `Latest` reader of its
   status index and each channel on it through the node's hub, with the request's
@@ -47,8 +49,8 @@
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
   #1028 checks each open of the hub, this check moves there. Deferred to
-  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
-  `--json`, and MCP. The CLI and MCP send this one form to a node, and the client reader
+  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
+  and MCP. The CLI and MCP send this one form to a node, and the client reader
   of #1749 does not replace it. Lost: `serve` replies with the text, so that `--json`
   and MCP each need a second reply; `status` asks the supervisors, a second source of
   status with its own access check. Decided by `laptop.architect-2`
