@@ -196,6 +196,42 @@ fn status_on_a_file_as_data_is_not_running() {
     );
 }
 
+#[test]
+fn status_on_a_directory_whose_data_is_a_file_names_that_file() {
+    let rig = Rig::new();
+    std::fs::create_dir(rig.dir.join("plant")).expect("make plant");
+    std::fs::write(rig.dir.join("plant/data"), b"").expect("write plant/data");
+    let output = rig.run(&["status", "--data", "plant"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
+        (
+            Some(1),
+            concat!(
+                "error[node.not-running]: no node runs in plant, because plant/data is ",
+                "not a directory\nfix: Give `--data` the data directory of a node that ",
+                "runs\n",
+            )
+        )
+    );
+}
+
+#[test]
+fn the_start_in_the_fix_of_a_data_directory_with_a_space_runs() {
+    let rig = Rig::new();
+    let output = rig.run(&["status", "--data", "my plant"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
+        (
+            Some(1),
+            concat!(
+                "error[node.not-running]: no node runs in my plant\nfix: Run `foundation ",
+                "start --data 'my plant'`, with `--name <name>` on its first start, or ",
+                "give `--data` the data directory of a node that runs\n",
+            )
+        )
+    );
+}
+
 /// The error of `status` on the data directory `dir`, where no node runs.
 fn not_running(dir: &str) -> String {
     format!(

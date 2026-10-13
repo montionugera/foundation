@@ -147,12 +147,18 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
             not_running(dir)
         }
         os::Error::Dir(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            let data = dir.display();
+            // `os::stored` opens `dir/data`, so `dir` or `dir/data` is the file.
+            let message = if dir.is_dir() {
+                format!(
+                    "no node runs in {data}, because {data}/data is not a directory"
+                )
+            } else {
+                format!("no node runs in {data}, which is not a directory")
+            };
             Failure {
                 code: NOT_RUNNING,
-                message: format!(
-                    "no node runs in {}, which is not a directory",
-                    dir.display()
-                ),
+                message,
                 fix: "Give `--data` the data directory of a node that runs".to_owned(),
             }
         }
@@ -183,7 +189,10 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
         node::client::Error::Unanswered { at, error } => (
             UNANSWERED,
             format!("no node answers at {at}, the address in {data}: {error}"),
-            format!("Start the node again with `foundation start --data {data}`"),
+            format!(
+                "Start the node again with `foundation start --data {}`",
+                quoted(dir)
+            ),
         ),
         node::client::Error::Session { at, error } => (
             SESSION,
@@ -201,14 +210,26 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
 
 /// The failure of a data directory `dir` where no node runs.
 fn not_running(dir: &Path) -> Failure {
-    let dir = dir.display();
     Failure {
         code: NOT_RUNNING,
-        message: format!("no node runs in {dir}"),
+        message: format!("no node runs in {}", dir.display()),
         fix: format!(
-            "Run `foundation start --data {dir}`, with `--name <name>` on its first \
-             start, or give `--data` the data directory of a node that runs"
+            "Run `foundation start --data {}`, with `--name <name>` on its first \
+             start, or give `--data` the data directory of a node that runs",
+            quoted(dir)
         ),
+    }
+}
+
+/// `dir` as one word of a POSIX shell, so that a command in a fix runs as printed: as
+/// it is when it holds only safe characters, else in single quotes.
+fn quoted(dir: &Path) -> String {
+    let dir = dir.display().to_string();
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c);
+    if !dir.is_empty() && dir.chars().all(safe) {
+        dir
+    } else {
+        format!("'{}'", dir.replace('\'', "'\\''"))
     }
 }
 
@@ -1219,6 +1240,30 @@ mod tests {
                 "no node runs in plant.hcl, which is not a directory",
                 "Give `--data` the data directory of a node that runs",
             )
+        );
+    }
+
+    #[test]
+    fn a_path_in_a_command_is_one_word_of_the_shell() {
+        let words = [
+            "plant",
+            "/var/lib/foundation-2.d",
+            "my plant",
+            "it's",
+            "",
+            "~/a",
+        ]
+        .map(|dir| quoted(Path::new(dir)));
+        assert_eq!(
+            words,
+            [
+                "plant",
+                "/var/lib/foundation-2.d",
+                "'my plant'",
+                "'it'\\''s'",
+                "''",
+                "'~/a'",
+            ]
         );
     }
 
