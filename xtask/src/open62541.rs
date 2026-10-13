@@ -2383,15 +2383,18 @@ End of search list.
         }
     }
 
+    /// A `git` command in `repo`, with an identity.
+    fn git(repo: &Path) -> Command {
+        let mut git = Command::new("git");
+        git.arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=x", "-c", "user.email=x@x"]);
+        git
+    }
+
     /// Commits each file in `repo` and tags the commit `tag`.
     fn tag(repo: &Path, tag: &str) {
-        let git = |args: &[&str]| {
-            let mut git = Command::new("git");
-            git.arg("-C")
-                .arg(repo)
-                .args(["-c", "user.name=x", "-c", "user.email=x@x"]);
-            exec(git.args(args)).unwrap()
-        };
+        let git = |args: &[&str]| exec(git(repo).args(args)).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", tag]);
         git(&["tag", tag]);
