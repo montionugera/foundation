@@ -76,9 +76,21 @@
   `config::plan::check(definitions, members, kinds)` checks the definitions after the
   plan, with no span or note. It gives the first stage with problems:
   `config.private-key` for each string of a definition; then, together, what the kind
-  table refuses in the kind and config of each connector, `config.duplicate-name`, and
-  `config.subject-is-connector`; then `config.unplaced`, `config.connector-home`,
-  `config.split-placement`, `config.writer-nodes`, and `config.unknown-node`.
+  table refuses in the kind and config of each connector, `config.long-name` for each
+  connector with a status name that is too long, `config.duplicate-name`, and
+  `config.subject-is-connector`; then, together, `config.implied-channel` for each
+  status channel that the kind of a connector writes (STATUS PLACEMENT; #2295;
+  `laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855), then for
+  each status channel of a connector that the definitions lack or hold as another
+  channel (STATUS PLACEMENT; `laptop.architect-2`, 2026-10-12T21:39:19Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350; the reason
+  of the stage, 2026-10-12T21:48:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
+  of the write check, 2026-10-12T22:33:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580); then
+  `config.unplaced`, `config.connector-home`, `config.split-placement`,
+  `config.writer-nodes`, and `config.unknown-node`.
   `spec::access::Policy::new` refuses an empty `allow`, so `Plan::decode` refuses it.
   The `ops` apply calls `check` after `definitions` and before `Mesh::apply`, with the
   members and the kind table of the node that applies, as both can change after `plan`.

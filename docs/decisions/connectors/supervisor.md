@@ -16,18 +16,20 @@
   and 3; 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
   3, and 5). The reader open waits while the mesh names no home for the index that it
-  selects. A reader with a hold opens again at its held position, so it stays `Behind`
-  at each open within its hold, and each close starts the hold again (HOME NAMED
-  READERS). So a hold longer than the longest wait of the backoff never ends while the
-  node runs with that spec. The reader then gets no frame again until #274 reads from
-  disk (the test:
+  selects. A reader with a hold opens again at its held position while its index keeps
+  its key, so it stays `Behind` at each open within its hold, and each close starts the
+  hold again (HOME NAMED READERS). So a hold longer than the longest wait of the backoff
+  never ends while the node runs with that spec. The reader then gets no frame again
+  until #274 reads from disk (the test:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). The wait
   for a home, and that the supervisor does no more for a held reader before #274, are
   decided by `laptop.architect-2` (2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, questions
   1 and 2). The text from "A reader with a hold" to the #274 test is from
   `laptop.architect` (2026-10-11T07:34:36Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343). Each run
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343), and
+  "while its index keeps its key" is from `laptop.architect` (2026-10-12T20:35:29Z:
+  https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132165963). Each run
   gets a child of the caller's token, which the supervisor cancels once the run returns
   or its future drops, so each task that the run spawned to wait on it ends with the run
   (`laptop.architect-2`, 2026-10-08T17:58:15Z:
@@ -48,16 +50,18 @@
   removed the channel, and the status session of the run holds the old key. `node`
   takes the keys from the spec in use: the status index of the connector, and each
   channel on it. A data channel with a new key changes no connector: the session of
-  the kind ends, and the next start opens it by name again (#2442). Lost: the key of
-  the status index alone, because a kind that changes and comes back keeps the index
-  and gives each count a new key; the names of the kind's `check`, which `node` then
-  runs a second time at each apply; an end of the run when a status write gives
-  `Failure::Removed`, which comes only at the next status write and changes CONNECTOR
-  STATUS; a key of the connector in the spec, a new field of `spec` and a new rule of
-  the plan for what the status keys already tell; each spec in order, because a node
-  that was down sees only the last one (`laptop.architect-2`, #2358,
+  the kind ends, and the next start opens it again from its names or its selector
+  (KIND TABLE). Lost: the key of the status index alone, because a kind that changes and
+  comes back keeps the index and gives each count a new key; the names of the kind's
+  `check`, which `node` then runs a second time at each apply; an end of the run when a
+  status write gives `Failure::Removed`, which comes only at the next status write and
+  changes CONNECTOR STATUS; a key of the connector in the spec, a new field of `spec`
+  and a new rule of the plan for what the status keys already tell; each spec in order,
+  because a node that was down sees only the last one (`laptop.architect-2`, #2358,
   2026-10-11T21:09:12Z:
-  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704). The
+  https://github.com/synnaxlabs/foundation/issues/2358#issuecomment-6113779704; the
+  words of the data channel sentence, 2026-10-12T20:24:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132012721). The
   lookup of these keys stays in `node`. Lost: `connector::status` gives the keys from
   the definitions, which makes `spec` a dependency of `connector` and of each kind for
   one caller, where a connector reads no spec and reaches its channels only through

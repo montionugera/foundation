@@ -175,12 +175,17 @@ fn a_session_silent_past_the_idle_setting_closes() {
 }
 
 /// The error that `join` gives for a node with `settings`, which the transport
-/// refuses.
+/// refuses after the claim.
 fn refused(settings: Settings) -> Error {
     let mut sim = sim::Sim::new(sim::Config::default());
-    let (_host, node) = start(&mut sim, settings);
+    let (host, node) = start(&mut sim, settings);
     assert_eq!(sim.run(), Ok(()));
-    node.join().expect_err("the transport refuses the settings")
+    let e = node.join().expect_err("the transport refuses the settings");
+    let made = [
+        "budget", "lock", "name", "node.key", "shard-0", "shard-1", "shards-2",
+    ];
+    assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from), "{e}");
+    e
 }
 
 /// An idle time of zero, a message limit under 1472 bytes, and a window smaller than

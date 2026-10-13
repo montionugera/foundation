@@ -102,6 +102,12 @@ state on `main`.
   share 50 resets a second on each shard. One ID is enough, and a peer whose dial
   completes gets new IDs with no limit: noq-proto issues a new ID each time the peer
   retires one.
+- A peer that keeps back or reorders an acknowledgment, or that stops a stream and
+  never acknowledges its reset, makes a session hold at most `window_bytes` of sent
+  bytes (#2361). Each held run of over 1452 bytes holds its whole block, so the
+  session holds at most `window_bytes / 1453` blocks, plus two for each stream. Open:
+  #2434 (a session that sends small parts of large blocks, as `hub` does, holds up to
+  that many large blocks).
 - Open: #620 (a stop after the peer's reset gives the peer the stream's window twice,
   so a peer grows the connection's receive memory with no bound).
 - Fixed: #299 (a peer made the node hold certificates that are not valid for a
@@ -267,11 +273,11 @@ state on `main`.
   each put in flight; then each put of a chunk that the disk does not hold stops with
   `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
   puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
-  memory for each stream. `transport` also holds each chunk whole until the peer
-  acknowledged each byte of it and each byte before it on the stream, so a get can hold
-  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
-  get hold each chunk that its stream sends after it). Who may open a blob stream is not
-  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  memory for each stream. `transport` also holds each chunk whole while noq keeps a sent
+  byte of it (STREAM WIRE), so a get can hold more than one chunk. The chunks that
+  `transport` holds for a session have at most `window_bytes` bytes together, plus two
+  chunks for each stream (#2361). Who may open a blob stream is not built: `node`
+  rejects each one until it routes them from member nodes only (#1229).
   The requester is not built (#1229). To attack when it lands: a binary that a peer
   serves under a hash it does not match (C9d).
 
@@ -333,7 +339,13 @@ state on `main`.
   open reported durable the records a killed process never synced), #553 (a power cut
   after the first open lost the new ring: its directory was not synced in its parent),
   #393 (two CRC-valid fields stopped the node at open); the `area_16` and
-  `below_tail_16` inputs hold the two fields of #393.
+  `below_tail_16` inputs hold the two fields of #393. The `carry` inputs hold a
+  carry record (#160): one valid, one each with a count past the body, an unknown
+  path byte, and a carried tail below the path's tail, one that continues the chain
+  only from the second header, one inside a data record, off the way, one that only
+  the older header reaches, one that passes the end of the area, and one after a
+  data record longer than the window. The `body_over_max` input holds a data record
+  that follows the chain with a body over `body_max`.
 
 ### Device to connector
 

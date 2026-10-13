@@ -38,6 +38,7 @@ types = { path = "../types" }
 wire = { path = "../wire" }
 
 [dev-dependencies]
+block = { path = "../block", features = ["sim"] }
 bytes = { workspace = true }
 codec = { path = "../codec" }
 connector = { path = "../connector", features = ["sim"] }

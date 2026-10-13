@@ -720,3 +720,35 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
     assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
     took
 }
+
+/// A server adds a namespace after a client connects, and a Double in it. The client
+/// reads it, then a new client reads it.
+#[test]
+fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value() {
+    let ((value, reads), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read(VALUE).await;
+            // SAFETY: the server lives, and copies the name.
+            let namespace = unsafe {
+                ffi::test::UA_Server_addNamespace(
+                    peer.server.raw(),
+                    c"urn:added".as_ptr(),
+                )
+            };
+            let added = Node {
+                namespace,
+                key: 1000,
+            };
+            peer.server.add_double(added, 2.5);
+            let second = client.read(added).await;
+            client.close().await;
+            let mut fresh = peer.connected().await;
+            let third = fresh.read(added).await;
+            fresh.close().await;
+            (peer.value, (first, namespace, second, third))
+        })
+        .await
+    });
+    assert_eq!(reads, (Ok(value), 2, Ok(2.5), Ok(2.5)));
+}

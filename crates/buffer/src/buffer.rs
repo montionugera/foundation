@@ -26,8 +26,9 @@ use types::hash;
 use types::time::Span;
 use types::wait;
 
+use crate::carry;
 use crate::entry::{self, ENTRIES_MAX, Entry};
-use crate::group::{self, Closed, Group, META_LEN, Sealed};
+use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
 use crate::log::{self, Found, Logs, Mark, Tail};
 use crate::read::{self, Read, Reading, Stored};
@@ -43,8 +44,8 @@ pub struct Config {
     /// must be there and durable.
     pub dir: PathBuf,
     /// Blocks for record headers, recovery reads, and the entries a read gives. It
-    /// needs a class of 64 KiB. Its largest block bounds an entry, with
-    /// [`Limit::Block`].
+    /// needs a class of 64 KiB. Its budget bounds an entry, with
+    /// [`Buffer::block_max`].
     pub pool: Rc<Pool>,
     /// Deadlines of the group commit.
     pub clock: Clock,
@@ -76,6 +77,14 @@ pub enum Error {
     /// The pool has no block for a header, a recovery read, the restart record, a
     /// recovered entry, or a read.
     Pool(block::Error),
+    /// The budget of the pool holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside
+    /// the blocks of a group. A pool of `min` bytes or more opens the ring.
+    Budget {
+        /// The budget of the pool.
+        budget: usize,
+        /// The least budget that opens the ring.
+        min: usize,
+    },
     /// A file call failed.
     Files(files::Error),
     /// The ring file has another length than its header says, or it is not empty and
@@ -118,6 +127,12 @@ impl fmt::Display for Error {
                  bytes and {free} are free"
             ),
             Self::Pool(error) => write!(f, "the pool has no block: {error}"),
+            Self::Budget { budget, min } => write!(
+                f,
+                "a pool of {budget} bytes holds no entry of {} bytes: give it {min} \
+                 bytes or more",
+                Layout::ENTRY_MAX_MIN
+            ),
             Self::Files(error) => write!(f, "a file call failed: {error}"),
             Self::Length { expected, found } => write!(
                 f,
@@ -256,6 +271,7 @@ pub struct Buffer {
 struct Shared {
     file: File,
     pool: Rc<Pool>,
+    block_max: usize,
     layout: Layout,
     state: RefCell<State>,
 }
@@ -392,10 +408,12 @@ impl Buffer {
     ///
     /// [`Error::Files`], [`Error::Pool`], [`Error::Length`], [`Error::Missing`],
     /// [`Error::Damaged`], [`Error::Version`], [`Error::Unfit`], [`Error::Unaligned`],
-    /// and [`Error::Invalid`] as each says. [`Error::Full`] when the ring has no block
-    /// for its restart record. [`Error::Pool`] with `TooLarge` when a recovered entry
-    /// is over the largest block of `pool`, which a read must give it in: a larger pool
-    /// must open the ring.
+    /// and [`Error::Invalid`] as each says. [`Error::Budget`] when the budget of `pool`
+    /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
+    /// No file changes. [`Error::Full`] when the ring has no block for its restart
+    /// record. [`Error::Pool`] with `TooLarge` when a recovered entry is over the
+    /// largest block of `pool`, which a read must give it in: a larger pool must open
+    /// the ring.
     ///
     /// # Panics
     ///
@@ -412,7 +430,10 @@ impl Buffer {
             layout,
             commit,
         } = config;
-        drop(pool.alloc(META_LEN)?);
+        let block_max = group::block_max(&pool).map_err(|min| Error::Budget {
+            budget: pool.budget(),
+            min,
+        })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let chain = random(&entropy);
@@ -422,6 +443,7 @@ impl Buffer {
         let shared = Rc::new(Shared {
             file,
             pool,
+            block_max,
             layout: header.layout,
             state: RefCell::new(State {
                 writer,
@@ -453,11 +475,20 @@ impl Buffer {
         self.shared.layout
     }
 
-    /// The block pool from [`Config::pool`]. Its largest block bounds an entry, with
-    /// [`Limit::Block`].
+    /// The block pool from [`Config::pool`]. Its budget bounds an entry, with
+    /// [`Buffer::block_max`].
     #[must_use]
     pub fn pool(&self) -> &Pool {
         &self.shared.pool
+    }
+
+    /// The most bytes of parts, joined, that one entry may have ([`Limit::Block`]). The
+    /// pool has room for an entry at or under it, in one part or two, when it commits
+    /// only the bytes of that entry's parts. It is at most the largest block of
+    /// [`Buffer::pool`]. It is at least [`Layout::ENTRY_MAX_MIN`].
+    #[must_use]
+    pub fn block_max(&self) -> usize {
+        self.shared.block_max
     }
 
     /// Where `path` of the index at `slot` stands, with every appended entry.
@@ -632,13 +663,14 @@ impl Buffer {
         if let Some(error) = &state.failed {
             return Err(Rejected::Files(error.clone()));
         }
-        let taken = match state.open.push(&shared.pool, &state.writer, batch) {
+        let (pool, block_max) = (&*shared.pool, shared.block_max);
+        let taken = match state.open.push(pool, block_max, &state.writer, batch) {
             Ok(taken) => taken,
             Err(group::Rejected::Record) => {
                 state.close_open();
                 state
                     .open
-                    .push(&shared.pool, &state.writer, batch)
+                    .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
             }
             Err(other) => return Err(rejected(other)),
@@ -849,6 +881,7 @@ async fn walk(
             Step::Data(body) => {
                 recover(body, offset, pool.largest(), slots, &mut logs)?;
             }
+            Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
             Step::Moved | Step::More => {}
             Step::End => break,
         }
@@ -879,6 +912,23 @@ fn recover(
         let slot = slots.index(header.index);
         logs.append(slot, &header).map_err(misplaced)?;
         logs.sync(slot, &header, offset).map_err(misplaced)?;
+    }
+    Ok(())
+}
+
+/// Feeds the logs the tails of a carry record body at `offset`.
+fn recover_carried(
+    body: &[u8],
+    offset: u64,
+    slots: &mut Slots,
+    logs: &mut Logs,
+) -> Result<(), Error> {
+    let unread = |_: entry::Invalid| Error::Invalid { offset };
+    let misplaced = |_: log::Invalid| Error::Invalid { offset };
+    for tail in carry::parse(body).map_err(unread)? {
+        let tail = tail.map_err(unread)?;
+        let slot = slots.index(tail.index);
+        logs.carry(slot, &tail).map_err(misplaced)?;
     }
     Ok(())
 }
