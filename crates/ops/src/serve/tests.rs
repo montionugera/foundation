@@ -197,7 +197,7 @@ fn refuses_each_body_that_is_no_request() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
         let after = [&plan_body(&[("site.hcl", &site())])[..], b"x"].concat();
-        let cases: [(&[u8], &str); 16] = [
+        let cases: [(&[u8], &str); 18] = [
             (b"", "no newline ends the first line"),
             (b"{\"apply\":{}}", "no newline ends the first line"),
             (b"\n", "EOF while parsing a value at line 1 column 0"),
@@ -235,11 +235,19 @@ fn refuses_each_body_that_is_no_request() {
             ),
             (
                 b"{\"apply\":[]}\n",
-                "invalid type: sequence, expected an empty object at line 1 column 9",
+                "invalid type: sequence, expected an object at line 1 column 9",
+            ),
+            (
+                b"{\"plan\":[[]]}\n",
+                "invalid type: sequence, expected an object at line 1 column 8",
+            ),
+            (
+                b"{\"plan\":{\"files\":[[\"a.hcl\",\"\"]]}}\n",
+                "invalid type: sequence, expected an object at line 1 column 18",
             ),
             (
                 b"{\"status\":[]}\n",
-                "invalid type: sequence, expected an empty object at line 1 column 10",
+                "invalid type: sequence, expected an object at line 1 column 10",
             ),
             (&after, "bytes follow the first line of `plan`"),
             (

@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
+use std::marker::PhantomData;
 
 use access::Rules;
+use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -121,7 +123,40 @@ enum Request {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
+    #[serde(deserialize_with = "objects")]
     files: Vec<File>,
+}
+
+/// A `T` that takes only an object: a derived struct also takes a sequence.
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for Visitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Object<T>, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor(PhantomData))
+    }
+}
+
+/// The files of a [`Plan`], each only from an object.
+fn objects<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<File>, D::Error> {
+    let files = Vec::<Object<File>>::deserialize(deserializer)?;
+    Ok(files.into_iter().map(|Object(file)| file).collect())
 }
 
 impl<'de> Deserialize<'de> for Request {
@@ -143,13 +178,16 @@ impl<'de> Deserialize<'de> for Request {
                     return Err(de::Error::custom("no operation"));
                 };
                 let request = match name.as_str() {
-                    "plan" => Request::Plan(map.next_value()?),
+                    "plan" => {
+                        let Object(plan) = map.next_value()?;
+                        Request::Plan(plan)
+                    }
                     "apply" => {
-                        let Empty {} = map.next_value()?;
+                        let Object(Empty {}) = map.next_value()?;
                         Request::Apply
                     }
                     "status" => {
-                        let Empty {} = map.next_value()?;
+                        let Object(Empty {}) = map.next_value()?;
                         Request::Status
                     }
                     _ => {
