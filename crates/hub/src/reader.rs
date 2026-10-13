@@ -11,7 +11,7 @@ use std::task::{Context, Poll, ready};
 
 use ::home::reader::Next;
 use types::channel;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{self, KeySet};
 use types::frame::{Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
@@ -102,7 +102,7 @@ impl<'a> Received<'a> {
         let names = self
             .names
             .expect("invariant: the hub calls no `name` on a reader of a client read");
-        let place = self.lens.place(entry).unwrap_or_else(|| {
+        let place = names.find(entry).unwrap_or_else(|| {
             panic!("the entry {entry} is not a channel of the reader")
         });
         names.get(place)
@@ -133,16 +133,11 @@ pub struct Position {
 pub(crate) struct Lens {
     pub(crate) set: Arc<KeySet>,
     pub(crate) mask: Mask,
-    /// The place in the reader's channels of each entry of `set`, or [`Lens::NONE`].
-    places: Box<[u32]>,
     index: channel::Slot,
     group: u32,
 }
 
 impl Lens {
-    /// The place of an entry that is not a channel of the reader.
-    const NONE: u32 = u32::MAX;
-
     /// The lens of `set` for a reader of `slots` on the index at `index`.
     ///
     /// # Panics
@@ -150,32 +145,18 @@ impl Lens {
     /// If `set` does not hold `index`.
     pub(crate) fn new(
         set: &Arc<KeySet>,
-        slots: &[channel::Slot],
+        slots: impl IntoIterator<Item = channel::Slot>,
         index: channel::Slot,
     ) -> Self {
         let entry = set
             .find(index)
             .expect("invariant: the key set of a frame on an index holds the index");
-        let mut places = vec![Self::NONE; set.entries().len()].into_boxed_slice();
-        for (place, &slot) in slots.iter().enumerate() {
-            if let Some(entry) = set.find(slot) {
-                places[entry] = u32::try_from(place)
-                    .expect("invariant: a key set holds fewer than u32::MAX entries");
-            }
-        }
         Self {
             set: Arc::clone(set),
-            mask: Mask::new(set, slots.iter().copied()),
-            places,
+            mask: Mask::new(set, slots),
             index,
             group: set.entries()[entry].group,
         }
-    }
-
-    /// The place in the reader's channels of `entry`, or `None` when it is not one.
-    fn place(&self, entry: usize) -> Option<usize> {
-        let place = *self.places.get(entry)?;
-        (place != Self::NONE).then(|| usize::try_from(place).expect("u32 fits usize"))
     }
 
     /// The position of the reader after `frame`, a frame of this lens's key set. The
@@ -463,19 +444,26 @@ impl Reader {
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
         let mut listed = None;
         let items = |found: &[(&Name, &Channel)]| {
-            listed = Some(Box::new(Names::new(found)));
+            listed = Some(Names::new(found));
             let item =
                 |&(_, channel): &(&Name, &Channel)| (channel.key(), channel.sample());
             found.iter().map(item).collect()
         };
         let (matched, home) = find(state, || &select, items).await?;
+        let mut listed =
+            listed.expect("invariant: `find` calls `items` before it returns");
         let mut reader = match home {
-            Home::Here(channels) => Self::local(state, channels, mode, named, hold)?,
+            Home::Here(channels) => {
+                listed.slots.clone_from(&channels.slots);
+                Self::local(state, channels, mode, named, hold)?
+            }
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
-                let (remote, slot) = Remote::open(state, home, matched, mode).await?;
+                let index = matched.index;
+                let (remote, slots) = Remote::open(state, home, matched, mode).await?;
+                listed.slots = slots;
                 Self {
-                    index: slot,
+                    index: listed.slots[index],
                     names: None,
                     source: Source::Remote(Box::new(remote)),
                     given: Cell::new(None),
@@ -483,7 +471,7 @@ impl Reader {
                 }
             }
         };
-        reader.names = listed;
+        reader.names = Some(Box::new(listed));
         Ok(reader)
     }
 
@@ -552,6 +540,9 @@ impl Reader {
                 Source::Remote(remote) => remote.take().await?,
             };
             let frame = self.frame.insert(frame);
+            if let Some(names) = &mut self.names {
+                names.place(&lens.set);
+            }
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
@@ -633,16 +624,26 @@ impl From<Stop> for Ended {
 }
 
 /// The name of each channel of a reader, in the order of its channels, in one text,
-/// so an open makes no allocation for each name.
+/// so an open makes no allocation for each name, and the place of each entry of the
+/// key set of the reader's last frame.
 #[derive(Debug)]
 struct Names {
     /// The end in `text` of the name of each channel.
     ends: Box<[usize]>,
     text: Box<str>,
+    /// The slot of each channel. Empty until the open knows the home of the index.
+    slots: Box<[channel::Slot]>,
+    /// The key set that `places` is of, or `None` before the first frame.
+    set: Option<key_set::Key>,
+    /// The place of each entry of `set` in the channels, or [`Names::NONE`].
+    places: Box<[u32]>,
 }
 
 impl Names {
-    /// The names of `found`, in their order.
+    /// The place of an entry that is not a channel of the reader.
+    const NONE: u32 = u32::MAX;
+
+    /// The names of `found`, in their order, with no slots.
     fn new(found: &[(&Name, &Channel)]) -> Self {
         let len = found.iter().map(|(name, _)| name.as_str().len()).sum();
         let mut text = String::with_capacity(len);
@@ -656,7 +657,34 @@ impl Names {
         Self {
             ends,
             text: text.into_boxed_str(),
+            slots: Box::default(),
+            set: None,
+            places: Box::default(),
         }
+    }
+
+    /// Makes the places those of the entries of `set`.
+    fn place(&mut self, set: &KeySet) {
+        if self.set == Some(set.key()) {
+            return;
+        }
+        let mut places = vec![Self::NONE; set.entries().len()].into_boxed_slice();
+        for (place, &slot) in self.slots.iter().enumerate() {
+            if let Some(entry) = set.find(slot) {
+                places[entry] = u32::try_from(place)
+                    .expect("invariant: a reader has fewer than u32::MAX channels");
+            }
+        }
+        self.places = places;
+        self.set = Some(set.key());
+    }
+
+    /// The place in the channels of `entry` of the last key set, or `None` when it is
+    /// not one.
+    fn find(&self, entry: usize) -> Option<usize> {
+        let place = *self.places.get(entry)?;
+        (place != Self::NONE)
+            .then(|| usize::try_from(place).expect("invariant: a u32 fits a usize"))
     }
 
     /// The name of the channel at `place`.
@@ -896,7 +924,7 @@ impl Session {
                 let set = snapshot
                     .get(key)
                     .expect("invariant: a frame's key set is known");
-                let lens = Lens::new(set, &self.slots, self.index);
+                let lens = Lens::new(set, self.slots.iter().copied(), self.index);
                 self.lens.insert(lens)
             }
         };

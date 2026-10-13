@@ -121,13 +121,14 @@ impl Remote {
     /// type, at `home`, another node, the home of their index. Spawns the task of the
     /// session, which dials the home, opens the session, and then takes its frames,
     /// and waits until the home opened it. A removal of a channel during the open ends
-    /// the session at its first take. Returns the session and the slot of its index.
+    /// the session at its first take. Returns the session and the slot of each channel
+    /// of `matched`, in its order.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
         matched: Matched<(channel::Key, Type)>,
         mode: Mode,
-    ) -> Result<(Self, channel::Slot), Error> {
+    ) -> Result<(Self, Box<[channel::Slot]>), Error> {
         let (index, _) = matched.items[matched.index];
         let data: Vec<_> = matched
             .items
@@ -149,7 +150,7 @@ impl Remote {
         );
         state.borrow().tasks.spawn(task);
         let slot = set.entries()[set.groups()[0]].slot;
-        let slots: Vec<_> = {
+        let slots = {
             let mut state = state.borrow_mut();
             let assigned = state.interner.slots();
             let slot_of = |&(key, sample)| {
@@ -161,7 +162,7 @@ impl Remote {
             };
             matched.items.iter().map(slot_of).collect()
         };
-        let lens = Lens::new(&set, &slots, slot);
+        let lens = Lens::new(&set, set.entries().iter().map(|entry| entry.slot), slot);
         let remote = Self {
             queue,
             credit: (mode == Mode::Complete).then_some(0),
@@ -170,7 +171,7 @@ impl Remote {
             streak: Streak::default(),
         };
         poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
-        Ok((remote, slot))
+        Ok((remote, slots))
     }
 
     /// Adds the charge of `frame`, which the reader gave back, to the credit.
