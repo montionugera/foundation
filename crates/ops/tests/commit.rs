@@ -87,6 +87,21 @@ fn built_with(root: &Path, env: &[(&str, &str)]) -> String {
     )
 }
 
+/// Whether a build of the probe at `root` does nothing, as cargo finds it fresh.
+fn fresh(root: &Path) -> bool {
+    let target = root.join("target");
+    let output = Command::new(env!("CARGO"))
+        .args(["build", "-v", "--offline", "--target-dir"])
+        .arg(&target)
+        .current_dir(root)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("spawn");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "cargo build: {stderr}");
+    stderr.contains("Fresh probe")
+}
+
 /// Commits at `root`, and gives the commit.
 fn commit(root: &Path) -> String {
     git(root, &["commit", "-q", "--allow-empty", "-m", "c"]);
@@ -149,4 +164,29 @@ fn a_variable_of_the_builder_gives_no_commit() {
     commit(&root);
     let env = [("FOUNDATION_COMMIT", "bogus"), ("GIT_DIR", "/nonexistent")];
     assert_eq!(built_with(&root, &env), "none");
+}
+
+#[test]
+fn a_rewrite_of_packed_refs_while_the_ref_has_its_file_rebuilds_nothing() {
+    let root = create_probe("rewrite", &[]);
+    commit(&root);
+    git(&root, &["branch", "other"]);
+    git(&root, &["pack-refs", "--all"]);
+    let head = commit(&root);
+    assert_eq!(built(&root), head);
+    assert!(fresh(&root));
+    git(&root, &["branch", "-D", "other"]);
+    assert!(fresh(&root));
+    assert_eq!(built(&root), head);
+}
+
+#[test]
+fn a_build_after_the_ref_moves_into_packed_refs_gives_the_commit() {
+    let root = create_probe("pack", &[]);
+    let head = commit(&root);
+    assert_eq!(built(&root), head);
+    git(&root, &["pack-refs", "--all"]);
+    assert_eq!(built(&root), head);
+    let next = commit(&root);
+    assert_eq!(built(&root), next);
 }

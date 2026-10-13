@@ -134,8 +134,9 @@ pub(crate) enum Response {
 pub(crate) struct Version {
     /// The version of Foundation.
     pub(crate) version: String,
-    /// The 40 hex digits of the commit of `HEAD` in the build, or null when `git` read
-    /// none. A build of a tree with changes gives the commit of `HEAD` too.
+    /// The 40 lowercase hex digits of the commit of `HEAD` in the build, or null outside
+    /// a git repository and on a branch with no commit. A build of a tree with changes
+    /// gives the commit of `HEAD` too.
     pub(crate) commit: Option<String>,
 }
 

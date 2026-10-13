@@ -13,10 +13,13 @@ fn main() {
     // Also on a branch with no commit, whose first commit must rebuild `ops`.
     watch_refs();
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
-    let hex = commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit());
+    let hex = commit.len() == 40
+        && commit
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     assert!(
         hex || commit.is_empty(),
-        "`git rev-parse HEAD` gives `{commit}`, not 40 hex digits"
+        "`git rev-parse HEAD` gives `{commit}`, not 40 lowercase hex digits"
     );
     println!("cargo::rustc-env=FOUNDATION_COMMIT={commit}");
 }
@@ -30,14 +33,21 @@ fn watch_refs() {
         return;
     }
     watch(&git_path("HEAD"));
-    if let Some(name) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        watch(&git_path(&name));
+    let Some(name) = git(&["symbolic-ref", "-q", "HEAD"]) else {
+        return;
+    };
+    let path = git_path(&name);
+    if path.exists() {
+        // Git reads a ref file before `packed-refs`, which each worktree shares and
+        // which a `git gc` in any of them rewrites.
+        watch(&path);
+        return;
     }
     let packed = git_path("packed-refs");
-    // `git pack-refs` makes it, and moves no ref to another commit.
     if packed.exists() {
         watch(&packed);
     }
+    watch_above(&path);
 }
 
 /// The trimmed output of `git` with `args`, or `None` when it fails.
@@ -53,13 +63,18 @@ fn git_path(name: &str) -> PathBuf {
     PathBuf::from(path.unwrap_or_else(|| panic!("git gives no path of `{name}`")))
 }
 
-/// Watches `path`, or, when it is not there, the nearest folder above it that is: a
-/// branch in `packed-refs` makes its loose ref file only at its next commit. Cargo
-/// runs the script on each build while a watched path is missing.
-fn watch(path: &Path) {
+/// Watches the nearest folder above `path` that is there, where git makes the file of a
+/// ref at its next commit. Cargo runs the script on each build while a watched path is
+/// missing.
+fn watch_above(path: &Path) {
     let there = path
         .ancestors()
         .find(|path| path.exists())
         .unwrap_or_else(|| panic!("no folder above {} is there", path.display()));
-    println!("cargo::rerun-if-changed={}", there.display());
+    watch(there);
+}
+
+/// Runs the script again when `path` changes.
+fn watch(path: &Path) {
+    println!("cargo::rerun-if-changed={}", path.display());
 }
