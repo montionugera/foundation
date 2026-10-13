@@ -27,9 +27,10 @@
   `block::Heap::erased`, which writes zero over all of its memory at the drop, also
   after a failed or dropped read (`laptop.architect`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798). That
-  memory is the reservation of the pool: at most 5.2 MiB, for a file of 64 KiB, held
-  until the get returns, or until the read of a dropped get ends. The value is at most
-  64 KiB while a kind holds it. Both are outside the pool budget of the node. The store does not check the owner or
+  memory is the reservation of the pool, 5.2 MiB for a file of 64 KiB. A get holds at
+  most 5.4 MiB of heap at once, by the counting allocator, until it returns, or until
+  the read of a dropped get ends. The value is at most 64 KiB while a kind holds it.
+  Both are outside the pool budget of the node. The store does not check the owner or
   mode of the file. Deferred; trigger:
   `env::files` gives the mode of a file. The person has not yet answered this question:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190. The
