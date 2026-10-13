@@ -726,6 +726,44 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel(
 }
 
 #[test]
+fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its_name()
+{
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            format!(
+                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
+                 subjects = \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
+            ),
+            connector("edge", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest), (expected, Vec::new()));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
+    founded(
+        &["site.edge"],
+        spec::founding::create(crate::common::ADMIN.public()),
+        |fixture, mesh| async move {
+            let node = create_node(&fixture, mesh);
+            let text = format!(
+                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
+                 subjects = \"sam\"\n  select = \"site.**\"\n  allow = [read]\n}}\n"
+            );
+            applied(&fixture, &node, &text).await;
+            let (head, rest) = status(&node, "sam").await;
+            let expected = json!({ "output": { "connectors": [] } });
+            assert_eq!((head, rest), (expected, Vec::new()));
+        },
+    );
+}
+
+#[test]
 fn refuses_an_admin_on_a_node_that_uses_no_spec() {
     let mut founding = spec::founding::create(crate::common::ADMIN.public());
     let policy = founding[&name("@admin.@access")].clone();
