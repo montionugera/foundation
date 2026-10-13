@@ -78,3 +78,4 @@
 | "`read` gives a list of `Error`" and "Nesting past the depth limit is `Error::TooDeep` from `read`" of HCL ERRORS (#330, 6007697466) | HCL DIAGNOSTICS (#2079, 6093002544): `read` gives `Vec<Diagnostic>` |
 | TEXT FIXES, after round 3: a code fix keeps its round; REVIEW TIERS, after round 3: a second round on the fix commits | REVIEW ROUNDS (6150355931) |
 | TEXT FIXES, for a Low finding in text: an item gives the exact new text (#2041, 6103180556), and an item that gives only facts and links or asks the author to find a fact is a finding | TEXT FIXES amendment (#2573, 6147048003) |
+| REVIEW ROUNDS (#2586, 6151416969): "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" | REVIEW ROUNDS (#2600, 6155838835): `laptop.monitor` is the design approver in place of `laptop.director` |
