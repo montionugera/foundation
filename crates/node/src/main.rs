@@ -39,7 +39,7 @@ const ADMIN_KEY: Code = Code::new("node.admin-key");
 const SOCKET: Code = Code::new("node.socket");
 const UNANSWERED: Code = Code::new("node.unanswered");
 const SESSION: Code = Code::new("node.session");
-const KEY_REFUSED: Code = Code::new("node.refused");
+const REFUSED: Code = Code::new("node.refused");
 const NO_REPLY: Code = Code::new("node.no-reply");
 
 /// Runs the command line on a shard that ends before a node starts, then the node of
@@ -140,10 +140,6 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
 }
 
 /// The failure of a reach of the node of the data directory `dir` that gave `error`.
-///
-/// # Panics
-///
-/// When `error` is a variant that this function does not know.
 fn unreached(dir: &Path, error: node::client::Error) -> Failure {
     let data = dir.display();
     let (code, message, fix) = match error {
@@ -170,11 +166,10 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
             "Read the log of the node, then run the command again",
         ),
         node::client::Error::Refused(refusal) => (
-            KEY_REFUSED,
+            REFUSED,
             format!("the node refused the key in {data}/data/admin.key: {refusal}"),
             "Use the key of a subject in the node's spec",
         ),
-        error => panic!("`unreached` knows no failure of {error:?}"),
     };
     Failure {
         code,
@@ -1292,7 +1287,7 @@ mod tests {
         assert_eq!(
             unreached(dir(), refused),
             of_reach(
-                KEY_REFUSED,
+                REFUSED,
                 "the node refused the key in foundation-data/data/admin.key: the spec \
                  has no such subject, does not list the key for it, or the signature \
                  is not valid",
