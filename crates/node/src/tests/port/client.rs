@@ -6,25 +6,18 @@ use crate::client::{self, reach};
 
 use super::*;
 
-/// What [`reach`] gave on a shard of `host` with a pool of `budget` bytes, once `sim`
-/// has run for a minute. A node on `host` can run meanwhile.
-fn reached(
-    sim: &mut sim::Sim,
-    host: &sim::node::Node,
-    budget: u64,
-) -> Result<(), client::Error> {
+/// What [`reach`] gave on a shard of `host`, once `sim` has run for a minute. A node
+/// on `host` can run meanwhile.
+fn reached(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), client::Error> {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
-        let config = block::Config::new(budget).expect("the budget fits");
-        let memory = block::Heap::new(config.reservation());
         let reached = reach(client::Config {
             files: host.files(),
             net: host.net(),
             clock: host.clock(),
             entropy: host.entropy(),
             tasks,
-            pool: Rc::new(block::Pool::new(config, memory)),
         })
         .await;
         *slot.lock().expect("no test thread panicked") = Some(reached.map(drop));
@@ -58,10 +51,7 @@ fn crashed(sim: &mut sim::Sim) -> sim::node::Node {
 fn reach_on_a_directory_where_no_node_ran_gives_not_running() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
-        Err(client::Error::NotRunning)
-    );
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
 }
 
 #[test]
@@ -73,10 +63,7 @@ fn reach_after_a_clean_stop_gives_not_running() {
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(node.join(), Ok(()));
-    assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
-        Err(client::Error::NotRunning)
-    );
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
 }
 
 /// A node with no region writes no `admin.key`.
@@ -86,7 +73,7 @@ fn reach_on_a_node_with_no_admin_key_gives_key() {
     let host = keyed(&mut sim, 2);
     let node = start(&host, listen(&host), Region::Absent);
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    assert_eq!(reached(&mut sim, &host, 1 << 20), Err(client::Error::Key));
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::Key));
     node.stop();
     assert_eq!(sim.run(), Ok(()));
 }
@@ -105,7 +92,7 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
         file.write_at(0, &[block.freeze()]).await
     });
     assert_eq!(written, Ok(Ok(())));
-    assert_eq!(reached(&mut sim, &host, 1 << 20), Err(client::Error::Key));
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::Key));
 }
 
 #[test]
@@ -119,10 +106,7 @@ fn reach_whose_read_of_address_fails_gives_the_file_error() {
         operation,
         code: 5,
     };
-    assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
-        Err(client::Error::Files(error))
-    );
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::Files(error)));
 }
 
 #[test]
@@ -136,10 +120,7 @@ fn reach_whose_read_of_the_admin_key_fails_gives_the_file_error() {
         operation,
         code: 5,
     };
-    assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
-        Err(client::Error::Files(error))
-    );
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::Files(error)));
 }
 
 #[test]
@@ -152,37 +133,20 @@ fn reach_makes_no_file() {
         })
     };
     let before = list(&mut sim);
-    assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
-        Err(client::Error::NotRunning)
-    );
+    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
     assert_eq!(list(&mut sim), before);
-}
-
-#[test]
-fn reach_with_a_pool_too_small_for_a_transport_gives_transport() {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = crashed(&mut sim);
-    let error = transport::Error::Config {
-        field: "pool",
-        rule: "must hold a message of at least 1472 bytes",
-    };
-    assert_eq!(
-        reached(&mut sim, &host, 1024),
-        Err(client::Error::Transport(error))
-    );
 }
 
 #[test]
 fn reach_after_a_crash_gives_unanswered_at_the_address() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
-    let reached = reached(&mut sim, &host, 1 << 20);
+    let reached = reached(&mut sim, &host);
     let at = listen(&host);
-    let error = ::hub::client::Error::Transport(transport::Error::Unreachable {
+    let error = transport::Error::Unreachable {
         peer: KEY.public(),
         attempts: vec![(Address::Udp(at), transport::Error::TimedOut)],
-    });
+    };
     assert_eq!(reached, Err(client::Error::Unanswered { at, error }));
 }
 
@@ -193,8 +157,8 @@ fn reach_on_a_running_node_dials_its_bound_address() {
     let host = keyed(&mut sim, 2);
     let node = start(&host, listen(&host), Region::Stored);
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    let reached = reached(&mut sim, &host, 1 << 20);
-    let Err(client::Error::Unanswered { at, error }) = reached else {
+    let reached = reached(&mut sim, &host);
+    let Err(client::Error::Session { at, error }) = reached else {
         panic!("the node rejects the hub stream: {reached:?}");
     };
     assert_eq!(at, listen(&host));
@@ -226,16 +190,39 @@ fn reach_dials_the_loopback_ip_of_the_family_for_an_unspecified_ip() {
         let host = keyed(&mut sim, 2);
         let node = start(&host, SocketAddr::new(any, PORT), Region::Stored);
         assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-        let reached = reached(&mut sim, &host, 1 << 20);
+        let reached = reached(&mut sim, &host);
         let at = SocketAddr::new(loopback, PORT);
-        let error = ::hub::client::Error::Transport(transport::Error::Unreachable {
+        let error = transport::Error::Unreachable {
             peer: KEY.public(),
             attempts: vec![(Address::Udp(at), transport::Error::TimedOut)],
-        });
+        };
         assert_eq!(reached, Err(client::Error::Unanswered { at, error }));
         node.stop();
         assert_eq!(sim.run(), Ok(()));
     }
+}
+
+/// A peer at the node's address that finishes the hub stream with no challenge.
+#[test]
+fn reach_whose_hub_stream_ends_with_no_challenge_gives_session() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = crashed(&mut sim);
+    let at = listen(&host);
+    shard(&host, move |host, tasks| async move {
+        let (transport, _pool) = transport_at(&host, tasks, KEY, at);
+        let session = transport.accept().await.expect("a session");
+        let incoming = session.accept().await.expect("a stream");
+        let mut sender = incoming.sender.expect("the hello stream goes both ways");
+        sender.finish().expect("the stream finishes");
+        host.clock().sleep(Span::MINUTE).await;
+    });
+    assert_eq!(
+        reached(&mut sim, &host),
+        Err(client::Error::Session {
+            at,
+            error: ::hub::client::Error::Unanswered,
+        })
+    );
 }
 
 /// A peer at the node's address that closes each session with a refusal.
@@ -251,7 +238,7 @@ fn reach_whose_hello_the_node_refuses_gives_refused() {
         host.clock().sleep(Span::MINUTE).await;
     });
     assert_eq!(
-        reached(&mut sim, &host, 1 << 20),
+        reached(&mut sim, &host),
         Err(client::Error::Refused(Refusal::Refused))
     );
 }

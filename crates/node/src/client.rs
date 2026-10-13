@@ -8,6 +8,14 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
+/// The pool of the transport and of the hub client. It holds a request of
+/// `BODY_BYTES_MAX` bytes with its header, and its largest block a datagram.
+const POOL: block::Config =
+    match block::Config::new(2 * wire::hub::client::BODY_BYTES_MAX) {
+        Ok(config) => config,
+        Err(_) => panic!("invariant: the budget fits"),
+    };
+
 /// What [`reach`] dials with: the files of the data directory, and the seams of the
 /// program's transport and of its hub client.
 #[derive(Debug)]
@@ -22,10 +30,6 @@ pub struct Config {
     pub entropy: env::entropy::Entropy,
     /// Where the transport and the hub client spawn their tasks.
     pub tasks: env::tasks::Tasks,
-    /// The pool of the transport and of the hub client. After `reach` reads both
-    /// files, it gives [`Error::Transport`] when the largest block holds less than
-    /// 1472 bytes.
-    pub pool: Rc<block::Pool>,
 }
 
 /// A client of the node that runs on the data directory of `config`, as its first
@@ -42,12 +46,12 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
         clock,
         entropy,
         tasks,
-        pool,
     } = config;
     let address = address::read(&files).await.map_err(Error::Files)?;
     let address = address.ok_or(Error::NotRunning)?;
     let key = admin::read(&files).await.map_err(Error::Files)?;
     let key = key.ok_or(Error::Key)?;
+    let pool = Rc::new(block::Pool::heap(POOL));
     let transport = transport::Client::new(transport::client::Config {
         net,
         clock: clock.clone(),
@@ -72,7 +76,10 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
         .await
         .map_err(|error| match error {
             hub::client::Error::Refused(refusal) => Error::Refused(refusal),
-            error => Error::Unanswered { at, error },
+            hub::client::Error::Transport(
+                error @ transport::Error::Unreachable { .. },
+            ) => Error::Unanswered { at, error },
+            error => Error::Session { at, error },
         })
 }
 
@@ -88,12 +95,20 @@ pub enum Error {
     Files(env::files::Error),
     /// The transport of the program did not start.
     Transport(transport::Error),
-    /// The program has no session with a node at `at`, where the file `address` says
-    /// the node is: the dial, the session, or the hello failed with `error`.
+    /// No node answers at `at`, where the file `address` says the node is: the dial
+    /// gave no session.
     Unanswered {
         /// The address that the program dialed.
         at: SocketAddr,
-        /// Why the hub client gave no session.
+        /// Why the dial gave no session.
+        error: transport::Error,
+    },
+    /// The node at `at` took the session, then the session or the hello failed with
+    /// `error`.
+    Session {
+        /// The address that the program dialed.
+        at: SocketAddr,
+        /// Why the hub client gave no client.
         error: hub::client::Error,
     },
     /// The node refused the hello that the key in `admin.key` signs.
@@ -120,6 +135,15 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn the_pool_holds_a_datagram_and_the_largest_request() {
+        let pool = block::Pool::heap(POOL);
+        assert!(pool.largest() >= 1472, "{}", pool.largest());
+        let request = wire::hub::client::BODY_BYTES_MAX
+            + u64::try_from(wire::hub::client::Request::LEN).unwrap();
+        assert!(u64::try_from(pool.budget()).unwrap() >= request);
+    }
 
     proptest! {
         #[test]
