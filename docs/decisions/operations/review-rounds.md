@@ -11,9 +11,7 @@
   boundary, a decision, or the owner of state. The design approver of an item is the
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect wrote the PR, it is
-  the other architect. When `laptop.director` wrote the PR, it is `laptop.director`,
-  which sends each OK and approval that it gives to `laptop.monitor` at once. They go
-  ahead unless the person objects, and the person approves the PR before it merges.
+  the other architect. When `laptop.director` wrote the PR, `laptop.architect` takes the place of `laptop.director`.
   After round 3, no other round runs, and no PR replaces it, other than a new design
   that its design approver approves, which starts at round 1. Each round comment
   numbered 3 marks each finding `defect` (wrong behavior, data loss, a crash, or an
@@ -55,14 +53,15 @@
     asks for, and the run after round 3, in round 3 of #2586
     (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969,
     2026-10-13T17:34:11Z);
-  - the design approver of a PR that `laptop.director` wrote, to fit PERSON DECIDES THE
-    DESIGN after the person's words of 2026-10-13T19:52:40Z
+  - the design approver of a PR that `laptop.director` wrote, in round 1 of #2600
+    (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154549130,
+    2026-10-13T20:27:57Z), so that no PR waits for the person beyond its approval to merge, after the person's words of 2026-10-13T19:52:40Z
     (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
 
   Cost: a fix after round 3 gets no `reviewer` or `breaker`, only its test, CI, an
   `architecture` run, and the approvals and `performance` runs that stay. In 4 of the 5
   worst escaped defects, the defect came in through a fix or a deferral that nothing
-  checked again. A style finding waits for the weekly `code-quality` pass. Supersedes,
+  checked again. A style finding waits for the weekly `code-quality` pass. Supersedes "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" of round 3 of #2586 (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969, 2026-10-13T17:34:11Z). Supersedes,
   after round 3, "a code fix keeps its round" of TEXT FIXES (the person,
   2026-10-10T15:50:57Z,
   https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621) and "A
