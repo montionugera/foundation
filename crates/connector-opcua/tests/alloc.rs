@@ -170,11 +170,11 @@ fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
     sim.run_on(&node, run).expect("the run ends")
 }
 
-/// As through the manager, the ask allocates 3 and the read of the answer 2. Each read
-/// is a new drive, whose sleep until the next timer of the loop allocates 1 more. The
-/// client swaps two buffers of values, and read 2 is the first to fill the second.
-/// The decode of the answer allocates one more for the Double of each node. The sim
-/// net allocates one more for each segment of 1460 bytes past the first: the ask of 64
+/// As through the manager, the ask allocates 3 and the answer allocates 1 for its
+/// results array and 1 for the value of each node. Each read is a new drive, whose
+/// sleep until the next timer of the loop allocates 1 more. The client swaps two
+/// buffers of values, and read 2 is the first to fill the second. The sim net
+/// allocates one more for each segment of 1460 bytes past the first: the ask of 64
 /// names takes 2.
 fn a_read_of_a_client_allocates_a_fixed_count() {
     let cases = [
