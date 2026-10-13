@@ -24,3 +24,6 @@
   for `g=` and `b=`: a user whose server has a variable with no number or name key.
   Decided by `laptop.architect-2` (#435 PR 1, 2026-10-13T01:16:13Z:
   https://github.com/synnaxlabs/foundation/pull/2511#issuecomment-6135949538).
+  The config has a `read` block for each channel, keyed by the channel, with the node ID
+  in OPC UA text form. Decided by `laptop.architect-2` (2026-10-13T16:56:48Z:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150744690).

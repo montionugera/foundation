@@ -19,6 +19,7 @@ use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::Node;
+use crate::value::Value;
 
 #[cfg(test)]
 mod tests;
@@ -33,7 +34,7 @@ const HEADER: usize = 24;
 /// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
 /// last. It moves a value of a fixed size whole to the next chunk and splits a string,
 /// so this is 1 less than the largest value of a fixed size in a Read today, a Double
-/// (8 bytes). A GUID key (19 bytes) would need 18.
+/// or a 64-bit integer (8 bytes). A GUID key (19 bytes) would need 18.
 const SPLIT: usize = 7;
 
 const _: () = assert!(
@@ -55,7 +56,7 @@ pub(crate) struct Client {
     /// The values of the last read, which [`Client::read`] gives. It swaps them with
     /// [`Reads::values`]. An answer with more values than nodes fails before it is
     /// copied, so neither grows past the most nodes of a read.
-    values: Vec<Result<f64, Status>>,
+    values: Vec<Result<Value, Status>>,
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
@@ -83,7 +84,7 @@ struct Reads {
     /// The status of the answer of the last read: `Good` when [`Reads::values`]
     /// holds its values.
     answer: Cell<Option<Status>>,
-    values: Cell<Vec<Result<f64, Status>>>,
+    values: Cell<Vec<Result<Value, Status>>>,
     /// The reads that open62541 took and has not called back, at most [`READS`].
     pending: Cell<u16>,
 }
@@ -194,11 +195,12 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`Large`] when the request, or a good answer with each field of a Double for
-    /// each node, needs more bytes than one message of the session: its chunk size
-    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7
-    /// bytes at the end of each chunk but the last, or the `MaxMessageSize` of the
-    /// server when that is smaller. The request comes first.
+    /// [`Large`] when the request, or a good answer with each field of a Double, the
+    /// largest scalar, for each node, needs more bytes than one message of the
+    /// session: its chunk size times the smaller of [`CHUNKS`] and the
+    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
+    /// last, or the `MaxMessageSize` of the server when that is smaller. The request
+    /// comes first.
     ///
     /// # Aborts
     ///
@@ -218,9 +220,10 @@ impl Client {
     }
 
     /// Reads the Value of each node of `nodes` in one request, and gives the value of
-    /// each node in order: its scalar Double, the bad status of its value, or
-    /// `BadTypeMismatch` for another value. A read of no nodes gives no values and
-    /// sends nothing. A read that times out or whose future dropped stays in flight
+    /// each node in order: its scalar, the status of its value when that is not Good
+    /// (a Good with a subcode is Good), or `BadTypeMismatch` for an array or a type
+    /// that is not one of [`Value`]. A read of no nodes gives no values and sends
+    /// nothing. A read that times out or whose future dropped stays in flight
     /// until the server answers it or the connection closes. While [`READS`] are in
     /// flight, a read first waits until one ends.
     ///
@@ -239,7 +242,7 @@ impl Client {
     pub(crate) async fn read(
         &mut self,
         nodes: &Nodes,
-    ) -> Result<&[Result<f64, Status>], Status> {
+    ) -> Result<&[Result<Value, Status>], Status> {
         assert!(
             Rc::ptr_eq(&nodes.client, &self.key),
             "invariant: a client reads only the nodes that it checked"
@@ -470,17 +473,10 @@ unsafe extern "C" fn answer(
         let mut values = reads.values.take();
         values.clear();
         values.extend((0..count).map(|index| {
-            let mut double = 0.0;
             // SAFETY: the response lives and has more results than `index`.
             let value = unsafe { ffi::shim_read_result(response, index) };
             // SAFETY: the value lives with the response.
-            let status =
-                Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
-            if status == Status::GOOD {
-                Ok(double)
-            } else {
-                Err(status)
-            }
+            unsafe { Value::of(value) }
         }));
         reads.values.set(values);
     }

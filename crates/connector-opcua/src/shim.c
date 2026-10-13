@@ -118,7 +118,22 @@ _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
                "decodedLength moved");
 _Static_assert(sizeof(shim_node) == 24, "shim_node changed");
 _Static_assert(offsetof(shim_node, name) == 8, "shim_node.name moved");
+_Static_assert(sizeof(shim_scalar) == 8, "shim_scalar changed");
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
+_Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
+                   UA_TYPES_BYTE == 2 && UA_TYPES_INT16 == 3 &&
+                   UA_TYPES_UINT16 == 4 && UA_TYPES_INT32 == 5 &&
+                   UA_TYPES_UINT32 == 6 && UA_TYPES_INT64 == 7 &&
+                   UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
+                   UA_TYPES_DOUBLE == 10,
+               "the scalar types of UA_TYPES moved");
+_Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
+                   UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
+                   UA_DATATYPEKIND_UINT16 == 4 && UA_DATATYPEKIND_INT32 == 5 &&
+                   UA_DATATYPEKIND_UINT32 == 6 && UA_DATATYPEKIND_INT64 == 7 &&
+                   UA_DATATYPEKIND_UINT64 == 8 && UA_DATATYPEKIND_FLOAT == 9 &&
+                   UA_DATATYPEKIND_DOUBLE == 10,
+               "the kinds of the scalar types moved");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
@@ -771,8 +786,8 @@ size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
 }
 
 /* Gives the most bytes of the body of the message of a good answer of a read of `count`
- * nodes that each hold a Double, with each field of each value, or `SIZE_MAX` past
- * it. */
+ * nodes that each hold a Double, the largest scalar of `shim_value_scalar`, with each
+ * field of each value, or `SIZE_MAX` past it. */
 size_t shim_read_answer(size_t count) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
     UA_ReadResponse response;
@@ -807,24 +822,42 @@ const UA_DataValue *shim_read_result(const UA_ReadResponse *response, size_t ind
     return &response->results[index];
 }
 
-/* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
- * value. A read callback gets `Good` whatever the answer holds. */
+/* Gives the status of `value`, an answer of a read: its status when it is not Good,
+ * else `BadNoData` when it holds no value, else `Good`, also for a Good with a subcode.
+ * A read callback gets `Good` whatever the answer holds. */
 UA_StatusCode shim_value_status(const void *value) {
     const UA_DataValue *answer = (const UA_DataValue *)value;
-    if(answer->hasStatus && answer->status != UA_STATUSCODE_GOOD)
+    if(answer->hasStatus && !UA_StatusCode_isGood(answer->status))
         return answer->status;
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
 }
 
-/* Writes the scalar Double of `value`, an answer of a read, to `out`, or gives the
- * status of `shim_value_status`, or `BadTypeMismatch` for another value. */
-UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
+/* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
+ * Else gives the status of `shim_value_status`, or `BadTypeMismatch` for an array or a
+ * kind that `shim_scalar` does not hold. */
+UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(!UA_Variant_hasScalarType(variant, &UA_TYPES[UA_TYPES_DOUBLE]))
+    if(!UA_Variant_isScalar(variant))
         return UA_STATUSCODE_BADTYPEMISMATCH;
-    *out = *(const UA_Double *)variant->data;
+    /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
+    const void *data = variant->data;
+    switch(variant->type->typeKind) {
+    case UA_DATATYPEKIND_BOOLEAN: out->boolean = *(const UA_Boolean *)data; break;
+    case UA_DATATYPEKIND_SBYTE: out->sbyte = *(const UA_SByte *)data; break;
+    case UA_DATATYPEKIND_BYTE: out->byte = *(const UA_Byte *)data; break;
+    case UA_DATATYPEKIND_INT16: out->int16 = *(const UA_Int16 *)data; break;
+    case UA_DATATYPEKIND_UINT16: out->uint16 = *(const UA_UInt16 *)data; break;
+    case UA_DATATYPEKIND_INT32: out->int32 = *(const UA_Int32 *)data; break;
+    case UA_DATATYPEKIND_UINT32: out->uint32 = *(const UA_UInt32 *)data; break;
+    case UA_DATATYPEKIND_INT64: out->int64 = *(const UA_Int64 *)data; break;
+    case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
+    case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
+    case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
+    default: return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+    *kind = (UA_UInt16)variant->type->typeKind;
     return UA_STATUSCODE_GOOD;
 }

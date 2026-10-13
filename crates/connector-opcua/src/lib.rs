@@ -41,6 +41,8 @@ pub mod sim;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod unwind;
+#[cfg(feature = "open62541")]
+mod value;
 
 #[cfg(feature = "open62541")]
 pub use config::Config;
