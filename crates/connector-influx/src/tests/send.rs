@@ -593,6 +593,31 @@ fn writes_the_fields_of_the_channels_of_each_frame() {
     assert_eq!(got.concat(), body.concat());
 }
 
+/// The second key set holds `edge.b` at the entry where the first holds `edge.a`.
+#[test]
+fn names_each_field_by_the_key_set_of_its_frame() {
+    let (got, first) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        drop(writer);
+        let mut writer = plant.writer(&["edge.time", "edge.b"]).await;
+        write_columns(&mut writer, first + 1, &[(3, &[3.0])]);
+        plant.clock.sleep(Span::SECOND).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        (plant.got(), first)
+    });
+    let body = [
+        line("1e0", "2e0", first),
+        format!("telemetry edge.b=3e0 {}\n", first + 1),
+    ];
+    let got: Vec<_> = got.into_iter().map(|(_, body)| body).collect();
+    assert_eq!(got.concat(), body.concat());
+}
+
 #[test]
 fn shows_a_write_that_fails_until_the_run_ends() {
     let errors = run(|node, tasks| async move {
