@@ -245,12 +245,13 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In each
   command of a fix below, `{dir}` follows `--data=` as one word of a POSIX shell: in
   single quotes, with each `'` as `'"'"'`, when it is empty or holds a character other
-  than `[A-Za-z0-9_./:@%+=,-]`. A `{dir}` that is not UTF-8, or that holds a character
-  that the text of a fix escapes, such as `\` or a newline, is named in no command: the
-  fix says to set `--data` to that directory. In a message, `{dir}` is the path as it
-  is. The fix of `node.not-running` is ``Run `foundation start --data={dir}`, with
-  `--name <name>` on its first start, or give `--data` the data directory of a node that
-  runs``, which supersedes "with no `--data`" above, decision 7 of
+  than `[A-Za-z0-9_./:@%+,-]`. A `{dir}` that is not UTF-8, or that the escape of a fix
+  text changes (a `\`, a control character, or another character that
+  `char::escape_debug` escapes), is named in no command: the fix says to set `--data` to
+  that directory. In a message, `{dir}` is the path as it is. The fix of
+  `node.not-running` is ``Run `foundation start --data={dir}`, with `--name <name>` on
+  its first start, or give `--data` the data directory of a node that runs``, which
+  supersedes "with no `--data`" above, decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
   `{dir}` that is a file, or whose `{dir}/data` is a file, is also `node.not-running`,
   with the message `no node runs in {dir}, which is not a data directory` and the fix
@@ -271,7 +272,11 @@
   of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
   https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894; the texts
   that name `{dir}` at 2026-10-13T21:52:28Z,
-  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155978119; and the
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155978119; the
   quotes of `{dir}` and the text of a `{dir}` that is no data directory at
   2026-10-13T22:10:06Z,
-  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6156250837).
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6156250837;
+  `--data={dir}` at 2026-10-13T22:25:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6156527941; and the
+  quotes of `'`, the safe set, and the fixes that name no path at 2026-10-13T22:31:15Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6156609096).
