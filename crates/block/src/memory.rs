@@ -161,8 +161,8 @@ impl Erased {
     }
 }
 
-// SAFETY: each method but `commit` does what that of `Heap` does, and `commit` changes
-// no byte.
+// SAFETY: `base` and `len` are those of `heap`, whose bytes are usable from the start,
+// and `commit` and `purge` change no byte.
 unsafe impl Memory for Erased {
     fn base(&self) -> NonNull<u8> {
         self.heap.base()
