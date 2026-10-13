@@ -1,6 +1,7 @@
 //! InfluxDB line protocol: one line for each point, with names checked and escaped
 //! once, before the first line.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::Write as _;
 
@@ -12,6 +13,8 @@ use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory as _};
 pub struct Measurement {
     prefix: Vec<u8>,
     fields: Vec<Vec<u8>>,
+    /// Each tag key and field key, as given.
+    keys: BTreeSet<String>,
 }
 
 impl Measurement {
@@ -48,6 +51,7 @@ impl Measurement {
         if let Some([key, _]) = keys.array_windows().find(|[a, b]| a == b) {
             return Err(Error::Duplicate((*key).into()));
         }
+        let keys = keys.into_iter().map(str::to_owned).collect();
         let mut prefix = Vec::new();
         escape(name, b", ", Part::Measurement, &mut prefix)?;
         let mut tags = tags.to_vec();
@@ -59,16 +63,31 @@ impl Measurement {
             prefix.push(b'=');
             escape(value, b",= ", Part::TagValue(key.into()), &mut prefix)?;
         }
-        let fields = fields.iter().map(|&key| {
-            unreserved_key(key)?;
-            let mut bytes = Vec::new();
-            escape(key, b",= ", Part::FieldKey, &mut bytes)?;
-            Ok(bytes)
-        });
         Ok(Self {
             prefix,
-            fields: fields.collect::<Result<_, _>>()?,
+            fields: fields
+                .iter()
+                .map(|key| field(key))
+                .collect::<Result<_, _>>()?,
+            keys,
         })
+    }
+
+    /// Checks and escapes the field key `key`, and adds it after each field there
+    /// is. Returns its place, which [`Measurement::line_by_place`] takes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Measurement::new`] gives for a field key, and [`Error::Duplicate`] for a
+    /// key that a tag or a field has. A refused key adds nothing.
+    pub fn add_field(&mut self, key: &str) -> Result<usize, Error> {
+        let bytes = field(key)?;
+        if !self.keys.insert(key.into()) {
+            return Err(Error::Duplicate(key.into()));
+        }
+        let place = self.fields.len();
+        self.fields.push(bytes);
+        Ok(place)
     }
 
     /// Appends one line at `time` to `out`, with the value of each field at its
@@ -80,11 +99,29 @@ impl Measurement {
     /// When `values` and the fields differ in length.
     pub fn line(&self, out: &mut Vec<u8>, values: &[Option<Value>], time: Stamp) {
         assert_eq!(values.len(), self.fields.len(), "one value for each field");
+        let values = values.iter().enumerate();
+        let values = values.filter_map(|(place, value)| Some((place, (*value)?)));
+        self.line_by_place(out, values, time);
+    }
+
+    /// Appends one line at `time` to `out`, with each `(place, value)` of `values` as
+    /// the value of the field at that place, in the order of `values`. With no value,
+    /// nothing is written. A place that comes twice writes its field twice.
+    ///
+    /// # Panics
+    ///
+    /// When a place has no field.
+    pub fn line_by_place(
+        &self,
+        out: &mut Vec<u8>,
+        values: impl IntoIterator<Item = (usize, Value)>,
+        time: Stamp,
+    ) {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
         let mut separator = b' ';
-        for (key, value) in self.fields.iter().zip(values) {
-            let Some(value) = *value else { continue };
+        for (place, value) in values {
+            let key = self.fields.get(place).expect("a place of a field");
             out.push(separator);
             separator = b',';
             out.extend_from_slice(key);
@@ -216,6 +253,14 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// The escaped field key `key`.
+fn field(key: &str) -> Result<Vec<u8>, Error> {
+    unreserved_key(key)?;
+    let mut bytes = Vec::new();
+    escape(key, b",= ", Part::FieldKey, &mut bytes)?;
+    Ok(bytes)
+}
 
 /// Refuses a key that InfluxDB keeps for itself.
 fn unreserved_key(key: &str) -> Result<(), Error> {

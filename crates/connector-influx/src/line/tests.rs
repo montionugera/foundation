@@ -146,6 +146,66 @@ fn panics_on_a_value_count_that_is_not_the_field_count() {
 }
 
 #[test]
+fn adds_a_field_after_the_fields_there_are() {
+    let mut measurement = Measurement::new("m", &[("site", "west")], &["a"]).unwrap();
+    assert_eq!(measurement.add_field("b c"), Ok(1));
+    assert_eq!(measurement.add_field("d"), Ok(2));
+    let mut out = Vec::new();
+    let values = [None, Some(Value::Integer(1)), Some(Value::Boolean(true))];
+    measurement.line(&mut out, &values, Stamp::EPOCH);
+    assert_eq!(text(&out), "m,site=west b\\ c=1i,d=t 0\n");
+}
+
+#[test]
+fn refuses_a_field_key_as_new_does_and_adds_nothing() {
+    let mut measurement = Measurement::new("m", &[("k", "v")], &["f"]).unwrap();
+    let character = Error::Character {
+        part: Part::FieldKey,
+        text: "a\tb".into(),
+        character: '\t',
+    };
+    let cases = [
+        ("", Error::Empty(Part::FieldKey)),
+        ("_f", Error::Reserved("_f".into())),
+        ("time", Error::Reserved("time".into())),
+        ("a\tb", character),
+        ("k", Error::Duplicate("k".into())),
+        ("f", Error::Duplicate("f".into())),
+    ];
+    for (key, error) in cases {
+        assert_eq!(measurement.add_field(key), Err(error));
+    }
+    assert_eq!(measurement.add_field("g"), Ok(1));
+    assert_eq!(
+        measurement.add_field("g"),
+        Err(Error::Duplicate("g".into()))
+    );
+    assert_eq!(
+        measurement,
+        Measurement::new("m", &[("k", "v")], &["f", "g"]).unwrap()
+    );
+}
+
+#[test]
+fn writes_the_values_by_place_in_their_order() {
+    let measurement = Measurement::new("m", &[], &["a", "b", "c"]).unwrap();
+    let mut out = b"x".to_vec();
+    measurement.line_by_place(&mut out, [], Stamp::EPOCH);
+    assert_eq!(out, b"x", "no value, so nothing is written");
+    let values = [(2, Value::Integer(3)), (0, Value::Integer(1))];
+    measurement.line_by_place(&mut out, values, Stamp::from_nanos(5));
+    assert_eq!(text(&out), "xm c=3i,a=1i 5\n");
+}
+
+#[test]
+#[should_panic(expected = "a place of a field")]
+fn panics_on_a_place_with_no_field() {
+    let measurement = Measurement::new("m", &[], &["a"]).unwrap();
+    let values = [(1, Value::Integer(1))];
+    measurement.line_by_place(&mut Vec::new(), values, Stamp::EPOCH);
+}
+
+#[test]
 fn refuses_a_float_that_is_not_finite() {
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert_eq!(Float::new(bad), None);
@@ -514,6 +574,20 @@ proptest! {
         let mut out = Vec::new();
         line.line(&mut out, &values, Stamp::from_nanos(time));
         prop_assert_eq!(parse(text(&out)), (measurement, tags, fields, time));
+    }
+
+    #[test]
+    fn adds_each_field_as_new_takes_it(
+        keys in proptest::collection::btree_set(name(), 2..8),
+        split in any::<proptest::sample::Index>(),
+    ) {
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let at = split.index(keys.len() - 1) + 1;
+        let mut measurement = Measurement::new("m", &[], &keys[..at]).unwrap();
+        for (place, key) in keys.iter().enumerate().skip(at) {
+            prop_assert_eq!(measurement.add_field(key), Ok(place));
+        }
+        prop_assert_eq!(measurement, Measurement::new("m", &[], &keys).unwrap());
     }
 
     #[test]
