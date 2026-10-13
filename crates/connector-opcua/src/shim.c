@@ -147,9 +147,9 @@ AT(unlock, 22);
 /* The last tick of a clock of `u64` ns. */
 #define LAST_TICK ((UA_DateTime)(UINT64_MAX / 100))
 
-/* Gives a time of `clock` in ticks of 100 ns: the monotonic time, at most `LAST_TICK`,
+/* Gives a time of `time` in ticks of 100 ns: the monotonic time, at most `LAST_TICK`,
  * or the wall time from the Unix epoch. */
-typedef UA_DateTime (*shim_now)(void *clock);
+typedef UA_DateTime (*shim_now)(void *time);
 
 /* An event loop with no I/O. It runs on one thread and never blocks. */
 struct shim_loop {
@@ -159,7 +159,7 @@ struct shim_loop {
     UA_Logger logger;
     shim_now now;
     shim_now wall;
-    void *clock;
+    void *time;
     /* The delayed callbacks for the next run, in order, and `tail` at the `next` of
      * the last. */
     UA_DelayedCallback *queued;
@@ -173,7 +173,7 @@ static struct shim_loop *loop_of(UA_EventLoop *el) { return (struct shim_loop *)
 
 static UA_DateTime now_of(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
-    return loop->now(loop->clock);
+    return loop->now(loop->time);
 }
 
 static void set_state(UA_EventLoop *el, UA_EventLoopState state) {
@@ -246,7 +246,7 @@ static void el_cancel(UA_EventLoop *el) { (void)el; }
 
 static UA_DateTime el_now(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
-    return loop->wall(loop->clock) + UA_DATETIME_UNIX_EPOCH;
+    return loop->wall(loop->time) + UA_DATETIME_UNIX_EPOCH;
 }
 
 static UA_Int64 el_utc_offset(UA_EventLoop *el) {
@@ -367,16 +367,16 @@ void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
     UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
 }
 
-/* Gives a fresh loop whose monotonic time is `now(clock)` and whose wall time is
- * `wall(clock)`, or NULL when out of memory. */
-UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *clock) {
+/* Gives a fresh loop whose monotonic time is `now(time)` and whose wall time is
+ * `wall(time)`, or NULL when out of memory. */
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
     UA_Timer_init(&loop->timer);
     loop->now = now;
     loop->wall = wall;
-    loop->clock = clock;
+    loop->time = time;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;
     UA_EventLoop *el = &loop->el;

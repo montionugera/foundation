@@ -20,7 +20,7 @@ use crate::ffi;
 pub(crate) type Wall = Box<dyn Fn() -> Stamp>;
 
 /// Gives the monotonic time of `clock` as the wall time, from the Unix epoch, for a
-/// test server, which has no wall time of a node.
+/// loop of a test or a benchmark, which has no wall time of a node.
 #[cfg(any(test, feature = "sim"))]
 pub(crate) fn monotonic(clock: Clock) -> Wall {
     Box::new(move || {
