@@ -98,7 +98,8 @@ impl Peer<'_> {
         // SAFETY: the client lives and has not connected.
         unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
         let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
-        let client = Client::start(clock, connections, raw, &url).await;
+        // SAFETY: `raw` is a new client of the loop of `connections`.
+        let client = unsafe { Client::start(clock, connections, raw, &url) }.await;
         client.expect("the client connects")
     }
 }

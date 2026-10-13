@@ -28,8 +28,8 @@ const READS: u16 = 16;
 const HEADER: usize = 24;
 
 /// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
-/// last: it moves a value that does not fit whole to the next chunk, and splits each
-/// value of more than 8 bytes past the first chunk.
+/// last: 1 less than the largest value that it moves whole to the next chunk, a Double
+/// (8 bytes). A string splits, and a GUID key (19 bytes) would need 18.
 const SPLIT: usize = 7;
 
 const _: () = assert!(
@@ -110,12 +110,17 @@ impl Client {
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
-        Self::start(clock, connections, raw, &url).await
+        // SAFETY: `raw` is a new client of the loop of `connections`.
+        unsafe { Self::start(clock, connections, raw, &url) }.await
     }
 
-    /// Connects `raw`, a client of the loop of `connections` that has not connected, as
-    /// [`Client::connect`] does.
-    async fn start(
+    /// Connects `raw` as [`Client::connect`] does.
+    ///
+    /// # Safety
+    ///
+    /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
+    /// connected, and nothing else owns it: the client frees it.
+    async unsafe fn start(
         clock: Clock,
         connections: Manager,
         raw: NonNull<ffi::Client>,
@@ -377,12 +382,7 @@ pub(crate) struct Nodes {
 }
 
 impl Nodes {
-    /// Builds one Read request of the Value of each node of `nodes`, in order, with no
-    /// check of its size, for a bench.
-    ///
-    /// # Panics
-    ///
-    /// If open62541 cannot allocate the request.
+    /// As [`Nodes::new`], for a bench.
     #[cfg(feature = "sim")]
     pub(crate) fn unchecked(nodes: &[Node]) -> Self {
         Self::new(nodes)
