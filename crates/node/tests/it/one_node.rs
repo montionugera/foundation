@@ -149,10 +149,12 @@ fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
 }
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
-/// `served` (by variable) to the last step of the value in the changes. Sample `k`
+/// `served` (by variable) before the last step of the value in the changes. Sample `k`
 /// stored has the value of read `k`, at a time within [`BOUND`] of it. A lost or extra
-/// sample before a step puts a sample on a read of another value. `served` is taken
-/// after `stored`. Else `Err` with the first sample that is not its read.
+/// sample before a step puts a sample on a read of another value. A later read of the
+/// same value can stand in for a lost read from the last step on, so the check stops
+/// there. `served` is taken after `stored`. Else `Err` with the first sample that is
+/// not its read.
 fn caught_up(
     reads: &[Reads],
     mut served: BTreeMap<String, Vec<Sample>>,
@@ -168,8 +170,7 @@ fn caught_up(
                 .rev()
                 .find(|&k| served[k].value.to_bits() != served[k - 1].value.to_bits())
                 .unwrap_or_else(|| panic!("{channel}: the changes step the value"));
-            for (k, (sample, read)) in
-                stored.iter().zip(&served).take(end + 1).enumerate()
+            for (k, (sample, read)) in stored.iter().zip(&served).take(end).enumerate()
             {
                 if sample.value.to_bits() != read.value.to_bits()
                     || (sample.time - read.time).nanos().abs() > BOUND.nanos()
@@ -180,11 +181,10 @@ fn caught_up(
                     ));
                 }
             }
-            if stored.len() <= end {
+            if stored.len() < end {
                 return Err(format!(
-                    "{channel}: InfluxDB holds {} of the {} reads",
-                    stored.len(),
-                    end + 1
+                    "{channel}: InfluxDB holds {} of the {end} reads",
+                    stored.len()
                 ));
             }
             Ok(Trace {
@@ -254,12 +254,13 @@ fn later(samples: &[Sample], by: Span) -> Vec<Sample> {
 }
 
 #[test]
-fn a_trace_holds_each_read_to_the_last_change_within_the_bound() {
+fn a_trace_holds_each_read_before_the_last_step_within_the_bound() {
     let served = create_served();
     let mut tick = served.clone();
     tick[3].time = tick[3].time + Span::from_nanos(90 * Span::MILLISECOND.nanos());
     let cases = [
         (served.clone(), served.clone()),
+        (served.clone(), served[..5].to_vec()),
         (served.clone(), later(&served, BOUND)),
         (
             served.clone(),
@@ -314,13 +315,13 @@ fn a_lost_extra_or_late_sample_fails_the_trace() {
         (late.clone(), not_read(0, &late[0]), "a late time"),
         (early.clone(), not_read(0, &early[0]), "an early time"),
         (
-            served[..5].to_vec(),
-            "plant.spike: InfluxDB holds 5 of the 6 reads".into(),
+            served[..4].to_vec(),
+            "plant.spike: InfluxDB holds 4 of the 5 reads".into(),
             "not caught up",
         ),
         (
             vec![],
-            "plant.spike: InfluxDB holds 0 of the 6 reads".into(),
+            "plant.spike: InfluxDB holds 0 of the 5 reads".into(),
             "none stored",
         ),
     ];
