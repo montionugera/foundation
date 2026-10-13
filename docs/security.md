@@ -131,7 +131,8 @@ state on `main`.
   counts such a datagram. A client opens only hub streams; `node` refuses the other
   protocols from a client. A node with a region gives each `Mesh` stream of a peer
   that proved a node key to `Mesh::serve`, which checks each message (NODE MESH), and
-  rejects a client's. It gives a `Hub` stream to the hub only when a member of its
+  rejects a client's. It gives a node's `Hub` stream to the hub only when a member
+  of its
   region has the peer's public key, once, at the header (NODE PORT). With a region, it
   gives a client's to the hub too, which admits the client by its hello against the
   access rules of the root region of the spec in use, and of each later spec; `node`
