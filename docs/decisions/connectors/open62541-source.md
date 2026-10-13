@@ -428,10 +428,16 @@
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
   2026-10-08 20:22 UTC).
   `dateTime_now` gives the wall time of the `event::Time` that `event::Loop::new`
-  takes. The kind gives the wall time of the node through `hub::writer::Writer::time`,
-  the midpoint of mesh time. Decided by `laptop.architect`
+  takes. Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147646436,
+  2026-10-13 14:18 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147864860,
+  2026-10-13 14:28 UTC). The kind gives the wall time of the node through
+  `hub::writer::Writer::time`, the midpoint of mesh time. Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
-  2026-10-13 13:56 UTC). `sim::serve` gives the wall time that its caller gives; the
+  2026-10-13 13:56 UTC). Supersedes condition 3 of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211, the
+  monotonic time from the Unix epoch. `sim::serve` gives the wall time that its caller gives; the
   benches and the unit tests give the monotonic time from the Unix epoch
   (`event::Time::monotonic`). Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
