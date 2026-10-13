@@ -114,7 +114,8 @@ impl fmt::Debug for File {
     }
 }
 
-/// The settings of a pool that holds one block of `len` bytes.
+/// The settings of a pool that holds one block of `len` bytes. The budget is twice
+/// `len` and 4 KiB, since `block` rounds a block up to its size class.
 fn pool(len: usize) -> block::Config {
     let budget = u64::try_from(len).expect("invariant: at most `LEN_MAX`") * 2 + 4096;
     block::Config::new(budget).expect("invariant: a budget of at most 132 KiB fits")

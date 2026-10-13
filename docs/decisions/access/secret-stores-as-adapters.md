@@ -6,7 +6,9 @@
 
   The first store is a file store, and every name resolves through it until the
   policy of #239 (ruling in the body of #2583, approved by the person on 2026-10-13
-  at 16:24:35Z, relayed by `laptop.monitor`; plan approved by `laptop.architect-2`:
+  at 16:24:35Z, relayed by `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949; plan
+  approved by `laptop.architect-2`:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150199760). The
   value of `plant.influx_token` is the file `secrets/plant.influx_token` of the data
   directory, read at each get, less one trailing `\n` or `\r\n`, at most 64 KiB. An

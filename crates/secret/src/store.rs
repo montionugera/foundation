@@ -37,7 +37,8 @@ pub type Request<'a> = Pin<Box<dyn Future<Output = Result<Value, Error>> + 'a>>;
 pub enum Error {
     /// The store has no value for the name.
     Missing {
-        /// The store's own text: where to put the value.
+        /// The store's own text: why it has no value, and where to put it when the
+        /// store can say.
         detail: String,
     },
     /// The store refused this node.
