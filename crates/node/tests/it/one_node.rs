@@ -68,9 +68,9 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
         .replace("localhost:8086", &influx.to_string())
 }
 
-/// The reads that the server answered of one variable, from the first to the last
-/// read before the last step of its value, and the samples that InfluxDB holds of
-/// them.
+/// The reads that the server answered of one variable, from the first to the end of
+/// the changes, and the samples that InfluxDB holds of them to the last read before
+/// the last step of the value.
 #[derive(Debug)]
 struct Trace {
     served: Vec<Sample>,
@@ -168,7 +168,12 @@ fn caught_up(
             let end = (1..reads.changed)
                 .rev()
                 .find(|&k| served[k].value.to_bits() != served[k - 1].value.to_bits())
-                .unwrap_or_else(|| panic!("{channel}: the changes step the value"));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{channel}: no read of the changes steps the value: {:?}",
+                        &served[..reads.changed]
+                    )
+                });
             for (k, (sample, read)) in
                 stored.iter().zip(&served).take(end + 1).enumerate()
             {
@@ -189,7 +194,7 @@ fn caught_up(
                 ));
             }
             Ok(Trace {
-                served: served[..end].to_vec(),
+                served: served[..reads.changed].to_vec(),
                 stored: stored[..end].to_vec(),
                 unchanged: reads.unchanged,
             })
@@ -257,11 +262,14 @@ fn later(samples: &[Sample], by: Span) -> Vec<Sample> {
 #[test]
 fn a_trace_holds_each_read_to_the_last_step_within_the_bound() {
     let served = create_served();
+    let mut stepped = served.clone();
+    stepped[6].value = 4.0;
     let mut tick = served.clone();
     tick[3].time = tick[3].time + Span::from_nanos(90 * Span::MILLISECOND.nanos());
     let cases = [
         (served.clone(), served.clone()),
         (served.clone(), served[..6].to_vec()),
+        (stepped.clone(), stepped.clone()),
         (served.clone(), later(&served, BOUND)),
         (
             served.clone(),
@@ -276,7 +284,7 @@ fn a_trace_holds_each_read_to_the_last_step_within_the_bound() {
         let traces = check(&served, &stored).expect("caught up");
         let pairs = (traces.iter())
             .map(|trace| (&trace.served[..], &trace.stored[..], trace.unchanged));
-        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..5], &stored[..5], 3)]);
+        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..6], &stored[..5], 3)]);
     }
 }
 
@@ -365,7 +373,7 @@ fn a_lost_read_fails_when_the_last_value_came_before() {
 }
 
 #[test]
-#[should_panic(expected = "plant.spike: the changes step the value")]
+#[should_panic(expected = "plant.spike: no read of the changes steps the value")]
 fn a_trace_with_no_step_panics() {
     let served = vec![create_served()[0]; 7];
     check(&served, &served).expect_err("it panics first");
@@ -413,7 +421,7 @@ fn a_bad_status_keeps_its_quality() {
             && changes[1..].iter().all(|quality| *quality == Some(BAD)),
         "Good before the changes, then Bad: {trace:?}"
     );
-    assert_eq!(qualities(&trace.stored), served);
+    assert_eq!(qualities(&trace.stored), served[..trace.stored.len()]);
 }
 
 #[test]
