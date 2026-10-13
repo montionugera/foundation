@@ -32,3 +32,6 @@
   reader by the channels of the spec in use, in place of a reader of
   `<connector>.status.*`: `laptop.architect-2` (2026-10-13T01:52:03Z,
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
+  `ops::Node::new` takes its seven inputs as arguments, and an eighth input makes them
+  `ops::Config`: `laptop.architect-2` (2026-10-13T02:25:59Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136850796).
