@@ -109,7 +109,7 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
 async fn read(
     ctx: &Context<Config>,
     client: &mut Client,
-    frames: &mut Frames,
+    frames: &mut Frames<'_>,
 ) -> Result<(), Error> {
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
@@ -126,7 +126,7 @@ async fn read(
             break;
         };
         let values = read.map_err(|status| device(Failure::Read(status)))?;
-        frames.write(reads, values, stamp)?;
+        frames.write(values, stamp)?;
     }
     Ok(())
 }
@@ -159,7 +159,7 @@ pub async fn writes(
         let ((), stamp) = frames.request(future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
-            written = frames.write(reads, &values, stamp);
+            written = frames.write(&values, stamp);
         }));
         written?;
     }
@@ -168,7 +168,9 @@ pub async fn writes(
 
 /// The frames of the ticks of a run: one sample in each series of the key set of its
 /// writer, the stamp in each index and a value in each other.
-struct Frames {
+struct Frames<'a> {
+    /// The reads of the values of each frame, in order.
+    reads: &'a [Read],
     layout: Layout,
     out: Out,
     stamps: Stamps,
@@ -197,14 +199,14 @@ struct Out {
     lost: Total,
 }
 
-impl Frames {
+impl<'a> Frames<'a> {
     /// Opens the writer of the channels of the reads of `ctx`, and gives its frames.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`]. [`Error::Config`] with `opcua.sample-type`
     /// for each channel whose sample type is not `f64`.
-    async fn open(ctx: &Context<Config>) -> Result<Self, Error> {
+    async fn open(ctx: &'a Context<Config>) -> Result<Self, Error> {
         let reads = &ctx.config().reads;
         let channels = reads.iter().map(|read| read.channel.clone()).collect();
         let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
@@ -235,6 +237,7 @@ impl Frames {
             .collect();
         let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
         Ok(Self {
+            reads,
             again: Vec::with_capacity(series.len()),
             backwards: Vec::with_capacity(samples.len()),
             layout: Layout {
@@ -257,7 +260,7 @@ impl Frames {
         self.stamps.request(&self.out.writer, request).await
     }
 
-    /// Writes one frame of `values`, the values of `reads` in order, at `stamp`. A
+    /// Writes one frame of `values`, the values of the reads in order, at `stamp`. A
     /// group that the home refuses as `Backwards` is written again once, after the
     /// stamp that the refusal gives.
     ///
@@ -271,18 +274,18 @@ impl Frames {
     /// When the home refuses a group as `Backwards` again.
     fn write(
         &mut self,
-        reads: &[Read],
         values: &[Result<f64, Status>],
         stamp: Stamp,
     ) -> Result<(), Error> {
         let values = Values::new(values).map_err(|(at, status)| {
             device(Failure::Value {
-                channel: reads[at].channel.clone(),
-                node: reads[at].node.clone(),
+                channel: self.reads[at].channel.clone(),
+                node: self.reads[at].node.clone(),
                 status,
             })
         })?;
         let Self {
+            reads: _,
             layout,
             out,
             stamps,
