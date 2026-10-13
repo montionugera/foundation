@@ -69,7 +69,8 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
 }
 
 /// The reads that the server answered of one variable, from the first to the last
-/// read before the last change, and the samples that InfluxDB holds of them.
+/// read before the last step of its value, and the samples that InfluxDB holds of
+/// them.
 #[derive(Debug)]
 struct Trace {
     served: Vec<Sample>,
@@ -148,11 +149,10 @@ fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
 }
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
-/// `served` (by variable) to the first read of the last value. Sample `k` stored has
-/// the value of read `k`, at a time within [`BOUND`] of it. The value steps at each
-/// change, so a lost or extra sample puts a later sample on a read of another value.
-/// `served` is taken after `stored`. Else `Err` with the first sample that is not its
-/// read.
+/// `served` (by variable) to the last step of the value in the changes. Sample `k`
+/// stored has the value of read `k`, at a time within [`BOUND`] of it. A lost or extra
+/// sample before a step puts a sample on a read of another value. `served` is taken
+/// after `stored`. Else `Err` with the first sample that is not its read.
 fn caught_up(
     reads: &[Reads],
     mut served: BTreeMap<String, Vec<Sample>>,
@@ -164,10 +164,10 @@ fn caught_up(
             let channel = reads.channel;
             let served = served.remove(reads.variable).unwrap_or_default();
             let stored = stored.remove(channel).unwrap_or_default();
-            let last = served[reads.changed - 1].value.to_bits();
-            let end = (served.iter())
-                .position(|read| read.value.to_bits() == last)
-                .expect("the last read has a value");
+            let end = (1..reads.changed)
+                .rev()
+                .find(|&k| served[k].value.to_bits() != served[k - 1].value.to_bits())
+                .unwrap_or_else(|| panic!("{channel}: the changes step the value"));
             for (k, (sample, read)) in
                 stored.iter().zip(&served).take(end + 1).enumerate()
             {
@@ -327,6 +327,28 @@ fn a_lost_extra_or_late_sample_fails_the_trace() {
     for (stored, error, case) in cases {
         assert_eq!(check(&served, &stored).unwrap_err(), error, "{case}");
     }
+}
+
+#[test]
+fn a_lost_read_fails_when_the_last_value_came_before() {
+    let mut served = create_served();
+    served[5].value = 1.0;
+    served[6].value = 1.0;
+    let stored = [&served[..4], &served[5..]].concat();
+    assert_eq!(
+        check(&served, &stored).unwrap_err(),
+        format!(
+            "plant.spike: sample 4 stored, {:?}, is not read 4, {:?}",
+            served[5], served[4]
+        )
+    );
+}
+
+#[test]
+#[should_panic(expected = "plant.spike: the changes step the value")]
+fn a_trace_with_no_step_panics() {
+    let served = vec![create_served()[0]; 7];
+    check(&served, &served).expect_err("it panics first");
 }
 
 #[test]
