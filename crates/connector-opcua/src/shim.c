@@ -667,15 +667,6 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-UA_NodeId shim_node_id(shim_node node) {
-    if(node.name == NULL)
-        return UA_NODEID_NUMERIC(node.namespace, node.number);
-    UA_NodeId id = {node.namespace, UA_NODEIDTYPE_STRING, {.string = {0}}};
-    id.identifier.string.length = node.length;
-    id.identifier.string.data = (UA_Byte *)(uintptr_t)node.name;
-    return id;
-}
-
 /* Asks `client` for the Value of `node`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
  * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
