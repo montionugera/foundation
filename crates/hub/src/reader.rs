@@ -11,7 +11,7 @@ use std::task::{Context, Poll, ready};
 
 use ::home::reader::Next;
 use types::channel;
-use types::frame::key_set::{self, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
@@ -659,7 +659,7 @@ impl Names {
     }
 
     /// The place in the channels of `entry` of `set`, or `None` when it is not one.
-    fn find(&self, set: &KeySet, entry: usize) -> Option<usize> {
+    fn find(&self, set: &Arc<KeySet>, entry: usize) -> Option<usize> {
         let mut places = self.places.borrow_mut();
         places.make(set);
         let place = *places.entries.get(entry)?;
@@ -676,8 +676,9 @@ impl Names {
 /// The place in a reader's channels of each entry of one key set.
 #[derive(Debug, Default)]
 struct Places {
-    /// The key set that the entries are of, or `None` before the first name.
-    set: Option<key_set::Key>,
+    /// The key set that the entries are of, or `None` before the first name. Held, so
+    /// that no other key set has its key.
+    set: Option<Arc<KeySet>>,
     /// The slot of each channel, and its entry in `set` or [`Places::NONE`]. Empty
     /// until the open knows the home of the index.
     channels: Box<[(channel::Slot, u32)]>,
@@ -694,8 +695,12 @@ impl Places {
     /// Makes the places those of `set`. It costs a search of `set` for each channel,
     /// and work for each other entry of `set` only when `set` is larger than each key
     /// set before it.
-    fn make(&mut self, set: &KeySet) {
-        if self.set == Some(set.key()) {
+    fn make(&mut self, set: &Arc<KeySet>) {
+        if self
+            .set
+            .as_ref()
+            .is_some_and(|held| held.key() == set.key())
+        {
             return;
         }
         for &(_, entry) in &self.channels {
@@ -713,7 +718,7 @@ impl Places {
                     .expect("invariant: a key set has fewer than u32::MAX entries")
             });
         }
-        self.set = Some(set.key());
+        self.set = Some(Arc::clone(set));
     }
 }
 
