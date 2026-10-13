@@ -74,7 +74,7 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102 and
-  supersedes, for `ManyIndexes`, its last sentence and item 2 of
+  supersedes, for `ManyIndexes`, its third bullet and item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). That
   check finds another key, sample type, or index under a status name, and the gap of a
   channel that `config` carries over: `laptop.architect-2` (2026-10-13T03:32:04Z,
