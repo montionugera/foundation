@@ -65,13 +65,6 @@ pub(crate) async fn create_config(
     config
 }
 
-/// A store of the secrets in the directory [`testing::SECRETS`] of the files of
-/// `node`.
-pub(crate) fn secrets(node: &sim::node::Node) -> Box<dyn secret::store::Store> {
-    let dir = std::path::Path::new(testing::SECRETS);
-    Box::new(secret::store::File::new(node.files(), dir))
-}
-
 /// The inputs of a hub on a new shard of `node`.
 pub(crate) fn env(node: &sim::node::Node, tasks: Tasks) -> hub::testing::Env {
     hub::testing::Env {

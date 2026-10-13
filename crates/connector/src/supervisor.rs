@@ -400,9 +400,7 @@ mod tests {
 
     use super::*;
     use crate::cancel::Token;
-    use crate::common::{
-        STATUS, create_config, create_status, env, run_on, run_with, secrets,
-    };
+    use crate::common::{STATUS, create_config, create_status, env, run_on, run_with};
     use crate::kind::{Channels, Kind, Table};
     use crate::testing;
     use hub::home::Refusal;
@@ -3241,7 +3239,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
-                secrets: secrets(&node),
+                secrets: testing::create_secrets(node.files()),
             });
             let token = Token::new();
             token.cancel();
@@ -3292,7 +3290,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub,
-                secrets: secrets(&node),
+                secrets: testing::create_secrets(node.files()),
             };
             let token = Token::new();
             let (canceller, sleeper) = (token.clone(), clock.clone());

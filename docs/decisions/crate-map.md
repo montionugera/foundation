@@ -31,9 +31,6 @@ Rules:
    `ops` may take `transport`, so its tests open a real `Mesh` (`laptop.architect-2`,
    2026-10-08T23:21:45Z:
    https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6070995340), and
-   `ops` may take `secret`, so its tests give a supervisor a secret store
-   (`laptop.architect-2`, 2026-10-13T16:26:56Z:
-   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150199760), and
    `hub` may take `blob`, so its region tests open a real `mesh::Mesh` on a
    `blob::Store` (`laptop.architect`, 2026-10-08T19:18:09Z:
    https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6067290747). A crate
