@@ -1,10 +1,12 @@
 use proptest::prelude::*;
 
-use super::{Error, Key, Node};
+use super::{Error, Key, NAME, Node};
 
 fn node() -> impl Strategy<Value = Node> {
-    let key =
-        prop_oneof![any::<u32>().prop_map(Key::Number), ".+".prop_map(Key::Name),];
+    let key = prop_oneof![
+        any::<u32>().prop_map(Key::Number),
+        ".{1,64}".prop_map(Key::Name),
+    ];
     (any::<u16>(), key).prop_map(|(namespace, key)| Node { namespace, key })
 }
 
@@ -81,8 +83,23 @@ fn another_text_is_refused() {
     assert_eq!(
         Error::Syntax.to_string(),
         "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an index to \
-         65535 and a number to 4294967295"
+         65535, a number to 4294967295, and a name of 1 to 4096 bytes"
     );
+}
+
+#[test]
+fn a_name_is_at_most_4096_bytes() {
+    let name = "ü".repeat(NAME / 2);
+    let text = format!("ns=1;s={name}");
+    assert_eq!(
+        text.parse(),
+        Ok(Node {
+            namespace: 1,
+            key: Key::Name(name)
+        })
+    );
+    let text = format!("ns=1;s={}x", "ü".repeat(NAME / 2));
+    assert_eq!(text.parse::<Node>(), Err(Error::Syntax));
 }
 
 #[test]

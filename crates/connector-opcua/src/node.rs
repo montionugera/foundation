@@ -20,9 +20,13 @@ pub(crate) struct Node {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     Number(u32),
-    /// Not empty.
+    /// Of 1 to [`NAME`] bytes.
     Name(String),
 }
+
+/// The most bytes in the name of a node. A request with a name past the chunks of one
+/// message closes its channel.
+pub(crate) const NAME: usize = 4096;
 
 /// Why a text is not a [`Node`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +35,7 @@ pub(crate) enum Error {
     Uri,
     /// Its key is a GUID (`g=`) or opaque (`b=`).
     Form,
-    /// Another text, or an index or a number out of range.
+    /// Another text, or an index, a number, or a name out of range.
     Syntax,
 }
 
@@ -47,7 +51,7 @@ impl fmt::Display for Error {
             }
             Self::Syntax => {
                 "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an \
-                 index to 65535 and a number to 4294967295"
+                 index to 65535, a number to 4294967295, and a name of 1 to 4096 bytes"
             }
         })
     }
@@ -74,7 +78,7 @@ impl FromStr for Node {
         let key = if let Some(number) = rest.strip_prefix("i=") {
             Key::Number(digits(number)?)
         } else if let Some(name) = rest.strip_prefix("s=")
-            && !name.is_empty()
+            && (1..=NAME).contains(&name.len())
         {
             Key::Name(name.to_owned())
         } else if rest.starts_with("g=") || rest.starts_with("b=") {
