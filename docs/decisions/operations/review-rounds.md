@@ -12,7 +12,7 @@
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect, or
   `laptop.architect` for a contract between the two lists, wrote the PR, it is the other
-  architect. When `laptop.director` wrote the PR, `laptop.architect` is the design
+  architect. When `laptop.director` wrote the PR, `laptop.monitor` is the design
   approver in place of `laptop.director`. After round 3, no other round runs, and no PR
   replaces it, other than a new design that its design approver approves, which starts
   at round 1. Each round comment numbered 3 marks each finding `defect` (wrong behavior,
@@ -54,11 +54,12 @@
     asks for, and the run after round 3, in round 3 of #2586
     (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969,
     2026-10-13T17:34:11Z);
-  - the design approver of a PR that `laptop.director` wrote, in round 1 of #2600
-    (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154549130,
-    2026-10-13T20:27:57Z), so that no PR waits for the person beyond its approval to
-    merge, after the person's words of 2026-10-13T19:52:40Z
-    (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476);
+  - the design approver of a PR that `laptop.director` wrote, by the person, relayed
+    by `laptop.monitor`
+    (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6155838835):
+    "Isn't it my job to check the directors rule change?" (2026-10-13T21:43:43Z),
+    then "I think it should be your job to do it" (2026-10-13T21:43:50Z). The person
+    still approves the merge of a rule PR (`docs/factory.md`, "Merge path");
   - the design approver of a contract on a PR that `laptop.architect` wrote, at the
     ask of `laptop.monitor`
     (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154720280,

@@ -34,8 +34,6 @@ holds for all crates, and the weekly pass. `laptop.architect-2` sends those to i
 than a contract on a PR that `laptop.architect` wrote: `laptop.architect-2` is the
 design approver of that contract, and gives each approval, OK, and ruling that `/review`
 asks of `laptop.architect` for it (`/review`, "Round cap" and "Round 1").
-`laptop.architect` is also the design approver in place of `laptop.director` on a PR
-that `laptop.director` wrote (`/review`, "Round cap").
 
 ## Interface issues
 

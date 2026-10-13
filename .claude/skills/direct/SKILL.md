@@ -69,9 +69,7 @@ ready and queues it. A later push needs a new approval.
 - The objective is high-quality software, shipped fast. A new rule closes a gap that no
   rule or check already covers, and names the defect it would have stopped. Never add a
   second gate on the same thing, and send the architects only boundaries, public
-  surfaces, contracts, risk-crate deferrals, and each OK and approval that
-  `laptop.architect` gives as the design approver of your PR (`/review`,
-  "Round cap").
+  surfaces, contracts, and risk-crate deferrals.
 - You own the review and test rules: `.claude/skills/review/`, the gate and test rules
   in `.claude/skills/build/`, `.claude/agents/`, and `docs/claude/testing.md`. Collect
   the rule changes from your audits in one draft rule PR, and keep only one open at a
