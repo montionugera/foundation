@@ -131,21 +131,21 @@
   round whose number is 3 or more may have findings and may end before a commit that
   changes code, since no round follows it (REVIEW ROUNDS in
   `docs/decisions/operations/review-rounds.md`). Its end must still be on the
-  first-parent chain of the head, with only clean merges of the base after it. Each
-  other problem of that round stays: the reviewers that it requires, the OK of each
+  first-parent chain of the head, and each merge of the base after it must be clean.
+  Each other problem of that round stays: the reviewers that it requires, the OK of each
   deferral in a risk crate, the approvals of its `Public surface:` line, and the
   director's approval of a red-team PR labeled `oracle`. The check does not check that
-  each finding of that round has its fix commit or its deferral. Decided by the director
-  at 2026-10-13T16:33:37Z (https://github.com/synnaxlabs/foundation/issues/2585).
-  Supersedes, for that round, the rule above that the last round finds none and that
-  the range to the head changes no code
-  (https://github.com/synnaxlabs/foundation/issues/2315). A round comment that only
-  holds a late report or only checks a merge keeps the number of the round before it
-  (Round cap in the `review` skill, https://github.com/synnaxlabs/foundation/pull/2586).
-  So for the reviewers that a round requires and for its `Breaker:` skip, a round
-  comment after the first is a later round, whatever its number, and so is a first
-  round comment whose number is above 1, as for the decision rule below. Decided by the
-  director in a message on 2026-10-13, for #2585 and #2586. A merge of the base is not
+  each finding of that round has its fix commit or its deferral, or that each commit
+  after it that changes code fixes a defect of that round. A round comment after the
+  first is a later round, whatever its number, also for the reviewers that it requires
+  and for its `breaker` skip, because a round comment that only holds a late report or
+  only checks a merge that is not clean takes the number of the round before it. Decided
+  by the director at 2026-10-13T16:33:37Z
+  (https://github.com/synnaxlabs/foundation/issues/2585) and 16:53:06Z
+  (https://github.com/synnaxlabs/foundation/issues/2585#issuecomment-6150677430).
+  Supersedes, for that round, the rule above that the last round finds none and that the
+  range to the head changes no code
+  (https://github.com/synnaxlabs/foundation/issues/2315). A merge of the base is not
   clean when the base moves a path that the PR changed since their merge base, and that
   is not code, to a code path, by the rename detection of the merge. A base move of a
   path that the PR did not change stays clean. Decided by the director at
