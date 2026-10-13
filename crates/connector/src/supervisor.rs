@@ -454,9 +454,10 @@ mod tests {
         ShowWide(Span),
         /// Clears the error, waits the span, then returns `Ok`.
         Clear(Span),
-        /// Lends its context to a task that shows the error `late` at the cancel of
-        /// the run, then returns `Ok` at once, or a device error when `device`.
-        Late { device: bool },
+        /// Lends its context to a task that shows the error `late`, or clears the
+        /// error when `cleared`, at the cancel of the run. Then returns `Ok` at once,
+        /// or a device error when `device`.
+        Late { device: bool, cleared: bool },
     }
 
     /// When each run started and ended.
@@ -576,7 +577,7 @@ mod tests {
                 clock.sleep(span).await;
                 Ok(())
             }
-            Some(Step::Late { device }) => show_late(lent, device),
+            Some(Step::Late { device, cleared }) => show_late(lent, device, cleared),
             None => {
                 ctx.cancel().wait().await;
                 Ok(())
@@ -585,11 +586,19 @@ mod tests {
     }
 
     /// Runs [`Step::Late`].
-    fn show_late(lent: &Rc<Context<bool>>, device: bool) -> Result<(), Error> {
+    fn show_late(
+        lent: &Rc<Context<bool>>,
+        device: bool,
+        cleared: bool,
+    ) -> Result<(), Error> {
         let late = Rc::clone(lent);
         lent.tasks().spawn(async move {
             late.cancel().wait().await;
-            late.error(&"late");
+            if cleared {
+                late.clear_error();
+            } else {
+                late.error(&"late");
+            }
         });
         if device {
             return Err(Error::Device("no reply".into()));
@@ -971,11 +980,10 @@ mod tests {
         assert_eq!(got[3..5], want);
     }
 
-    /// The state, the class, and the text of each status that a run of
-    /// [`Step::Late`] gives, cancelled at `cancel`.
-    fn supervise_late(device: bool, cancel: Span) -> Vec<((i64, i64, i64), String)> {
-        let steps = vec![Step::Late { device }];
-        let out = supervise("script", steps, config(), Cancel::After(cancel));
+    /// The state, the class, and the text of each status that a run of `late`, a
+    /// [`Step::Late`], gives, cancelled at `cancel`.
+    fn supervise_late(late: Step, cancel: Span) -> Vec<((i64, i64, i64), String)> {
+        let out = supervise("script", vec![late], config(), Cancel::After(cancel));
         out.result.expect("ok after a cancel");
         (out.statuses.iter())
             .zip(states(&out.statuses))
@@ -990,7 +998,11 @@ mod tests {
             ((3, 0, 0), String::new()),
             ((2, 0, 0), String::new()),
         ];
-        assert_eq!(supervise_late(false, ms(500)), want);
+        let late = Step::Late {
+            device: false,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(500)), want);
     }
 
     #[test]
@@ -1001,7 +1013,26 @@ mod tests {
             ((1, 2, 0), "no reply".to_owned()),
             ((0, 2, 1), "no reply".to_owned()),
         ];
-        assert_eq!(supervise_late(true, ms(5_000))[..4], want);
+        let late = Step::Late {
+            device: true,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
+    }
+
+    #[test]
+    fn keeps_the_device_end_when_a_task_clears_the_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
+        ];
+        let late = Step::Late {
+            device: true,
+            cleared: true,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
     }
 
     #[test]
