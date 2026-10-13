@@ -15,8 +15,7 @@ typedef struct {
     size_t length;
 } shim_node;
 
-/* Gives the id of `node`, which borrows its name. Inline, so a read makes no call for
- * it. */
+/* Gives the id of `node`, which borrows its name. */
 static inline UA_NodeId shim_node_id(shim_node node) {
     if(node.name == NULL)
         return UA_NODEID_NUMERIC(node.namespace, node.number);
