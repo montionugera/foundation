@@ -24,7 +24,7 @@ use types::name::Name;
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
-const CALLS: u64 = 100_000;
+const CALLS: u64 = 10_000;
 const WARMUP: usize = 10;
 const ROUNDS: usize = 100;
 
