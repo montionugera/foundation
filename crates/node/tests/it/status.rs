@@ -61,7 +61,7 @@ pub(crate) fn connectors(json: &[u8]) -> BTreeMap<String, Connector> {
 /// `ops` writes each key of a connector, so a connector that lacks one of `address`,
 /// `restarts`, `counts`, or `error` has another shape.
 #[test]
-fn a_connector_that_lacks_an_optional_key_is_refused() {
+fn a_connector_that_lacks_a_nullable_key_is_refused() {
     let keys = ["address", "restarts", "counts", "error"];
     for missing in keys {
         let present = keys.iter().filter(|key| **key != missing);
