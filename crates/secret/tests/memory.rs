@@ -18,12 +18,26 @@ static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 
 /// 5.4 MiB.
 const BOUND: usize = 5_662_310;
+/// The most heap bytes that a get holds while it waits for its turn.
+const WAIT: usize = 1024;
 
 fn main() {
-    let cases = [(1, 1), (4096, 1), (1 << 16, 1), (1 << 16, 2)];
+    let cases = [
+        (1, 1),
+        (4096, 1),
+        (1 << 16, 1),
+        (1 << 16, 2),
+        (1 << 16, 256),
+    ];
     let peaks = cases.map(|(len, gets)| (len, gets, peak(len, gets)));
-    let over: Vec<_> = peaks.iter().filter(|(.., peak)| *peak > BOUND).collect();
-    assert!(over.is_empty(), "gets held more than 5.4 MiB: {over:?}");
+    let over: Vec<_> = peaks
+        .iter()
+        .filter(|&&(_, gets, peak)| peak > BOUND + (gets - 1) * WAIT)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "gets held more than 5.4 MiB and 1 KiB for each that waits: {over:?}"
+    );
 }
 
 /// The most heap bytes held at once during `gets` gets at once of a file of `len`

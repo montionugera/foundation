@@ -65,8 +65,8 @@ fn lent(pool: Pool, len: usize, at: usize) {
     );
 }
 
-/// Puts `PLAIN` in a block, purges its class, and carves the class again with a block
-/// that ends before `PLAIN`.
+/// Puts `PLAIN` in a block, purges twice, so the idle class gives its pages back, and
+/// carves the class again with a block that ends before `PLAIN`.
 fn recarved(pool: Pool) {
     let mut first = pool.alloc(32).expect("the budget has room");
     first.fill(0x11);
