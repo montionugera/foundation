@@ -33,7 +33,7 @@ mod tests;
 /// the plan adds, changes, or removes. It gives a home only to an index on which
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
 /// each connector on whose status channels `subject` has `read`, and gives
-/// `ops.denied` when the node places a connector and `subject` reads none. It waits at
+/// `ops.denied` when it shows none, also when the node places no connector. It waits at
 /// most 1 s for the status channels, and gives `ops.channel-read` when the reader of a
 /// connector does not open or ends.
 ///
@@ -342,15 +342,13 @@ async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
     let mut placed = status::placed(spec.definitions(), &node.name);
-    let any = !placed.is_empty();
     placed.retain(|placed| {
         placed
             .channels()
             .iter()
             .all(|name| check.allows(Action::Read, name))
     });
-    // Else a subject with no grant learns that the node places a connector.
-    if any && placed.is_empty() {
+    if placed.is_empty() {
         return Err(check.denied(Action::Read, On::Nothing));
     }
     let output = status::read(node, subject, &placed).await?;

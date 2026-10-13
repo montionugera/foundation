@@ -341,13 +341,45 @@ fn leaves_out_each_connector_on_another_node() {
     });
 }
 
+/// The head of the refusal of `subject`, which reads no status channel.
+fn refused(subject: &str) -> Value {
+    let message = format!(
+        "no access policy gives `{subject}` the action `read` on a request that names \
+         no definition"
+    );
+    json!({
+        "errors": [{
+            "code": "ops.denied",
+            "message": message,
+            "fix": "Ask an admin of the region for an access policy that allows it",
+            "notes": [],
+        }],
+        "status": 1,
+    })
+}
+
 #[test]
-fn gives_no_connector_on_a_node_with_none() {
+fn refuses_an_admin_on_a_node_that_places_no_connector() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
-        let (head, _) = status(&node, "eve").await;
-        assert_eq!(head, json!({ "output": { "connectors": [] } }));
+        let (head, rest) = status(&node, "@admin").await;
+        assert_eq!((head, rest), (refused("@admin"), Vec::new()));
+    });
+}
+
+#[test]
+fn refuses_an_admin_on_a_node_that_uses_no_spec() {
+    let mut founding = spec::founding::create(crate::common::ADMIN.public());
+    let policy = founding[&name("@admin.@access")].clone();
+    // An access policy at a key that is no tree key of its kind: a problem.
+    founding.insert(name("x"), policy);
+    founded(&["edge"], founding, |fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
+        let spec = mesh.spec().await.expect("a spec");
+        assert_eq!(spec.pointer, None, "{spec:?}");
+        let (head, rest) = status(&node, "@admin").await;
+        assert_eq!((head, rest), (refused("@admin"), Vec::new()));
     });
 }
 
@@ -383,18 +415,7 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
         let text = [reader(), connector("site.b", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let message = "no access policy gives `sam` the action `read` on a request \
-                       that names no definition";
-        let expected = json!({
-            "errors": [{
-                "code": "ops.denied",
-                "message": message,
-                "fix": "Ask an admin of the region for an access policy that allows it",
-                "notes": [],
-            }],
-            "status": 1,
-        });
-        assert_eq!(head, expected);
+        assert_eq!(head, refused("sam"));
         assert_eq!(rest, b"");
     });
 }
@@ -414,18 +435,7 @@ fn refuses_a_subject_that_may_read_only_some_status_channels() {
         applied(&fixture, &node, &text.concat()).await;
         supervise(&fixture, &node, &["site.a"]).await;
         let (head, _) = status(&node, "sam").await;
-        let message = "no access policy gives `sam` the action `read` on a request \
-                       that names no definition";
-        let expected = json!({
-            "errors": [{
-                "code": "ops.denied",
-                "message": message,
-                "fix": "Ask an admin of the region for an access policy that allows it",
-                "notes": [],
-            }],
-            "status": 1,
-        });
-        assert_eq!(head, expected);
+        assert_eq!(head, refused("sam"));
     });
 }
 
