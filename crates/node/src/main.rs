@@ -147,18 +147,12 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
             not_running(dir)
         }
         os::Error::Dir(error) if error.kind() == io::ErrorKind::NotADirectory => {
-            let data = dir.display();
-            // `os::stored` opens `dir/data`, so `dir` or `dir/data` is the file.
-            let message = if dir.is_dir() {
-                format!(
-                    "no node runs in {data}, because {data}/data is not a directory"
-                )
-            } else {
-                format!("no node runs in {data}, which is not a directory")
-            };
             Failure {
                 code: NOT_RUNNING,
-                message,
+                message: format!(
+                    "no node runs in {}, which is not a data directory",
+                    dir.display()
+                ),
                 fix: "Give `--data` the data directory of a node that runs".to_owned(),
             }
         }
@@ -1237,10 +1231,38 @@ mod tests {
             stored(Path::new("plant.hcl"), os::Error::Dir(file)),
             of_reach(
                 NOT_RUNNING,
-                "no node runs in plant.hcl, which is not a directory",
+                "no node runs in plant.hcl, which is not a data directory",
                 "Give `--data` the data directory of a node that runs",
             )
         );
+    }
+
+    #[test]
+    fn the_fix_of_a_data_directory_where_no_node_runs_quotes_it_for_the_shell() {
+        let fix = |dir| not_running(Path::new(dir)).fix;
+        assert_eq!(
+            ["plant", "my plant", "it's"].map(fix),
+            [
+                "Run `foundation start --data plant`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data 'my plant'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data 'it'\\''s'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
+            ]
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn the_shell_gives_back_the_path_of_its_word(dir in "[\t\n -~é]{0,24}") {
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", quoted(Path::new(&dir))))
+                .output()
+                .expect("run sh");
+            proptest::prop_assert_eq!(String::from_utf8_lossy(&output.stdout), dir);
+        }
     }
 
     #[test]

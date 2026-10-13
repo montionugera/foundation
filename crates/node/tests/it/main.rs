@@ -189,7 +189,7 @@ fn status_on_a_file_as_data_is_not_running() {
         (
             Some(1),
             concat!(
-                "error[node.not-running]: no node runs in plant.hcl, which is not a ",
+                "error[node.not-running]: no node runs in plant.hcl, which is not a data ",
                 "directory\nfix: Give `--data` the data directory of a node that runs\n",
             )
         )
@@ -197,7 +197,7 @@ fn status_on_a_file_as_data_is_not_running() {
 }
 
 #[test]
-fn status_on_a_directory_whose_data_is_a_file_names_that_file() {
+fn status_on_a_directory_whose_data_is_a_file_is_not_running() {
     let rig = Rig::new();
     std::fs::create_dir(rig.dir.join("plant")).expect("make plant");
     std::fs::write(rig.dir.join("plant/data"), b"").expect("write plant/data");
@@ -207,9 +207,8 @@ fn status_on_a_directory_whose_data_is_a_file_names_that_file() {
         (
             Some(1),
             concat!(
-                "error[node.not-running]: no node runs in plant, because plant/data is ",
-                "not a directory\nfix: Give `--data` the data directory of a node that ",
-                "runs\n",
+                "error[node.not-running]: no node runs in plant, which is not a data ",
+                "directory\nfix: Give `--data` the data directory of a node that runs\n",
             )
         )
     );
