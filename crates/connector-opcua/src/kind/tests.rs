@@ -878,3 +878,13 @@ fn stamps_each_frame_within_its_read() {
         assert_eq!(stamp(frame, 1), answered);
     }
 }
+
+#[test]
+#[should_panic(
+    expected = "invariant: `Values::new` refuses the read and status Some((1, BadNotFound))"
+)]
+fn panics_with_the_first_bad_read_when_a_value_is_bad() {
+    let bad = Err(Status::BAD_NOT_FOUND);
+    let values = [Ok(1.0), bad, bad];
+    Values(&values).get(2);
+}

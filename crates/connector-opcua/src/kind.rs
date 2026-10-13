@@ -433,11 +433,19 @@ impl<'a> Values<'a> {
 
     /// The value of the read at `at`.
     fn get(self, at: usize) -> f64 {
-        let value = self.0[at];
-        let Ok(value) = value else {
-            panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
-        };
-        value
+        match self.0[at] {
+            Ok(value) => value,
+            Err(_) => self.broken(),
+        }
+    }
+
+    /// Panics with the first bad read and its status. Cold and apart from `get`, so
+    /// the loop of a send keeps no read on the stack for the message.
+    #[cold]
+    #[inline(never)]
+    fn broken(self) -> ! {
+        let bad = Self::new(self.0).err();
+        panic!("invariant: `Values::new` refuses the read and status {bad:?}")
     }
 }
 
