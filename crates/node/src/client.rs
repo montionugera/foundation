@@ -104,10 +104,10 @@ pub enum Error {
 fn dialed(mut bound: SocketAddr) -> SocketAddr {
     match bound.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => {
-            bound.set_ip(Ipv4Addr::LOCALHOST.into())
+            bound.set_ip(Ipv4Addr::LOCALHOST.into());
         }
         IpAddr::V6(ip) if ip.is_unspecified() => {
-            bound.set_ip(Ipv6Addr::LOCALHOST.into())
+            bound.set_ip(Ipv6Addr::LOCALHOST.into());
         }
         IpAddr::V4(_) | IpAddr::V6(_) => {}
     }

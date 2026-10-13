@@ -27,10 +27,10 @@ fn reached(
             pool: Rc::new(block::Pool::new(config, memory)),
         })
         .await;
-        *slot.lock().unwrap() = Some(reached.map(drop));
+        *slot.lock().expect("no test thread panicked") = Some(reached.map(drop));
     });
     assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-    let reached = out.lock().unwrap().take();
+    let reached = out.lock().unwrap_or_else(PoisonError::into_inner).take();
     reached.expect("reach ends in a minute")
 }
 
