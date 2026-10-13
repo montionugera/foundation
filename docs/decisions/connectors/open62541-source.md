@@ -420,16 +420,19 @@
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
   `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
   `dateTime_now` gives a wall time that `event::Loop::new` takes, and the UTC offset is
-  0. The kind gives the wall time of the node through `hub`, at the midpoint of mesh
-  time; a test server gives its monotonic time from the Unix epoch. Decided by
+  0. The kind gives the wall time of the node through `hub`. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
   2026-10-13 07:03 UTC), and added to ONE NODE by the person
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
-  2026-10-13 13:40 UTC). Its drop runs the queued delayed callbacks in at most 64
-  passes, then aborts: a callback that queues itself at each pass is a defect. The
-  hidden module `bench`, behind the feature `sim`, gives the benchmark and the
-  allocation test a client on the loop. Decided by `laptop.architect-2`
+  2026-10-13 13:40 UTC). It reads the midpoint of mesh time through
+  `hub::writer::Time`. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC). A test server gives its monotonic time from the Unix epoch.
+  The drop of the loop runs the queued delayed callbacks in at most 64 passes, then
+  aborts: a callback that queues itself at each pass is a defect. The hidden module
+  `bench`, behind the feature `sim`, gives the benchmark and the allocation test a
+  client on the loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
