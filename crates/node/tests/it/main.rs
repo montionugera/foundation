@@ -97,7 +97,8 @@ fn status_gives_each_connector_as_json() {
         "channel \"plant.time\" { kind = \"index\" }\n",
         "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
         "connector \"plant.influx\" {\n  kind = \"influx\"\n  node = \"edge\"\n",
-        "  address = \"http://127.0.0.1:1\"\n  select = \"plant.*\"\n",
+        "  address = \"http://127.0.0.1:1\"\n  database = \"plant\"\n",
+        "  measurement = \"telemetry\"\n  select = \"plant.missing\"\n",
         "  reader {\n    mode = \"complete\"\n  }\n}\n",
     ));
     rig.start();
@@ -121,8 +122,8 @@ fn status_gives_each_connector_as_json() {
             error: Some(status::Error {
                 class: "config".into(),
                 text: concat!(
-                    "this build cannot run the influx kind yet. Remove the connector, ",
-                    "or run it on a build that has the influx writer",
+                    "the selector matches no channel. ",
+                    "Select a channel that the spec defines",
                 )
                 .into(),
                 next: None,
