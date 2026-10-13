@@ -41,5 +41,5 @@
   trigger of a value larger than a Double: `laptop.architect-2` at
   2026-10-13T22:01:26Z,
   https://github.com/synnaxlabs/foundation/pull/2613#issuecomment-6156112949.
-  Supersedes the trigger of another type of
-  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207.
+  Supersedes the trigger of another type, approved in item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801.

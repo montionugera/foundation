@@ -23,9 +23,9 @@ pub(crate) enum Value {
 }
 
 impl Value {
-    /// Gives the scalar of `value`, an answer of a read. Else gives the status of its
-    /// value when that is not Good (a Good with a subcode is Good), or
-    /// `BadTypeMismatch` for an array or a type that is not one of [`Value`].
+    /// Gives the scalar of `value`, an answer of a read. Else gives its status when
+    /// that is not Good (a Good with a subcode is Good), `BadNoData` when it holds no
+    /// value, or `BadTypeMismatch` for an array or a type that is not one of [`Value`].
     ///
     /// # Safety
     ///
