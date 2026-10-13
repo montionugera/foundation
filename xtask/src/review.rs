@@ -438,7 +438,7 @@ fn unended(
                  first-parent chain of the head {head}, or a merge of a branch other \
                  than the base follows it. Correct the range of the round comment when \
                  it names the wrong commit. Else bring the reviewed commits back onto \
-                 that chain, with only merges of the base after them."
+                 that chain, and make each merge after them a merge of the base."
             )));
         }
     }
