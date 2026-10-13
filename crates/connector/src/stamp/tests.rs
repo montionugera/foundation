@@ -85,7 +85,7 @@ fn a_request_near_the_end_of_time_is_stamped_at_its_midpoint() {
     let (sent, stamp) = with_writer(config, async |writer, clock| {
         let mut stamps = Stamps::default();
         let sent = writer.now();
-        let request = clock.sleep(Span::from_nanos(2 * Span::SECOND.nanos()));
+        let request = clock.sleep(Span::from_nanos(2 * Span::SECOND.nanos() + 1));
         (sent, stamps.request(&writer, request).await.1)
     });
     assert_eq!(stamp, sent + Span::SECOND);
