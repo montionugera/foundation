@@ -15,6 +15,7 @@ name = "foundation"
 path = "src/main.rs"
 
 [dependencies]
+access = { path = "../access" }
 blob = { path = "../blob" }
 block = { path = "../block" }
 buffer = { path = "../buffer" }

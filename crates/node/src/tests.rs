@@ -4663,7 +4663,7 @@ mod port {
                 let port = route::accept(
                     transport,
                     Some(mesh.clone()),
-                    hub,
+                    crate::task::Handles { hub, ops: None },
                     clock,
                     tasks,
                     settings.header_wait,
@@ -4802,14 +4802,15 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
-        /// The node stops a hub stream of a program, and resets its reply half, with
-        /// the code of a rejected header.
+        /// The node gives a hub stream of a program to its hub, which takes it as the
+        /// hello stream and closes the session at its first message, which is no
+        /// hello, with the code of a malformed message.
         #[test]
-        fn rejects_a_hub_stream_of_a_program_of_a_region() {
+        fn a_hub_stream_of_a_program_of_a_region_goes_to_the_hub() {
             let Seen { sent, read, .. } = opened(Dialer::Program);
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(sent, transport::Error::Stopped { code });
-            assert_eq!(read, Err(transport::Error::Reset { code }));
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::PeerClosed { code });
+            assert_eq!(read, Err(transport::Error::PeerClosed { code }));
         }
 
         /// The mesh serves a mesh stream: at the first message that is not a mesh
@@ -6296,7 +6297,10 @@ mod port {
                 let port = route::accept(
                     transport,
                     Some(mesh.clone()),
-                    hub.clone(),
+                    crate::task::Handles {
+                        hub: hub.clone(),
+                        ops: None,
+                    },
                     clock,
                     tasks,
                     settings.header_wait,

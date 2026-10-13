@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use wire::hub::client::{REFUSED, Refusal};
@@ -9,19 +10,23 @@ use super::*;
 /// What [`reach`] gives on a shard of `host`, once it ends.
 type Reached = Arc<Mutex<Option<Result<(), client::Error>>>>;
 
+/// What [`reach`] dials with on `host`, with the tasks of a shard.
+fn reach_config(host: &sim::node::Node, tasks: env::tasks::Tasks) -> client::Config {
+    client::Config {
+        files: host.files(),
+        net: host.net(),
+        clock: host.clock(),
+        entropy: host.entropy(),
+        tasks,
+    }
+}
+
 /// Calls [`reach`] on a shard of `host`.
 fn reach_on(host: &sim::node::Node) -> Reached {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
-        let reached = reach(client::Config {
-            files: host.files(),
-            net: host.net(),
-            clock: host.clock(),
-            entropy: host.entropy(),
-            tasks,
-        })
-        .await;
+        let reached = reach(reach_config(&host, tasks)).await;
         *slot.lock().expect("no test thread panicked") = Some(reached.map(drop));
     });
     out
@@ -167,23 +172,14 @@ fn reach_after_a_crash_gives_unanswered_at_the_address() {
     assert_eq!(reached, Err(client::Error::Unanswered { at, error }));
 }
 
-/// The node serves no hello of a program yet: it rejects the hub stream.
+/// The node admits the hello of its first admin at its bound address.
 #[test]
 fn reach_on_a_running_node_dials_its_bound_address() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     let node = start(&host, listen(&host), Region::Stored);
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    let reached = reached(&mut sim, &host);
-    let Err(client::Error::Session { at, error }) = reached else {
-        panic!("the node rejects the hub stream: {reached:?}");
-    };
-    assert_eq!(at, listen(&host));
-    let code = Code(wire::header::REJECTED);
-    assert_eq!(
-        error,
-        ::hub::client::Error::Transport(transport::Error::Reset { code })
-    );
+    assert_eq!(reached(&mut sim, &host), Ok(()));
     node.stop();
     assert_eq!(sim.run(), Ok(()));
 }
@@ -280,4 +276,174 @@ fn reach_whose_hello_the_node_refuses_gives_refused() {
         reached(&mut sim, &host),
         Err(client::Error::Refused(Refusal::Refused))
     );
+}
+
+/// A request of `plan` of `plant.hcl`, which defines the index `plant.time` and homes
+/// it on `edge`, the node.
+const PLAN: &[u8] = concat!(
+    r#"{"plan":{"files":[{"path":"plant.hcl","text":""#,
+    r#"channel \"plant.time\" { kind = \"index\" }\n"#,
+    r#"placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n"#,
+    "\"}]}}\n",
+)
+.as_bytes();
+
+/// The replies that the client of [`reach`] on a shard of `host` gets to [`PLAN`],
+/// then to a request of `apply` of the plan file that follows the first line of the
+/// first reply, once `sim` has run for a minute.
+fn plan_and_apply(sim: &mut sim::Sim, host: &sim::node::Node) -> [Vec<u8>; 2] {
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    shard(host, move |host, tasks| async move {
+        let client = reach(reach_config(&host, tasks)).await;
+        let client = client.expect("the node admits its first admin");
+        let planned = client.request(PLAN).await.expect("a reply of plan");
+        let end = planned.iter().position(|&byte| byte == b'\n');
+        let plan = &planned[end.expect("a first line") + 1..];
+        let apply = [&b"{\"apply\":{}}\n"[..], plan].concat();
+        let applied = client.request(&apply).await.expect("a reply of apply");
+        *slot.lock().expect("no test thread panicked") = Some([planned, applied]);
+    });
+    assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+    let replies = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+    replies.expect("the requests end in a minute")
+}
+
+/// The definitions of the spec that `node` uses, once `sim` has run for a second.
+fn used(
+    sim: &mut sim::Sim,
+    node: &Node,
+) -> BTreeMap<types::name::Name, spec::definition::Definition> {
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    node.operate(move |ops| async move {
+        let definitions = (*ops.mesh().used().definitions).clone();
+        *slot.lock().expect("no test thread panicked") = Some(definitions);
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    let used = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+    used.expect("the operation ends in a second")
+}
+
+/// The node answers each request of its first admin with the reply of `ops::serve`:
+/// the apply of the plan puts `plant.time` in the spec in use.
+#[test]
+fn a_program_plans_and_applies_on_the_node() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, listen(&host), Region::Stored);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    let label = spec::definition::Kind::Channel.key("plant.time").unwrap();
+    assert!(!used(&mut sim, &node).contains_key(&label));
+    let [planned, applied] = plan_and_apply(&mut sim, &host);
+    let end = planned.iter().position(|&byte| byte == b'\n').unwrap();
+    let base = concat!(
+        r#"{"version":0,"#,
+        r#""root":"3ae069cacea966c3a682f4421d2cba2acc91d8db6748381bb44ee7d7a3ccd300"}"#,
+    );
+    let changes = concat!(
+        r#"[{"action":"add","kind":"channel","name":"plant.time","#,
+        r#""place":{"file":"plant.hcl","line":1,"column":9}},"#,
+        r#"{"action":"add","kind":"placement","name":"plant.home","#,
+        r#""place":{"file":"plant.hcl","line":2,"column":11}}]"#,
+    );
+    let reserved = concat!(
+        r#"[{"name":"@admin","kind":"access","key":"@admin.@access"},"#,
+        r#"{"name":"@admin","kind":"subject","key":"@admin.@subject"}]"#,
+    );
+    let output = format!(
+        "{{\"output\":{{\"base\":{base},\"changes\":{changes},\
+         \"homes\":{{\"plant.time\":\"edge\"}},\"reserved\":{reserved},\
+         \"added\":2,\"changed\":0,\"removed\":0}}}}\n"
+    );
+    assert_eq!(text(&planned[..=end]), output);
+    let applied_output = concat!(
+        r#"{"output":{"pointer":{"version":1,"root":"#,
+        r#""f60dbe4d9c93586d6ce87ef97da14ab86b2ee9b20fa01ed0b35da7eb7c4e15f9"},"#,
+        r#""added":2,"changed":0,"removed":0,"homes":1}}"#,
+        "\n",
+    );
+    assert_eq!(text(&applied), applied_output);
+    assert!(used(&mut sim, &node).contains_key(&label));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+}
+
+/// `bytes` as text, for an exact compare.
+fn text(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("a reply is UTF-8")
+}
+
+/// The key of `plant.operator`, which no founding lists.
+const OPERATOR: PrivateKey = PrivateKey([5; 32]);
+
+/// What a hello of `plant.operator` with [`OPERATOR`] gives on a shard of `host`, at
+/// the node whose address `host` holds, once `sim` has run for a minute.
+fn operator(
+    sim: &mut sim::Sim,
+    host: &sim::node::Node,
+) -> Result<(), ::hub::client::Error> {
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    shard(host, move |host, tasks| async move {
+        let files = host.files();
+        let address = crate::address::read(&files).await.expect("a read");
+        let address = address.expect("a node runs");
+        let (transport, pool) = program(&host, tasks.clone());
+        let config = ::hub::client::Config {
+            via: address.key,
+            node: address.public_key,
+            addresses: vec![Address::Udp(address.bound)],
+            subject: "plant.operator".parse().unwrap(),
+            key: OPERATOR,
+            clock: host.clock(),
+            entropy: host.entropy(),
+            tasks,
+            pool,
+        };
+        let connected = ::hub::client::Client::connect(&transport, config).await;
+        *slot.lock().expect("no test thread panicked") = Some(connected.map(drop));
+    });
+    assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+    let connected = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+    connected.expect("the hello ends in a minute")
+}
+
+/// The hub takes the rules of each later spec in use: a hello of a subject that no
+/// spec lists is refused, and the same hello after a spec adds the subject is
+/// admitted.
+#[test]
+fn a_hello_of_a_subject_that_a_later_spec_adds_is_admitted() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let node = start(&host, listen(&host), Region::Stored);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(
+        operator(&mut sim, &host),
+        Err(::hub::client::Error::Refused(Refusal::Refused))
+    );
+    let applied = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&applied);
+    node.operate(move |ops| async move {
+        let mesh = ops.mesh();
+        let used = mesh.used();
+        let mut definitions = (*used.definitions).clone();
+        let subject = spec::subject::Subject::new(vec![OPERATOR.public()]).unwrap();
+        let label = spec::definition::Kind::Subject
+            .key("plant.operator")
+            .unwrap();
+        definitions.insert(label, spec::definition::Definition::Subject(subject));
+        let base = used.pointer.expect("a spec in use");
+        let applied = mesh.apply(base, definitions, BTreeMap::new()).await;
+        *slot.lock().expect("no test thread panicked") = Some(applied.map(drop));
+    });
+    assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+    let applied = applied
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    assert_eq!(applied, Some(Ok(())));
+    assert_eq!(operator(&mut sim, &host), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
 }
