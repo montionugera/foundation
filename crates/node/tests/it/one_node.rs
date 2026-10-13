@@ -114,17 +114,17 @@ fn held(
     let count = |served: &BTreeMap<String, Vec<Sample>>, variable| {
         served.get(variable).map_or(0, Vec::len)
     };
-    let unchanged = plant.opcua.served();
+    let before = plant.opcua.served();
     plant.opcua.change(TICKS, quality);
-    let changed = plant.opcua.served();
+    let after = plant.opcua.served();
     let reads: Vec<_> = variables
         .iter()
         .map(|&(variable, channel)| {
             let reads = Reads {
                 variable,
                 channel,
-                unchanged: count(&unchanged, variable),
-                changed: count(&changed, variable),
+                unchanged: count(&before, variable),
+                changed: count(&after, variable),
             };
             let changes = reads.changed - reads.unchanged;
             assert!(
@@ -237,11 +237,8 @@ fn a_trace_pairs_each_stored_sample_with_the_nearest_read() {
         quality: None,
     };
     // Three reads before the changes, three in them, and one after the last change.
-    let served: Vec<_> = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0]
-        .into_iter()
-        .zip(0..)
-        .map(|(value, at)| sample(at, value))
-        .collect();
+    let values = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0];
+    let served: Vec<_> = (0..).zip(values).map(|(at, v)| sample(at, v)).collect();
     let reads = [Reads {
         variable: "ns=3;s=SpikeData",
         channel: "plant.spike",
@@ -256,13 +253,10 @@ fn a_trace_pairs_each_stored_sample_with_the_nearest_read() {
         )
     };
     let traces = check(&served[1..]).expect("caught up");
-    let [trace] = &traces[..] else {
-        panic!("one variable: {traces:?}");
-    };
-    assert_eq!(
-        (&trace.served[..], &trace.stored[..]),
-        (&served[1..6], &served[1..6])
-    );
+    let pairs = traces
+        .iter()
+        .map(|trace| (&trace.served[..], &trace.stored[..]));
+    assert_eq!(pairs.collect::<Vec<_>>(), [(&served[1..6], &served[1..6])]);
     let not_read = |k, stored: &Sample, read| {
         format!(
             "plant.spike: sample {k} stored, {stored:?}, is not read {read}, {:?}",
