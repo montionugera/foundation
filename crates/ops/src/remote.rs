@@ -43,7 +43,7 @@ where
         .map(|path| front_end::not_utf8(path))
         .collect();
     if !not_utf8.is_empty() {
-        return Err(Error::config(not_utf8, &error::Paths::default()));
+        return Err(Error::config(not_utf8, &error::Sources::default()));
     }
     let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
@@ -93,7 +93,7 @@ where
 {
     let Some(name) = plan.to_str() else {
         let not_utf8 = vec![front_end::not_utf8(plan)];
-        return Err(Error::config(not_utf8, &error::Paths::default()));
+        return Err(Error::config(not_utf8, &error::Sources::default()));
     };
     let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes)?, reach).await?;

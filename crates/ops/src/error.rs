@@ -156,12 +156,12 @@ impl From<Action> for spec::access::Action {
 
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
-    /// at `paths`.
-    pub(crate) fn config(diagnostics: Vec<Diagnostic>, paths: &Paths) -> Self {
+    /// of `sources`.
+    pub(crate) fn config(diagnostics: Vec<Diagnostic>, sources: &Sources) -> Self {
         Self::Config(
             diagnostics
                 .into_iter()
-                .map(|diagnostic| Problem::of(diagnostic, paths))
+                .map(|diagnostic| Problem::of(diagnostic, sources))
                 .collect(),
         )
     }
@@ -325,19 +325,19 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
-    /// The problem of `diagnostic`, whose spans are in the files at `paths`.
-    pub(crate) fn of(diagnostic: Diagnostic, paths: &Paths) -> Self {
+    /// The problem of `diagnostic`, whose spans are in the files of `sources`.
+    pub(crate) fn of(diagnostic: Diagnostic, sources: &Sources) -> Self {
         Self {
             code: diagnostic.code.as_str().to_owned(),
             message: diagnostic.message,
             fix: diagnostic.fix,
-            place: diagnostic.span.map(|span| paths.place(span)),
+            place: diagnostic.span.map(|span| sources.place(span)),
             notes: diagnostic
                 .notes
                 .into_iter()
                 .map(|note| Note {
                     text: note.text,
-                    place: paths.place(note.span),
+                    place: sources.place(note.span),
                 })
                 .collect(),
         }
@@ -388,9 +388,9 @@ pub(crate) struct Place {
 /// The path of each file of a plan, by source. Each place in a file shares its path,
 /// so the problems of a file do not repeat it in memory.
 #[derive(Default)]
-pub(crate) struct Paths(Vec<Option<Arc<str>>>);
+pub(crate) struct Sources(Vec<Option<Arc<str>>>);
 
-impl Paths {
+impl Sources {
     /// The path of each of `files`, by source.
     pub(crate) fn of(files: &[File]) -> Self {
         Self(
