@@ -227,11 +227,11 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
         .await;
 }
 
-/// Writes one frame of the status index of `connector` and of each channel `last` on
-/// it with the sample `bytes`, as a program.
-async fn write(fixture: &Fixture, connector: &str, samples: &[(&str, &[u8])]) {
-    let lasts = std::iter::once("time").chain(samples.iter().map(|(last, _)| *last));
-    let channels = lasts.map(|last| name(&format!("{connector}.status.{last}")));
+/// Writes one frame of the channel `index` and of each channel `name` on it with the
+/// sample `bytes`, as a program.
+async fn write(fixture: &Fixture, index: &str, samples: &[(&str, &[u8])]) {
+    let names = std::iter::once(index).chain(samples.iter().map(|(name, _)| *name));
+    let channels = names.map(name);
     let config = hub::writer::Config {
         subject: name("program"),
         authority: Authority(1),
@@ -375,7 +375,8 @@ fn gives_unknown_for_a_frame_with_no_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
-        write(&fixture, "site.a", &[("in", &5_u64.to_le_bytes())]).await;
+        let samples: [(&str, &[u8]); 1] = [("site.a.status.in", &5_u64.to_le_bytes())];
+        write(&fixture, "site.a.status.time", &samples).await;
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, _) = status(&node, "@admin").await;
@@ -593,7 +594,8 @@ fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
                    channel \"site.a.status.state\" {\n  data_type = \"uuid\"\n  \
                    index = \"site.a.status.time\"\n}\n";
         applied(&fixture, &node, &[old, EDGE].concat()).await;
-        write(&fixture, "site.a", &[("state", &[7; 16])]).await;
+        let samples: [(&str, &[u8]); 1] = [("site.a.status.state", &[7; 16])];
+        write(&fixture, "site.a.status.time", &samples).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
@@ -615,14 +617,45 @@ fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
                    channel \"site.a.status.restarts\" {\n  data_type = \"u64\"\n  \
                    index = \"site.a.status.time\"\n}\n";
         applied(&fixture, &node, &[old, EDGE].concat()).await;
-        let samples: [(&str, &[u8]); 3] =
-            [("state", &[0]), ("class", &[0]), ("restarts", &[0; 8])];
-        write(&fixture, "site.a", &samples).await;
+        let samples: [(&str, &[u8]); 3] = [
+            ("site.a.status.state", &[0]),
+            ("site.a.status.class", &[0]),
+            ("site.a.status.restarts", &[0; 8]),
+        ];
+        write(&fixture, "site.a.status.time", &samples).await;
         applied_alone(
             &node,
             &["channel \"x.time\" { kind = \"index\" }\n", EDGE].concat(),
         )
         .await;
+        applied_alone(&node, &connector("site.a", "steady", "edge")).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status()
+{
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let old = "channel \"x.time\" { kind = \"index\" }\n\
+                   channel \"site.a.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"x.time\"\n}\n\
+                   channel \"site.a.status.class\" {\n  data_type = \"u8\"\n  \
+                   index = \"x.time\"\n}\n\
+                   channel \"site.a.status.restarts\" {\n  data_type = \"u64\"\n  \
+                   index = \"x.time\"\n}\n";
+        applied(&fixture, &node, &[old, EDGE].concat()).await;
+        let samples: [(&str, &[u8]); 3] = [
+            ("site.a.status.state", &[0]),
+            ("site.a.status.class", &[0]),
+            ("site.a.status.restarts", &[0; 8]),
+        ];
+        write(&fixture, "x.time", &samples).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
@@ -645,7 +678,8 @@ fn fails_when_the_buffer_fails_before_a_frame_of_the_status() {
             std::path::Path::new("shard-0/ring"),
             env::files::Operation::Sync,
         );
-        write(&fixture, "site.b", &[("in", &5_u64.to_le_bytes())]).await;
+        let samples: [(&str, &[u8]); 1] = [("site.b.status.in", &5_u64.to_le_bytes())];
+        write(&fixture, "site.b.status.time", &samples).await;
         let (head, _) = status(&node, "@admin").await;
         let expected = json!({
             "errors": [{
