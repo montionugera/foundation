@@ -36,7 +36,8 @@ impl Reading {
     ///
     /// # Panics
     ///
-    /// When a series of `received` does not decode.
+    /// When a series of `received` does not decode, or a channel has a sample type
+    /// that its status channel never has.
     #[must_use]
     pub fn of(received: &Received<'_>) -> Option<Self> {
         let samples = Samples::of(received);
