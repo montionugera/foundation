@@ -35,8 +35,8 @@ mod tests;
 /// each connector on whose status channels `subject` has `read`, and gives
 /// `ops.denied` when it shows none, also when the node places no connector. It waits at
 /// most 1 s from the request for the status channels. A connector whose status
-/// channels the hub does not define yet, or that an apply removes, is `unknown`.
-/// `status` gives `ops.channel-read` when the reader of a connector does not open or
+/// channels the hub does not define yet, or whose status channels an apply removes,
+/// is `unknown`. `status` gives `ops.channel-read` when the reader of a connector does not open or
 /// ends for another cause.
 ///
 /// [`cli`]: crate::cli
