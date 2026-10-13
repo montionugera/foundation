@@ -28,8 +28,11 @@
   `POST /write?db=<database>&precision=ns`, and a `bucket` with
   `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
   InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in
-  the query. Until the token of #2583, a request has no `Authorization`. Approved by
-  the person (2026-10-13T16:24:35Z, relayed in
+  the query. Until the token of #2583, a request has no `Authorization`: the key
+  choice https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6156072634,
+  which `laptop.architect-2` accepted on 2026-10-13T21:59:25Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448).
+  Approved by the person (2026-10-13T16:24:35Z, relayed in
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949), and
   the plan that `laptop.architect-2` approved on 2026-10-13T16:53:54Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150691934),
