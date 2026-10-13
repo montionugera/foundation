@@ -16,12 +16,13 @@
   crate owns the read of each variable: it answers the reads of the type check when
   open62541 adds the node, and frees each read after the delete. Lost: the values and
   the record of reads in C, with a C array that Rust copies out, which gives two copies
-  of the state across the FFI, a C allocation per read, and a second clock in C. Lost: a
-  `Server` with `listen`, `local`, and `serve`, since a drop between `listen` and
-  `serve` leaks the server. Decided by `laptop.architect-2` (2026-10-13T01:23:17Z:
+  of the state across the FFI, a C allocation per read, and a second clock in C. Decided
+  by `laptop.architect-2` (2026-10-13T01:23:17Z:
   https://github.com/synnaxlabs/foundation/issues/2515#issuecomment-6136027630), and the
-  one `serve`, the `listener`, `&Variables`, the namespaces, and the panic on the number
-  0 by `laptop.architect-2` (2026-10-13T02:02:19Z:
+  one `serve`, with the loss of a `Server` with `listen`, `local`, and `serve`, since a
+  drop between `listen` and `serve` leaks the server, the `listener`, `&Variables`, the
+  namespaces, and the panic on the number 0 by `laptop.architect-2`
+  (2026-10-13T02:02:19Z:
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136492404), and the
   options of `listener` by `laptop.architect-2` (2026-10-13T02:07:45Z:
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136612131). The one
@@ -30,6 +31,6 @@
   https://github.com/synnaxlabs/foundation/issues/2515#issuecomment-6136027630. The
   `listener` that the caller binds, which `Manager::accepting` takes, supersedes for
   `sim::serve` the bind in `Manager::listening` of
-  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Both:
-  approved by `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Both by
+  `laptop.architect-2` (2026-10-13T02:19:56Z:
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257).

@@ -218,8 +218,8 @@ impl Server {
     ) -> T {
         let manager = ManuallyDrop::new(manager);
         // SAFETY: each close below deletes the server before the manager drops. A
-        // panic out of `start`, the drive, or a close, and a drop of this future, leak
-        // both.
+        // panic out of `start`, the drive, `until`, or a close, and a drop of this
+        // future, leak both.
         let mut server = unsafe { Self::start(&manager, c"", sessions) };
         if let Err(panic) = panic::catch_unwind(AssertUnwindSafe(|| add(&mut server))) {
             server.close(&manager).await;
