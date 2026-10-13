@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use ::sim::{Sim, node};
 use connector::cancel::Token;
@@ -748,4 +750,100 @@ fn closes_the_session_at_the_end_of_each_run() {
         Ok(())
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+}
+
+#[test]
+fn closes_the_session_at_each_end_with_an_error() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.variables.change(Quality(0x8000_0000));
+        scene.supervise(ms(30_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let bad = "the node ns=3;s=SpikeData of `plant.a` gives Bad";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 5);
+}
+
+#[test]
+fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
+    let mut setup = Setup::three();
+    setup.channels.push(("plant.other", index(10)));
+    setup.channels[3] = ("plant.c", data(4, 10, F64));
+    let outcome = run(setup, move |scene| async move {
+        let mut rival = open_rival(&scene.hub, Authority::ABSOLUTE).await;
+        let set = Arc::clone(rival.set());
+        let entries = set.entries();
+        let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
+        let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
+        let now = rival.now().nanos();
+        for (entry, bytes) in draft.iter_mut() {
+            let sample = match entries[entry].key.as_u128() {
+                1 => (now + ms(300).nanos()).to_le_bytes(),
+                10 => (now + ms(600).nanos()).to_le_bytes(),
+                _ => 0.0_f64.to_le_bytes(),
+            };
+            bytes.copy_from_slice(&sample);
+        }
+        for &index in set.groups() {
+            draft.set_count(entries[index].group, 1);
+        }
+        let outcomes = rival.write(Label::Path(Path::Live), draft);
+        assert!(
+            matches!(
+                outcomes,
+                Ok([Outcome::Applied { .. }, Outcome::Applied { .. }])
+            ),
+            "{outcomes:?}"
+        );
+        drop(rival);
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let (frames, other) = (&outcome.frames, &outcome.indexes[&10]);
+    let ahead = stamp(&other[0], 10);
+    assert_eq!(stamp(&frames[1], 1), ahead + 1);
+    assert_eq!(stamp(&other[1], 10), ahead + 1);
+}
+
+#[test]
+fn counts_the_samples_of_a_frame_that_the_home_loses() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let rival = open_rival(&scene.hub, Authority(1)).await;
+        scene.after(ms(550), move |scene| async move {
+            let mut held = fill(&rival);
+            drop(held.pop());
+            scene.node.clock().sleep(Span::SECOND).await;
+            drop(held);
+            drop(rival);
+        });
+        scene.supervise(ms(2_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let frames = u64::try_from(outcome.frames.len()).expect("a few");
+    assert_eq!(frames, 11);
+    assert_eq!(last(&outcome.statuses, IN), frames * 3);
+    assert_eq!(last(&outcome.statuses, LOST), 30);
+}
+
+/// The read of one node has no delay, so the request starts and ends at the time of
+/// the answer of the server.
+#[test]
+fn stamps_each_frame_within_its_read() {
+    let offset = Arc::new(AtomicI64::new(0));
+    let mesh = Arc::clone(&offset);
+    let outcome = run(Setup::three(), |scene| async move {
+        let rival = open_rival(&scene.hub, Authority(1)).await;
+        let monotonic = i64::try_from(scene.node.clock().now().0).expect("small");
+        mesh.store(rival.now().nanos() - monotonic, Ordering::Relaxed);
+        drop(rival);
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let offset = offset.load(Ordering::Relaxed);
+    let served = &outcome.served[A];
+    assert_eq!(outcome.frames.len(), served.len());
+    for (frame, served) in outcome.frames.iter().zip(served) {
+        let answered = i64::try_from(served.time.0).expect("small") + offset;
+        assert_eq!(stamp(frame, 1), answered);
+    }
 }
