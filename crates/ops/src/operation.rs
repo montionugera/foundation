@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use types::name::Name;
 
 use crate::Start;
-use crate::error::Error;
+use crate::error::{Among, Error};
 
 /// The data directory of a command that names none.
 pub(crate) const DATA: &str = "foundation-data";
@@ -216,10 +216,10 @@ fn help(name: Option<&str>) -> Result<Parsed, Error> {
     root.build();
     let command = match name {
         None => &mut root,
-        Some("help") => return Err(unknown("help")),
+        Some("help") => return Err(unknown("help", Among::Commands)),
         Some(name) => root
             .find_subcommand_mut(name)
-            .ok_or_else(|| unknown(name))?,
+            .ok_or_else(|| unknown(name, Among::Commands))?,
     };
     Ok(Parsed::Help(command.render_help().to_string()))
 }
@@ -230,7 +230,7 @@ pub(crate) fn read(
     arguments: Map<String, Value>,
 ) -> Result<Request, Error> {
     if !TABLE.iter().any(|spec| spec.name == name) {
-        return Err(unknown(name));
+        return Err(unknown(name, Among::Tools));
     }
     let tagged = Map::from_iter([(name.to_owned(), Value::Object(arguments))]);
     serde_json::from_value(Value::Object(tagged)).map_err(|e| Error::Argument {
@@ -239,7 +239,7 @@ pub(crate) fn read(
 }
 
 /// The unknown-operation error for `name`, with the closest operation name.
-fn unknown(name: &str) -> Error {
+fn unknown(name: &str, among: Among) -> Error {
     let operations = Request::augment_subcommands(clap::Command::new("foundation"))
         .disable_help_subcommand(true)
         .disable_help_flag(true);
@@ -250,6 +250,7 @@ fn unknown(name: &str) -> Error {
     Error::Unknown {
         name: name.to_owned(),
         closest,
+        among,
     }
 }
 
@@ -267,6 +268,7 @@ fn from_clap(e: &clap::Error) -> Error {
             name: context(e, ContextKind::InvalidSubcommand)
                 .expect("invariant: clap names an unknown subcommand"),
             closest: context(e, ContextKind::SuggestedSubcommand),
+            among: Among::Commands,
         };
     }
     let what = e

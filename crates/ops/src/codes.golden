@@ -1,5 +1,5 @@
 ops.argument	Match the arguments to `foundation --help` or `foundation <operation> --help`
-ops.unknown-operation	Use a name from `foundation --help`, or from `tools/list` in MCP
+ops.unknown-operation	Use a name from `foundation --help`
 ops.input	Give standard input a source that can be read
 ops.output	Give standard output a destination that can be written
 ops.bad-plan	Make a plan with `foundation plan`, and apply it with no edits

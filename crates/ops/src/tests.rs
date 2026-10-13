@@ -9,7 +9,7 @@ use std::task::{Context, Poll, Waker};
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Error, On, Unread};
+use crate::error::{Action, Among, Error, On, Unread};
 use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
@@ -303,8 +303,7 @@ fn a_text_error_writes_control_characters_as_escapes() {
             cli(&[name]).stderr,
             format!(
                 "error[ops.unknown-operation]: no operation is named `{escaped}`\n\
-                 fix: Use a name from `foundation --help`, or from `tools/list` in \
-                 MCP\n"
+                 fix: Use a name from `foundation --help`\n"
             )
         );
     }
@@ -319,7 +318,7 @@ fn a_json_error_keeps_the_callers_text() {
         json!({ "errors": [{
             "code": "ops.unknown-operation",
             "message": "no operation is named `\u{1b}x`",
-            "fix": "Use a name from `foundation --help`, or from `tools/list` in MCP",
+            "fix": "Use a name from `foundation --help`",
             "notes": [],
         }] })
     );
@@ -370,7 +369,7 @@ fn help_for_a_name_that_is_not_a_command_is_unknown() {
         cli(&["help", "help"]),
         failed(
             "error[ops.unknown-operation]: no operation is named `help`\n\
-             fix: Use a name from `foundation --help`, or from `tools/list` in MCP\n"
+             fix: Use a name from `foundation --help`\n"
         )
     );
 }
@@ -432,20 +431,23 @@ fn an_unknown_operation_suggests_the_closest_name() {
 }
 
 #[test]
-fn an_unknown_operation_far_from_every_name_points_to_the_lists_of_names() {
-    let expected = json!({ "errors": [{ "code": "ops.unknown-operation",
-        "message": "no operation is named `zzz`",
-        "fix": "Use a name from `foundation --help`, or from `tools/list` in MCP",
-        "notes": [] }] });
+fn an_unknown_operation_far_from_every_name_points_to_the_list_of_its_carrier() {
+    let expected = |fix| {
+        json!({ "errors": [{ "code": "ops.unknown-operation",
+            "message": "no operation is named `zzz`", "fix": fix, "notes": [] }] })
+    };
     assert_eq!(
         call(&json!({ "name": "zzz" })),
-        failed_call("no operation is named `zzz`", &expected)
+        failed_call(
+            "no operation is named `zzz`",
+            &expected("Use a name from `tools/list`")
+        )
     );
     let exit = cli(&["zzz", "--json"]);
     assert_eq!((exit.status, exit.stdout.as_str()), (2, ""));
     assert_eq!(
         serde_json::from_str::<Value>(&exit.stderr).expect("json"),
-        expected
+        expected("Use a name from `foundation --help`")
     );
 }
 
@@ -484,6 +486,7 @@ fn every() -> Vec<Error> {
         Error::Unknown {
             name: String::new(),
             closest: None,
+            among: Among::Commands,
         },
         Error::Input {
             message: String::new(),
@@ -1104,7 +1107,7 @@ mod mcp {
             assert_eq!(
                 ask(&request(json!(1), "tools/call", json!({ "name": name })))["error"]
                     ["data"]["errors"][0]["fix"],
-                "Use a name from `foundation --help`, or from `tools/list` in MCP",
+                "Use a name from `tools/list`",
                 "{name}"
             );
         }

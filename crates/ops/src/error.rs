@@ -36,6 +36,15 @@ const BAD_REPLY: Code = Code::new("ops.bad-reply");
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
 
+/// Where the caller of an operation finds the names of the operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Among {
+    /// The commands of `foundation --help`.
+    Commands,
+    /// The tools of `tools/list` in MCP.
+    Tools,
+}
+
 /// Why a command line did not run to its end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
@@ -45,6 +54,7 @@ pub(crate) enum Error {
     Unknown {
         name: String,
         closest: Option<String>,
+        among: Among,
     },
     /// Standard input could not be read.
     Input { message: String },
@@ -215,10 +225,16 @@ impl Error {
                 closest: Some(closest),
                 ..
             } => (UNKNOWN, format!("Use `{closest}`, the closest name")),
-            Self::Unknown { closest: None, .. } => {
-                let fix =
-                    "Use a name from `foundation --help`, or from `tools/list` in MCP";
-                (UNKNOWN, fix.to_owned())
+            Self::Unknown {
+                closest: None,
+                among,
+                ..
+            } => {
+                let list = match among {
+                    Among::Commands => "foundation --help",
+                    Among::Tools => "tools/list",
+                };
+                (UNKNOWN, format!("Use a name from `{list}`"))
             }
             Self::Input { .. } => (
                 INPUT,
