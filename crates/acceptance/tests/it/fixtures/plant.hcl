@@ -19,11 +19,12 @@ channel "plant.trend" {
   index     = "plant.time"
 }
 
-# On node "edge", reads three values from the OPC UA server.
+# On node "edge", reads three values from the OPC UA server 10 times a second.
 connector "plc" {
   kind    = "opcua"
   node    = "edge"
   address = "opc.tcp://localhost:50000"
+  rate    = 10
   read "plant.spike" { node_id = "ns=3;s=SpikeData" }
   read "plant.dip" { node_id = "ns=3;s=DipData" }
   read "plant.trend" { node_id = "ns=3;s=PositiveTrendData" }

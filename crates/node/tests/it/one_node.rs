@@ -1,5 +1,6 @@
 //! The exit tests of ONE NODE: one `foundation` node reads a simulated OPC UA server
-//! and pushes each sample to a simulated InfluxDB.
+//! and pushes each sample to a simulated InfluxDB. Exit test 1 runs on the real binary
+//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb`.
 
 mod sim;
 
@@ -30,8 +31,9 @@ const VARIABLES: [(&str, &str); 3] = [
 /// The changes of each variable: 5 s at 10 Hz.
 const TICKS: usize = 50;
 
-/// The samples of each variable after the changes: the first value and each change.
-const ALL: usize = TICKS + 1;
+/// The fewest reads of each variable that the server answers in the [`TICKS`] changes,
+/// so that a node that reads too few fails the test: half the ticks of `rate = 10`.
+const READS: usize = TICKS / 2;
 
 /// The MVP target of the time error bound.
 const BOUND: Span = Span::SECOND;
@@ -65,7 +67,8 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
         .replace("localhost:8086", &influx.to_string())
 }
 
-/// What the server served of one variable, and what InfluxDB holds of its channel.
+/// What the server served of one variable, and as many of the first samples of its
+/// channel as InfluxDB holds.
 #[derive(Debug)]
 struct Trace {
     channel: &'static str,
@@ -98,30 +101,71 @@ impl Trace {
     }
 }
 
-/// The trace of each variable of `variables`, once the server served `samples` of
-/// each and InfluxDB holds as many. Else `Err` with the counts.
-fn caught_up(
+/// Waits until InfluxDB holds a sample of each channel of `variables`.
+fn wait_first(plant: &Plant, variables: &[(&str, &'static str)]) {
+    plant.rig.wait("InfluxDB holds the first values", || {
+        let stored = plant.influx.stored();
+        let empty: Vec<_> = variables
+            .iter()
+            .map(|&(_, channel)| channel)
+            .filter(|channel| stored.get(*channel).is_none_or(Vec::is_empty))
+            .collect();
+        if empty.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("no sample of {empty:?}"))
+        }
+    });
+}
+
+/// Changes each variable [`TICKS`] times with `quality`, and gives each read that the
+/// server answered of each variable of `variables`, by its channel. Panics when the
+/// server answered fewer than [`READS`] reads of a variable.
+fn change(
     plant: &Plant,
     variables: &[(&str, &'static str)],
-    samples: usize,
-) -> Result<Vec<Trace>, String> {
+    quality: Quality,
+) -> BTreeMap<&'static str, Vec<Sample>> {
+    plant.opcua.change(TICKS, quality);
     let mut served = plant.opcua.served();
-    let mut stored = plant.influx.stored();
-    let traces: Vec<_> = variables
+    variables
         .iter()
-        .map(|&(variable, channel)| Trace {
-            channel,
-            served: served
+        .map(|&(variable, channel)| {
+            let reads = served
                 .remove(variable)
-                .expect("invariant: the server serves each variable"),
+                .expect("invariant: the server serves each variable");
+            assert!(reads.len() >= READS, "{channel}: {} reads", reads.len());
+            (channel, reads)
+        })
+        .collect()
+}
+
+/// The trace of each channel of `served`, once InfluxDB holds as many samples of each
+/// as the server served. Else `Err` with the counts.
+fn caught_up(
+    plant: &Plant,
+    served: &BTreeMap<&'static str, Vec<Sample>>,
+) -> Result<Vec<Trace>, String> {
+    let mut stored = plant.influx.stored();
+    let traces: Vec<_> = served
+        .iter()
+        .map(|(&channel, served)| Trace {
+            channel,
+            served: served.clone(),
             stored: stored.remove(channel).unwrap_or_default(),
         })
         .collect();
     if traces
         .iter()
-        .all(|trace| trace.served.len() == samples && trace.stored.len() == samples)
+        .all(|trace| trace.stored.len() >= trace.served.len())
     {
-        return Ok(traces);
+        return Ok(traces
+            .into_iter()
+            .map(|mut trace| {
+                trace.stored.truncate(trace.served.len());
+                trace
+            })
+            .collect());
     }
     let counts: Vec<_> = traces
         .iter()
@@ -162,32 +206,29 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1156, #1734, #1744"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
-    plant.rig.wait("InfluxDB holds the first values", || {
-        caught_up(&plant, &VARIABLES, 1)
-    });
-    plant.opcua.change(TICKS, Quality::GOOD);
-    for trace in plant.rig.wait("InfluxDB holds each sample", || {
-        caught_up(&plant, &VARIABLES, ALL)
-    }) {
+    wait_first(&plant, &VARIABLES);
+    let served = change(&plant, &VARIABLES, Quality::GOOD);
+    for trace in plant
+        .rig
+        .wait("InfluxDB holds each read", || caught_up(&plant, &served))
+    {
         trace.assert_held();
     }
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1156, #1734, #1744"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
-    plant.rig.wait("InfluxDB holds the first value", || {
-        caught_up(&plant, spike, 1)
-    });
-    plant.opcua.change(TICKS, BAD);
-    let traces = plant.rig.wait("InfluxDB holds each sample", || {
-        caught_up(&plant, spike, ALL)
-    });
+    wait_first(&plant, spike);
+    let served = change(&plant, spike, BAD);
+    let traces = plant
+        .rig
+        .wait("InfluxDB holds each read", || caught_up(&plant, &served));
     let [trace] = &traces[..] else {
         panic!("one variable: {traces:?}");
     };
@@ -195,12 +236,12 @@ fn a_bad_status_keeps_its_quality() {
         samples.iter().map(|sample| sample.quality).collect()
     };
     let served = qualities(&trace.served);
-    assert_eq!(served[1..], [Some(BAD); TICKS], "{trace:?}");
+    assert_eq!(served.last(), Some(&Some(BAD)), "{trace:?}");
     assert_eq!(qualities(&trace.stored), served);
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1744"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2401"]
 fn a_wrong_config_gives_its_file_line_and_fix() {
     let mut rig = Rig::new();
     let hcl = PLANT
@@ -228,7 +269,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
              fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it\n\
              \n\
              error[connector.bad-uri]: a URI is a string, not an integer\n  \
-             --> plant.hcl:36:17\n\
+             --> plant.hcl:37:17\n\
              fix: Write an `http` URI such as \"http://10.0.0.2:8086\"\n"
         )
     );
@@ -236,7 +277,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1156, #1734, #1735, #1744"]
+#[ignore = "waits on #337, #435, #1734, #1735, #1744, #2326, #2401"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -286,18 +327,19 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             _ => Err(format!("{status:#?}")),
         }
     });
-    opcua.change(TICKS, Quality::GOOD);
-    influx.serve();
-    let plant = Plant { rig, opcua, influx };
-    for trace in plant.rig.wait("InfluxDB holds each sample", || {
-        caught_up(&plant, &VARIABLES, ALL)
-    }) {
+    let mut plant = Plant { rig, opcua, influx };
+    let served = change(&plant, &VARIABLES, Quality::GOOD);
+    plant.influx.serve();
+    for trace in plant
+        .rig
+        .wait("InfluxDB holds each read", || caught_up(&plant, &served))
+    {
         trace.assert_held();
     }
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1156, #1734, #1735, #1744"]
+#[ignore = "waits on #337, #435, #1734, #1735, #1744, #2326, #2401"]
 fn status_shows_samples_flow() {
     let plant = create_plant(PLANT);
     let rig = &plant.rig;

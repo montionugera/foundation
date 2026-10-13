@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use connector::cancel::Token;
 use connector::http::Client;
-use connector_influx::sim::Store;
+use connector_influx::sim::{Field, Store};
 use env::net::tcp::{Listen, Options};
 use env::thread::Handle;
 use http::Request;
@@ -32,8 +32,7 @@ pub(super) struct Opcua {}
 /// The simulated InfluxDB, with the database `plant`. Drop stops it.
 #[derive(Debug, Default)]
 pub(super) struct Influx {
-    /// The tests read it while [`Influx::stored`] waits on #1734. The test
-    /// `a_dropped_influx_ends_its_shard` counts its owners.
+    /// The test `a_dropped_influx_ends_its_shard` counts its owners.
     store: Arc<Mutex<Store>>,
     /// The address of the first [`Influx::serve`].
     address: Option<SocketAddr>,
@@ -68,7 +67,8 @@ impl Opcua {
         todo!("waits on #435")
     }
 
-    /// Each sample served, by node id, in order: the first value, then each change.
+    /// Each read that the server answered, by node id, in order: the value and status
+    /// of the answer, at the time of the answer.
     #[expect(clippy::todo, reason = "waits on #435")]
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
         todo!("waits on #435")
@@ -119,10 +119,25 @@ impl Influx {
         Some(shard)
     }
 
-    /// Each sample stored, by data channel, in time order.
-    #[expect(clippy::todo, reason = "waits on #1734")]
+    /// Each sample stored in the measurement `plant`, by field key (the channel name),
+    /// in time order, each with no quality. Panics on a field that is not a float.
     pub(super) fn stored(&self) -> BTreeMap<String, Vec<Sample>> {
-        todo!("waits on #1734")
+        let store = self.store.lock().expect("the server does not panic");
+        let mut stored = BTreeMap::<String, Vec<Sample>>::new();
+        for point in store.points("plant", &[]) {
+            for (channel, field) in point.fields.iter() {
+                let Field::Float(value) = field else {
+                    panic!("{channel} holds {field:?} at {}", point.time);
+                };
+                let sample = Sample {
+                    time: point.time,
+                    value,
+                    quality: None,
+                };
+                stored.entry(channel.into()).or_default().push(sample);
+            }
+        }
+        stored
     }
 }
 
@@ -201,6 +216,36 @@ fn influx_stores_each_line_written_to_plant_and_keeps_it_after_a_stop() {
     let store = influx.store.lock().expect("no panic");
     let times: Vec<_> = store.points("m", &[]).map(|point| point.time).collect();
     assert_eq!(times, [Stamp::from_nanos(1), Stamp::from_nanos(2)]);
+}
+
+#[test]
+fn influx_gives_each_field_of_plant_as_the_samples_of_its_channel() {
+    let mut influx = Influx::default();
+    let address = influx.serve();
+    let lines =
+        "plant plant.spike=1,plant.dip=2 1\nplant plant.spike=3 2\nm plant.dip=9 3";
+    assert_eq!(write(address, lines), "204 No Content");
+    let sample = |time, value| Sample {
+        time: Stamp::from_nanos(time),
+        value,
+        quality: None,
+    };
+    assert_eq!(
+        influx.stored(),
+        BTreeMap::from([
+            ("plant.dip".into(), vec![sample(1, 2.0)]),
+            ("plant.spike".into(), vec![sample(1, 1.0), sample(2, 3.0)]),
+        ])
+    );
+}
+
+#[test]
+#[should_panic(expected = "plant.spike holds Integer(1) at ")]
+fn influx_panics_on_a_field_that_is_not_a_float() {
+    let mut influx = Influx::default();
+    let address = influx.serve();
+    assert_eq!(write(address, "plant plant.spike=1i 1"), "204 No Content");
+    influx.stored();
 }
 
 #[test]
