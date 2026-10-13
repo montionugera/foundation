@@ -326,11 +326,10 @@ impl Request {
 impl Response {
     /// The output as JSON, without the operation's name.
     pub(crate) fn json(&self) -> Value {
-        let value = match self {
-            Self::Version(output) => serde_json::to_value(output),
-            Self::Docs(output) => serde_json::to_value(output),
-        };
-        value.expect("invariant: an output is plain JSON data")
+        match self {
+            Self::Version(output) => crate::value(output),
+            Self::Docs(output) => crate::value(output),
+        }
     }
 
     pub(crate) fn text(&self) -> String {
