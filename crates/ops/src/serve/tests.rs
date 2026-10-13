@@ -8,7 +8,7 @@ use spec::definition::Definition;
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use super::{Large, Reply, serve};
+use super::{Body, Large, serve};
 use crate::Node;
 use crate::common::{
     NODE, PLANT, SITE, create_node, fail_sync, name, placed_site, solo,
@@ -1184,12 +1184,12 @@ fn stops_writing_a_reply_at_the_bound() {
         len: fits,
         written: Cell::new(0),
     };
-    Reply::line(&strings).expect("a reply at the bound");
+    Body::line(&strings).expect("a reply at the bound");
     let strings = Strings {
         len: 10 * fits,
         written: Cell::new(0),
     };
-    let Err(Large) = Reply::line(&strings) else {
+    let Err(Large) = Body::line(&strings) else {
         panic!("a reply over the bound fits");
     };
     assert_eq!(strings.written.get(), fits + 1);
@@ -1205,9 +1205,9 @@ impl serde::Serialize for Unwritable {
 }
 
 #[test]
-#[should_panic(expected = "invariant: a reply is plain JSON data: no JSON")]
+#[should_panic(expected = "invariant: a body is plain JSON data: no JSON")]
 fn panics_on_a_reply_that_is_no_json_data() {
-    if let Err(Large) = Reply::line(&Unwritable) {
+    if let Err(Large) = Body::line(&Unwritable) {
         panic!("`Large` in place of the panic");
     }
 }
