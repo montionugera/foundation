@@ -91,6 +91,10 @@ impl Manager {
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn listening(
         clock: Clock,
         wall: Wall,
@@ -112,6 +116,10 @@ impl Manager {
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn accepting(
         clock: Clock,
         wall: Wall,

@@ -1255,7 +1255,9 @@ async fn follow(
 
 /// The connector kinds of this binary.
 fn kinds() -> connector::kind::Table {
-    connector::kind::Table::new().with("influx", connector_influx::Kind::default())
+    connector::kind::Table::new()
+        .with("influx", connector_influx::Kind::default())
+        .with("opcua", connector_opcua::Kind::default())
 }
 
 /// Drives `runs`, with a mesh, which ends when the mesh's group stops. Ready when the

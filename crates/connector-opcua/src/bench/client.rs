@@ -2,6 +2,7 @@
 //! manager, as the kind of OPC UA uses them.
 
 use std::cell::RefCell;
+use std::ffi::CString;
 use std::net::{IpAddr, SocketAddr};
 
 use env::clock::Clock;
@@ -40,7 +41,7 @@ pub enum Variable {
 pub struct Server {
     clock: Clock,
     net: Net,
-    url: String,
+    url: CString,
     /// Gives the next value of each client. The loop of a client sets the random
     /// numbers of open62541 on its thread, which the server also draws from.
     rng: RefCell<Rng>,
@@ -80,7 +81,7 @@ impl Server {
         let this = Self {
             clock,
             net,
-            url: format!("opc.tcp://{local}"),
+            url: CString::new(format!("opc.tcp://{local}")).expect("no NUL"),
             rng: RefCell::new(rng),
         };
         let add = |server: &mut crate::server::Server| {
