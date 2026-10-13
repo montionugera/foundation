@@ -563,16 +563,50 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
     });
 }
 
+/// The text of user channels with the status names of `site.a` of `steady`, each data
+/// channel on the index `index`, and `state` of the type `state`.
+fn user_status(index: &str, state: &str) -> String {
+    let on = |last: &str, data_type: &str| {
+        format!(
+            "channel \"site.a.status.{last}\" {{\n  data_type = \"{data_type}\"\n  \
+             index = \"{index}\"\n}}\n"
+        )
+    };
+    [
+        format!("channel \"{index}\" {{ kind = \"index\" }}\n"),
+        on("state", state),
+        on("class", "u8"),
+        on("restarts", "u64"),
+        on("backoff", "duration"),
+        on("error", "string"),
+        on("in", "u64"),
+        on("confirmed", "u64"),
+        EDGE.to_owned(),
+    ]
+    .concat()
+}
+
+/// A sample of each data channel of [`user_status`], with `state` as the sample of
+/// `state`.
+fn user_samples(state: &[u8]) -> [(&'static str, &[u8]); 7] {
+    [
+        ("site.a.status.state", state),
+        ("site.a.status.class", &[0]),
+        ("site.a.status.restarts", &[0; 8]),
+        ("site.a.status.backoff", &[0; 8]),
+        ("site.a.status.error", &[0; 4]),
+        ("site.a.status.in", &[0; 8]),
+        ("site.a.status.confirmed", &[0; 8]),
+    ]
+}
+
 #[test]
 fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let old = "channel \"site.a.status.time\" { kind = \"index\" }\n\
-                   channel \"site.a.status.state\" {\n  data_type = \"uuid\"\n  \
-                   index = \"site.a.status.time\"\n}\n";
-        applied(&fixture, &node, &[old, EDGE].concat()).await;
-        let samples: [(&str, &[u8]); 1] = [("site.a.status.state", &[7; 16])];
-        write(&fixture, "site.a.status.time", &samples).await;
+        let old = user_status("site.a.status.time", "uuid");
+        applied(&fixture, &node, &old).await;
+        write(&fixture, "site.a.status.time", &user_samples(&[7; 16])).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
@@ -606,20 +640,8 @@ fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
 fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let old = "channel \"x.time\" { kind = \"index\" }\n\
-                   channel \"site.a.status.state\" {\n  data_type = \"u8\"\n  \
-                   index = \"x.time\"\n}\n\
-                   channel \"site.a.status.class\" {\n  data_type = \"u8\"\n  \
-                   index = \"x.time\"\n}\n\
-                   channel \"site.a.status.restarts\" {\n  data_type = \"u64\"\n  \
-                   index = \"x.time\"\n}\n";
-        applied(&fixture, &node, &[old, EDGE].concat()).await;
-        let samples: [(&str, &[u8]); 3] = [
-            ("site.a.status.state", &[0]),
-            ("site.a.status.class", &[0]),
-            ("site.a.status.restarts", &[0; 8]),
-        ];
-        write(&fixture, "x.time", &samples).await;
+        applied(&fixture, &node, &user_status("x.time", "u8")).await;
+        write(&fixture, "x.time", &user_samples(&[0])).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
         let expected =
