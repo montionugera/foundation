@@ -418,25 +418,24 @@
   (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6071050895,
   2026-10-08 23:26 UTC).
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
-  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
-  `dateTime_now` gives a wall time that `event::Loop::new` takes, and the UTC offset is
-  0. The kind gives the wall time of the node through `hub`. Decided by
-  `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
-  2026-10-13 07:03 UTC), and added to ONE NODE by the person
-  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
-  2026-10-13 13:40 UTC). It reads the midpoint of mesh time through
-  `hub::writer::Time`. Decided by `laptop.architect`
-  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
-  2026-10-13 13:56 UTC). A test server gives its monotonic time from the Unix epoch.
-  The drop of the loop runs the queued delayed callbacks in at most 64 passes, then
-  aborts: a callback that queues itself at each pass is a defect. The hidden module
-  `bench`, behind the feature `sim`, gives the benchmark and the allocation test a
-  client on the loop. Decided by `laptop.architect-2`
+  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`, and the
+  UTC offset is 0. Its drop runs the queued delayed callbacks in at most 64 passes,
+  then aborts: a callback that queues itself at each pass is a defect. The hidden
+  module `bench`, behind the feature `sim`, gives the benchmark and the allocation test
+  a client on the loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC). `bench` also gives a connection manager with the test server
+  2026-10-08 20:22 UTC). `dateTime_now` of the loop of the kind gives the wall time of
+  the node through `hub`, which `event::Loop::new` takes. The trigger moved to ONE NODE
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
+  2026-10-13 07:03 UTC), and the person added it to ONE NODE
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
+  2026-10-13 13:40 UTC). It is the midpoint of mesh time, through
+  `hub::writer::Writer::time`. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC). `bench` also gives a connection manager with the test server
   and its clients on the loop of the manager. Approved by `laptop.architect-2` at
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
