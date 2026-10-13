@@ -12,9 +12,10 @@
 #include <open62541/types.h>
 #include <open62541/util.h>
 #include "mp_printf.h"
-#include "shim.h"
 #include "timer.h"
 #pragma GCC diagnostic pop
+
+#include "shim.h"
 
 #include <stddef.h>
 #include <stdio.h>
