@@ -33,6 +33,9 @@ const A: &str = "ns=3;s=SpikeData";
 const B: &str = "ns=3;i=7";
 const C: &str = "ns=2;s=Dip";
 
+/// The data channels of [`Setup::three`].
+const ABC: &[&str] = &["plant.a", "plant.b", "plant.c"];
+
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
@@ -505,36 +508,50 @@ fn diagnostics(result: Result<(), Error>) -> Vec<Diagnostic> {
     }
 }
 
-/// Opens a writer of `plant.a`, `plant.b`, and `plant.c` at `authority`.
-async fn open_rival(hub: &hub::Hub, authority: Authority) -> Writer {
+/// Opens a writer of `channels` at `authority`.
+async fn open_rival(hub: &hub::Hub, authority: Authority, channels: &[&str]) -> Writer {
     let config = hub::writer::Config {
         subject: name("plant.rival"),
         authority,
         lease: None,
-        channels: ["plant.a", "plant.b", "plant.c"].map(name).into(),
+        channels: channels.iter().map(|&channel| name(channel)).collect(),
     };
     hub.writer(config).await.expect("opens")
 }
 
-/// Opens a writer as [`open_rival`] does at `Authority::ABSOLUTE`, and writes through
-/// it one frame stamped `lead` after the hub's time, with 0 in each value.
-async fn write_ahead(hub: &hub::Hub, lead: Span) -> Writer {
-    let mut rival = open_rival(hub, Authority::ABSOLUTE).await;
-    let entries = rival.set().entries();
+/// Opens a writer of `channels` at `Authority::ABSOLUTE`, and writes through it one
+/// frame with 0 in each value, in which each index of `leads` is stamped its lead
+/// after the hub's time. Panics unless the home applies each group.
+async fn write_ahead(
+    hub: &hub::Hub,
+    channels: &[&str],
+    leads: &[(u128, Span)],
+) -> Writer {
+    let mut rival = open_rival(hub, Authority::ABSOLUTE, channels).await;
+    let set = Arc::clone(rival.set());
+    let entries = set.entries();
     let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
     let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
-    let stamp = rival.now().nanos() + lead.nanos();
+    let now = rival.now().nanos();
     for (entry, bytes) in draft.iter_mut() {
-        let sample = match entries[entry].key.as_u128() {
-            1 => stamp.to_le_bytes(),
-            _ => 0.0_f64.to_le_bytes(),
+        let key = entries[entry].key.as_u128();
+        let sample = match leads.iter().find(|(index, _)| *index == key) {
+            Some((_, lead)) => (now + lead.nanos()).to_le_bytes(),
+            None => 0.0_f64.to_le_bytes(),
         };
         bytes.copy_from_slice(&sample);
     }
-    draft.set_count(entries[0].group, 1);
+    for &index in set.groups() {
+        draft.set_count(entries[index].group, 1);
+    }
     let outcomes = rival.write(Label::Path(Path::Live), draft);
-    let applied = matches!(outcomes, Ok([Outcome::Applied { .. }]));
-    assert!(applied, "the frame ahead applies: {outcomes:?}");
+    let applied = outcomes.as_ref().is_ok_and(|outcomes| {
+        outcomes.len() == set.groups().len()
+            && outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Outcome::Applied { .. }))
+    });
+    assert!(applied, "each group ahead applies: {outcomes:?}");
     rival
 }
 
@@ -646,7 +663,7 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
 fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let lead = ms(500);
     let outcome = run(Setup::three(), move |scene| async move {
-        drop(write_ahead(&scene.hub, lead).await);
+        drop(write_ahead(&scene.hub, ABC, &[(1, lead)]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -709,7 +726,7 @@ fn refuses_a_read_past_one_message_of_the_server() {
 #[test]
 fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, Span::ZERO).await;
+        let rival = write_ahead(&scene.hub, ABC, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |_| async move { drop(rival) });
         scene.supervise(ms(2_050)).await
     });
@@ -722,7 +739,7 @@ fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
 #[test]
 fn counts_the_samples_of_a_frame_for_which_the_pool_has_no_room() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1)).await;
+        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
         scene.after(ms(550), move |scene| async move {
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
@@ -773,32 +790,8 @@ fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
         setup.channels.push(("plant.other", index(10)));
         setup.channels[3] = ("plant.c", data(4, 10, F64));
         let outcome = run(setup, move |scene| async move {
-            let mut rival = open_rival(&scene.hub, Authority::ABSOLUTE).await;
-            let set = Arc::clone(rival.set());
-            let entries = set.entries();
-            let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
-            let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
-            let now = rival.now().nanos();
-            for (entry, bytes) in draft.iter_mut() {
-                let sample = match entries[entry].key.as_u128() {
-                    1 => (now + ms(one).nanos()).to_le_bytes(),
-                    10 => (now + ms(ten).nanos()).to_le_bytes(),
-                    _ => 0.0_f64.to_le_bytes(),
-                };
-                bytes.copy_from_slice(&sample);
-            }
-            for &index in set.groups() {
-                draft.set_count(entries[index].group, 1);
-            }
-            let outcomes = rival.write(Label::Path(Path::Live), draft);
-            assert!(
-                matches!(
-                    outcomes,
-                    Ok([Outcome::Applied { .. }, Outcome::Applied { .. }])
-                ),
-                "{outcomes:?}"
-            );
-            drop(rival);
+            let leads = [(1, ms(one)), (10, ms(ten))];
+            drop(write_ahead(&scene.hub, ABC, &leads).await);
             scene.supervise(ms(1_050)).await
         });
         assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -817,34 +810,7 @@ fn writes_only_the_refused_second_group_again() {
     setup.channels.push(("plant.other", index(10)));
     setup.channels[3] = ("plant.c", data(4, 10, F64));
     let outcome = run(setup, move |scene| async move {
-        let config = hub::writer::Config {
-            subject: name("plant.rival"),
-            authority: Authority::ABSOLUTE,
-            lease: None,
-            channels: ["plant.c"].map(name).into(),
-        };
-        let mut rival = scene.hub.writer(config).await.expect("opens");
-        let set = Arc::clone(rival.set());
-        let entries = set.entries();
-        let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
-        let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
-        let now = rival.now().nanos();
-        for (entry, bytes) in draft.iter_mut() {
-            let sample = match entries[entry].key.as_u128() {
-                10 => (now + ms(600).nanos()).to_le_bytes(),
-                _ => 0.0_f64.to_le_bytes(),
-            };
-            bytes.copy_from_slice(&sample);
-        }
-        for &index in set.groups() {
-            draft.set_count(entries[index].group, 1);
-        }
-        let outcomes = rival.write(Label::Path(Path::Live), draft);
-        assert!(
-            matches!(outcomes, Ok([Outcome::Applied { .. }])),
-            "{outcomes:?}"
-        );
-        drop(rival);
+        drop(write_ahead(&scene.hub, &["plant.c"], &[(10, ms(600))]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -862,7 +828,7 @@ fn writes_only_the_refused_second_group_again() {
 #[test]
 fn counts_the_samples_of_a_frame_that_the_home_loses() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1)).await;
+        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
         scene.after(ms(550), move |scene| async move {
             let mut held = fill(&rival);
             drop(held.pop());
@@ -886,7 +852,7 @@ fn stamps_each_frame_within_its_read() {
     let offset = Arc::new(AtomicI64::new(0));
     let mesh = Arc::clone(&offset);
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1)).await;
+        let rival = open_rival(&scene.hub, Authority(1), ABC).await;
         let monotonic = i64::try_from(scene.node.clock().now().0).expect("small");
         mesh.store(rival.now().nanos() - monotonic, Ordering::Relaxed);
         drop(rival);
