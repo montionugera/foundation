@@ -194,6 +194,16 @@ fn writes_each_field_in_the_order_given_and_twice() {
 }
 
 #[test]
+fn writes_a_field_of_another_measurement_at_a_tag_key_of_this_one() {
+    let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
+    let other = Measurement::new("n", &[]).unwrap();
+    let field = other.field("t").unwrap();
+    let mut out = Vec::new();
+    measurement.line(&mut out, [(&field, Value::Float(float(1.0)))], Stamp::EPOCH);
+    assert_eq!(text(&out), "m,t=v t=1e0 0\n");
+}
+
+#[test]
 fn refuses_a_field_key_as_new_refuses_a_key() {
     let measurement = Measurement::new("m", &[("k", "v")]).unwrap();
     let character = Error::Character {
