@@ -343,5 +343,6 @@
   of a reader of the status index and each channel on it, each channel by the last
   segment of its name (`laptop.architect-2`, 2026-10-13T01:10:40Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057). Each
-  channel on the status index that the supervisor does not write is a count, because
-  `config` refuses a channel that points at a channel that a connector implies.
+  channel on the status index that the supervisor does not write is a count, because a
+  kind adds only counts to the status, and `config` refuses a channel that points at a
+  channel that a connector implies.
