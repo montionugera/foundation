@@ -12,28 +12,28 @@
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect wrote the PR, it is
   the other architect. When `laptop.director` wrote the PR, `laptop.architect` is the
-  design approver in place of `laptop.director`.
-  After round 3, no other round runs, and no PR replaces it,
-  other than a new design that its design approver approves, which starts at round 1.
-  Each round comment numbered 3 marks each finding `defect` (wrong behavior, data loss,
-  a crash, or an oracle weakening), `design flaw`, or neither, as its reviewer marked
-  it. The author fixes each defect with a test that fails without the fix, CI checks it,
-  and a defect is never deferred. Each other finding is a deferral, and the deferral of
-  a design flaw needs the explicit OK of its design approver, or the PR closes for the
-  new design. After round 3, the PR changes only by these changes: merges of `main` and
-  the commits that fix what one broke, the fixes of defects, the `Text fixes:` items of
-  round 3, and each change that an approval or OK of the `review` skill asks for, with
-  the link to the comment that asks for it. When the PR changes by more than clean
-  merges and text fixes, an `architecture` run on the whole range after round 3 names
-  its public surface and hot path. A defect that the run finds gets its fix, its test,
-  and a new run. Each item of that surface, and each decision or public doc that states
-  what a crate does and that the range changes, needs the approval of its design
-  approver and each approval that the `review` skill asks for. The approvals, OKs,
-  links, and `performance` runs that the `review` skill asks for stay. A PR whose last
-  round was round 3 or later when this rule merged runs no new round. A `reviewer` marks
-  the findings of that round, and its changes after that round meet the same limit.
-  Reviewers put first what costs the most after merge, and a matter of style that leaves
-  each statement true is no finding. The person, relayed by `laptop.monitor`
+  design approver in place of `laptop.director`. After round 3, no other round runs, and
+  no PR replaces it, other than a new design that its design approver approves, which
+  starts at round 1. Each round comment numbered 3 marks each finding `defect` (wrong
+  behavior, data loss, a crash, or an oracle weakening), `design flaw`, or neither, as
+  its reviewer marked it. The author fixes each defect with a test that fails without
+  the fix, CI checks it, and a defect is never deferred. Each other finding is a
+  deferral, and the deferral of a design flaw needs the explicit OK of its design
+  approver, or the PR closes for the new design. After round 3, the PR changes only by
+  these changes: merges of `main` and the commits that fix what one broke, the fixes of
+  defects, the `Text fixes:` items of round 3, and each change that an approval or OK of
+  the `review` skill asks for, with the link to the comment that asks for it. When the
+  PR changes by more than clean merges and text fixes, an `architecture` run on the
+  whole range after round 3 names its public surface and hot path. A defect that the run
+  finds gets its fix, its test, and a new run. Each item of that surface, and each
+  decision or public doc that states what a crate does and that the range changes, needs
+  the approval of its design approver and each approval that the `review` skill asks
+  for. The approvals, OKs, links, and `performance` runs that the `review` skill asks
+  for stay. A PR whose last round was round 3 or later when this rule merged runs no new
+  round. A `reviewer` marks the findings of that round, and its changes after that round
+  meet the same limit. Reviewers put first what costs the most after merge, and a matter
+  of style that leaves each statement true is no finding. The person, relayed by
+  `laptop.monitor`
   (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6150302970,
   2026-10-13T16:27:23Z): "Cap reviews at 3 rounds. Make sure that agents are deeply
   aware that they only get 3 review rounds, so they need to bacth findings." and "We
