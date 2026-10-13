@@ -44,9 +44,13 @@
   driver one get held 81,070, 312,988, and 5,474,548 bytes. A dropped get gives the turn
   on at its drop, and its pool stays until its read ends. The value is at most 64 KiB
   while a kind holds it. Both are outside the pool budget of the node. The store does
-  not check the owner or mode of the file. Deferred; trigger: `env::files` gives the
-  mode of a file. The person has not yet answered this question:
-  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190. The
+  not check the owner or mode of the file. Make the file readable only by the user that
+  runs the node. The mode check is deferred; trigger: exit test 1 of #1737 passes
+  (`laptop.architect-2`, 2026-10-13T19:53:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153933564, under the
+  person's rule of 2026-10-13T19:52:40Z that each choice goes ahead unless the person
+  objects:
+  https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009).

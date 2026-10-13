@@ -19,8 +19,9 @@ const LEN_MAX: u64 = 1 << 16;
 /// `<dir>/plant.influx_token`, with one trailing `\n` or `\r\n` cut. It reads the
 /// file at each `get`, so a file added or changed takes effect at the next `get`.
 /// It holds no name with an ASCII capital, so no two names share a file on a file
-/// system that ignores case. It does not check the owner or mode of the file. It runs
-/// one `get` at a time, and the others wait in the order they came.
+/// system that ignores case. It does not check the owner or mode of the file, so make
+/// the file readable only by the user that runs the node. It runs one `get` at a time,
+/// and the others wait in the order they came.
 pub struct File {
     files: Files,
     dir: PathBuf,
