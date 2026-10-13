@@ -246,9 +246,10 @@
   `--data` ``, which supersedes "with no `--data`" above. The fix of `node.session` is
   `Fix the cause in the message, then run the command again`, because the node writes no
   log; the PR of #2606 that writes the log points this fix to it. The fix of
-  `ops.unknown-operation` with no close name is ``Use a name from `foundation --help`,
-  or from `tools/list` in MCP``, because `foundation docs` lists only the operations of
+  `ops.unknown-operation` with no close name names the list of its carrier: ``Use a
+  name from `foundation --help` `` on the command line, and ``Use a name from
+  `tools/list` `` in MCP, because `foundation docs` lists only the operations of
   `TABLE`. By `laptop.architect-2` (2026-10-13T21:30:55Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024, and the
-  fix of `ops.unknown-operation` at 2026-10-13T21:35:53Z,
-  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155703839).
+  fix of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894).
