@@ -384,6 +384,8 @@ const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
 const LARGE_FRAME: Code = Code::new("connector.large-frame");
+/// The fix of [`LARGE_FRAME`].
+const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
 /// The class of `error` of the open of a named reader.
 ///
@@ -472,10 +474,26 @@ impl From<hub::writer::Failure> for Error {
                 Self::Retry(Box::new(failure))
             }
             Failure::Home(Home::Large) => {
-                config_error(LARGE_FRAME, &failure, "Give the connector fewer channels")
+                config_error(LARGE_FRAME, &failure, FEWER_CHANNELS)
             }
             Failure::Home(Home::Resend) => {
                 panic!("invariant: a kind labels no frame resend")
+            }
+        }
+    }
+}
+
+/// The class of a pool that has no block for a frame of a run, for a kind that returns
+/// it with `?`: `Config` (`connector.large-frame`) for `TooLarge`, since only fewer
+/// channels fix it, and `Retry` for `Exhausted` and `Refused`.
+impl From<block::Error> for Error {
+    fn from(error: block::Error) -> Self {
+        match error {
+            block::Error::Exhausted { .. } | block::Error::Refused { .. } => {
+                Self::Retry(Box::new(error))
+            }
+            block::Error::TooLarge { .. } => {
+                config_error(LARGE_FRAME, &error, FEWER_CHANNELS)
             }
         }
     }
