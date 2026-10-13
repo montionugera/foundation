@@ -1,7 +1,6 @@
 //! The exit tests of ONE NODE: one `foundation` node reads a simulated OPC UA server
 //! and pushes each sample to a simulated InfluxDB. Exit test 1 runs on the real binary
-//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb --
-//! --include-ignored`.
+//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb`.
 
 mod sim;
 
@@ -12,12 +11,10 @@ use types::quality::Quality;
 use types::time::{Span, Stamp};
 
 use self::sim::{Influx, Opcua, Sample};
+use crate::quickstart::plant;
 use crate::rig::Rig;
 use crate::status::{Connector, Error};
 use crate::text;
-
-/// The config of the quickstart page.
-const PLANT: &str = include_str!("../../../acceptance/tests/it/fixtures/plant.hcl");
 
 /// The channel `plant.spike`, with the quality channel `plant.quality`.
 const QUALITY: &str = include_str!("one_node/quality.hcl");
@@ -391,7 +388,7 @@ fn a_trace_with_no_step_panics_with_the_reads_of_the_changes() {
 fn each_config_names_the_served_addresses() {
     let opcua = SocketAddr::from(([127, 0, 0, 1], 4840));
     let influx = SocketAddr::from(([127, 0, 0, 1], 9086));
-    for hcl in [PLANT, QUALITY] {
+    for hcl in [plant(), QUALITY] {
         let hcl = served(hcl, opcua, influx);
         assert!(hcl.contains("\"opc.tcp://127.0.0.1:4840\""), "{hcl}");
         assert!(hcl.contains("\"http://127.0.0.1:9086\""), "{hcl}");
@@ -400,12 +397,14 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #435"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
-    let plant = create_plant(PLANT);
+    let plant = create_plant(plant());
     first_stored(&plant, &VARIABLES);
     let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
-    held(&plant, &reads);
+    for trace in held(&plant, &reads) {
+        let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
+        assert!(trace.served.iter().all(good), "{trace:?}");
+    }
 }
 
 #[test]
@@ -436,7 +435,7 @@ fn a_bad_status_keeps_its_quality() {
 #[ignore = "waits on #435"]
 fn a_wrong_config_gives_its_file_line_and_fix() {
     let mut rig = Rig::new();
-    let hcl = PLANT
+    let hcl = plant()
         .replacen("data_type", "datatype", 1)
         .replace("\"http://localhost:8086\"", "8086");
     rig.config(&hcl);
@@ -477,7 +476,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     let opcua_address = opcua.serve();
     let influx_address = influx.serve();
     influx.stop();
-    rig.config(&served(PLANT, opcua_address, influx_address));
+    rig.config(&served(plant(), opcua_address, influx_address));
     rig.start();
     rig.apply();
     let failing = rig.wait("`influx` shows the failed write", || {
@@ -522,7 +521,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 #[test]
 #[ignore = "waits on #435"]
 fn status_shows_samples_flow() {
-    let plant = create_plant(PLANT);
+    let plant = create_plant(plant());
     let rig = &plant.rig;
     let before = rig.wait("both counts are above 0", || counts_above(rig, (0, 0)));
     plant.opcua.change(TICKS, Quality::GOOD);

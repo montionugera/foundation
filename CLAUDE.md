@@ -41,35 +41,54 @@ Read only the section you need, when you need it.
 
 ## 🚨 The person decides the design 🚨
 
-The person approves each high-level connector design and each critical design
-decision before any code builds on it. No architect, director, monitor, or builder
-makes one. A record, code, a test, or a simulator that already assumes a choice does
-not decide it. The record is PERSON DECIDES THE DESIGN
+The person sees each key choice early and can reverse it. A key choice goes ahead when
+it is made, unless the person objects. A choice that a test, a simulator, or a fixture
+makes counts too. The record is PERSON DECIDES THE DESIGN
 (`docs/decisions/operations/person-decides-design.md`).
 
-A decision is one of these when a user or an operator sees it or depends on it:
+A key choice is one of these product contracts:
 
-- the external systems, protocols, and versions that a connector supports;
-- security and auth: TLS, tokens, credentials, OPC UA security modes;
-- the config and command line that a user writes: blocks, attributes, defaults;
-- guarantees: loss, order, durability, retry, and what a user sees on a failure;
-- how data maps to and from an external system: types, time, quality;
-- wire and on-disk formats;
-- the structure of the system: a new crate, or a change to the crate map or layers;
-- the servers, versions, and security that an acceptance or exit test runs against;
-- a choice in a test, simulator, or fixture that sets one of the above.
+- (a) the external systems and versions that a connector supports;
+- (b) the security posture, and any default that lowers it;
+- (c) the user model as a whole;
+- (d) data guarantees: loss, order, and durability;
+- (e) how data maps to and from an external system: types, time, and what drops;
+- (f) the formats that something outside the binary keeps or speaks;
+- (g) what the exit tests run against.
 
-When you are not sure, it is one. To ask:
+Or it is one of these kinds of internal architecture:
 
-1. Write it on its issue as one question: the problem, the options, the cost of each,
-   and a recommendation. One decision per question, never in a list of other choices.
-2. Send the link to `laptop.monitor`, which asks the person. Add `blocked`, and build
-   only the parts that the decision does not touch.
-3. Only the person's own words decide it. Record them in `docs/decisions/` with the
-   UTC time and the link.
+1. Boundaries: a new crate or component, a job that moves between them, or a new
+   dependency between layers.
+2. Public interfaces between components: the traits and types that one crate gives
+   others, the connector interface, the client wire and SDK, and the command line.
+3. The HCL schema: new block kinds, new attributes, removed or renamed ones, a changed
+   type, default, or meaning, and how plan and apply work.
+4. Data architecture: the data model (channels, series, frames, specs, time, quality),
+   its layout in memory, on the wire, and on disk, the storage design (logs, indexes,
+   retention, crash safety), and where data lives and how it moves.
+5. Build or use: our own protocol, parser, storage engine, or codec, or a library for
+   a core structure.
+6. The execution model: the runtime, threads, shards, and where each part runs.
+7. The strategy of a connector against its system: poll or subscribe, batching, and
+   the timing source.
+8. A simple version first, and the robust design that it defers.
+9. Failure handling between components: what stops, what restarts, and what the user
+   sees.
 
-A PR that makes such a decision links the person's approval. Review fails it without
-one.
+The crate's architect decides all else: names, error codes, tunable numbers, tests, a
+new function that follows an interface the person saw, and delivery tuning (codec
+details, routing, packing, priority). There is no catch-all. When you are not sure,
+ask the crate's architect, not the person.
+
+When you make a key choice:
+
+1. Before work builds on it, send `laptop.monitor` one message: the kind, the choice,
+   your recommendation, and a link to it on its issue or PR. A choice sent after code
+   builds on it is caught late.
+2. Go on. Do not wait for an answer, add `blocked`, or hold a PR for it.
+3. When the person objects, `laptop.monitor` tells you. Reverse the choice, and record
+   the person's words in `docs/decisions/` with the UTC time and the link.
 
 ## 🚨 Three review rounds 🚨
 

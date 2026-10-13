@@ -17,7 +17,9 @@ use types::name::Name;
 use types::sample;
 
 use super::{Output, plan};
-use crate::common::{ADMIN, PLANT, Reader, SITE, files, front_ends, name, placed_site};
+use crate::common::{
+    ADMIN, SITE, create_kinds, files, front_ends, name, placed_site, plant, shown,
+};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
@@ -32,7 +34,7 @@ fn run(
     texts: &[(&str, &str)],
     applied: &BTreeMap<Name, Definition>,
 ) -> Result<Output, Error> {
-    let kinds = Table::new().with("influx", Reader).with("opcua", Reader);
+    let kinds = create_kinds();
     let members = BTreeSet::from([name("edge")]);
     plan(
         &files(texts),
@@ -67,7 +69,7 @@ const INDEX: channel::Kind = channel::Kind::Index {
 
 #[test]
 fn shows_each_definition_in_file_order_then_the_counts() {
-    let planned = run(&[("plant.hcl", PLANT)], &BTreeMap::new()).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &BTreeMap::new()).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -79,17 +81,21 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel plc.status.backoff
 + channel plc.status.class
 + channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
++ channel influx.status.confirmed
 + channel influx.status.error
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-18 to add, 0 to change, 0 to remove.
+22 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -158,19 +164,8 @@ fn gives_the_json_of_the_site_plan() {
 
 #[test]
 fn gives_each_problem_with_its_place_and_fix() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
-    assert_eq!(
-        problems(&[("plant.hcl", &wrong)]).text(),
-        "\
-error[document.missing-attribute]: the `channel` block has no `data_type`
-  --> plant.hcl:5:1
-fix: Add a `data_type` attribute such as \"f64\"
-
-error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
-  --> plant.hcl:6:3
-fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
-"
-    );
+    let wrong = plant().replacen("data_type", "datatype", 1);
+    assert_eq!(problems(&[("plant.hcl", &wrong)]).text(), shown("error["));
 }
 
 #[test]
@@ -373,7 +368,7 @@ fn gives_the_json_of_a_change_and_a_removal() {
 
 #[test]
 fn names_one_problem_or_the_count_and_exits_with_2() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
+    let wrong = plant().replacen("data_type", "datatype", 1);
     let two = problems(&[("plant.hcl", &wrong)]);
     assert_eq!(
         (two.to_string(), two.status()),
@@ -641,10 +636,10 @@ fn gives_no_fingerprints_for_another_kind() {
 #[test]
 fn breaker_names_the_applied_channel_that_a_connector_replaces() {
     let applied = BTreeMap::from([(name("plc"), channel(9, INDEX))]);
-    let kinds = Table::new().with("influx", Reader).with("opcua", Reader);
+    let kinds = create_kinds();
     let members = BTreeSet::from([name("edge")]);
     let (output, planned) = plan(
-        &files(&[("plant.hcl", PLANT)]),
+        &files(&[("plant.hcl", plant())]),
         empty(),
         &applied,
         &members,
@@ -677,7 +672,7 @@ fn breaker_names_the_applied_channel_that_a_connector_replaces() {
 #[test]
 fn shows_a_kind_change_as_an_add_and_a_removal() {
     let applied = BTreeMap::from([(name("plc"), channel(9, INDEX))]);
-    let planned = run(&[("plant.hcl", PLANT)], &applied).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -689,18 +684,22 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel plc.status.backoff
 + channel plc.status.class
 + channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
++ channel influx.status.confirmed
 + channel influx.status.error
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - channel plc
-18 to add, 0 to change, 1 to remove.
+22 to add, 0 to change, 1 to remove.
 "
     );
 }
@@ -711,7 +710,7 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
     let connector = Connector::new(name("opcua"), name("edge"), config);
     let applied =
         BTreeMap::from([(name("plant.time"), Definition::Connector(connector))]);
-    let planned = run(&[("plant.hcl", PLANT)], &applied).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -723,18 +722,22 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel plc.status.backoff
 + channel plc.status.class
 + channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
++ channel influx.status.confirmed
 + channel influx.status.error
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - connector plant.time
-18 to add, 0 to change, 1 to remove.
+22 to add, 0 to change, 1 to remove.
 "
     );
 }

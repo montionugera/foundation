@@ -142,10 +142,9 @@ approval on the `Public surface:` line. When the author of the PR is the crate's
 architect, the other architect gives each approval, OK, and ruling that this skill asks
 of the crate's architect.
 
-When the PR makes a design decision (`CLAUDE.md`, "The person decides the design"),
-it links the person's approval of that one decision on the `Public surface:` line. Tell
-`reviewer` to report each such decision with no link as a finding, which no fix commit
-closes until the approval is linked.
+When the PR makes a key choice (`CLAUDE.md`, "The person decides the design"), tell
+`reviewer` to list each one. The author sends `laptop.monitor` each one that it has not
+sent yet. The list is not a finding, and it does not hold the PR.
 
 A PR that adds or changes code for an OS that CI does not run (LINUX CI in
 `docs/decisions/testing/linux-ci.md`), or states what its code does on that OS, links a

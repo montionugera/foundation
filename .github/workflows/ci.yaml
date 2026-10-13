@@ -20,6 +20,7 @@ on:
       - 'clippy.toml'
       - 'rustfmt.toml'
       - 'deny.toml'
+      - 'docs/quickstart.md'
       - '.github/workflows/**'
 
 # Each commit on main gets its own group, so a later merge never cancels its run.
@@ -71,6 +72,7 @@ jobs:
               - 'clippy.toml'
               - 'rustfmt.toml'
               - 'deny.toml'
+              - 'docs/quickstart.md'
               - '.github/workflows/**'
             deps:
               - 'Cargo.toml'
