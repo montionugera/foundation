@@ -15,6 +15,7 @@ use types::name::{Name, Selector};
 use types::time::Span;
 
 use crate::Node;
+use crate::error::escape_controls;
 
 #[cfg(test)]
 mod tests;
@@ -253,7 +254,8 @@ impl From<connector::status::Class> for Class {
 
 impl Output {
     /// A table of the connectors, then a line `<name>: <class> error: <text>` for
-    /// each connector with an error, after a blank line. Empty with no connector.
+    /// each connector with an error, after a blank line. Each control character of a
+    /// value is escaped, so a value stays on its line. Empty with no connector.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the table entry of `status` calls it")
@@ -270,10 +272,13 @@ impl Output {
         let mut lines = vec![head.map(str::to_owned)];
         lines.extend(self.connectors.iter().map(|status| {
             [
-                status.name.clone(),
-                status.kind.clone(),
+                escape_controls(&status.name),
+                escape_controls(&status.kind),
                 status.state.word().to_owned(),
-                status.address.clone().unwrap_or_else(|| "-".to_owned()),
+                status
+                    .address
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), escape_controls),
                 count(status, "in"),
                 count(status, "confirmed"),
             ]
@@ -296,7 +301,9 @@ impl Output {
         let errors = self.connectors.iter().filter_map(|status| {
             let error = status.error.as_ref()?;
             let class = error.class.word();
-            Some(format!("{}: {class} error: {}\n", status.name, error.text))
+            let (name, text) =
+                (escape_controls(&status.name), escape_controls(&error.text));
+            Some(format!("{name}: {class} error: {text}\n"))
         });
         let errors: String = errors.collect();
         if !errors.is_empty() {

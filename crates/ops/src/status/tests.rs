@@ -84,7 +84,60 @@ impl kind::Kind for Failing {
 }
 
 fn kinds() -> Table {
-    Table::new().with("steady", Steady).with("failing", Failing)
+    Table::new()
+        .with("steady", Steady)
+        .with("failing", Failing)
+        .with("forging", Forging)
+}
+
+/// A kind whose run ends with a device error whose text, from the device, holds a
+/// newline.
+struct Forging;
+
+impl kind::Kind for Forging {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(counts())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+        std::future::ready(Err(kind::Error::Device(
+            "refused\nsite.a: config error: forged by the device".into(),
+        )))
+    }
+}
+
+#[test]
+fn escapes_a_newline_in_the_text_of_an_error() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            connector("site.a", "steady", "edge"),
+            connector("site.b", "forging", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        supervise(&fixture, &node, &["site.a", "site.b"]).await;
+        let (head, _) = status(&node, "@admin").await;
+        let output: Output =
+            serde_json::from_value(head["output"].clone()).expect("an output");
+        let text = output.text();
+        let (_, errors) = text.split_once("\n\n").expect("a line of errors");
+        let line = "site.b: device error: refused\\nsite.a: config error: forged by the \
+                    device\n";
+        assert_eq!(errors, line);
+    });
 }
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`].
