@@ -38,9 +38,11 @@
   rule of `SPLIT` and the test of each form of a key at 2026-10-13T05:45:02Z,
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974.
   A close or reset of the stream by the server ends the connect, or the session, with
-  no new dial: the copy of open62541 sets `BadConnectionClosed`, and the supervisor
-  paces the next run. The client still dials again for a switch of the URL that
-  open62541 makes, and falls back to the given URL when that dial fails
-  (`docs/dependencies.md`, "Local patches"). Decided by `laptop.architect-2`
-  (2026-10-13T16:56:50Z:
-  https://github.com/synnaxlabs/foundation/issues/2578#issuecomment-6150745226).
+  an error status and no new dial, and the supervisor paces the next run
+  (`laptop.architect-2`, 2026-10-13T16:56:50Z:
+  https://github.com/synnaxlabs/foundation/issues/2578#issuecomment-6150745226). The
+  status is `BadConnectionClosed`, which the copy of open62541 sets
+  (`docs/dependencies.md`, "Local patches"), the choice of the owner in #2593. The
+  client still dials again for a switch of the endpoint that open62541 makes, and
+  falls back to the given URL when that dial fails. Each dial, the fallback too, goes
+  to the address of the given URL.
