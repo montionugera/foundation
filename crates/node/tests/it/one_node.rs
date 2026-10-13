@@ -68,13 +68,14 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
         .replace("localhost:8086", &influx.to_string())
 }
 
-/// The reads that the server answered of one variable, from the read of the first
-/// sample that InfluxDB holds of its channel to the last change, and the samples stored
-/// of them.
+/// The reads that the server answered of one variable, from the first to the last
+/// change, and the samples that InfluxDB holds of them.
 #[derive(Debug)]
 struct Trace {
     served: Vec<Sample>,
     stored: Vec<Sample>,
+    /// How many of `served` the server answered before the changes.
+    unchanged: usize,
 }
 
 /// How many reads of one variable the server answered before and to the end of the
@@ -87,17 +88,8 @@ struct Reads {
     changed: usize,
 }
 
-/// Waits until InfluxDB holds a sample of each channel of `variables`, changes each
-/// variable [`TICKS`] times with `quality`, and waits until InfluxDB holds each read
-/// that the server answered from then to the last change. Gives the trace of each
-/// variable. A trace starts at the first sample stored, since a connector's reader can
-/// open after the first reads. Panics when the server answered fewer than [`READS`]
-/// reads of a variable in the changes.
-fn held(
-    plant: &Plant,
-    variables: &[(&'static str, &'static str)],
-    quality: Quality,
-) -> Vec<Trace> {
+/// Waits until InfluxDB holds a sample of each channel of `variables`.
+fn first_stored(plant: &Plant, variables: &[(&str, &str)]) {
     plant.rig.wait("InfluxDB holds the first values", || {
         let stored = plant.influx.stored();
         let empty: Vec<_> = variables
@@ -111,41 +103,56 @@ fn held(
             Err(format!("no sample of {empty:?}"))
         }
     });
+}
+
+/// Changes each variable of `variables` [`TICKS`] times with `quality`, and gives the
+/// reads of each. Panics when the server answered fewer than [`READS`] reads of a
+/// variable in the changes.
+fn change(
+    opcua: &Opcua,
+    variables: &[(&'static str, &'static str)],
+    quality: Quality,
+) -> Vec<Reads> {
     let count = |served: &BTreeMap<String, Vec<Sample>>, variable| {
         served.get(variable).map_or(0, Vec::len)
     };
-    let before = plant.opcua.served();
-    plant.opcua.change(TICKS, quality);
-    let after = plant.opcua.served();
+    let before = opcua.served();
+    opcua.change(TICKS, quality);
+    let after = opcua.served();
     let reads: Vec<_> = variables
         .iter()
-        .map(|&(variable, channel)| {
-            let reads = Reads {
-                variable,
-                channel,
-                unchanged: count(&before, variable),
-                changed: count(&after, variable),
-            };
-            let changes = reads.changed - reads.unchanged;
-            assert!(
-                changes >= READS,
-                "{channel}: {changes} reads in the changes"
-            );
-            reads
+        .map(|&(variable, channel)| Reads {
+            variable,
+            channel,
+            unchanged: count(&before, variable),
+            changed: count(&after, variable),
         })
         .collect();
+    for reads in &reads {
+        let in_changes = reads.changed - reads.unchanged;
+        let channel = reads.channel;
+        assert!(
+            in_changes >= READS,
+            "{channel}: {in_changes} reads in the changes"
+        );
+    }
+    reads
+}
+
+/// Waits until InfluxDB holds each of `reads`, and gives the trace of each.
+fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
     plant.rig.wait("InfluxDB holds each read", || {
         let stored = plant.influx.stored();
-        caught_up(&reads, plant.opcua.served(), stored)
+        caught_up(reads, plant.opcua.served(), stored)
     })
 }
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
-/// `served` (by variable) to the end of the changes, from one before the changes. Each
-/// sample stored is the read nearest to it in time, with its value, within [`BOUND`],
-/// so a lost read fails even when the next read has its value. `served` is taken after
-/// `stored`, so it holds the read of each sample stored. Else `Err` with the first
-/// sample that is not its read.
+/// `served` (by variable) from the first to the end of the changes. Each sample stored
+/// is the read nearest to it in time, with its value, within [`BOUND`], so a lost read
+/// fails even when the next read has its value. `served` is taken after `stored`, so it
+/// holds the read of each sample stored. Else `Err` with the first sample that is not
+/// its read.
 fn caught_up(
     reads: &[Reads],
     mut served: BTreeMap<String, Vec<Sample>>,
@@ -155,42 +162,31 @@ fn caught_up(
         .iter()
         .map(|reads| {
             let channel = reads.channel;
+            let changed = reads.changed;
             let served = served.remove(reads.variable).unwrap_or_default();
             let stored = stored.remove(channel).unwrap_or_default();
-            let nearest = |sample: &Sample| nearest(&served, sample.time);
-            let first = (stored.first().map(nearest))
-                .filter(|&first| first < reads.unchanged)
-                .ok_or_else(|| {
-                    format!(
-                        "{channel}: the first sample stored is {:?}, not one of the {} \
-                         reads before the changes",
-                        stored.first(),
-                        reads.unchanged
-                    )
-                })?;
-            let held = reads.changed - first;
-            for (k, sample) in stored.iter().take(held).enumerate() {
-                let read = &served[first + k];
-                if nearest(sample) != first + k
+            for (k, sample) in stored.iter().take(changed).enumerate() {
+                let read = &served[k];
+                if nearest(&served, sample.time) != k
                     || sample.value.to_bits() != read.value.to_bits()
                     || (sample.time - read.time).nanos().abs() > BOUND.nanos()
                 {
                     return Err(format!(
-                        "{channel}: sample {k} stored, {sample:?}, is not read {}, \
-                         {read:?}",
-                        first + k
+                        "{channel}: sample {k} stored, {sample:?}, is not read {k}, \
+                         {read:?}"
                     ));
                 }
             }
-            if stored.len() < held {
+            if stored.len() < changed {
                 return Err(format!(
-                    "{channel}: InfluxDB holds {} of the {held} reads from read {first}",
+                    "{channel}: InfluxDB holds {} of the {changed} reads",
                     stored.len()
                 ));
             }
             Ok(Trace {
-                served: served[first..reads.changed].to_vec(),
-                stored: stored[..held].to_vec(),
+                served: served[..changed].to_vec(),
+                stored: stored[..changed].to_vec(),
+                unchanged: reads.unchanged,
             })
         })
         .collect()
@@ -229,77 +225,92 @@ fn counts_above(rig: &Rig, floor: (u64, u64)) -> Result<(u64, u64), String> {
     }
 }
 
-#[test]
-fn a_trace_pairs_each_stored_sample_with_the_nearest_read() {
-    let sample = |at: i64, value| Sample {
-        time: Stamp::from_nanos(at * 3 * Span::SECOND.nanos()),
-        value,
-        quality: None,
-    };
-    // Three reads before the changes, three in them, and one after the last change.
+/// Three reads of `plant.spike` before the changes, three in them, and one after the
+/// last change, 3 s apart.
+fn create_served() -> Vec<Sample> {
     let values = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0];
-    let served: Vec<_> = (0..).zip(values).map(|(at, v)| sample(at, v)).collect();
+    (10..)
+        .zip(values)
+        .map(|(at, value)| Sample {
+            time: Stamp::from_nanos(at * 3 * Span::SECOND.nanos()),
+            value,
+            quality: None,
+        })
+        .collect()
+}
+
+/// [`caught_up`] of `stored` against [`create_served`].
+fn check(stored: &[Sample]) -> Result<Vec<Trace>, String> {
     let reads = [Reads {
         variable: "ns=3;s=SpikeData",
         channel: "plant.spike",
         unchanged: 3,
         changed: 6,
     }];
-    let check = |stored: &[Sample]| {
-        caught_up(
-            &reads,
-            BTreeMap::from([("ns=3;s=SpikeData".into(), served.clone())]),
-            BTreeMap::from([("plant.spike".into(), stored.to_vec())]),
+    caught_up(
+        &reads,
+        BTreeMap::from([("ns=3;s=SpikeData".into(), create_served())]),
+        BTreeMap::from([("plant.spike".into(), stored.to_vec())]),
+    )
+}
+
+#[test]
+fn a_trace_holds_each_read_from_the_first_to_the_last_change() {
+    let served = create_served();
+    let mut bound = served.clone();
+    bound[0].time = bound[0].time + BOUND;
+    for stored in [&served, &bound] {
+        let traces = check(stored).expect("caught up");
+        let pairs = (traces.iter())
+            .map(|trace| (&trace.served[..], &trace.stored[..], trace.unchanged));
+        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..6], &stored[..6], 3)]);
+    }
+}
+
+#[test]
+fn a_lost_or_late_read_fails_the_trace() {
+    let served = create_served();
+    let not_read = |k, stored: &Sample| {
+        format!(
+            "plant.spike: sample {k} stored, {stored:?}, is not read {k}, {:?}",
+            served[k]
         )
     };
-    let traces = check(&served[1..]).expect("caught up");
-    let pairs = traces
-        .iter()
-        .map(|trace| (&trace.served[..], &trace.stored[..]));
-    assert_eq!(pairs.collect::<Vec<_>>(), [(&served[1..6], &served[1..6])]);
-    let not_read = |k, stored: &Sample, read| {
-        format!(
-            "plant.spike: sample {k} stored, {stored:?}, is not read {read}, {:?}",
-            served[read]
-        )
-    };
-    assert_eq!(
-        check(&served[3..]).unwrap_err(),
-        format!(
-            "plant.spike: the first sample stored is {:?}, not one of the 3 reads \
-             before the changes",
-            Some(&served[3])
-        ),
-        "the first read after the changes started"
-    );
-    assert_eq!(
-        check(&[]).unwrap_err(),
-        "plant.spike: the first sample stored is None, not one of the 3 reads before \
-         the changes",
-        "none stored"
-    );
-    assert_eq!(
-        check(&[&served[..1], &served[2..]].concat()).unwrap_err(),
-        not_read(1, &served[2], 1),
-        "a lost read before the changes"
-    );
-    assert_eq!(
-        check(&[&served[..5], &served[6..]].concat()).unwrap_err(),
-        not_read(5, &served[6], 5),
-        "a lost last read"
-    );
-    let mut late = served.clone();
+    let (mut late, mut early) = (served.clone(), served.clone());
     late[0].time = late[0].time + BOUND + Span::from_nanos(1);
-    assert_eq!(
-        check(&late).unwrap_err(),
-        not_read(0, &late[0], 0),
-        "a time out of bound"
-    );
-    assert_eq!(
-        check(&served[..4]).unwrap_err(),
-        "plant.spike: InfluxDB holds 4 of the 6 reads from read 0",
-        "not caught up"
-    );
+    early[0].time = early[0].time - BOUND - Span::from_nanos(1);
+    let cases = [
+        (
+            served[1..].to_vec(),
+            not_read(0, &served[1]),
+            "the first read lost",
+        ),
+        (
+            [&served[..1], &served[2..]].concat(),
+            not_read(1, &served[2]),
+            "a read before the changes lost",
+        ),
+        (
+            [&served[..5], &served[6..]].concat(),
+            not_read(5, &served[6]),
+            "the last read lost",
+        ),
+        (late.clone(), not_read(0, &late[0]), "a late time"),
+        (early.clone(), not_read(0, &early[0]), "an early time"),
+        (
+            served[..4].to_vec(),
+            "plant.spike: InfluxDB holds 4 of the 6 reads".into(),
+            "not caught up",
+        ),
+        (
+            vec![],
+            "plant.spike: InfluxDB holds 0 of the 6 reads".into(),
+            "none stored",
+        ),
+    ];
+    for (stored, error, case) in cases {
+        assert_eq!(check(&stored).unwrap_err(), error, "{case}");
+    }
 }
 
 #[test]
@@ -318,7 +329,9 @@ fn each_config_names_the_served_addresses() {
 #[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
-    held(&plant, &VARIABLES, Quality::GOOD);
+    first_stored(&plant, &VARIABLES);
+    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
+    held(&plant, &reads);
 }
 
 #[test]
@@ -326,7 +339,8 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
-    let traces = held(&plant, spike, BAD);
+    first_stored(&plant, spike);
+    let traces = held(&plant, &change(&plant.opcua, spike, BAD));
     let [trace] = &traces[..] else {
         panic!("one variable: {traces:?}");
     };
@@ -334,12 +348,12 @@ fn a_bad_status_keeps_its_quality() {
         samples.iter().map(|sample| sample.quality).collect()
     };
     let served = qualities(&trace.served);
-    let bad: Vec<_> = (served.iter())
-        .skip_while(|quality| **quality == Some(Quality::GOOD))
-        .collect();
+    // One read can fall between the count of the reads and the first change.
+    let (before, changes) = served.split_at(trace.unchanged);
     assert!(
-        bad.len() >= READS && bad.iter().all(|quality| **quality == Some(BAD)),
-        "Good, then only Bad: {trace:?}"
+        before.iter().all(|quality| *quality == Some(Quality::GOOD))
+            && changes[1..].iter().all(|quality| *quality == Some(BAD)),
+        "Good before the changes, then Bad: {trace:?}"
     );
     assert_eq!(qualities(&trace.stored), served);
 }
@@ -381,7 +395,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1735, #1744, #2326, #2401"]
+#[ignore = "waits on #274, #337, #435, #1734, #1735, #1744, #2326, #2401"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -431,8 +445,10 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             _ => Err(format!("{status:#?}")),
         }
     });
-    influx.serve();
-    held(&Plant { rig, opcua, influx }, &VARIABLES, Quality::GOOD);
+    let mut plant = Plant { rig, opcua, influx };
+    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
+    plant.influx.serve();
+    held(&plant, &reads);
 }
 
 #[test]
