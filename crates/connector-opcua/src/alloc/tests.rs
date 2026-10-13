@@ -232,12 +232,8 @@ fn exhausts() {
 #[test]
 #[cfg(unix)]
 fn exhausted_aborts_with_the_size_of_a_header() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
-    let output = child::output("alloc::tests::exhausts", &[]);
-    assert_eq!(output.status.signal(), Some(SIGABRT));
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
+        child::aborted("alloc::tests::exhausts", &[]),
         "memory allocation of 16 bytes failed\nnote: run with `RUST_BACKTRACE=1` \
          environment variable to display a backtrace\n"
     );

@@ -227,12 +227,8 @@ fn serves_with_a_wall_that_panics() {
 #[test]
 #[cfg(unix)]
 fn a_panic_in_the_wall_of_a_server_aborts() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
-    let output =
-        crate::child::output("sim::tests::serves_with_a_wall_that_panics", &[]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.signal(), Some(SIGABRT), "{stderr}");
+    let stderr =
+        crate::child::aborted("sim::tests::serves_with_a_wall_that_panics", &[]);
     assert!(
         stderr.contains("panic in a function that cannot unwind"),
         "{stderr}"
