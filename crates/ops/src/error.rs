@@ -216,7 +216,9 @@ impl Error {
                 ..
             } => (UNKNOWN, format!("Use `{closest}`, the closest name")),
             Self::Unknown { closest: None, .. } => {
-                (UNKNOWN, "Use a name from `foundation docs`".to_owned())
+                let fix =
+                    "Use a name from `foundation --help`, or from `tools/list` in MCP";
+                (UNKNOWN, fix.to_owned())
             }
             Self::Input { .. } => (
                 INPUT,

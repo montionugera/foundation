@@ -95,7 +95,7 @@ impl Remote {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        plan(files, out, paths, reach).await
+        plan(files, out, paths, Path::new(DATA), reach).await
     }
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
@@ -103,7 +103,7 @@ impl Remote {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        apply(file, paths, reach).await
+        apply(file, paths, Path::new(DATA), reach).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -111,7 +111,7 @@ impl Remote {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        status(reach).await
+        status(Path::new(DATA), reach).await
     }
 
     /// The run, output, and errors of `foundation <args>`.
@@ -637,5 +637,33 @@ fn the_command_line_escapes_the_name_of_the_plan_file() {
             (status, output.as_str(), errors.as_str()),
             (Run::Exit(0), applied, "")
         );
+    });
+}
+
+/// `plan`, `apply`, and `status` reach the node of `--data`, else of `foundation-data`.
+#[test]
+fn the_command_line_reaches_the_node_of_data() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh.clone()));
+        for args in [
+            &["plan", "site.hcl", "--data", "other", "--out", "site.plan"][..],
+            &["apply", "--data", "other", "site.plan"],
+            &["plan", "site.hcl"],
+        ] {
+            let (status, _, errors) = remote.cli(&paths, args).await;
+            assert_eq!((status, errors.as_str()), (Run::Exit(0), ""), "{args:?}");
+        }
+        let (other, data) = (PathBuf::from("other"), PathBuf::from(DATA));
+        let reached = [other.clone(), other.clone(), data.clone()];
+        assert_eq!(*remote.reached.borrow(), reached);
+
+        let reply = b"{\"output\":{\"connectors\":[]}}\n".to_vec();
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Reply(reply));
+        for args in [&["status", "--data", "other"][..], &["status"]] {
+            let (status, _, errors) = remote.cli(&paths, args).await;
+            assert_eq!((status, errors.as_str()), (Run::Exit(0), ""), "{args:?}");
+        }
+        assert_eq!(*remote.reached.borrow(), [other, data]);
     });
 }

@@ -178,7 +178,7 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
         node::client::Error::Session { at, error } => (
             SESSION,
             format!("the session with the node at {at} failed: {error}"),
-            "Read the log of the node, then run the command again",
+            "Fix the cause in the message, then run the command again",
         ),
         node::client::Error::Refused(refusal) => (
             REFUSED,
@@ -198,7 +198,9 @@ fn not_running(dir: &Path) -> Failure {
     Failure {
         code: NOT_RUNNING,
         message: format!("no node runs in {}", dir.display()),
-        fix: "Start one with `foundation start --name <name>`".to_owned(),
+        fix: "Start one with `foundation start --name <name>`, or give the data \
+              directory of a node that runs with `--data`"
+            .to_owned(),
     }
 }
 
@@ -1181,7 +1183,9 @@ mod tests {
         }
     }
 
-    const NOT_RUNNING_FIX: &str = "Start one with `foundation start --name <name>`";
+    const NOT_RUNNING_FIX: &str = "Start one with `foundation start --name <name>`, or \
+                                   give the data directory of a node that runs with \
+                                   `--data`";
     const UNREADABLE_FIX: &str = "Run the command as the user that started the node";
 
     #[test]
@@ -1296,7 +1300,7 @@ mod tests {
                 SESSION,
                 "the session with the node at 127.0.0.1:54321 failed: the node \
                  finished a stream with no answer",
-                "Read the log of the node, then run the command again",
+                "Fix the cause in the message, then run the command again",
             )
         );
     }

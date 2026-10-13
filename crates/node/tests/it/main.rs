@@ -16,6 +16,13 @@ use std::collections::BTreeMap;
 
 use rig::Rig;
 
+/// The refusal of `status` on a node that places no connector.
+const REFUSED: &str = concat!(
+    "error[ops.denied]: no access policy gives `@admin` the action `read` on a ",
+    "request that names no definition\n",
+    "fix: Ask an admin of the region for an access policy that allows it\n",
+);
+
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("UTF-8")
 }
@@ -144,13 +151,30 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
+        (Some(1), "", REFUSED)
+    );
+}
+
+/// `status --data` reaches the node of that data directory, and `status` with no flag
+/// reaches none in `foundation-data`.
+#[test]
+fn status_reaches_the_node_of_data() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let output = rig.run(&["status", "--data", "plant"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
+        (Some(1), REFUSED)
+    );
+    let output = rig.run(&["status"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
         (
             Some(1),
-            "",
             concat!(
-                "error[ops.denied]: no access policy gives `@admin` the action `read` ",
-                "on a request that names no definition\n",
-                "fix: Ask an admin of the region for an access policy that allows it\n",
+                "error[node.not-running]: no node runs in foundation-data\n",
+                "fix: Start one with `foundation start --name <name>`, or give the ",
+                "data directory of a node that runs with `--data`\n",
             )
         )
     );

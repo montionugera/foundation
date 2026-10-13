@@ -61,13 +61,12 @@ enum Command {
     Run(Request),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
-    /// Show the change from config files to the spec of the node in
-    /// `foundation-data`.
+    /// Show the change from config files to the spec of the node of `--data`.
     Plan(PlanArgs),
-    /// Apply a plan file of `foundation plan --out` on the node in `foundation-data`.
+    /// Apply a plan file of `foundation plan --out` on the node of `--data`.
     Apply(ApplyArgs),
-    /// Show the state of each connector on the node in `foundation-data`.
-    Status,
+    /// Show the state of each connector on the node of `--data`.
+    Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -100,12 +99,24 @@ struct PlanArgs {
     /// file.
     #[arg(long)]
     out: Option<PathBuf>,
+    #[command(flatten)]
+    node: NodeArgs,
 }
 
 #[derive(clap::Args)]
 struct ApplyArgs {
     /// The plan file.
     plan: PathBuf,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+/// The arguments of a command that runs on a node.
+#[derive(clap::Args)]
+struct NodeArgs {
+    /// The data directory of the node.
+    #[arg(long, default_value = DATA)]
+    data: PathBuf,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -145,11 +156,15 @@ pub(crate) enum Parsed {
     Plan {
         files: Vec<PathBuf>,
         out: Option<PathBuf>,
+        data: PathBuf,
     },
     Apply {
         plan: PathBuf,
+        data: PathBuf,
     },
-    Status,
+    Status {
+        data: PathBuf,
+    },
     Help(String),
     Mcp,
 }
@@ -180,9 +195,16 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
             name,
             listen,
         })),
-        Command::Plan(PlanArgs { files, out }) => Ok(Parsed::Plan { files, out }),
-        Command::Apply(ApplyArgs { plan }) => Ok(Parsed::Apply { plan }),
-        Command::Status => Ok(Parsed::Status),
+        Command::Plan(PlanArgs { files, out, node }) => Ok(Parsed::Plan {
+            files,
+            out,
+            data: node.data,
+        }),
+        Command::Apply(ApplyArgs { plan, node }) => Ok(Parsed::Apply {
+            plan,
+            data: node.data,
+        }),
+        Command::Status(NodeArgs { data }) => Ok(Parsed::Status { data }),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }

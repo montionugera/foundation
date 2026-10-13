@@ -56,11 +56,11 @@ pub enum Run {
 /// gets an Invalid Request error. A closed `output` ends the run with no error,
 /// because its reader has left.
 ///
-/// `plan`, `apply`, and `status` run on the node of `foundation-data`. Each reads the
-/// files it names through `paths`, calls `reach` with that data directory once, and
-/// calls what it gives with the body of one request. A [`Failure`] of either is the
-/// error of the command, with status 1. `start` and the other operations call
-/// neither.
+/// `plan`, `apply`, and `status` run on the node of `--data`, else of
+/// `foundation-data`. Each reads the files it names through `paths`, calls `reach` with
+/// that data directory once, and calls what it gives with the body of one request. A
+/// [`Failure`] of either is the error of the command, with status 1. `start` and the
+/// other operations call neither.
 ///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.
@@ -91,21 +91,23 @@ where
             &mut output,
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
-        Ok(Parsed::Plan { files, out }) => {
-            match remote::plan(&files, out.as_deref(), paths, reach).await {
+        Ok(Parsed::Plan { files, out, data }) => {
+            match remote::plan(&files, out.as_deref(), paths, &data, reach).await {
                 Ok(planned) => {
                     write(&mut output, &render(json, &planned, || planned.text()))
                 }
                 Err(error) => Err(Stop::Failed(error)),
             }
         }
-        Ok(Parsed::Apply { plan }) => match remote::apply(&plan, paths, reach).await {
-            Ok(applied) => {
-                write(&mut output, &render(json, &applied, || applied.text()))
+        Ok(Parsed::Apply { plan, data }) => {
+            match remote::apply(&plan, paths, &data, reach).await {
+                Ok(applied) => {
+                    write(&mut output, &render(json, &applied, || applied.text()))
+                }
+                Err(error) => Err(Stop::Failed(error)),
             }
-            Err(error) => Err(Stop::Failed(error)),
-        },
-        Ok(Parsed::Status) => match remote::status(reach).await {
+        }
+        Ok(Parsed::Status { data }) => match remote::status(&data, reach).await {
             Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
             Err(error) => Err(Stop::Failed(error)),
         },

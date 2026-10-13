@@ -303,7 +303,8 @@ fn a_text_error_writes_control_characters_as_escapes() {
             cli(&[name]).stderr,
             format!(
                 "error[ops.unknown-operation]: no operation is named `{escaped}`\n\
-                 fix: Use a name from `foundation docs`\n"
+                 fix: Use a name from `foundation --help`, or from `tools/list` in \
+                 MCP\n"
             )
         );
     }
@@ -318,7 +319,7 @@ fn a_json_error_keeps_the_callers_text() {
         json!({ "errors": [{
             "code": "ops.unknown-operation",
             "message": "no operation is named `\u{1b}x`",
-            "fix": "Use a name from `foundation docs`",
+            "fix": "Use a name from `foundation --help`, or from `tools/list` in MCP",
             "notes": [],
         }] })
     );
@@ -369,7 +370,7 @@ fn help_for_a_name_that_is_not_a_command_is_unknown() {
         cli(&["help", "help"]),
         failed(
             "error[ops.unknown-operation]: no operation is named `help`\n\
-             fix: Use a name from `foundation docs`\n"
+             fix: Use a name from `foundation --help`, or from `tools/list` in MCP\n"
         )
     );
 }
@@ -431,10 +432,11 @@ fn an_unknown_operation_suggests_the_closest_name() {
 }
 
 #[test]
-fn an_unknown_operation_far_from_every_name_points_to_the_docs() {
+fn an_unknown_operation_far_from_every_name_points_to_the_lists_of_names() {
     let expected = json!({ "errors": [{ "code": "ops.unknown-operation",
         "message": "no operation is named `zzz`",
-        "fix": "Use a name from `foundation docs`", "notes": [] }] });
+        "fix": "Use a name from `foundation --help`, or from `tools/list` in MCP",
+        "notes": [] }] });
     assert_eq!(
         call(&json!({ "name": "zzz" })),
         failed_call("no operation is named `zzz`", &expected)
@@ -1102,7 +1104,7 @@ mod mcp {
             assert_eq!(
                 ask(&request(json!(1), "tools/call", json!({ "name": name })))["error"]
                     ["data"]["errors"][0]["fix"],
-                "Use a name from `foundation docs`",
+                "Use a name from `foundation --help`, or from `tools/list` in MCP",
                 "{name}"
             );
         }
