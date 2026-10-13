@@ -53,7 +53,26 @@ impl Disk {
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
-        let data = data(dir).map_err(|errno| crate::Error::Dir(errno.into()))?;
+        Self::start(data(dir), threads, name)
+    }
+
+    /// Opens `dir/data`, which must be there, and starts I/O thread `name`.
+    pub(crate) fn stored(
+        dir: &Path,
+        threads: &Threads,
+        name: &str,
+    ) -> Result<(Self, Handle), crate::Error> {
+        let data = fs::open(dir.join("data"), READ_DIR, fs::Mode::empty());
+        Self::start(data, threads, name)
+    }
+
+    /// Starts I/O thread `name` on the data directory `data`.
+    fn start(
+        data: io::Result<OwnedFd>,
+        threads: &Threads,
+        name: &str,
+    ) -> Result<(Self, Handle), crate::Error> {
+        let data = data.map_err(|errno| crate::Error::Dir(errno.into()))?;
         let (queue, thread) =
             Queue::start(threads, name).map_err(crate::Error::Thread)?;
         let disk = Self {

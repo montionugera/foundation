@@ -2580,6 +2580,49 @@ mod tests {
         (Span::from_nanos(3_000_000_001), 2, 7),
     ];
 
+    /// A kind with the count `samples`. Its run takes frames from the shard's pool
+    /// until it has no room, sets the count to 7, fills the pool again at 900 ms, and
+    /// at 1 s, after the flush gets no block for its frame, gives the frames back and
+    /// returns `Ok`.
+    fn hog_to_flush() -> impl Kind<Config = ()> {
+        counted(|ctx: Context<()>| async move {
+            let channels =
+                ["state", "class", "restarts", "backoff", "error", "samples"]
+                    .map(|c| name(&format!("plant.tally.status.{c}")))
+                    .into();
+            let writer = ctx.writer(channels, Authority(1), None).await;
+            let writer = writer.expect("the writer opens");
+            let mut held = fill(&writer);
+            ctx.count("samples").set(7);
+            ctx.clock().sleep(ms(900)).await;
+            held.extend(fill(&writer));
+            ctx.clock().sleep(ms(100)).await;
+            // The flush at 1 s runs after this task wakes at 1 s, so yield once.
+            let mut flushed = false;
+            poll_fn(|cx| {
+                if flushed {
+                    return Poll::Ready(());
+                }
+                flushed = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+            drop(held);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stamps_a_frame_after_the_stamp_of_a_frame_with_no_block() {
+        let want = [
+            (Span::ZERO, 0, 0),
+            (Span::from_nanos(1_000_000_001), 3, 7),
+            (Span::from_nanos(1_000_000_002), 2, 7),
+        ];
+        assert_eq!(hogged_by(hog_to_flush()), want);
+    }
+
     /// Takes frames of one sample for each channel of `writer` from the shard's pool
     /// until the pool has no room for a frame of any size up to 2 KiB, so that no
     /// status frame and no copy of it in the home gets a block. `writer` has `error`,
@@ -2699,7 +2742,12 @@ mod tests {
 
     /// The time, `state`, and count of each status frame of `hog(full)`.
     fn hogged(full: bool) -> Vec<(Span, i64, i64)> {
-        let statuses = tally(hog(full));
+        hogged_by(hog(full))
+    }
+
+    /// The time, `state`, and count of each status frame of `kind`.
+    fn hogged_by(kind: impl Kind + 'static) -> Vec<(Span, i64, i64)> {
+        let statuses = tally(kind);
         statuses
             .iter()
             .map(|(at, samples, _)| (*at, samples[0], samples[4]))

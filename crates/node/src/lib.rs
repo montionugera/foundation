@@ -9,6 +9,7 @@ mod admin;
 pub mod bench;
 mod budget;
 mod cause;
+pub mod client;
 mod connectors;
 mod directory;
 #[cfg(feature = "sim")]

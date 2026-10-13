@@ -1507,3 +1507,42 @@ fn a_list_waits_for_a_dropped_create_dir_in_its_directory() {
         assert_eq!(names, [PathBuf::from("e")]);
     });
 }
+
+#[test]
+fn stored_of_a_directory_with_no_data_directory_gives_dir_and_makes_nothing() {
+    let scratch = Scratch::new();
+    let threads = os::threads().unwrap();
+    for dir in [scratch.0.join("node"), scratch.0.clone()] {
+        let Err(os::Error::Dir(error)) = os::stored(&dir, &threads, "files") else {
+            panic!("a directory with no data directory gives Dir");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    let left = std::fs::read_dir(&scratch.0).unwrap().count();
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn stored_reads_the_files_that_files_wrote() {
+    let scratch = Scratch::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pool = pool();
+    let (files, thread) = files(&scratch.0, "files");
+    runtime.block_on(async {
+        let file = create(&files, "a", KIB).await;
+        file.write_at(0, &[block(&pool, b"kept")]).await.unwrap();
+    });
+    drop(files);
+    thread.join().unwrap();
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::stored(&scratch.0, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    runtime.block_on(async {
+        let file = files.open(Path::new("a"), Mode::Read).await.unwrap();
+        assert_eq!(read(&file, &pool, 0, 4).await, b"kept");
+    });
+    drop(files);
+    thread.join().unwrap();
+}

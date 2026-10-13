@@ -1,6 +1,7 @@
 //! Polling a registered wait or race allocates nothing, and so do a tick from the third
-//! call on and a set of a status count. This binary has no test harness: the count
-//! covers each thread, and a harness allocates on its own thread at any time.
+//! call on, a stamped request, and a set of a status count. This binary has no test
+//! harness: the count covers each thread, and a harness allocates on its own thread at
+//! any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -14,6 +15,10 @@ use std::task::{Context, Wake, Waker};
 
 use connector::cancel::Token;
 use connector::pace::Timer;
+use connector::stamp::Stamps;
+use types::authority::Authority;
+use types::channel;
+use types::name::Name;
 use types::time::Rate;
 
 /// A waker with a reference count, as a task has. It counts its wakes.
@@ -49,6 +54,7 @@ fn main() {
         "race",
     );
     check_ticks();
+    check_stamps();
     status::check(status::Shows::Nothing);
     status::check(status::Shows::Error);
 }
@@ -94,6 +100,49 @@ fn check_ticks() {
         .expect("the shard starts");
     sim.run().expect("the run ends");
     handle.join().expect("the shard ends");
+}
+
+/// Checks that 64 polls of a stamped request that is ready allocate nothing, after
+/// one warm-up request.
+fn check_stamps() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let result = sim.run_on(&node, |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks,
+        };
+        let (hub, _) = hub::testing::open(env).await;
+        let connector: Name = "plant.stamp".parse().expect("a valid name");
+        let first = channel::Key::from_u128(100);
+        let status = connector::testing::create_status(&connector, &[], first);
+        hub.set_definitions(status.iter().map(|(name, def)| (name, def)));
+        let config = hub::writer::Config {
+            subject: connector,
+            authority: Authority(1),
+            lease: None,
+            channels: vec!["plant.stamp.status.state".parse().expect("a valid name")],
+        };
+        let writer = hub.writer(config).await.expect("the writer opens");
+        let mut stamps = Stamps::default();
+        stamps.request(&writer, future::ready(())).await;
+        let mut cx = Context::from_waker(Waker::noop());
+        let ((), allocations) = ALLOCATOR.count(|| {
+            for _ in 0..64 {
+                let request = pin!(stamps.request(&writer, future::ready(())));
+                assert!(request.poll(&mut cx).is_ready(), "a ready request");
+            }
+        });
+        allocations
+    });
+    assert_eq!(
+        result.expect("the run ends"),
+        0,
+        "a stamped request allocates nothing"
+    );
 }
 
 /// Polls `f` once to register it, then checks that 64 more polls with alternating
