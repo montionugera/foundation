@@ -5,10 +5,10 @@
   challenge came on the monotonic clock, plus `client::LIFE` (10 minutes), or at the end
   of mesh time when the sum passes it, as mesh time is the node's. Lost: an error of
   `connect` for a challenge near the end of mesh time, a second guard of the node's own
-  checks of the expiry (`EXPIRED`). A task renews the hello at half of `LIFE`
-  after each admission, on the hello stream, until the session ends. A renewal waits for
-  a block as each message does, and the node closes the session if the hello ends
-  first. A challenge that `wire` refuses ends the renewal and closes the session with
+  checks of the expiry (`EXPIRED`). A task renews the hello at half of `LIFE` after each
+  admission, on the hello stream, until the session ends. A renewal waits for a block as
+  each message does, and the node closes the session if the hello ends first. A
+  challenge that `wire` refuses ends the renewal and closes the session with
   `MALFORMED`. From then on, each request that fails gives the error that ended the
   renewal, also a request that was in flight, in place of the error of the close
   (`laptop.architect`, 2026-10-09 01:14 UTC,
@@ -36,17 +36,16 @@
   with (`MALFORMED`, `BUSY`, and `REFUSED` to `CHANGED`). Each meaning of a code is
   stated once, in `wire`, and its `Display` gives the cause. A close with 0 or a code
   outside the set stays `Error::Transport`. Lost: one dial for each request (a handshake
-  for each request,
-  and a read stream of HUB LINK needs a session that lives; `laptop.architect`,
+  for each request, and a read stream of HUB LINK needs a session that lives;
+  `laptop.architect`,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724); `&mut
-  self`
-  with the renewal inside `request` (an idle program loses its session at the expiry); a
-  queue in a task that owns the session; a lock of a library (`tokio::sync::Semaphore`
-  is FIFO, but it is built for many threads, with atomics and an `Arc` for an owned
-  permit, where `hub` needs one lock on one thread, and `futures::lock::Mutex` wakes the
-  first waiter of its slab, not the oldest, and lets a new `lock` take the lock ahead of
-  it, which starves a waiter); `Error::Stopped` with a `u32` code, which gives `hub` a
-  meaning for each code. The plan
+  self` with the renewal inside `request` (an idle program loses its session at the
+  expiry); a queue in a task that owns the session; a lock of a library
+  (`tokio::sync::Semaphore` is FIFO, but it is built for many threads, with atomics and
+  an `Arc` for an owned permit, where `hub` needs one lock on one thread, and
+  `futures::lock::Mutex` wakes the first waiter of its slab, not the oldest, and lets a
+  new `lock` take the lock ahead of it, which starves a waiter); `Error::Stopped` with a
+  `u32` code, which gives `hub` a meaning for each code. The plan
   (https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6069186434) was
   approved with the `Refusal` change by `laptop.architect` at 2026-10-08T21:25:05Z
   (https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6069345374).

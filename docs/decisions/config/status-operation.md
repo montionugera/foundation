@@ -10,29 +10,27 @@
   name order. For each, `serve` opens a `Latest` reader of its status index and each
   channel on it through the node's hub, with the request's subject. All reads run at
   once, and a connector with no frame within 1 s of the request is `unknown`, so a reply
-  waits at most 1 s in all. A link holds one
-  open request for each session, and `node::Settings::places_max` bounds the sessions of
-  programs, so at most that bound times the connectors of the node are open readers of
-  `status` at once (`laptop.architect`,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
-  `ops::Node` takes the hub, the clock for the bound, and the
-  node's name at construction. `state` is `running`, `restarting`, `stopped`, `ending`,
-  or `unknown`; with `unknown`, `restarts`, `counts`, and `error` are null. A connector
-  whose newest frame holds no status is `unknown` too. When the reader of a connector
-  does not open or ends, `status` fails with `ops.channel-read`, which names the
-  connector and gives the text of the hub. `status` needs `read` on each status channel
-  of a connector through the `Check` of `plan` and `apply`, and leaves out each
-  connector without it. When the node places a connector and the subject reads none, it
-  gives `ops.denied` with `On::Nothing`. A node that places no connector gives
-  `ops.denied` with `On::Nothing` too, also
-  with no spec in use, as SERVE ACCESS refuses a request with no name to check
+  waits at most 1 s in all. A link holds one open request for each session, and
+  `node::Settings::places_max` bounds the sessions of programs, so at most that bound
+  times the connectors of the node are open readers of `status` at once
   (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
+  `ops::Node` takes the hub, the clock for the bound, and the node's name at
+  construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
+  with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest
+  frame holds no status is `unknown` too. When the reader of a connector does not open
+  or ends, `status` fails with `ops.channel-read`, which names the connector and gives
+  the text of the hub. `status` needs `read` on each status channel of a connector
+  through the `Check` of `plan` and `apply`, and leaves out each connector without it.
+  When the node places a connector and the subject reads none, it gives `ops.denied`
+  with `On::Nothing`. A node that places no connector gives `ops.denied` with
+  `On::Nothing` too, also with no spec in use, as SERVE ACCESS refuses a request with no
+  name to check (`laptop.architect`,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724, which
-  supersedes "A spec with no
-  connector on the node gives an empty list" of item 5 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119).
-  When #1028 checks each open of the hub, this check moves there. Deferred
-  to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
+  supersedes "A spec with no connector on the node gives an empty list" of item 5 of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
+  #1028 checks each open of the hub, this check moves there. Deferred to
+  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
   `--json`, and MCP. The CLI and MCP send this one form to a node, and the client reader
   of #1749 does not replace it. Lost: `serve` replies with the text, so that `--json`
   and MCP each need a second reply; `status` asks the supervisors, a second source of
