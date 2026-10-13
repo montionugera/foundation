@@ -87,9 +87,9 @@ pub(crate) struct Writes {
 }
 
 impl Writes {
-    /// Each channel that it writes: those of its kind, then those it implies.
+    /// Each channel that its kind writes.
     pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
-        self.channels.iter().chain(self.implied_names())
+        self.channels.iter()
     }
 
     /// Each channel that it implies: the status index, then the data.

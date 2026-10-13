@@ -38,6 +38,12 @@
   rule that counts the writers of an index also counts a connector that implies the
   index (`laptop.architect-2`, 2026-10-10T22:35:37Z,
   https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855).
+  Superseded: since `check` refuses each other channel with an edge to a status channel
+  (STATUS PLACEMENT), the connector is the only writer of its status index, which takes
+  the connector's placement, so no rule counts the connector. Lost: keep the count with
+  a test (no result changes, so no test can fail). By `laptop.architect-2` (#2468 round
+  8, 2026-10-13T01:21:52Z:
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6136011417).
   `config.unknown-node` is at each node that a connector or a placement names and that
   `members` does not hold, and the fix names a member that is equal to it without case.
   `config.writer-nodes` is at the `node` of the first connector, in name order, on a

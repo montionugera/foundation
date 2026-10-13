@@ -434,7 +434,7 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Reports whether `connector` writes or implies `index` or a channel on it.
+    /// Reports whether `connector` writes `index` or a channel on it.
     fn feeds(&self, connector: &Connector<'_>, index: &Name) -> bool {
         connector.writes.names().any(|name| {
             name == index || self.index_of.get(name).copied() == Some(index)
