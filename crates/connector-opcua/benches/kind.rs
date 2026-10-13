@@ -15,10 +15,8 @@ mod kind;
 
 /// The node counts of the reads of a tick.
 const COUNTS: [usize; 2] = [1, 256];
-/// The ticks or writes before the timed ones. Tick 1 connects. In its first two commits
-/// of 10 ms, at a write each 1 ms, the buffer of the test home grows the `Vec`s of its
-/// groups, and after them it reuses each group with its capacity.
-const WARMUP: usize = 20;
+/// The ticks before the timed ticks: tick 1 connects.
+const WARMUP: usize = 10;
 const TICKS: usize = 1000;
 /// The node counts of a run start and of a parse. A frame of 1,000 nodes fits the
 /// largest block of the pool of the test hub.
@@ -36,14 +34,6 @@ fn main() {
             .split_off(WARMUP);
         ticks.sort_unstable();
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
-        println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
-    }
-    println!("ns per write of a frame over {TICKS} writes");
-    println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
-    for nodes in COUNTS {
-        let mut writes = kind::writes(nodes, WARMUP + TICKS, time).split_off(WARMUP);
-        writes.sort_unstable();
-        let at = |percent: usize| writes[writes.len() * percent / 100];
         println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
     }
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");

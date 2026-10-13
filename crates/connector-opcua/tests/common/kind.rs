@@ -36,21 +36,10 @@ const PERIOD: Span = Span::from_nanos(100_000_000);
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
 
-/// What a run of [`Measured`] measures, and where it puts what the measure gives.
-enum Of {
-    /// Each poll of the run of the `opcua` kind.
-    Polls(Polls),
-    /// Each of `count` writes of a frame of its reads, with no server.
-    Writes {
-        count: usize,
-        measures: Arc<Mutex<Vec<u64>>>,
-    },
-}
-
-/// The `opcua` kind, with `measure` around each poll of its run or each write.
+/// The `opcua` kind, with `measure` around each poll of its run.
 struct Measured<M> {
     measure: M,
-    of: Of,
+    polls: Polls,
 }
 
 impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
@@ -74,27 +63,16 @@ impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
     }
 
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
-        match &self.of {
-            Of::Polls(polls) => {
-                let kind = connector_opcua::Kind::default();
-                let clock = ctx.clock().clone();
-                let mut run = pin!(kind.run(ctx));
-                poll_fn(|cx| {
-                    let mut poll = Poll::Pending;
-                    let value = (self.measure)(&mut || poll = run.as_mut().poll(cx));
-                    let mut polls = polls.lock().expect("no panic under the lock");
-                    polls.push((clock.now(), value));
-                    poll
-                })
-                .await
-            }
-            Of::Writes { count, measures } => {
-                let writes = connector_opcua::bench::kind::writes;
-                let written = writes(&ctx, *count, &self.measure).await?;
-                *measures.lock().expect("no panic under the lock") = written;
-                Ok(())
-            }
-        }
+        let (kind, clock) = (connector_opcua::Kind::default(), ctx.clock().clone());
+        let mut run = pin!(kind.run(ctx));
+        poll_fn(|cx| {
+            let mut poll = Poll::Pending;
+            let value = (self.measure)(&mut || poll = run.as_mut().poll(cx));
+            let mut polls = self.polls.lock().expect("no panic under the lock");
+            polls.push((clock.now(), value));
+            poll
+        })
+        .await
     }
 }
 
@@ -119,7 +97,7 @@ pub(crate) fn run(
     let polls = Polls::default();
     let kind = Measured {
         measure,
-        of: Of::Polls(Arc::clone(&polls)),
+        polls: Arc::clone(&polls),
     };
     let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -159,41 +137,6 @@ pub(crate) fn run(
         &polls.lock().expect("no panic under the lock"),
         &served[..count],
     )
-}
-
-/// Writes `count` frames of a connector that reads `nodes` Double variables, with no
-/// server, and gives what `measure` gives for the check of the values and the write
-/// of each frame. `measure` calls the work that it gets once.
-///
-/// # Panics
-///
-/// If the run ends with an error.
-pub(crate) fn writes(
-    nodes: usize,
-    count: usize,
-    measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
-) -> Vec<u64> {
-    let measures = Arc::<Mutex<Vec<u64>>>::default();
-    let kind = Measured {
-        measure,
-        of: Of::Writes {
-            count,
-            measures: Arc::clone(&measures),
-        },
-    };
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let node = sim.node(sim::node::Config::default());
-    let run = sim.run_on(&node, move |node, tasks| async move {
-        let supervisor = Supervisor::new(inputs(&node, &tasks, kind, nodes).await);
-        let config = config("opc.tcp://plc:4840", nodes);
-        let token = Token::new();
-        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
-        open.await.run().await
-    });
-    let result = run.expect("the run ends");
-    assert!(result.is_ok(), "the run ends ok: {result:?}");
-    let measures = measures.lock().expect("no panic under the lock");
-    measures.clone()
 }
 
 /// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
