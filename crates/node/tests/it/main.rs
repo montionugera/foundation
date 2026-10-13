@@ -215,7 +215,63 @@ fn status_on_a_directory_whose_data_is_a_file_is_not_running() {
 }
 
 #[test]
-fn the_start_in_the_fix_of_a_data_directory_with_a_space_runs() {
+fn the_start_in_the_fix_of_a_data_directory_runs_as_printed() {
+    let rig = Rig::new();
+    let shell = |command: String| {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&rig.dir)
+            .output()
+            .expect("run sh");
+        (
+            text(&output.stdout).to_owned(),
+            text(&output.stderr).to_owned(),
+        )
+    };
+    for (dir, named) in [
+        ("my plant", "my plant"),
+        ("-x", "./-x"),
+        ("it's", "it's"),
+        ("=plant", "=plant"),
+    ] {
+        let data = format!("--data={dir}");
+        let output = rig.run(&["status", data.as_str()], b"");
+        let errors = text(&output.stderr).to_owned();
+        let start = (errors.split('`'))
+            .find(|part| part.starts_with("foundation start --data "))
+            .unwrap_or_else(|| panic!("no start in {errors}"));
+        let words = shell(start.replacen("foundation start", "printf '%s|'", 1));
+        assert_eq!(words.0, format!("--data|{named}|"), "the fix of {errors}");
+        let parsed = start.replacen("foundation", env!("CARGO_BIN_EXE_foundation"), 1);
+        let parsed = shell(format!("{parsed} --unknown"));
+        assert_eq!(
+            parsed.1.lines().next(),
+            Some("error[ops.argument]: unexpected argument found: `--unknown`"),
+            "the fix of {errors}"
+        );
+    }
+}
+
+#[test]
+fn the_fix_of_a_data_directory_that_it_cannot_print_names_no_path() {
+    let rig = Rig::new();
+    let output = rig.run(&["status", "--data", "a\\b"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
+        (
+            Some(1),
+            concat!(
+                "error[node.not-running]: no node runs in a\\\\b\nfix: Run `foundation ",
+                "start` with `--data` set to that directory, with `--name <name>` on its ",
+                "first start, or give `--data` the data directory of a node that runs\n",
+            )
+        )
+    );
+}
+
+#[test]
+fn status_on_a_data_directory_with_a_space_quotes_it_in_the_fix() {
     let rig = Rig::new();
     let output = rig.run(&["status", "--data", "my plant"], b"");
     assert_eq!(
