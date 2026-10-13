@@ -454,16 +454,16 @@ impl Reader {
             listed.expect("invariant: `find` calls `items` before it returns");
         let mut reader = match home {
             Home::Here(channels) => {
-                listed.slots.clone_from(&channels.slots);
+                listed.slot(&channels.slots);
                 Self::local(state, channels, mode, named, hold)?
             }
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
                 let index = matched.index;
                 let (remote, slots) = Remote::open(state, home, matched, mode).await?;
-                listed.slots = slots;
+                listed.slot(&slots);
                 Self {
-                    index: listed.slots[index],
+                    index: slots[index],
                     names: None,
                     source: Source::Remote(Box::new(remote)),
                     given: Cell::new(None),
@@ -631,12 +631,16 @@ struct Names {
     /// The end in `text` of the name of each channel.
     ends: Box<[usize]>,
     text: Box<str>,
-    /// The slot of each channel. Empty until the open knows the home of the index.
-    slots: Box<[channel::Slot]>,
-    /// The key set that `places` is of, or `None` before the first frame.
+    /// The slot of each channel, and its entry in `set` or [`Names::NONE`]. Empty until
+    /// the open knows the home of the index.
+    channels: Box<[(channel::Slot, u32)]>,
+    /// The key set that the entries and `places` are of, or `None` before the first
+    /// frame.
     set: Option<key_set::Key>,
-    /// The place of each entry of `set` in the channels, or [`Names::NONE`].
-    places: Box<[u32]>,
+    /// The place in the channels of each entry of `set`, or [`Names::NONE`]. As long
+    /// as the largest key set so far, with [`Names::NONE`] past `set`, so that a new
+    /// key set allocates only when it is larger.
+    places: Vec<u32>,
 }
 
 impl Names {
@@ -657,25 +661,39 @@ impl Names {
         Self {
             ends,
             text: text.into_boxed_str(),
-            slots: Box::default(),
+            channels: Box::default(),
             set: None,
-            places: Box::default(),
+            places: Vec::new(),
         }
     }
 
-    /// Makes the places those of the entries of `set`.
+    /// Gives the slot of each channel, in their order.
+    fn slot(&mut self, slots: &[channel::Slot]) {
+        self.channels = slots.iter().map(|&slot| (slot, Self::NONE)).collect();
+    }
+
+    /// Makes the entries and places those of `set`. It costs a search of `set` for each
+    /// channel, and no work for each other entry of `set`.
     fn place(&mut self, set: &KeySet) {
         if self.set == Some(set.key()) {
             return;
         }
-        let mut places = vec![Self::NONE; set.entries().len()].into_boxed_slice();
-        for (place, &slot) in self.slots.iter().enumerate() {
-            if let Some(entry) = set.find(slot) {
-                places[entry] = u32::try_from(place)
-                    .expect("invariant: a reader has fewer than u32::MAX channels");
+        for &(_, entry) in &self.channels {
+            if entry != Self::NONE {
+                self.places[to_usize(entry)] = Self::NONE;
             }
         }
-        self.places = places;
+        if self.places.len() < set.entries().len() {
+            self.places.resize(set.entries().len(), Self::NONE);
+        }
+        for (place, (slot, entry)) in self.channels.iter_mut().enumerate() {
+            *entry = set.find(*slot).map_or(Self::NONE, |at| {
+                self.places[at] = u32::try_from(place)
+                    .expect("invariant: a reader has fewer than u32::MAX channels");
+                u32::try_from(at)
+                    .expect("invariant: a key set has fewer than u32::MAX entries")
+            });
+        }
         self.set = Some(set.key());
     }
 
@@ -683,8 +701,7 @@ impl Names {
     /// not one.
     fn find(&self, entry: usize) -> Option<usize> {
         let place = *self.places.get(entry)?;
-        (place != Self::NONE)
-            .then(|| usize::try_from(place).expect("invariant: a u32 fits a usize"))
+        (place != Self::NONE).then(|| to_usize(place))
     }
 
     /// The name of the channel at `place`.
@@ -692,6 +709,10 @@ impl Names {
         let start = place.checked_sub(1).map_or(0, |before| self.ends[before]);
         &self.text[start..self.ends[place]]
     }
+}
+
+fn to_usize(value: u32) -> usize {
+    usize::try_from(value).expect("invariant: a usize holds a u32")
 }
 
 /// What the selector of a reader matched.

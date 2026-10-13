@@ -722,6 +722,26 @@ fn panics_on_the_name_of_an_entry_past_the_set() {
 }
 
 #[test]
+#[should_panic(expected = "the entry 1 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_whose_place_a_key_set_before_held() {
+    run(48, |test| async move {
+        let mut reader = test.reader(&["value-c"], Mode::Complete).await;
+        let mut first = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut first, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        drop(first);
+        let received = reader.next().await.expect("a frame");
+        let held = entry(received.set(), 5);
+        assert_eq!(names(&received), ["time", "value-c"]);
+        let mut second = test.writer("b", &["value"]).await;
+        write_series(&mut second, &[(1, &[now + 1]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time"]);
+        let _name = received.name(held);
+    });
+}
+
+#[test]
 fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
     run(45, |test| async move {
         let config = reader::Config {

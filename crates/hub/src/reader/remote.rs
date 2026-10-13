@@ -19,7 +19,7 @@ use types::sample::Type;
 use wire::Protocol;
 use wire::hub::{Credit, FromHome, Head, Open, Refusal, keys};
 
-use super::{Ended, Error, Lens, Matched, Mode, Streak, WINDOW};
+use super::{Ended, Error, Lens, Matched, Mode, Streak, WINDOW, to_usize};
 use crate::State;
 
 /// The most opens of one [`connect`]. The home's node dials only when it has no open
@@ -796,10 +796,6 @@ fn refusal(ended: &Ended) -> Option<Refusal> {
         | Ended::Stream(_)
         | Ended::Refused(_) => None,
     }
-}
-
-fn to_usize(value: u32) -> usize {
-    usize::try_from(value).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]
