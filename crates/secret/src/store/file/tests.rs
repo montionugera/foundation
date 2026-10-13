@@ -1,5 +1,4 @@
 use env::files::Operation;
-use proptest::prelude::*;
 
 use super::*;
 
@@ -29,7 +28,8 @@ async fn put(files: &Files, path: &str, bytes: &[u8]) {
         .await
         .expect("makes it");
     if !bytes.is_empty() {
-        let pool = block::Pool::heap(pool(bytes.len()));
+        let pool = block::Config::new(1 << 18).expect("a budget that fits");
+        let pool = block::Pool::heap(pool);
         let block = pool.copy(bytes).expect("the pool holds the bytes");
         file.write_at(0, &[block]).await.expect("writes");
     }
@@ -167,6 +167,19 @@ fn reads_a_file_of_64_kib_and_refuses_one_byte_more() {
 }
 
 #[test]
+fn reads_a_file_at_each_bound_of_a_block_size_class() {
+    on_sim(|_, files| async move {
+        let store = store(files.clone());
+        let lens = [1, 64, 65, 256, 257, 4096, 4097, 49_152, 49_153, 65_535];
+        for len in lens {
+            let value = vec![b'k'; len];
+            put(&files, "secrets/plant.key", &value).await;
+            assert_eq!(get(&store, "plant.key").await, Ok(value), "{len} bytes");
+        }
+    });
+}
+
+#[test]
 fn gives_a_failed_file_call_as_unavailable() {
     on_sim(|node, files| async move {
         let store = store(files.clone());
@@ -211,12 +224,4 @@ fn refuses_an_absolute_directory() {
 fn refuses_a_directory_with_a_parent_segment() {
     let (_sim, files) = files();
     drop(File::new(files, Path::new("a/../secrets")));
-}
-
-proptest! {
-    #[test]
-    fn a_pool_holds_a_file_of_each_length(len in 0..=1_usize << 16) {
-        let pool = block::Pool::heap(pool(len));
-        prop_assert_eq!(pool.alloc(len).map(|block| block.len()), Ok(len));
-    }
 }
