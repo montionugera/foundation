@@ -338,4 +338,8 @@
   gives them. A kind gets a count through `Context::count`, and `status::Status` stays
   inside the crate (`laptop.architect-2`, 2026-10-09T19:43:41Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088037219, items 1
-  to 3).
+  to 3). A reader of the status uses the public `status::State`, `status::Class`, and
+  `status::Reading`, and `Reading::of(received)` reads the newest status from a frame
+  of a reader of `<connector>.status.*`, each channel by the last segment of its name
+  (`laptop.architect-2`, 2026-10-13T01:10:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057).

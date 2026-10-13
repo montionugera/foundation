@@ -4,11 +4,10 @@ use std::collections::BTreeMap;
 
 use codec::Variable;
 use hub::reader::Received;
-use types::channel;
 use types::name::Name;
-use types::sample::Type;
+use types::sample::{Scalar, Type};
 
-use super::{Class, State, TIME};
+use super::{Class, State, TIME, last};
 
 #[cfg(test)]
 mod tests;
@@ -23,103 +22,115 @@ pub struct Reading {
     /// The class and text of the error that ended the last run, or `None` when the
     /// last run returned `Ok` or no run ended.
     pub error: Option<(Class, String)>,
-    /// Each count that the kind names, by name.
+    /// Each count, by the last segment of its name.
     pub counts: BTreeMap<Name, u64>,
 }
 
 impl Reading {
-    /// The newest status in `received`, a frame of a reader of the status channels
-    /// of `connector`. `names` gives the name of each key in the frame. Gives `None`
-    /// when the frame holds no sample of a channel of the supervisor, or a value of
-    /// `state` or `class` that no state or class has.
+    /// The newest status in `received`, a frame of a reader that selects
+    /// `<connector>.status.*`. A count is each `u64` channel that the supervisor does
+    /// not write. Returns `None` when the frame holds no sample of `state`, `class`,
+    /// or `restarts`, a value of `state` or `class` that no state or class has, or a
+    /// class with no sample of `error`.
     ///
     /// # Panics
     ///
-    /// When the frame holds a series that does not decode, which the home refuses, or
-    /// a status channel with a fixed type wider than 8 bytes.
+    /// When a series of `received` does not decode.
     #[must_use]
-    pub fn of(
-        connector: &Name,
-        received: &Received<'_>,
-        names: &BTreeMap<channel::Key, Name>,
-    ) -> Option<Self> {
-        let prefix = format!("{connector}.status.");
-        let names: BTreeMap<channel::Key, &str> = names
-            .iter()
-            .filter_map(|(key, name)| {
-                let last = name.as_str().strip_prefix(&prefix)?;
-                (last != TIME).then_some((*key, last))
-            })
-            .collect();
-        let (set, view) = (received.set(), received.view());
-        let mut numbers = BTreeMap::new();
-        let mut text = None;
-        for (entry, bytes) in view.iter() {
-            let entry = &set.entries()[entry];
-            let Some(&last) = names.get(&entry.key) else {
-                continue;
-            };
-            let count = view.range(entry.group).map_or(0, |range| range.count);
-            if count == 0 {
-                continue;
-            }
-            match newest(entry.data_type, count, bytes) {
-                Sample::Number(value) => numbers.insert(last, value),
-                Sample::Text(value) => text.replace(value).and(None),
-            };
-        }
-        let state = State::of(numbers.remove("state")?)?;
-        let error = match numbers.remove("class")? {
+    pub fn of(received: &Received<'_>) -> Option<Self> {
+        let samples = Samples::of(received);
+        let error = match samples.class? {
             0 => None,
-            code => Some((Class::of(code)?, text?)),
+            code => Some((Class::of(code)?, samples.text?)),
         };
-        let restarts = numbers.remove("restarts")?;
-        numbers.remove("backoff")?;
-        let counts = numbers
-            .into_iter()
-            .map(|(last, value)| {
-                let name = last.parse().expect("invariant: a segment of a name");
-                (name, value)
-            })
-            .collect();
         Some(Self {
-            state,
-            restarts,
+            state: State::of(samples.state?)?,
+            restarts: samples.restarts?,
             error,
-            counts,
+            counts: samples.counts,
         })
     }
 }
 
-/// The newest sample of a series of a status channel.
-enum Sample {
-    Number(u64),
-    /// The text of `error`.
-    Text(String),
+/// The newest sample of each status channel in a frame.
+struct Samples {
+    state: Option<u64>,
+    class: Option<u64>,
+    restarts: Option<u64>,
+    text: Option<String>,
+    counts: BTreeMap<Name, u64>,
 }
 
-/// The last of the `count` samples of the encoded series `bytes` of `data_type`.
+impl Samples {
+    /// The newest samples in `received`, each channel by the last segment of its name.
+    /// Each `u64` channel that the supervisor does not write is a count.
+    ///
+    /// # Panics
+    ///
+    /// When a series of `received` does not decode.
+    fn of(received: &Received<'_>) -> Self {
+        let (set, view) = (received.set(), received.view());
+        let mut samples = Self {
+            state: None,
+            class: None,
+            restarts: None,
+            text: None,
+            counts: BTreeMap::new(),
+        };
+        for (entry, bytes) in view.iter() {
+            let name = received.name(entry);
+            let segment = name.rsplit('.').next().unwrap_or(name);
+            let entry = &set.entries()[entry];
+            let range = view.range(entry.group);
+            let count = range.expect("invariant: a view holds each index").count;
+            let sample = || newest(entry.data_type, count, bytes);
+            match segment {
+                TIME | last::BACKOFF => {}
+                last::STATE => samples.state = Some(number(&sample())),
+                last::CLASS => samples.class = Some(number(&sample())),
+                last::RESTARTS => samples.restarts = Some(number(&sample())),
+                last::ERROR => {
+                    let text = String::from_utf8(sample());
+                    samples.text = Some(text.expect("invariant: decode checks UTF-8"));
+                }
+                _ if entry.data_type == Type::Scalar(Scalar::U64) => {
+                    let name = segment.parse().expect("invariant: a segment of a name");
+                    samples.counts.insert(name, number(&sample()));
+                }
+                _ => {}
+            }
+        }
+        samples
+    }
+}
+
+/// The bytes of the last of the `count` samples of the encoded series `bytes` of
+/// `data_type`.
 ///
 /// # Panics
 ///
-/// When the series does not decode, which the home refuses, or `count` is 0.
-fn newest(data_type: Type, count: u32, bytes: &[u8]) -> Sample {
+/// When the series does not decode, or `count` is 0.
+fn newest(data_type: Type, count: u32, bytes: &[u8]) -> Vec<u8> {
     let count =
         usize::try_from(count).expect("invariant: a frame's count fits in memory");
     let mut raw = Vec::new();
-    codec::decode(data_type, count, bytes, &mut raw)
-        .expect("invariant: the home holds series that decode");
-    if let Some(form) = Variable::of(data_type) {
-        let sample = form.samples(count, &raw).last();
-        let sample = sample.expect("invariant: a group in a frame has a sample");
-        return Sample::Text(String::from_utf8_lossy(sample).into_owned());
-    }
-    let width = data_type
-        .width()
-        .expect("invariant: a fixed type has a width");
-    let sample = raw.rchunks_exact(width).next();
-    let sample = sample.expect("invariant: a group in a frame has a sample");
+    // A remote reader passes a peer's series on unchecked (#2144).
+    codec::decode(data_type, count, bytes, &mut raw).expect("a series that decodes");
+    let sample = if let Some(form) = Variable::of(data_type) {
+        form.samples(count, &raw).last()
+    } else {
+        let width = data_type.width();
+        let width = width.expect("invariant: a fixed type has a width");
+        raw.rchunks_exact(width).next()
+    };
+    sample
+        .expect("invariant: a group in a frame has a sample")
+        .to_vec()
+}
+
+/// The sample `bytes` of an unsigned type of at most 8 bytes, as a `u64`.
+fn number(bytes: &[u8]) -> u64 {
     let mut widened = [0; 8];
-    widened[..width].copy_from_slice(sample);
-    Sample::Number(u64::from_le_bytes(widened))
+    widened[..bytes.len()].copy_from_slice(bytes);
+    u64::from_le_bytes(widened)
 }
