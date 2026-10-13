@@ -137,7 +137,9 @@ mod status {
     /// A kind that sets its count `samples` 64 times each 2.1 s, so each first set
     /// finds the status write due, and counts the allocations of the sets from the
     /// third time on. It holds `steady` from the third time on until it ends its last
-    /// sleep, and counts in `slept` what its sleeps allocate meanwhile.
+    /// sleep, and counts in `slept` what its sleeps allocate meanwhile. With
+    /// `Shows::Error`, it shows an error before its first set, so each status write
+    /// holds that error.
     struct Sets {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
