@@ -89,4 +89,4 @@
   of a run of an earlier spec with fewer counts is `unknown` by that count too, until
   the run of the spec in use writes its start frame: `laptop.architect-2`
   (2026-10-13T04:05:46Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480).
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480). A frame of a run of an earlier spec with more counts holds each status channel of the spec in use, so it gives its state until the run of the spec in use writes its start frame. That state can be `running`, since the earlier run writes no `stopped` frame once the apply removed a channel that its frames hold: `laptop.architect-2` (2026-10-13T04:28:21Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6138238827).
