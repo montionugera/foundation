@@ -214,6 +214,22 @@ pub fn files(
     Disk::new(dir, threads, name)
 }
 
+/// The real disk under `dir/data` and the handle of its I/O thread, as [`files`] gives
+/// them, for a directory that is there. It makes nothing.
+///
+/// # Errors
+///
+/// - [`Error::Dir`] when `dir/data` is not there or the OS cannot open it.
+/// - [`Error::Thread`] when the I/O thread cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn stored(
+    dir: &Path,
+    threads: &env::threads::Threads,
+    name: &str,
+) -> Result<(Disk, env::thread::Handle), Error> {
+    Disk::stored(dir, threads, name)
+}
+
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
 /// future completes at it, also when it came before the first poll. A second one ends
 /// the process as it does with no hold, so a stop that hangs can still be ended. It
