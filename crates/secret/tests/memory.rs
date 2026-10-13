@@ -1,5 +1,6 @@
 //! The heap bytes that the gets of one file store hold at once, as SECRET STORES AS
-//! ADAPTERS states them. The count covers every thread, so this binary has no test harness.
+//! ADAPTERS states them. The count covers every thread, so this binary has no test
+//! harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
