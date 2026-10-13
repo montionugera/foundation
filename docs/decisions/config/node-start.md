@@ -207,7 +207,11 @@
   socket of the program, 2026-10-13T02:03:30Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136518581); the
   `hub` use and `Refused`, `laptop.architect`, 2026-10-11T08:10:05Z, item 3:
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274.
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274; the
+  map of `hub::client::Error`, 2026-10-13T01:54:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136368545, and its
+  `Network` arm, 2026-10-13T02:20:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136786579.
   Supersedes `ops::Unreached` and "`node`: no new public item" of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935.
   A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
