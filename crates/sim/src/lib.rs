@@ -403,8 +403,7 @@ impl Sim {
     /// default dispatch. A panic in the poll, or in a drop of the futures that end
     /// with the task, ends the task's thread and the run.
     fn step(&mut self) -> Result<(), Error> {
-        let (task, thread, start) = lock(&self.shared).pick(&mut self.scheduler);
-        let log = lock(&self.shared).log(thread);
+        let (task, thread, start, log) = lock(&self.shared).pick(&mut self.scheduler);
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::dispatcher::with_default(&log, || {
                 if self.poll(task, thread, start).is_pending() {

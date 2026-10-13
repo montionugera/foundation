@@ -416,10 +416,6 @@ impl State {
         self.threads[&thread].name.clone()
     }
 
-    pub(crate) fn log(&self, thread: u64) -> Dispatch {
-        self.threads[&thread].log.clone()
-    }
-
     /// How `thread` ended, or `None` while it runs.
     pub(crate) fn outcome(&self, thread: u64) -> Option<Outcome> {
         self.threads[&thread].outcome.clone()
@@ -466,13 +462,16 @@ impl State {
     }
 
     /// Takes a ready task of a node that is not paused, at random, and makes its
-    /// thread the current one. Returns the task, its thread, and the thread's start
-    /// when the task is its first.
+    /// thread the current one. Returns the task, its thread, the thread's start when
+    /// the task is its first, and the thread's log.
     ///
     /// # Panics
     ///
     /// When no such task is ready.
-    pub(crate) fn pick(&mut self, rng: &mut Rng) -> (u64, u64, Option<Start>) {
+    pub(crate) fn pick(
+        &mut self,
+        rng: &mut Rng,
+    ) -> (u64, u64, Option<Start>, Dispatch) {
         let runnable: Vec<u64> = self.runnable().collect();
         let count = u64::try_from(runnable.len()).expect("invariant: usize fits u64");
         let nth = usize::try_from(rng.below(count))
@@ -482,7 +481,8 @@ impl State {
         self.ready.remove(&task);
         let thread = self.tasks[&task];
         self.current = Some(thread);
-        (task, thread, self.starts.remove(&task))
+        let log = self.threads[&thread].log.clone();
+        (task, thread, self.starts.remove(&task), log)
     }
 
     /// Ends the poll that `pick` began.
