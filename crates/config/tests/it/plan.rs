@@ -3634,10 +3634,10 @@ fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
     }
 }
 
-/// A connector writes its status index, so a channel on that index that another
-/// connector writes on another node leaves the index with no one home.
+/// Only the connector writes its status, so `check` refuses a channel on its status
+/// index that another connector writes, before the rules of `plan` count writers.
 #[test]
-fn check_counts_a_connector_as_a_writer_of_its_status_index() {
+fn check_refuses_a_channel_that_another_connector_writes_on_a_status_index() {
     let mut definitions = with_writer("m", &["x"]);
     let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
         panic!("the status index");
@@ -3652,14 +3652,7 @@ fn check_counts_a_connector_as_a_writer_of_its_status_index() {
     definitions.insert(name("x"), Stored::Channel(x));
     let members = BTreeSet::from([name("n"), name("m")]);
     let found = config::plan::check(&definitions, &members, &kinds());
-    let expected = (
-        "config.writer-nodes",
-        None,
-        "connectors on the nodes `n` and `m` write the index `c.status.time`, so it has \
-         no one home"
-            .into(),
-        "Run each connector that writes `c.status.time` on one node".into(),
-    );
+    let expected = points("x", "c.status.time");
     assert_eq!(problems(found.map(|()| unreachable())), [expected]);
 }
 
