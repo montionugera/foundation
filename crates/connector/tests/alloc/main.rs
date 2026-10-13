@@ -139,7 +139,7 @@ mod status {
     /// third time on. It holds `steady` from the third time on until it ends its last
     /// sleep, and counts in `slept` what its sleeps allocate meanwhile. With
     /// `Shows::Error`, it shows an error before its first set, so each status write
-    /// holds that error.
+    /// after the start of the run and before its end holds that error.
     struct Sets {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
