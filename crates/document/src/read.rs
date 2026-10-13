@@ -129,7 +129,8 @@ fn span_fix(error: time::Error) -> String {
         | time::Error::Range
         | time::Error::Reversed
         | time::Error::Zero
-        | time::Error::Period => error.fix().into(),
+        | time::Error::Period
+        | time::Error::Rate => error.fix().into(),
     }
 }
 
