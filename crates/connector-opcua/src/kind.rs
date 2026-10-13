@@ -154,7 +154,7 @@ struct Frames {
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
     fills: Vec<Fill>,
-    /// The values of each group, by its number.
+    /// The count of data samples of each group in one frame, by its number.
     samples: Vec<u64>,
     /// The series of the groups that a frame wrote again.
     again: Vec<(usize, usize)>,
@@ -322,7 +322,8 @@ impl Frames {
                     refusal: refusal @ (Refusal::Expired | Refusal::Codec { .. }),
                     ..
                 } => panic!(
-                    "the home refuses a frame with no lease in raw form: {refusal}"
+                    "invariant: the home refuses no frame with no lease in raw form, \
+                     but gives {refusal}"
                 ),
             }
         }
