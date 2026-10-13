@@ -116,12 +116,14 @@
   Supersedes the code, message, fix, and order of
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6060043966.
   The apply output is `Applied { file, pointer, added, changed, removed, homes }`, where
-  `homes` counts the homes that the plan lists. Its text is `Applied <file>: <a> added,
-  <c> changed, <r> removed, <h> homes listed.`, with each count of 0 left out and `1
-  home listed` for one home, and `no change` only for a plan with no change and no home.
-  The text without `homes` and the rule that leaves out a count of 0 are step 5 of the
-  plan https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6063695586.
-  `homes`, its text, and the `no change` rule decided by `laptop.architect-2`
+  `homes` counts the homes of the plan that the apply gives: each home that the plan
+  lists, and through `ops::serve` each home on whose index the subject has `apply`
+  (SERVE ACCESS). Its text is `Applied <file>: <a> added, <c> changed, <r> removed, <h>
+  homes listed.`, with each count of 0 left out and `1 home listed` for one home, and
+  `no change` only for a plan with no change and no home. The text without `homes` and
+  the rule that leaves out a count of 0 are step 5 of the plan
+  https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6063695586. `homes`,
+  its text, and the `no change` rule decided by `laptop.architect-2`
   (2026-10-09T00:42:24Z,
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071903259). The whole
   text approved by `laptop.architect-2` (2026-10-09T01:02:46Z,
@@ -145,3 +147,43 @@
   supersedes the order of the example in item 4. The field `key` is by
   `laptop.architect-2` (2026-10-12T18:47:07Z,
   https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
+  A remote program runs `plan` and `apply` on a node through `ops::serve`. The request
+  form is private to `ops`: one line of JSON with one operation and its input, a
+  newline, then the bytes of a plan file as they are. `plan` sends the path and the text
+  of each file: `{"plan":{"files":[{"path":"site.hcl","text":"..."}]}}`, with no byte
+  after the newline. `apply` sends `{"apply":{}}` and then only the plan. The command
+  line checks the path and fills `Applied::file`, so the node sees no path and gives the
+  apply output with no `file`. The reply is `{"output":<the output>}` and a newline,
+  then the plan file for `plan`. The reply of an error is `{"errors":[...],
+  "status":<n>}` and a newline, with the `errors` of each error of `ops` and the exit
+  status that the error has (2 for a `Config` or a `Plan` error), not always 1. Three
+  codes are new, each with status 1. A body that is not this form is `ops.bad-request`,
+  with the cause in the message and the fix ``Use a `foundation` program of the same
+  version as the node``. So is each operation other than `plan` and `apply`, with the
+  cause ``the operation `<name>` does not run on a node``. A subject with no grant gets
+  `ops.denied` (SERVE ACCESS). A reply of more than `wire::hub::client::BODY_BYTES_MAX`
+  bytes is `ops.large-reply`, with the bound in the message and the fix `Plan and apply
+  the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
+  (`laptop.architect`, 2026-10-08T11:24:14Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
+  bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
+  The places of the problems of one file share its path (`laptop.architect`,
+  2026-10-12T20:11:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
+  `laptop.architect-2`, 2026-10-12T20:14:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131856346). `serve`
+  reads the spec in use as the apply does, so a node that is behind gives `ops.behind`
+  for `plan` too (later step of
+  https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913, in
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6071715327). A node
+  that uses no spec gives `ops.denied` to each remote subject instead (SERVE ACCESS).
+  The form, the status of an error, `ops.denied`, and `ops.large-reply` are decisions 5
+  to 7 of plan revision 4, by `laptop.architect-2` (2026-10-11T07:10:55Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913),
+  approved for the contracts by `laptop.architect` (2026-10-11T08:10:05Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). The
+  status of `ops.bad-request`, its fix, and its use for each operation other than `plan`
+  and `apply` are by `laptop.architect-2` (2026-10-12T18:30:05Z,
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6130219053), which
+  supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. Lost:
+  one JSON value with the plan file as a list of numbers, which is four times the bytes.

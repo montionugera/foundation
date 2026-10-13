@@ -1,7 +1,6 @@
 //! Plans the change from config files to the applied spec.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 use document::{Document, Span};
 use schemars::JsonSchema;
@@ -10,7 +9,7 @@ use serde_json::Value;
 use spec::definition::Definition;
 use types::name::Name;
 
-use crate::error::{Error, Place};
+use crate::error::{Error, Paths, Place};
 use crate::front_end::{self, File, FrontEnds};
 
 #[cfg(test)]
@@ -39,7 +38,7 @@ pub(crate) fn plan(
 
 /// The config files of one plan, each read into its Document.
 pub(crate) struct Documents {
-    paths: Vec<PathBuf>,
+    paths: Paths,
     documents: Vec<Document>,
 }
 
@@ -54,10 +53,25 @@ impl Documents {
     ///
     /// As [`front_end::read`] panics.
     pub(crate) fn read(files: &[File], front_ends: &FrontEnds) -> Result<Self, Error> {
-        let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        let paths = Paths::of(files);
         match front_end::read(files, front_ends) {
             Ok(documents) => Ok(Self { paths, documents }),
             Err(diagnostics) => Err(Error::config(diagnostics, &paths)),
+        }
+    }
+
+    /// The tree key of each definition of the files, in order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::check`].
+    pub(crate) fn names(
+        &self,
+        kinds: &connector::kind::Table,
+    ) -> Result<Vec<Name>, Error> {
+        match config::check(&self.documents, kinds) {
+            Ok(entries) => Ok(entries.into_keys().collect()),
+            Err(diagnostics) => Err(Error::config(diagnostics, &self.paths)),
         }
     }
 
@@ -328,7 +342,7 @@ fn lines<'a>(
 
 impl Change {
     /// The output of `line` at the tree key `name`.
-    fn of(name: &Name, line: Line<'_>, paths: &[PathBuf]) -> (Order, Self) {
+    fn of(name: &Name, line: Line<'_>, paths: &Paths) -> (Order, Self) {
         let (kind, span, definition) = match line {
             Line::Add(entry) | Line::Change(entry) => {
                 let definition =
@@ -357,7 +371,7 @@ impl Change {
             action: line.action(),
             kind: kind.as_str().to_owned(),
             name: label.to_string(),
-            place: span.map(|span| Place::of(span, paths)),
+            place: span.map(|span| paths.place(span)),
             fingerprints,
         };
         (order, change)
