@@ -94,3 +94,13 @@ unsafe fn release<T>(data: *const ()) {
     // SAFETY: as in `clone`. The waker gives up its one count.
     unsafe { Rc::decrement_strong_count(data.cast::<Inner<T>>()) };
 }
+
+/// Temporary, for the CI run of #2584: each mutant of it is caught.
+pub fn caught(x: u32) -> u32 {
+    x + 1
+}
+
+/// Temporary, for the CI run of #2584: its one mutant is missed.
+pub fn missed(v: &mut u32) {
+    *v = 7;
+}

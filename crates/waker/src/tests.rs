@@ -165,3 +165,8 @@ fn a_last_drop_on_another_thread_aborts_before_the_value_drops() {
     });
     assert!(!printed.contains(DROPPED), "{printed}");
 }
+
+#[test]
+fn caught() {
+    assert_eq!(super::caught(2), 3);
+}
