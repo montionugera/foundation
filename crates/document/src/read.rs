@@ -18,6 +18,7 @@ const BAD_NAME: Code = Code::new("document.bad-name");
 const BAD_SELECTOR: Code = Code::new("document.bad-selector");
 const BAD_SPAN: Code = Code::new("document.bad-span");
 const NEGATIVE_SPAN: Code = Code::new("document.negative-span");
+const BAD_RATE: Code = Code::new("document.bad-rate");
 const LABEL_COUNT: Code = Code::new("document.label-count");
 const REPEATED_BLOCK: Code = Code::new("document.repeated-block");
 
@@ -131,6 +132,52 @@ fn span_fix(error: time::Error) -> String {
         | time::Error::Zero
         | time::Error::Period
         | time::Error::Rate => error.fix().into(),
+    }
+}
+
+/// Reads a rate from a string that [`time::Rate`] reads, such as `"10Hz"` or
+/// `"2.5kHz"`.
+///
+/// # Errors
+///
+/// A `document.bad-rate` diagnostic at the value's span when the value is not a
+/// string, or when `time::Rate` refuses its text.
+pub fn rate(value: &Value) -> Result<time::Rate, Diagnostic> {
+    let bad = |message: String, fix: String| {
+        Diagnostic::new(BAD_RATE, value.span, message, fix)
+    };
+    let Kind::String(text) = &value.kind else {
+        return Err(bad(
+            format!("a rate is a string, not {}", value.kind.noun()),
+            "Write a string such as \"10Hz\"".into(),
+        ));
+    };
+    text.parse().map_err(|error| {
+        bad(
+            format!("cannot read the rate {text:?}: {error}"),
+            rate_fix(error),
+        )
+    })
+}
+
+/// The fix for `error`, with each rate quoted as the file writes it.
+fn rate_fix(error: time::Error) -> String {
+    match error {
+        time::Error::Zero => "Write a rate above zero, such as \"10Hz\"".into(),
+        time::Error::Period => {
+            "Use a rate from \"0.000000001Hz\" to \"1000MHz\"".into()
+        }
+        time::Error::Rate => {
+            "Write a rate such as \"10Hz\", \"2.5kHz\", or \"1MHz\"".into()
+        }
+        time::Error::Span
+        | time::Error::Long
+        | time::Error::Fraction
+        | time::Error::Stamp
+        | time::Error::Date
+        | time::Error::Era
+        | time::Error::Range
+        | time::Error::Reversed => error.fix().into(),
     }
 }
 
@@ -1085,6 +1132,75 @@ mod tests {
                 refused_span(&format!("cannot read the span {text:?}: {problem}"), fix),
                 "{text:?}"
             );
+        }
+    }
+
+    fn refused_rate(message: &str, fix: &str) -> Result<time::Rate, Diagnostic> {
+        Err(Diagnostic::new(
+            Code::new("document.bad-rate"),
+            Some(span()),
+            message.into(),
+            fix.into(),
+        ))
+    }
+
+    #[test]
+    fn reads_a_rate() {
+        assert_eq!(
+            super::rate(&string("2.5kHz")),
+            Ok(time::Rate::new(2500, 1).unwrap())
+        );
+        assert_eq!(
+            super::rate(&string("0.5Hz")),
+            Ok(time::Rate::new(1, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn refuses_a_rate_that_is_not_a_string() {
+        assert_eq!(
+            super::rate(&value(Kind::Integer(10))),
+            refused_rate(
+                "a rate is a string, not an integer",
+                "Write a string such as \"10Hz\""
+            ),
+        );
+    }
+
+    #[test]
+    fn refuses_a_rate_that_time_refuses() {
+        for (text, problem, fix) in [
+            (
+                "10 Hz",
+                "a rate is not a number and a unit of `Hz`, `kHz`, or `MHz`, to 1 nHz",
+                "Write a rate such as \"10Hz\", \"2.5kHz\", or \"1MHz\"",
+            ),
+            (
+                "0Hz",
+                "a rate has a zero numerator or denominator",
+                "Write a rate above zero, such as \"10Hz\"",
+            ),
+            (
+                "1001MHz",
+                "the sample period of a rate is under 1 ns or longer than a span",
+                "Use a rate from \"0.000000001Hz\" to \"1000MHz\"",
+            ),
+        ] {
+            assert_eq!(
+                super::rate(&string(text)),
+                refused_rate(&format!("cannot read the rate {text:?}: {problem}"), fix),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_each_rate_that_the_fix_of_a_rate_names() {
+        for text in ["10 Hz", "0Hz", "1001MHz"] {
+            let fix = super::rate(&string(text)).unwrap_err().fix;
+            for named in fix.split('"').skip(1).step_by(2) {
+                assert!(super::rate(&string(named)).is_ok(), "{text:?}: {named:?}");
+            }
         }
     }
 
