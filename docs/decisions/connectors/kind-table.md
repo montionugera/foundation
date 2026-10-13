@@ -63,9 +63,14 @@
   `TooLarge` (`connector.large-frame`, with the fix "Give the connector fewer
   channels"), because only a spec change or a kind that splits its frames fixes it.
   `Retry`: pool `Exhausted` and `Refused`, as writer `Home` `Full`. A panic with
-  `invariant:`: `OutOfRange`, `Unordered`, `IndexAbsent`, and `End`, because a kind
-  gives its series from its own code (`laptop.architect-2`, 2026-10-13T06:23:18Z:
-  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6139612819, item 5).
+  `invariant:`: `OutOfRange`, `Unordered`, and `IndexAbsent`, because a kind gives its
+  series from its own code, and `End`, which a draft never gives (the classes:
+  `laptop.architect-2`, 2026-10-13T06:23:18Z:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6139612819, item 5;
+  `From<frame::Error>` and the panics: `laptop.architect-2`, 2026-10-13T07:43:02Z:
+  https://github.com/synnaxlabs/foundation/pull/2561#issuecomment-6140788066; the
+  text: `laptop.architect`, 2026-10-13T07:42:14Z:
+  https://github.com/synnaxlabs/foundation/pull/2561#issuecomment-6140774870).
   `Table::check` takes where the file names the kind and puts `connector.unknown-kind`
   there; `discover` and `run` take their kind from the spec, which has no spans
   (`laptop.architect-2`,
