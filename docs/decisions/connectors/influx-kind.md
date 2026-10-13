@@ -17,8 +17,9 @@
   https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931
   (2026-10-08 05:03 UTC).
   The kind also reads one target (`Target`): `database` for InfluxDB 1, or `bucket`
-  and `org` for InfluxDB 2 and 3. This supersedes "InfluxDB 1 only" of section 4 of
-  ONE NODE (the goal of https://github.com/synnaxlabs/foundation/issues/2583). Each
+  and `org` for InfluxDB 2 and 3. Supersedes "InfluxDB 1 only" of section 4 of the
+  ONE NODE record
+  (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217). Each
   is a string of 1 to 4,096 bytes (`influx.bad-database`, `influx.bad-bucket`,
   `influx.bad-org`), so the query of the write URI holds both names when each byte is
   encoded. A `database` with a `bucket` is `influx.two-targets`, and an `org` with a
@@ -31,7 +32,9 @@
   the person (2026-10-13T16:24:35Z, relayed in
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949), and
   the plan that `laptop.architect-2` approved on 2026-10-13T16:53:54Z
-  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150691934).
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150691934),
+  and its review of the target with no token
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155556749).
   The kind also reads `measurement`, a name that `line::Measurement::new` takes other
   than `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its
   settings and no written channel. `run` writes each frame of the reader to the write
