@@ -339,9 +339,16 @@
   inside the crate (`laptop.architect-2`, 2026-10-09T19:43:41Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088037219, items 1
   to 3). A reader of the status uses the public `status::State`, `status::Class`, and
-  `status::Reading`, and `Reading::of(received)` reads the newest status from a frame
-  of a reader of the status index and each channel on it, each channel by the last
-  segment of its name (`laptop.architect-2`, 2026-10-13T01:10:40Z:
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057). Each
-  channel on the status index that the supervisor does not write is a count, because
-  `config` refuses a channel that points at a channel that a connector implies.
+  `status::Reading`, and `Reading::of(received)` reads the newest status from a frame of
+  a reader of the status index and each channel on it, each channel by the last segment
+  of its name (`laptop.architect-2`, 2026-10-13T01:10:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057; the
+  reader by its channels: `laptop.architect-2`, 2026-10-13T01:52:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
+  Each channel on the status index that the supervisor does not write is a count,
+  because a kind adds only counts to the status, and `config` refuses each channel that
+  no connector implies and that points at a channel that a connector implies
+  (`laptop.architect-2`, 2026-10-13T02:00:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136466855;
+  `laptop.architect`, 2026-10-13T01:57:10Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136397268).
