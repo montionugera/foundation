@@ -207,15 +207,19 @@ fn refused(address: SocketAddr) -> String {
     format!("the connect failed: {address} refused the connection")
 }
 
+/// The time of each sample of the field `f` that `influx` stored.
+fn times(influx: &Influx) -> Vec<Stamp> {
+    let stored = influx.stored();
+    stored["f"].iter().map(|sample| sample.time).collect()
+}
+
 #[test]
 fn influx_stores_each_line_written_to_plant_and_keeps_it_after_a_stop() {
     let mut influx = Influx::default();
     let address = influx.serve();
-    assert_eq!(write(address, "m f=1 1\nm f=2 2"), "204 No Content");
+    assert_eq!(write(address, "plant f=1 1\nplant f=2 2"), "204 No Content");
     influx.stop();
-    let store = influx.store.lock().expect("no panic");
-    let times: Vec<_> = store.points("m", &[]).map(|point| point.time).collect();
-    assert_eq!(times, [Stamp::from_nanos(1), Stamp::from_nanos(2)]);
+    assert_eq!(times(&influx), [Stamp::from_nanos(1), Stamp::from_nanos(2)]);
 }
 
 #[test]
@@ -256,14 +260,12 @@ fn influx_panics_on_a_field_that_is_not_a_float() {
 fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
     let mut influx = Influx::default();
     let address = influx.serve();
-    assert_eq!(write(address, "m f=1 1"), "204 No Content");
+    assert_eq!(write(address, "plant f=1 1"), "204 No Content");
     influx.stop();
-    assert_eq!(write(address, "m f=2 2"), refused(address));
+    assert_eq!(write(address, "plant f=2 2"), refused(address));
     assert_eq!(influx.serve(), address);
-    assert_eq!(write(address, "m f=3 3"), "204 No Content");
-    let store = influx.store.lock().expect("no panic");
-    let times: Vec<_> = store.points("m", &[]).map(|point| point.time).collect();
-    assert_eq!(times, [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
+    assert_eq!(write(address, "plant f=3 3"), "204 No Content");
+    assert_eq!(times(&influx), [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
 }
 
 #[test]

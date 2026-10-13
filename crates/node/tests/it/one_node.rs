@@ -279,7 +279,13 @@ fn a_bad_status_keeps_its_quality() {
         samples.iter().map(|sample| sample.quality).collect()
     };
     let served = qualities(&trace.served);
-    assert_eq!(served.last(), Some(&Some(BAD)), "{trace:?}");
+    let bad: Vec<_> = (served.iter())
+        .skip_while(|quality| **quality == Some(Quality::GOOD))
+        .collect();
+    assert!(
+        bad.len() >= READS && bad.iter().all(|quality| **quality == Some(BAD)),
+        "Good, then only Bad: {trace:?}"
+    );
     assert_eq!(qualities(&trace.stored), served);
 }
 
