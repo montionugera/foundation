@@ -426,26 +426,25 @@
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC). `dateTime_now` gives a wall time that `event::Loop::new`
-  takes. The loop of the kind gives the wall time of the node through `hub`.
-  `sim::serve` gives the wall time that its caller gives; the benches and the unit
-  tests give the monotonic time from the Unix epoch. Decided by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147646436,
-  2026-10-13 14:18 UTC;
-  https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
-  2026-10-13 14:19 UTC). The trigger moved to ONE NODE by `laptop.architect-2`
+  2026-10-08 20:22 UTC).
+  `dateTime_now` gives the wall time of the `event::Time` that `event::Loop::new`
+  takes. The kind gives the wall time of the node through `hub::writer::Writer::time`,
+  the midpoint of mesh time. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC). `sim::serve` gives the wall time that its caller gives; the
+  benches and the unit tests give the monotonic time from the Unix epoch
+  (`event::Time::monotonic`). Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
+  2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
+  1 of #1737 passes"
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
-  2026-10-13 07:03 UTC), and added to ONE NODE by the person, relayed by
+  2026-10-13 07:03 UTC), and the person added this part to ONE NODE, relayed by
   `laptop.monitor`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
-  2026-10-13 13:40 UTC). The wall time of the kind is the midpoint of mesh time,
-  through `hub::writer::Writer::time`. Decided by `laptop.architect`
-  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
-  2026-10-13 13:56 UTC). The certificate part of #1992 lands in the PR of the first
-  connection with a security policy other than `None`, so no connection that checks a
-  certificate runs before it. `bench` also gives a connection manager with the test
-  server and its clients on the loop of the manager. Approved by `laptop.architect-2` at
-  `3b508e494`
+  2026-10-13 13:40 UTC). The certificate part of #1992 keeps its trigger: the PR of
+  the first connection with a security policy other than `None`.
+  `bench` also gives a connection manager with the test server and its clients on the
+  loop of the manager. Approved by `laptop.architect-2` at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
   `bench::client` gives a test server on its own manager, and clients of it that each
