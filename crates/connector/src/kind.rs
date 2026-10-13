@@ -430,8 +430,8 @@ fn writer_error(error: hub::writer::Error) -> Error {
 ///
 /// # Panics
 ///
-/// For an end that only a reader away from its home gives, because a named reader
-/// opens only at its home.
+/// For an end that only a reader away from its home gives, because a named reader opens
+/// only at its home.
 #[expect(
     clippy::fallible_impl_from,
     reason = "each panic is an end that no run gets"
@@ -455,8 +455,8 @@ impl From<hub::reader::Ended> for Error {
     }
 }
 
-/// The class of a failed write of a run, for a kind that returns it with `?`:
-/// `Config` (`connector.large-frame`) for `Home(Large)`, and `Retry` for `Removed`,
+/// The class of a failed write of a run, for a kind that returns it with `?`: `Config`
+/// (`connector.large-frame`) for `Home(Large)`, and `Retry` for `Removed`,
 /// `Home(Full)`, and `Home(Disk)`.
 ///
 /// # Panics
