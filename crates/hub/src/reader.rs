@@ -615,7 +615,8 @@ impl From<Stop> for Ended {
     }
 }
 
-/// The name of each channel of a reader, in one text, so an open copies no name.
+/// The name of each channel of a reader, in one text, so an open makes no allocation
+/// for each name.
 #[derive(Debug, Default)]
 struct Names {
     /// The key of each channel, sorted, with the end of its name in `text`.
