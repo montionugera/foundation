@@ -238,15 +238,17 @@
   2026-10-08T06:38:42Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
   to 3). A running kind shows an error with `Context::error`, as an attempt that failed:
-  `class` 3 and the text of the error, cut as above. `Context::clear_error` clears `class`
-  to 0 and the text (`laptop.architect-2`, 2026-10-13T04:31:10Z:
-  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6138269499). A change of it is written within one second, as a change of counts
+  `class` 3 and the text of the error, cut as above. `Context::clear_error` clears
+  `class` to 0 and the text. Until the first call of a run, `class` and `error` keep the
+  end of the last run, so a kind that wants a clear status clears it at its start
+  (`laptop.architect-2`, 2026-10-13T04:31:10Z:
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6138269499). A change
+  of the shown error is written within one second, as a change of counts
   (`laptop.architect-2`, 2026-10-13T01:12:06Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432), which
-  supersedes "at once" of rule 3 for it. Until the first call of a run, `class` and
-  `error` keep the end of the last run, so a kind that wants a clear status clears it at
-  its start. The same value again writes nothing. The end of the run replaces both. A
-  call after the run returned shows nothing (`laptop.architect-2`, 2026-10-13T04:01:43Z:
+  supersedes "at once" of rule 3 for it. The same value again writes nothing. The end of
+  the run replaces both. A call after the run returned shows nothing
+  (`laptop.architect-2`, 2026-10-13T04:01:43Z:
   https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
   run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2

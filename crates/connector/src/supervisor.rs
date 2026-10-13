@@ -454,6 +454,9 @@ mod tests {
         ShowWide(Span),
         /// Clears the error, waits the span, then returns `Ok`.
         Clear(Span),
+        /// Lends its context to a task that shows the error `late` at the cancel of
+        /// the run, then returns `Ok` at once, or a device error when `device`.
+        Late { device: bool },
     }
 
     /// When each run started and ended.
@@ -493,6 +496,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
+            let ctx = Rc::new(ctx);
             assert_eq!(ctx.name().as_str(), "plant.script");
             let clock = ctx.clock();
             let index = {
@@ -515,7 +519,8 @@ mod tests {
     }
 
     /// Runs `step` of a `Script`, or waits for the cancel when it is `None`.
-    async fn play(ctx: &Context<bool>, step: Option<Step>) -> Result<(), Error> {
+    async fn play(lent: &Rc<Context<bool>>, step: Option<Step>) -> Result<(), Error> {
+        let ctx: &Context<bool> = lent;
         let clock = ctx.clock();
         match step {
             Some(Step::Done) => Ok(()),
@@ -571,11 +576,25 @@ mod tests {
                 clock.sleep(span).await;
                 Ok(())
             }
+            Some(Step::Late { device }) => show_late(lent, device),
             None => {
                 ctx.cancel().wait().await;
                 Ok(())
             }
         }
+    }
+
+    /// Runs [`Step::Late`].
+    fn show_late(lent: &Rc<Context<bool>>, device: bool) -> Result<(), Error> {
+        let late = Rc::clone(lent);
+        lent.tasks().spawn(async move {
+            late.cancel().wait().await;
+            late.error(&"late");
+        });
+        if device {
+            return Err(Error::Device("no reply".into()));
+        }
+        Ok(())
     }
 
     /// Returns `end` with `?`, as a kind does.
@@ -952,74 +971,14 @@ mod tests {
         assert_eq!(got[3..5], want);
     }
 
-    /// A kind whose run lends its context to a task that shows the error `late` at the
-    /// cancel of the run, then returns `Ok` at once, or a device error when `device`.
-    struct Late {
-        device: bool,
-    }
-
-    impl Kind for Late {
-        type Config = ();
-
-        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-            Ok(())
-        }
-
-        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-            Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
-        fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
-            let ctx = Rc::new(ctx);
-            let late = Rc::clone(&ctx);
-            ctx.tasks().spawn(async move {
-                late.cancel().wait().await;
-                late.error(&"late");
-            });
-            std::future::ready(if self.device {
-                Err(Error::Device("no reply".into()))
-            } else {
-                Ok(())
-            })
-        }
-    }
-
-    /// The state, the class, and the text of each status that a `Late` run gives,
-    /// cancelled at `cancel`.
+    /// The state, the class, and the text of each status that a run of
+    /// [`Step::Late`] gives, cancelled at `cancel`.
     fn supervise_late(device: bool, cancel: Span) -> Vec<((i64, i64, i64), String)> {
-        let statuses = run_on(move |node, tasks| async move {
-            let kinds = Table::new().with("script", Late { device });
-            let inputs =
-                create_config(&node, tasks.clone(), kinds, "plant.script").await;
-            let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
-            let supervisor = Supervisor::new(inputs);
-            let clock = node.clock();
-            let token = Token::new();
-            let canceller = token.clone();
-            let sleeper = clock.clone();
-            tasks.spawn(async move {
-                sleeper.sleep(cancel).await;
-                canceller.cancel();
-            });
-            let name = "plant.script".parse().expect("a valid name");
-            let result = supervisor
-                .open("script", name, &config(), &token)
-                .await
-                .run()
-                .await;
-            result.expect("ok after a cancel");
-            clock.sleep(Span::SECOND).await;
-            statuses.borrow().clone()
-        });
-        (statuses.iter())
-            .zip(states(&statuses))
+        let steps = vec![Step::Late { device }];
+        let out = supervise("script", steps, config(), Cancel::After(cancel));
+        out.result.expect("ok after a cancel");
+        (out.statuses.iter())
+            .zip(states(&out.statuses))
             .map(|((_, _, text), state)| (state, text.clone()))
             .collect()
     }

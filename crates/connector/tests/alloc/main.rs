@@ -49,7 +49,8 @@ fn main() {
         "race",
     );
     check_ticks();
-    status::check();
+    status::check(false);
+    status::check(true);
 }
 
 /// Checks that 64 ticks after two warm-up ticks allocate nothing in their polls. The
@@ -141,6 +142,7 @@ mod status {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
         slept: Arc<AtomicU64>,
+        shows: bool,
     }
 
     impl Kind for Sets {
@@ -167,6 +169,9 @@ mod status {
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
+            if self.shows {
+                ctx.error(&"refused");
+            }
             let allocations = Cell::new(0);
             // The first wakes of the flush grow the simulator's lists.
             for round in 0..6_u64 {
@@ -209,7 +214,7 @@ mod status {
     /// Checks that a set of a status count allocates nothing, also the set that wakes
     /// the status writer, and that so does each poll of the supervisor while the kind
     /// sets its count, with the write of the status, but for the kind's sleeps.
-    pub(super) fn check() {
+    pub(super) fn check(shows: bool) {
         let allocations = Arc::new(AtomicU64::new(1));
         let steady = Arc::new(AtomicBool::new(false));
         let slept = Arc::new(AtomicU64::new(0));
@@ -217,6 +222,7 @@ mod status {
             allocations: Arc::clone(&allocations),
             steady: Arc::clone(&steady),
             slept: Arc::clone(&slept),
+            shows,
         };
         let polled = Arc::new(AtomicU64::new(0));
         let (counted, into) = (Arc::clone(&steady), Arc::clone(&polled));
@@ -269,7 +275,8 @@ mod status {
         assert_eq!(
             polled.load(Relaxed),
             slept.load(Relaxed),
-            "a poll of the supervisor allocates only in the kind's sleeps"
+            "a poll of the supervisor allocates only in the kind's sleeps, shows: \
+             {shows}"
         );
     }
 }
