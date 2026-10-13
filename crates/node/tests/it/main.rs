@@ -8,6 +8,8 @@ mod one_node;
 mod port;
 mod rig;
 #[cfg(unix)]
+mod secret;
+#[cfg(unix)]
 mod start;
 mod status;
 

@@ -91,3 +91,13 @@ fn count(name: &Path, prefix: &str) -> Option<usize> {
     let count = rest.parse::<usize>().ok()?;
     (count.to_string() == rest).then_some(count)
 }
+
+#[cfg(test)]
+mod tests {
+    /// SECRET STORES AS ADAPTERS tells a person to write a secret to
+    /// `<--data>/data/secrets/<full name>`.
+    #[test]
+    fn the_secrets_are_where_the_record_says() {
+        assert_eq!(super::secrets(), super::Path::new("secrets"));
+    }
+}
