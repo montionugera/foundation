@@ -13,8 +13,8 @@ use http::{Request, StatusCode, Uri};
 use hub::reader::{Ended, Position, Received};
 use types::time::Span;
 
-use crate::Config;
-use crate::batch::Batch;
+use crate::batch::{Batch, Taken};
+use crate::{CONFIRMED, Config};
 
 /// The longest a write request may take.
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
@@ -28,14 +28,14 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took.
-    Sent(Position),
+    /// The position after the batch that InfluxDB took, and its samples.
+    Sent(Position, u64),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch only after InfluxDB answers 204.
+/// lines, and acks a batch and counts its samples only after InfluxDB answers 204.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -48,17 +48,26 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         body_max: BODY_MAX,
     });
     let uri = write_uri(&config.address, &config.database);
+    let confirmed = ctx.count(CONFIRMED);
     let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
-            && let Some((body, position)) = batch.take()
+            && let Some(Taken {
+                body,
+                position,
+                samples,
+            }) = batch.take()
         {
             if body.is_empty() {
                 reader.ack(position);
             } else {
-                flight.set(Some(send(&client, ctx, &uri, body.into(), position)));
+                let (client, uri) = (&client, &uri);
+                flight.set(Some(async move {
+                    send(client, ctx, uri, body.into()).await;
+                    (position, samples)
+                }));
             }
         }
         let full = batch.full();
@@ -75,9 +84,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
                     return Poll::Ready(Event::Cancelled);
                 }
                 if let Some(sending) = flight.as_mut().as_pin_mut()
-                    && let Poll::Ready(sent) = sending.poll(cx)
+                    && let Poll::Ready((position, samples)) = sending.poll(cx)
                 {
-                    return Poll::Ready(Event::Sent(sent));
+                    return Poll::Ready(Event::Sent(position, samples));
                 }
                 frame.as_mut().poll(cx).map(Event::Frame)
             })
@@ -85,9 +94,10 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         };
         match event {
             Event::Cancelled => return Ok(()),
-            Event::Sent(position) => {
+            Event::Sent(position, samples) => {
                 flight.set(None);
                 reader.ack(position);
+                confirmed.add(samples);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -95,16 +105,10 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     }
 }
 
-/// Sends `body` until InfluxDB answers 204, and gives `position`. Shows each other
-/// answer as the run's error and waits a backoff before the next attempt. Never
-/// ends after the cancel of the run, which the caller sees first.
-async fn send(
-    client: &Client,
-    ctx: &Context<Config>,
-    uri: &Uri,
-    body: Bytes,
-    position: Position,
-) -> Position {
+/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
+/// error and waits a backoff before the next attempt. Never ends after the cancel of
+/// the run, which the caller sees first.
+async fn send(client: &Client, ctx: &Context<Config>, uri: &Uri, body: Bytes) {
     let mut backoff = None;
     loop {
         let request = Request::post(uri.clone()).body(body.clone());
@@ -112,7 +116,7 @@ async fn send(
         match client.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
-                return position;
+                return;
             }
             Ok(answer) => ctx.error(&format_args!(
                 "InfluxDB answered {}: {}",

@@ -2566,6 +2566,79 @@ mod tests {
         assert_eq!(got, want);
     }
 
+    #[test]
+    fn keeps_a_count_across_the_runs_of_one_call() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let statuses = tally(counted(move |ctx: Context<()>| {
+            let first = runs.fetch_add(1, Ordering::Relaxed) == 0;
+            async move {
+                if first {
+                    ctx.count("samples").add(2);
+                    return Err(Error::Retry("busy".into()));
+                }
+                ctx.count("samples").add(3);
+                Ok(())
+            }
+        }));
+        let last = statuses
+            .last()
+            .map(|(_, samples, _)| (samples[2], samples[4]));
+        assert_eq!(last, Some((1, 5)), "one restart, then 2 + 3: {statuses:?}");
+    }
+
+    #[test]
+    fn adds_to_the_value_that_a_set_gave() {
+        let statuses = tally(counted(|ctx: Context<()>| async move {
+            ctx.count("samples").set(3);
+            ctx.count("samples").add(4);
+            Ok(())
+        }));
+        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        assert_eq!(last, Some(7), "{statuses:?}");
+    }
+
+    #[test]
+    fn gives_an_add_in_the_next_flush() {
+        let statuses = tally(counted(|ctx: Context<()>| async move {
+            let clock = ctx.clock().clone();
+            ctx.count("samples").set(3);
+            clock.sleep(ms(1_500)).await;
+            ctx.count("samples").add(4);
+            clock.sleep(ms(3_000)).await;
+            Ok(())
+        }));
+        let first = statuses.iter().find(|(_, samples, _)| samples[4] == 7);
+        assert_eq!(first.map(|&(at, ..)| at), Some(ms(2_000)), "{statuses:?}");
+    }
+
+    #[test]
+    fn adds_to_each_count_alone() {
+        let kind = Closure {
+            counts: vec![name("samples"), name("errors")],
+            reader: None,
+            run: |ctx: Context<()>| async move {
+                ctx.count("samples").set(3);
+                ctx.count("errors").add(1);
+                ctx.count("samples").add(4);
+                Ok(())
+            },
+        };
+        let (statuses, _) = tally_until(kind, &["samples", "errors"], None);
+        let last = statuses.last().map(|(_, counts, _)| (counts[4], counts[5]));
+        assert_eq!(last, Some((7, 1)), "samples, then errors: {statuses:?}");
+    }
+
+    #[test]
+    fn saturates_an_add_at_the_largest_count() {
+        let statuses = tally(counted(|ctx: Context<()>| async move {
+            ctx.count("samples").set(u64::MAX - 1);
+            ctx.count("samples").add(2);
+            Ok(())
+        }));
+        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        assert_eq!(last, Some(-1), "u64::MAX, read as i64: {statuses:?}");
+    }
+
     /// A kind with the count `samples`. Its run spawns a task that sets the count to
     /// each of 1 to `n`, `gap` apart, and returns `Ok` once that task ended.
     fn relay(n: u64, gap: Span) -> impl Kind<Config = ()> {
@@ -2850,7 +2923,7 @@ mod tests {
 
     #[test]
     fn returns_at_a_cancel_while_a_change_of_state_waits() {
-        let (statuses, returned) = tally_until(outlive(), Some(ms(700)));
+        let (statuses, returned) = tally_until(outlive(), &["samples"], Some(ms(700)));
         let states: Vec<_> = statuses.iter().map(|(at, s, _)| (*at, s[0])).collect();
         let want = [(Span::ZERO, 0), (ms(700), 2)];
         assert_eq!(
@@ -2928,20 +3001,23 @@ mod tests {
     /// The status frames of one connector of `kind`, `plant.tally`, with the count
     /// `samples`.
     fn tally(kind: impl Kind + 'static) -> Vec<Written> {
-        tally_until(kind, None).0
+        tally_until(kind, &["samples"], None).0
     }
 
-    /// The status frames of one connector of `kind`, as [`tally`] gives, whose call
-    /// is cancelled at `cancel`, and when the call returned.
+    /// The status frames of one connector of `kind`, as [`tally`] gives, with the
+    /// counts `counts`, whose call is cancelled at `cancel`, and when the call
+    /// returned.
     fn tally_until(
         kind: impl Kind + 'static,
+        counts: &'static [&'static str],
         cancel: Option<Span>,
     ) -> (Vec<Written>, Span) {
         run_on(move |node, tasks| async move {
             let kinds = Table::new().with("tally", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.tally").await;
-            let (connector, counts) = (name("plant.tally"), [name("samples")]);
+            let connector = name("plant.tally");
+            let counts: Vec<_> = counts.iter().map(|count| name(count)).collect();
             let status = testing::create_status(&connector, &counts, STATUS);
             inputs
                 .hub

@@ -174,7 +174,7 @@ async fn bench(
             reader.ack(position);
         }
         let (taken, (ns, allocs)) = timed(|| batch.take());
-        body = taken.expect("a batch").0.len();
+        body = taken.expect("a batch").body.len();
         if round < warmup {
             first += figures.0 + ns;
         } else {

@@ -182,14 +182,14 @@ fn writes_each_field_in_the_order_given_and_twice() {
     let a = measurement.field("a").unwrap();
     let c = measurement.field("c").unwrap();
     let mut out = b"x".to_vec();
-    measurement.line(&mut out, [], Stamp::EPOCH);
+    assert_eq!(measurement.line(&mut out, [], Stamp::EPOCH), 0);
     assert_eq!(out, b"x", "no value, so nothing is written");
     let values = [
         (&c, Value::Integer(3)),
         (&a, Value::Integer(1)),
         (&c, Value::Integer(4)),
     ];
-    measurement.line(&mut out, values, Stamp::from_nanos(5));
+    assert_eq!(measurement.line(&mut out, values, Stamp::from_nanos(5)), 3);
     assert_eq!(text(&out), "xm c=3i,a=1i,c=4i 5\n");
 }
 

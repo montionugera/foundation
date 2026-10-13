@@ -32,12 +32,24 @@ struct Body {
     /// The most bytes of a body taken.
     most: usize,
     lines: usize,
+    samples: u64,
     times: Vec<u8>,
     raw: Vec<u8>,
     /// The entry of each data channel of the frame, in view order.
     entries: Vec<usize>,
     /// The values of each sample time of the frame, by the order of `entries`.
     values: Vec<Option<Value>>,
+}
+
+/// The lines that [`Batch::take`] gives.
+#[derive(Debug)]
+pub struct Taken {
+    /// The lines, as a request body.
+    pub body: Vec<u8>,
+    /// The reader's position after the last frame of the batch.
+    pub position: Position,
+    /// The samples written as fields: a NaN or infinite sample is not.
+    pub samples: u64,
 }
 
 /// The data channels seen in the frames of one key set.
@@ -114,16 +126,18 @@ impl Batch {
         self.body.lines >= LINES_MAX
     }
 
-    /// The body of the lines and the position after the last frame added, or `None`
-    /// when no frame was added. Empties the batch.
-    pub fn take(&mut self) -> Option<(Vec<u8>, Position)> {
+    /// The lines of the frames added, or `None` when no frame was added. Empties the
+    /// batch.
+    pub fn take(&mut self) -> Option<Taken> {
         let position = self.position.take()?;
         self.body.lines = 0;
         self.body.most = self.body.most.max(self.body.bytes.len());
-        Some((
-            std::mem::replace(&mut self.body.bytes, Vec::with_capacity(self.body.most)),
+        let bytes = Vec::with_capacity(self.body.most);
+        Some(Taken {
+            body: std::mem::replace(&mut self.body.bytes, bytes),
             position,
-        ))
+            samples: std::mem::take(&mut self.body.samples),
+        })
     }
 }
 
@@ -172,15 +186,16 @@ impl Body {
         let lines = self.values.chunks_exact(fields);
         for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
             let time = Stamp::from_nanos(i64::from_le_bytes(time));
-            let start = self.bytes.len();
             let values =
                 (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
                     Some((&layout.channel(at).field, (*value)?))
                 });
-            measurement.line(&mut self.bytes, values, time);
-            if self.bytes.len() > start {
+            let wrote = measurement.line(&mut self.bytes, values, time);
+            if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
             }
+            let wrote = u64::try_from(wrote).expect("invariant: usize fits u64");
+            self.samples = self.samples.saturating_add(wrote);
         }
     }
 }

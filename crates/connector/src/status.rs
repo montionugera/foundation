@@ -212,8 +212,8 @@ impl Status {
     }
 }
 
-/// One count of a kind, `<connector>.status.<count>`. It is not `Send`: as `Context`,
-/// it stays on the shard of its run.
+/// One count of a kind, `<connector>.status.<count>`. It holds across the runs of one
+/// supervisor call. It is not `Send`: as `Context`, it stays on the shard of its run.
 #[derive(Debug)]
 pub struct Count {
     values: Rc<Values>,
@@ -227,6 +227,13 @@ impl Count {
     pub fn set(&self, value: u64) {
         self.values.counts[self.at].1.set(value);
         self.values.stage();
+    }
+
+    /// Adds `value` to the count. Saturates at `u64::MAX`. The status gives it as
+    /// [`Count::set`] does. Never blocks.
+    pub fn add(&self, value: u64) {
+        let count = &self.values.counts[self.at].1;
+        self.set(count.get().saturating_add(value));
     }
 }
 
