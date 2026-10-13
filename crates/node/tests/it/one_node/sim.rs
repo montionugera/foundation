@@ -1,7 +1,6 @@
 //! The simulated servers of ONE NODE, served by the test process over `os` on
 //! loopback.
 
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
@@ -121,12 +120,7 @@ impl Opcua {
             reason = "the test thread is not a thread that env started"
         )]
         let sleep = std::thread::sleep;
-        pace(
-            ticks,
-            || self.clock.now(),
-            sleep,
-            || self.variables.change(quality),
-        );
+        pace(ticks, &self.clock, sleep, || self.variables.change(quality));
     }
 
     /// Each read that the server answered, by node id, in order: the value and status
@@ -234,24 +228,24 @@ impl Drop for Server {
     }
 }
 
-/// Calls `change` `ticks` times at 10 Hz, each after a `sleep`. Change `tick` is due
-/// `tick` ticks after the first read of `now`, so a late wake does not move the later
+/// Calls `change` `ticks` times at 10 Hz on `clock`, each after a `sleep`. Change
+/// `tick` is due `tick` ticks after the call, so a late wake does not move the later
 /// changes.
 fn pace(
     ticks: usize,
-    mut now: impl FnMut() -> Monotonic,
+    clock: &Clock,
     mut sleep: impl FnMut(Duration),
     mut change: impl FnMut(),
 ) {
-    let start = now();
+    let start = clock.now();
     for tick in 1..=ticks {
-        sleep(wait(start, tick, now()));
+        sleep(wait(start, tick, clock.now()));
         change();
     }
 }
 
-/// The time from `now` to change `tick` of [`pace`], which is due `tick`
-/// ticks after `start`: 0 when it is late.
+/// The time from `now` to change `tick` of [`pace`], which is due `tick` ticks after
+/// `start`: 0 when it is late.
 fn wait(start: Monotonic, tick: usize, now: Monotonic) -> Duration {
     let ticks = i64::try_from(tick).expect("a count of ticks fits an i64");
     let due = start + Span::from_nanos(ticks * TICK.nanos());
@@ -403,20 +397,22 @@ fn opcua_changes_at_10_hz_and_records_no_read_that_no_client_made() {
 #[test]
 fn each_change_is_due_its_ticks_after_the_start_whatever_the_wakes() {
     let ms = |n: i64| Span::from_nanos(n * Span::MILLISECOND.nanos());
-    // Paces 3 changes with the first wake `late` late, and gives each sleep and the
-    // time of each change after the start.
+    // Paces 3 changes on a simulated clock with the first wake `late` late, and gives
+    // each sleep and the time of each change after the start.
     let paced = |late: Span| {
-        let start = Monotonic(0) + ms(1000);
-        let now = Cell::new(start);
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let clock = sim.node(sim::node::Config::default()).clock();
+        let start = clock.now();
         let (mut sleeps, mut changes) = (Vec::new(), Vec::new());
         let sleep = |wait: Duration| {
             let slept =
                 Span::from_nanos(i64::try_from(wait.as_nanos()).expect("short"));
             let late = if sleeps.is_empty() { late } else { Span::ZERO };
             sleeps.push(slept);
-            now.set(now.get() + slept + late);
+            let woke = Span::from_nanos(slept.nanos() + late.nanos());
+            sim.run_for(woke).expect("the run has no task");
         };
-        pace(3, || now.get(), sleep, || changes.push(now.get() - start));
+        pace(3, &clock, sleep, || changes.push(clock.now() - start));
         (sleeps, changes)
     };
     let (sleeps, changes) = paced(ms(50));
