@@ -160,7 +160,8 @@ influx     influx  running  http://localhost:8086      -     1517
 ```
 
 `IN` counts the samples that the connector read from the server and the node stored.
-`CONFIRMED` counts the samples that InfluxDB confirmed. Run `status` again, and both grow.
+`CONFIRMED` counts the samples that InfluxDB confirmed. Run `status` again, and both
+grow.
 
 See the samples in InfluxDB:
 
