@@ -9,7 +9,7 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
-  makes it a `Response` variant, as #1744 does for `plan::Output` (OPS OUTPUT). `--json`
+  writes the `text()` of the reply, as it does for `plan`. `--json`
   and the MCP tool later give the same value, with no change to the operation, the type,
   or the reply. The connectors are each connector of the spec in use whose `node` is
   this node, in name order. For each, `serve` opens a `Latest` reader of its status
