@@ -310,14 +310,12 @@ impl Scene {
     fn serve(&self) {
         let listener = listen(&self.node);
         let (stop, group) = (Token::new(), Group::new(self.tasks.clone()));
-        let (clock, net) = (self.node.clock(), self.node.net());
-        let node::Config {
-            wall: start,
-            monotonic,
-            ..
-        } = node::Config::default();
-        let read = clock.clone();
-        let wall = move || start + (read.now() - monotonic);
+        let (clock, net, node) = (self.node.clock(), self.node.net(), self.node.wall());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a simulated device reads the wall time of its node"
+        )]
+        let wall = move || node.now().time;
         let (variables, until) = (self.variables.clone(), stop.clone());
         let mut rng = self.node.entropy().rng();
         group.tasks().spawn(async move {

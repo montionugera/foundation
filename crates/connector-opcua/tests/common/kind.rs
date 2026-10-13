@@ -130,13 +130,12 @@ pub(crate) fn run(
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
         let (clock, net, listener) = (node.clock(), node.net(), listen(&node));
-        let sim::node::Config {
-            wall: start,
-            monotonic,
-            ..
-        } = sim::node::Config::default();
-        let read = clock.clone();
-        let wall = move || start + (read.now() - monotonic);
+        let wall = node.wall();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a simulated device reads the wall time of its node"
+        )]
+        let wall = move || wall.now().time;
         let (answers, until) = (variables.clone(), stop.clone());
         let mut rng = node.entropy().rng();
         serving.tasks().spawn(async move {
