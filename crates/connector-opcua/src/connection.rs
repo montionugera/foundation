@@ -108,9 +108,9 @@ impl Manager {
 
     /// As [`Manager::listening`], on the bound `listener`.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When a C allocation fails.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub(crate) fn accepting(
         clock: Clock,
         net: Net,
