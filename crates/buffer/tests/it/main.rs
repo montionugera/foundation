@@ -3799,9 +3799,9 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
     }
 }
 
-/// Data records at 0, 1, and 2 blocks and at 4 blocks each hold an entry with no
-/// samples at seq 3. The carry record at 3 blocks takes one more, which a trim
-/// passed. It gives an exact count, so the one at 5 blocks takes no more.
+/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3.
+/// The carry record at 3 blocks, written over the third, takes two more, which a
+/// trim passed. It gives an exact count, so the one at 5 blocks takes no more.
 #[test]
 fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
     for (given, taken) in [(5, true), (6, false)] {
