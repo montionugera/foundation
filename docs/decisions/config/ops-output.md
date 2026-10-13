@@ -2,7 +2,11 @@
   changes, homes, added, changed, removed }`, with `Change { action, kind, name, place:
   Option<Place> }`. It derives `Serialize`, `Deserialize`, and `JsonSchema`, and `ops`
   resolves each span to a file, line, and column. `text()` gives the terminal text, as
-  `Response` and `Error` do. The CLI writes its `text()`, or its JSON with `--json`.
+  `Response` and `Error` do. The CLI writes its `text()`, or its JSON with `--json`
+  (`laptop.architect-2`, 2026-10-13T08:24:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842, which
+  supersedes "#1744 makes it a `Response` variant" of
+  https://github.com/synnaxlabs/foundation/pull/1911#issuecomment-6064364728).
   Each error of `ops`, in the CLI and in MCP, has one JSON shape: `{"errors": [...]}`,
   each item a typed `Problem { code, message, fix, place: Option<Place>, notes }`. An
   error that is not a diagnostic, such as `ops.argument`, is a list of one item with no
