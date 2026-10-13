@@ -363,7 +363,7 @@ fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
     );
     assert_eq!(
         fix,
-        "fix: Fix the cause that the message states, then start the node again\n"
+        "fix: Fix the cause that the message states, then run the command again\n"
     );
 }
 
@@ -452,7 +452,7 @@ fn a_key_file_that_holds_no_key_fails() {
             "",
             "error[node.failed]: the file `node.key` in the data directory is not a \
              node key; restore it from a backup of this node\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -476,7 +476,7 @@ fn a_region_with_no_name_file_and_no_key_file_fails_with_and_with_no_name() {
                  file `name`, and the file `node.key` is not there or holds a key that \
                  the founding of the region does not hold; restore `node.key` from a \
                  backup of this node, or give another data directory\n\
-                 fix: Fix the cause that the message states, then start the node again\n"
+                 fix: Fix the cause that the message states, then run the command again\n"
             ),
             "{args:?}"
         );
@@ -545,7 +545,7 @@ fn a_key_file_that_is_a_directory_fails_as_node_failed() {
             "",
             "error[node.failed]: cannot use the data directory: open of node.key \
              failed with OS error 21\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -565,7 +565,7 @@ fn a_ring_that_is_a_directory_fails_as_node_failed() {
             "",
             "error[node.failed]: cannot open the buffer of shard-0: a file call failed: \
              open of shard-0/ring failed with OS error 21\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -661,7 +661,7 @@ fn an_admin_key_that_holds_no_key_fails() {
             "",
             "error[node.failed]: the file `admin.key` in the data directory is not an \
              admin key; restore it from a backup, or remove it to make a new admin\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }

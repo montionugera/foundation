@@ -12,7 +12,7 @@
   `{"name":"edge","data":"foundation-data"}` with `--json`. The line comes after the
   file `address` holds the address. `data` is the path as given, not made absolute, so
   `cli` stays a function of its arguments. Each form writes it lossily, as
-  `Path::to_string_lossy` does. The text form also escapes it as `Start::fail` does,
+  `Path::to_string_lossy` does. The text form also escapes it as `ops::fail` does,
   each character but a quote as `char::escape_debug` does, so a
   newline in it adds no line, and a backslash or a combining mark shows escaped. A
   literal `\n` in a path then reads apart from a newline, and the line matches the
@@ -20,7 +20,7 @@
   newline splits into two lines; `escape_controls`, as `Config` errors use, which keeps
   each backslash, so a literal `\n` reads as a newline. A write that fails changes
   nothing. A node that stops before the thread writes can exit with no line.
-  `Start::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
+  `ops::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
@@ -186,3 +186,14 @@
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164) and
   reworded by it (2026-10-11T10:39:06Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).
+  `main` runs `ops::cli` on a shard that ends before `start` runs, so a command that
+  reaches a node can wait on its reply. A failure to start that shard and each failure
+  of the node go through `ops::fail` with the arguments, which writes JSON when `--json`
+  comes before any `--`, as `cli` reads it. A panic of that shard goes on as a panic.
+  The fix of `node.failed` is "Fix the cause that the message states, then run the
+  command again", since the command that failed can be a command other than `start`.
+  Lost: `Start::fail`, which a failure before `cli` gives a `Start` cannot reach.
+  Decided by `laptop.architect-2` (2026-10-13T02:10:54Z, the shard,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419;
+  2026-10-13T02:43:10Z, `ops::fail` and the fix,
+  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137040498).
