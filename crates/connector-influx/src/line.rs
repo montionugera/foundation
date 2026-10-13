@@ -75,8 +75,9 @@ impl Measurement {
     }
 
     /// Appends one line at `time` to `out`, with each field of `values` and its
-    /// value, in order. With no value, nothing is written. A field that comes twice
-    /// is written twice.
+    /// value, in order. Each field comes from [`Measurement::field`] of this
+    /// measurement. With no value, nothing is written. A field that comes twice is
+    /// written twice.
     #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
     pub fn line<'a>(
         &self,
@@ -141,12 +142,13 @@ impl Float {
     }
 }
 
-/// Why a measurement is not valid line protocol.
+/// Why a measurement or a field key is not valid line protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// An empty part.
     Empty(Part),
-    /// A part with a character that [`Measurement::new`] refuses.
+    /// A part with a character that [`Measurement::new`] or [`Measurement::field`]
+    /// refuses.
     Character {
         /// The part that holds `character`.
         part: Part,

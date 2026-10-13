@@ -1,8 +1,11 @@
-- **LINE TEXT (#1098)** `connector_influx::line::Measurement::new` accepts only text
-  that InfluxDB 1, 2, and 3 each store as written, in each part (measurement name, tag
-  key, tag value, field key). It refuses the rest at construction, so the error
-  reaches the config diagnostic in place of a partial write that InfluxDB answers with
-  204 or drops. One set of refused characters holds for every part: a backslash, a
+- **LINE TEXT (#1098)** `connector_influx::line::Measurement::new`, and
+  `Measurement::field` for a field key, accept only text that InfluxDB 1, 2, and 3 each
+  store as written, in each part (measurement name, tag key, tag value, field key).
+  They refuse the rest at construction, so the error reaches the config diagnostic in
+  place of a partial write that InfluxDB answers with 204 or drops. The architect moved
+  the field key to `Measurement::field` on 2026-10-13T07:36:47Z
+  (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). One
+  set of refused characters holds for every part: a backslash, a
   newline, a carriage return, a tab, NUL, U+FFFD, and each character outside the
   general categories L, M, N, P, and S other than U+0020. The last two are what
   InfluxDB 1 and 2 with `validate-keys` drop (`unicode.IsPrint` false, or
