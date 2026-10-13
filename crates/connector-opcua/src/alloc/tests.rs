@@ -227,7 +227,7 @@ fn exhausts() {
 
 /// No test reaches a caller of `exhausted`: a constructor of `shim.c` gives NULL only
 /// when the global allocator fails, and an allocator that fails on demand is a mutable
-/// global.
+/// global. #2566 holds the test that kills a panic at each caller.
 #[test]
 #[cfg(unix)]
 fn exhausted_aborts_with_the_size_of_a_header() {
