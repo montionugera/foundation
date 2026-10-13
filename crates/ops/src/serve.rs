@@ -42,7 +42,7 @@ pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
     reply.unwrap_or_else(|error| failed(&error)).0
 }
 
-/// A reply that would pass the bound.
+/// A body that would pass the bound.
 #[derive(Debug)]
 struct Large;
 
@@ -52,32 +52,32 @@ impl From<Large> for Error {
     }
 }
 
-/// The bytes of a reply: at most `BODY_BYTES_MAX`.
+/// The bytes of a request or a reply: at most `BODY_BYTES_MAX`.
 #[derive(Default)]
-struct Reply(Vec<u8>);
+struct Body(Vec<u8>);
 
-impl Reply {
-    /// The reply of `head` as one line of JSON. Stops at the bound.
+impl Body {
+    /// The body of `head` as one line of JSON. Stops at the bound.
     ///
     /// # Errors
     ///
     /// `Large` when the line passes the bound.
     fn line(head: &impl Serialize) -> Result<Self, Large> {
-        let mut reply = Self::default();
-        match serde_json::to_writer(&mut reply, head) {
+        let mut body = Self::default();
+        match serde_json::to_writer(&mut body, head) {
             Ok(()) => {}
             Err(error) if error.is_io() => return Err(Large),
-            Err(error) => panic!("invariant: a reply is plain JSON data: {error}"),
+            Err(error) => panic!("invariant: a body is plain JSON data: {error}"),
         }
-        reply.add(b"\n")?;
-        Ok(reply)
+        body.add(b"\n")?;
+        Ok(body)
     }
 
     /// Adds `bytes` to the end.
     ///
     /// # Errors
     ///
-    /// `Large`, with no byte added, when the reply would pass the bound.
+    /// `Large`, with no byte added, when the body would pass the bound.
     fn add(&mut self, bytes: &[u8]) -> Result<(), Large> {
         let len = self.0.len().saturating_add(bytes.len());
         if u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX) {
@@ -89,7 +89,7 @@ impl Reply {
     }
 }
 
-impl Write for Reply {
+impl Write for Body {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.add(bytes)
             .map(|()| bytes.len())
@@ -172,9 +172,9 @@ enum Answer<'a, T> {
 }
 
 /// The reply that holds `error`, or `ops.large-reply` when that reply passes the bound.
-fn failed(error: &Error) -> Reply {
+fn failed(error: &Error) -> Body {
     let line = |error: &Error| {
-        Reply::line(&Answer::<()>::Failed {
+        Body::line(&Answer::<()>::Failed {
             errors: error.problems(),
             status: error.status(),
         })
@@ -285,7 +285,7 @@ fn bad_reply(message: impl Into<String>) -> Error {
 }
 
 /// The reply of the request `body` of `subject`.
-async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
+async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
     let Some((head, rest)) = first_line(body) else {
         return Err(bad_request("no newline ends the first line"));
     };
@@ -349,7 +349,7 @@ impl<'a> Check<'a> {
 }
 
 /// The reply of `plan` of `files`: its output, then the plan file.
-async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Error> {
+async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error> {
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(&node.kinds)?;
     let spec = used::spec(&node.mesh).await?;
@@ -370,13 +370,13 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
-    let mut reply = Reply::line(&Answer::Done { output: &output })?;
+    let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
 }
 
 /// The reply of `apply` of the plan file `bytes`: its output.
-async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error> {
+async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -415,5 +415,5 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
         return Err(check.denied(Action::Apply, On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
-    Ok(Reply::line(&Answer::Done { output: &effect })?)
+    Ok(Body::line(&Answer::Done { output: &effect })?)
 }
