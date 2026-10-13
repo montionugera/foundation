@@ -1350,6 +1350,17 @@ mod tests {
         }
 
         #[test]
+        fn a_rate_past_u64_nanohertz_is_too_fast() {
+            for text in [
+                "18446744083.709551616Hz",
+                "340282366920938463463374607431768211459Hz",
+                "18446744073.7095516159Hz",
+            ] {
+                assert_eq!(text.parse::<Rate>(), Err(Error::Period), "{text}");
+            }
+        }
+
+        #[test]
         fn refuses_a_text_that_is_not_a_rate() {
             for (text, error) in [
                 ("0Hz", Error::Zero),
