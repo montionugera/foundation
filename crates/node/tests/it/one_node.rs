@@ -469,7 +469,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #274, #337, #435, #1735, #1744"]
+#[ignore = "waits on #274, #337, #435, #1735, #1744, #2559"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -526,7 +526,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1735, #1744"]
+#[ignore = "waits on #337, #435, #1735, #1744, #2559"]
 fn status_shows_samples_flow() {
     let plant = create_plant(PLANT);
     let rig = &plant.rig;
