@@ -34,7 +34,7 @@ const BAD_ADDRESS: Code = Code::new("influx.bad-address");
 const BAD_DATABASE: Code = Code::new("influx.bad-database");
 const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
-/// the connector.
+/// one supervisor call.
 const CONFIRMED: &str = "confirmed";
 
 /// The `influx` kind: writes a reader's samples to InfluxDB.
