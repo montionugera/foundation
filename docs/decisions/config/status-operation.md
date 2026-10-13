@@ -13,24 +13,23 @@
   2026-10-13T08:24:06Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442056, and
   `laptop.architect-2`, 2026-10-13T08:24:09Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842). With
-  `--json`, it writes the JSON of the reply, as it does for `plan`. `status` has no
-  entry in the operation table, as `plan` and `apply` have none, and #2530 adds its MCP
-  tool (`laptop.architect-2`, 2026-10-13T08:31:04Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758, items 1
-  and 3, which supersede "read-only in the operation table" of item 1 and "is a variant
-  of `Response`" of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842). `status`
+  has no entry in the operation table and no `Response` variant, as `plan` and `apply`
+  have none (`laptop.architect-2`, 2026-10-13T08:31:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758, item 1,
+  which supersedes "read-only in the operation table" of item 1 and "is a variant of
+  `Response`" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; approved
-  by `laptop.architect`, 2026-10-13T08:39:51Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141698090). The MCP
-  tool later gives the same value, with no change to the operation, the type, or the
-  reply. The connectors are each connector of the spec in use whose `node` is this node,
-  in name order. For each, `serve` opens a `Latest` reader of its status index and each
-  channel on it through the node's hub, with the request's subject. All reads run at
-  once, and a connector with no frame within 1 s of the request is `unknown`, so a reply
-  waits at most 1 s in all. A link holds one open request for each session, and
-  `node::Settings::places_max` bounds the sessions of programs, so at most that bound
-  times the connectors of the node are open readers of `status` at once
+  by `laptop.architect`, 2026-10-13T08:46:14Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141814158). `--json`
+  and the MCP tool later give the same value, with no change to the operation, the type,
+  or the reply. The connectors are each connector of the spec in use whose `node` is
+  this node, in name order. For each, `serve` opens a `Latest` reader of its status
+  index and each channel on it through the node's hub, with the request's subject. All
+  reads run at once, and a connector with no frame within 1 s of the request is
+  `unknown`, so a reply waits at most 1 s in all. A link holds one open request for each
+  session, and `node::Settings::places_max` bounds the sessions of programs, so at most
+  that bound times the connectors of the node are open readers of `status` at once
   (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
@@ -54,11 +53,12 @@
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
   #1028 checks each open of the hub, this check moves there. Deferred to
-  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart and
-  MCP. The CLI and MCP send this one form to a node, and the client reader of #1749 does
-  not replace it. Lost: `serve` replies with the text, so that `--json` and MCP each
-  need a second reply; `status` asks the supervisors, a second source of status with its
-  own access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
+  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
+  `--json` (https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141794585),
+  and MCP. The CLI and MCP send this one form to a node, and the client reader of #1749
+  does not replace it. Lost: `serve` replies with the text, so that `--json` and MCP
+  each need a second reply; `status` asks the supervisors, a second source of status
+  with its own access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the text
