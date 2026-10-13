@@ -1,6 +1,7 @@
 //! The requests and replies of a remote program, and how the node runs each request.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 
@@ -188,22 +189,29 @@ fn failed(error: &Error) -> Body {
 
 /// The body of a request of `plan` of `files`, for [`serve`].
 ///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+///
 /// # Panics
 ///
 /// When the path of a file is not UTF-8.
-pub(crate) fn plan_request(files: &[File]) -> Vec<u8> {
-    let files =
-        serde_json::to_value(files).expect("invariant: the path of each file is UTF-8");
-    let mut body = json!({ "plan": { "files": files } })
-        .to_string()
-        .into_bytes();
-    body.push(b'\n');
-    body
+pub(crate) fn plan_request(files: &[File]) -> Result<Vec<u8>, Error> {
+    let plan = BTreeMap::from([("files", files)]);
+    let body = Body::line(&BTreeMap::from([("plan", plan)]));
+    body.map(|body| body.0).map_err(|Large| Error::LargeRequest)
 }
 
 /// The body of a request of `apply` of the plan file `plan`, for [`serve`].
-pub(crate) fn apply_request(plan: &[u8]) -> Vec<u8> {
-    [b"{\"apply\":{}}\n", plan].concat()
+///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+pub(crate) fn apply_request(plan: &[u8]) -> Result<Vec<u8>, Error> {
+    let large = |Large| Error::LargeRequest;
+    let mut body = Body::line(&json!({ "apply": {} })).map_err(large)?;
+    body.add(plan).map_err(large)?;
+    Ok(body.0)
 }
 
 /// The output of the reply `body` of [`serve`] to a request of `plan`, and the plan

@@ -62,7 +62,7 @@ where
             text,
         });
     }
-    let reply = request(&serve::plan_request(&read), reach).await?;
+    let reply = request(&serve::plan_request(&read)?, reach).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
         paths.write(out, plan).map_err(|error| Error::Write {
@@ -96,7 +96,7 @@ where
         return Err(Error::config(not_utf8, &error::Paths::default()));
     };
     let bytes = file(paths, plan)?;
-    let reply = request(&serve::apply_request(&bytes), reach).await?;
+    let reply = request(&serve::apply_request(&bytes)?, reach).await?;
     let effect = serve::apply_reply(&reply)?;
     Ok(Applied {
         file: name.to_owned(),
@@ -133,9 +133,6 @@ async fn request<C>(
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    if body.len() > most() {
-        return Err(Error::LargeRequest);
-    }
     let send = reach(Path::new(DATA)).await.map_err(Error::Node)?;
     send(body).await.map_err(Error::Node)
 }

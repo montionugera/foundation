@@ -237,7 +237,7 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
             path: PathBuf::from("big.hcl"),
             text: String::new(),
         }];
-        let around = serve::plan_request(&empty).len();
+        let around = serve::plan_request(&empty).expect("a request").len();
         let text = "#".repeat(most() - around + 1);
         paths
             .write(Path::new("big.hcl"), text.as_bytes())
@@ -474,7 +474,7 @@ fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
 fn apply_of_a_plan_file_that_does_not_fit_a_request_reaches_no_node() {
     solo(|host, mesh| async move {
         let paths = host.paths();
-        let around = serve::apply_request(b"").len();
+        let around = serve::apply_request(b"").expect("a request").len();
         let plan = vec![b'x'; most() - around + 1];
         paths.write(Path::new("big.plan"), &plan).expect("a write");
         let remote = Remote::new(create_node(mesh));
@@ -503,7 +503,8 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
         let body = serve::plan_request(&[File {
             path: PathBuf::from("bad.hcl"),
             text: "{".to_owned(),
-        }]);
+        }])
+        .expect("a request");
         let reply = serve::serve(&remote.node, &name("@admin"), &body).await;
         let expected = serve::plan_reply(&reply).map(drop);
         let Err(Error::Remote { problems, status }) = expected.clone() else {
