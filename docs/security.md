@@ -129,21 +129,24 @@ state on `main`.
 - The first message of a stream, and each datagram, starts with a `wire` header
   (PROTOCOL HEADER). `node` stops a stream whose header is not valid, and drops and
   counts such a datagram. A client opens only hub streams; `node` refuses the other
-  protocols from a client. A node with a region gives each `Mesh` stream of a peer
-  that proved a node key to `Mesh::serve`, which checks each message (NODE MESH), and
-  rejects a client's. It gives a `Hub` stream to the hub only when a member of its
-  region has the peer's public key, once, at the header (NODE PORT); it rejects a
-  client's until #1744. `node` stops and resets each other stream until its protocol
-  has a server. It reads no datagram yet (#1661). It admits each member of the region to
-  a session, and gives other peers at most 256 places by default
-  (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
-  for the key of a node. At the bound, the oldest place frees for the new peer, and its
-  sessions close unless its peer is now a member. So a peer outside the region keeps its
-  session until that many later peers took a place. A flood that takes that many
-  places in the time that a peer needs to prove its right (a member, the client hello
-  of #1744, or the ticket of #1157) closes that peer's session; only a limit on
-  handshakes before admission bounds that rate (#563). It rejects a stream whose header
-  has not arrived within 10 s by default (`node::Settings::header_wait`).
+  protocols from a client. A node with a region gives each `Mesh` stream of a peer that
+  proved a node key to `Mesh::serve`, which checks each message (NODE MESH), and rejects
+  a client's. It gives a node's `Hub` stream to the hub only when a member of its region
+  has the peer's public key, once, at the header (NODE PORT). With a region, it gives a
+  client's to the hub too, which admits the client by its hello against the access rules
+  of the root region of the spec in use, and of each later spec; `node` answers each
+  request that the hub verified with `ops::serve`. With no region, it rejects a
+  client's. `node` stops and resets each other stream until its protocol has a server.
+  It reads no datagram yet (#1661). It admits each member of the region to a session,
+  and gives other peers at most 256 places by default (`node::Settings::places_max`,
+  NODE PORT): one for each session of a program, and one for the key of a node. At the
+  bound, the oldest place frees for the new peer, and its sessions close unless its peer
+  is now a member. So a peer outside the region keeps its session until that many later
+  peers took a place. A flood that takes that many places in the time that a peer needs
+  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of
+  #1157) closes that peer's session; only a limit on handshakes before admission bounds
+  that rate (#563). It rejects a stream whose header has not arrived within 10 s by
+  default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
