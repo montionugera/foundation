@@ -844,12 +844,14 @@ fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
         let writer = test.writer("a", &["value"]).await;
         let time = writer.time();
         test.clock.sleep(Span::SECOND).await;
-        assert_eq!(time.now(), writer.now());
-        assert_eq!(time.now().nanos(), test.now());
+        let last = writer.now();
+        assert_eq!(time.now(), last);
+        assert_eq!(last.nanos(), test.now());
         drop(writer);
         test.clock.sleep(Span::SECOND).await;
-        assert_eq!(time.clone().now().nanos(), test.now());
-        assert_eq!(format!("{time:?}"), "Time { .. }");
+        let after = time.clone().now();
+        assert!(after >= last, "{after} is before {last}");
+        assert_eq!(after.nanos(), test.now());
     });
 }
 

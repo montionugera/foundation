@@ -254,7 +254,7 @@ impl Writer {
         now(&self.state)
     }
 
-    /// The mesh time of [`Self::now`], to keep apart from the writer.
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
     #[must_use]
     pub fn time(&self) -> Time {
         Time(Rc::clone(&self.state))
@@ -320,28 +320,16 @@ impl Drop for Writer {
     }
 }
 
-/// The mesh time of a writer's hub, apart from the writer, as [`Writer::time`] gives
-/// it. It reads also after the writer drops.
-#[derive(Clone)]
+/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
+/// It reads what [`Writer::now`] reads, also after the writer drops.
+#[derive(Clone, Debug)]
 pub struct Time(Rc<RefCell<State>>);
 
 impl Time {
-    /// Mesh time now, as [`Writer::now`] gives it.
-    ///
-    /// # Panics
-    ///
-    /// If called inside a call of the hub that changes its state, such as
-    /// [`Writer::write`]. Mesh time is known for each `Time`: a writer opens only
-    /// after mesh time, which stays.
+    /// As [`Writer::now`].
     #[must_use]
     pub fn now(&self) -> Stamp {
         now(&self.0)
-    }
-}
-
-impl fmt::Debug for Time {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Time").finish_non_exhaustive()
     }
 }
 
