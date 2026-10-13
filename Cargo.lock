@@ -1744,6 +1744,7 @@ version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
  "counting",
+ "document",
  "env",
  "proptest",
  "sim",
