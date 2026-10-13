@@ -319,10 +319,11 @@ nothing checked again. So when round 1 led to fix commits:
    PR or a deferral that is not in a risk crate, other than a test in it) is not counted
    when the `reviewer` gives its fix as the exact new text, at any severity, or when it
    is Low: the round comment lists it under a line `Text fixes:` after its findings. A
-   Low finding is a problem of wording (a word, a sentence, the line width), of a
-   citation (a link, a SHA, a time, an issue number, a name), or of that text of a
-   deferral or a later step, and its fix makes no sentence state another thing about
-   what the code, a test, a decision, a ruling, or a contract does. Each other finding
+   Low finding is a problem of a citation (a link, a SHA, a time, an issue number, a
+   name) or of that text of a deferral or a later step, and its fix makes no sentence
+   state another thing about what the code, a test, a decision, a ruling, or a contract
+   does. A problem of wording that leaves each statement true is no finding
+   (`.claude/agents/reviewer.md`). Each other finding
    is Medium or higher. A missing or stale link to an approval, an OK, or a ruling that
    Round 1, "Findings" step 3, or "Done" asks for is no Low finding. That text of a
    deferral or a later step is the body of the issue that the author files for it, or
