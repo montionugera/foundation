@@ -57,10 +57,10 @@ session starts new work on it before then. `laptop.monitor` says on #1737 when t
 sessions have started. Of the PRs in flight on its issues, #2461 and #2477 finish, and
 the drafts #2565 and #2454 wait. Work that the ONE NODE plan (#1737) names on an issue
 of this milestone, such as the store half of #1232, is ONE NODE work. The ONE NODE
-amendment of 2026-10-13 gives the work that takes its place, the person's words, and
-the orders of `laptop.monitor` with their links.
-Supersedes, until the new sessions start, "It runs beside FIRST SLICE" of this entry
-(the person's decision of 2026-10-06, which has no link).
+amendment of 2026-10-13 gives the work that takes its place, the person's words, and the
+orders of `laptop.monitor` with their links. Supersedes, until the new sessions start,
+"It runs beside FIRST SLICE" of this entry (the person's decision of 2026-10-06, which
+has no link).
 
 **ONE NODE (2026-10-08)** A milestone beside FIRST SLICE, which keeps priority: one real
 node moves OPC UA samples to InfluxDB. The `foundation` binary starts a node from a
@@ -84,33 +84,31 @@ APIs and connectors.", 2026-10-08T02:45:18Z,
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6051113411).
 
 Amendment (2026-10-13): until the new sessions start, each session starts only ONE NODE
-work. It
-makes the current node production grade, with better connector infrastructure, CLIs that
-are intuitive, and better performance and reliability. It sets up the common parts that
-make more connectors easier and better to build later, and it improves the developer
-experience. The person decided ("Ok, so here's what I
-want to focus on. Instead of diong store and forward, we are giong to defer that. What
-we are going to work on doing is making the current ONE NODE infrastructure as
-production grade and high quality. That is improving connector infrastructure, making
-the CLIs actually intuitive, improving system perforfmance reliability. If we wanted to
-ship the current ONE NODE set up to production, and builda ll of the relevant
-componentry to make it easier to build other production grade connectors what would it
-be? We should use all of the remainin gsessions in that extended effort, ten we will
-continue STORE AND FORWARD once we have the new sessions", 2026-10-13T20:47:30Z),
-relayed by `laptop.monitor` in factory message `fd562224` and recorded at
-2026-10-13T20:48:58Z:
+work. It makes the current node production grade, with better connector infrastructure,
+CLIs that are intuitive, and better performance and reliability. It sets up the common
+parts that make more connectors easier and better to build later, and it improves the
+developer experience. The person decided ("Ok, so here's what I want to focus on.
+Instead of diong store and forward, we are giong to defer that. What we are going to
+work on doing is making the current ONE NODE infrastructure as production grade and high
+quality. That is improving connector infrastructure, making the CLIs actually intuitive,
+improving system perforfmance reliability. If we wanted to ship the current ONE NODE set
+up to production, and builda ll of the relevant componentry to make it easier to build
+other production grade connectors what would it be? We should use all of the remainin
+gsessions in that extended effort, ten we will continue STORE AND FORWARD once we have
+the new sessions", 2026-10-13T20:47:30Z), relayed by `laptop.monitor` in factory message
+`fd562224` and recorded at 2026-10-13T20:48:58Z:
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233, and
 widened the scope ("It's not jus tproduction gaps, its also what we can set up to make
 additional connector infrastructure easier/better to build in the future, and dx
 experiences we can improve upon", 2026-10-13T20:49:30Z), relayed by `laptop.monitor` in
 factory message `3e5b1dba` and recorded at 2026-10-13T20:51:24Z:
-https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154948753.
-With the relay, `laptop.monitor` ordered that no session starts new STORE AND FORWARD
-work and that the ONE NODE PRs in flight finish
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154948753. With the
+relay, `laptop.monitor` ordered that no session starts new STORE AND FORWARD work and
+that the ONE NODE PRs in flight finish
 (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233). It
-decided later that the STORE AND FORWARD PRs #2461 and #2477 finish and the drafts
-#2565 and #2454 wait, that this work gets a new part of the path of #1737, that ONE NODE
-stays open after the five tests of #1733 pass until the new sessions start, and that it
-says on #1737 when they have started (factory message `4226c412`, recorded at
+decided later that the STORE AND FORWARD PRs #2461 and #2477 finish and the drafts #2565
+and #2454 wait, that this work gets a new part of the path of #1737, that ONE NODE stays
+open after the five tests of #1733 pass until the new sessions start, and that it says
+on #1737 when they have started (factory message `4226c412`, recorded at
 2026-10-13T21:00:24Z:
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588).
