@@ -103,6 +103,11 @@ const DECISION_CUTOFF: &str = "2026-10-11T16:00:00Z";
 /// that came before it.
 const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
+/// The most review rounds that a PR gets. A last round of this number or above may
+/// have findings and may end before a commit that changes code, since no round follows
+/// it.
+const ROUNDS: u32 = 3;
+
 /// The crates in which a deferral needs the OK of the architect. It must match the
 /// risk crates of ENGINEERS in `docs/decisions/operations/engineers.md`.
 const RISK: [&str; 10] = [
@@ -255,20 +260,21 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 }
 
 /// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must find nothing and end at `head`, or
-/// at a commit on its first-parent chain after which each merge is a clean merge of
-/// the base and the range to `head` changes no code, with a `Text fixes:` line when a
-/// commit that is not a merge follows it. `place` gives where a commit (a SHA or its
-/// prefix) is from `head` (`History::place`). A later round may skip `breaker` when
-/// the range of the last round changes no code; an earlier round's skip is taken as
-/// written. `code_change` gives the first code change in a range, with a merge of the
-/// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
-/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
-/// `decision_change` gives a phrase for its range (`History::decision_change`). For
-/// that rule, a round comment after the first is a later round, whatever its number,
-/// and so is a first round comment whose number is above 1. The last round, when
-/// posted at or after `LINK_CUTOFF`, must link the OK of each deferral of a PR that
-/// changes a risk crate, and an approval of its public surface ([`unlinked`]).
+/// reviewers it requires, and the last round, below round [`ROUNDS`], must find nothing
+/// and end at `head`, or at a commit on its first-parent chain after which each merge
+/// is a clean merge of the base and the range to `head` changes no code, with a
+/// `Text fixes:` line when a commit that is not a merge follows it. `place` gives
+/// where a commit (a SHA or its prefix) is from `head` (`History::place`). A later
+/// round may skip `breaker` when the range of the last round changes no code; an
+/// earlier round's skip is taken as written. `code_change` gives the first code change
+/// in a range, with a merge of the base read by its resolution, as a phrase, or `None`
+/// (`History::code_change`). A later round posted at or after `DECISION_CUTOFF` must
+/// name `architecture` when `decision_change` gives a phrase for its range
+/// (`History::decision_change`). For that rule, a round comment after the first is a
+/// later round, whatever its number, and so is a first round comment whose number is
+/// above 1. The last round, when posted at or after `LINK_CUTOFF`, must link the OK of
+/// each deferral of a PR that changes a risk crate, and an approval of its public
+/// surface ([`unlinked`]).
 fn problems(
     record: &Record,
     head: &str,
@@ -315,14 +321,16 @@ fn problems(
         round: Ok(round), ..
     }) = rounds.last()
     {
-        if round.findings > 0 {
-            problems.push(format!(
-                "review round {} has findings ({}). Fix or answer them, then run \
-                 another round.",
-                round.number, round.findings
-            ));
+        if round.number < ROUNDS {
+            if round.findings > 0 {
+                problems.push(format!(
+                    "review round {} has findings ({}). Fix or answer them, then run \
+                     another round.",
+                    round.number, round.findings
+                ));
+            }
+            problems.extend(unended(round, head, place(&round.end)?, code_change)?);
         }
-        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
         problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")

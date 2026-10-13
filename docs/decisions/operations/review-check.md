@@ -127,11 +127,18 @@
   an end line, is not `none`. Decided by the director at 2026-10-11T00:54:34Z
   (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358) and
   2026-10-11T01:16:17Z
-  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A merge
-  of the base is not clean when the base moves a path that the PR changed since their
-  merge base, and that is not code, to a code path, by the rename detection of the
-  merge. A base move of a path that the PR did not change stays clean. Decided by the
-  director at 2026-10-07T17:21:14Z
+  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A last
+  round whose number is 3 or more may have findings and may end before a commit that
+  changes code, since no round follows it (REVIEW ROUNDS in
+  `docs/decisions/operations/review-rounds.md`). Each other problem of that round
+  stays: the reviewers that it requires, the OK of each deferral in a risk crate, the
+  approvals of its `Public surface:` line, and the director's approval of a red-team PR
+  labeled `oracle`. Decided by the director at 2026-10-13T16:33:37Z
+  (https://github.com/synnaxlabs/foundation/issues/2585). A merge of the base is not
+  clean when the base moves a path that the PR changed since their merge base, and that
+  is not code, to a code path, by the rename detection of the merge. A base move of a
+  path that the PR did not change stays clean. Decided by the director at
+  2026-10-07T17:21:14Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385). When
   the last round is a later round with `Breaker: skipped`, it fails if its range changes
   code: a change to a file that is not a `.md` file (its lines, its mode, or its path),

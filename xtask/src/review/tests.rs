@@ -690,26 +690,26 @@ fn reads_each_field_as_github_shows_it() {
         "Findings:&nbsp;2",
     ] {
         let comment =
-            ROUND.replace("Findings: none", &format!("{line}\nFindings: none"));
+            second().replace("Findings: none", &format!("{line}\nFindings: none"));
         assert_eq!(
             check(&record(vec![bot(&comment)])),
             vec![
-                "review round 3 has findings (2). Fix or answer them, then run another \
+                "review round 2 has findings (2). Fix or answer them, then run another \
                  round."
             ],
             "{line}"
         );
     }
-    let range = ROUND.replace(
+    let range = second().replace(
         "Range: `38cba24f",
         "Range\\: `aaaaaaaa..bbbbbbbb`\nRange: `38cba24f",
     );
-    assert_ne!(range, ROUND);
+    assert_ne!(range, second());
     assert_eq!(
         check(&record(vec![bot(&range)])),
         vec![
-            "review round 3 skips `breaker`, but its range changes code at `a.rs:2`.",
-            "review round 3 ends at bbbbbbbb, not at the head \
+            "review round 2 skips `breaker`, but its range changes code at `a.rs:2`.",
+            "review round 2 ends at bbbbbbbb, not at the head \
              c77c67d72fd8d37964334c80e14dd8b5a1d5b6fb. A commit after the round needs \
              a new round; only a clean merge of the base, or a commit that changes no \
              code after a round with a `Text fixes:` line, does not.",
@@ -788,40 +788,40 @@ fn reads_off_the_backticks_that_github_shows() {
 
 #[test]
 fn reads_the_round_heading_as_github_shows_it() {
-    let fields = ROUND.replace("Findings: none", "Findings: 2");
+    let fields = second().replace("Findings: none", "Findings: 2");
     for heading in [
-        "## Review&#32;round 3",
-        "## Review *round* 3",
-        "## Review\u{200B} round 3",
-        "Review round 3\n---",
+        "## Review&#32;round 2",
+        "## Review *round* 2",
+        "## Review\u{200B} round 2",
+        "Review round 2\n---",
     ] {
-        let last = fields.replace("## Review round 3", heading);
+        let last = fields.replace("## Review round 2", heading);
         assert_eq!(
-            check(&record(vec![bot(ROUND), bot(&last)])),
+            check(&record(vec![bot(&second()), bot(&last)])),
             vec![
-                "review round 3 has findings (2). Fix or answer them, then run \
+                "review round 2 has findings (2). Fix or answer them, then run \
                  another round."
             ],
             "{heading}"
         );
     }
-    let word = fields.replace("## Review round 3", "## Review roundup 3");
+    let word = fields.replace("## Review round 2", "## Review roundup 2");
     assert_eq!(
-        check(&record(vec![bot(ROUND), bot(&word)])),
+        check(&record(vec![bot(&second()), bot(&word)])),
         Vec::<String>::new()
     );
     // GitHub shows these headings in a quote, or of level 1: not a round.
-    for heading in ["# Review round 3", "<search\n> ## Review round 3"] {
-        let other = fields.replace("## Review round 3", heading);
+    for heading in ["# Review round 2", "<search\n> ## Review round 2"] {
+        let other = fields.replace("## Review round 2", heading);
         assert_eq!(
-            check(&record(vec![bot(ROUND), bot(&other)])),
+            check(&record(vec![bot(&second()), bot(&other)])),
             Vec::<String>::new(),
             "{heading}"
         );
     }
-    let lines = fields.replace("## Review round 3", "Review round\n3\n---");
+    let lines = fields.replace("## Review round 2", "Review round\n3\n---");
     assert_eq!(
-        check(&record(vec![bot(ROUND), bot(&lines)])),
+        check(&record(vec![bot(&second()), bot(&lines)])),
         vec!["`## Review round ` has no round number"]
     );
 }
@@ -921,11 +921,11 @@ fn ignores_a_round_by_another_account() {
 
 #[test]
 fn fails_a_range_that_ends_before_a_commit_that_changes_code() {
-    let round = ROUND.replace("..c77c67d7", &format!("..{CODE}"));
+    let round = second().replace("..c77c67d7", &format!("..{CODE}"));
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at `{CODE}`, and the range from it to the head \
+            "review round 2 ends at `{CODE}`, and the range from it to the head \
              `{HEAD}` changes code at `a.rs:2`. A commit that changes code needs a new \
              round."
         )]
@@ -953,7 +953,7 @@ fn passes_a_range_that_ends_before_commits_that_change_no_code() {
 
 #[test]
 fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
-    let ended = ROUND.replace("..c77c67d7", &format!("..{TEXT}"));
+    let ended = second().replace("..c77c67d7", &format!("..{TEXT}"));
     let fixes = |line| ended.replace("No bug,", &format!("{line}\n\nNo bug,"));
     for round in [
         ended.clone(),
@@ -969,7 +969,7 @@ fn fails_a_range_that_ends_before_a_commit_without_a_text_fixes_line() {
         assert_eq!(
             check(&record(vec![bot(&round)])),
             vec![format!(
-                "review round 3 ends at `{TEXT}`, not at the head `{HEAD}`, and has no \
+                "review round 2 ends at `{TEXT}`, not at the head `{HEAD}`, and has no \
                  `Text fixes:` line."
             )],
             "{round}"
@@ -993,11 +993,11 @@ fn passes_a_range_that_ends_before_only_clean_merges_without_text_fixes() {
 
 #[test]
 fn fails_a_range_that_ends_off_the_first_parent_chain() {
-    let round = ROUND.replace("..c77c67d7", "..0badc0de");
+    let round = second().replace("..c77c67d7", "..0badc0de");
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at 0badc0de, not at the head {HEAD}. A commit after \
+            "review round 2 ends at 0badc0de, not at the head {HEAD}. A commit after \
              the round needs a new round; only a clean merge of the base, or a commit \
              that changes no code after a round with a `Text fixes:` line, does not."
         )]
@@ -1006,11 +1006,11 @@ fn fails_a_range_that_ends_off_the_first_parent_chain() {
 
 #[test]
 fn fails_a_round_with_findings() {
-    let round = ROUND.replace("Findings: none", "Findings: 1");
+    let round = second().replace("Findings: none", "Findings: 1");
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![
-            "review round 3 has findings (1). Fix or answer them, then run another \
+            "review round 2 has findings (1). Fix or answer them, then run another \
              round."
                 .to_string()
         ]
@@ -1104,11 +1104,11 @@ fn needs_only_the_reviewer_for_a_diff_with_no_code() {
 
 #[test]
 fn takes_the_last_round() {
-    let later = ROUND.replace("Findings: none", "Findings: 3");
+    let later = second().replace("Findings: none", "Findings: 3");
     assert_eq!(
-        check(&record(vec![bot(ROUND), bot(&later)])),
+        check(&record(vec![bot(&second()), bot(&later)])),
         vec![
-            "review round 3 has findings (3). Fix or answer them, then run another \
+            "review round 2 has findings (3). Fix or answer them, then run another \
              round."
                 .to_string()
         ]
@@ -1271,11 +1271,11 @@ fn a_problem_shows_an_image_in_a_field_that_it_quotes() {
 
 #[test]
 fn a_problem_shows_an_image_in_the_end_of_a_range_that_it_quotes() {
-    let round = ROUND.replace("`38cba24f..c77c67d7`", "38cba24f..c77c67d7![](x)");
+    let round = second().replace("`38cba24f..c77c67d7`", "38cba24f..c77c67d7![](x)");
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at c77c67d7![], not at the head {HEAD}. A commit \
+            "review round 2 ends at c77c67d7![], not at the head {HEAD}. A commit \
              after the round needs a new round; only a clean merge of the base, or a \
              commit that changes no code after a round with a `Text fixes:` line, \
              does not."
@@ -1416,7 +1416,7 @@ fn returns_a_failure_to_read_history() {
     let failed = |_: &str| Err("git rev-parse: bad".to_string());
     assert_eq!(
         problems(
-            &record(vec![bot(ROUND)]),
+            &record(vec![bot(&second())]),
             HEAD,
             &failed,
             &|_, _| Ok(None),
@@ -1427,7 +1427,7 @@ fn returns_a_failure_to_read_history() {
     let failed = |_: &str, _: &str| Err("git diff: bad".to_string());
     assert_eq!(
         problems(
-            &record(vec![bot(ROUND)]),
+            &record(vec![bot(&second())]),
             HEAD,
             &|_| Ok(Place::Head),
             &failed,
@@ -1763,29 +1763,29 @@ fn passes_a_code_block_after_a_byte_order_mark_at_the_start() {
 #[test]
 fn reads_no_heading_after_two_byte_order_marks() {
     // GitHub drops only the first mark, so it shows the heading line as text.
-    let earlier = ROUND.replace("Findings: none", "Findings: 2");
-    let at = ROUND.find("## Review round 3").unwrap();
+    let earlier = second().replace("Findings: none", "Findings: 2");
+    let at = second().find("## Review round 2").unwrap();
     for (marks, expected) in [
         ("\u{feff}", vec![]),
         (
             "\u{feff}\u{feff}",
             vec![
-                "review round 3 has findings (2). Fix or answer them, then run another \
+                "review round 2 has findings (2). Fix or answer them, then run another \
                  round."
                     .to_owned(),
             ],
         ),
     ] {
-        let last = format!("{marks}{}", &ROUND[at..]);
+        let last = format!("{marks}{}", &second()[at..]);
         assert_eq!(check(&record(vec![bot(&earlier), bot(&last)])), expected);
     }
     // After the second mark, a tag is text, and the heading after it shows.
-    let shown = check(&record(vec![bot(ROUND), bot(&earlier[at..])]));
+    let shown = check(&record(vec![bot(&second()), bot(&earlier[at..])]));
     assert_eq!(shown.len(), 1);
     for line in ["<search x", "<!-- x", "<SEARCH x"] {
         let last = format!("\u{feff}\u{feff}{line}\n{}", &earlier[at..]);
         assert_eq!(
-            check(&record(vec![bot(ROUND), bot(&last)])),
+            check(&record(vec![bot(&second()), bot(&last)])),
             shown,
             "{line}"
         );
@@ -2446,14 +2446,14 @@ fn reads_a_line_break_in_an_image_text_as_github_shows_it() {
     // GitHub shows the image as one character on the line of `Reviewers:`, so the
     // `Findings:` line that GitHub shows is `Findings: 2`.
     for image in ["![a\nb](x)", "![a\\\nb](x)"] {
-        let comment = ROUND.replace("Findings: none", "Findings: 2").replace(
+        let comment = second().replace("Findings: none", "Findings: 2").replace(
             "Reviewers: reviewer",
             &format!("Reviewers: reviewer, {image}Findings: none"),
         );
         assert_eq!(
             check(&record(vec![bot(&comment)])),
             vec![
-                "review round 3 has findings (2). Fix or answer them, then run \
+                "review round 2 has findings (2). Fix or answer them, then run \
                  another round."
             ],
             "{image}"
@@ -3637,14 +3637,79 @@ fn a_last_round_gives_the_problem_of_each_end_line_after_its_other_problems() {
     let end = "Deferred: #12\nPublic surface: `hub::Route`";
     let round = ended_at(end, LINK_CUTOFF);
     let round = Comment {
-        body: round.body.replace("Findings: none", "Findings: 1"),
+        body: round
+            .body
+            .replace("Findings: none", "Findings: 1")
+            .replace("## Review round 3", "## Review round 2"),
         ..round
     };
     let mut expected = vec![
-        "review round 3 has findings (1). Fix or answer them, then run another round."
+        "review round 2 has findings (1). Fix or answer them, then run another round."
             .to_string(),
     ];
     expected.extend(no_ok("#12"));
     expected.extend(no_link());
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|problem| problem.replace("review round 3", "review round 2"))
+        .collect();
     assert_eq!(risk(vec![round]), expected);
+}
+
+/// `ROUND` with `Findings: 2`, ended at `CODE`, a commit before the head after which
+/// the range changes code.
+fn capped() -> String {
+    ROUND
+        .replace("Findings: none", "Findings: 2")
+        .replace("..c77c67d7`", &format!("..{CODE}`"))
+}
+
+#[test]
+fn a_last_round_3_passes_with_findings_and_a_code_commit_after_it() {
+    assert_eq!(check(&record(vec![bot(&capped())])), Vec::<String>::new());
+    let fourth = capped().replace("## Review round 3", "## Review round 4");
+    assert_eq!(check(&record(vec![bot(&fourth)])), Vec::<String>::new());
+}
+
+#[test]
+fn a_last_round_2_with_findings_and_a_code_commit_after_it_fails() {
+    let second = capped().replace("## Review round 3", "## Review round 2");
+    assert_eq!(
+        check(&record(vec![bot(&second)])),
+        vec![
+            "review round 2 has findings (2). Fix or answer them, then run another \
+             round."
+                .to_string(),
+            format!(
+                "review round 2 ends at `{CODE}`, and the range from it to the head \
+                 `{HEAD}` changes code at `a.rs:2`. A commit that changes code needs a \
+                 new round."
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_last_round_3_with_findings_needs_the_ok_of_each_deferral_in_a_risk_crate() {
+    let round = deferred("#12");
+    let round = Comment {
+        body: round.body.replace("Findings: none", "Findings: 2"),
+        ..round
+    };
+    assert_eq!(risk(vec![round]), no_ok("#12"));
+}
+
+#[test]
+fn a_last_round_3_with_findings_needs_each_reviewer_that_it_requires() {
+    let round =
+        later("reviewer, architecture").replace("Findings: none", "Findings: 2");
+    assert_eq!(
+        check(&record(vec![bot(&round)])),
+        vec!["review round 3 names no breaker, which this round requires.".to_string()]
+    );
+}
+
+/// `ROUND` as round 2, below the round cap, so that its findings and its end count.
+fn second() -> String {
+    ROUND.replace("## Review round 3", "## Review round 2")
 }
