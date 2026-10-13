@@ -155,6 +155,10 @@ exclude_re = [
   # back. Its test kills the mutants through the private logs.
   'crates/buffer/src/bench\.rs:.*replace Logs::append with \(\)$',
   'crates/buffer/src/bench\.rs:.* in Logs::append$',
+  # Only the `logs` bench calls `buffer::bench::Logs::carry`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::carry with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::carry$',
   # Only the `logs` bench calls `buffer::bench::Logs::trim`, and it gives nothing
   # back. Its test kills the mutants through the private logs and tails.
   'crates/buffer/src/bench\.rs:.*replace Logs::trim with \(\)$',

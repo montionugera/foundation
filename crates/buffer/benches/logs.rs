@@ -1,7 +1,7 @@
 //! The time to sync the durable logs of a shard at each commit, for each entry: one
 //! record with data entries of each index, after a trim that hides each older record.
-//! Also the time to append an entry, and the time of a commit that trims to the
-//! oldest holder.
+//! Also the time to append an entry, to carry a tail, and the time of a commit that
+//! trims to the oldest holder.
 
 use buffer::bench::Logs;
 use divan::Bencher;
@@ -48,6 +48,14 @@ fn append(bencher: Bencher<'_, '_>, indexes: u32) {
     bencher
         .counter(count(indexes))
         .bench_local(|| logs.append());
+}
+
+/// A commit with an append and a sync of each entry, then a carry record of the
+/// tail of each index. Less `append` and `sync`, the time to carry each tail.
+#[divan::bench(args = [1, 64, 256])]
+fn carry(bencher: Bencher<'_, '_>, indexes: u32) {
+    let mut logs = warm(indexes);
+    bencher.counter(count(indexes)).bench_local(|| logs.carry());
 }
 
 /// One index syncs each 64th commit, so the records after its holder stay.

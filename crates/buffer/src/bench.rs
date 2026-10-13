@@ -124,6 +124,34 @@ impl Logs {
         self.offset += BLOCK;
     }
 
+    /// One commit as `commit(1)`, with an append of each entry, then a carry record
+    /// in the next record that holds the durable tail of each index.
+    pub fn carry(&mut self) {
+        self.inner.hide(self.offset);
+        for (slot, header) in &mut self.headers {
+            self.inner.append(*slot, header).expect("entries in order");
+            self.inner
+                .sync(*slot, header, self.offset)
+                .expect("entries in order");
+            header.first += 1;
+        }
+        self.offset += BLOCK;
+        for (slot, header) in &self.headers {
+            let durable = self.inner.durable(*slot, header.path);
+            let tail = crate::carry::Tail {
+                index: header.index,
+                path: header.path,
+                seq: durable.seq,
+                given: 0,
+                stamp: durable.stamp,
+            };
+            self.inner
+                .carry(*slot, &tail, self.offset)
+                .expect("the durable tail");
+        }
+        self.offset += BLOCK;
+    }
+
     /// Moves the appended tail of each index past one data entry, with no sync.
     pub fn append(&mut self) {
         for (slot, header) in &mut self.headers {
@@ -202,6 +230,19 @@ mod tests {
             assert_eq!(logs.inner.durable(slot, Path::Live).seq, 6, "index {n}");
             assert_eq!(logs.inner.runs(slot, Path::Live).count(), 1, "index {n}");
         }
+    }
+
+    /// Each carry record becomes the holder of each index, and its tail is the end.
+    #[test]
+    fn each_carry_of_the_logs_holds_the_tail_of_each_index() {
+        let mut logs = Logs::new(2);
+        logs.carry();
+        logs.carry();
+        for n in 0..2 {
+            let slot = Slot::new(n);
+            assert_eq!(logs.inner.durable(slot, Path::Live).seq, 2, "index {n}");
+        }
+        assert_eq!(logs.inner.kept(), Some(4 * BLOCK));
     }
 
     /// Each call moves the appended tail of each index past one more entry.
