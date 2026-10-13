@@ -134,8 +134,8 @@ fn escapes_a_newline_in_the_text_of_an_error() {
             serde_json::from_value(head["output"].clone()).expect("an output");
         let text = output.text();
         let (_, errors) = text.split_once("\n\n").expect("a line of errors");
-        let line = "site.b: device error: refused\\nsite.a: config error: forged by the \
-                    device\n";
+        let line = "site.b: device error: refused\\nsite.a: config error: forged by \
+                    the device\n";
         assert_eq!(errors, line);
     });
 }
@@ -358,8 +358,8 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
         let text = [reader(), connector("site.b", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let message = "no access policy gives `sam` the action `read` on a request that \
-                       names no definition";
+        let message = "no access policy gives `sam` the action `read` on a request \
+                       that names no definition";
         let expected = json!({
             "errors": [{
                 "code": "ops.denied",
