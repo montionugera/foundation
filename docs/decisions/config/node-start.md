@@ -12,7 +12,7 @@
   `{"name":"edge","data":"foundation-data"}` with `--json`. The line comes after the
   file `address` holds the address. `data` is the path as given, not made absolute, so
   `cli` stays a function of its arguments. Each form writes it lossily, as
-  `Path::to_string_lossy` does. The text form also escapes it as `Start::fail` does,
+  `Path::to_string_lossy` does. The text form also escapes it as `ops::fail` does,
   each character but a quote as `char::escape_debug` does, so a
   newline in it adds no line, and a backslash or a combining mark shows escaped. A
   literal `\n` in a path then reads apart from a newline, and the line matches the
@@ -20,7 +20,7 @@
   newline splits into two lines; `escape_controls`, as `Config` errors use, which keeps
   each backslash, so a literal `\n` reads as a newline. A write that fails changes
   nothing. A node that stops before the thread writes can exit with no line.
-  `Start::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
+  `ops::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
   `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
@@ -54,8 +54,9 @@
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6050855867;
   2026-10-08T05:00:46Z, `--name` and the line,
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6052649826;
-  2026-10-09T18:30:45Z, `running` (now `line`), `fail`, `Failure`, and the `Stopper`
-  doc, https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545;
+  2026-10-09T18:30:45Z, `running` (now `line`), `fail` (now `ops::fail`), `Failure`,
+  and the `Stopper` doc,
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545;
   2026-10-09T19:31:23Z, `start` as a `Command` variant, which amends the first, and the
   line, https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6087849613;
   2026-10-09T20:14:29Z, `node.disk`, `node.memory`, and a code of its own for the file
@@ -81,8 +82,8 @@
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6090417728;
   2026-10-09T23:14:43Z, the escape of `data` in the text form,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6090863425;
-  2026-10-09T23:23:21Z, why the escape stays: `Start::fail` and `Applied` give a path in
-  that form,
+  2026-10-09T23:23:21Z, why the escape stays: `Start::fail` (now `ops::fail`) and
+  `Applied` give a path in that form,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6090952680;
   2026-10-09T23:57:51Z, that reason confirmed, and the first bullet of the ruling
   narrowed to `Applied` and each error but `Config`,
@@ -228,3 +229,24 @@
   https://github.com/synnaxlabs/foundation/pull/2169#issuecomment-6103406164) and
   reworded by it (2026-10-11T10:39:06Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108157810).
+  `main` runs `ops::cli` on a shard that ends before `start` runs, so a command that
+  reaches a node can wait on its reply. A failure to start that shard and each failure
+  of the node go through `ops::fail` with the arguments, which writes JSON when `--json`
+  comes after the program name and before any `--`, as `cli` reads it. A panic of that
+  shard goes on as a panic. The fix of `node.failed` is "Fix the cause that the message
+  states, then run the command again", since the command that failed can be a command
+  other than `start`. Lost: `Start::fail`, which a failure before `cli` gives a `Start`
+  cannot reach. Supersedes `Start::fail` in item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545.
+  Decided by `laptop.architect-2` (2026-10-13T02:10:54Z, the shard,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419;
+  2026-10-13T02:43:10Z, `ops::fail` and the fix,
+  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137040498;
+  2026-10-13T03:32:47Z, `--json` only after the program name,
+  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137592748).
+  The shard of `cli` makes no blocking call while a request to the node waits. Lost: an
+  `os` thread for `cli` and a shard for the client, about 90 lines and one more thread.
+  Trigger: a command that blocks while a request or a stream of the node waits, such as
+  a watch of samples to `output`; then `env::paths` becomes async and runs each call on
+  a thread, as `env::files` does. Decided by `laptop.architect-2` (2026-10-13T02:14:36Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489).

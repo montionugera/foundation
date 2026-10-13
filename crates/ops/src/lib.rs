@@ -48,7 +48,13 @@ pub enum Run {
 /// at most one line on `output`, flushed, until `input` ends. A line longer than 1 MiB
 /// gets an Invalid Request error. A closed `output` ends the run with no error,
 /// because its reader has left.
-pub fn cli(
+///
+/// Blocks its thread at each read of `input` and each write of `output` or `errors`.
+#[expect(
+    clippy::unused_async,
+    reason = "`plan` and `apply` wait on a node in #1744 PR 2e-2"
+)]
+pub async fn cli(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,
     mut output: impl Write,
@@ -56,15 +62,11 @@ pub fn cli(
 ) -> Run {
     let args: Vec<OsString> = args.into_iter().collect();
     // Read before parsing, so an argument error also honors `--json`.
-    let json = args
-        .iter()
-        .take_while(|arg| *arg != "--")
-        .map(|arg| arg.as_encoded_bytes())
-        .any(|arg| arg == b"--json" || arg.starts_with(b"--json="));
+    let json = json(&args);
     let render = |value: Value, text: String| {
         if json { format!("{value}\n") } else { text }
     };
-    let done = match operation::parse(&args) {
+    let done = match operation::parse(&args, json) {
         Ok(Parsed::Start(start)) => return Run::Start(start),
         Ok(Parsed::Run(request)) => {
             let response = request.run();
@@ -80,6 +82,23 @@ pub fn cli(
         Ok(()) | Err(Stop::Closed) => Run::Exit(0),
         Err(Stop::Failed(error)) => Run::Exit(report(&error, json, errors)),
     }
+}
+
+/// Writes `failure`, why the command line `args` did not run or why its node failed,
+/// to `errors` as [`cli`] writes its own errors: as JSON when `args` has `--json`
+/// after the program name and before any `--`, else as text. Gives exit status 1.
+pub fn fail(args: &[OsString], failure: &Failure, errors: impl Write) -> u8 {
+    report(&Error::Start(failure.clone()), json(args), errors)
+}
+
+/// Whether `args` asks for JSON: a `--json` flag after the program name and before any
+/// `--`.
+fn json(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .map(|arg| arg.as_encoded_bytes())
+        .any(|arg| arg == b"--json" || arg.starts_with(b"--json="))
 }
 
 /// Writes `error` to `errors`, as JSON when `json`, and gives its exit status.
