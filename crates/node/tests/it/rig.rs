@@ -13,6 +13,7 @@ use env::clock::Clock;
 use types::time::Span;
 
 use crate::status::Connector;
+use crate::text;
 
 /// How long [`Rig::wait`] and [`Rig::run`] wait: longer than the 60 s cap of a restart
 /// backoff.
@@ -254,11 +255,24 @@ impl Rig {
         wait(&self.clock, PATIENCE, what, check)
     }
 
-    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Panics when either
-    /// command does not exit 0.
-    #[expect(clippy::todo, reason = "waits on #337, #1744")]
-    pub(crate) fn apply(&self) {
-        todo!("waits on #337, #1744")
+    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Gives the stdout of
+    /// each command. Panics when either command does not exit 0 with no stderr.
+    pub(crate) fn apply(&self) -> [String; 2] {
+        let commands: [&[&str]; 2] = [
+            &["plan", "plant.hcl", "--out", "plant.plan"],
+            &["apply", "plant.plan"],
+        ];
+        commands.map(|args| {
+            let output = self.run(args, b"");
+            let stderr = text(&output.stderr);
+            assert!(
+                output.status.success() && stderr.is_empty(),
+                "`foundation {}` exited with {}, stderr: {stderr}",
+                args.join(" "),
+                output.status
+            );
+            text(&output.stdout).to_owned()
+        })
     }
 
     /// The connectors of `foundation status --json`, by name.

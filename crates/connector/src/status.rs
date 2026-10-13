@@ -111,6 +111,7 @@ impl Status {
     pub(crate) fn new(counts: Vec<Name>) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
+            shown: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
         }))
@@ -139,6 +140,28 @@ impl Status {
             values: Rc::clone(&self.0),
             at,
         }
+    }
+
+    /// Shows `error` as the class `Retry` and its text, from the next write until the
+    /// end of the run.
+    pub(crate) fn show(&self, error: &dyn fmt::Display) {
+        self.set(Shown::Error(cut(&error.to_string())));
+    }
+
+    /// Clears the class and the text, from the next write until the end of the run.
+    pub(crate) fn clear(&self) {
+        self.set(Shown::Cleared);
+    }
+
+    /// Stages `new`, unless it is the value that the run shows, or no run runs.
+    fn set(&self, new: Shown) {
+        let mut shown = self.0.shown.borrow_mut();
+        if matches!(*shown, Shown::Ended) || *shown == new {
+            return;
+        }
+        *shown = new;
+        drop(shown);
+        self.0.stage();
     }
 }
 
@@ -182,7 +205,8 @@ impl State {
     }
 }
 
-/// How the last run ended, as `class` gives it: `None` also before the first end.
+/// How the last run ended, or the error that the running kind shows, as `class` gives
+/// it: `None` also before the first end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     None = 0,
@@ -209,9 +233,11 @@ impl Class {
     }
 }
 
-/// The last value of each count, and whether the status waits for a write.
+/// The last value of each count and the error that the run shows, and whether the
+/// status waits for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
+    shown: RefCell<Shown>,
     staged: Cell<bool>,
     /// The flush, while it waits for a staged count of an open session, so that a set
     /// after the close wakes nothing.
@@ -229,17 +255,32 @@ impl Values {
     }
 }
 
+/// The error that the running kind shows.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Shown {
+    /// No run runs: an error that a task of the last run shows is not written.
+    #[default]
+    Ended,
+    /// The run showed nothing yet, so the status keeps the end of the last run.
+    Nothing,
+    /// The run cleared the error last.
+    Cleared,
+    /// The text of the last error that the run showed, as the class `Retry`.
+    Error(String),
+}
+
 impl fmt::Debug for Values {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Values")
             .field("counts", &self.counts)
+            .field("shown", &self.shown.borrow())
             .field("staged", &self.staged.get())
             .finish_non_exhaustive()
     }
 }
 
 /// The writer of one connector's status channels: the supervisor sets each change of
-/// state, and [`Writer::flush`] writes the counts.
+/// state, and [`Writer::flush`] writes the counts and the error that the kind shows.
 pub(crate) struct Writer {
     session: RefCell<Session>,
     values: Rc<Values>,
@@ -336,15 +377,18 @@ impl Writer {
             session.started = true;
             session.state = State::Running;
         });
+        self.values.shown.replace(Shown::Nothing);
         true
     }
 
-    /// Writes `state` 3 with the class and the text of a run that ended with `end`. It
-    /// takes them at the call, so the caller can drop `end` before it awaits.
+    /// Writes `state` 3 with the class and the text of a run that ended with `end`,
+    /// in place of the error that the run showed. It takes them at the call, so the
+    /// caller can drop `end` before it awaits.
     pub(crate) fn end(
         &self,
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
+        self.values.shown.replace(Shown::Ended);
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
@@ -518,6 +562,19 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
+        match &*values.shown.borrow() {
+            Shown::Ended | Shown::Nothing => {}
+            Shown::Cleared => {
+                self.class = Class::None;
+                self.error.set(&mut self.series, String::new());
+            }
+            Shown::Error(text) => {
+                self.class = Class::Retry;
+                if self.error.value != *text {
+                    self.error.set(&mut self.series, text.clone());
+                }
+            }
+        }
         if self.closed {
             self.unapplied = false;
             return;
@@ -889,7 +946,8 @@ mod tests {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], staged: true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, staged: \
+                    true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 

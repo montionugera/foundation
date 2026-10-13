@@ -447,6 +447,19 @@ mod tests {
         Failed(hub::writer::Failure),
         /// Returns a failed draft of a frame with `?`.
         Draft(frame::Error),
+        /// Shows the error `refused`, waits the span, shows it again, waits the span,
+        /// clears it twice, waits the span, then returns `Ok`.
+        Show(Span),
+        /// Shows the error `refused`, then returns a device error at once.
+        ShowEnd,
+        /// Shows an error of 1,100 bytes, waits the span, then returns `Ok`.
+        ShowWide(Span),
+        /// Clears the error, waits the span, then returns `Ok`.
+        Clear(Span),
+        /// Lends its context to a task that shows the error `late`, or clears the
+        /// error when `cleared`, at the cancel of the run. Then returns `Ok` at once,
+        /// or a device error when `failed`.
+        Late { failed: bool, cleared: bool },
     }
 
     /// When each run started and ended.
@@ -486,6 +499,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
+            let ctx = Rc::new(ctx);
             assert_eq!(ctx.name().as_str(), "plant.script");
             let clock = ctx.clock();
             let index = {
@@ -498,48 +512,101 @@ mod tests {
                 .lock()
                 .expect("no panic under the lock")
                 .pop_front();
-            let out = match step {
-                Some(Step::Done) => Ok(()),
-                Some(Step::Device(span)) => {
-                    clock.sleep(span).await;
-                    Err(Error::Device("no reply".into()))
-                }
-                Some(Step::Config) => Err(Error::Config(vec![bad()])),
-                Some(Step::Configs) => Err(Error::Config(vec![bad(), worse()])),
-                Some(Step::Retry) => Err(Error::Retry("busy".into())),
-                Some(Step::Long) => Err(Error::Device(long().into())),
-                Some(Step::Wide) => Err(Error::Device("a".repeat(1_100).into())),
-                Some(Step::Abort) => {
-                    ctx.cancel().cancel();
-                    Err(Error::Device("stopped its parts".into()))
-                }
-                Some(Step::Linger(span)) => {
-                    ctx.cancel().wait().await;
-                    clock.sleep(span).await;
-                    Err(Error::Device("stopped late".into()))
-                }
-                Some(Step::Hold(span)) => {
-                    hold(&ctx, span);
-                    Err(Error::Device("left a task".into()))
-                }
-                Some(Step::Refuse(span)) => {
-                    hold(&ctx, span);
-                    Err(Error::Config(vec![bad()]))
-                }
-                Some(Step::Ended(ended)) => returned(ended),
-                Some(Step::Failed(failure)) => returned(failure),
-                Some(Step::Draft(error)) => returned(error),
-                None => {
-                    ctx.cancel().wait().await;
-                    Ok(())
-                }
-            };
+            let out = play(&ctx, step).await;
             let mut runs = self.runs.lock().expect("no panic under the lock");
             if let Some(run) = runs.get_mut(index) {
                 run.1 = Some(clock.now());
             }
             out
         }
+    }
+
+    /// Runs `step` of a `Script`, or waits for the cancel when it is `None`.
+    async fn play(lent: &Rc<Context<bool>>, step: Option<Step>) -> Result<(), Error> {
+        let ctx: &Context<bool> = lent;
+        let clock = ctx.clock();
+        match step {
+            Some(Step::Done) => Ok(()),
+            Some(Step::Device(span)) => {
+                clock.sleep(span).await;
+                Err(Error::Device("no reply".into()))
+            }
+            Some(Step::Config) => Err(Error::Config(vec![bad()])),
+            Some(Step::Configs) => Err(Error::Config(vec![bad(), worse()])),
+            Some(Step::Retry) => Err(Error::Retry("busy".into())),
+            Some(Step::Long) => Err(Error::Device(long().into())),
+            Some(Step::Wide) => Err(Error::Device("a".repeat(1_100).into())),
+            Some(Step::Abort) => {
+                ctx.cancel().cancel();
+                Err(Error::Device("stopped its parts".into()))
+            }
+            Some(Step::Linger(span)) => {
+                ctx.cancel().wait().await;
+                clock.sleep(span).await;
+                Err(Error::Device("stopped late".into()))
+            }
+            Some(Step::Hold(span)) => {
+                hold(ctx, span);
+                Err(Error::Device("left a task".into()))
+            }
+            Some(Step::Refuse(span)) => {
+                hold(ctx, span);
+                Err(Error::Config(vec![bad()]))
+            }
+            Some(Step::Ended(ended)) => returned(ended),
+            Some(Step::Failed(failure)) => returned(failure),
+            Some(Step::Draft(error)) => returned(error),
+            Some(Step::Show(span)) => {
+                ctx.error(&"refused");
+                clock.sleep(span).await;
+                ctx.error(&"refused");
+                clock.sleep(span).await;
+                ctx.clear_error();
+                ctx.clear_error();
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::ShowEnd) => {
+                ctx.error(&"refused");
+                Err(Error::Device("no reply".into()))
+            }
+            Some(Step::ShowWide(span)) => {
+                ctx.error(&"a".repeat(1_100));
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::Clear(span)) => {
+                ctx.clear_error();
+                clock.sleep(span).await;
+                Ok(())
+            }
+            Some(Step::Late { failed, cleared }) => show_late(lent, failed, cleared),
+            None => {
+                ctx.cancel().wait().await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Runs [`Step::Late`].
+    fn show_late(
+        lent: &Rc<Context<bool>>,
+        failed: bool,
+        cleared: bool,
+    ) -> Result<(), Error> {
+        let late = Rc::clone(lent);
+        lent.tasks().spawn(async move {
+            late.cancel().wait().await;
+            if cleared {
+                late.clear_error();
+            } else {
+                late.error(&"late");
+            }
+        });
+        if failed {
+            return Err(Error::Device("no reply".into()));
+        }
+        Ok(())
     }
 
     /// Returns `end` with `?`, as a kind does.
@@ -852,6 +919,126 @@ mod tests {
     }
 
     #[test]
+    fn writes_the_error_that_a_run_shows_and_its_clear() {
+        let steps = vec![Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((at, _, text), state)| (*at, state, text.as_str()))
+            .collect();
+        let want = [
+            (Span::ZERO, (0, 0, 0), ""),
+            (ms(1_000), (0, 3, 0), "refused"),
+            (ms(4_000), (0, 0, 0), ""),
+            (ms(6_000), (3, 0, 0), ""),
+            (Span::from_nanos(ms(6_000).nanos() + 1), (2, 0, 0), ""),
+        ];
+        assert_eq!(got, want);
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn writes_the_end_of_a_run_in_place_of_the_error_it_showed() {
+        let steps = vec![Step::ShowEnd];
+        let out = supervise("script", steps, config(), Cancel::After(ms(500)));
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["", "no reply", "no reply", "no reply"]);
+        let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
+        assert_eq!(classes, [0, 2, 2, 2]);
+    }
+
+    #[test]
+    fn writes_the_error_that_a_restart_shows_again() {
+        let steps = vec![Step::ShowEnd, Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        let want = [
+            "", "no reply", "no reply", "no reply", "refused", "", "", "",
+        ];
+        assert_eq!(texts, want);
+    }
+
+    #[test]
+    fn cuts_a_long_error_that_a_run_shows_to_1024_bytes() {
+        let steps = vec![Step::ShowWide(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (states(&out.statuses).into_iter())
+            .zip(&out.statuses)
+            .map(|(state, (_, _, text))| (state, text.as_str()))
+            .collect();
+        assert_eq!(got[1], ((0, 3, 0), "a".repeat(1_024).as_str()));
+    }
+
+    #[test]
+    fn writes_a_clear_status_when_a_restart_clears_the_end_before_it() {
+        let steps = vec![Step::ShowEnd, Step::Clear(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (states(&out.statuses).into_iter())
+            .zip(&out.statuses)
+            .map(|(state, (at, _, text))| (*at, state, text.as_str()))
+            .collect();
+        let restart = got[3].0;
+        let cleared = Span::from_nanos(restart.nanos() + ms(1_000).nanos());
+        let want = [(restart, (0, 2, 1), "no reply"), (cleared, (0, 0, 1), "")];
+        assert_eq!(got[3..5], want);
+    }
+
+    /// The state, the class, and the text of each status that a run of `late`, a
+    /// [`Step::Late`], gives, cancelled at `cancel`.
+    fn supervise_late(late: Step, cancel: Span) -> Vec<((i64, i64, i64), String)> {
+        let out = supervise("script", vec![late], config(), Cancel::After(cancel));
+        out.result.expect("ok after a cancel");
+        (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((_, _, text), state)| (state, text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn keeps_the_ok_end_when_a_task_shows_an_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 0, 0), String::new()),
+            ((2, 0, 0), String::new()),
+        ];
+        let late = Step::Late {
+            failed: false,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(500)), want);
+    }
+
+    #[test]
+    fn keeps_the_device_end_when_a_task_shows_an_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
+        ];
+        let late = Step::Late {
+            failed: true,
+            cleared: false,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
+    }
+
+    #[test]
+    fn keeps_the_device_end_when_a_task_clears_the_error_after_it() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+            ((0, 2, 1), "no reply".to_owned()),
+        ];
+        let late = Step::Late {
+            failed: true,
+            cleared: true,
+        };
+        assert_eq!(supervise_late(late, ms(5_000))[..4], want);
+    }
+
+    #[test]
     fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =
             refuse_the_last_wait(vec![Step::Hold(ms(2_000))], Span::ZERO);
@@ -1127,6 +1314,22 @@ mod tests {
             entry: 3,
             entries: 2,
         };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 1 \
+                               follows entry 2: entries must increase")]
+    fn panics_when_a_kind_returns_series_out_of_order() {
+        let error = frame::Error::Unordered { entry: 1, last: 2 };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 2 is \
+                               present but its index, entry 0, is absent")]
+    fn panics_when_a_kind_returns_a_series_with_no_index() {
+        let error = frame::Error::IndexAbsent { entry: 2, index: 0 };
         supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
     }
 

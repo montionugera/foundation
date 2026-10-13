@@ -1169,6 +1169,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",

@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use document::diagnostic::Code;
 use serde_json::Value;
 use types::name::Name;
 
@@ -20,18 +19,6 @@ pub struct Start {
     pub name: Option<Name>,
     /// `--listen`: the address of the node's one port, else port 0 of `127.0.0.1`.
     pub listen: SocketAddr,
-}
-
-/// Why the command line did not run, or why its node did not start or stopped with an
-/// error.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failure {
-    /// What kind of failure it is, such as `node.busy`.
-    pub code: Code,
-    /// What went wrong.
-    pub message: String,
-    /// What to do about it.
-    pub fix: String,
 }
 
 impl Start {

@@ -251,6 +251,22 @@ impl<C> Context<C> {
         self.status.count(name)
     }
 
+    /// Shows `error` in the status of the running connector, as an attempt that
+    /// failed with the class `retry`. The status gives it within one second. The end
+    /// of the run replaces it, and a call after the run returned shows nothing.
+    pub fn error(&self, error: &dyn fmt::Display) {
+        self.status.show(error);
+    }
+
+    /// Clears the class and the text of the error in the status of the running
+    /// connector, within one second: the one that [`Context::error`] showed, or the
+    /// end of the last run. Until the first call of `error` or `clear_error` in a
+    /// run, the status keeps the end of the last run. A call after the run returned
+    /// shows nothing.
+    pub fn clear_error(&self) {
+        self.status.clear();
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {

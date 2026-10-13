@@ -1,14 +1,15 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Error, On};
+use crate::error::{Action, Error, On, Unread};
 use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
@@ -24,21 +25,38 @@ struct Exit {
     status: u8,
 }
 
-/// What [`crate::cli`] gives. It runs no command that waits, so one poll ends it.
-fn now<T>(future: impl Future<Output = T>) -> T {
-    let Poll::Ready(out) = pin!(future).poll(&mut Context::from_waker(Waker::noop()))
+/// What [`crate::cli`] gives for a command that reaches no node, with the paths of a
+/// host that holds no file. Such a command does not wait, so one poll ends it.
+fn offline(
+    args: impl IntoIterator<Item = OsString>,
+    input: impl io::BufRead,
+    output: impl io::Write,
+    errors: impl io::Write,
+) -> crate::Run {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let paths = sim.node(sim::node::Config::default()).paths();
+    let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
+        panic!("a command sent a request")
+    };
+    let reached = Cell::new(0);
+    let reach = async |_: &Path| {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    };
+    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
     };
-    out
+    assert_eq!(reached.get(), 0, "a command reached its node");
+    run
 }
 
 fn run(args: &[&str], input: impl io::BufRead) -> Exit {
     let args = ["foundation"].iter().chain(args).map(OsString::from);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let crate::Run::Exit(status) =
-        now(crate::cli(args, input, &mut stdout, &mut stderr))
+    let crate::Run::Exit(status) = offline(args, input, &mut stdout, &mut stderr)
     else {
         panic!("a command that is not `start` exits");
     };
@@ -101,8 +119,9 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Three more for `start`, `mcp`, and `help`, which are not operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
+    // Five more for `start`, `plan`, `apply`, `mcp`, and `help`, which are not
+    // operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 5);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();
@@ -368,7 +387,7 @@ fn a_json_flag_with_a_value_gives_its_error_as_json() {
             value.clone(),
         ];
         let mut stderr = Vec::new();
-        let status = now(crate::cli(args, io::empty(), io::sink(), &mut stderr));
+        let status = offline(args, io::empty(), io::sink(), &mut stderr);
         let error: Value = serde_json::from_slice(&stderr).expect("json");
         assert_eq!(
             (status, error),
@@ -450,7 +469,7 @@ fn a_call_with_no_arguments_runs() {
     );
 }
 
-/// One error of each variant but `Config` and `Start`.
+/// One error of each variant but `Config`, `Node`, and `Remote`.
 fn every() -> Vec<Error> {
     let pointer = spec::Pointer {
         version: 0,
@@ -490,6 +509,18 @@ fn every() -> Vec<Error> {
             on: On::Spec,
         },
         Error::LargeReply,
+        Error::Read {
+            path: PathBuf::new(),
+            cause: Unread::NotFound,
+        },
+        Error::Write {
+            path: PathBuf::new(),
+            error: env::paths::Error::NotFound,
+        },
+        Error::LargeRequest,
+        Error::Reply {
+            message: String::new(),
+        },
     ]
 }
 
@@ -499,7 +530,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
         // `Config` holds the codes of the front ends, of `config`, and the one below.
-        // `Start` holds the codes of `node`.
+        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
         match error {
             Error::Argument { .. }
             | Error::Unknown { .. }
@@ -513,8 +544,13 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Request { .. }
             | Error::Denied { .. }
             | Error::LargeReply
+            | Error::Read { .. }
+            | Error::Write { .. }
+            | Error::LargeRequest
+            | Error::Reply { .. }
             | Error::Config(_)
-            | Error::Start(_) => {}
+            | Error::Node(_)
+            | Error::Remote { .. } => {}
         }
     }
     let mut lines: Vec<_> = every
@@ -547,7 +583,7 @@ mod start {
     use document::diagnostic::Code;
     use serde_json::json;
 
-    use super::{Exit, call, cli, failed, now};
+    use super::{Exit, call, cli, failed, offline};
     use crate::{Failure, Run, Start};
 
     fn start(args: &[&str]) -> Run {
@@ -557,7 +593,7 @@ mod start {
             .map(OsString::from);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let run = now(crate::cli(args, io::empty(), &mut stdout, &mut stderr));
+        let run = offline(args, io::empty(), &mut stdout, &mut stderr);
         assert_eq!((stdout, stderr), (Vec::new(), Vec::new()), "writes nothing");
         run
     }
@@ -843,12 +879,7 @@ mod start {
         ] {
             let args: Vec<OsString> =
                 [program].iter().chain(flags).map(OsString::from).collect();
-            let run = now(crate::cli(
-                args.clone(),
-                io::empty(),
-                io::sink(),
-                io::sink(),
-            ));
+            let run = offline(args.clone(), io::empty(), io::sink(), io::sink());
             let Run::Start(start) = run else {
                 panic!("{args:?} starts a node");
             };
@@ -1084,7 +1115,7 @@ mod mcp {
 mod serve {
     use std::io::{self, Read, Write};
 
-    use super::{Exit, now, run};
+    use super::{Exit, offline, run};
     use crate::Run;
 
     const PING: &str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
@@ -1162,12 +1193,12 @@ mod serve {
     #[test]
     fn each_reply_is_flushed() {
         let mut output = Buffered::default();
-        let status = now(crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             PING.as_bytes(),
             &mut output,
             io::sink(),
-        ));
+        );
         assert_eq!(status, Run::Exit(0));
         assert_eq!(
             (output.pending.as_slice(), output.flushed.as_slice()),
@@ -1184,12 +1215,12 @@ mod serve {
             closed: true,
             ..Buffered::default()
         };
-        let status = now(crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             output,
             &mut stderr,
-        ));
+        );
         assert_eq!(
             (status, stderr.as_slice(), rest),
             (Run::Exit(0), b"".as_slice(), PING.as_bytes())
@@ -1216,35 +1247,35 @@ mod serve {
         let input = format!("{PING}{PING}");
         let mut rest = input.as_bytes();
         let mut stdout = Vec::new();
-        let status = now(crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             Failing(io::ErrorKind::BrokenPipe),
             &mut stdout,
-        ));
+        );
         assert_eq!(
             (status, stdout.as_slice(), rest),
             (Run::Exit(0), b"".as_slice(), PING.as_bytes())
         );
         let mut stderr = Vec::new();
-        let status = now(crate::cli(
+        let status = offline(
             ["foundation", "version"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::BrokenPipe),
             &mut stderr,
-        ));
+        );
         assert_eq!((status, stderr.as_slice()), (Run::Exit(0), b"".as_slice()));
     }
 
     #[test]
     fn an_output_that_fails_is_an_error() {
         let mut stderr = Vec::new();
-        let status = now(crate::cli(
+        let status = offline(
             ["foundation", "version", "--json"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::StorageFull),
             &mut stderr,
-        ));
+        );
         let message = io::Error::from(io::ErrorKind::StorageFull).to_string();
         assert_eq!(status, Run::Exit(1));
         assert_eq!(
