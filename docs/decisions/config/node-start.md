@@ -199,7 +199,9 @@
   Decided by `laptop.architect-2` (2026-10-13T02:10:54Z, the shard,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419;
   2026-10-13T02:43:10Z, `ops::fail` and the fix,
-  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137040498).
+  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137040498;
+  2026-10-13T03:32:47Z, `--json` only after the program name,
+  https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137592748).
   The shard of `cli` makes no blocking call while a request to the node waits. Lost: an
   `os` thread for `cli` and a shard for the client, about 90 lines and one more thread.
   Trigger: a command that blocks while a request or a stream of the node waits, such as
