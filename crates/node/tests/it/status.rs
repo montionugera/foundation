@@ -18,7 +18,7 @@ struct Output {
 pub(crate) struct Connector {
     pub(crate) name: String,
     pub(crate) kind: String,
-    /// `running`, `restarting`, `stopped`, or `unknown`.
+    /// `running`, `restarting`, `stopped`, `ending`, or `unknown`.
     pub(crate) state: String,
     /// The `address` attribute of the config, or `None` when it has none.
     #[serde(deserialize_with = "Option::deserialize")]
@@ -56,4 +56,12 @@ pub(crate) fn connectors(json: &[u8]) -> BTreeMap<String, Connector> {
     (output.connectors.into_iter())
         .map(|connector| (connector.name.clone(), connector))
         .collect()
+}
+
+/// `ops` writes each key of a connector, so a connector with no `address`, `restarts`,
+/// `counts`, or `error` key has another shape.
+#[test]
+#[should_panic(expected = "the status JSON")]
+fn a_connector_with_no_optional_key_panics() {
+    connectors(br#"{"connectors":[{"name":"a","kind":"influx","state":"unknown"}]}"#);
 }
