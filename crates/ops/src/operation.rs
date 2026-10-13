@@ -223,7 +223,7 @@ fn help(name: Option<&str>) -> Result<Parsed, Error> {
     Ok(Parsed::Help(command.render_help().to_string()))
 }
 
-/// Reads a request for the operation `name` from its JSON `arguments`.
+/// Reads the request of a `tools/call` of MCP for the tool `name` from its `arguments`.
 pub(crate) fn read(
     name: &str,
     arguments: Map<String, Value>,
