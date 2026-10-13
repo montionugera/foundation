@@ -72,7 +72,7 @@ async fn bench(
     n: u64,
 ) -> (Line, [Line; 4]) {
     let more: Vec<_> = (0..n).map(|at| name(&format!("w.{at}"))).collect();
-    let hub = common::hub_in(&node, tasks, None, &more).await;
+    let hub = common::hub_alone(&node, tasks, &more).await;
     let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
     let mut timer = Line::new("timer", 1);
     let mut one = Line::new(leak(format!("open 1/{n}")), 1);

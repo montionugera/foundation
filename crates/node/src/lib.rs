@@ -117,7 +117,8 @@ impl<M> fmt::Debug for Config<M> {
     }
 }
 
-/// The region whose mesh a node opens.
+/// The region whose mesh a node opens. The hub of each task knows each channel of the
+/// region's spec in use, at the open and after each spec change that takes effect.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Region {
@@ -137,11 +138,9 @@ pub enum Region {
     /// `acceptance` lab, which writes the file first with `create_key`, give it. A
     /// start whose mesh log holds no record keeps the region in the data directory. A
     /// start whose log holds a record and that gives another region stops the node, and
-    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of
-    /// each task knows each channel of the region's spec in use, at the open and after
-    /// each spec change that takes effect. At a start whose log holds no record, that
-    /// is the founding's `definitions`, or no channel when `spec::region::check` gives
-    /// them problems.
+    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. At a start
+    /// whose log holds no record, the spec in use is the founding's `definitions`, or
+    /// no channel when `spec::region::check` gives them problems.
     #[cfg(feature = "sim")]
     Given(mesh::region::Founding),
 }
@@ -1026,9 +1025,9 @@ impl Endpoint {
 impl Serve {
     /// Keeps the budgets ([`budget::keep`]), loads the node's identity
     /// ([`identity::load`]), and opens `endpoint`, then runs each task given with a
-    /// hub over `home` that knows each channel of the spec that the mesh uses, and of
-    /// each spec that takes effect later, runs each connector that the spec in use
-    /// places on this node ([`connectors::Runs`]), and serves the node's port, until
+    /// hub over `home` that takes its definitions from the region's mesh
+    /// ([`hub::Config::region`]), runs each connector that the spec in use places on
+    /// this node ([`connectors::Runs`]), and serves the node's port, until
     /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
     /// of [`end`], with the address in the file `address` of `files` while it serves
     /// ([`address::hold`]). A transport or a group that ends it goes into `failed`
@@ -1122,10 +1121,9 @@ impl Serve {
                         tasks: tasks.clone(),
                         hub: hub.clone(),
                     };
-                    (ops, (mesh, runs(mesh, key, config)))
+                    (ops, runs(mesh, key, config).follow(mesh.watch_spec()))
                 });
                 let (ops, runs) = parts.unzip();
-                let group = follow(runs, hub.clone()).await;
                 let port = route::accept(
                     transport,
                     mesh,
@@ -1135,7 +1133,7 @@ impl Serve {
                     settings.header_wait,
                     settings.places_max,
                 );
-                let stop = until(guard, port, group, fail);
+                let stop = until(guard, port, runs, fail);
                 inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
             });
             // `hold` leaves `serve` to drop here: after a failed write it still holds
@@ -1221,56 +1219,23 @@ fn kinds() -> connector::kind::Table {
     connector::kind::Table::new().with("influx", connector_influx::Kind::default())
 }
 
-/// Gives `hub` what the spec that `mesh` uses defines and makes `runs` match it, then
-/// returns a future that does so for each later spec in use and resolves with the
-/// stop of the group, or never resolves when the node has no mesh.
-/// The hub knows each spec before the runs do, so a run finds its status channels.
-/// The future holds the runs.
-async fn follow(
-    mesh: Option<(&mesh::Mesh, connectors::Runs)>,
-    hub: hub::Hub,
-) -> impl Future<Output = mesh::Stopped> + use<> {
-    let define = move |spec: mesh::used::Spec, runs: &mut connectors::Runs| {
-        hub.set_definitions(&*spec.definitions);
-        runs.apply(&spec.definitions);
-    };
-    let mut followed = mesh.map(|(mesh, runs)| (mesh.watch_spec(), runs));
-    let first = match &mut followed {
-        Some((watch, runs)) => watch.next().await.map(|spec| define(spec, runs)),
-        None => Ok(()),
-    };
-    async move {
-        let Some((mut watch, mut runs)) = followed else {
-            return std::future::pending().await;
-        };
-        if let Err(stopped) = first {
-            return stopped;
-        }
-        loop {
-            let next = watch.next().await;
-            if let Err(stopped) = next.map(|spec| define(spec, &mut runs)) {
-                return stopped;
-            }
-        }
-    }
-}
-
-/// Ready when the node stops (`guard`), the transport stops (`port`), or the mesh's
-/// group stops, by the rank of [`end`]. A transport or a group that ends it goes into
-/// `fail` first.
+/// Drives `runs`, with a mesh, which ends when the mesh's group stops. Ready when the
+/// node stops (`guard`), the transport stops (`port`), or `runs` ends, by the rank of
+/// [`end`]. A transport or a group that ends it goes into `fail` first.
 async fn until(
     guard: Guard,
     port: impl Future<Output = transport::Error>,
-    group: impl Future<Output = mesh::Stopped>,
+    runs: Option<impl Future<Output = mesh::Stopped>>,
     fail: impl Fn(Error),
 ) {
-    let (mut guard, mut port, mut group) = (pin!(guard), pin!(port), pin!(group));
+    let (mut guard, mut port) = (pin!(guard), pin!(port));
+    let mut runs = pin!(runs);
     poll_fn(|cx| {
-        let ended = end(
-            guard.as_mut().poll(cx),
-            port.as_mut().poll(cx),
-            group.as_mut().poll(cx),
-        );
+        let group = match runs.as_mut().as_pin_mut() {
+            Some(runs) => runs.poll(cx),
+            None => Poll::Pending,
+        };
+        let ended = end(guard.as_mut().poll(cx), port.as_mut().poll(cx), group);
         // Set before the tasks drop, so that `join` ranks it above a panic in a
         // task's drop.
         ended.map(|error| error.map_or((), &fail))

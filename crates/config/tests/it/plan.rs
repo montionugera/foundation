@@ -1041,6 +1041,147 @@ fn check_refuses_a_status_channel_on_another_index() {
     );
 }
 
+/// The problems of `plan::check` on `COUNTED` with the index `a.time` and its data
+/// channel `a.x`, after `edit` of the kind of `channel`, with the key of each
+/// definition by name.
+fn pointed(
+    channel: &str,
+    edit: impl FnOnce(&mut spec::channel::Kind<Key>, &BTreeMap<Name, Key>),
+) -> Vec<Problem> {
+    let members = BTreeSet::from([name("n")]);
+    let mut spec = Spec::create_empty();
+    let a = "channel \"a.time\" { kind = \"index\" }\n\
+             channel \"a.x\" {\n  data_type = \"f64\"\n  index = \"a.time\"\n}\n";
+    let text = format!("{COUNTED}{a}{}", placement("a", "\"a.time\"", "n"));
+    spec.apply(&spec.plan(&[&text], &["n"]).expect("no problems"));
+    let mut definitions = spec.definitions();
+    let keys = definitions
+        .iter()
+        .filter_map(|(name, stored)| match stored {
+            Stored::Channel(channel) => Some((name.clone(), channel.key)),
+            _ => None,
+        })
+        .collect();
+    let Some(Stored::Channel(stored)) = definitions.get_mut(&name(channel)) else {
+        panic!("the channel `{channel}`");
+    };
+    edit(&mut stored.kind, &keys);
+    problems(
+        config::plan::check(&definitions, &members, &kinds()).map(|()| unreachable()),
+    )
+}
+
+/// The diagnostic of `check` for `from`, which points at the status channel
+/// `channel` of `c`.
+fn points(from: &str, channel: &str) -> Problem {
+    (
+        "config.implied-channel",
+        None,
+        format!(
+            "the connector `c` implies the channel `{channel}`, so the channel \
+             `{from}` cannot point at it"
+        ),
+        "Make the plan file with `plan`".into(),
+    )
+}
+
+/// Only the connector writes its status, so no other channel is on its status index.
+#[test]
+fn check_refuses_a_data_channel_on_a_status_index() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, None, data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.time")]);
+}
+
+#[test]
+fn check_refuses_an_index_whose_control_channel_is_a_status_channel() {
+    let found = pointed("a.time", |kind, keys| {
+        let control = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: None,
+            control: Some(control),
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_a_data_channel_whose_quality_channel_is_a_status_channel() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        let index = *data.index();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_an_index_whose_error_channel_is_a_status_channel() {
+    let found = pointed("a.time", |kind, keys| {
+        let error = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: Some(error),
+            control: None,
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_two_edges_to_one_status_channel_once() {
+    let found = pointed("a.time", |kind, keys| {
+        let state = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: Some(state),
+            control: Some(state),
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_an_index_and_a_quality_channel_on_one_status_channel_once() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, Some(index), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.time")]);
+}
+
+#[test]
+fn check_refuses_edges_to_two_status_channels_once_each() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(
+        found,
+        [
+            points("a.x", "c.status.time"),
+            points("a.x", "c.status.state")
+        ]
+    );
+}
+
 /// The problems of `plan::check` on `counted` after `edit` of the kind of the
 /// status channel `channel`, with the key of `c.status.state`.
 fn edited(
@@ -3564,10 +3705,10 @@ fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
     }
 }
 
-/// A connector writes its status index, so a channel on that index that another
-/// connector writes on another node leaves the index with no one home.
+/// Only the connector writes its status, so `check` refuses a channel on its status
+/// index that another connector writes, before the rules of `plan` count writers.
 #[test]
-fn check_counts_a_connector_as_a_writer_of_its_status_index() {
+fn check_refuses_a_channel_that_another_connector_writes_on_a_status_index() {
     let mut definitions = with_writer("m", &["x"]);
     let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
         panic!("the status index");
@@ -3582,14 +3723,7 @@ fn check_counts_a_connector_as_a_writer_of_its_status_index() {
     definitions.insert(name("x"), Stored::Channel(x));
     let members = BTreeSet::from([name("n"), name("m")]);
     let found = config::plan::check(&definitions, &members, &kinds());
-    let expected = (
-        "config.writer-nodes",
-        None,
-        "connectors on the nodes `n` and `m` write the index `c.status.time`, so it has \
-         no one home"
-            .into(),
-        "Run each connector that writes `c.status.time` on one node".into(),
-    );
+    let expected = points("x", "c.status.time");
     assert_eq!(problems(found.map(|()| unreachable())), [expected]);
 }
 
@@ -3616,4 +3750,15 @@ fn refuses_a_connector_whose_status_names_are_too_long() {
         problems(found.map(|()| unreachable())),
         [(code, None, message, fix)]
     );
+}
+
+#[test]
+fn planned_holds_only_for_a_file_kind_at_the_key_of_an_unreserved_label() {
+    use spec::definition::Kind;
+    let planned = |key: &str, kind| config::plan::planned(&name(key), kind);
+    assert!(planned("plant.@access", Kind::Access));
+    assert!(planned("plant.temp", Kind::Channel));
+    assert!(!planned("@admin.@access", Kind::Access), "a founding key");
+    assert!(!planned("plant", Kind::Access), "no tree key of the kind");
+    assert!(!planned("child.@region", Kind::Region), "no file block");
 }
