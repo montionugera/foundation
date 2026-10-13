@@ -75,9 +75,9 @@
   the fix `Fix the cause in the message, then start the node and plan again`. It can
   come after a proposal, so plan again to see whether the change applied. Lost: a code
   for each variant of the stop, which gives a better hint but adds three codes for one
-  cause. The code has only this cause: #1744 gives a node that does not run
-  `ops.no-node` (`laptop.architect-2`, 2026-10-09T23:13:35Z,
-  https://github.com/synnaxlabs/foundation/pull/2192#issuecomment-6090851088).
+  cause. The code has only this cause: a node that does not run gives
+  `node.not-running` (below), which supersedes `ops.no-node` of
+  https://github.com/synnaxlabs/foundation/pull/2192#issuecomment-6090851088.
   Supersedes the code `ops.stopped` of `Unreached::Stopped` in
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935.
   `ops.stopped` decided by `laptop.architect-2` (2026-10-09T03:42:35Z, (b) of
@@ -187,5 +187,51 @@
   and `apply` are by `laptop.architect-2` (2026-10-12T18:30:05Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6130219053), which
   supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. STATUS
-  OPERATION adds `status` to `plan` and `apply` there. Lost: one JSON value with the
-  plan file as a list of numbers, which is four times the bytes.
+  OPERATION adds `status` to `plan` and `apply` there. Lost:
+  one JSON value with the plan file as a list of numbers, which is four times the bytes.
+  `plan` and `apply` run on the node of `foundation-data`, which `node::client::reach`
+  reaches. The command line gives four codes of its own. `ops.read`: `no file is at
+  <path>`, `<path> is a directory, not a file`, or `the text of <path> is not UTF-8`,
+  status 2, and `the read of <path> failed with OS error <code>`, status 1, each with
+  the fix `Fix the cause in the message, then run the command again`.
+  `ops.large-request`: `the request has more than <n> bytes, the most that a request
+  holds`, for config files whose bytes together pass that bound at their read, or for
+  the encoded request, status 2, fix `Make the config files smaller`; the check comes
+  before the reach. `ops.write`: `the directory of the plan file <path> is not there` or
+  `the write of the plan file <path> failed with OS error <code>`, status 1, fix ``Give
+  `--out` a path in a directory that can be written``. `ops.bad-reply`: `the reply of
+  the node is no reply: <why>`, status 1, fix ``Use a `foundation` program of the same
+  version as the node``. A failure to reach the node, or of its request, has status 1
+  and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
+  `node.socket`, `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`,
+  with the message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
+  2026-10-11T07:10:55Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
+  fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
+  with no `--data`, by decision 7 of plan revision 5
+  (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641),
+  approved by `laptop.architect-2` (2026-10-13T02:10:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419).
+  `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  `node.socket` covers a socket of the program that broke, with the message `the
+  socket of this program failed: <the transport error>` (`laptop.architect-2`,
+  2026-10-13T02:10:54Z, item 4 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419). The
+  transport error in `node.unanswered` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  Supersedes, in decision 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913, the fix
+  of `node.not-running`, the message of `node.socket`, the hub error in
+  `node.unanswered`, and the example `read of admin.key` of `node.unreadable`, which the
+  error of `env::files` gives as `read_at of admin.key failed with OS error 13`
+  (`laptop.architect-2`, 2026-10-13T04:17:48Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6138124615). The
+  four `ops` codes are decisions 2, 4, 5, and 8 of plan revision 5,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641, with
+  `ops.large-request` by item 2 of the approval of `laptop.architect-2`
+  (2026-10-13T02:10:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419), which
+  supersedes the bound on each file of that plan. `laptop.architect-2` approved the
+  messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).

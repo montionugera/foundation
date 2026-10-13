@@ -190,6 +190,32 @@ fn a_data_directory_that_is_a_file_fails() {
     );
 }
 
+/// The OS gives the program name, so it can read as a flag.
+#[test]
+fn a_failed_start_json_is_json_for_a_program_named_double_dash() {
+    use std::os::unix::process::CommandExt;
+
+    let rig = Rig::new();
+    std::fs::write(rig.dir.join("plain"), "").expect("write the file");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_foundation"))
+        .arg0("--")
+        .args(["start", "--json", "--data", "plain", "--name", "edge"])
+        .current_dir(&rig.dir)
+        .output()
+        .expect("foundation runs");
+    assert_eq!(
+        ended(&output),
+        (
+            Some(1),
+            "",
+            "{\"errors\":[{\"code\":\"node.data\",\"fix\":\"Make plain a directory \
+             that this user can write, and let it write each file in it, or give \
+             another directory with `--data`\",\"message\":\"cannot write the data \
+             directory plain: Not a directory (os error 20)\",\"notes\":[]}]}\n"
+        )
+    );
+}
+
 #[test]
 fn a_data_directory_whose_parent_is_missing_fails() {
     let rig = Rig::new();
@@ -363,7 +389,7 @@ fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
     );
     assert_eq!(
         fix,
-        "fix: Fix the cause that the message states, then start the node again\n"
+        "fix: Fix the cause that the message states, then run the command again\n"
     );
 }
 
@@ -452,7 +478,7 @@ fn a_key_file_that_holds_no_key_fails() {
             "",
             "error[node.failed]: the file `node.key` in the data directory is not a \
              node key; restore it from a backup of this node\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -476,7 +502,8 @@ fn a_region_with_no_name_file_and_no_key_file_fails_with_and_with_no_name() {
                  file `name`, and the file `node.key` is not there or holds a key that \
                  the founding of the region does not hold; restore `node.key` from a \
                  backup of this node, or give another data directory\n\
-                 fix: Fix the cause that the message states, then start the node again\n"
+                 fix: Fix the cause that the message states, then run the command \
+                 again\n"
             ),
             "{args:?}"
         );
@@ -545,7 +572,7 @@ fn a_key_file_that_is_a_directory_fails_as_node_failed() {
             "",
             "error[node.failed]: cannot use the data directory: open of node.key \
              failed with OS error 21\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -565,7 +592,7 @@ fn a_ring_that_is_a_directory_fails_as_node_failed() {
             "",
             "error[node.failed]: cannot open the buffer of shard-0: a file call failed: \
              open of shard-0/ring failed with OS error 21\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }
@@ -661,7 +688,7 @@ fn an_admin_key_that_holds_no_key_fails() {
             "",
             "error[node.failed]: the file `admin.key` in the data directory is not an \
              admin key; restore it from a backup, or remove it to make a new admin\n\
-             fix: Fix the cause that the message states, then start the node again\n"
+             fix: Fix the cause that the message states, then run the command again\n"
         )
     );
 }

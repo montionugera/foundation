@@ -186,10 +186,10 @@
   | Channel | Type | Values |
   | --- | --- | --- |
   | `state` | `u8` | 0 running, 1 waiting to restart, 2 stopped, 3 ending |
-  | `class` | `u8` | the end of the last run: 0 none or `Ok`, 1 `Config`, 2 `Device`, 3 `Retry` |
+  | `class` | `u8` | the end of the last run, or the error that the running kind shows (below): 0 none or `Ok`, 1 `Config`, 2 `Device`, 3 `Retry` |
   | `restarts` | `u64` | the restarts in this call |
   | `backoff` | `Span` | the wait from this sample to the next try, 0 unless `state` is 1 |
-  | `error` | `String` | the text of the error that ended the last run, empty when `class` is 0 |
+  | `error` | `String` | the text of the error that ended the last run, or that the running kind shows, empty when `class` is 0 |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
   `error`, and `backoff` but for the end of its wait (below), follow the #1735 ruling
@@ -232,20 +232,35 @@
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or
-  `error` is written as soon as the home applied the state before it (below). A change
-  of counts alone is written at most once each second after the last write, timed with
-  the clock of `supervisor::Config` (`laptop.architect-2`, 2026-10-08T06:38:42Z:
+  `error` that the supervisor makes is written as soon as the home applied the state
+  before it (below). A change of counts alone is written at most once each second after
+  the last write, timed with the clock of `supervisor::Config` (`laptop.architect-2`,
+  2026-10-08T06:38:42Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
-  to 3). When a run returns, `state` 3 with the class of that end is written as soon as
+  to 3). A running kind shows an error with `Context::error`, as an attempt that failed:
+  `class` 3 and the text of the error, cut as above. `Context::clear_error` clears
+  `class` to 0 and the text. Until the first call of a run, `class` and `error` keep the
+  end of the last run, so a kind that wants a clear status clears it at its start
+  (`laptop.architect-2`, 2026-10-13T04:31:10Z:
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6138269499). A change
+  of the shown error is written within one second, as a change of counts
+  (`laptop.architect-2`, 2026-10-13T01:12:06Z:
+  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432), which
+  supersedes "at once" of rule 3 for it. The same value again writes nothing. The end of
+  the run replaces both. A call after the run returned shows nothing
+  (`laptop.architect-2`, 2026-10-13T04:01:43Z:
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
+  run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
   when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903). A run
   whose last task ends T after its start gives at most 1 + ⌊T / 1 s⌋ + 2 frames: the
-  start, at most one frame of counts in each second, then `state` 3 and the next state.
-  So a kind that counts 10,000 samples over 10 s gives at most 13. When the run itself
-  sets its last count and ends at the flush at 10 s, that flush writes no frame, and it
-  gives 12. T runs to the end of the last task, because a task that outlives the run can
-  set counts between `state` 3 and the next state (`laptop.architect-2`,
+  start, at most one frame of counts or a shown error in each second, then `state` 3
+  and the next state. So a kind that counts 10,000 samples over 10 s gives at most 13.
+  When the run itself sets its last count and ends at the flush at 10 s, that flush
+  writes no frame, and it gives 12. T runs to the end of the last task, because a task
+  that outlives the run can set counts between `state` 3 and the next state
+  (`laptop.architect-2`,
   2026-10-09T21:16:18Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of

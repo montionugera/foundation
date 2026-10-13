@@ -1,19 +1,23 @@
-//! Runs the request of a remote program on the node.
+//! The requests and replies of a remote program, and how the node runs each request.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 
 use access::Rules;
-use serde::de::{self, Deserializer, IgnoredAny, MapAccess};
+use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
+use crate::apply::Effect;
 use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
-use crate::plan::Documents;
+use crate::plan::{Documents, Output};
 use crate::{Node, apply, status, used};
 
 #[cfg(test)]
@@ -44,7 +48,7 @@ pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
     reply.unwrap_or_else(|error| failed(&error)).0
 }
 
-/// A reply that would pass the bound.
+/// A body that would pass the bound.
 #[derive(Debug)]
 struct Large;
 
@@ -54,32 +58,32 @@ impl From<Large> for Error {
     }
 }
 
-/// The bytes of a reply: at most `BODY_BYTES_MAX`.
+/// The bytes of a request or a reply: at most `BODY_BYTES_MAX`.
 #[derive(Default)]
-struct Reply(Vec<u8>);
+struct Body(Vec<u8>);
 
-impl Reply {
-    /// The reply of `head` as one line of JSON. Stops at the bound.
+impl Body {
+    /// The body of `head` as one line of JSON. Stops at the bound.
     ///
     /// # Errors
     ///
     /// `Large` when the line passes the bound.
     fn line(head: &impl Serialize) -> Result<Self, Large> {
-        let mut reply = Self::default();
-        match serde_json::to_writer(&mut reply, head) {
+        let mut body = Self::default();
+        match serde_json::to_writer(&mut body, head) {
             Ok(()) => {}
             Err(error) if error.is_io() => return Err(Large),
-            Err(error) => panic!("invariant: a reply is plain JSON data: {error}"),
+            Err(error) => panic!("invariant: a body is plain JSON data: {error}"),
         }
-        reply.add(b"\n")?;
-        Ok(reply)
+        body.add(b"\n")?;
+        Ok(body)
     }
 
     /// Adds `bytes` to the end.
     ///
     /// # Errors
     ///
-    /// `Large`, with no byte added, when the reply would pass the bound.
+    /// `Large`, with no byte added, when the body would pass the bound.
     fn add(&mut self, bytes: &[u8]) -> Result<(), Large> {
         let len = self.0.len().saturating_add(bytes.len());
         if u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX) {
@@ -91,7 +95,7 @@ impl Reply {
     }
 }
 
-impl Write for Reply {
+impl Write for Body {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.add(bytes)
             .map(|()| bytes.len())
@@ -164,24 +168,25 @@ impl<'de> Deserialize<'de> for Request {
     }
 }
 
-/// The first line of the reply of an operation that ran.
-#[derive(Serialize)]
-struct Done<'a, T> {
-    output: &'a T,
-}
-
-/// The first line of the reply of an error, with the exit status of the program.
-#[derive(Serialize)]
-struct Failed<'a> {
-    errors: &'a [Problem],
-    status: u8,
+/// The first line of a reply: the output of an operation that ran, or its errors with
+/// the exit status of the program.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Answer<'a, T> {
+    Done {
+        output: T,
+    },
+    Failed {
+        errors: Cow<'a, [Problem]>,
+        status: u8,
+    },
 }
 
 /// The reply that holds `error`, or `ops.large-reply` when that reply passes the bound.
-fn failed(error: &Error) -> Reply {
+fn failed(error: &Error) -> Body {
     let line = |error: &Error| {
-        Reply::line(&Failed {
-            errors: &error.problems(),
+        Body::line(&Answer::<()>::Failed {
+            errors: error.problems(),
             status: error.status(),
         })
     };
@@ -192,31 +197,129 @@ fn failed(error: &Error) -> Reply {
     })
 }
 
+/// The body of a request of `plan` of `files`, for [`serve`].
+///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+///
+/// # Panics
+///
+/// When the path of a file is not UTF-8 and the body before that path fits the bound.
+pub(crate) fn plan_request(files: &[File]) -> Result<Vec<u8>, Error> {
+    let plan = BTreeMap::from([("files", files)]);
+    let body = Body::line(&BTreeMap::from([("plan", plan)]));
+    body.map(|body| body.0).map_err(|Large| Error::LargeRequest)
+}
+
+/// The body of a request of `apply` of the plan file `plan`, for [`serve`].
+///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+pub(crate) fn apply_request(plan: &[u8]) -> Result<Vec<u8>, Error> {
+    let large = |Large| Error::LargeRequest;
+    let mut body = Body::line(&json!({ "apply": {} })).map_err(large)?;
+    body.add(plan).map_err(large)?;
+    Ok(body.0)
+}
+
+/// The output of the reply `body` of [`serve`] to a request of `plan`, and the plan
+/// file after its first line.
+///
+/// # Errors
+///
+/// Each error of [`answer`], and [`Error::Reply`] when no plan follows the output.
+pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
+    let (output, plan) = answer(body)?;
+    if plan.is_empty() {
+        return Err(bad_reply(
+            "no plan follows the first line of the reply of `plan`",
+        ));
+    }
+    Ok((output, plan))
+}
+
+/// The output of the reply `body` of [`serve`] to a request of `apply`.
+///
+/// # Errors
+///
+/// Each error of [`answer`], and [`Error::Reply`] when bytes follow the output.
+pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
+    let (effect, rest) = answer(body)?;
+    if !rest.is_empty() {
+        return Err(bad_reply(
+            "bytes follow the first line of the reply of `apply`",
+        ));
+    }
+    Ok(effect)
+}
+
+/// The output of the reply `body` of [`serve`], and the bytes after its first line.
+///
+/// # Errors
+///
+/// - [`Error::Remote`] with the errors of the reply and its exit status.
+/// - [`Error::Reply`] when `body` is no reply, or holds no error with a status of 0.
+fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
+    let Some((head, rest)) = first_line(body) else {
+        return Err(bad_reply("no newline ends the first line"));
+    };
+    match serde_json::from_slice::<Answer<'_, Value>>(head) {
+        Ok(Answer::Done { output }) => match T::deserialize(output) {
+            Ok(output) => Ok((output, rest)),
+            Err(error) => Err(bad_reply(error.to_string())),
+        },
+        Ok(Answer::Failed { errors, status }) if status == 0 || errors.is_empty() => {
+            Err(bad_reply("an error has the exit status 0, or no problem"))
+        }
+        Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
+            problems: errors.into_owned(),
+            status,
+        }),
+        Err(error) => Err(bad_reply(error.to_string())),
+    }
+}
+
+/// The first line of `body` and the bytes after its newline, or `None` when no newline
+/// ends it.
+fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
+    let end = body.iter().position(|byte| *byte == b'\n')?;
+    Some((&body[..end], &body[end + 1..]))
+}
+
 /// `Request` with `message`.
-fn bad(message: impl Into<String>) -> Error {
+fn bad_request(message: impl Into<String>) -> Error {
     Error::Request {
         message: message.into(),
     }
 }
 
+/// `Reply` with `message`.
+fn bad_reply(message: impl Into<String>) -> Error {
+    Error::Reply {
+        message: message.into(),
+    }
+}
+
 /// The reply of the request `body` of `subject`.
-async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
-    let Some(end) = body.iter().position(|byte| *byte == b'\n') else {
-        return Err(bad("no newline ends the first line"));
+async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
+    let Some((head, rest)) = first_line(body) else {
+        return Err(bad_request("no newline ends the first line"));
     };
-    let (head, rest) = (&body[..end], &body[end + 1..]);
-    let request = serde_json::from_slice(head).map_err(|e| bad(e.to_string()))?;
+    let request =
+        serde_json::from_slice(head).map_err(|e| bad_request(e.to_string()))?;
     match request {
         Request::Plan(_) if !rest.is_empty() => {
-            Err(bad("bytes follow the first line of `plan`"))
+            Err(bad_request("bytes follow the first line of `plan`"))
         }
         Request::Plan(Plan { files }) => plan(node, subject, &files).await,
         Request::Apply => apply(node, subject, rest).await,
         Request::Status if !rest.is_empty() => {
-            Err(bad("bytes follow the first line of `status`"))
+            Err(bad_request("bytes follow the first line of `status`"))
         }
         Request::Status => status(node, subject).await,
-        Request::Other(name) => Err(bad(format!(
+        Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
     }
@@ -268,7 +371,7 @@ impl<'a> Check<'a> {
 }
 
 /// The reply of `plan` of `files`: its output, then the plan file.
-async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Error> {
+async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error> {
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(&node.kinds)?;
     let spec = used::spec(&node.mesh).await?;
@@ -289,13 +392,13 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
-    let mut reply = Reply::line(&Done { output: &output })?;
+    let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
 }
 
 /// The reply of `apply` of the plan file `bytes`: its output.
-async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error> {
+async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -334,12 +437,12 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
         return Err(check.denied(Action::Apply, On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
-    Ok(Reply::line(&Done { output: &effect })?)
+    Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 
 /// The reply of `status`: its output. It leaves out each connector on whose status
 /// channels `subject` has no `read`.
-async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
+async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -353,5 +456,5 @@ async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
         return Err(check.denied(Action::Read, On::Nothing));
     }
     let output = status::read(node, subject, &placed, asked).await?;
-    Ok(Reply::line(&Done { output: &output })?)
+    Ok(Body::line(&Answer::Done { output: &output })?)
 }

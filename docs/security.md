@@ -469,6 +469,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
 | `types_stamp` | `Stamp` | Printed text reads back to the same value |
 | `types_span` | `Span` | Printed text reads back to the same value |
+| `types_rate` | `time::Rate` text | An `Ok` rate is reduced, has a period of 1 ns or more, and has a denominator that divides 10^9 |
 | `types_range` | `Range` | Printed text reads back to the same value |
 | `types_byte_size` | `byte::Size` | Printed text reads back to the same value |
 | `types_channel` | `channel::Key` | Printed text reads back to the same key |
@@ -483,10 +484,11 @@ not reached from the corpus: `transport::message` (#55), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
-each connector's protocol parser, the file `name` of the data directory
+each connector's protocol parser, the `node_id` text of the `opcua` kind
+(`connector_opcua::node`, #2523), the file `name` of the data directory
 (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of
 `/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the request
-of a remote program (`ops::serve`, #1744), the newest handoff record of each index in
-the ring (`home::handoff::read`, #2278), and the chunk processing of open62541
-(`ua_securechannel.c`, #1990).
+of a remote program and the reply of its node (`ops::serve`, #1744), the newest handoff
+record of each index in the ring (`home::handoff::read`, #2278), and the chunk
+processing of open62541 (`ua_securechannel.c`, #1990).

@@ -139,9 +139,9 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
     }
 }
 
-/// The allocations in the polls of reads 2 to 100 of one client. The server runs on
-/// its own manager, outside the polls.
-fn client_reads() -> Vec<u64> {
+/// The allocations in the polls of reads 2 to 100 of `variable` by one client. The
+/// server runs on its own manager, outside the polls.
+fn client_reads(variable: client::Variable) -> Vec<u64> {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
@@ -150,7 +150,7 @@ fn client_reads() -> Vec<u64> {
             let mut client = server.connect().await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
-                let mut read = pin!(client.read());
+                let mut read = pin!(client.read(variable));
                 let mut count = 0;
                 poll_fn(|cx| {
                     let (poll, allocations) =
@@ -173,5 +173,11 @@ fn client_reads() -> Vec<u64> {
 /// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
 /// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
 fn a_read_of_a_client_allocates_a_fixed_count() {
-    assert_eq!(client_reads(), [7; 99], "reads 2 to 100");
+    for variable in [client::Variable::Number, client::Variable::Name] {
+        assert_eq!(
+            client_reads(variable),
+            [7; 99],
+            "reads 2 to 100 of {variable:?}"
+        );
+    }
 }

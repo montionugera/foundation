@@ -245,6 +245,11 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
         "int in_the_body(int unused) { return 0; }",
     );
     assert!(body.contains("unused parameter 'unused'"), "{body}");
+    let own = check_shim(
+        "#include \"shim.h\"",
+        "int in_our_header(int unused) { return 0; }",
+    );
+    assert!(own.contains("unused parameter 'unused'"), "{own}");
 }
 
 #[test]

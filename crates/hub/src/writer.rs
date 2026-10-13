@@ -176,6 +176,7 @@ impl Writer {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
+        state.borrow_mut().catch_up();
         let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
             groups.iter().map(|&(index, _)| index).collect()
         };
@@ -188,7 +189,7 @@ impl Writer {
             let (_, groups) = resolve(&state.borrow(), &channels)?;
             let checked = indexes(&groups);
             let homed = crate::homes(state, &checked).await;
-            // A call of `set_definitions` while the open waits can change a channel,
+            // A change of the definitions while the open waits can change a channel,
             // and then the home of an index it left does not matter.
             let (keys, again) = resolve(&state.borrow(), &channels)?;
             if indexes(&again) == checked {

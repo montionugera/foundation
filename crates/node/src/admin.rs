@@ -50,6 +50,22 @@ pub(crate) async fn load(
     }
 }
 
+/// The private key in `admin.key` of `files`, or `None` when no node wrote the file.
+/// Opens it to read only, so it makes nothing and waits for no lock.
+///
+/// # Errors
+///
+/// The error of each file call that fails, except [`env::files::Error::NotFound`].
+pub(crate) async fn read(
+    files: &Files,
+) -> Result<Option<PrivateKey>, env::files::Error> {
+    let held = sector::read::<LEN>(files, Path::new(FILE), TAG).await?;
+    Ok(match held {
+        Held::Written(bytes) => Some(field(&bytes)),
+        Held::Nothing | Held::Foreign => None,
+    })
+}
+
 /// The bytes of the file that holds `private_key`.
 fn encode(private_key: &PrivateKey) -> [u8; LEN] {
     let mut bytes = [0; LEN];

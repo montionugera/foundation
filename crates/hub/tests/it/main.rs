@@ -116,7 +116,8 @@ struct Test {
 
 impl Test {
     /// A hub on a new ring of `node` with `layout`, a pool of `pool` bytes, and
-    /// `region`, whose mesh clock does not run yet.
+    /// `region`, whose mesh clock does not run yet. The founding of `region` must hold
+    /// [`channels`].
     async fn new(
         node: sim::node::Node,
         tasks: Tasks,
@@ -169,7 +170,9 @@ impl Test {
                 transport: Rc::clone(&region.transport),
             }),
         });
-        hub.set_definitions(&channels());
+        if region.is_none() {
+            hub.set_definitions(&channels());
+        }
         Self {
             clock: node.clock(),
             node,
@@ -233,8 +236,8 @@ impl Test {
     }
 
     /// Sets [`CHANNELS`] and `more`, each `(key, name, data type, index)`, as the
-    /// definitions.
-    fn define<'a>(
+    /// definitions: in a spec that the mesh puts in use, with a region.
+    async fn define<'a>(
         &self,
         more: impl IntoIterator<Item = (u128, &'a str, DataType, u128)>,
     ) {
@@ -242,7 +245,10 @@ impl Test {
         channels.extend(more.into_iter().map(|(key, channel, data_type, index)| {
             (name(channel), definition(key, data_type, index))
         }));
-        self.hub.set_definitions(&channels);
+        match self.region {
+            Some(_) => self.set_spec(channels).await,
+            None => self.hub.set_definitions(&channels),
+        }
     }
 
     async fn reader(&self, channels: &[&str], mode: Mode) -> reader::Reader {
@@ -705,6 +711,71 @@ fn panics_on_the_name_of_an_entry_outside_the_view() {
         write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
         let received = reader.next().await.expect("a frame");
         let _name = received.name(entry(received.set(), 5));
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 3 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_past_the_set() {
+    run(47, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(received.set().entries().len());
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 1 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_whose_place_a_key_set_before_held() {
+    run(48, |test| async move {
+        let mut reader = test.reader(&["value-c"], Mode::Complete).await;
+        let mut first = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut first, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        drop(first);
+        let received = reader.next().await.expect("a frame");
+        let held = entry(received.set(), 5);
+        assert_eq!(names(&received), ["time", "value-c"]);
+        let mut second = test.writer("b", &["value"]).await;
+        write_series(&mut second, &[(1, &[now + 1]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time"]);
+        let _name = received.name(held);
+    });
+}
+
+#[test]
+fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
+    run(45, |test| async move {
+        let config = reader::Config {
+            name: Some(name("named")),
+            ..unnamed(&["value"], Mode::Complete)
+        };
+        let mut reader = test.hub.reader(config).await.expect("opens");
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+fn gives_a_channel_defined_again_at_a_new_key_its_name_at_the_new_open() {
+    run(46, |test| async move {
+        let mut changed = channels();
+        changed.insert(name("value"), definition(9, DataType::Sample(I64), 1));
+        test.hub.set_definitions(&changed);
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (9, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 9]);
+        assert_eq!(names(&received), ["time", "value"]);
     });
 }
 
@@ -1498,7 +1569,8 @@ fn releases_the_lent_frame_of_a_latest_reader_at_the_next_call() {
 #[test]
 fn writes_and_reads_a_channel_of_a_variable_type() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut reader = test.reader(&["text"], Mode::Complete).await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
@@ -1534,7 +1606,8 @@ fn writes_and_reads_a_channel_of_a_variable_type() {
 #[test]
 fn refuses_a_string_sample_that_is_not_utf8() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
         let set = Arc::clone(writer.set());
@@ -1721,7 +1794,8 @@ fn gives_a_writer_the_sample_type_of_each_data_channel() {
         test.define([
             (6, "text", DataType::Sample(Type::String), 1),
             (7, "quality", DataType::Quality, 1),
-        ]);
+        ])
+        .await;
         let writer = test.writer("a", &["text", "quality"]).await;
         let entries: Vec<_> = writer
             .set()

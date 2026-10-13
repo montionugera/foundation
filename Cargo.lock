@@ -470,6 +470,7 @@ dependencies = [
  "counting",
  "divan",
  "env",
+ "proptest",
  "sim",
  "types",
 ]
@@ -1171,6 +1172,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-opcua",
  "counting",
  "crc32c",
  "divan",

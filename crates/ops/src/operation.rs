@@ -13,6 +13,9 @@ use types::name::Name;
 use crate::Start;
 use crate::error::Error;
 
+/// The data directory of a command that names none.
+pub(crate) const DATA: &str = "foundation-data";
+
 /// The facts that the CLI, the MCP tools, and the docs show for one operation.
 pub(crate) struct Spec {
     pub(crate) name: &'static str,
@@ -58,6 +61,11 @@ enum Command {
     Run(Request),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
+    /// Show the change from config files to the spec of the node in
+    /// `foundation-data`.
+    Plan(PlanArgs),
+    /// Apply a plan file of `foundation plan --out` on the node in `foundation-data`.
+    Apply(ApplyArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -69,7 +77,7 @@ enum Command {
 struct StartArgs {
     /// The data directory of the node. The start makes it when it is not there, but
     /// not its parents.
-    #[arg(long, default_value = "foundation-data")]
+    #[arg(long, default_value = DATA)]
     data: PathBuf,
     /// The name of the node. The first start on a data directory needs it, and a later
     /// start reads it from there.
@@ -79,6 +87,23 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+}
+
+#[derive(clap::Args)]
+struct PlanArgs {
+    /// The config files.
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// Write the plan file here, for `foundation apply`. With none, `plan` writes no
+    /// file.
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ApplyArgs {
+    /// The plan file.
+    plan: PathBuf,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -115,6 +140,13 @@ pub(crate) struct Reference {
 pub(crate) enum Parsed {
     Run(Request),
     Start(Start),
+    Plan {
+        files: Vec<PathBuf>,
+        out: Option<PathBuf>,
+    },
+    Apply {
+        plan: PathBuf,
+    },
     Help(String),
     Mcp,
 }
@@ -127,7 +159,8 @@ pub(crate) fn command() -> clap::Command {
     })
 }
 
-pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
+/// Parses `args`. `json` is whether they ask for JSON, as `cli` read it.
+pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
     let matches = match command().try_get_matches_from(args) {
         Ok(matches) => matches,
         Err(e) if e.kind() == ErrorKind::DisplayHelp => {
@@ -140,10 +173,12 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
         Command::Run(request) => Ok(Parsed::Run(request)),
         Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
             data,
-            json: cli.json,
+            json,
             name,
             listen,
         })),
+        Command::Plan(PlanArgs { files, out }) => Ok(Parsed::Plan { files, out }),
+        Command::Apply(ApplyArgs { plan }) => Ok(Parsed::Apply { plan }),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }

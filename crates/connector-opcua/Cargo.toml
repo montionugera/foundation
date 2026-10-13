@@ -8,7 +8,8 @@ publish.workspace = true
 [features]
 open62541 = ["dep:cc"]
 # Exposes `bench` to the `run`, `manager`, and `client` benches, `fuzz` to the fuzz
-# target, and both to the `alloc` and `memory` tests.
+# target, both to the `alloc` and `memory` tests, and `sim` to the tests of other
+# crates.
 sim = ["open62541"]
 
 [dependencies]
@@ -24,6 +25,7 @@ cc = { workspace = true }
 connector-opcua = { path = ".", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
+proptest = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]
