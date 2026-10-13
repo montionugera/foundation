@@ -643,6 +643,20 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
     assert_eq!(last(&outcome.statuses, RESTARTS), 2);
 }
 
+/// The counts hold across the runs of one supervisor call, as `status::Count` does.
+#[test]
+fn counts_the_samples_of_each_run_after_a_restart() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.after(ms(3_050), |scene| async move { scene.serve() });
+        scene.supervise(ms(5_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 2);
+    let frames = u64::try_from(outcome.frames.len()).expect("a few");
+    assert_eq!(last(&outcome.statuses, IN), frames * 3);
+}
+
 #[test]
 fn ends_the_run_with_a_device_error_on_a_bad_status() {
     let outcome = run(Setup::three(), |scene| async move {

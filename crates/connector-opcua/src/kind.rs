@@ -116,7 +116,7 @@ async fn read(
     let nodes = client
         .nodes(&nodes)
         .map_err(|large| large_read(reads.len(), large))?;
-    let mut missed = Total::new(ctx.count("missed"));
+    let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
         missed.add(tick.missed);
@@ -195,8 +195,8 @@ struct Layout {
 /// The writer of the frames, and the counts of their samples.
 struct Out {
     writer: Writer,
-    applied: Total,
-    lost: Total,
+    applied: status::Count,
+    lost: status::Count,
 }
 
 impl<'a> Frames<'a> {
@@ -247,8 +247,8 @@ impl<'a> Frames<'a> {
                 groups,
             },
             out: Out {
-                applied: Total::new(ctx.count("in")),
-                lost: Total::new(ctx.count("lost")),
+                applied: ctx.count("in"),
+                lost: ctx.count("lost"),
                 writer,
             },
             stamps: Stamps::default(),
@@ -449,23 +449,6 @@ impl<'a> Values<'a> {
 #[inline(never)]
 fn broken(at: usize, status: Status) -> ! {
     panic!("invariant: read {at} is {status:?}, which `Values::new` refuses")
-}
-
-/// A count of the status and its total in the run.
-struct Total {
-    count: status::Count,
-    total: u64,
-}
-
-impl Total {
-    fn new(count: status::Count) -> Self {
-        Self { count, total: 0 }
-    }
-
-    fn add(&mut self, samples: u64) {
-        self.total += samples;
-        self.count.set(self.total);
-    }
 }
 
 /// The diagnostic of the channel of `read` when its sample type is not `f64`.
