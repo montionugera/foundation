@@ -161,7 +161,8 @@ impl Erased {
     }
 }
 
-// SAFETY: each method but `commit` is the one of `Heap`, and `commit` changes no byte.
+// SAFETY: each method but `commit` does what that of `Heap` does, and `commit` changes
+// no byte.
 unsafe impl Memory for Erased {
     fn base(&self) -> NonNull<u8> {
         self.heap.base()
@@ -187,9 +188,7 @@ unsafe impl Memory for Erased {
         Ok(())
     }
 
-    fn purge(&self, offset: usize, len: usize) {
-        self.heap.purge(offset, len);
-    }
+    fn purge(&self, _offset: usize, _len: usize) {}
 }
 
 impl fmt::Debug for Erased {
@@ -237,6 +236,11 @@ mod tests {
             memory.commit(offset, len).expect("heap memory commits");
             assert_eq!(committed(&memory), ranges, "after a commit at {offset}");
         }
+    }
+
+    #[test]
+    fn erased_prints_its_length() {
+        assert_eq!(format!("{:?}", Erased::new(64)), "Erased { len: 64 }");
     }
 
     #[test]
