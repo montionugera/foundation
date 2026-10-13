@@ -59,13 +59,17 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
 }
 
 /// Runs the test `name` as `output` does, asserts that it aborts, and gives its
-/// standard error.
+/// output.
 #[cfg(unix)]
-pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> String {
+pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     use std::os::unix::process::ExitStatusExt;
     const SIGABRT: i32 = 6;
     let output = output(name, envs);
-    let stderr = String::from_utf8(output.stderr).expect("the error output is UTF-8");
-    assert_eq!(output.status.signal(), Some(SIGABRT), "{name}: {stderr}");
-    stderr
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.signal(),
+        Some(SIGABRT),
+        "{name} {envs:?}: {stderr}"
+    );
+    output
 }

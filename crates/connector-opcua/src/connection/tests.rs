@@ -2512,9 +2512,9 @@ fn listen_on_another_port() {
 
 /// Runs the test `name` of this module in a child process, asserts that it aborts,
 /// and gives its panic message. The test harness writes the message to stdout.
+#[cfg(unix)]
 fn abort(name: &str) -> String {
-    let output = child::output(&format!("connection::tests::{name}"), &[]);
-    assert!(!output.status.success(), "{name} ends");
+    let output = child::aborted(&format!("connection::tests::{name}"), &[]);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let message = stdout
         .lines()
@@ -2526,6 +2526,7 @@ fn abort(name: &str) -> String {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_listen_with_no_listener_or_after_a_listen_aborts() {
     let message = "a listen open takes the listener that `Manager::listening` got";
     assert_eq!(abort("listen_with_no_listener"), message);
@@ -2533,6 +2534,7 @@ fn a_listen_with_no_listener_or_after_a_listen_aborts() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_listen_on_a_port_other_than_the_listener_aborts() {
     assert_eq!(
         abort("listen_on_another_port"),

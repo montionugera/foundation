@@ -227,8 +227,9 @@ fn serves_with_a_wall_that_panics() {
 #[test]
 #[cfg(unix)]
 fn a_panic_in_the_wall_of_a_server_aborts() {
-    let stderr =
+    let output =
         crate::child::aborted("sim::tests::serves_with_a_wall_that_panics", &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("panic in a function that cannot unwind"),
         "{stderr}"

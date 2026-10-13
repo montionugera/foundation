@@ -233,7 +233,8 @@ fn exhausts() {
 #[cfg(unix)]
 fn exhausted_aborts_with_the_size_of_a_header() {
     assert_eq!(
-        child::aborted("alloc::tests::exhausts", &[]),
+        String::from_utf8(child::aborted("alloc::tests::exhausts", &[]).stderr)
+            .unwrap(),
         "memory allocation of 16 bytes failed\nnote: run with `RUST_BACKTRACE=1` \
          environment variable to display a backtrace\n"
     );
