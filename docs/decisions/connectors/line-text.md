@@ -22,15 +22,16 @@
   the crate by the person on 2026-10-08T01:48:32Z
   (https://github.com/synnaxlabs/foundation/issues/1098#issuecomment-6050501586).
   A value is text that InfluxDB 1, 2, and 3 each store, so the writer writes no `u`
-  integer. A `u8`, `u16`, or `u32` sample is an `i` integer. The kind refuses a `u64`
-  channel with `Error::Config` and `influx.unsigned` where the run first learns the
-  type, before it writes a line of that frame: InfluxDB 1 OSS refuses `u`, and an
-  `i64` holds no value above `i64::MAX`. When `connector::Kind::check` gets the types
-  of the channels that a reader selects, the refusal moves to plan. Lost: each
-  unsigned value as `i`, with an error at a sample above `i64::MAX`, as one value then
-  stops the ack until a person acts, also on InfluxDB 2 and 3; a `u64` as a float or
-  as its bits in an `i64`, as each changes the value with no error; a `u64` as a
-  string field, as its queries then differ from each other integer; and an `unsigned`
-  setting for InfluxDB 2 and 3, as it gives one server two rules. Decided by
-  `laptop.architect-2` on 2026-10-08T08:21Z
+  integer. Until #2555, the kind writes only `f64` channels and refuses each other type
+  with `influx.sample-type`. Then a `u8`, `u16`, or `u32` sample is an `i` integer, and
+  the kind refuses a `u64` channel with `Error::Config` and `influx.unsigned` where the
+  run first learns the type, before it writes a line of that frame: InfluxDB 1 OSS
+  refuses `u`, and an `i64` holds no value above `i64::MAX`. When
+  `connector::Kind::check` gets the types of the channels that a reader selects, the
+  refusal moves to plan. Lost: each unsigned value as `i`, with an error at a sample
+  above `i64::MAX`, as one value then stops the ack until a person acts, also on
+  InfluxDB 2 and 3; a `u64` as a float or as its bits in an `i64`, as each changes the
+  value with no error; a `u64` as a string field, as its queries then differ from each
+  other integer; and an `unsigned` setting for InfluxDB 2 and 3, as it gives one server
+  two rules. Decided by `laptop.architect-2` on 2026-10-08T08:21Z
   (https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055802089).
