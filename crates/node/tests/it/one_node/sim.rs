@@ -116,9 +116,9 @@ impl Opcua {
             let mut rng = os::entropy().rng();
             let net = os::net();
             let read = clock.clone();
-            let wall = move || wall(zero, read.now());
+            let now = move || wall(zero, read.now());
             let until = token.wait();
-            serve(clock, wall, net, listener, &mut rng, &variables, until).await;
+            serve(clock, now, net, listener, &mut rng, &variables, until).await;
         });
         self.server = Some(server);
         address
