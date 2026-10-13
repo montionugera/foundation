@@ -28,8 +28,9 @@ pub(crate) enum Key {
 pub(crate) struct Name(String);
 
 impl Name {
-    /// The most bytes in a name. A request with a name past the chunks of one message
-    /// closes its channel.
+    /// The most bytes in a name: an interim bound, derived from no limit, until the
+    /// client checks the size of a whole request. A request past the chunks of one
+    /// message closes its channel.
     pub(crate) const BYTES: usize = 4096;
 
     /// Gives `text` as a name, or `None` when it is empty or has more than
@@ -58,19 +59,21 @@ pub(crate) enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Uri => {
-                "a namespace by URI (nsu=) is not supported: give its index (ns=)"
-            }
-            Self::Form => {
+        match self {
+            Self::Uri => f.write_str(
+                "a namespace by URI (nsu=) is not supported: give its index (ns=)",
+            ),
+            Self::Form => f.write_str(
                 "a GUID (g=) or opaque (b=) key is not supported: give a number (i=) \
-                 or a name (s=)"
-            }
-            Self::Syntax => {
+                 or a name (s=)",
+            ),
+            Self::Syntax => write!(
+                f,
                 "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an \
-                 index to 65535, a number to 4294967295, and a name of 1 to 4096 bytes"
-            }
-        })
+                 index to 65535, a number to 4294967295, and a name of 1 to {} bytes",
+                Name::BYTES
+            ),
+        }
     }
 }
 
