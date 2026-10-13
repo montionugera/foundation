@@ -68,21 +68,25 @@
   which supersedes item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
   two cases). `unknown` also for a hub that holds a channel of another spec under a
-  status name or lacks a status channel of the spec, found by the name, the key, and the sample type of
-  each channel of the frame, its index too, by the count of its channels, and by
-  `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
+  status name or lacks a status channel of the spec, found by the name, the key, and the
+  sample type of each channel of the frame, its index too, by the count of its channels,
+  and by `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102 and
   supersedes, for `ManyIndexes`, its third bullet and item 2 of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). That check finds another key,
-  sample type, or index under a status name, but not a channel that `config` carries
-  over with its key and definition (the gap above): `laptop.architect-2`
-  (2026-10-13T03:32:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). That
+  check finds another key, sample type, or index under a status name, but not a channel
+  that `config` carries over with its key and definition (the gap above):
+  `laptop.architect-2` (2026-10-13T03:32:04Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137583351, which
   corrects the scope of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). The count
   of the channels is inside item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437:
   `laptop.architect-2` (2026-10-13T03:45:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137750716). A frame of a run of an earlier spec with fewer counts is `unknown` by that count too, until the run of the spec in use writes its start frame: `laptop.architect-2` (2026-10-13T04:05:46Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480).
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137750716). A frame
+  of a run of an earlier spec with fewer counts is `unknown` by that count too, until
+  the run of the spec in use writes its start frame: `laptop.architect-2`
+  (2026-10-13T04:05:46Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480).
