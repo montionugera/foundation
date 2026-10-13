@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -6,7 +7,8 @@ use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use types::name::Name;
 
@@ -114,9 +116,36 @@ pub(crate) enum Request {
     Docs(Empty),
 }
 
-#[derive(clap::Args, Deserialize, JsonSchema)]
+#[derive(clap::Args, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Empty {}
+
+/// Takes only an empty object: a derived struct also takes a sequence.
+impl<'de> Deserialize<'de> for Empty {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = Empty;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an empty object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Empty, A::Error> {
+                match map.next_key::<String>()? {
+                    Some(key) => Err(de::Error::unknown_field(&key, &[])),
+                    None => Ok(Empty {}),
+                }
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
 
 /// The output of each operation. Serde tags it with the operation's name; `json` and
 /// `text` leave the tag out.
