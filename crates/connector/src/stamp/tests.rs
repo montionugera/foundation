@@ -6,14 +6,15 @@ use types::authority::Authority;
 use types::time::{Span, Stamp};
 
 use super::Stamps;
-use crate::common::{create_status, env, run_on};
+use crate::common::{create_status, env, run_with};
 
-/// Runs `main` with a writer on the status index of `plant.stamp` and the clock of
-/// its node.
+/// Runs `main` on a node of `config`, with a writer on the status index of
+/// `plant.stamp` and the clock of the node.
 fn with_writer<T: Send + 'static>(
+    config: sim::node::Config,
     main: impl AsyncFnOnce(Writer, env::clock::Clock) -> T + Send + 'static,
 ) -> T {
-    run_on(|node, tasks| async move {
+    run_with(config, |node, tasks| async move {
         let (hub, _) = hub::testing::open(env(&node, tasks)).await;
         let status = create_status("plant.stamp");
         hub.set_definitions(status.iter().map(|(name, def)| (name, def)));
@@ -30,7 +31,8 @@ fn with_writer<T: Send + 'static>(
 
 #[test]
 fn a_request_is_stamped_at_its_midpoint() {
-    let (sent, answered, output, stamp) = with_writer(async |writer, clock| {
+    let config = sim::node::Config::default();
+    let (sent, answered, output, stamp) = with_writer(config, async |writer, clock| {
         let mut stamps = Stamps::default();
         let sent = writer.now();
         let request = async {
@@ -47,7 +49,7 @@ fn a_request_is_stamped_at_its_midpoint() {
 
 #[test]
 fn a_request_with_no_wait_is_stamped_after_the_one_before() {
-    let (now, stamps) = with_writer(async |writer, _| {
+    let (now, stamps) = with_writer(sim::node::Config::default(), async |writer, _| {
         let mut stamps = Stamps::default();
         let mut given = Vec::new();
         for _ in 0..3 {
@@ -61,15 +63,32 @@ fn a_request_with_no_wait_is_stamped_after_the_one_before() {
 
 #[test]
 fn a_request_after_a_refusal_is_stamped_after_its_stamp() {
-    let (now, refused, stamp) = with_writer(async |writer, _| {
-        let mut stamps = Stamps::default();
-        let now = writer.now();
-        let refused = stamps.after(now + Span::from_nanos(20));
-        let ((), stamp) = stamps.request(&writer, future::ready(())).await;
-        (now, refused, stamp)
-    });
+    let (now, refused, stamp) =
+        with_writer(sim::node::Config::default(), async |writer, _| {
+            let mut stamps = Stamps::default();
+            let now = writer.now();
+            let refused = stamps.after(now + Span::from_nanos(20));
+            let ((), stamp) = stamps.request(&writer, future::ready(())).await;
+            (now, refused, stamp)
+        });
     assert_eq!(refused, now + Span::from_nanos(21));
     assert_eq!(stamp, now + Span::from_nanos(22));
+}
+
+#[test]
+fn a_request_near_the_end_of_time_is_stamped_at_its_midpoint() {
+    let wall = Stamp::from_nanos(i64::MAX - 100 * Span::SECOND.nanos());
+    let config = sim::node::Config {
+        wall,
+        ..Default::default()
+    };
+    let (sent, stamp) = with_writer(config, async |writer, clock| {
+        let mut stamps = Stamps::default();
+        let sent = writer.now();
+        let request = clock.sleep(Span::from_nanos(2 * Span::SECOND.nanos()));
+        (sent, stamps.request(&writer, request).await.1)
+    });
+    assert_eq!(stamp, sent + Span::SECOND);
 }
 
 #[test]
@@ -87,18 +106,18 @@ fn a_refusal_at_the_last_instant_panics() {
 }
 
 #[test]
-#[should_panic(expected = "refusal under the last stamp: 9 ns < 10 ns")]
+#[should_panic(expected = "refusal under the last stamp: 9 ns < 11 ns")]
 fn a_refusal_under_the_last_stamp_panics() {
     let mut stamps = Stamps::default();
-    stamps.next(Stamp::from_nanos(10));
+    stamps.after(Stamp::from_nanos(10));
     stamps.after(Stamp::from_nanos(9));
 }
 
 #[test]
 fn a_refusal_at_the_last_stamp_is_stamped_after_it() {
     let mut stamps = Stamps::default();
-    stamps.next(Stamp::from_nanos(10));
-    assert_eq!(stamps.after(Stamp::from_nanos(10)), Stamp::from_nanos(11));
+    stamps.after(Stamp::from_nanos(10));
+    assert_eq!(stamps.after(Stamp::from_nanos(11)), Stamp::from_nanos(12));
 }
 
 /// A call of [`Stamps`]: a stamp at some time, or a refusal whose stamp before is
