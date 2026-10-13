@@ -3327,7 +3327,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
-                secrets: testing::create_secrets(node.files()),
+                secrets: testing::create_secret_store(node.files()),
             });
             let token = Token::new();
             token.cancel();
@@ -3378,7 +3378,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub,
-                secrets: testing::create_secrets(node.files()),
+                secrets: testing::create_secret_store(node.files()),
             };
             let token = Token::new();
             let (canceller, sleeper) = (token.clone(), clock.clone());

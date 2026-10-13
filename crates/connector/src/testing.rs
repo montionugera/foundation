@@ -15,12 +15,12 @@ use types::name::Name;
 use crate::kind::Table;
 use crate::{status, supervisor};
 
-/// The directory of the files that holds the secrets of [`create_secrets`].
+/// The directory of the files that holds the secrets of [`create_secret_store`].
 const SECRETS: &str = "secrets";
 
 /// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
 /// seams of `env` and `net`, a hub on a new shard in `env`, and the store of
-/// [`create_secrets`] on `env.files`.
+/// [`create_secret_store`] on `env.files`.
 ///
 /// # Panics
 ///
@@ -41,13 +41,13 @@ pub async fn create_config(
         net,
         tasks,
         hub,
-        secrets: create_secrets(files),
+        secrets: create_secret_store(files),
     }
 }
 
 /// A store of the secrets on `files` that [`create_secret`] writes.
 #[must_use]
-pub fn create_secrets(files: Files) -> Box<dyn secret::store::Store> {
+pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
     Box::new(secret::store::File::new(files, Path::new(SECRETS)))
 }
 
