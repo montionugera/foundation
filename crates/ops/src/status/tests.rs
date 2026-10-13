@@ -99,7 +99,8 @@ impl kind::Kind for Scripted {
 /// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
 /// `forging` with one whose text, from the device, holds a newline, `showing` shows an
 /// error, `clearing` clears the error of its failed first run, `wide` also names
-/// `extra`, and `shifted` names `in` and `other`.
+/// `extra`, `shifted` names `in` and `other`, and `opcua` and `influx` set the counts
+/// of the status block of the quickstart page.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
     let failing = "no route to the device";
@@ -115,6 +116,14 @@ fn kinds() -> Table {
         .with(
             "shifted",
             Scripted::new(&[("in", 0), ("other", 0)], Script::Steady),
+        )
+        .with(
+            "opcua",
+            Scripted::new(&[("in", 1520), ("lost", 0), ("missed", 0)], Script::Steady),
+        )
+        .with(
+            "influx",
+            Scripted::new(&[("confirmed", 1517)], Script::Steady),
         )
 }
 
@@ -1054,6 +1063,20 @@ fn writes_each_class_and_state_as_its_word() {
         assert_eq!(class.word(), word);
         assert_eq!(serde_json::to_value(class).expect("JSON"), json!(word));
     }
+}
+
+#[test]
+fn the_command_line_writes_the_status_block_of_the_quickstart_page() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let placement = "placement \"plant.home\" {\n  select = \"plant.**\"\n  \
+                         home = \"edge\"\n}\n";
+        applied(&fixture, &node, &format!("{}{placement}", common::plant())).await;
+        supervise(&fixture, &node, &["plc", "influx"]).await;
+        let shown = cli(&node, &fixture.sim.paths(), &["status"]).await;
+        let expected = common::shown("CONNECTOR").to_owned();
+        assert_eq!(shown, (Run::Exit(0), expected, String::new()));
+    });
 }
 
 #[test]

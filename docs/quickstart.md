@@ -155,8 +155,8 @@ foundation status
 
 ```text
 CONNECTOR  KIND    STATE    ADDRESS                    IN    CONFIRMED
-plc        opcua   running  opc.tcp://localhost:50000  1520  -
 influx     influx  running  http://localhost:8086      -     1517
+plc        opcua   running  opc.tcp://localhost:50000  1520  -
 ```
 
 `IN` counts the samples that the connector read from the server and the node stored.
