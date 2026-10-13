@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
 use ::sim::{Sim, node};
 use env::net::{Listener, tcp};
@@ -6,7 +7,6 @@ use types::quality::Quality;
 
 use super::{Served, Variables, serve};
 use crate::client::Client;
-use crate::connection::OPTIONS;
 use crate::ffi::Status;
 use crate::node::Node;
 
@@ -20,7 +20,12 @@ fn listen(node: &node::Node) -> Listener {
     let listen = tcp::Listen {
         local,
         backlog: 4,
-        options: OPTIONS,
+        options: tcp::Options {
+            send_buffer_bytes: 1 << 16,
+            recv_buffer_bytes: 1 << 16,
+            unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
+            delayed: false,
+        },
     };
     node.net().listen(&listen).expect("the port is free")
 }

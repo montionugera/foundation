@@ -4,6 +4,7 @@
 
 use std::ffi::CStr;
 use std::future::poll_fn;
+use std::mem::ManuallyDrop;
 use std::pin::pin;
 use std::ptr::NonNull;
 use std::task::Poll;
@@ -112,7 +113,7 @@ impl Server {
     ///
     /// If open62541 refuses the node.
     pub(crate) fn add_double(&self, node: &Node, value: f64) {
-        let (namespace, number, name, length) = key(node);
+        let (namespace, number, name, length) = parts(node);
         // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
             ffi::test::shim_server_add_double(
@@ -139,7 +140,7 @@ impl Server {
         node: &Node,
         answer: impl FnMut() -> (f64, types::quality::Quality) + 'static,
     ) {
-        let (namespace, number, name, length) = key(node);
+        let (namespace, number, name, length) = parts(node);
         let source = NonNull::from(Box::leak(Box::new(Source {
             read,
             answer: Box::new(answer),
@@ -170,7 +171,7 @@ impl Server {
     /// If open62541 refuses the node.
     #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
-        let (namespace, number, name, length) = key(node);
+        let (namespace, number, name, length) = parts(node);
         // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
             ffi::test::shim_server_add_bytes(
@@ -198,13 +199,26 @@ impl Server {
         self.raw.as_ptr()
     }
 
-    /// Drives `manager` until `until` completes, then closes the server as
-    /// [`Server::close`] does, and gives the output of `until`.
+    /// Starts a server on `manager` with an empty host and room for `sessions`
+    /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives `manager`
+    /// until `until` completes, closes the server as [`Server::close`] does, drops
+    /// `manager`, and gives the output of `until`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Server::start`] and [`Server::close`] do. A panic leaks the server and
+    /// `manager`.
     pub(crate) async fn serve<T>(
-        self,
-        manager: &Manager,
+        manager: Manager,
+        sessions: u16,
+        add: impl FnOnce(&mut Self),
         until: impl Future<Output = T>,
     ) -> T {
+        let manager = ManuallyDrop::new(manager);
+        // SAFETY: the close below deletes the server before the manager drops, and a
+        // panic leaks both.
+        let mut server = unsafe { Self::start(&manager, c"", sessions) };
+        add(&mut server);
         let out = {
             let mut drive = pin!(manager.drive(|_| {
                 manager.events().run();
@@ -217,7 +231,8 @@ impl Server {
             })
             .await
         };
-        self.close(manager).await;
+        server.close(&manager).await;
+        drop(ManuallyDrop::into_inner(manager));
         out
     }
 
@@ -281,7 +296,7 @@ impl Server {
 /// # Panics
 ///
 /// If its key is the number 0, since open62541 then adds the node at a free number.
-fn key(node: &Node) -> (u16, u32, *const u8, usize) {
+fn parts(node: &Node) -> (u16, u32, *const u8, usize) {
     assert!(
         node.key != Key::Number(0),
         "{node}: open62541 adds a node of the number 0 at a free number"
