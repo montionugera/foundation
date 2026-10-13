@@ -12,20 +12,19 @@
   which needs a check across crates for a case that shows nothing (`laptop.architect`,
   2026-10-13,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156368387).
-  `plan` needs the action `plan` on each name of the
-  files, and on each name of the spec in use that `plan` compares
-  (`config::plan::planned`). A founding definition, which `plan` leaves out (FIRST
-  ADMIN), is not in the check. Lost: a check on the changed names alone, with which the
-  refusal depends on the content of the spec, so a subject learns if a definition that
-  it has no right on is there, or equals its guess. `apply` needs `apply` on the tree
-  key of each definition that the plan adds, changes, or removes. `serve` reads those
-  names from the plan alone, so the refusal depends only on the request and the rules.
-  The apply gives a home of the plan only to an index on which the subject has `apply`,
-  and drops each other home with no error. So a subject with a grant on part of the tree
-  applies the files of the whole mesh. Lost: `apply` on each index of the homes, with
-  which such a subject applies no plan, because the homes list each placed index; and a
-  check of only the indexes with no home, with which the refusal depends on the state
-  (`laptop.architect`, 2026-10-12T18:28:19Z,
+  `plan` needs the action `plan` on each name of the files, and on each name of the spec
+  in use that `plan` compares (`config::plan::planned`). A founding definition, which
+  `plan` leaves out (FIRST ADMIN), is not in the check. Lost: a check on the changed
+  names alone, with which the refusal depends on the content of the spec, so a subject
+  learns if a definition that it has no right on is there, or equals its guess. `apply`
+  needs `apply` on the tree key of each definition that the plan adds, changes, or
+  removes. `serve` reads those names from the plan alone, so the refusal depends only on
+  the request and the rules. The apply gives a home of the plan only to an index on
+  which the subject has `apply`, and drops each other home with no error. So a subject
+  with a grant on part of the tree applies the files of the whole mesh. Lost: `apply` on
+  each index of the homes, with which such a subject applies no plan, because the homes
+  list each placed index; and a check of only the indexes with no home, with which the
+  refusal depends on the state (`laptop.architect`, 2026-10-12T18:28:19Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6130192057). The
   rules are those of the spec in use, which is the base of each plan that applies, so a
   plan that removes the subject's own policy passes when that policy gives the subject
