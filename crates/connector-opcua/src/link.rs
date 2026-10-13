@@ -150,12 +150,12 @@ fn shim_compiler() -> cc::Tool {
 /// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
 /// lines and expands `_Pragma`.
 fn shim_pragmas(file: &str) -> Vec<String> {
-    // A bare name, as GCC on Windows escapes each `\` of a path in a line marker, and
-    // not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+    // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+    let path = std::path::Path::new(ROOT).join("src").join(file);
     let output = shim_compiler()
         .to_command()
-        .current_dir(std::path::Path::new(ROOT).join("src"))
-        .args(["-E", file])
+        .arg("-E")
+        .arg(&path)
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -164,7 +164,9 @@ fn shim_pragmas(file: &str) -> Vec<String> {
     for line in String::from_utf8(output.stdout).unwrap().lines() {
         // A line marker, `# <line> "<file>" <flags>`, names the file of the next lines.
         if let Some(marker) = line.strip_prefix("# ") {
-            in_shim = marker.contains(&format!("\"{file}\""));
+            // GCC on Windows escapes each `\` of the name.
+            let name = marker.split('"').nth(1).unwrap_or_default();
+            in_shim = std::path::Path::new(&name.replace("\\\\", "\\")) == path;
         } else if in_shim && line.trim_start().starts_with("#pragma") {
             pragmas.push(line.trim().to_owned());
         }
@@ -269,6 +271,22 @@ fn the_shim_check_ignores_the_environment_of_cc() {
         output.status.success() && stdout.contains("test result: ok. 1 passed"),
         "{stdout}"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn the_shim_check_finds_a_cc_relative_to_the_crate() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    let cc = Path::new(env!("OUT_DIR")).join("relative-cc");
+    std::fs::write(&cc, "#!/bin/sh\nexec cc \"$@\"\n").unwrap();
+    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (root, cc) = (root(), cc.canonicalize().unwrap());
+    let common = root.ancestors().find(|dir| cc.starts_with(dir)).unwrap();
+    let up = "../".repeat(root.strip_prefix(common).unwrap().components().count());
+    let relative = format!("{up}{}", cc.strip_prefix(common).unwrap().display());
+    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
+    crate::child::run(name, &[("CC", &relative)]);
 }
 
 #[test]
