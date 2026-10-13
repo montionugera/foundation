@@ -333,7 +333,16 @@
   the open gives `ManyIndexes` with the least matched name and the least name on another
   index (`laptop.architect`, 2026-10-08T06:18:32Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6053699496). A
-  selector that matches no channel gives `Empty` until #1819 (`laptop.architect`,
+  reader gives the name of each channel that it reads, as at its open, through
+  `Received::name`. The reader of a client read holds no name (`laptop.architect`,
+  2026-10-13T01:00:24Z and 01:03:02Z:
+  https://github.com/synnaxlabs/foundation/issues/2508#issuecomment-6135761867 and
+  https://github.com/synnaxlabs/foundation/issues/2508#issuecomment-6135803509). This
+  supersedes "and an open of a connector clones no name" of finding 3 of
+  https://github.com/synnaxlabs/foundation/pull/2425#issuecomment-6111681323. Each open
+  of `Hub::reader` now copies the bytes of each matched name once, into one text, with
+  a count of allocations that does not grow with the channels. A selector that matches
+  no channel gives `Empty` until #1819 (`laptop.architect`,
   2026-10-08T06:18:32Z and 06:37:34Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6053699496 and
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6054016051). A named

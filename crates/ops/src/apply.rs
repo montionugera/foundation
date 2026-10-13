@@ -4,10 +4,9 @@ use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use types::channel;
 
-use crate::error::{self, Error, Paths};
+use crate::error::{self, Error, Sources};
 use crate::front_end;
 use crate::plan::{self, Counts};
 use crate::used;
@@ -32,7 +31,7 @@ pub(crate) async fn file(
     key: impl FnMut() -> channel::Key,
 ) -> Result<Applied, Error> {
     let file = path.to_str().ok_or_else(|| {
-        Error::config(vec![front_end::not_utf8(path)], &Paths::default())
+        Error::config(vec![front_end::not_utf8(path)], &Sources::default())
     })?;
     let plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let effect = apply(plan, used::spec(mesh).await?, mesh, kinds, key).await?;
@@ -84,7 +83,7 @@ pub(crate) async fn apply(
         pointer
     } else {
         config::plan::check(&definitions, &mesh.names(), kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, &Paths::default()))?;
+            .map_err(|diagnostics| Error::config(diagnostics, &Sources::default()))?;
         mesh.apply(plan.base, definitions, plan.homes)
             .await
             .map_err(|error| match error {
@@ -122,18 +121,9 @@ pub(crate) struct Effect {
 }
 
 impl Applied {
-    /// The output as JSON.
-    pub(crate) fn json(&self) -> Value {
-        serde_json::to_value(self).expect("invariant: an output is plain JSON data")
-    }
-
     /// `Applied <file>: <a> added, <c> changed, <r> removed, <h> homes listed.`, with
     /// each count of 0 left out and `1 home listed` for one home, or `no change` in
     /// place of the counts when each is 0.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the table entries of #1744 call it")
-    )]
     pub(crate) fn text(&self) -> String {
         let Effect { counts, homes, .. } = &self.effect;
         let counts = [

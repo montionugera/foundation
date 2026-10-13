@@ -6,6 +6,7 @@
    build. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <open62541/client.h>
 #include <open62541/server_config_default.h>
 #pragma GCC diagnostic pop
 
@@ -89,7 +90,66 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t si
     return status;
 }
 
-/* Sets the most chunks in a message of each later channel of `server`. */
-void shim_server_chunks(UA_Server *server, UA_UInt32 chunks) {
-    UA_Server_getConfig(server)->tcpMaxChunks = chunks;
+/* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
+ * of `server`, each 0 for the default of open62541. */
+void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
+                        UA_UInt32 chunks) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->tcpBufSize = buffer;
+    config->tcpMaxMsgSize = message;
+    config->tcpMaxChunks = chunks;
+}
+
+/* Sets the receive buffer size that `client` gives in its next HEL. */
+void shim_client_receive(UA_Client *client, UA_UInt32 size) {
+    UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
+}
+
+/* The node context of a variable of `shim_server_add_source`, as the first field of
+ * the context that Rust holds. */
+typedef struct shim_source shim_source;
+struct shim_source {
+    /* Gives the value and the status of a read of the variable. */
+    void (*read)(shim_source *source, UA_Double *value, UA_StatusCode *status);
+};
+
+static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessionId,
+                                      void *sessionContext, const UA_NodeId *nodeId,
+                                      void *nodeContext,
+                                      UA_Boolean includeSourceTimeStamp,
+                                      const UA_NumericRange *range,
+                                      UA_DataValue *value) {
+    (void)server;
+    (void)sessionId;
+    (void)sessionContext;
+    (void)nodeId;
+    (void)includeSourceTimeStamp;
+    /* The client of the crate reads no range. */
+    (void)range;
+    value->hasStatus = true;
+    shim_source *source = nodeContext;
+    UA_Double read;
+    source->read(source, &read, &value->status);
+    UA_StatusCode status =
+        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[UA_TYPES_DOUBLE]);
+    value->hasValue = status == UA_STATUSCODE_GOOD;
+    return status;
+}
+
+/* Adds to `server` the Double variable `node` under the Objects folder, whose reads
+ * `source` answers. `source` lives until the server is deleted. */
+UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
+                                     shim_source *source) {
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.valueRank = UA_VALUERANK_SCALAR;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
+    return UA_Server_addCallbackValueSourceVariableNode(
+        server, shim_node_id(node),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "source"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, callbacks,
+        source, NULL);
 }

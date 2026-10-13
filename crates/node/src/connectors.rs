@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use connector::cancel;
 use connector::supervisor::{self, Supervisor};
-use spec::channel::Kind;
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::channel;
@@ -160,14 +159,16 @@ impl Runs {
     /// key of a status channel is changed. The first run of a loop waits until no open
     /// of a loop whose first run has not started is pending.
     pub(crate) fn apply(&mut self, definitions: &BTreeMap<Name, Definition>) {
-        let by_index = by_index(definitions);
         let wanted: BTreeMap<&Name, Placed> = definitions
             .iter()
             .filter_map(|(name, definition)| match definition {
                 Definition::Connector(connector) if *connector.node() == self.node => {
                     let placed = Placed {
                         connector: connector.clone(),
-                        status: status(definitions, &by_index, name),
+                        status: connector::status::defined(definitions, name)
+                            .into_iter()
+                            .map(|(_, channel)| channel.key)
+                            .collect(),
                     };
                     Some((name, placed))
                 }
@@ -205,56 +206,6 @@ impl Runs {
                 .spawn(Box::pin(run(supervisor, opens, name, state)));
         }
     }
-
-    /// Makes the runs match each spec in use that `watch` gives ([`Runs::apply`]), the
-    /// spec in use now first, and gives the stop of the group.
-    pub(crate) async fn follow(
-        mut self,
-        mut watch: mesh::used::Watch,
-    ) -> mesh::Stopped {
-        loop {
-            match watch.next().await {
-                Ok(spec) => self.apply(&spec.definitions),
-                Err(stopped) => return stopped,
-            }
-        }
-    }
-}
-
-/// The keys of the data channels on each index channel of `definitions`, in their
-/// order.
-fn by_index(
-    definitions: &BTreeMap<Name, Definition>,
-) -> BTreeMap<channel::Key, Vec<channel::Key>> {
-    let mut by_index: BTreeMap<channel::Key, Vec<channel::Key>> = BTreeMap::new();
-    for definition in definitions.values() {
-        if let Definition::Channel(channel) = definition
-            && let Kind::Data(data) = &channel.kind
-        {
-            by_index.entry(*data.index()).or_default().push(channel.key);
-        }
-    }
-    by_index
-}
-
-/// The keys of the status channels of the connector `name`: its status index, then
-/// each channel on it in `by_index`. Empty when the status names are refused or
-/// `definitions` has no channel at the name of the index; the open of the status
-/// session then fails.
-fn status(
-    definitions: &BTreeMap<Name, Definition>,
-    by_index: &BTreeMap<channel::Key, Vec<channel::Key>>,
-    name: &Name,
-) -> Vec<channel::Key> {
-    let Ok((index, _)) = connector::status::channels(name, &[]) else {
-        return Vec::new();
-    };
-    let Some(Definition::Channel(index)) = definitions.get(&index) else {
-        return Vec::new();
-    };
-    let mut keys = vec![index.key];
-    keys.extend(by_index.get(&index.key).into_iter().flatten().copied());
-    keys
 }
 
 /// The loop of the name `name`: runs its connector until a change removes it. Its

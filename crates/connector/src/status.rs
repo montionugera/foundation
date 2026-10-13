@@ -2,7 +2,7 @@
 //! their own, and their writes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::fmt;
 use std::future::{pending, poll_fn};
@@ -17,6 +17,8 @@ use std::task::{self, Poll, Wake, Waker};
 
 use codec::Variable;
 use env::clock::Clock;
+use spec::channel::{Channel, Kind};
+use spec::definition::Definition;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path};
 use types::name::Name;
@@ -30,7 +32,12 @@ use loom::sync::Mutex;
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, Ordering};
 
+use crate::stamp::Stamps;
 use crate::{cancel, kind};
+
+mod reading;
+
+pub use reading::Reading;
 
 /// The name of the index of the status channels.
 const TIME: &str = "time";
@@ -38,12 +45,21 @@ const TIME: &str = "time";
 /// The channels that the supervisor writes, with the sample type of each. `error`
 /// is last, so it is entry [`ERROR`] of a frame.
 const SUPERVISOR: [(&str, Type); 5] = [
-    ("state", Type::Scalar(Scalar::U8)),
-    ("class", Type::Scalar(Scalar::U8)),
-    ("restarts", Type::Scalar(Scalar::U64)),
-    ("backoff", Type::Scalar(Scalar::Span)),
-    ("error", Type::String),
+    (segment::STATE, Type::Scalar(Scalar::U8)),
+    (segment::CLASS, Type::Scalar(Scalar::U8)),
+    (segment::RESTARTS, Type::Scalar(Scalar::U64)),
+    (segment::BACKOFF, Type::Scalar(Scalar::Span)),
+    (segment::ERROR, Type::String),
 ];
+
+/// The last segment of the name of each channel that the supervisor writes.
+mod segment {
+    pub(super) const STATE: &str = "state";
+    pub(super) const CLASS: &str = "class";
+    pub(super) const RESTARTS: &str = "restarts";
+    pub(super) const BACKOFF: &str = "backoff";
+    pub(super) const ERROR: &str = "error";
+}
 
 /// The entry of `error` in a frame, after the index and the other channels of the
 /// supervisor.
@@ -56,7 +72,8 @@ const PERIOD: Span = Span::SECOND;
 
 /// The status channels of `connector`: the name of their index, then the name and
 /// sample type of each channel on it, the supervisor's first, then each of `counts`
-/// as `u64`. `counts` is as [`kind::Table::check`] gives them.
+/// as `u64`. `counts` is as [`kind::Table::check`] gives them. Each frame that the
+/// supervisor writes holds one sample of each of these channels.
 ///
 /// # Errors
 ///
@@ -76,6 +93,37 @@ pub fn channels(
         .map(|(last, sample)| Ok((status(last)?, sample)))
         .collect::<Result<_, _>>()?;
     Ok((time, channels))
+}
+
+/// The status channels that `definitions` defines for the connector `name`: its
+/// status index, then each data channel on it, in name order.
+///
+/// # Panics
+///
+/// When `definitions` has no status index for `name`, which `config` refuses.
+#[must_use]
+pub fn defined<'a>(
+    definitions: &'a BTreeMap<Name, Definition>,
+    name: &Name,
+) -> Vec<(&'a Name, &'a Channel)> {
+    let index = channels(name, &[]).map(|(index, _)| index);
+    let index = index.expect("invariant: `config` refuses a status name that is long");
+    let Some((index, Definition::Channel(found))) = definitions.get_key_value(&index)
+    else {
+        panic!("invariant: `config` defines the status index `{index}`");
+    };
+    let on = definitions
+        .iter()
+        .filter_map(|(channel, definition)| match definition {
+            Definition::Channel(
+                on @ Channel {
+                    kind: Kind::Data(data),
+                    ..
+                },
+            ) if *data.index() == found.key => Some((channel, on)),
+            _ => None,
+        });
+    std::iter::once((index, found)).chain(on).collect()
 }
 
 /// Panics when `kind` names a count of more than one segment, a count that the index
@@ -110,6 +158,7 @@ impl Status {
     pub(crate) fn new(counts: Vec<Name>) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
+            shown: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
         }))
@@ -139,10 +188,32 @@ impl Status {
             at,
         }
     }
+
+    /// Shows `error` as the class `Retry` and its text, from the next write until the
+    /// end of the run.
+    pub(crate) fn show(&self, error: &dyn fmt::Display) {
+        self.set(Shown::Error(cut(&error.to_string())));
+    }
+
+    /// Clears the class and the text, from the next write until the end of the run.
+    pub(crate) fn clear(&self) {
+        self.set(Shown::Cleared);
+    }
+
+    /// Stages `new`, unless it is the value that the run shows, or no run runs.
+    fn set(&self, new: Shown) {
+        let mut shown = self.0.shown.borrow_mut();
+        if matches!(*shown, Shown::Ended) || *shown == new {
+            return;
+        }
+        *shown = new;
+        drop(shown);
+        self.0.stage();
+    }
 }
 
-/// One count of a kind, `<connector>.status.<count>`. It is not `Send`: as `Context`,
-/// it stays on the shard of its run.
+/// One count of a kind, `<connector>.status.<count>`. It holds across the runs of one
+/// supervisor call. It is not `Send`: as `Context`, it stays on the shard of its run.
 #[derive(Debug)]
 pub struct Count {
     values: Rc<Values>,
@@ -157,15 +228,25 @@ impl Count {
         self.values.counts[self.at].1.set(value);
         self.values.stage();
     }
+
+    /// Adds `value` to the count. Saturates at `u64::MAX`. The status gives it as
+    /// [`Count::set`] does. Never blocks.
+    pub fn add(&self, value: u64) {
+        let count = &self.values.counts[self.at].1;
+        self.set(count.get().saturating_add(value));
+    }
 }
 
-/// What a connector's run is doing, as `state` gives it.
+/// What a connector's run does, as its `state` channel gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum State {
+pub enum State {
+    /// A run is under way.
     Running,
-    /// Waits for the next try, at this time by the node's clock.
-    Waiting(Monotonic),
+    /// The supervisor waits for the next try of a restart.
+    Restarting,
+    /// The supervisor runs the connector no more.
     Stopped,
+    /// The last run returned, and the supervisor waits for its tasks to end.
     Ending,
 }
 
@@ -174,43 +255,92 @@ impl State {
     fn code(self) -> u8 {
         match self {
             Self::Running => 0,
-            Self::Waiting(_) => 1,
+            Self::Restarting => 1,
             Self::Stopped => 2,
             Self::Ending => 3,
         }
     }
+
+    /// The state of the value `code` of `state`, or `None` when no state has it.
+    fn of(code: u64) -> Option<Self> {
+        [Self::Running, Self::Restarting, Self::Stopped, Self::Ending]
+            .into_iter()
+            .find(|state| u64::from(state.code()) == code)
+    }
 }
 
-/// How the last run ended, as `class` gives it: `None` also before the first end.
+/// What the writer of a status does: its state, with the time of the next try by the
+/// node's clock while it restarts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Class {
-    None = 0,
+enum Phase {
+    Running,
+    Waiting(Monotonic),
+    Stopped,
+    Ending,
+}
+
+impl Phase {
+    fn state(self) -> State {
+        match self {
+            Self::Running => State::Running,
+            Self::Waiting(_) => State::Restarting,
+            Self::Stopped => State::Stopped,
+            Self::Ending => State::Ending,
+        }
+    }
+}
+
+/// How the last run of a connector ended with an error, or the error that its running
+/// kind shows, as its `class` channel gives it. The value of `class` is 0 when
+/// [`Reading::error`] is `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// `kind::Error::Config`.
     Config = 1,
+    /// `kind::Error::Device`.
     Device = 2,
+    /// `kind::Error::Retry`, or an error that the running kind shows.
     Retry = 3,
 }
 
 impl Class {
-    /// The class of a run that ended with `end`, and the text of `error`: empty for
-    /// `Ok`, else the text of the error with no class, cut to [`ERROR_MAX`] bytes.
-    fn with_text(end: &Result<(), kind::Error>) -> (Self, String) {
+    /// The class of a run that ended with `end`, and the text of `error`: `None` and
+    /// an empty text for `Ok`, else the text of the error with no class, cut to
+    /// [`ERROR_MAX`] bytes.
+    fn with_text(end: &Result<(), kind::Error>) -> (Option<Self>, String) {
         let (class, text) = match end {
-            Ok(()) => (Self::None, String::new()),
+            Ok(()) => (None, String::new()),
             Err(kind::Error::Config(diagnostics)) => {
                 let texts: Vec<_> =
                     diagnostics.iter().map(ToString::to_string).collect();
-                (Self::Config, texts.join("; "))
+                (Some(Self::Config), texts.join("; "))
             }
-            Err(kind::Error::Device(source)) => (Self::Device, source.to_string()),
-            Err(kind::Error::Retry(source)) => (Self::Retry, source.to_string()),
+            Err(kind::Error::Device(source)) => {
+                (Some(Self::Device), source.to_string())
+            }
+            Err(kind::Error::Retry(source)) => (Some(Self::Retry), source.to_string()),
         };
         (class, cut(&text))
     }
+
+    /// The value of `class` for `class`.
+    fn code(class: Option<Self>) -> u8 {
+        class.map_or(0, |class| class as u8)
+    }
+
+    /// The class of the value `code` of `class`, or `None` when no class has it.
+    fn of(code: u64) -> Option<Self> {
+        [Self::Config, Self::Device, Self::Retry]
+            .into_iter()
+            .find(|class| u64::from(*class as u8) == code)
+    }
 }
 
-/// The last value of each count, and whether the status waits for a write.
+/// The last value of each count and the error that the run shows, and whether the
+/// status waits for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
+    shown: RefCell<Shown>,
     staged: Cell<bool>,
     /// The flush, while it waits for a staged count of an open session, so that a set
     /// after the close wakes nothing.
@@ -228,17 +358,32 @@ impl Values {
     }
 }
 
+/// The error that the running kind shows.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Shown {
+    /// No run runs: an error that a task of the last run shows is not written.
+    #[default]
+    Ended,
+    /// The run showed nothing yet, so the status keeps the end of the last run.
+    Nothing,
+    /// The run cleared the error last.
+    Cleared,
+    /// The text of the last error that the run showed, as the class `Retry`.
+    Error(String),
+}
+
 impl fmt::Debug for Values {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Values")
             .field("counts", &self.counts)
+            .field("shown", &self.shown.borrow())
             .field("staged", &self.staged.get())
             .finish_non_exhaustive()
     }
 }
 
 /// The writer of one connector's status channels: the supervisor sets each change of
-/// state, and [`Writer::flush`] writes the counts.
+/// state, and [`Writer::flush`] writes the counts and the error that the kind shows.
 pub(crate) struct Writer {
     session: RefCell<Session>,
     values: Rc<Values>,
@@ -298,10 +443,10 @@ impl Writer {
             entries,
             series,
             group,
-            last: None,
+            stamps: Stamps::default(),
             wrote: Monotonic::default(),
-            state: State::Running,
-            class: Class::None,
+            phase: Phase::Running,
+            class: None,
             restarts: 0,
             error: Text {
                 value: String::new(),
@@ -333,22 +478,25 @@ impl Writer {
                 session.restarts = session.restarts.strict_add(1);
             }
             session.started = true;
-            session.state = State::Running;
+            session.phase = Phase::Running;
         });
+        self.values.shown.replace(Shown::Nothing);
         true
     }
 
-    /// Writes `state` 3 with the class and the text of a run that ended with `end`. It
-    /// takes them at the call, so the caller can drop `end` before it awaits.
+    /// Writes `state` 3 with the class and the text of a run that ended with `end`,
+    /// in place of the error that the run showed. It takes them at the call, so the
+    /// caller can drop `end` before it awaits.
     pub(crate) fn end(
         &self,
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
+        self.values.shown.replace(Shown::Ended);
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
             session.error.set(&mut session.series, error);
-            session.state = State::Ending;
+            session.phase = Phase::Ending;
         })
     }
 
@@ -357,13 +505,13 @@ impl Writer {
     pub(crate) async fn wait(&self, span: Span) -> Monotonic {
         self.applied().await;
         let next = self.clock.now() + span;
-        self.change(|session| session.state = State::Waiting(next));
+        self.change(|session| session.phase = Phase::Waiting(next));
         next
     }
 
     /// Writes `state` 2.
     pub(crate) async fn stop(&self) {
-        self.set(|session| session.state = State::Stopped).await;
+        self.set(|session| session.phase = Phase::Stopped).await;
     }
 
     /// Writes the change of state that `change` makes, after the home applied the
@@ -467,11 +615,11 @@ struct Session {
     /// Each series of a frame, by entry, with its length.
     series: Box<[(usize, usize)]>,
     group: u32,
-    last: Option<Stamp>,
+    stamps: Stamps,
     /// When the last write was, by the node's clock.
     wrote: Monotonic,
-    state: State,
-    class: Class,
+    phase: Phase,
+    class: Option<Class>,
     restarts: u64,
     error: Text,
     /// Set at the first start, after which each start is a restart.
@@ -517,25 +665,39 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
+        match &*values.shown.borrow() {
+            Shown::Ended | Shown::Nothing => {}
+            Shown::Cleared => {
+                self.class = None;
+                self.error.set(&mut self.series, String::new());
+            }
+            Shown::Error(text) => {
+                self.class = Some(Class::Retry);
+                if self.error.value != *text {
+                    self.error.set(&mut self.series, text.clone());
+                }
+            }
+        }
         if self.closed {
             self.unapplied = false;
             return;
         }
         self.wrote = now;
         let mesh = self.hub.now();
-        let stamp = self.last.map_or(mesh, |last| mesh.max(after(last)));
+        let stamp = self.stamps.next(mesh);
         // The hub's clock can step while the node's clock does not.
-        let next = match self.state {
-            State::Waiting(next) => Some(mesh + (next - now)),
-            State::Running | State::Stopped | State::Ending => None,
+        let next = match self.phase {
+            Phase::Waiting(next) => Some(mesh + (next - now)),
+            Phase::Running | Phase::Stopped | Phase::Ending => None,
         };
-        if let Err(before) = self.send(values, stamp, next)
-            && let Err(again) = self.send(values, after(before), next)
-        {
-            panic!(
-                "invariant: a status frame stamped after {before}, the last stamp of \
-                 its index, is not backwards, but the home gives {again} as last"
-            )
+        if let Err(before) = self.send(values, stamp, next) {
+            let stamp = self.stamps.after(before);
+            if let Err(again) = self.send(values, stamp, next) {
+                panic!(
+                    "invariant: a status frame stamped after {before}, the last stamp \
+                     of its index, is not backwards, but the home gives {again} as last"
+                )
+            }
         }
         if !values.staged.get() {
             self.unapplied = false;
@@ -569,7 +731,6 @@ impl Session {
             Err(error) => panic!("invariant: the series follow the key set: {error}"),
         };
         self.fill(&mut draft, values, stamp, next);
-        self.last = Some(stamp);
         match self.hub.write(Label::Path(Path::Live), draft) {
             Ok([Outcome::Applied { .. }]) => {}
             Err(Failure::Removed(_) | Failure::Home(home::Error::Disk(_))) => {
@@ -623,8 +784,8 @@ impl Session {
     ) {
         let backoff = next.map_or(Span::ZERO, |next| (next - stamp).max(Span::ZERO));
         let supervisor = [
-            u64::from(self.state.code()).to_le_bytes(),
-            u64::from(self.class as u8).to_le_bytes(),
+            u64::from(self.phase.state().code()).to_le_bytes(),
+            u64::from(Class::code(self.class)).to_le_bytes(),
             self.restarts.to_le_bytes(),
             backoff.nanos().to_le_bytes(),
         ];
@@ -657,11 +818,6 @@ impl Session {
 /// boundary, in a string with no spare capacity.
 fn cut(text: &str) -> String {
     text[..text.floor_char_boundary(ERROR_MAX)].to_owned()
-}
-
-/// The stamp 1 ns after `stamp`.
-fn after(stamp: Stamp) -> Stamp {
-    Stamp::from_nanos(stamp.nanos().strict_add(1))
 }
 
 /// Polls `run` to its end, and `side` after it while `run` is pending, so `side` sees
@@ -745,6 +901,31 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::testing::create_status;
+
+    #[test]
+    fn defines_the_status_channels_of_one_connector() {
+        let (a, b) = (name("site.a"), name("site.b"));
+        let counts = [name("in")];
+        let mine = create_status(&a, &counts, types::channel::Key::from_u128(100));
+        let theirs = create_status(&b, &counts, types::channel::Key::from_u128(200));
+        let definitions: BTreeMap<_, _> = mine.iter().chain(&theirs).cloned().collect();
+        let mut expected: Vec<_> = mine
+            .iter()
+            .map(|(name, definition)| match definition {
+                Definition::Channel(channel) => (name, channel),
+                _ => unreachable!("a status definition is a channel"),
+            })
+            .collect();
+        expected[1..].sort_by_key(|(name, _)| *name);
+        assert_eq!(defined(&definitions, &a), expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "defines the status index `site.a.status.time`")]
+    fn panics_with_no_status_index() {
+        drop(defined(&BTreeMap::new(), &name("site.a")));
+    }
 
     /// A side of [`beside`] that counts its polls and keeps its last waker.
     fn side(
@@ -869,7 +1050,7 @@ mod tests {
     fn gives_the_text_of_an_error_with_no_spare_capacity() {
         let device = Err(kind::Error::Device("busy".into()));
         let (class, text) = Class::with_text(&device);
-        assert_eq!((class, text.as_str()), (Class::Device, "busy"));
+        assert_eq!((class, text.as_str()), (Some(Class::Device), "busy"));
         assert_eq!(text.capacity(), text.len());
     }
 
@@ -893,7 +1074,8 @@ mod tests {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], staged: true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, staged: \
+                    true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 

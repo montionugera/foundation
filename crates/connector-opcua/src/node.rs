@@ -23,22 +23,14 @@ pub(crate) enum Key {
     Name(Name),
 }
 
-/// The name of a node: 1 to [`Name::BYTES`] bytes.
+/// The name of a node: 1 or more bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Name(String);
 
 impl Name {
-    /// The most bytes in a name: an interim bound, derived from no limit, until the
-    /// client checks the size of a whole request. A request past the chunks of one
-    /// message closes its channel.
-    pub(crate) const BYTES: usize = 4096;
-
-    /// Gives `text` as a name, or `None` when it is empty or has more than
-    /// [`Self::BYTES`] bytes.
+    /// Gives `text` as a name, or `None` when it is empty.
     pub(crate) fn new(text: &str) -> Option<Self> {
-        (1..=Self::BYTES)
-            .contains(&text.len())
-            .then(|| Self(text.to_owned()))
+        (!text.is_empty()).then(|| Self(text.to_owned()))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -67,11 +59,9 @@ impl fmt::Display for Error {
                 "a GUID (g=) or opaque (b=) key is not supported: give a number (i=) \
                  or a name (s=)",
             ),
-            Self::Syntax => write!(
-                f,
+            Self::Syntax => f.write_str(
                 "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an \
-                 index to 65535, a number to 4294967295, and a name of 1 to {} bytes",
-                Name::BYTES
+                 index to 65535, a number to 4294967295, and a name that is not empty",
             ),
         }
     }

@@ -7,18 +7,19 @@ publish.workspace = true
 
 [features]
 sim = [
-    "dep:bytes",
     "connector/sim",
     "dep:env",
     "dep:influxdb-line-protocol",
 ]
 
 [dependencies]
-bytes = { workspace = true, optional = true }
+bytes.workspace = true
+codec = { path = "../codec" }
 connector = { path = "../connector" }
 document = { path = "../document" }
 env = { path = "../env", optional = true }
 http.workspace = true
+hub = { path = "../hub" }
 influxdb-line-protocol = { workspace = true, optional = true }
 types = { path = "../types" }
 unicode-properties.workspace = true
@@ -33,6 +34,12 @@ env = { path = "../env" }
 hub = { path = "../hub", features = ["sim"] }
 proptest.workspace = true
 sim = { path = "../sim" }
+spec = { path = "../spec" }
+
+[[bench]]
+name = "batch"
+harness = false
+test = true
 
 [[bench]]
 name = "line"

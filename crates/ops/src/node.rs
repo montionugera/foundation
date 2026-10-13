@@ -4,8 +4,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use env::clock::Clock;
 use serde_json::Value;
 use types::channel;
+use types::name::Name;
 
 use crate::front_end::{File, FrontEnds};
 use crate::{apply, plan, used};
@@ -20,24 +22,35 @@ pub struct Node {
     pub(crate) key: Box<dyn Fn() -> channel::Key>,
     pub(crate) front_ends: FrontEnds,
     pub(crate) kinds: Arc<connector::kind::Table>,
+    pub(crate) hub: hub::Hub,
+    pub(crate) clock: Clock,
+    pub(crate) name: Name,
 }
 
 impl Node {
     /// `key` gives the key of each new channel: each call gives a key that no channel
     /// holds and no earlier call gave. `front_ends` gives the syntax of each file
-    /// extension, and `kinds` holds each connector kind of the node.
+    /// extension, and `kinds` holds each connector kind of the node. `status` reads
+    /// the status channels through `hub`, the hub of the node named `name`, and waits
+    /// for them on `clock`, the node's clock.
     #[must_use]
     pub fn new(
         mesh: mesh::Mesh,
         key: impl Fn() -> channel::Key + 'static,
         front_ends: FrontEnds,
         kinds: Arc<connector::kind::Table>,
+        hub: hub::Hub,
+        clock: Clock,
+        name: Name,
     ) -> Self {
         Self {
             mesh,
             key: Box::new(key),
             front_ends,
             kinds,
+            hub,
+            clock,
+            name,
         }
     }
 
@@ -72,7 +85,7 @@ impl Node {
             &self.kinds,
         )
         .map_err(|e| e.json())?;
-        Ok((plan.encode(), output.json()))
+        Ok((plan.encode(), crate::value(&output)))
     }
 
     /// Applies the plan file `bytes`, read from `path`, and gives the JSON output that
@@ -84,7 +97,7 @@ impl Node {
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
         apply::file(path, bytes, &self.mesh, &self.kinds, &self.key)
             .await
-            .map(|applied| applied.json())
+            .map(|applied| crate::value(&applied))
             .map_err(|e| e.json())
     }
 }

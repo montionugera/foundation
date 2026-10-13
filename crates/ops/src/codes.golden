@@ -10,5 +10,10 @@ ops.stopped	Fix the cause in the message, then start the node and plan again
 ops.bad-request	Use a `foundation` program of the same version as the node
 ops.denied	Ask an admin of the region for an access policy that allows it
 ops.large-reply	Plan and apply the change in smaller steps
+ops.channel-read	Fix the cause in the message, then ask for the status again
+ops.read	Fix the cause in the message, then run the command again
+ops.write	Give `--out` a path in a directory that can be written
+ops.large-request	Make the config files smaller
+ops.bad-reply	Use a `foundation` program of the same version as the node
 ops.unknown-extension	Use a file that ends in `.hcl`
 ops.path-not-utf8	Rename the file to a UTF-8 name

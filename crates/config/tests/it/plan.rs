@@ -512,6 +512,7 @@ fn removes_a_definition_that_no_file_holds() {
         "influx",
         "influx.status.backoff",
         "influx.status.class",
+        "influx.status.confirmed",
         "influx.status.error",
         "influx.status.restarts",
         "influx.status.state",

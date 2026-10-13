@@ -15,6 +15,7 @@ name = "foundation"
 path = "src/main.rs"
 
 [dependencies]
+access = { path = "../access" }
 blob = { path = "../blob" }
 block = { path = "../block" }
 buffer = { path = "../buffer" }
@@ -43,6 +44,7 @@ bytes = { workspace = true }
 codec = { path = "../codec" }
 connector = { path = "../connector", features = ["sim"] }
 connector-influx = { path = "../connector-influx", features = ["sim"] }
+connector-opcua = { path = "../connector-opcua", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
 http = { workspace = true }
@@ -50,6 +52,8 @@ hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]

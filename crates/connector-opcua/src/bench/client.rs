@@ -1,20 +1,15 @@
 //! Runs a test server of open62541 with clients that each have their own connection
 //! manager, as the kind of OPC UA uses them.
 
-#![expect(unsafe_code, reason = "open62541 is a C library")]
-
 use std::cell::RefCell;
-use std::future::{Future as _, poll_fn};
-use std::mem::ManuallyDrop;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::pin;
-use std::task::Poll;
 
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
 
 use super::PORT;
+use crate::client::Nodes;
 use crate::connection;
 use crate::node::{Key, Name, Node};
 
@@ -59,6 +54,11 @@ impl Server {
     ///
     /// If the port is taken, or if open62541 refuses the server or a step of its
     /// close. A panic in `body` leaks the server and its manager.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop or the connection manager: the process
+    /// stops as the Rust allocator does when it has no memory.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
@@ -67,58 +67,57 @@ impl Server {
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
         let local = SocketAddr::new(address, PORT);
-        let manager = ManuallyDrop::new(
-            connection::Manager::listening(
-                Clock::clone(&clock),
-                Net::clone(&net),
-                local,
-                u32::from(SESSIONS),
-                &mut rng,
-            )
-            .expect("the port is free"),
-        );
-        // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks the manager.
-        let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(&VALUE, DOUBLE);
-        server.add_double(&named(), DOUBLE);
+        let manager = connection::Manager::listening(
+            Clock::clone(&clock),
+            Net::clone(&net),
+            local,
+            u32::from(SESSIONS),
+            &mut rng,
+        )
+        .expect("the port is free");
         let this = Self {
             clock,
             net,
             url: format!("opc.tcp://{local}"),
             rng: RefCell::new(rng),
         };
-        let value = {
-            let mut serve = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut body = pin!(body(&this));
-            poll_fn(|cx| {
-                assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
-                body.as_mut().poll(cx)
-            })
-            .await
+        let add = |server: &mut crate::server::Server| {
+            server.add_double(&VALUE, DOUBLE);
+            server.add_double(&named(), DOUBLE);
         };
-        server.close(&manager).await;
-        drop(ManuallyDrop::into_inner(manager));
-        value
+        crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
 
-    /// Connects a client to the server, on its own connection manager.
+    /// Connects a client to the server, on its own connection manager, whose reads
+    /// each read `count` copies of a [`Variable`] in one request.
     ///
     /// # Panics
     ///
-    /// If the connect fails, with its status.
-    pub async fn connect(&self) -> Client {
+    /// If the connect fails, with its status, or if the request or its answer of
+    /// `count` copies needs more than one message of the session.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, the connection manager, the client, or
+    /// a Read request: the process stops as the Rust allocator does when it has no
+    /// memory.
+    pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        match crate::client::Client::connect(clock, net, rng, &self.url).await {
-            Ok(client) => Client {
-                client,
-                name: named(),
-            },
-            Err(status) => panic!("a connect failed: {status:?}"),
+        let session =
+            match crate::client::Client::connect(clock, net, rng, &self.url).await {
+                Ok(session) => session,
+                Err(status) => panic!("a connect failed: {status:?}"),
+            };
+        let nodes = |node: Node| {
+            let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
+            session.nodes(&nodes).expect("the nodes fit in one message")
+        };
+        let (number, name) = (nodes(VALUE), nodes(named()));
+        Client {
+            session,
+            number,
+            name,
         }
     }
 }
@@ -141,31 +140,40 @@ fn named() -> Node {
 
 /// A client of a [`Server`].
 pub struct Client {
-    client: crate::client::Client,
-    name: Node,
+    session: crate::client::Client,
+    number: Nodes,
+    name: Nodes,
 }
 
 impl Client {
-    /// Reads the Double of `variable`.
+    /// Reads the Double of each copy of `variable` in one request.
     ///
     /// # Panics
     ///
     /// If the read fails, with its status, or gives another value.
     pub async fn read(&mut self, variable: Variable) {
-        let node = match variable {
-            Variable::Number => &VALUE,
+        let nodes = match variable {
+            Variable::Number => &self.number,
             Variable::Name => &self.name,
         };
-        match self.client.read(node).await {
-            Ok(value) => assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}"),
+        let values = match self.session.read(nodes).await {
+            Ok(values) => values,
             Err(status) => panic!("a read failed: {status:?}"),
+        };
+        for value in values {
+            match value {
+                Ok(value) => {
+                    assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}");
+                }
+                Err(status) => panic!("a read failed: {status:?}"),
+            }
         }
     }
 
     /// Closes the session and the connection of the client. A client that drops with no
     /// close holds one of the 4 sessions of its server until the session times out.
     pub async fn close(self) {
-        self.client.close().await;
+        self.session.close().await;
     }
 }
 
@@ -192,7 +200,7 @@ mod tests {
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
             let body = async |server: &Server| {
-                let mut client = server.connect().await;
+                let mut client = server.connect(3).await;
                 client.read(Variable::Number).await;
                 client.read(Variable::Name).await;
                 let debug = format!("{server:?} {client:?}");
@@ -225,7 +233,7 @@ mod tests {
                 let body = async |server: &Server| {
                     let mut ids = [session(&net, remote).await; 3];
                     for id in &mut ids[1..] {
-                        let client = server.connect().await;
+                        let client = server.connect(1).await;
                         *id = session(&net, remote).await;
                         client.close().await;
                     }

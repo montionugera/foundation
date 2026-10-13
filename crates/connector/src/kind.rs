@@ -251,6 +251,22 @@ impl<C> Context<C> {
         self.status.count(name)
     }
 
+    /// Shows `error` in the status of the running connector, as an attempt that
+    /// failed with the class `retry`. The status gives it within one second. The end
+    /// of the run replaces it, and a call after the run returned shows nothing.
+    pub fn error(&self, error: &dyn fmt::Display) {
+        self.status.show(error);
+    }
+
+    /// Clears the class and the text of the error in the status of the running
+    /// connector, within one second: the one that [`Context::error`] showed, or the
+    /// end of the last run. Until the first call of `error` or `clear_error` in a
+    /// run, the status keeps the end of the last run. A call after the run returned
+    /// shows nothing.
+    pub fn clear_error(&self) {
+        self.status.clear();
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {
@@ -384,6 +400,8 @@ const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
 const LARGE_FRAME: Code = Code::new("connector.large-frame");
+/// The fix of [`LARGE_FRAME`].
+const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
 /// The class of `error` of the open of a named reader.
 ///
@@ -472,10 +490,45 @@ impl From<hub::writer::Failure> for Error {
                 Self::Retry(Box::new(failure))
             }
             Failure::Home(Home::Large) => {
-                config_error(LARGE_FRAME, &failure, "Give the connector fewer channels")
+                config_error(LARGE_FRAME, &failure, FEWER_CHANNELS)
             }
             Failure::Home(Home::Resend) => {
                 panic!("invariant: a kind labels no frame resend")
+            }
+        }
+    }
+}
+
+/// The class of a failed draft of a frame of a run, for a kind that returns it with
+/// `?`: `Config` (`connector.large-frame`) for a pool `TooLarge`, because only a spec
+/// change or a kind that splits its frames fixes it, and `Retry` for a pool
+/// `Exhausted` and `Refused`.
+///
+/// # Panics
+///
+/// For `OutOfRange`, `Unordered`, and `IndexAbsent`, because a kind gives its series
+/// from its own code, and for `End`, which a draft never gives.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "each panic is a defect of the kind's series or an end that no draft gives"
+)]
+impl From<types::frame::Error> for Error {
+    fn from(error: types::frame::Error) -> Self {
+        use types::frame::Error as Frame;
+        match error {
+            Frame::Pool(
+                block::Error::Exhausted { .. } | block::Error::Refused { .. },
+            ) => Self::Retry(Box::new(error)),
+            Frame::Pool(block::Error::TooLarge { .. }) => {
+                config_error(LARGE_FRAME, &error, FEWER_CHANNELS)
+            }
+            Frame::OutOfRange { .. }
+            | Frame::Unordered { .. }
+            | Frame::IndexAbsent { .. } => {
+                panic!("invariant: the series follow the key set: {error}")
+            }
+            Frame::End(_) => {
+                panic!("invariant: a draft gives no end of another node: {error}")
             }
         }
     }
