@@ -1,7 +1,6 @@
 //! The exit tests of ONE NODE: one `foundation` node reads a simulated OPC UA server
 //! and pushes each sample to a simulated InfluxDB. Exit test 1 runs on the real binary
-//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb --
-//! --include-ignored`.
+//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb`.
 
 mod sim;
 
@@ -404,7 +403,10 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
     first_stored(&plant, &VARIABLES);
     let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
-    held(&plant, &reads);
+    for trace in held(&plant, &reads) {
+        let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
+        assert!(trace.served.iter().all(good), "{trace:?}");
+    }
 }
 
 #[test]
