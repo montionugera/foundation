@@ -72,7 +72,10 @@ fn read(offset: u32, channel: &str, node_id: &str) -> Block {
 
 /// The config of the connector at `address`, with `reads`.
 fn config(address: Value, reads: Vec<Block>) -> Document {
-    document(&[(0, "address", address), (10, "rate", string("10Hz"))], reads)
+    document(
+        &[(0, "address", address), (10, "rate", string("10Hz"))],
+        reads,
+    )
 }
 
 fn refused(code: &'static str, at: u32, message: &str, fix: &str) -> Diagnostic {
@@ -113,7 +116,10 @@ fn refuses_a_bad_address() {
             "the address \"http://plc:4840\" does not start with opc.tcp://",
         ),
         (string("opc.tcp://plc\0:4840"), "the address holds a NUL"),
-        (Value::Integer(4840), "an address is a string, not an integer"),
+        (
+            Value::Integer(4840),
+            "an address is a string, not an integer",
+        ),
         (
             Value::Reference("plc".parse().expect("a name")),
             "an address is a string, not a reference",
@@ -195,7 +201,10 @@ fn refuses_a_bad_node_id() {
             "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an index \
              to 65535, a number to 4294967295, and a name that is not empty",
         ),
-        (Value::Integer(1001), "a node ID is a string, not an integer"),
+        (
+            Value::Integer(1001),
+            "a node ID is a string, not an integer",
+        ),
     ] {
         let reads = vec![block(
             20,
@@ -215,7 +224,12 @@ fn refuses_a_bad_node_id() {
 fn refuses_a_read_with_a_bad_label_or_no_node_id() {
     let reads = vec![
         block(20, "read", &[], &[(30, "node_id", string("ns=3;i=1"))]),
-        block(40, "read", &["a", "b"], &[(50, "node_id", string("ns=3;i=2"))]),
+        block(
+            40,
+            "read",
+            &["a", "b"],
+            &[(50, "node_id", string("ns=3;i=2"))],
+        ),
         block(60, "read", &["plant spike"], &[]),
     ];
     let label = "Name the channel of the block, such as `read \"plant.spike\"`";
@@ -252,7 +266,12 @@ fn refuses_a_channel_in_two_reads() {
     let reads = vec![
         read(20, "plant.spike", "ns=3;s=SpikeData"),
         read(40, "plant.dip", "ns=3;i=1001"),
-        block(60, "read", &["plant.spike"], &[(70, "node_id", Value::Integer(1))]),
+        block(
+            60,
+            "read",
+            &["plant.spike"],
+            &[(70, "node_id", Value::Integer(1))],
+        ),
     ];
     let mut expected = refused(
         "opcua.repeated-channel",

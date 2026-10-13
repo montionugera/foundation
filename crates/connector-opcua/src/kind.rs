@@ -21,6 +21,10 @@ use crate::config::{self, Config, Read};
 use crate::ffi::Status;
 use crate::node::Node;
 
+#[cfg(test)]
+#[cfg(feature = "sim")]
+mod tests;
+
 const SAMPLE_TYPE: Code = Code::new("opcua.sample-type");
 const LARGE_READ: Code = Code::new("opcua.large-read");
 
@@ -49,7 +53,11 @@ impl kind::Kind for Kind {
         let counts = COUNTS.map(|count| count.parse().expect("a count is a name"));
         Ok(Channels {
             reader: None,
-            writes: config.reads.iter().map(|read| read.channel.clone()).collect(),
+            writes: config
+                .reads
+                .iter()
+                .map(|read| read.channel.clone())
+                .collect(),
             counts: counts.into(),
         })
     }
@@ -81,7 +89,11 @@ impl kind::Kind for Kind {
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let config = ctx.config();
-    let channels = config.reads.iter().map(|read| read.channel.clone()).collect();
+    let channels = config
+        .reads
+        .iter()
+        .map(|read| read.channel.clone())
+        .collect();
     let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
     let mut frames = Frames::new(&ctx, writer)?;
     let (clock, net) = (ctx.clock().clone(), ctx.net().clone());
@@ -105,7 +117,9 @@ async fn read(
 ) -> Result<(), Error> {
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
-    let nodes = client.nodes(&nodes).map_err(|large| large_read(reads.len(), large))?;
+    let nodes = client
+        .nodes(&nodes)
+        .map_err(|large| large_read(reads.len(), large))?;
     let mut values = Vec::with_capacity(reads.len());
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
@@ -268,7 +282,9 @@ impl Frames {
         let fills = &*fills;
         let groups = || {
             let indexes = series.iter().map(|&(entry, _)| &fills[entry]);
-            indexes.filter(|fill| fill.read.is_none()).map(|fill| fill.group)
+            indexes
+                .filter(|fill| fill.read.is_none())
+                .map(|fill| fill.group)
         };
         let mut draft = match writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
@@ -305,7 +321,9 @@ impl Frames {
                 Outcome::Refused {
                     refusal: refusal @ (Refusal::Expired | Refusal::Codec { .. }),
                     ..
-                } => panic!("the home refuses a frame with no lease in raw form: {refusal}"),
+                } => panic!(
+                    "the home refuses a frame with no lease in raw form: {refusal}"
+                ),
             }
         }
         applied.add(wrote);
@@ -403,7 +421,10 @@ fn large_read(nodes: usize, Large { bytes, most }: Large) -> Error {
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 enum Failure {
-    Connect { address: String, status: Status },
+    Connect {
+        address: String,
+        status: Status,
+    },
     Read(Status),
     Value {
         channel: Name,
@@ -423,11 +444,7 @@ impl fmt::Display for Failure {
                 channel,
                 node,
                 status,
-            } => write!(
-                f,
-                "the node {node} of `{channel}` gives {}",
-                status.name()
-            ),
+            } => write!(f, "the node {node} of `{channel}` gives {}", status.name()),
         }
     }
 }

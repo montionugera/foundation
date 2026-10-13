@@ -110,7 +110,8 @@ fn address(value: &Value) -> Result<String, Diagnostic> {
 fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
     const OF: &str = "the `read` block";
     let blocks = config.blocks.iter();
-    let blocks: Vec<&Block> = blocks.filter(|block| &*block.keyword == "read").collect();
+    let blocks: Vec<&Block> =
+        blocks.filter(|block| &*block.keyword == "read").collect();
     if blocks.is_empty() {
         diagnostics.push(Diagnostic::new(
             NO_READ,
@@ -172,7 +173,8 @@ fn node(value: &Value) -> Result<Node, Diagnostic> {
             value.kind.noun()
         )));
     };
-    text.parse().map_err(|error: crate::node::Error| refused(error.to_string()))
+    text.parse()
+        .map_err(|error: crate::node::Error| refused(error.to_string()))
 }
 
 /// The diagnostic of a `read` block of `channel` after the block `first` of it.

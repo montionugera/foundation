@@ -467,6 +467,7 @@ version = "0.0.0"
 dependencies = [
  "block",
  "cc",
+ "codec",
  "connector",
  "connector-opcua",
  "counting",
@@ -476,6 +477,7 @@ dependencies = [
  "hub",
  "proptest",
  "sim",
+ "spec",
  "types",
 ]
 

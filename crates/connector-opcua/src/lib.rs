@@ -17,7 +17,10 @@ mod event;
 #[cfg(feature = "open62541")]
 #[cfg_attr(
     not(feature = "sim"),
-    expect(dead_code, reason = "only `bench` and `fuzz` use the codec of open62541")
+    expect(
+        dead_code,
+        reason = "only `bench` and `fuzz` use the codec of open62541"
+    )
 )]
 mod ffi;
 #[cfg(feature = "sim")]
