@@ -9,14 +9,19 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
-  writes the `text()` of the reply, as it does for `plan` (`laptop.architect`, 2026-10-13T08:24:06Z,
+  writes the `text()` of the reply, as it does for `plan` (`laptop.architect`,
+  2026-10-13T08:24:06Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442056, and
   `laptop.architect-2`, 2026-10-13T08:24:09Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842). With `--json`, it writes the JSON of the reply, as it does for `plan`. `status` has no entry in the operation table, as `plan` and `apply` have none, and #2530 adds its MCP tool (`laptop.architect-2`, 2026-10-13T08:31:04Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758, items 1 and 3, which
-  supersede "read-only in the operation table" of item 1 and "is a variant of
-  `Response`" of item 2 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; approved by `laptop.architect`, 2026-10-13T08:39:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842). With
+  `--json`, it writes the JSON of the reply, as it does for `plan`. `status` has no
+  entry in the operation table, as `plan` and `apply` have none, and #2530 adds its MCP
+  tool (`laptop.architect-2`, 2026-10-13T08:31:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758, items 1
+  and 3, which supersede "read-only in the operation table" of item 1 and "is a variant
+  of `Response`" of item 2 of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; approved
+  by `laptop.architect`, 2026-10-13T08:39:51Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141698090). The MCP
   tool later gives the same value, with no change to the operation, the type, or the
   reply. The connectors are each connector of the spec in use whose `node` is this node,
