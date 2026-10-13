@@ -11,3 +11,5 @@
   `docs/decisions/` also runs `architecture`, and the `review` check fails one that does
   not name it (the director,
   https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591).
+  Amended (2026-10-13, REVIEW ROUNDS): after round 3, no round runs but one that does
+  not count, and a fix of a defect has only its test and CI.
