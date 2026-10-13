@@ -1,8 +1,8 @@
 //! Tests of `Mesh::serve`. Node 2 writes raw streams to node 1 over two transports,
 //! and node 1 serves each with its mesh.
 
+use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
-use transport::{Class, Code};
 
 use super::*;
 
@@ -150,7 +150,10 @@ fn raft(message: raft::Message) -> Vec<u8> {
 }
 
 fn propose(id: u8) -> Vec<u8> {
-    Message::Propose { change: home(id) }.encode()
+    Message::Propose {
+        change: home_to(id),
+    }
+    .encode()
 }
 
 /// The mesh of node 1 as the lone voter, once it leads, with the position of its
@@ -162,10 +165,10 @@ async fn leader(
 ) -> (Mesh, Position) {
     let config = Config {
         pool,
-        ..config(node, tasks, 1, &[1, 2], &[1])
+        ..config(node, tasks, 1, &[1, 2], &[1]).await
     };
     let mesh = Mesh::start(config).await.unwrap();
-    let first = lead(&mesh, &node.clock(), home(1)).await;
+    let first = lead(&mesh, &node.clock(), home_to(1)).await;
     (mesh, first)
 }
 
@@ -223,7 +226,7 @@ fn serve_stops_a_one_way_stream_at_the_first_message_that_the_group_refuses() {
     for (members, from, refused, error) in cases {
         let (served, finished) = run(
             move |node, tasks, incoming| async move {
-                let config = config(&node, &tasks, 1, members, &IDS);
+                let config = config(&node, &tasks, 1, members, &IDS).await;
                 let mesh = Mesh::start(config).await.unwrap();
                 let served = mesh.serve(public(from), incoming).await;
                 // The group did not see the heartbeat after the refused message:
@@ -319,7 +322,8 @@ fn serve_stops_at_a_vote_under_the_key_of_a_join_that_a_step_replaced() {
                 .await;
             let served = mesh.serve(public(3), incoming).await;
             node.clock().sleep(HALF).await;
-            assert_eq!(term(&mesh), unapplied::later());
+            let later = unapplied::later();
+            assert_eq!(probe_term(&mesh, 3, later).await, later);
             served
         },
         |peer| async move {
@@ -340,10 +344,7 @@ fn serve_stops_at_a_vote_under_the_key_of_a_join_that_a_step_replaced() {
 
 #[test]
 fn serve_stops_a_one_way_stream_at_a_message_that_it_does_not_carry() {
-    let at = Position {
-        term: Term(1),
-        index: 1,
-    };
+    let at = common::at(1, 1);
     let cases = [
         vec![0xff],
         Vec::new(),
@@ -381,7 +382,7 @@ fn serve_drops_a_message_that_the_pool_has_no_block_for_and_goes_on() {
             let pool = small_pool();
             let config = Config {
                 pool: Rc::clone(&pool),
-                ..config(&node, &tasks, 1, &IDS, &IDS)
+                ..config(&node, &tasks, 1, &IDS, &IDS).await
             };
             let mesh = Mesh::start(config).await.unwrap();
             let held = fill(&pool);
@@ -466,7 +467,7 @@ fn serve_stops_a_one_way_stream_when_the_group_stopped() {
         |node, tasks, incoming| async move {
             let (mesh, _) = leader(&node, &tasks, create_pool()).await;
             let stop = Error::Stopped(fail_sync(&node));
-            assert_eq!(mesh.propose(home(4)).await, Err(stop.clone()));
+            assert_eq!(mesh.propose(home_to(4)).await, Err(stop.clone()));
             (mesh.serve(public(2), incoming).await, stop)
         },
         |peer| async move {
@@ -572,7 +573,7 @@ fn serve_gives_the_cause_when_the_peer_stopped_the_reply_half() {
         |node, tasks, incoming| async move {
             let (mesh, first) = leader(&node, &tasks, create_pool()).await;
             let served = mesh.serve(public(1), incoming).await;
-            let next = mesh.propose(home(5)).await;
+            let next = mesh.propose(home_to(5)).await;
             (served, next, first)
         },
         |peer| async move {
@@ -615,7 +616,7 @@ fn serve_refuses_a_proposal_of_a_peer_that_is_no_voter() {
             let (mesh, first) = leader(&node, &tasks, create_pool()).await;
             let served = mesh.serve(public(2), incoming).await;
             // The group did not see the change.
-            assert_eq!(mesh.propose(home(4)).await, Ok(after(first, 1)));
+            assert_eq!(mesh.propose(home_to(4)).await, Ok(after(first, 1)));
             served
         },
         |peer| async move { stopped(peer, &[propose(3)]).await },
@@ -632,14 +633,14 @@ fn serve_refuses_a_proposal_while_a_write_of_the_log_waits_for_a_block() {
             let pool = small_pool();
             let (mesh, first) = leader(&node, &tasks, Rc::clone(&pool)).await;
             let held = fill(&pool);
-            let mut local = pin!(mesh.propose(home(4)));
+            let mut local = pin!(mesh.propose(home_to(4)));
             assert!(now(local.as_mut()).await.is_pending());
             node.clock().sleep(TICK).await;
             let served = mesh.serve(public(1), incoming).await;
             drop(held);
             assert_eq!(local.await, Ok(after(first, 1)));
             // The group did not see the change.
-            assert_eq!(mesh.propose(home(5)).await, Ok(after(first, 2)));
+            assert_eq!(mesh.propose(home_to(5)).await, Ok(after(first, 2)));
             served
         },
         |peer| async move { stopped(peer, &[propose(3)]).await },
@@ -665,7 +666,7 @@ async fn serve_then_propose(
     let clock = node.clock();
     let serve = pin!(mesh.serve(public(1), incoming));
     let served = within(&clock, seconds(30), serve).await;
-    let later = within(&clock, seconds(30), pin!(mesh.propose(home(4)))).await;
+    let later = within(&clock, seconds(30), pin!(mesh.propose(home_to(4)))).await;
     (served, later, first)
 }
 
@@ -733,7 +734,7 @@ fn serve_drops_the_block_of_the_proposal_before_the_group_writes() {
 fn serve_gives_no_answer_when_the_pool_has_no_block_for_it() {
     let ((served, taken, later, first), seen) = run(
         |node, tasks, incoming| async move {
-            let budget = block::Config { budget: 1 << 20 };
+            let budget = block::Config::new(1 << 20).expect("the budget fits");
             let (memory, switch) = Scarce::new(budget.reservation());
             let pool = Rc::new(Pool::new(budget, memory));
             let (mesh, first) = leader(&node, &tasks, pool).await;
@@ -743,7 +744,7 @@ fn serve_gives_no_answer_when_the_pool_has_no_block_for_it() {
             let served = mesh.serve(public(1), incoming).await;
             switch.allow();
             let taken = watch.next().await;
-            (served, taken, mesh.propose(home(4)).await, first)
+            (served, taken, mesh.propose(home_to(4)).await, first)
         },
         |peer| async move { stopped(peer, &[propose(3)]).await },
     );
@@ -774,7 +775,7 @@ fn serve_gives_no_code_of_the_mesh_when_the_group_stops() {
                 fail_sync(&node);
                 let served = mesh.serve(public(1), incoming).await;
                 drop(mesh);
-                let config = config(&node, &tasks, 1, &[1, 2], &[1]);
+                let config = config(&node, &tasks, 1, &[1, 2], &[1]).await;
                 let mesh = Mesh::open(config).await.unwrap();
                 let mut watch = mesh.watch(INDEX);
                 assert_eq!(watch.next().await, Ok(None));
@@ -796,10 +797,7 @@ fn serve_gives_no_code_of_the_mesh_when_the_group_stops() {
 // `serve` does not tell a stop before the proposal from a stop in its write.
 #[test]
 fn serve_gives_no_code_of_the_mesh_when_the_group_stopped_before_the_proposal() {
-    let at = Position {
-        term: Term(5),
-        index: 1,
-    };
+    let at = common::at(5, 1);
     let (served, seen) = run(
         move |node, tasks, incoming| async move {
             let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
@@ -833,7 +831,7 @@ fn serve_stops_a_two_way_stream_that_does_not_start_with_a_proposal() {
             |node, tasks, incoming| async move {
                 let (mesh, first) = leader(&node, &tasks, create_pool()).await;
                 let served = mesh.serve(public(1), incoming).await;
-                assert_eq!(mesh.propose(home(4)).await, Ok(after(first, 1)));
+                assert_eq!(mesh.propose(home_to(4)).await, Ok(after(first, 1)));
                 served
             },
             |peer| async move { stopped(peer, &[bytes, propose(3)]).await },
@@ -870,7 +868,7 @@ fn serve_stops_a_two_way_stream_at_a_second_message() {
             let (mesh, first) = leader(&node, &tasks, create_pool()).await;
             let served = mesh.serve(public(1), incoming).await;
             // The group did not see the second change.
-            assert_eq!(mesh.propose(home(5)).await, Ok(after(first, 2)));
+            assert_eq!(mesh.propose(home_to(5)).await, Ok(after(first, 2)));
             (served, first)
         },
         |peer| async move {

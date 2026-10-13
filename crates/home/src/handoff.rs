@@ -1,18 +1,20 @@
 //! The handoff entry of an index. Its body names the writer that holds control of the
 //! index from the entry's place in the index log.
 
+use std::num::NonZeroU8;
 use std::str;
 
 use block::Block;
-use buffer::{Entry, Layout};
+use buffer::{Buffer, Entry, Layout};
 use control::{Handoff, Writer};
 use types::authority::Authority;
-use types::frame::{Path, key_set};
+use types::channel::{self, Slot};
+use types::frame::Path;
 use types::name::Name;
 use types::time::Stamp;
 
 /// The buffer tag of a handoff entry.
-const TAG: u8 = 1;
+const TAG: NonZeroU8 = NonZeroU8::MIN;
 
 /// The most bytes in the body of a handoff: the authority and the longest subject.
 pub(crate) const MAX_BYTES: usize = 1 + Name::MAX_BYTES;
@@ -21,9 +23,9 @@ const _: () = assert!(
     "a handoff fits one entry of any ring"
 );
 
-/// The buffer entry that records `handoff` on the live path of `index` at seq `first`,
-/// at mesh time `stored_at`. Its body is a block from `pool`, or no part when no
-/// writer holds control.
+/// The buffer entry that records `handoff` on the live path of the index `index` at
+/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`,
+/// or no part when no writer holds control.
 ///
 /// # Errors
 ///
@@ -31,19 +33,20 @@ const _: () = assert!(
 pub(crate) fn entry(
     pool: &block::Pool,
     handoff: Handoff<'_>,
-    index: &key_set::Entry,
+    index: channel::Key,
+    slot: Slot,
     first: u64,
     stored_at: Stamp,
 ) -> Result<Entry, block::Error> {
     Ok(Entry {
-        index: index.key,
-        slot: index.slot,
+        index,
+        slot,
         path: Path::Live,
         first,
         len: 0,
         stored_at,
         last: None,
-        tag: TAG,
+        tag: TAG.get(),
         parts: body(pool, handoff)?.into(),
     })
 }
@@ -68,6 +71,27 @@ fn body(
     Ok(Some(block.freeze()))
 }
 
+/// The holder that the newest durable handoff of each index in `buffer` names, with
+/// the index's slot, in no order. An index whose newest handoff names no holder is
+/// absent.
+///
+/// # Errors
+///
+/// The error of [`Buffer::newest`].
+///
+/// # Panics
+///
+/// When a handoff does not decode, as [`read`] says.
+pub(crate) async fn newest(
+    buffer: &Buffer,
+) -> Result<Vec<(Slot, Writer)>, buffer::Error> {
+    let found = buffer.newest(Path::Live, TAG).await?;
+    let holders = found
+        .into_iter()
+        .filter_map(|(slot, stored)| Some((slot, read(&stored.bytes)?)));
+    Ok(holders.collect())
+}
+
 /// The holder that `body`, the bytes of a handoff record, names, or `None` when no
 /// writer holds control.
 ///
@@ -75,11 +99,7 @@ fn body(
 ///
 /// If the subject is not a valid name. Bytes from another node must be checked before
 /// they reach `read`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "recovery (#275) is the first user")
-)]
-pub(crate) fn read(body: &[u8]) -> Option<Writer> {
+fn read(body: &[u8]) -> Option<Writer> {
     let (&authority, subject) = body.split_first()?;
     let subject = str::from_utf8(subject)
         .unwrap_or_else(|error| panic!("the handoff subject is not UTF-8: {error}"));
@@ -95,11 +115,9 @@ pub(crate) fn read(body: &[u8]) -> Option<Writer> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use types::channel::Slot;
-    use types::frame::key_set::Group;
 
     use super::*;
-    use crate::common::{create_interner, create_pool, key};
+    use crate::common::{create_pool, key};
 
     fn writer(subject: &str, authority: u8) -> Writer {
         Writer {
@@ -111,15 +129,6 @@ mod tests {
     mod entry {
         use super::*;
 
-        /// The index entry of slot 4 in a key set of its own.
-        fn index() -> key_set::Entry {
-            let set = create_interner().intern(&[Group {
-                index: key(Slot::new(4)),
-                data: &[],
-            }]);
-            set.entries()[0]
-        }
-
         #[test]
         fn records_the_holder_on_the_live_path_at_first() {
             let holder = writer("plant.pump-1", 7);
@@ -128,7 +137,8 @@ mod tests {
             let entry = entry(
                 &create_pool(4096),
                 Handoff { to: Some(&holder) },
-                &index(),
+                key(Slot::new(4)),
+                Slot::new(4),
                 12,
                 stored_at,
             )
@@ -150,7 +160,8 @@ mod tests {
             let entry = entry(
                 &create_pool(4096),
                 Handoff { to: None },
-                &index(),
+                key(Slot::new(4)),
+                Slot::new(4),
                 12,
                 Stamp::from_nanos(9),
             )

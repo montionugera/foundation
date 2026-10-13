@@ -5,12 +5,11 @@
 
 use std::fmt;
 
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use raft::{Body, Claim, Message, Raft, Ready, Signature};
-use types::node::{self, PrivateKey, PublicKey};
+use types::ed25519::{Pair, PrivateKey, PublicKey};
+use types::node;
 
 use crate::bytes::{put_grant, put_key, put_keys, put_position};
-use crate::ed25519;
 
 const GRANT: &[u8] = b"foundation/grant/1";
 const CHANGE: &[u8] = b"foundation/voters/1";
@@ -18,7 +17,7 @@ const CHANGE: &[u8] = b"foundation/voters/1";
 /// Signs this node's claims with its node key.
 pub(crate) struct Signer {
     key: node::Key,
-    pair: Ed25519KeyPair,
+    pair: Pair,
 }
 
 impl Signer {
@@ -26,13 +25,8 @@ impl Signer {
     pub(crate) fn new(key: node::Key, private: &PrivateKey) -> Self {
         Self {
             key,
-            pair: ed25519::pair(private),
+            pair: Pair::new(private),
         }
-    }
-
-    /// Whether `public` checks the claims that this signer signs.
-    pub(crate) fn owns(&self, public: PublicKey) -> bool {
-        self.pair.public_key().as_ref() == public.to_bytes()
     }
 
     /// Signs each grant and change in `ready` that has no signature, before the
@@ -49,7 +43,7 @@ impl Signer {
                 self.key,
                 "invariant: each claim of another node arrives signed"
             );
-            Signature(ed25519::sign(&self.pair, &statement(claim)))
+            Signature(self.pair.sign(&statement(claim)))
         });
     }
 }
@@ -178,7 +172,7 @@ fn verify(
 fn holds(public: PublicKey, claim: &Claim<'_>, signature: Option<Signature>) -> bool {
     let Signature(bytes) =
         signature.expect("invariant: decode gives each claim a signature");
-    ed25519::holds(public, &statement(claim), &bytes)
+    public.verify(&statement(claim), &bytes).is_ok()
 }
 
 /// Why a claim in a message does not hold.
@@ -390,10 +384,7 @@ mod tests {
     // term after that.
     fn two_links() -> Message {
         let mut message = chained_in(Term(TERM.0 + 2));
-        let next = Position {
-            term: Term(TERM.0 + 1),
-            index: 3,
-        };
+        let next = common::at(TERM.0 + 1, 3);
         let pair = Voters {
             incoming: [key(1), key(2)].into(),
             outgoing: BTreeSet::new(),
@@ -404,7 +395,7 @@ mod tests {
         };
         let change = |leader, at, voters, voted| {
             let Data::Voters(change) =
-                common::change_voted(leader, at, voters, voted).data
+                common::voters_entry_voted(leader, at, voters, voted).data
             else {
                 unreachable!()
             };
@@ -533,10 +524,7 @@ mod tests {
         };
         let claim = Claim::Change {
             leader: key(3),
-            at: Position {
-                term: Term(7),
-                index: 5,
-            },
+            at: common::at(7, 5),
             voters: &voters,
         };
         assert_eq!(statement(&claim), expected);
@@ -551,10 +539,7 @@ mod tests {
     }
 
     fn written() -> Position {
-        Position {
-            term: TERM,
-            index: 2,
-        }
+        common::at(TERM.0, 2)
     }
 
     fn signed_change() -> Change {
@@ -563,7 +548,8 @@ mod tests {
 
     // The change to `voters` that leader 1 wrote at `written`, signed.
     fn signed_change_to(voters: Voters) -> Change {
-        let Data::Voters(change) = common::change(1, written(), voters).data else {
+        let Data::Voters(change) = common::voters_entry(1, written(), voters).data
+        else {
             unreachable!()
         };
         change
@@ -616,10 +602,7 @@ mod tests {
         let signature = signed_change().signature;
         let members = members(&[1, 2, 3]);
         let joint = joint();
-        let later = Position {
-            index: 3,
-            ..written()
-        };
+        let later = common::at(TERM.0, 3);
         let left = Voters {
             outgoing: BTreeSet::new(),
             ..joint.clone()
@@ -867,26 +850,25 @@ mod tests {
 
     // A change of `leader` at `at` to voters 1, 2 and 3, with a signed vote of
     // each of `voted` that is not the leader.
-    fn change_voted(leader: u8, at: Position, voted: &[u8]) -> raft::Entry {
+    fn three_voters_entry(leader: u8, at: Position, voted: &[u8]) -> raft::Entry {
         let three = Voters {
             incoming: [key(1), key(2), key(3)].into(),
             outgoing: BTreeSet::new(),
         };
-        common::change_voted(leader, at, three, voted)
+        common::voters_entry_voted(leader, at, three, voted)
     }
 
     // An append from leader 2 of `[bytes, change voted by 1, 2 and 3, change voted
     // by 2, 3 and 4, bytes]` at indexes 1 to 4 of `TERM`.
     fn run() -> Message {
-        let at = |index| Position { term: TERM, index };
         let bytes = |index| raft::Entry {
-            at: at(index),
+            at: common::at(TERM.0, index),
             data: Data::Bytes(index.to_le_bytes().to_vec()),
         };
         let entries = vec![
             bytes(1),
-            change_voted(2, at(2), &[1, 2, 3]),
-            change_voted(2, at(3), &[2, 3, 4]),
+            three_voters_entry(2, common::at(TERM.0, 2), &[1, 2, 3]),
+            three_voters_entry(2, common::at(TERM.0, 3), &[2, 3, 4]),
             bytes(4),
         ];
         let append = Body::Append {
@@ -931,11 +913,7 @@ mod tests {
         let Body::Append { entries, .. } = &mut message.body else {
             unreachable!()
         };
-        let at = Position {
-            term: TERM,
-            index: 3,
-        };
-        entries[2] = change_voted(4, at, &[1, 2, 3]);
+        entries[2] = three_voters_entry(4, common::at(TERM.0, 3), &[1, 2, 3]);
         assert_eq!(checked(&mut message, members(&[1, 2, 3])), Ok(()));
         assert_eq!(run_entries(&message), &run_entries(&run())[..2]);
     }

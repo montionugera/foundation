@@ -1,0 +1,717 @@
+- **OPEN62541 SOURCE (#435)** We copy the upstream source files of open62541, not the
+  amalgamation: the amalgamation adds the POSIX clock and event loop even with
+  `UA_ARCHITECTURE=none`. The 3 global clock functions give a fixed time. That is
+  acceptable only with a closed list of the (file, enclosing function) pairs that may
+  call one; a list per file would pass a new call in a listed file. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
+  2026-10-08 02:27 UTC). A test of `connector-opcua` names the function of each clock
+  key of `FUNCTION_SYMBOLS` and fails when its reason becomes false. For example,
+  `shim.c` fails the build with `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust
+  or `shim.c` names a security policy, so a client has only the policy `None`, and
+  `encryptUserIdentityTokenEcc` needs an ECC policy. Approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6094588326,
+  2026-10-10 06:19 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6099193878,
+  2026-10-10 15:39 UTC). The sentence "A test of `connector-opcua` names the function of
+  each clock key of `FUNCTION_SYMBOLS` and fails when its reason becomes false.":
+  approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6102856606,
+  2026-10-10 22:28 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103121782,
+  2026-10-10 23:02 UTC). The copy goes in `patches/open62541/`, and the `build.rs` of
+  `connector-opcua` reads its `sources.txt`. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057244538,
+  2026-10-08 09:50 UTC). `cargo xtask open62541 <tag>` makes the copy. Each file from
+  the release is byte for byte the file at the tag. Every other file (`src_generated/`,
+  `sources.txt`, `flags.txt`, `VERSION`) is the output of that command alone, never
+  edited by hand. Our change edits only release files. `cargo xtask open62541` is the
+  clock check. It builds the copy from its own files with `-g -O0` and reads the call
+  relocations against the closed list. It fails on a call outside the list, a listed
+  pair with no call, a clock address in any section that is not code, each
+  `DW_TAG_inlined_subroutine`, and a header outside the copy. It runs on the staged
+  copy before `<tag>` replaces anything, and on the committed copy with no tag. A test
+  in `cargo test -p xtask` runs it on the committed copy. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057554572,
+  2026-10-08 10:08 UTC). PR 2 of #435 adds that test with the copy. Approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058025302,
+  2026-10-08 10:37 UTC). #1860 makes CI run it on a PR that changes only `patches/`.
+  The check reads each undefined symbol of an object that a relocation in that object
+  names (`nm -u` and `objdump -r`) and fails on each symbol outside the copy that is not
+  on a closed list, with the file and the symbol. `SYMBOLS` admits a symbol for any
+  file. Each other reference needs its key in `FUNCTION_SYMBOLS`. Each entry has its
+  reason. A symbol goes in `SYMBOLS` only when it reads no clock, file, network,
+  randomness, or process state. A symbol is outside the copy when no object exports it:
+  a `static` function of one file does not hide a call of the OS function of its name
+  from another. A key of `FUNCTION_SYMBOLS` with no reference fails, so a file that the
+  build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
+  `connector-opcua`, which lists the outside symbols of the production build. A header
+  list is not a check: a listed header can include another (`pthread.h` includes
+  `time.h`). So the check refuses no system header, and each header that the copy
+  includes must be in the copy or in a system directory as `cc` finds it. Lost: a header
+  list, and a deny list of OS symbols, which passes a call that it does not name.
+  Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375,
+  2026-10-08 13:31 UTC). Supersedes the closed list of system headers of
+  https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058446715. The
+  sentences "`SYMBOLS` admits a symbol for any file. Each other reference needs its key
+  in `FUNCTION_SYMBOLS`." and "A key of `FUNCTION_SYMBOLS` with no reference fails, so a
+  file that the build leaves out loses its keys.": changed by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099491752,
+  2026-10-10 16:07 UTC). `SYMBOLS` holds memory and string functions, the 5 constructors
+  that `shim.c` defines to abort, and one exception that reads process state: the
+  allocator, whose addresses the OS places at random, so no result of the copy may
+  depend on an address. On x86-64 the assembler makes `_GLOBAL_OFFSET_TABLE_` undefined
+  in each object that reads the table, with no relocation, so only a reference that the
+  C makes counts. The check builds with no stack protector, so the compiler adds no
+  reference to its random canary, and a reference that the C makes fails. Approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC). A reference is an undefined symbol that a relocation names, and
+  it is outside the copy when no object exports it: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6093780083,
+  2026-10-10 04:30 UTC). When `SYMBOLS` does not admit a reference in a function, in any
+  file, and it is not the address of a clock, the check keys it by (file, function,
+  symbol, access), read from `objdump -dr` as the clock check reads a call. The function
+  is the whole label of the function symbol, such as `parse.0` for a nested function,
+  and the access is a call or an address. So a listed symbol in a new function of a file
+  fails, and so does the address of a listed symbol that its function only calls. A
+  function that has the address of a listed name is that listed function: a weak alias
+  gives one function two names. An empty listed function before a new one gives the new
+  one its address only with no `-ffunction-sections`. That is an edit made to hide, and
+  review of each copy PR covers it. The function at the address of a listed name:
+  decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). `FUNCTION_SYMBOLS` lists these keys, the clock calls among
+  them. A reference from outside a function fails when `SYMBOLS` does not admit it.
+  Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094336509,
+  2026-10-10 05:46 UTC). The whole label and the access: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6094746609,
+  2026-10-10 06:40 UTC). It refines the (file, enclosing function) list of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367 by symbol
+  and access. A key may name a symbol that is not a clock, with its reason. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC). Supersedes the (file, symbol) pairs of
+  https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. The text
+  from "When `SYMBOLS` does not admit" to here, less the three sentences from "A
+  function that has the address of a listed name" that `laptop.architect-2` decided on
+  2026-10-11: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099166264,
+  2026-10-10 15:36 UTC); approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6099229278,
+  2026-10-10 15:42 UTC). The check fails on every reference to a clock function that is
+  not a call, also one in code. A call relocation counts as a call only in a section
+  that `objdump -d` disassembles. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058446715,
+  2026-10-08 11:03 UTC). Supersedes the clock address rule of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057554572. The
+  check stands against a clock reference that the compiler makes from C in the copy,
+  from a new tag or from our patch. It does not stand against an edit made to hide
+  from it, such as assembly that stores a function's address: review of each copy PR
+  covers that. The check reads each symbol name from the text of `nm` and `objdump`, and
+  `objdump` does not show each name exactly: `g+0x1` is a name, or `g` with an addend.
+  So the check fails on each symbol whose name holds a character other than an ASCII
+  letter, a digit, `_`, `.`, or `$`. A name that holds a newline reads as two names in
+  `nm`, so this rule does not see it. No C identifier gives such a name: it is an edit
+  made to hide, and review of each copy PR covers it. Lost: a second tool and a second
+  parser (`readelf -sW`) for that one name. The symbol name rule: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). The copy compiles with `-fno-dollars-in-identifiers`, a line of
+  `flags.txt`, so the connector and the check read `$` in the same way and no C
+  identifier gives a function a name that holds `$`: on aarch64, `objdump` gives no
+  function header to a function named `$x` or `$d`, as it gives none to a mapping
+  symbol, and in a section that holds another function, the code of such a function
+  reads as code of the function before it. `cc` reads a macro name only up to its `$`,
+  in the two builds alike. The symbol name rule still admits `$`, because each mapping
+  symbol holds one. Lost: the extent of each function from the symbol table, a second
+  parser for a name that no file of the copy has. Lost: the flag in the check alone,
+  with which the two builds read `#define X$ 1` in two ways. `cargo xtask open62541`
+  writes that line after the flags of the release, and the check fails on a `flags.txt`
+  without it. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106749302,
+  2026-10-11 07:37 UTC). The words "read `$` in the same way" and "no C identifier gives
+  a function": stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC). A `#line` directive or a line marker in a copy file fails the
+  check, because it moves the file that the include check reads. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1848#issuecomment-6058103514,
+  2026-10-08 10:42 UTC). A builtin or an intrinsic that reads a clock or randomness,
+  such as `__rdtsc()`, makes no symbol and no relocation, and a new tag can add it as
+  honest C. So the check reads each instruction of `objdump -d` and fails on each
+  mnemonic outside a closed list for the architecture of the build, with the file, the
+  function, and the mnemonic. A move of a system register (`mrs`, `msr`) is keyed by its
+  register too. The key of an x86 instruction keeps each prefix that `objdump -d` shows
+  as a word before the mnemonic (`rep stos`, `notrack jmp`), so such a prefix has its
+  own entry. A prefix that `objdump` shows in an operand, such as the segment of
+  `fs:0x0`, is not in the key. The prefix rule: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6105970028,
+  2026-10-11 05:48 UTC). Which prefix the key keeps: stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6106559609,
+  2026-10-11 07:12 UTC). An entry goes in the list only when its instruction reads
+  registers, flags, and memory, and no other state. A system register that the processor
+  or the OS fills, such as a counter (`cntvct_el0`) or a random number (`rndr`), is
+  other state. One exception is the thread pointer, which the thread-local state of the
+  copy needs, and which is an address, as those of the allocator are: `mrs tpidr_el0` on
+  aarch64, and on x86-64 a memory operand through `fs`, which the key does not keep. The
+  check does not see what the memory that an instruction reads holds. So a read at a
+  fixed place from the thread pointer passes on the two architectures. On x86-64 with
+  glibc, the stack guard is at such a place (`fs:0x28`). From C that names no address, a
+  compiler makes such a read only for a thread-local variable and, on x86-64 with glibc,
+  for the stack protector, which the check builds without. A read of another place from
+  the thread pointer in the C of the copy is an edit made to hide, and review of each
+  copy PR covers it. Lost: a key that keeps the segment (`mov fs:`). The thread-local
+  state of the copy needs its entry, which then admits each place from the thread
+  pointer, as `mrs tpidr_el0` does. Lost: a key by the place (`fs:0x28`), a deny list of
+  the places of one libc. The entry rule and the thread pointer: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107930295,
+  2026-10-11 10:10 UTC, for the sentences on a fixed place,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522, 2026-10-11
+  10:30 UTC, and, for the sentence on a system register,
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108643437, 2026-10-11
+  11:41 UTC). Supersedes the entry rule ("only when it reads no clock, randomness, file,
+  network, or process state") of
+  https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499. Lost: a
+  deny list of the instructions that read a clock or randomness, which passes one that
+  it does not name, such as one of a later extension. The closed list, the key of `mrs`
+  and `msr`, and this "Lost": decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2232#issuecomment-6103788499,
+  2026-10-11 00:32 UTC). No flag of the upstream build is lost with no error. Decided by
+  `laptop.director`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060613260,
+  2026-10-08 13:10 UTC). `cargo xtask open62541` puts each flag of a compile in
+  `flags.txt` (`-D`, `-I`, `-std`, and `CODE_FLAGS`, the flags that change the code) or
+  in `LEFT_OUT`, a closed list with the reason of each, and fails on any other flag.
+  `build.rs` and the check both read `flags.txt`, so the check reads objects compiled
+  with each flag of `flags.txt`, as the objects of the connector are. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849,
+  2026-10-08 13:31 UTC). The words "each flag of `flags.txt`, as the objects of the
+  connector are": approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108089522,
+  2026-10-11 10:30 UTC). The `UA_ARCH_HEADER` of the allocator below and the sanitizer
+  flags below are the only flags that `build.rs` names outside `flags.txt`. The `cc`
+  crate also gives each compile of the connector flags from the profile and the target
+  of the Rust build, such as the optimization level, `-fPIC`, and `-g`. It adds the
+  `CFLAGS` of the environment too. The check takes none of these flags from `build.rs`
+  or from the `cc` crate. It adds its own `-g -O0` and `-fno-stack-protector` (above),
+  and no other flag that changes the code. So the two builds differ in the macros that a
+  flag of one build alone changes, such as `__OPTIMIZE__`, `__PIE__`, and
+  `_FORTIFY_SOURCE`. Until #2381, the check does not read code that a file of the copy
+  puts under such a macro. The two builds also differ in macros that no flag makes, such
+  as `__FILE__` and `__clang__`. The check names each source `./` and its path in the
+  copy, and `build.rs` names it by an absolute path. The check compiles only with GCC.
+  `clang` compiles the connector when the `cc` crate picks it, and always with the
+  address sanitizer or under `cfg(fuzzing)` (below). Until #2381, the check does not
+  read code that only the connector build compiles for the value of such a macro. The
+  two builds also differ with no macro. The check compiles at `-O0`, where
+  `__builtin_constant_p` of a local that holds a constant is 0. A release build of the
+  connector compiles at `-O3`, where it is 1. Until #2381, the check does not read code
+  that only the connector build compiles from the same preprocessed text. These
+  sentences: stated by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6107095861,
+  2026-10-11 08:23 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108238957, 2026-10-11
+  10:49 UTC, for the flags of the `cc` crate and of the check, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6108737600, 2026-10-11
+  11:53 UTC, for the difference with no macro, and
+  https://github.com/synnaxlabs/foundation/pull/2336#issuecomment-6109104654, 2026-10-11
+  12:38 UTC, for the macros that no flag makes and the words "that holds a constant"). A
+  `-W` flag with no `,` is a warning, which changes no code, so `collect` leaves it out
+  by that pattern, not by name. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061473044,
+  2026-10-08 13:57 UTC) and `laptop.director`
+  (https://github.com/synnaxlabs/foundation/pull/1893#issuecomment-6061540779,
+  2026-10-08 14:00 UTC). Supersedes, for `-W` flags, the closed list of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060613260 and of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6060989849
+  (`laptop.director`,
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6064080980,
+  2026-10-08 16:10 UTC).
+  Our change makes the random state `UA_rng` of `src/util/ua_util.c` one per thread
+  (`UA_THREAD_LOCAL`), so a draw on one thread does not move the state of another.
+  Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050889018,
+  2026-10-08 02:24 UTC). A test in `cargo test -p xtask` links the objects of the
+  check with a C driver in `xtask/`: the main thread sets the start value 1, joins a
+  thread that sets 2 and draws, then draws, and its values must equal those of a
+  thread that sets 1 alone. The driver defines each clock function to call `abort()`,
+  and the test asserts its exact output. The end-to-end check of PR 4 of #435 covers
+  the production build. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6059441203,
+  2026-10-08 12:03 UTC). A draw on a thread with no start value aborts
+  (https://github.com/synnaxlabs/foundation/pull/1909#issuecomment-6064798117,
+  2026-10-08 16:51 UTC). Nothing in the library sets a start value, also in
+  production. So `connector-opcua` (PR 4 of #435) sets the start value
+  with `UA_random_seed_deterministic`, taken from the randomness of `env`, and never
+  calls `UA_random_seed`, which reads the clock. It does so on each thread before that
+  thread calls open62541, and runs each server and each client on one thread. Its
+  test server sets the start value of the test at start, and its end-to-end check
+  asserts the same run for the same value. A state for each `UA_Server` and
+  `UA_Client` lost: the draw functions and the security policy plugins take no
+  server, so each call site changes, and LOCAL PATCHES does that work again at each
+  release. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1906#issuecomment-6063691059,
+  2026-10-08 15:49 UTC).
+  The generator is PCG32 (`UA_ENABLE_DETERMINISTIC_RNG`), which a peer can predict from
+  a few of its values. Foundation code takes no nonce, key, or session token from
+  `UA_UInt32_random` or `UA_Guid_random`. The copy does so in two places: the nonces of
+  the security policy None, which protect nothing, and the session authentication token
+  of its server, which only the test server of `connector-opcua` runs. Before Foundation
+  builds a security policy that encrypts or an OPC UA server, that work takes each
+  nonce, key, and token from a cryptographic source, and its PR records the source here.
+  Decided by `laptop.architect-2`, 2026-10-09 13:10 UTC
+  (https://github.com/synnaxlabs/foundation/pull/1997#issuecomment-6081545452).
+  A second change of `src/util/ua_util.c` keeps a flag for each thread, which
+  `UA_random_seed` and `UA_random_seed_deterministic` set, and `UA_UInt32_random` and
+  `UA_Guid_random` call `abort()` on a thread with no start value. The C driver then
+  calls each of the two draws on a thread with none, and the test asserts the abort
+  and its exact output. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1909#issuecomment-6064798117,
+  2026-10-08 16:51 UTC). Supersedes the record text "each thread with none draws the
+  same fixed values", which cited
+  https://github.com/synnaxlabs/foundation/pull/1906#issuecomment-6063691059. The
+  line of `UA_random_seed` that sets the flag has no test: no path of our build
+  reaches it, and a test needs a driver whose clock does not abort. Approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6065760073,
+  2026-10-08 17:47 UTC). This change and its driver test ship in a PR of their own,
+  apart from the connector code (same comment).
+  The feature `open62541` of `connector-opcua` compiles the copy and `src/shim.c`
+  with `cc`. `shim.c` defines the 8 symbols that the copy leaves undefined: the 3
+  clock functions give 0, and the 5 POSIX constructors print their name and abort,
+  since our config always has an event loop. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
+  2026-10-08 02:27 UTC). The test server is in `src/server.c`, which only the feature
+  `sim` compiles, and a test fails when the Rust outside tests or another `.c` or `.h`
+  file of `src/` names an identifier that starts with `UA_Server`, or `shim_server_new`
+  or `UA_random_seed`. So no production code reaches `setDefaultConfig`,
+  `interruptServer`, or `UA_random_seed`. Lost: a smaller claim for that clock key,
+  which no test then checks. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2309#issuecomment-6103245041,
+  2026-10-10 23:18 UTC). The test stands against honest code. A name split by a line
+  splice or a string continuation has no honest use, so review covers it. Lost: a scan
+  on the tokens of rustc and of the C preprocessor. It adds a Rust parser and a
+  preprocessor run to a test, for edits that review sees. Also lost: a fix of the
+  scan for each case, because each of three fixes let in a new case. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6104162271,
+  2026-10-11 01:23 UTC). A test asserts the pragmas of `shim.c` and `server.c` after
+  the preprocessor. It stands against honest code. A `#line` directive or a line marker
+  in `shim.c` or `server.c` has no honest use, since both files are written by hand,
+  so review covers it, and the `#line` rule of the copy check does not apply to them.
+  If one is ever generated, that rule applies to it. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1947#issuecomment-6067031461,
+  2026-10-08 19:03 UTC; the line marker:
+  https://github.com/synnaxlabs/foundation/pull/1947#issuecomment-6067179092,
+  2026-10-08 19:12 UTC). The pragma test and the `#line` rule for `server.c`:
+  approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
+  2026-10-11 00:41 UTC).
+  The copy also holds `arch/common/timer.c` and `timer.h`, which the build with
+  `UA_ARCHITECTURE=none` does not compile. `cargo xtask open62541` takes them from a
+  closed list of extra release files, with the reason of each, and compiles them with
+  the flags of `flags.txt`. The event loop of `connector-opcua` holds a `UA_Timer` and
+  gives it the time of `env`. Lost: timers in Rust, a copy of library code that already
+  takes the time as an input. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6065760073,
+  2026-10-08 17:47 UTC; the release path,
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6066098798,
+  2026-10-08 18:08 UTC).
+  The copy, `shim.c`, and `server.c` allocate through the global allocator of the
+  binary. `src/alloc.h` is the `UA_ARCH_HEADER` of both builds: it declares the 4
+  functions of `src/alloc.rs` and defines `UA_malloc`, `UA_calloc`, `UA_realloc`, and
+  `UA_free` as them, before `config.h` sets the libc calls as the defaults. They keep
+  the C contract on `std::alloc`: a failure gives NULL and never panics, `malloc(0)`
+  and `realloc(p, 0)` give a unique pointer that is not NULL, and each pointer is
+  aligned to 16. No pointer crosses between the libc allocator and these: the objects
+  of the copy, `shim.c`, and `server.c` call no libc function that gives or takes a
+  heap pointer. A crypto library that a later PR links keeps its own allocator. So the
+  counting allocator of a test or benchmark binary counts C too. The copy check
+  compiles without `alloc.h`. A test reads the archive that `build.rs` makes with it,
+  and fails on each symbol outside the copy, `shim.c`, and `server.c` that its closed
+  list does not hold. The list holds no clock function and no libc function that
+  gives or takes a heap pointer. Lost: `UA_ENABLE_MALLOC_SINGLETON` (a global),
+  `--wrap=malloc` (`std::alloc` calls `malloc`, so it recurses), and 4 `-D` flags (a
+  define gives no prototype, and C99 needs one). Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067206932,
+  2026-10-08 19:13 UTC; the header:
+  https://github.com/synnaxlabs/foundation/pull/1981#issuecomment-6067771921,
+  2026-10-08 19:46 UTC). The exception for `UA_ARCH_HEADER` in the flags passage
+  above, the copy check without `alloc.h`, and the test of the archive: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1981#issuecomment-6068060133,
+  2026-10-08 20:04 UTC, and at 1a593331:
+  https://github.com/synnaxlabs/foundation/pull/1981#issuecomment-6069664332,
+  2026-10-08 21:46 UTC, and the list for 64-bit Arm at 586e8089:
+  https://github.com/synnaxlabs/foundation/pull/1981#issuecomment-6069858320,
+  2026-10-08 22:00 UTC).
+  The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
+  2026-10-11 00:41 UTC).
+  `build.rs` gives both builds the sanitizers of the Rust build. With
+  `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
+  -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
+  `-fsanitize=fuzzer-no-link`. With either, a compiler that is not clang gives way to
+  `clang`, since rustc links the LLVM runtimes. The `function` check is off because the
+  copy calls functions through a generic type by design (`ZIP_FUNCTIONS`, the
+  `UA_Callback` casts). With a sanitizer other than `address` and `leak`, `build.rs`
+  fails: the C has no MSan or TSan instrumentation, so MSan reports false errors and
+  TSan misses the C. Lost: a Rust MSan or TSan run of this crate (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/2165#issuecomment-6088153688, 2026-10-09
+  19:51 UTC). Under `cfg(asan)`, the test of the archive also accepts the names of the
+  sanitizer runtimes (`__asan_`, `__ubsan_`, `__start_asan_globals`,
+  `__stop_asan_globals`). Lost: `CC` and `CFLAGS` set by each job, which gives two
+  places that pick the flags, and C with no coverage under a plain `cargo fuzz`; and an
+  ignore list for the copy in place of `-fno-sanitize=function`, because the one
+  indirect call of `shim.c` that the check reads runs the cast callbacks of the copy.
+  The flags follow `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050889018,
+  2026-10-08 02:24 UTC, and the `function` check, 2026-10-09 17:35 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2165#issuecomment-6086019787).
+  Supersedes, for the `function` check, the C flags of rule 1 of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050889018.
+  The copy builds with `UA_MULTITHREADING` 0, so it takes no `UA_LOCK` and links no
+  `pthread_mutex_*` symbol: each server and each client runs on one thread. Level 0
+  alone makes `UA_THREAD_LOCAL` empty, so two threads would share `UA_rng` and the
+  `static UA_THREAD_LOCAL` buffers of `src/client/ua_client.c` and the server files.
+  So our change of `src_generated/open62541/config.h` moves its thread-local block out
+  of `#if UA_MULTITHREADING >= 100`. The driver test of `UA_rng` is its positive
+  control, and the test of the archive fails on each `pthread_mutex_*` symbol: the
+  closed list holds none. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6068041912,
+  2026-10-08 20:03 UTC). Supersedes the note "a copy config with `UA_MULTITHREADING`
+  0 is the fix, as its own change" of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211.
+  It is the one file outside the release that we edit by hand. Supersedes, for this
+  block, "never edited by hand. Our change (PR 3, `UA_rng`) edits only release files"
+  of https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6057554572. This
+  text approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6069607884,
+  2026-10-08 21:42 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6069329793,
+  2026-10-08 21:24 UTC).
+  A second change of that file adds a branch that sets `UA_FLOAT_LITTLE_ENDIAN` when
+  the target is 64-bit Arm and `__BYTE_ORDER__` is little-endian. Clang defines no
+  `__FLOAT_WORD_ORDER__`, so without it a Clang build for 64-bit Arm encodes each float
+  on the slow path of `pack754`, which links the `long double` helpers. On 64-bit Arm
+  the float order is the byte order. The test of `connector-opcua` that preprocesses
+  `config.h` for each target is its check. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6071050895,
+  2026-10-08 23:26 UTC).
+  The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
+  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
+  `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
+  until #1992 gives it the wall time of the node through `hub`, in the PR of the first
+  connection with a security policy other than `None`. No connection that checks a
+  certificate runs before. Its drop runs the queued delayed callbacks in at most 64
+  passes, then aborts: a callback that queues itself at each pass is a defect. The
+  hidden module `bench`, behind the feature `sim`, gives the benchmark and the
+  allocation test a client on the loop. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
+  2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
+  (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
+  2026-10-08 20:22 UTC). `bench` also gives a connection manager with the test server
+  and its clients on the loop of the manager. Approved by `laptop.architect-2` at
+  `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
+  2026-10-10 03:05 UTC).
+  `bench::client` gives a test server on its own manager, and clients of it that each
+  have their own manager, as the kind uses them. Each new loop sets the start value of
+  the generator of its thread again, from the next value of its `Rng`, and each loop on
+  that thread then draws from that one generator. So the caller gives each loop on a
+  thread an `Rng` whose next value differs: after the same start value, the generator
+  gives the same numbers again. Approved by `laptop.architect-2` at `c1285785f`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520,
+  2026-10-11 17:47 UTC). Lost: a `Loop::new` that mixes the next value with a draw from
+  the generator, so that equal values give different numbers. A run then depends on what
+  its thread drew before, so the same value does not give the same run, and the first
+  loop of a thread has no start value to draw from. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111912275,
+  2026-10-11 17:51 UTC).
+  The logger of the loop writes each message of level warning and up to fd 2, and
+  drops the lower levels: it formats the line into a stack buffer of 512 bytes with
+  `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
+  `stdio` lock, and does not mix with a line of another thread. A longer line is cut,
+  not dropped. Trigger: when `node` has a log, the loop takes its sink from its
+  caller. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327,
+  2026-10-08 20:07 UTC;
+  https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
+  2026-10-08 20:22 UTC).
+  Two timers due at one time run in an order that no code may depend on. The timer
+  tree of the copy orders by due time, then by `id`, so that order is the order of
+  their adds and a simulation with such timers replays; open62541 ranks them by heap
+  address. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6073878926,
+  2026-10-09 03:49 UTC). The batch search of the copy goes in the order of the tree,
+  so whether a current-time timer batches does not depend on addresses (approved by
+  `laptop.architect-2`, 2026-10-09T05:27:21Z,
+  https://github.com/synnaxlabs/foundation/pull/2106#issuecomment-6074900634).
+  The TCP connection manager of `connector-opcua` is `connection::Manager`. It owns its
+  loop and its connections, on one thread, and takes the clock, network, and randomness
+  of `env` at `new`. `drive(run)` moves each connection on and polls `run` with the
+  context of the drive until `run` gives a value, so `run` can poll its own sources. One
+  drive of a manager runs at a time. A connect, a send, or a close from `run` or from
+  another task on that thread wakes the drive. After each `run`, also the one that gives
+  the value, the drive moves on each connection again after each connect, send, or close
+  on it that the `run` or such a step asks for, so it can also read and call open62541
+  back after that `run`, except the listen connection after an accept, which moves on
+  only after the next `run`. At most 256 sends wait on one connection: a send past them
+  closes the connection. open62541 allocates each send at most at the send buffer size
+  of its channel, so this bounds the memory of a connection at 256 send buffers. Sends
+  wait from one pass to the next, and longer while a stream is full, so an owner keeps
+  the chunks of its messages in flight at 256 or fewer. A client does so with its
+  requests in flight times the chunks of a message. A close reads and drops what the
+  peer sends while it writes what waits, closes its side, then reads until the peer
+  closes its side, so that the drop sends no reset. It drops the stream with a warning
+  10 s after the first close, so that a peer that reads slowly or never closes cannot
+  hold it. A manager reads each stream into its one buffer of 64 KiB, since open62541
+  copies what it keeps of a read. At most 100 streams close at once: a close past that
+  drops the stream that started to close first, before its close ends, with a warning.
+  So a server of the minimal config holds at most its 100 secure channels and 100
+  closing streams (#2262). Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2271#issuecomment-6099183891,
+  2026-10-10 15:38 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2271#issuecomment-6103268271,
+  2026-10-10 23:21 UTC). Supersedes
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6085824086 for the
+  memory of a manager, and
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086204518 for a
+  close past the cap, which ends before its drain. Each connect, read, write, or close
+  error gives a warning through the logger of the loop. The first close, or an error
+  before it, gives `CLOSING` once, at the next run of the loop. The wake of a send on
+  the thread of the drive: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6074418284,
+  2026-10-09 04:43 UTC). The rest, before the send bound and the context of `run`:
+  approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6085824086,
+  2026-10-09 17:22 UTC). The send bound and the context of `run`: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086043036,
+  2026-10-09 17:36 UTC). The sends between two passes, the passes before the value, and
+  the order of a close: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086204518,
+  2026-10-09 17:46 UTC). The moves of the woken connections alone before the value:
+  approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086285343,
+  2026-10-09 17:51 UTC). The moves after each `run`, and the `CLOSING` of the first
+  close or an error before it: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731,
+  2026-10-09 18:21 UTC). The listen connection after an accept, and one accept between
+  two runs of the loop: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2258#issuecomment-6099177882,
+  2026-10-10 15:37 UTC). Supersedes
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086285343 and
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
+  listen connection after an accept.
+  A server listens on the listener that `Manager::listening` binds on the socket address
+  that its owner gives, with the options of each stream of the manager. Each accepted
+  stream is a new connection that gets `ESTABLISHED`, with the context of the listen
+  connection at the accept. A drive accepts at most one stream between two runs of the
+  loop, as the POSIX manager accepts one for each run
+  (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541 needs that run: at
+  the limit, `purgeFirstChannelWithoutSession`
+  (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
+  is already `CLOSING`, on which `UA_SecureChannel_shutdown` does nothing, so each
+  accept before the run that gives that `CLOSING` adds one channel past the limit. A
+  burst of 150 accepts in one pass held 149 secure channels against the limit of 100 in
+  the `sim` test of #2255. After an accept, the drive moves the listen connection on
+  only after the next run, so an accept costs one move of the listen connection, not a
+  pass of the table. Lost: a wake and a full pass after each accept, so a burst of n
+  streams cost n passes; and the manager gives each queued `CLOSING` after an accept, so
+  it would run work of the loop, and a `CLOSING` would come by two paths. As the POSIX
+  manager does, the first `ESTABLISHED` of the listen gives `listen-address`, the host
+  of its `address` param, and `listen-port`, from which the server makes its discovery
+  URL, and that of an accepted connection gives `remote-address`. A listen with no
+  `address` gives the address of the listener as `listen-address`, where the POSIX
+  manager gives the host name. A listen on each address with no `address` gives neither,
+  so the server makes no discovery URL from it, since `env` has no host name. A listen
+  takes one `address` at most, because the manager has one listener: an open with more,
+  or with an `address` that is not a string, gives `BadInvalidArgument`. An accept error
+  closes the listen connection with a warning, also an error of one stream after which
+  the listener stays usable, because `env` gives both as `Error::Io`. This holds only
+  while the one server is the test server: before a server serves users, the manager
+  must keep listening after an error of one stream (#2005). Also before a server serves
+  users, a pass must move only the connections that are woken: a pass moves each
+  connection, about 63 to 107 ns each by the load of the host on the bench of #435 6b3,
+  on box2, an Intel Xeon Platinum 8488C. Deferred by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6092329880,
+  2026-10-10 01:45 UTC), with these words approved at `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
+  2026-10-10 03:05 UTC). Lost for the listener: the open of the listen binds it from its
+  parameters. `address` is a host name and `Net::listen` takes a socket address, so the
+  open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
+  lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
+  options hold only when the owner binds with the options of the manager. An owner that
+  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
+  until a listen open takes it, and `Server::start` makes the URL of its server from
+  that port. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
+  one constructor with an `Option<Listener>`, which a client gives as a literal `None`
+  (`docs/claude/rust.md`; `laptop.director`,
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089322178, 2026-10-09
+  21:10 UTC), and one with an enum argument, a new type that holds one value. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286,
+  2026-10-09 20:26 UTC). The two constructors: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505,
+  2026-10-09 21:12 UTC), after the ruling of `laptop.director`. Supersedes the one
+  constructor of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286. The bind
+  in `Manager::listening`: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
+  2026-10-10 03:15 UTC). Supersedes "the listener that its owner gives" of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286 and
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The
+  parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
+  (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
+  2026-10-09 21:25 UTC).
+  A server on the loop of a manager is `STOPPED` when its last connection closes after
+  `UA_Server_run_shutdown`. That close can queue a delayed callback on the server, such
+  as the removal of a session that is not activated, so its owner drives the loop until
+  no delayed callback waits, and panics if one still waits after 64 runs, as a loop free
+  does, or if the server is then not `STOPPED`. `event::Loop::delayed` gives whether one
+  waits. `UA_Server_delete` then frees the server and each session at once. Between that
+  drive and the delete, the owner calls nothing that queues a delayed callback on the
+  server, such as `UA_Server_addCertificates`: the next run of the loop would read the
+  freed server. The drive: approved by `laptop.architect-2` at `5ebf60ae2`
+  (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998,
+  2026-10-10 00:19 UTC). The drive until no delayed callback waits: approved by
+  `laptop.architect-2` at `c04ad0db3`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
+  2026-10-10 16:03 UTC). Supersedes the drive until nothing is due of
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998. The bound
+  of 64 runs: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6102906547,
+  2026-10-10 22:34 UTC). The delete and the calls between: approved by
+  `laptop.architect-2` at `1816b9c85`
+  (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6090016795,
+  2026-10-09 22:04 UTC). The panic in place of a drive until `STOPPED`: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093544897,
+  2026-10-10 04:00 UTC). Supersedes the drive until `STOPPED` of
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6091519998.
+  The one function that calls `UA_Server_run_shutdown`, does that drive, and
+  deletes the server, with no call between: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
+  2026-10-10 15:28 UTC), as `connection::Manager::close_server`. Supersedes the
+  `delete_server` sentence approved at `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338). That
+  function is `server::Server::close`, on a `server::Server` that owns the server:
+  approved by `laptop.architect-2` as a later step of 6c on #435
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
+  2026-10-10 03:15 UTC). It is behind `cfg(any(test, feature = "sim"))` until a
+  server that serves users calls it: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
+  2026-10-10 15:28 UTC), which moves to that function the cfg on `delete_server`
+  approved at `3b508e494`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
+  2026-10-10 03:05 UTC). `server::Server` holds the started test server.
+  `Server::start` is an `unsafe fn` whose caller deletes the server before its manager
+  drops, and it takes the port of the server from the listener of the manager.
+  `Server::close` panics before the stop when its manager does not hold the loop of
+  the server: approved by `laptop.architect-2` at `d6d834286`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6106770355,
+  2026-10-11 07:40 UTC). The `host` of `Server::start`, from which and the port it makes
+  the one server URL: approved by `laptop.architect-2` at `c9a61bcaf`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
+  2026-10-11 10:14 UTC). `host` is a `&CStr`, so `start` has no panic for a NUL: decided
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
+  2026-10-11 12:14 UTC). Supersedes `host: &str` of that comment. The one function:
+  asked by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089865399,
+  2026-10-09 21:51 UTC). The scans of the Rust outside tests in `link` count only the
+  code behind `test` or `feature = "sim"` as test code, and `open62541` stays a product
+  cfg: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099099141,
+  2026-10-10 15:28 UTC). The test of the `ua_server.c` patch stops and deletes its
+  server itself, because it checks `STOPPING` between the stop and the drive. That
+  exception: approved by `laptop.architect-2` at `c04ad0db3`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6099448516,
+  2026-10-10 16:03 UTC). The test of the panic at the bound deletes its server itself
+  after that panic, because `Server::close` panics before its delete, and the delayed
+  callbacks that still wait are those of the test, which do not read the server. That
+  exception: approved by `laptop.architect-2` at `08c753cbe`
+  (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6103350388,
+  2026-10-10 23:32 UTC). The test of a close through another manager stops and
+  deletes its server itself, because `Server::close` panics before its stop and takes
+  the server. That exception: approved by `laptop.architect-2` at `c9a61bcaf`
+  (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
+  2026-10-11 10:14 UTC).
+  A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
+  Its `close` first waits for the answer to a CreateSession in flight, or for its
+  request timeout. The server refuses a CloseSession sent before that answer, since it
+  has no session token, and when the answer then comes, open62541 activates the session,
+  which the server keeps after the channel closes. Then `close` sends a CloseSession
+  with `UA_Client_disconnectAsync` and drives its manager until the channel is closed,
+  so a close with a CreateSession in flight can take two request timeouts. A client that
+  lost its channel sends no CloseSession, so its session stays on the server until it
+  times out (https://github.com/synnaxlabs/foundation/issues/2400). The wait works
+  around `src/client/ua_client_connect.c` of open62541: `UA_Client_disconnectAsync`
+  (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
+  and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.
+  Lost: a patch of the copy that defers the CloseSession until the CreateSession answer.
+  It waits for the same answer, so the close ends no sooner, and it changes the session
+  state machine of open62541, where LOCAL PATCHES asks for a hand mutant of each line
+  that it changes. When a new release replaces the copy, check whether it still sends
+  that CloseSession, and remove the wait when it does not. The drop of a
+  `client::Client` calls `shim_client_free`, which stops the loop, then deletes the
+  client. On a stopped loop, open62541 refuses the synchronous CloseSession of the
+  delete and does not wait for the channel to close, so the delete sends no
+  CloseSession, and the session stays on the server until it times out. Since the drop
+  stops the whole loop, the loop of a client holds no other client or server. Before a
+  run returns, the kind closes its client with `close`. A drop is only for a run whose
+  future drops or that panics, because each session that a drop leaves holds one of the
+  sessions of its server until then. A read keeps its answer in the client, which
+  outlives the delete that calls the callback of each read in flight, and the callback
+  drops the answer of a request that is not the read in flight. Lost: a drop that sends
+  the CloseSession. A delete on a started loop sends it in a synchronous call, and that
+  call waits for an answer that only a drive of the manager reads. Proposed in
+  https://github.com/synnaxlabs/foundation/pull/2397. Approved by `laptop.architect-2`,
+  with the rule for the kind and the lost design as its texts
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6109221870,
+  2026-10-11 12:52 UTC). The wait for the CreateSession, its cause and bound, its lost
+  design, and the close of a client that lost its channel: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
+  2026-10-11 15:26 UTC).
+  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 16 first waits until one of them
+  ends. A read sends the timeout hint 0, so neither open62541 (2^32 - 1 ms, 49.7 days)
+  nor the server ends it, and it stays in flight until the server answers it or the
+  channel closes. An open62541 timeout ends a request on the client only, so the count
+  would not have the requests that the server still holds. The read gives `BadTimeout`
+  at the request timeout of the client, its wait included. When no read ends in that
+  wait, it gives `BadTooManyOperations`: the server holds 16 requests, and the client
+  sends no read until it answers one. The kind closes a client that gives it and
+  connects again. The bound is a constant from the sends of a connection, not from the
+  rate of reads, as only a server that holds requests fills it. A client sends and takes
+  at most 8 chunks in a message, and the test server sends at most 8, so the reads in
+  flight times the chunks of a message stay at 128, half of the 256 sends of a
+  connection. The other half is for the requests of open62541 itself. open62541 checks
+  the chunks of a message that it sends against its own count, not against the count of
+  the peer (`src/ua_securechannel.c`, line 392). Lost: a read whose future drops cancels
+  its request, since open62541 has no local remove, and `UA_Client_cancelByRequestId`
+  sends one more request, and the server still answers the read; a read past the bound
+  that fails at once, which fails reads that the late answer of a dropped read lets go
+  on; and a client that closes its channel when no read ends in the wait, which gives
+  the caller `BadConnectionClosed` and hides the cause. Proposed in
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6127422590. Approved
+  by `laptop.architect-2` at `8ab776da8`
+  (https://github.com/synnaxlabs/foundation/pull/2450#issuecomment-6128818932,
+  2026-10-12 16:59 UTC).

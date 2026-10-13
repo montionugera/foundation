@@ -1,24 +1,41 @@
 //! `get`, `apply`, and `diff` of `spec::tree` never panic on chunks from a peer. On a
 //! tree that a `diff` from the empty tree reads whole, that `diff` lists the entries
 //! in name order, `get` agrees with it on each name, and `apply` gives a tree whose
-//! entries are those entries with the changes.
+//! entries are those entries with the changes. `spec::region::definitions` gives the
+//! error of that `diff`, the first entry in name order that is not a definition, or
+//! the decoded entries exactly when `spec::region::tree` of them has the same root,
+//! with the chunks of that `diff` and no other.
 //!
 //! Input: a count of chunks, each a count of pieces, each a length, bytes, and a
-//! link; then changes to the end, each a length, a name, and a length and value, where
-//! a value length of 255 deletes. A link `k` above zero adds the digest of chunk
-//! `k - 1`, modulo the chunks built so far, where chunk 0 is the empty tree. A count
-//! past the end reads as zero; bytes past the end stop at the end.
+//! link. A length from `KEY` to `VALUE - 1` adds the entry key `p.a`, `p.b`, or
+//! `p.c` instead of bytes. A length of `VALUE` or more adds an index channel
+//! definition with its value length, so that a short input builds a tree that
+//! `definitions` reads. Then changes to the end, each a length, a name, and a length
+//! and value, where a value length of 255 deletes. A link `k` above zero adds the
+//! digest of chunk `k - 1`, modulo the chunks built so far, where chunk 0 is the
+//! empty tree. A count past the end reads as zero; bytes past the end stop at the
+//! end.
 
 #![no_main]
+#![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use libfuzzer_sys::fuzz_target;
+use spec::channel::{Channel, Kind};
+use spec::definition::Definition;
+use spec::region;
 use spec::tree::{self, Change, Chunks, Diff, Error};
+use types::channel::Key;
 use types::digest::Digest;
 use types::name::Name;
 
+/// The entries of a diff from the empty tree, and its chunks.
+type Whole = (Vec<(Name, Vec<u8>)>, Vec<Digest>);
+
 const DELETE: u8 = 255;
+const KEY: u8 = 250;
+const VALUE: u8 = 253;
 
 fuzz_target!(|input: &[u8]| {
     let mut input = input;
@@ -27,8 +44,23 @@ fuzz_target!(|input: &[u8]| {
     for _ in 0..byte(&mut input) {
         let mut chunk = Vec::new();
         for _ in 0..byte(&mut input) {
-            let len = byte(&mut input);
-            chunk.extend_from_slice(bytes(&mut input, len));
+            match byte(&mut input) {
+                len @ VALUE.. => {
+                    let at = u128::from(len - VALUE);
+                    let definition = Definition::Channel(Channel {
+                        key: Key::from_u128(at + 1),
+                        kind: Kind::Index {
+                            error: None,
+                            control: None,
+                        },
+                    });
+                    let value = definition.encode();
+                    chunk.push(u8::try_from(value.len()).expect("a short value"));
+                    chunk.extend(value);
+                }
+                len @ KEY.. => chunk.extend([3, b'p', b'.', b'a' + (len - KEY)]),
+                len => chunk.extend_from_slice(bytes(&mut input, len)),
+            }
             if let Some(link) = byte(&mut input).checked_sub(1) {
                 chunk.extend(roots[usize::from(link) % roots.len()].0);
             }
@@ -70,8 +102,8 @@ fn check(
     names: &BTreeSet<Name>,
     changes: &[Change],
 ) {
-    let whole =
-        tree::diff(chunks, tree::empty(), root).map(|diff| entries(root, &diff));
+    let whole = tree::diff(chunks, tree::empty(), root)
+        .map(|diff| (entries(root, &diff), diff.chunks));
     let got: Vec<_> = names
         .iter()
         .map(|name| tree::get(chunks, root, name).map(|value| value.map(Vec::from)))
@@ -84,11 +116,12 @@ fn check(
     {
         named(chunks, error);
     }
+    read(chunks, root, &whole);
     let applied = tree::apply(chunks, root, changes.iter().cloned());
     if let Err(error) = &applied {
         named(chunks, error);
     }
-    let Ok(whole) = whole else {
+    let Ok((whole, _)) = whole else {
         return;
     };
     let mut expected: BTreeMap<Name, Vec<u8>> = whole.into_iter().collect();
@@ -120,6 +153,64 @@ fn check(
         Ok(update.chunks),
         "the update does not list the chunks it made"
     );
+}
+
+/// `region::definitions` of the tree at `root`, where `whole` is its `diff` from the
+/// empty tree: its entries and its chunks.
+fn read(chunks: &Chunks, root: Digest, whole: &Result<Whole, Error>) {
+    match region::definitions(chunks, root) {
+        Ok((definitions, kept)) => {
+            let (entries, digests) = whole.as_ref().expect("a diff reads the tree");
+            assert_eq!(
+                definitions,
+                decoded(entries),
+                "definitions are not the decode"
+            );
+            let rebuilt = region::tree(&mut Chunks::default(), &definitions).root;
+            assert_eq!(rebuilt, root, "definitions read a tree of another root");
+            let mut tree = Chunks::default();
+            for &digest in digests {
+                tree.insert(chunks.get(digest).expect("a diff reads it").to_vec());
+            }
+            assert_eq!(kept, tree, "kept is not the chunks of the diff");
+        }
+        Err(region::Error::Tree(Error::Corrupt(at))) if at == root && whole.is_ok() => {
+            let (entries, _) = whole.as_ref().expect("a diff reads the tree");
+            let rebuilt = region::tree(&mut Chunks::default(), &decoded(entries)).root;
+            assert_ne!(rebuilt, root, "the tree of the definitions is refused");
+        }
+        Err(region::Error::Tree(error)) => {
+            assert_eq!(
+                whole.as_ref().err(),
+                Some(&error),
+                "not the error of a diff"
+            );
+        }
+        Err(region::Error::Definition { key, error }) => {
+            let (entries, _) = whole.as_ref().expect("a diff reads the tree");
+            let at = entries.partition_point(|(before, _)| *before < key);
+            let (found, bytes) = entries.get(at).expect("the value of the key");
+            assert_eq!(*found, key, "the key of the error is not in the tree");
+            assert_eq!(
+                Definition::decode(bytes),
+                Err(error),
+                "not the error of its key"
+            );
+            for (before, bytes) in &entries[..at] {
+                let decoded = Definition::decode(bytes);
+                assert!(decoded.is_ok(), "{before} before {key} is not a definition");
+            }
+        }
+    }
+}
+
+/// The definition of each entry, which each decodes.
+fn decoded(entries: &[(Name, Vec<u8>)]) -> BTreeMap<Name, Definition> {
+    let decode = |bytes| Definition::decode(bytes).expect("each value is a definition");
+    entries
+        .iter()
+        .map(|(key, bytes)| (key.clone(), decode(bytes)))
+        .collect()
 }
 
 /// The chunk an error names is absent for `Missing` and present for `Corrupt`. The

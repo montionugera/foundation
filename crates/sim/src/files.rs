@@ -75,6 +75,47 @@ impl Call {
             _ => None,
         }
     }
+
+    /// The calls in flight that a call of `path` waits for, if any.
+    fn scope(&self, path: &Path) -> Option<Scope> {
+        match self {
+            Self::Open(Mode::Write | Mode::Create { .. })
+            | Self::Remove
+            | Self::Unlink { .. } => Some(Scope::Path(disk::normal(path))),
+            Self::Rename { to, .. } => Some(Scope::Path(disk::normal(to))),
+            Self::List => Some(Scope::Dir(disk::normal(path))),
+            Self::Free => Some(Scope::Disk),
+            _ => None,
+        }
+    }
+}
+
+/// The calls of a node that a dropped future or handle left to run, which a call waits
+/// for. Its paths are normal.
+enum Scope {
+    /// The calls on a path whose file the call replaces, makes, or removes.
+    Path(PathBuf),
+    /// The calls on a path directly in a directory that the call lists.
+    Dir(PathBuf),
+    /// Every call.
+    Disk,
+}
+
+impl Scope {
+    /// Whether a call on `path`, which is normal, is in the scope.
+    fn covers(&self, path: &Path) -> bool {
+        match self {
+            Self::Path(on) => on == path,
+            Self::Dir(dir) => path.parent() == Some(dir),
+            Self::Disk => true,
+        }
+    }
+
+    /// Whether the scope also covers each remove through a handle whose future lives.
+    /// Only a call that replaces, makes, or removes a file waits for one.
+    fn live_removes(&self) -> bool {
+        matches!(self, Self::Path(_))
+    }
 }
 
 /// The error of `operation` on `path`, which failed by `cause`.
@@ -158,7 +199,7 @@ pub(crate) struct Files {
     done: BTreeMap<u64, (usize, Ended)>,
     /// The waker of each close that waits for the calls of its descriptor, by the key
     /// of its handle.
-    closes: BTreeMap<u64, Waker>,
+    closing: BTreeMap<u64, Waker>,
     rng: Rng,
     /// The last tick. A call's key is the tick of its start, a file or directory
     /// that it makes takes the same key, and a write takes a tick when it ends. One
@@ -177,7 +218,7 @@ impl Files {
             flights: BTreeMap::new(),
             queue: BTreeSet::new(),
             done: BTreeMap::new(),
-            closes: BTreeMap::new(),
+            closing: BTreeMap::new(),
             rng,
             tick: disk::ROOT,
             digest: DefaultHasher::new(),
@@ -205,13 +246,13 @@ impl Files {
         &mut self,
         now: Monotonic,
         node: usize,
-        path: &Path,
+        path: PathBuf,
         call: Call,
         held: Option<Held>,
     ) -> u64 {
         let key = self.tick();
         let delay = self.rng.below(DELAYS);
-        let fault = (node, disk::normal(path), call.operation());
+        let fault = (node, disk::normal(&path), call.operation());
         let fault = self.faults.iter().position(|aimed| *aimed == fault);
         let failed = fault.map(|at| self.faults.remove(at)).is_some();
         let disk = &mut self.disks[node];
@@ -223,11 +264,14 @@ impl Files {
                 before = disk.file(handle.inode).start_read(range, &mut self.rng);
             }
         }
-        let at = Monotonic(now.0.saturating_add(delay));
+        let mut at = Monotonic(now.0.saturating_add(delay));
+        if let Some(scope) = call.scope(&path) {
+            at = at.max(self.wait_end(node, &scope));
+        }
         self.queue.insert((at, key));
         let flight = Flight {
             node,
-            path: path.to_path_buf(),
+            path,
             call,
             held,
             failed,
@@ -237,6 +281,41 @@ impl Files {
         };
         self.flights.insert(key, flight);
         key
+    }
+
+    /// The time that a call of `node` in `scope` ends no earlier than: the end of the
+    /// last call in `scope` that a dropped future or handle left to run, or of a
+    /// remove through a handle, live or not, when the scope covers live removes, or
+    /// zero. A call without a handle is on its path. A call through a handle is on each
+    /// path that has named its file, and on the path of each dropped rename of the
+    /// file, so it stays on them after a rename or a remove.
+    fn wait_end(&self, node: usize, scope: &Scope) -> Monotonic {
+        let disk = &self.disks[node];
+        let pending: Vec<_> = (self.queue.iter().rev())
+            .map(|(at, key)| (*at, &self.flights[key]))
+            .filter(|(_, flight)| {
+                let unlink =
+                    matches!(flight.call, Call::Unlink { .. }) && scope.live_removes();
+                flight.node == node && (flight.dropped || unlink)
+            })
+            .collect();
+        let moved: BTreeSet<_> = (pending.iter())
+            .filter_map(|(_, flight)| match &flight.call {
+                Call::Rename { handle, to } if scope.covers(&disk::normal(to)) => {
+                    Some(handle.inode)
+                }
+                _ => None,
+            })
+            .collect();
+        (pending.iter())
+            .find(|(_, flight)| match flight.call.handle() {
+                Some(handle) => {
+                    moved.contains(&handle.inode)
+                        || disk.names(handle.inode).any(|name| scope.covers(name))
+                }
+                None => scope.covers(&disk::normal(&flight.path)),
+            })
+            .map_or(Monotonic::default(), |(at, _)| *at)
     }
 
     /// The true time at which the first call in flight ends.
@@ -264,7 +343,7 @@ impl Files {
                 (flight.node, flight.dropped, flight.waker.take());
             let kind = mem::discriminant(&flight.call);
             let close = flight.call.handle().map(|handle| handle.key);
-            wakers.extend(close.and_then(|key| self.closes.remove(&key)));
+            wakers.extend(close.and_then(|key| self.closing.remove(&key)));
             let ended = self.apply(key, flight);
             (due, key, kind, ended.result.is_ok()).hash(&mut self.digest);
             if dropped {
@@ -330,7 +409,7 @@ impl Files {
                 Ok(Done::Unit)
             }
             Call::Rename { handle, to } => {
-                disk.rename(handle.inode, &path, to).map(|()| Done::Unit)
+                disk.rename(*handle, &path, to).map(|()| Done::Unit)
             }
             Call::Unlink { handle } => {
                 disk.unlink(handle.inode, &path).map(|()| Done::Unit)
@@ -405,12 +484,15 @@ impl Files {
                 .expect("invariant: a queued call is in flight");
             flight.dropped = true;
             let close = flight.call.handle().map(|handle| handle.key);
-            closes.extend(close.and_then(|key| self.closes.remove(&key)));
+            closes.extend(close.and_then(|key| self.closing.remove(&key)));
             let kind = mem::discriminant(&flight.call);
-            let drawn = (matches!(flight.call, Call::Open(Mode::Create { .. }))
-                && !flight.failed
-                && self.disks[node].makes(&flight.path))
-            .then(|| match self.rng.below(2) {
+            let makes = match flight.call {
+                Call::Open(Mode::Create { len }) => {
+                    self.disks[node].makes(&flight.path, len)
+                }
+                _ => false,
+            };
+            let drawn = (makes && !flight.failed).then(|| match self.rng.below(2) {
                 0 => Cut::Whole,
                 _ => Cut::Empty,
             });
@@ -420,10 +502,13 @@ impl Files {
             // A power cut loses what a sync in flight would make durable.
             let synced = matches!(flight.call, Call::Sync { .. } | Call::SyncDir);
             let (ok, held) = if power && synced {
+                if let Some(handle) = flight.call.handle() {
+                    self.disks[node].release(handle);
+                }
                 (false, flight.held)
             } else {
                 let ended = self.apply(key, flight);
-                (ended.result.is_ok(), ended.held)
+                (ended.result.is_ok(), self.discard(node, ended))
             };
             (at, key, kind, drawn, ok).hash(&mut self.digest);
             orphans.extend(held);
@@ -454,14 +539,29 @@ impl Files {
         if calls.all(|held| held.key != handle.key) {
             return (Poll::Ready(()), Some(waker));
         }
-        (Poll::Pending, self.closes.insert(handle.key, waker))
+        (Poll::Pending, self.closing.insert(handle.key, waker))
+    }
+
+    /// The path of descriptor `handle` of `node` now, as its open or rename gave it.
+    pub(crate) fn path(&self, node: usize, handle: Handle) -> PathBuf {
+        self.disks[node].path(handle).to_path_buf()
+    }
+
+    /// Makes `handle`, which an open of `path` on `node` gave, a descriptor.
+    pub(crate) fn opened(&mut self, node: usize, handle: Handle, path: &Path) {
+        self.disks[node].opened(handle, path);
     }
 
     /// Closes descriptor `handle` of `node`. Returns the waker of its close, to drop
     /// after the lock is released.
-    pub(crate) fn release(&mut self, node: usize, handle: Handle) -> Option<Waker> {
-        self.disks[node].release(handle);
-        self.closes.remove(&handle.key)
+    pub(crate) fn close(&mut self, node: usize, handle: Handle) -> Option<Waker> {
+        self.disks[node].close(handle);
+        self.closing.remove(&handle.key)
+    }
+
+    /// The path of each descriptor that `node` closed, in order.
+    pub(crate) fn closes(&self, node: usize) -> Vec<PathBuf> {
+        self.disks[node].closes().to_vec()
     }
 }
 

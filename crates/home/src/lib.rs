@@ -17,6 +17,8 @@ pub mod reader;
 mod shard;
 mod split;
 mod stored;
+#[cfg(feature = "sim")]
+pub mod testing;
 pub mod writer;
 
 pub use shard::{Commit, Config, Error, Outcome, Shard};
@@ -33,7 +35,8 @@ pub enum Refusal {
     Expired,
     /// A stamp broke a rule.
     Order(order::Error),
-    /// A series does not fit the group's count.
+    /// `codec` refused a series: its bytes are not a series of its channel's type
+    /// with the group's count.
     Codec {
         /// The series' channel.
         channel: channel::Key,

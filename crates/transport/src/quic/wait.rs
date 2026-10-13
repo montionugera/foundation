@@ -162,12 +162,14 @@ impl Queue {
         !self.reads.is_empty()
     }
 
-    /// The counts up to `now`.
+    /// The counts of the reads up to `now`, with no budget waits: the endpoint counts
+    /// those.
     pub(super) fn status(&self, now: Monotonic) -> Status {
         let open = self.since.map_or(0, |since| (now - since).nanos());
         Status {
             waited: Span::from_nanos(self.waited.saturating_add(open)),
             refusals: self.refusals,
+            budget_waits: 0,
         }
     }
 
@@ -243,7 +245,8 @@ mod tests {
     }
 
     fn pool(budget: usize) -> Pool {
-        let config = Config { budget };
+        let budget = u64::try_from(budget).expect("a usize fits in a u64");
+        let config = Config::new(budget).expect("the budget fits");
         let memory = Heap::new(config.reservation());
         Pool::new(config, memory)
     }
@@ -424,7 +427,7 @@ mod tests {
 
     #[test]
     fn the_status_counts_the_time_a_read_waits_and_each_refused_take() {
-        let config = Config { budget: 1 << 16 };
+        let config = Config::new(1 << 16).expect("the budget fits");
         let (memory, switch) = Scarce::new(config.reservation());
         let pool = Pool::new(config, memory);
         let mut queue = Queue::default();
@@ -436,6 +439,7 @@ mod tests {
         let none = Status {
             waited: Span::ZERO,
             refusals: 0,
+            budget_waits: 0,
         };
         assert_eq!(queue.status(at(5)), none);
         switch.refuse();
@@ -445,6 +449,7 @@ mod tests {
         let status = Status {
             waited: millis(5),
             refusals: 2,
+            budget_waits: 0,
         };
         assert_eq!(queue.status(at(15)), status);
         switch.allow();
@@ -453,6 +458,7 @@ mod tests {
         let status = Status {
             waited: millis(20),
             refusals: 2,
+            budget_waits: 0,
         };
         assert_eq!(queue.status(at(40)), status);
         queue.wait(at(50), stream(0, 2), Class::Command, &waker);
@@ -460,6 +466,7 @@ mod tests {
         let status = Status {
             waited: millis(23),
             refusals: 2,
+            budget_waits: 0,
         };
         assert_eq!(queue.status(at(60)), status);
     }

@@ -8,10 +8,12 @@
     clippy::string_slice
 )]
 
+pub mod blob;
 pub mod clock;
 mod common;
 pub mod header;
 pub mod hub;
+pub mod session;
 
 /// The wire format version this node writes and reads. It covers every byte after the
 /// header, encoded series included.

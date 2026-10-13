@@ -4,27 +4,30 @@
 //! The commit task is not counted. The home's `woken` after a commit, which that task
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
-//! a depth it reached before. This binary has no test harness: the count covers each
-//! thread, and a harness allocates on its own thread at any time.
+//! a depth it reached before. An open of a reader of many channels copies no name.
+//! This binary has no test harness: the count covers each thread, and a harness
+//! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 #[path = "../common/mod.rs"]
 mod common;
-#[path = "../common/shard.rs"]
-mod shard;
+#[path = "../common/node.rs"]
+mod node;
 #[path = "../common/woken.rs"]
 mod woken;
 
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use common::{SETTLE, hub};
+use common::{SETTLE, hub, name, unnamed};
+use home::reader::Next;
+use home::reader::complete::Charge;
 use hub::Hub;
-use hub::reader::{Mode, Reader};
+use hub::reader::{self, Mode, Reader};
 use hub::writer::{self, Writer};
-use shard::name;
 use types::authority::Authority;
+use types::time::Span;
 use woken::Woken;
 
 #[global_allocator]
@@ -79,7 +82,7 @@ async fn five_latest(
 ) {
     let mut latests = vec![latest];
     for _ in 0..4 {
-        let latest = hub.reader(&[name("value")], Mode::Latest).await;
+        let latest = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         latests.push(latest.expect("opens"));
     }
     for latest in &mut latests[1..] {
@@ -109,7 +112,7 @@ async fn replaced(
 ) {
     let mut latests = Vec::new();
     for _ in 0..12 {
-        let latest = hub.reader(&[name("value")], Mode::Latest).await;
+        let latest = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         latests.push(latest.expect("opens"));
     }
     for latest in &mut latests {
@@ -129,7 +132,7 @@ async fn replaced(
         }
     }
     for latest in &mut latests {
-        let replaced = hub.reader(&[name("value")], Mode::Latest).await;
+        let replaced = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         *latest = replaced.expect("opens");
         read(latest);
     }
@@ -137,6 +140,46 @@ async fn replaced(
     let written = write(writer, now);
     let taken: u64 = latests.iter_mut().map(read).sum();
     assert_eq!((waited, written, taken), (0, 0, 0), "replaced");
+}
+
+/// Opens `config` on `hub`, with the allocations made while the open ran, not those of
+/// the other tasks while it waited.
+async fn open(
+    hub: &Hub,
+    node: &sim::node::Node,
+    config: reader::Config,
+) -> (Reader, u64) {
+    let mut open = pin!(hub.reader(config));
+    let mut context = Context::from_waker(Waker::noop());
+    let mut allocations = 0;
+    loop {
+        let (poll, made) = ALLOCATOR.count(|| open.as_mut().poll(&mut context));
+        allocations += made;
+        if let Poll::Ready(reader) = poll {
+            return (reader.expect("opens"), allocations);
+        }
+        node.clock().sleep(Span::MILLISECOND).await;
+    }
+}
+
+/// An open of a reader of many channels makes fewer allocations than it has channels,
+/// once the first open grew the state of its channels: it copies no name.
+fn open_of_a_reader_of_many_channels() {
+    const MANY: u64 = 1000;
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let more: Vec<_> = (0..MANY).map(|n| name(&format!("w.{n}"))).collect();
+        let hub = common::hub_in(&node, tasks, None, &more).await;
+        let _first = open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        let (_second, allocations) =
+            open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        assert!(
+            allocations < MANY,
+            "an open of {MANY} channels made {allocations} allocations"
+        );
+    })
+    .expect("the run ends");
 }
 
 /// Writes a frame, waits for its commit, and calls `woken`. Returns the number of keys
@@ -158,7 +201,7 @@ fn woken_of_a_reader_that_takes_each_frame() {
         for n in 0..20 {
             calls.push(commit(&mut woken).await);
             assert!(
-                woken.shard.take(woken.readers[0]).is_some(),
+                matches!(woken.shard.take(woken.readers[0]), Next::Frame(_)),
                 "frame {n} waits for the reader"
             );
         }
@@ -187,7 +230,12 @@ fn woken_of_a_reader_that_falls_behind_again() {
                 calls.push(commit(&mut woken).await);
             }
             let reader = woken.readers[0];
-            let taken = std::iter::from_fn(|| woken.shard.take(reader)).count();
+            let taken = std::iter::from_fn(|| match woken.shard.take(reader) {
+                Next::Frame(frame) => Some(frame),
+                Next::Empty => None,
+                Next::Behind => panic!("lag {lag}: the reader is behind"),
+            })
+            .count();
             assert_eq!(taken, DEPTH, "lag {lag}");
             lags.push(calls);
         }
@@ -205,6 +253,43 @@ fn woken_of_a_reader_that_falls_behind_again() {
     .expect("the run ends");
 }
 
+/// The home's `woken` with a reader that takes each frame and one whose credit covers
+/// one frame at a time: once a frame of the second waits for credit, as many frames
+/// wait for it as waited before, so the call allocates nothing.
+fn woken_of_a_reader_whose_frame_waits_for_credit() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let mut woken = Woken::new(&node, tasks, 1).await;
+        let slot = woken.set.entries()[woken.set.groups()[0]].slot;
+        let limited = woken.shard.open_complete(slot, 1, Charge::Whole);
+        let mut calls = Vec::new();
+        let mut spent = 0;
+        for n in 0..6 {
+            if n < 5 {
+                woken.shard.grant(limited, spent + 1);
+            }
+            calls.push(commit(&mut woken).await);
+            assert!(
+                matches!(woken.shard.take(woken.readers[0]), Next::Frame(_)),
+                "frame {n} waits for the reader"
+            );
+            if n < 5 {
+                let Next::Frame(frame) = woken.shard.take(limited.into()) else {
+                    panic!("frame {n} waits for the limited reader");
+                };
+                spent += frame.charge();
+            }
+        }
+        assert_eq!(
+            calls[1..],
+            [(2, 0), (2, 0), (2, 0), (2, 0), (1, 0)],
+            "(keys given, allocations) of each call after the first: {calls:?}"
+        );
+    })
+    .expect("the run ends");
+}
+
 fn main() {
     assert_eq!(
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
@@ -213,12 +298,14 @@ fn main() {
     );
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
+    woken_of_a_reader_whose_frame_waits_for_credit();
+    open_of_a_reader_of_many_channels();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
         let (hub, now) = hub(&node, tasks).await;
         let mut reader = hub
-            .reader(&[name("value")], Mode::Complete)
+            .reader(unnamed(&["value"], Mode::Complete))
             .await
             .expect("opens");
         let config = writer::Config {
@@ -229,15 +316,17 @@ fn main() {
         };
         let mut writer = hub.writer(config).await.expect("opens");
         let mut latest = hub
-            .reader(&[name("value")], Mode::Latest)
+            .reader(unnamed(&["value"], Mode::Latest))
             .await
             .expect("opens");
         for n in 0..WARM + COUNTED {
+            let stamped = ALLOCATOR.count(|| writer.now()).1;
             let written = write(&mut writer, now + n);
             node.clock().sleep(SETTLE).await;
             let read = read(&mut reader);
             if n >= WARM {
-                assert_eq!((written, read), (0, 0), "frame {n} allocated");
+                let counts = (stamped, written, read);
+                assert_eq!(counts, (0, 0, 0), "frame {n} allocated");
             }
         }
         let now = now + WARM + COUNTED;

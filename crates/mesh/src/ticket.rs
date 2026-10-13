@@ -2,8 +2,9 @@
 
 use std::fmt;
 
+use types::ed25519::{BadSignature, Pair, PrivateKey, PublicKey};
 use types::name::{Name, Prefix};
-use types::node::{self, PrivateKey, PublicKey};
+use types::node;
 use types::time::{Span, Stamp};
 
 use crate::bytes::{
@@ -11,7 +12,6 @@ use crate::bytes::{
     take_optional_span, take_stamp,
 };
 use crate::card;
-use crate::ed25519;
 
 const TAG: &[u8] = b"foundation/admission/1";
 
@@ -92,7 +92,7 @@ impl Ticket {
     /// The public half of the key pair: the key of the ticket's record.
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
-        ed25519::public(&ed25519::pair(&self.private_key))
+        self.private_key.public()
     }
 
     /// The prefix of the ticket's region.
@@ -111,7 +111,7 @@ impl Ticket {
     /// the card's node key, and the card's byte form.
     #[must_use]
     pub fn admission(&self, card: &card::Signed) -> [u8; 64] {
-        ed25519::sign(&ed25519::pair(&self.private_key), &statement(card))
+        Pair::new(&self.private_key).sign(&statement(card))
     }
 }
 
@@ -127,12 +127,9 @@ impl fmt::Debug for Ticket {
 /// The region's record of a ticket. Its key is `public_key`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
-    /// The public half of the ticket's key pair.
-    pub(crate) public_key: PublicKey,
-    /// What the ticket admits.
-    pub(crate) options: Options,
-    /// How many nodes the ticket admitted.
-    pub(crate) uses: u64,
+    public_key: PublicKey,
+    options: Options,
+    uses: u64,
 }
 
 impl Record {
@@ -145,26 +142,43 @@ impl Record {
         }
     }
 
-    /// Admits `card` with `admission` at mesh time `at`, and counts one use.
+    /// For a member that the ticket admits, the time offline after which the region
+    /// removes it, or `None` when it is not ephemeral.
+    pub(crate) const fn ephemeral(&self) -> Option<Span> {
+        self.options.ephemeral
+    }
+
+    /// How many nodes the ticket admitted.
+    #[cfg(test)]
+    pub(crate) const fn uses(&self) -> u64 {
+        self.uses
+    }
+
+    /// Counts one node that the ticket admitted, after [`Record::check`] passes. The
+    /// count saturates at [`u64::MAX`].
+    pub(crate) const fn count(&mut self) {
+        self.uses = self.uses.saturating_add(1);
+    }
+
+    /// Checks that the ticket admits `card` with `admission` at mesh time `at`.
     ///
     /// # Errors
     ///
     /// The first refusal that holds, in this order: [`Refused::Forged`],
-    /// [`Refused::Scope`], [`Refused::Expired`], and [`Refused::Used`]. A refusal
-    /// counts no use.
-    pub(crate) fn admit(
-        &mut self,
+    /// [`Refused::Scope`], [`Refused::Expired`], and [`Refused::Used`].
+    pub(crate) fn check(
+        &self,
         card: &card::Signed,
         admission: &[u8; 64],
         at: Stamp,
     ) -> Result<(), Refused> {
         let public_key = self.public_key;
-        if !ed25519::holds(public_key, &statement(card), admission) {
-            return Err(Refused::Forged {
+        public_key.verify(&statement(card), admission).map_err(
+            |_bad: BadSignature| Refused::Forged {
                 node: card.key(),
                 public_key,
-            });
-        }
+            },
+        )?;
         let name = &card.card().name;
         if !name.starts_with(&self.options.prefix) {
             return Err(Refused::Scope {
@@ -182,7 +196,6 @@ impl Record {
         if !self.options.reusable && self.uses > 0 {
             return Err(Refused::Used { public_key });
         }
-        self.uses = self.uses.saturating_add(1);
         Ok(())
     }
 }
@@ -263,19 +276,9 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::{key, private, public, signed, ticket, voter};
-
-    const EXPIRY: Stamp = Stamp::from_nanos(1_000);
-    const BEFORE_EXPIRY: Stamp = Stamp::from_nanos(999);
-
-    fn options(prefix: &str, reusable: bool) -> Options {
-        Options {
-            prefix: prefix.parse().unwrap(),
-            reusable,
-            expiry: EXPIRY,
-            ephemeral: None,
-        }
-    }
+    use crate::common::{
+        BEFORE_EXPIRY, EXPIRY, key, options, private, public, signed, ticket, voter,
+    };
 
     fn record(id: u8, reusable: bool) -> Record {
         Record::new(ticket(id).public_key(), options("plant.edge", reusable))
@@ -328,47 +331,53 @@ mod tests {
         statement.extend(key(3).as_u128().to_le_bytes());
         card.card().encode(&mut statement);
         let admission = ticket(7).admission(&card);
-        assert!(ed25519::holds(public(7), &statement, &admission));
+        assert_eq!(public(7).verify(&statement, &admission), Ok(()));
     }
 
     #[test]
     fn a_single_use_ticket_admits_one_node() {
         let mut record = record(7, false);
-        let (first, second) = (signed(3, "plant.edge.a"), signed(4, "plant.edge.b"));
-        let at = BEFORE_EXPIRY;
+        let card = signed(3, "plant.edge.a");
+        let admission = ticket(7).admission(&card);
+        for _ in 0..2 {
+            assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
+        }
+        record.count();
         assert_eq!(
-            record.admit(&first, &ticket(7).admission(&first), at),
-            Ok(())
-        );
-        assert_eq!(
-            record.admit(&second, &ticket(7).admission(&second), at),
+            record.check(&card, &admission, BEFORE_EXPIRY),
             Err(Refused::Used {
                 public_key: public(7)
             })
         );
-        // The count is region state, which every node must agree on.
-        assert_eq!(record.uses, 1);
     }
 
     #[test]
-    fn a_reusable_ticket_admits_each_node() {
+    fn a_reusable_ticket_admits_each_node_after_any_use() {
         let mut record = record(7, true);
-        for (id, name) in [(3, "plant.edge.a"), (4, "plant.edge.b")] {
-            let card = signed(id, name);
-            let admitted =
-                record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
-            assert_eq!(admitted, Ok(()));
-        }
-        // The count is region state, which every node must agree on.
-        assert_eq!(record.uses, 2);
+        record.uses = u64::MAX;
+        let card = signed(3, "plant.edge.a");
+        let admitted = record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
+        assert_eq!(admitted, Ok(()));
+    }
+
+    /// `check` reads the count only for a single-use ticket, which apply counts at
+    /// most once, so no caller sees a wrap.
+    #[test]
+    fn the_use_count_saturates() {
+        let mut record = record(7, true);
+        record.count();
+        assert_eq!(record.uses(), 1);
+        record.uses = u64::MAX;
+        record.count();
+        assert_eq!(record.uses(), u64::MAX);
     }
 
     #[test]
     fn an_admission_of_another_ticket_is_forged() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edge.a");
         assert_eq!(
-            record.admit(&card, &ticket(8).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(8).admission(&card), BEFORE_EXPIRY),
             Err(Refused::Forged {
                 node: key(3),
                 public_key: public(7)
@@ -378,11 +387,11 @@ mod tests {
 
     #[test]
     fn an_admission_of_another_card_is_forged() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let admission = ticket(7).admission(&signed(3, "plant.edge.a"));
         let other = signed(4, "plant.edge.a");
         assert_eq!(
-            record.admit(&other, &admission, BEFORE_EXPIRY),
+            record.check(&other, &admission, BEFORE_EXPIRY),
             Err(Refused::Forged {
                 node: key(4),
                 public_key: public(7)
@@ -392,10 +401,10 @@ mod tests {
 
     #[test]
     fn a_name_outside_the_prefix_is_out_of_scope() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edger");
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
             Err(Refused::Scope {
                 name: "plant.edger".parse().unwrap(),
                 prefix: "plant.edge".parse().unwrap()
@@ -404,18 +413,18 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_the_first_check_that_fails_and_counts_no_use() {
-        let mut record = record(7, false);
+    fn a_refusal_names_the_first_check_that_fails() {
+        let record = record(7, false);
         let outside = signed(3, "plant.edger");
         assert_eq!(
-            record.admit(&outside, &ticket(8).admission(&outside), EXPIRY),
+            record.check(&outside, &ticket(8).admission(&outside), EXPIRY),
             Err(Refused::Forged {
                 node: key(3),
                 public_key: public(7)
             })
         );
         assert_eq!(
-            record.admit(&outside, &ticket(7).admission(&outside), EXPIRY),
+            record.check(&outside, &ticket(7).admission(&outside), EXPIRY),
             Err(Refused::Scope {
                 name: "plant.edger".parse().unwrap(),
                 prefix: "plant.edge".parse().unwrap()
@@ -423,9 +432,9 @@ mod tests {
         );
         let inside = signed(4, "plant.edge.a");
         let admission = ticket(7).admission(&inside);
-        assert_eq!(record.admit(&inside, &admission, BEFORE_EXPIRY), Ok(()));
+        assert_eq!(record.check(&inside, &admission, BEFORE_EXPIRY), Ok(()));
         assert_eq!(
-            record.admit(&inside, &admission, EXPIRY),
+            record.check(&inside, &admission, EXPIRY),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -436,10 +445,10 @@ mod tests {
 
     #[test]
     fn a_ticket_admits_no_node_from_its_expiry() {
-        let mut record = record(7, false);
+        let record = record(7, false);
         let card = signed(3, "plant.edge.a");
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), EXPIRY),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -448,7 +457,7 @@ mod tests {
         );
         let after = Stamp::from_nanos(EXPIRY.nanos() + 1);
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), after),
+            record.check(&card, &ticket(7).admission(&card), after),
             Err(Refused::Expired {
                 public_key: public(7),
                 expiry: EXPIRY,
@@ -456,7 +465,7 @@ mod tests {
             })
         );
         assert_eq!(
-            record.admit(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
+            record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY),
             Ok(())
         );
     }
@@ -516,9 +525,9 @@ mod tests {
             let mut card = signed(node_id, "plant.edge.a").card().clone();
             card.version = version;
             let card = card::Signed::sign(key(node_id), card, &private(node_id));
-            let mut record = record(ticket_id, false);
+            let record = record(ticket_id, false);
             let admission = ticket(ticket_id).admission(&card);
-            prop_assert_eq!(record.admit(&card, &admission, BEFORE_EXPIRY), Ok(()));
+            prop_assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
         }
     }
 }

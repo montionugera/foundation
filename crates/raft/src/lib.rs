@@ -22,7 +22,7 @@ pub use config::{Config, Start};
 pub use log::{Change, Data, Entry};
 pub use machine::{Raft, Ready, Role};
 pub use message::{Answer, Body, Claim, Grant, Link, Message, Proof, Signature};
-pub use voters::Voters;
+pub use voters::{NoMajority, Voters};
 
 /// An election term. A term has at most one leader.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

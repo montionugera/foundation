@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -6,7 +8,9 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use types::name::Name;
 
+use crate::Start;
 use crate::error::Error;
 
 /// The facts that the CLI, the MCP tools, and the docs show for one operation.
@@ -52,11 +56,29 @@ struct Cli {
 enum Command {
     #[command(flatten)]
     Run(Request),
+    /// Start a node on a data directory, and run it until Ctrl-C.
+    Start(StartArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
     /// Print this help, or the help of one command.
     Help { command: Option<String> },
+}
+
+#[derive(clap::Args)]
+struct StartArgs {
+    /// The data directory of the node. The start makes it when it is not there, but
+    /// not its parents.
+    #[arg(long, default_value = "foundation-data")]
+    data: PathBuf,
+    /// The name of the node. The first start on a data directory needs it, and a later
+    /// start reads it from there.
+    #[arg(long)]
+    name: Option<Name>,
+    /// The socket address of the node's one port. Port 0 takes a free port. The default
+    /// takes no session from another host.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    listen: SocketAddr,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -92,6 +114,7 @@ pub(crate) struct Reference {
 
 pub(crate) enum Parsed {
     Run(Request),
+    Start(Start),
     Help(String),
     Mcp,
 }
@@ -112,11 +135,15 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
         }
         Err(e) => return Err(from_clap(&e)),
     };
-    match Cli::from_arg_matches(&matches)
-        .map_err(|e| from_clap(&e))?
-        .command
-    {
+    let cli = Cli::from_arg_matches(&matches).map_err(|e| from_clap(&e))?;
+    match cli.command {
         Command::Run(request) => Ok(Parsed::Run(request)),
+        Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
+            data,
+            json: cli.json,
+            name,
+            listen,
+        })),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }
@@ -185,10 +212,14 @@ fn from_clap(e: &clap::Error) -> Error {
         .kind()
         .as_str()
         .expect("invariant: clap describes each error kind that is not help");
-    let message = match context(e, ContextKind::InvalidArg) {
+    let mut message = match context(e, ContextKind::InvalidArg) {
         Some(arg) => format!("{what}: `{arg}`"),
         None => what.to_owned(),
     };
+    // The error of a value's parser, such as why a name is not one.
+    if let Some(source) = std::error::Error::source(e) {
+        message = format!("{message}: {source}");
+    }
     Error::Argument { message }
 }
 

@@ -8,11 +8,11 @@ use home::Outcome;
 use home::reader::complete::Charge;
 use types::authority::Authority;
 use types::channel;
-use types::frame::key_set::{Group, KeySet};
+use types::frame::key_set::{Entry, Group, KeySet};
 use types::frame::{Draft, Form, Label, Path};
 use types::sample::{Scalar, Type};
 
-use crate::shard::{name, shard};
+use crate::node::env;
 
 /// The shard, its readers, and the keys of `woken`.
 pub(crate) struct Woken {
@@ -21,7 +21,8 @@ pub(crate) struct Woken {
     pub(crate) readers: Vec<home::reader::Key>,
     /// The keys that the caller gives `woken`.
     pub(crate) keys: Vec<home::reader::Key>,
-    set: Arc<KeySet>,
+    /// The key set of each frame.
+    pub(crate) set: Arc<KeySet>,
     writer: home::writer::Key,
     /// Each series of a frame on every index.
     series: Vec<(usize, usize)>,
@@ -35,7 +36,8 @@ impl Woken {
         tasks: Tasks,
         indexes: usize,
     ) -> Self {
-        let (mut shard, mut interner, stamp) = shard(node, tasks).await;
+        let (mut shard, mut interner, now, _) =
+            home::testing::shard(env(node, tasks)).await;
         let key = |n| channel::Key::from_u128(u128::try_from(n).expect("few"));
         let channels: Vec<_> = (0..indexes)
             .map(|n| {
@@ -55,13 +57,13 @@ impl Woken {
         let set = interner.intern(&groups);
         let mut readers = Vec::with_capacity(indexes);
         for &entry in set.groups() {
-            let slot = set.entries()[entry].slot;
-            shard.carry(slot);
+            let Entry { slot, key, .. } = set.entries()[entry];
+            assert!(shard.carry(slot, key), "each index is new");
             readers.push(shard.open_complete(slot, u64::MAX, Charge::Whole).into());
         }
         let writer = shard
             .open_writer(home::writer::Writer {
-                subject: name("a"),
+                subject: "a".parse().expect("a valid name"),
                 authority: Authority(1),
                 lease: None,
                 set: Arc::clone(&set),
@@ -75,7 +77,7 @@ impl Woken {
             set,
             writer,
             series,
-            stamp,
+            stamp: now.nanos(),
         }
     }
 

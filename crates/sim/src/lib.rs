@@ -21,6 +21,7 @@ mod disk;
 mod drivers;
 mod files;
 mod net;
+mod paths;
 mod serial;
 mod state;
 #[cfg(test)]
@@ -140,7 +141,14 @@ impl Sim {
 
     /// Adds a node. Its clocks read the values in `config` now, and its entropy is
     /// its own stream from the seed.
+    ///
+    /// # Panics
+    ///
+    /// When `config.arm_max` is zero or negative.
     pub fn node(&mut self, config: node::Config) -> Node {
+        if let Some(max) = config.arm_max {
+            assert!(max > Span::ZERO, "arm_max {max:?} is not positive");
+        }
         let entropy = Rng::from_seed(self.streams.next_u64());
         let node = lock(&self.shared).add(config, entropy);
         let shared = Arc::clone(&self.shared);
@@ -560,11 +568,13 @@ impl fmt::Debug for Sim {
 /// How a node crashes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Crash {
-    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk
-    /// keeps each call that ended. Each file call in flight takes effect at the
-    /// crash, as if its future dropped, so a write keeps any subset of its sectors,
-    /// and a [`Mode::Create`](env::files::Mode::Create) open that makes a file
-    /// leaves it whole or with no bytes. Each TCP stream and listener drops.
+    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk keeps
+    /// each call that ended. Each file call in flight takes effect at the crash, as if
+    /// its future dropped, so a write keeps any subset of its sectors, and a
+    /// [`Mode::Create`](env::files::Mode::Create) open that makes a file leaves it
+    /// whole or with no bytes. When the disk has no room for its bytes, that open
+    /// leaves no file at its path, as with no crash, or a file with no bytes. Each TCP
+    /// stream and listener drops.
     Process,
     /// The machine loses power and boots again.
     ///

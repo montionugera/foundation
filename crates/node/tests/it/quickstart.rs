@@ -1,6 +1,6 @@
 //! Checks the quickstart page against the binary.
 
-use crate::{foundation, text};
+use crate::{Rig, text};
 
 const PAGE: &str = include_str!("../../../../docs/quickstart.md");
 
@@ -21,7 +21,7 @@ fn the_help_names_each_command_and_flag_on_the_quickstart_page() {
         .collect();
     assert!(!commands.is_empty(), "the page has no `foundation` command");
     for words in &commands {
-        let output = foundation(&[words[0], "--help"], "");
+        let output = Rig::new().run(&[words[0], "--help"], b"");
         let help = text(&output.stdout);
         assert_eq!(
             output.status.code(),

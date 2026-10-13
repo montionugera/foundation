@@ -21,7 +21,7 @@ const RANGE: usize = 16;
 /// Bytes of one descriptor: entry and the end of its series in the series bytes (each
 /// `u32`).
 const DESCRIPTOR: usize = 8;
-/// Each series starts at a multiple of this.
+/// Each series starts at a multiple of this. A power of two.
 const SERIES_ALIGN: usize = 8;
 
 /// Offsets of the header's fields: the key set key and the counts of ranges and
@@ -116,6 +116,13 @@ pub struct Range {
 }
 
 impl Range {
+    /// The seq after the last sample of the range, or `None` when it would pass
+    /// `u64::MAX`.
+    #[must_use]
+    pub fn end(self) -> Option<u64> {
+        self.seq.checked_add(u64::from(self.count))
+    }
+
     /// The range of `group` in the frame `bytes`, or `None` when it is absent.
     fn find(bytes: &[u8], group: u32) -> Option<Self> {
         let (ranges, ..) = parts(bytes);
@@ -273,6 +280,11 @@ impl<'a> Layout<'a> {
         Self::checked(set, ends, Sizes::Ends)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "as a call, it keeps `Draft::new` from folding its constant `Sizes`"
+    )]
+    #[inline(always)]
     fn checked(
         set: &'a KeySet,
         series: &'a [(usize, usize)],
@@ -353,6 +365,9 @@ impl<'a> Layout<'a> {
     /// # Errors
     ///
     /// The pool's error when it cannot give the block.
+    // Without the hint, fat LTO stops inlining it into `Draft::new` once it has a
+    // second caller.
+    #[inline]
     pub fn draft(self, pool: &block::Pool, form: Form) -> Result<Draft, block::Error> {
         let Self {
             set,
@@ -379,7 +394,10 @@ impl<'a> Layout<'a> {
         }
         let mut end = 0_usize;
         for (descriptor, &(entry, size)) in descriptors.iter_mut().zip(series) {
-            if let Sizes::Lens = sizes {
+            // An empty fill still calls `memset`, which costs up to about 90 ns.
+            if let Sizes::Lens = sizes
+                && !end.is_multiple_of(SERIES_ALIGN)
+            {
                 body[end..padded(end)].fill(0);
             }
             end = sizes.end(end, size);
@@ -819,9 +837,11 @@ fn bounds(descriptors: &[[u8; DESCRIPTOR]], n: usize) -> (usize, usize) {
 /// Where a series that ends at `end` stops with its padding, and the next one starts.
 /// Saturates at `usize::MAX`.
 const fn padded(end: usize) -> usize {
-    match end.checked_next_multiple_of(SERIES_ALIGN) {
-        Some(start) => start,
-        None => usize::MAX,
+    let (sum, over) = end.overflowing_add(SERIES_ALIGN - 1);
+    if over {
+        usize::MAX
+    } else {
+        sum & !(SERIES_ALIGN - 1)
     }
 }
 
@@ -868,17 +888,20 @@ mod tests {
         channel::Key::from_u128(u128::from(n))
     }
 
-    /// An interner where key `n` has slot `n`, for each `n` below 1000.
+    /// An interner where key `n` has slot `2n` as an index and `2n + 1` as a data
+    /// channel of `F64`, for each `n` below 1000.
     pub(super) fn interner() -> Interner {
         let mut interner = Interner::new();
         for n in 0..1000 {
-            interner.slots().assign(key(n));
+            interner.slots().index(key(n));
+            interner.slots().data(key(n), F64);
         }
         interner
     }
 
     pub(super) fn pool(budget: usize) -> block::Pool {
-        let config = block::Config { budget };
+        let budget = u64::try_from(budget).expect("a usize fits in a u64");
+        let config = block::Config::new(budget).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         block::Pool::new(config, memory)
     }
@@ -1845,6 +1868,21 @@ mod tests {
 
     proptest! {
         #[test]
+        fn zeros_only_the_padding_of_a_dirty_draft_from_lengths(
+            lens in proptest::collection::vec(0..40_usize, 4),
+        ) {
+            let (pool, set) = (pool(1 << 16), two_groups());
+            let series: Vec<_> = lens.iter().copied().enumerate().collect();
+            let mut draft = dirty_draft(&pool, Layout::new(&set, &series).unwrap());
+            let mut expected = Vec::new();
+            for &len in &lens {
+                expected.resize(expected.len().next_multiple_of(8), 0);
+                expected.extend(std::iter::repeat_n(0xff_u8, len));
+            }
+            prop_assert_eq!(draft.body_mut(), expected.as_slice());
+        }
+
+        #[test]
         fn reads_back_what_a_draft_wrote(case in cases()) {
             round_trip(&case)?;
         }
@@ -1913,6 +1951,46 @@ mod tests {
         let max = usize::MAX;
         let ends: Vec<_> = super::ends([(0, max), (1, 1)]).collect();
         assert_eq!(ends, [(0, max), (1, max)]);
+    }
+
+    #[test]
+    fn pads_an_end_at_and_around_the_saturation_bound() {
+        let max = usize::MAX;
+        for (end, start) in [
+            (max - 8, max - 7),
+            (max - 7, max - 7),
+            (max - 6, max),
+            (max, max),
+        ] {
+            let ends: Vec<_> = super::ends([(0, end), (1, 0)]).collect();
+            assert_eq!(ends, [(0, end), (1, start)], "{end}");
+        }
+        let set = one_group(&mut interner());
+        let ends = [(0, max - 7), (2, max - 7)];
+        assert_eq!(Layout::from_ends(&set, &ends).unwrap().body_len(), max - 7);
+        let error = Layout::from_ends(&set, &[(0, max - 6), (2, max - 1)]).unwrap_err();
+        assert_eq!(
+            error,
+            Error::End(BadEnd::Before {
+                end: max - 1,
+                start: max
+            })
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn pads_an_end_to_a_multiple_of_8_or_saturates(
+            end in prop_oneof![
+                any::<usize>(),
+                usize::MAX - 16..=usize::MAX,
+                0..17_usize,
+            ],
+        ) {
+            let start = end.checked_next_multiple_of(SERIES_ALIGN);
+            let start = start.unwrap_or(usize::MAX);
+            prop_assert_eq!(super::ends([(0, end), (1, 0)]).nth(1), Some((1, start)));
+        }
     }
 
     #[test]
@@ -2049,7 +2127,8 @@ mod tests {
         }]);
         let mut interner = Interner::new();
         for &n in &remote.order {
-            interner.slots().assign(key(n));
+            interner.slots().index(key(n));
+            interner.slots().data(key(n), F64);
         }
         let held = data(&|j| remote.held[j]);
         let reader = interner.intern(&[Group {
@@ -2144,5 +2223,30 @@ mod tests {
                 prop_assert_eq!(received.series(place), expected, "place {}", place);
             }
         }
+    }
+
+    proptest! {
+        #[test]
+        fn gives_the_seq_after_a_range_or_none_past_the_highest_seq(
+            seq in prop_oneof![
+                any::<u64>(),
+                (u64::MAX - u64::from(u32::MAX))..=u64::MAX,
+            ],
+            count in any::<u32>(),
+        ) {
+            let sum = u128::from(seq) + u128::from(count);
+            let expected = u64::try_from(sum).ok();
+            prop_assert_eq!(Range { seq, count }.end(), expected);
+        }
+    }
+
+    #[test]
+    fn ends_a_range_at_the_highest_seq_and_none_past_it() {
+        let range = |count| Range {
+            seq: u64::MAX,
+            count,
+        };
+        assert_eq!(range(0).end(), Some(u64::MAX));
+        assert_eq!(range(1).end(), None);
     }
 }

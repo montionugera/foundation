@@ -1,5 +1,6 @@
-//! `os::files` on a small filesystem that the test mounts with `sudo`. Only one CI
-//! step on a GitHub-hosted runner runs this target.
+//! `os` with `sudo`: files on a small filesystem that the test mounts, a listener
+//! that an operator aborts, and a write as root or in a directory that refuses a
+//! remove. Only one CI step on a GitHub-hosted runner runs this target.
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 #![cfg(target_os = "linux")]
@@ -10,11 +11,24 @@ use std::process::Command;
 
 use env::files::{Error, Files, Mode};
 
+#[path = "../common/mod.rs"]
+#[expect(dead_code, reason = "this binary only makes a scratch directory")]
+mod disk;
+#[path = "../common/free.rs"]
+mod free;
+#[path = "../common/fsize.rs"]
+mod fsize;
 #[path = "../it/kept.rs"]
 mod kept;
+mod paths;
+#[path = "../common/seccomp.rs"]
+mod seccomp;
+#[path = "../common/sockets.rs"]
+#[expect(dead_code, reason = "this binary only listens")]
+mod sockets;
 
 /// A 64 MiB ext4 filesystem on a loop device in a directory of its own, unmounted and
-/// removed when it drops.
+/// removed when it drops, except while the thread panics.
 struct Small(PathBuf);
 
 impl Small {
@@ -40,10 +54,19 @@ impl Small {
 
 impl Drop for Small {
     fn drop(&mut self) {
-        // Lazy: when a test panics, its files thread may still hold the mount.
-        check(sudo("umount").arg("-l").arg(self.mount()));
-        std::fs::remove_dir_all(&self.0).unwrap();
+        // While the thread panics, a command can block and a second panic aborts the
+        // test binary.
+        if !std::thread::panicking() {
+            remove(&self.mount());
+        }
     }
+}
+
+/// Unmounts the `mount` of a [`Small`] and removes its directory.
+fn remove(mount: &Path) {
+    // Lazy: a command that a parallel test starts can inherit a file on the mount.
+    check(sudo("umount").arg("-l").arg(mount));
+    std::fs::remove_dir_all(mount.parent().unwrap()).unwrap();
 }
 
 fn sudo(program: &str) -> Command {
@@ -73,6 +96,64 @@ fn run<F: Future<Output = ()>>(body: impl FnOnce(Files, PathBuf) -> F) {
 }
 
 #[test]
+fn a_disk_that_drops_while_the_test_panics_stays_mounted() {
+    let mut data = PathBuf::new();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(|_, path| {
+            data = path;
+            async { panic!("the test broke") }
+        });
+    }));
+    unwound.expect_err("the test panics");
+    let mount = data.parent().expect("the data directory is on the mount");
+    let mounted = Command::new("mountpoint")
+        .arg("-q")
+        .arg(mount)
+        .status()
+        .unwrap()
+        .success();
+    if mounted {
+        remove(mount);
+    }
+    assert!(mounted, "{} is not mounted", mount.display());
+}
+
+/// The holder of a mount point is on another device, and its entry is the mount's.
+#[test]
+fn files_of_a_mount_point_syncs_only_the_mount() {
+    use std::sync::{Arc, Mutex};
+
+    let disk = Small::new();
+    let mount = std::fs::canonicalize(disk.mount()).unwrap();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("synced", move || async move {
+        let synced = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&synced);
+        seccomp::answer_calls(&[libc::SYS_fsync], move |data, _| {
+            let fd = format!("/proc/self/fd/{}", data.args[0]);
+            seen.lock().unwrap().push(std::fs::read_link(fd).unwrap());
+            None
+        });
+        let (files, thread) = os::files(&mount, &os::threads().unwrap(), "files")
+            .expect("the disk opens");
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(*synced.lock().unwrap(), [mount]);
+    });
+    assert_eq!(handle.unwrap().join(), Ok(()));
+}
+
+#[test]
+fn free_drops_by_the_bytes_of_a_created_file() {
+    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+}
+
+#[test]
+fn a_free_waits_for_a_dropped_create() {
+    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
+}
+
+#[test]
 fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
     run(|files, _| async move {
         let free = files.free().await.unwrap();
@@ -85,6 +166,64 @@ fn a_create_past_the_free_bytes_gives_full_and_keeps_no_blocks() {
     });
 }
 
+/// A child that another thread starts while a create fails holds a copy of the file.
+#[test]
+#[expect(unsafe_code, reason = "a hook before exec is an OS call")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the files thread waits for the thread that starts the child"
+)]
+fn a_failed_create_keeps_no_blocks_while_a_child_holds_the_file() {
+    use std::io::{Read, Write};
+    use std::os::unix::process::CommandExt;
+
+    let disk = Small::new();
+    let mount = disk.mount();
+    let (forked, forked_in) = std::io::pipe().unwrap();
+    let (released_out, released) = std::io::pipe().unwrap();
+    let mut command = Command::new("true");
+    // SAFETY: the hook only reads and writes pipes, which is safe after a fork.
+    unsafe {
+        command.pre_exec(move || {
+            (&forked_in).write_all(&[0])?;
+            (&released_out).read_exact(&mut [0])
+        });
+    }
+    let (started, child) = std::sync::mpsc::channel();
+    let mut command = Some(command);
+    let threads = os::threads().unwrap();
+    let handle = threads.start("files", move || async move {
+        let starts = os::threads().unwrap();
+        seccomp::answer_calls(&[libc::SYS_unlinkat], move |_, _| {
+            if let Some(mut command) = command.take() {
+                let thread = starts.start("child", move || async move {
+                    assert!(command.status().unwrap().success());
+                });
+                (&forked).read_exact(&mut [0]).unwrap();
+                started.send(thread.unwrap()).unwrap();
+            }
+            None
+        });
+        let (files, thread) = os::files(&mount, &os::threads().unwrap(), "files")
+            .expect("the disk opens");
+        let files = Files::new(files);
+        let free = files.free().await.unwrap();
+        let mode = Mode::Create { len: free * 2 };
+        let error = files.open(Path::new("a"), mode).await.unwrap_err();
+        let after = files.free().await.unwrap();
+        (&released).write_all(&[0]).unwrap();
+        let spawner = child.recv_timeout(std::time::Duration::from_secs(10));
+        let spawner =
+            spawner.expect("the unlink of the failed create starts the child");
+        spawner.join().unwrap();
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(error, Error::Full { path: "a".into() });
+        assert_eq!(after, free);
+    });
+    assert_eq!(handle.unwrap().join(), Ok(()));
+}
+
 #[test]
 fn a_create_after_a_failed_create_gives_full_again() {
     run(|files, _| async move {
@@ -94,6 +233,22 @@ fn a_create_after_a_failed_create_gives_full_again() {
         files.open(Path::new("a"), mode).await.unwrap_err();
         let error = files.open(Path::new("a"), mode).await.unwrap_err();
         assert_eq!(error, Error::Full { path: "a".into() });
+    });
+}
+
+/// A command that a parallel test starts inherits a file with no `O_CLOEXEC`, as the
+/// fragmented test holds `fill`.
+#[test]
+fn a_file_that_a_command_inherits_does_not_fail_the_unmount() {
+    use rustix::fs::{self, OFlags};
+    run(|_, data| async move {
+        std::fs::create_dir_all(&data).unwrap();
+        let flags = OFlags::WRONLY.union(OFlags::CREATE);
+        let fill = fs::open(data.join("fill"), flags, fs::Mode::RUSR).unwrap();
+        // The command runs on after the test, and holds the file.
+        let command = Command::new("sleep").arg("2").spawn().unwrap();
+        drop(fill);
+        drop(command);
     });
 }
 
@@ -125,4 +280,16 @@ fn a_create_on_fragmented_free_space_frees_the_blocks_past_the_end() {
             "{allocated} bytes allocated"
         );
     });
+}
+
+/// An operator aborts the listener with `ss -K`, as a tool that kills sockets does.
+#[test]
+#[expect(clippy::disallowed_methods, reason = "os is the crate under test")]
+fn a_listener_that_an_operator_aborts_drops_with_no_panic() {
+    let listener = os::net().listen(&sockets::LISTEN).unwrap();
+    let local = listener.local();
+    check(sudo("ss").args(["-K", "-t", "-l", "src", &local.to_string()]));
+    let refused = std::net::TcpStream::connect(local).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::ConnectionRefused);
+    drop(listener);
 }

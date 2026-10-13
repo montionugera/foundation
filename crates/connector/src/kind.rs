@@ -3,15 +3,22 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::pin::Pin;
+use std::rc::Rc;
 
-use document::Document;
 use document::diagnostic::{Code, Diagnostic};
+use document::{Document, Span};
 use env::clock::Clock;
-use env::entropy::Entropy;
+use env::net::Net;
 use env::rng::Rng;
+use env::tasks::Tasks;
+use types::authority::Authority;
 use types::name::Name;
+use types::time;
 
-use crate::cancel;
+use crate::{cancel, reader, status, supervisor};
+
+/// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
+pub const NOUN: &str = "the connector";
 
 /// One connector kind: it owns its config's fields and how it runs. `node` builds one
 /// value per kind for the life of the process; every connector of the kind shares it,
@@ -51,16 +58,22 @@ pub trait Kind: Send + Sync + 'static {
 /// What a checked connector reads and writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Channels {
-    /// The channels it reads from the device.
-    pub reads: Vec<Name>,
-    /// The channels it writes to the device.
+    /// The settings of the reader of the channels it reads from the mesh: commands for
+    /// the device, or samples it sends out. Get them from [`reader::read`]. The
+    /// supervisor opens the reader under the connector's name before each run. `None`
+    /// for a kind that reads no channel.
+    pub reader: Option<reader::Settings>,
+    /// The channels it writes to the mesh: samples from the device.
     pub writes: Vec<Name>,
+    /// The last segment of each count channel of the kind,
+    /// `<connector>.status.<count>`.
+    pub counts: Vec<Name>,
 }
 
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The supervisor stops; a spec change starts it again.
+    /// The config cannot work. The connector stops until the next spec change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -96,30 +109,40 @@ impl std::error::Error for Error {
     }
 }
 
-/// One run's capabilities.
+/// One run's capabilities. It is not `Send`: it stays on the supervisor's shard, so a
+/// kind's own thread takes clones of the parts it needs.
 #[derive(Debug)]
 pub struct Context<C> {
     name: Name,
     config: C,
     cancel: cancel::Token,
-    clock: Clock,
-    entropy: Entropy,
+    tasks: Tasks,
+    status: status::Status,
+    reader: Option<hub::reader::Reader>,
+    // Its `tasks` field is the shard's, which no run counts: spawn only through
+    // `self.tasks`.
+    inputs: Rc<supervisor::Config>,
 }
 
 impl<C> Context<C> {
+    /// Makes the context of one run, whose tasks spawn through `tasks`.
     pub(crate) fn new(
         name: Name,
         config: C,
         cancel: cancel::Token,
-        clock: Clock,
-        entropy: Entropy,
+        tasks: Tasks,
+        status: status::Status,
+        reader: Option<hub::reader::Reader>,
+        inputs: Rc<supervisor::Config>,
     ) -> Self {
         Self {
             name,
             config,
             cancel,
-            clock,
-            entropy,
+            tasks,
+            status,
+            reader,
+            inputs,
         }
     }
 
@@ -129,8 +152,10 @@ impl<C> Context<C> {
             name: self.name,
             config,
             cancel: self.cancel,
-            clock: self.clock,
-            entropy: self.entropy,
+            tasks: self.tasks,
+            status: self.status,
+            reader: self.reader,
+            inputs: self.inputs,
         }
     }
 
@@ -146,7 +171,7 @@ impl<C> Context<C> {
         &self.config
     }
 
-    /// Cancelled when the run must stop.
+    /// Cancelled when the run must stop, and when it has returned.
     #[must_use]
     pub fn cancel(&self) -> &cancel::Token {
         &self.cancel
@@ -155,13 +180,88 @@ impl<C> Context<C> {
     /// The node's clock.
     #[must_use]
     pub fn clock(&self) -> &Clock {
-        &self.clock
+        &self.inputs.clock
     }
 
     /// A new random source, seeded from the node's entropy, that simulation replays.
     #[must_use]
     pub fn rng(&self) -> Rng {
-        self.entropy.rng()
+        self.inputs.entropy.rng()
+    }
+
+    /// Opens a writer session on `channels` as this connector: the session's subject
+    /// is the connector's name.
+    ///
+    /// When a write gives [`hub::writer::Failure::Removed`], return [`Error::Retry`]:
+    /// the next run opens its writer by name, so a channel that the spec defined again
+    /// with a new key is written. The frame of that write is lost, and so is each
+    /// sample of the device until the next run opens its writer.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with one diagnostic and no span, for a writer that only a
+    /// spec change fixes: `connector.unknown-channel` for a name that no channel has,
+    /// `connector.no-channel` for no name, and `connector.lease` for a lease that is
+    /// not longer than zero. [`Error::Retry`] with the hub's error when the home of an
+    /// index is another node, or the mesh stopped.
+    ///
+    /// # Panics
+    ///
+    /// When the hub gives an error that this open cannot get.
+    pub async fn writer(
+        &self,
+        channels: Vec<Name>,
+        authority: Authority,
+        lease: Option<time::Span>,
+    ) -> Result<hub::writer::Writer, Error> {
+        let config = hub::writer::Config {
+            subject: self.name.clone(),
+            authority,
+            lease,
+            channels,
+        };
+        self.inputs.hub.writer(config).await.map_err(writer_error)
+    }
+
+    /// Takes the reader that the supervisor opened for this run, under the connector's
+    /// name, from the settings that `check` gave. `None` when `check` gave none, or
+    /// after the first call. When the reader ends with [`hub::reader::Ended::Behind`]
+    /// or [`hub::reader::Ended::Removed`], return [`Error::Retry`]: the supervisor
+    /// opens a new reader from the selector before the next run, so a channel that the
+    /// spec defined again with a new key is read, and the open gives `Config` when the
+    /// selector matches nothing. A reader with a hold opens again at its held position
+    /// while its index keeps its key. While the home keeps no frame there, each later
+    /// run gets `Behind`. Each close starts the hold again, so a hold longer than the
+    /// wait between two runs never ends.
+    pub fn reader(&mut self) -> Option<hub::reader::Reader> {
+        self.reader.take()
+    }
+
+    /// The count `name` of the connector's status, `<connector>.status.<name>`, to
+    /// set from the kind's data path. The call searches the names of the counts, so
+    /// take each count once, before the data path.
+    ///
+    /// # Panics
+    ///
+    /// When the kind's `check` did not name `name` as a count.
+    #[must_use]
+    pub fn count(&self, name: &str) -> status::Count {
+        self.status.count(name)
+    }
+
+    /// Connects streams and datagrams.
+    #[must_use]
+    pub fn net(&self) -> &Net {
+        &self.inputs.net
+    }
+
+    /// Runs the kind's own tasks on its shard. Each task must end when
+    /// [`Context::cancel`] is cancelled. The next run of the same
+    /// [`Opened::run`](crate::supervisor::Opened::run) call starts only after each of
+    /// them ends.
+    #[must_use]
+    pub fn tasks(&self) -> &Tasks {
+        &self.tasks
     }
 }
 
@@ -194,14 +294,29 @@ impl Table {
     ///
     /// # Errors
     ///
-    /// The diagnostics of the kind's `parse` or `check`. An unknown kind gives one
-    /// diagnostic, `connector.unknown-kind`, since the name comes from a file.
+    /// The diagnostics of the kind's `parse` or `check`, each with no span placed at
+    /// `at`, where the file names the kind. An unknown kind gives one diagnostic,
+    /// `connector.unknown-kind` at `at`.
+    ///
+    /// # Panics
+    ///
+    /// When the kind names a count that [`status`] names in any case, a count of more
+    /// than one segment, or one count twice in any case: the kind's code is wrong.
     pub fn check(
         &self,
         kind: &str,
+        at: Option<Span>,
         config: &Document,
     ) -> Result<Channels, Vec<Diagnostic>> {
-        self.get(kind)?.check(config)
+        let place = |mut diagnostics: Vec<Diagnostic>| {
+            for diagnostic in &mut diagnostics {
+                diagnostic.span = diagnostic.span.or(at);
+            }
+            diagnostics
+        };
+        let channels = self.get(kind, at)?.check(config).map_err(place)?;
+        status::check(kind, &channels.counts);
+        Ok(channels)
     }
 
     /// Finds connectors of `kind` that this node can run.
@@ -216,7 +331,7 @@ impl Table {
         kind: &str,
         cancel: &cancel::Token,
     ) -> Result<Vec<Document>, Error> {
-        self.get(kind)
+        self.get(kind, None)
             .map_err(Error::Config)?
             .discover(cancel)
             .await
@@ -229,10 +344,14 @@ impl Table {
         config: &Document,
         ctx: Context<()>,
     ) -> Result<Run<'a>, Vec<Diagnostic>> {
-        self.get(kind)?.run(config, ctx)
+        self.get(kind, None)?.run(config, ctx)
     }
 
-    fn get(&self, kind: &str) -> Result<&dyn Erased, Vec<Diagnostic>> {
+    fn get(
+        &self,
+        kind: &str,
+        at: Option<Span>,
+    ) -> Result<&dyn Erased, Vec<Diagnostic>> {
         let erased = self.kinds.get(kind).ok_or_else(|| {
             let names: Vec<_> = self.kinds.keys().copied().collect();
             let fix = if names.is_empty() {
@@ -242,7 +361,7 @@ impl Table {
             };
             vec![Diagnostic::new(
                 UNKNOWN_KIND,
-                None,
+                at,
                 format!("this build has no connector kind {kind:?}"),
                 fix,
             )]
@@ -258,6 +377,60 @@ impl fmt::Debug for Table {
 }
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
+const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
+const NO_CHANNEL: Code = Code::new("connector.no-channel");
+const MANY_INDEXES: Code = Code::new("connector.many-indexes");
+const LEASE: Code = Code::new("connector.lease");
+
+/// The class of `error` of the open of a named reader.
+///
+/// # Panics
+///
+/// For `Unsynced`, which the supervisor's open never gives, and for an error of a
+/// reader away from its home, since a named reader opens only at its home.
+pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
+    use hub::reader::Error as Hub;
+    let (code, fix) = match error {
+        Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
+        Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
+        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
+        Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
+            panic!("invariant: a named reader away from its home gave: {error}")
+        }
+    };
+    config_error(code, &error, fix)
+}
+
+/// The class of `error` of a writer.
+///
+/// # Panics
+///
+/// For `Unsynced`: the hub waits for mesh time.
+fn writer_error(error: hub::writer::Error) -> Error {
+    use hub::home::writer::Error as Home;
+    use hub::writer::Error as Hub;
+    let (code, fix) = match error {
+        Hub::Unknown(_) => (UNKNOWN_CHANNEL, "Define the channel in the spec"),
+        Hub::Empty => (NO_CHANNEL, "Give the connector a channel to write"),
+        Hub::Home(home @ Home::Lease { .. }) => (LEASE, home.fix()),
+        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Home(Home::Unsynced) => {
+            panic!("invariant: a writer of the hub gave: {error}")
+        }
+    };
+    config_error(code, &error, fix)
+}
+
+/// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
+fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
+    Error::Config(vec![Diagnostic::new(
+        code,
+        None,
+        error.to_string(),
+        fix.into(),
+    )])
+}
 
 /// One run of a kind.
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
@@ -301,16 +474,16 @@ impl<K: Kind> Erased for K {
 }
 
 #[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use document::value::{self, Value};
-    use document::{Attribute, Map};
+    use document::{Attribute, Map, Position, Source};
 
     use std::cell::RefCell;
-    use std::rc::Rc;
 
     use super::*;
     use crate::cancel::Token;
-    use crate::common::run;
+    use crate::common::{create_config, run, run_on};
 
     const MISSING: Code = Code::new("test.missing");
     const RANGE: Code = Code::new("test.range");
@@ -330,9 +503,18 @@ mod tests {
         type Config = i128;
 
         fn parse(&self, config: &Document) -> Result<i128, Vec<Diagnostic>> {
-            match config.attributes.get("n").map(|a| &a.value.kind) {
-                Some(value::Kind::Integer(n)) => Ok(*n),
-                _ => Err(vec![diagnostic(MISSING, "no integer n")]),
+            match config.attributes.get("n").map(|a| &a.value) {
+                Some(Value {
+                    kind: value::Kind::Integer(n),
+                    ..
+                }) => Ok(*n),
+                Some(value) => Err(vec![Diagnostic::new(
+                    MISSING,
+                    value.span,
+                    "n is not an integer".into(),
+                    "Fix it".into(),
+                )]),
+                None => Err(vec![diagnostic(MISSING, "no integer n")]),
             }
         }
 
@@ -341,8 +523,9 @@ mod tests {
                 return Err(vec![diagnostic(RANGE, "n is over 8")]);
             }
             Ok(Channels {
-                reads: (0..*n).map(|i| name(&format!("counter.c{i}"))).collect(),
-                writes: Vec::new(),
+                reader: None,
+                writes: (0..*n).map(|i| name(&format!("counter.c{i}"))).collect(),
+                counts: vec![name("frames")],
             })
         }
 
@@ -385,26 +568,27 @@ mod tests {
 
     #[test]
     fn checks_a_config_through_its_kind() {
-        let channels = table().check("counter", &config(2));
-        let reads = vec![name("counter.c0"), name("counter.c1")];
+        let channels = table().check("counter", None, &config(2));
+        let writes = vec![name("counter.c0"), name("counter.c1")];
         assert_eq!(
             channels,
             Ok(Channels {
-                reads,
-                writes: Vec::new()
+                reader: None,
+                writes,
+                counts: vec![name("frames")],
             })
         );
     }
 
     #[test]
     fn returns_the_diagnostics_of_parse() {
-        let result = table().check("counter", &Document::default());
+        let result = table().check("counter", None, &Document::default());
         assert_eq!(result, Err(vec![diagnostic(MISSING, "no integer n")]));
     }
 
     #[test]
     fn returns_the_diagnostics_of_check() {
-        let result = table().check("counter", &config(9));
+        let result = table().check("counter", None, &config(9));
         assert_eq!(result, Err(vec![diagnostic(RANGE, "n is over 8")]));
     }
 
@@ -421,13 +605,157 @@ mod tests {
     fn names_the_known_kinds_for_an_unknown_kind() {
         let table = table().with("other", Counter);
         let expected = unknown("modbus", "[\"counter\", \"other\"]");
-        assert_eq!(table.check("modbus", &config(1)), Err(vec![expected]));
+        assert_eq!(table.check("modbus", None, &config(1)), Err(vec![expected]));
+    }
+
+    /// The span from `start` to `end` on line 0 of source 2.
+    fn span(start: u32, end: u32) -> Option<Span> {
+        let position = |offset| Position {
+            offset,
+            line: 0,
+            column: offset,
+        };
+        Span::new(Source(2), position(start), position(end))
+    }
+
+    #[test]
+    fn puts_an_unknown_kind_where_the_file_names_it() {
+        let at = span(7, 15);
+        let mut expected = unknown("modbus", "[\"counter\"]");
+        expected.span = at;
+        assert_eq!(table().check("modbus", at, &config(1)), Err(vec![expected]));
+    }
+
+    #[test]
+    fn places_each_diagnostic_of_the_kind_with_no_span_at_the_kind() {
+        let at = span(7, 15);
+        let placed = |mut diagnostic: Diagnostic| {
+            diagnostic.span = at;
+            diagnostic
+        };
+        let missing = placed(diagnostic(MISSING, "no integer n"));
+        let range = placed(diagnostic(RANGE, "n is over 8"));
+        let table = table();
+        assert_eq!(
+            table.check("counter", at, &Document::default()),
+            Err(vec![missing])
+        );
+        assert_eq!(table.check("counter", at, &config(9)), Err(vec![range]));
+    }
+
+    #[test]
+    fn keeps_the_span_of_a_diagnostic_of_the_kind() {
+        let mut config = config(1);
+        let n = span(20, 24);
+        config.attributes = Map::new(vec![Attribute {
+            key: "n".into(),
+            key_span: None,
+            value: Value {
+                kind: value::Kind::String("x".into()),
+                span: n,
+            },
+        }])
+        .expect("one key");
+        let expected =
+            Diagnostic::new(MISSING, n, "n is not an integer".into(), "Fix it".into());
+        assert_eq!(
+            table().check("counter", span(7, 15), &config),
+            Err(vec![expected])
+        );
     }
 
     #[test]
     fn shows_the_names_of_its_kinds() {
         let table = table().with("other", Counter);
         assert_eq!(format!("{table:?}"), r#"{"counter", "other"}"#);
+    }
+
+    /// A kind that names the counts `.0`.
+    struct Counts(&'static [&'static str]);
+
+    impl Kind for Counts {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels {
+                counts: self.0.iter().map(|count| name(count)).collect(),
+                ..Channels::default()
+            })
+        }
+
+        fn discover(
+            &self,
+            _: &cancel::Token,
+        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    fn check_counts(
+        counts: &'static [&'static str],
+    ) -> Result<Channels, Vec<Diagnostic>> {
+        Table::new().with("counts", Counts(counts)).check(
+            "counts",
+            None,
+            &Document::default(),
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `state`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_a_status_channel_of_the_supervisor() {
+        drop(check_counts(&["state"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `time`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_index() {
+        drop(check_counts(&["time"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `State`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_a_status_channel_in_another_case() {
+        drop(check_counts(&["State"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `TIME`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_index_in_another_case() {
+        drop(check_counts(&["TIME"]));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the kind \"counts\" names the count `x.frames`, which is \
+                               not one segment"
+    )]
+    fn panics_on_a_count_of_more_than_one_segment() {
+        drop(check_counts(&["x.frames"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `Frames` twice")]
+    fn panics_on_a_count_named_twice_in_another_case() {
+        drop(check_counts(&["frames", "errors", "Frames"]));
+    }
+
+    #[test]
+    fn checks_counts_with_names_of_their_own() {
+        let channels = check_counts(&["frames", "restarts_seen"]).expect("checks");
+        assert_eq!(channels.counts, [name("frames"), name("restarts_seen")]);
     }
 
     #[test]
@@ -455,7 +783,7 @@ mod tests {
 
     #[test]
     fn says_an_empty_table_has_no_kinds() {
-        let result = Table::new().check("modbus", &config(1));
+        let result = Table::new().check("modbus", None, &config(1));
         let expected = Diagnostic::new(
             UNKNOWN_KIND,
             None,
@@ -467,15 +795,20 @@ mod tests {
 
     #[test]
     fn runs_until_cancelled_with_its_context() {
-        let (early, late, out, ctx_name, n) = run(|clock, tasks, entropy| async move {
+        let (early, late, out, ctx_name, n) = run_on(|node, tasks| async move {
             let token = Token::new();
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
             let ctx = Context::new(
                 name("plant.counter"),
                 3,
                 token.clone(),
-                clock.clone(),
-                entropy,
+                tasks.clone(),
+                status::Status::new(Vec::new()),
+                None,
+                inputs,
             );
+            let clock = node.clock();
             let (ctx_name, n) = (ctx.name().clone(), *ctx.config());
             let out = Rc::new(RefCell::new(None));
             let slot = Rc::clone(&out);
@@ -497,8 +830,12 @@ mod tests {
 
     #[test]
     fn gives_a_new_random_source_on_each_call() {
-        let (a, b) = run(|clock, _, entropy| async move {
-            let ctx = Context::new(name("a"), (), Token::new(), clock, entropy);
+        let (a, b) = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
         });
         assert_ne!(a, b);
@@ -517,6 +854,91 @@ mod tests {
         assert_eq!(retry.to_string(), "an attempt failed: timed out");
         let source = std::error::Error::source(&retry).map(ToString::to_string);
         assert_eq!(source.as_deref(), Some("timed out"));
+    }
+
+    /// Calls the mapping directly: the hub of `hub::testing` has no region, so it never
+    /// gives `Remote` or `Mesh`. #2376 holds the test through a run.
+    #[test]
+    fn retries_a_hub_error_that_the_home_or_the_mesh_can_clear() {
+        let home = types::node::Key::from_u128(7);
+        let stopped = || hub::mesh::Stopped::Dropped;
+        let reader = |error| reader_error(error).to_string();
+        let writer = |error| writer_error(error).to_string();
+        assert_eq!(
+            reader(hub::reader::Error::Remote { home }),
+            format!(
+                "an attempt failed: the home of the index of the reader is node \
+                 {home}, and this reader opens only at the home"
+            )
+        );
+        assert_eq!(
+            writer(hub::writer::Error::Remote { home }),
+            format!(
+                "an attempt failed: the home of an index of the writer is node \
+                 {home}, and a writer writes only at this node"
+            )
+        );
+        let mesh =
+            "an attempt failed: the mesh stopped: each mesh of the group dropped";
+        assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
+        assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+    }
+
+    /// Calls the mapping directly: the supervisor opens a reader only after the status
+    /// channels, which wait for mesh time, so no run can give `Unsynced`.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a reader opened before mesh time: the node has no mesh \
+                    time yet: open the named reader again later"
+    )]
+    fn panics_for_a_reader_that_has_no_mesh_time() {
+        drop(reader_error(hub::reader::Error::Unsynced));
+    }
+
+    /// Calls the mapping directly, since a named reader opens only at its home. The
+    /// arm of `Transport` has no test: `connector` cannot build a `transport` error.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the pool had no \
+                    block for the open: pool is full: asked for 8 bytes, 0 bytes free"
+    )]
+    fn panics_for_a_reader_error_away_from_its_home() {
+        let pool = block::Error::Exhausted {
+            requested: 8,
+            available: 0,
+        };
+        drop(reader_error(hub::reader::Error::Pool(pool)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    refused the reader with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refusal_of_the_reader() {
+        let refusal = wire::hub::Refusal::NotHome;
+        drop(reader_error(hub::reader::Error::Refused(refusal)));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the reply of \
+                    the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_reply_that_breaks_the_hub_protocol() {
+        drop(reader_error(hub::reader::Error::Message(
+            wire::hub::Error::Empty,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a writer of the hub gave: the node has no mesh time yet"
+    )]
+    fn panics_for_a_writer_error_that_the_hub_never_gives() {
+        let unsynced = hub::home::writer::Error::Unsynced;
+        drop(writer_error(hub::writer::Error::Home(unsynced)));
     }
 
     #[test]

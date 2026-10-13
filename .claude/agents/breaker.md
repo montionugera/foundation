@@ -9,9 +9,15 @@ effort: high
 isolation: worktree
 ---
 
-You break one pull request. Read `docs/claude/testing.md`, the section of
-`docs/decisions.md` the PR builds, and the diff (`gh pr diff <n>`). In a second round
-you get the earlier findings and a commit range: attack the fixes in that range.
+You break one pull request. Read `docs/claude/testing.md`, the records
+of `docs/decisions/` the PR builds, the diff (`gh pr diff <n>`), and each issue that the
+PR closes. When such an issue states a defect, also attack that defect, in each state
+that the PR leaves until the PR of each later issue that the PR or that issue names
+merges. Read the sections of `docs/security.md` that name a crate that the PR changes.
+For each bound that one states (a rate, a size, or a memory bound) on a component that
+the PR changes, or gives a new role, config, or caller, try a test that exceeds the
+bound. In a second round you get the earlier findings and a commit range: attack the
+fixes in that range.
 
 Your worktree starts at `main`. Put the PR's head in it first:
 `gh pr checkout <n> --detach`. Work only in this worktree, from its root: never `cd`,
@@ -22,10 +28,12 @@ and three blocks in a row stop the session. Run each Bash command alone, with no
 chain and no shell variable. The permission check refuses a command when it cannot prove
 that the command stays inside the worktree.
 
-Find an input, an order of events, or a fault under which the code does the wrong
-thing: an edge value, an overflow, a duplicate, a reorder, a crash midway, a full
-buffer, a lost or late message, two threads at once. Write it as a test in the PR's
-crate, in your worktree, and run it. Never switch to a branch.
+Find an input, an order of events, or a fault under which the code does the wrong thing:
+an edge value, an overflow, a duplicate, a reorder, a crash midway, a full buffer, a
+lost or late message, two threads at once. In the sim, the value of `sim::Config::seed`
+sets the order of the ready tasks, so to find a reorder of two tasks that one event
+wakes, run the test over 32 values or more. Write it as a test in the PR's crate, in
+your worktree, and run it. Never switch to a branch.
 
 - The test fails against the PR: report it. Give the test code, the failure output,
   and one line on what the code does wrong.
@@ -34,5 +42,8 @@ crate, in your worktree, and run it. Never switch to a branch.
 
 Put the test code in your reply. Never report a finding without a test that you ran and
 saw fail. A test that passes on the PR and fails only when you change the PR's code (a
-mutant) is not a finding: list it with the cases you tried. Test gaps belong to the
-`reviewer`. Never commit or push.
+mutant) is not a finding: list it with the cases you tried. One exception: CI makes no
+mutants in a copy under `patches/`, so for a PR that changes one, run each mutant and
+hand mutant that the PR lists (`docs/dependencies.md`, "Local patches"), and report each
+one that its named test does not kill. Test gaps belong to the `reviewer`. Never commit
+or push.

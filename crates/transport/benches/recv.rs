@@ -1,14 +1,15 @@
-//! The cost of a `stream::Receiver::recv` on a session between two sim nodes. Run
-//! with `cargo bench -p transport --bench recv`. A figure is the time of the polls of
-//! `recv` per message over a round, and some messages in a round cost more than
-//! others.
+//! The cost of a `stream::Receiver::recv` and a `recv_into` on a session between two
+//! sim nodes. Run with `cargo bench -p transport --bench recv`. A figure is the time
+//! of the polls of a read per message over a round, and some messages in a round cost
+//! more than others.
 //!
 //! Each round, the client sends 16 messages of one size on one `Complete` stream, and
-//! the server times each poll of `recv` until it has them. A sim sleep before each
-//! round lets the peer read and acknowledge. The window holds a round, so a message
-//! waits for no credit. `polls/msg` near 1 means most messages were whole at their
-//! first poll; a message that spans polls costs more. A poll also drives the session,
-//! so it holds the cost of the packets it reads.
+//! the server times each poll of its read until it has them. A `recv_into` reads into
+//! one buffer made before the bench. A sim sleep before each round lets the peer read
+//! and acknowledge. The window holds a round, so a message waits for no credit.
+//! `polls/msg` near 1 means most messages were whole at their first poll; a message
+//! that spans polls costs more. A poll also drives the session, so it holds the cost
+//! of the packets it reads.
 //!
 //! To compare two builds, run each several times in turn on one pinned core and
 //! compare p10 and p50: on a busy machine, p90 holds the preemptions.
@@ -18,17 +19,16 @@
 use std::future;
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use block::{Block, Heap, Pool};
 use sim::Sim;
 use sim::node::Node;
 use transport::{Address, Class, Code, Config, Error, Port, Transport};
-use types::node::{PrivateKey, PublicKey};
+use types::ed25519::PrivateKey;
 use types::time::Span;
 
 #[global_allocator]
@@ -46,9 +46,18 @@ const CLOSED: Error = Error::PeerClosed { code: Code(0) };
 /// many more chunks.
 const SIZES: [usize; 3] = [1 << 10, 56 << 10, 1 << 20];
 const MESSAGE_BYTES_MAX: usize = 1 << 20;
+/// The reads. Each size runs in each mode in turn, so neither mode runs only after
+/// the other.
+const MODES: [Mode; 2] = [Mode::Recv, Mode::Into];
 
-/// Per size: the ns of `recv` polls per message of each round, the polls, and the
-/// allocations.
+#[derive(Clone, Copy, Debug)]
+enum Mode {
+    Recv,
+    Into,
+}
+
+/// Per mode and size: the ns of read polls per message of each round, the polls, and
+/// the allocations.
 type Results = Arc<Mutex<Vec<(Vec<f64>, u64, u64)>>>;
 
 fn main() {
@@ -62,11 +71,11 @@ fn main() {
         let pool = Rc::clone(&config.pool);
         let transport = Transport::new(config, part(&node, 0)).expect("a transport");
         let session = transport
-            .dial(public(&SERVER), &[Address::Udp(at)])
+            .dial(SERVER.public(), &[Address::Udp(at)])
             .await
             .expect("a session");
         let clock = node.clock();
-        for bytes in SIZES {
+        for bytes in SIZES.iter().flat_map(|&bytes| MODES.map(|_| bytes)) {
             let mut sender = session
                 .open_sender(Class::Complete)
                 .await
@@ -99,7 +108,8 @@ fn serve(node: &Node) -> Results {
         let config = config(&own, tasks.clone(), SERVER);
         let transport = Transport::new(config, part(&own, PORT)).expect("a transport");
         let session = transport.accept().await.expect("a session");
-        for _ in SIZES {
+        let mut buffer = vec![0; MESSAGE_BYTES_MAX];
+        for mode in SIZES.iter().flat_map(|_| MODES) {
             let mut receiver = match session.accept().await {
                 Ok(incoming) => incoming.receiver,
                 Err(error) => panic!("accept: {error}"),
@@ -108,17 +118,18 @@ fn serve(node: &Node) -> Results {
             'stream: loop {
                 let mut spent = 0;
                 for _ in 0..MESSAGES {
-                    let mut recv = pin!(receiver.recv());
-                    let read = future::poll_fn(|cx| {
-                        let (poll, took, counted) = timed(|| recv.as_mut().poll(cx));
-                        spent += took;
-                        polls += 1;
-                        allocations += counted;
-                        poll
-                    })
-                    .await;
+                    let mut counts = (&mut spent, &mut polls, &mut allocations);
+                    let read = match mode {
+                        Mode::Recv => polled(pin!(receiver.recv()), &mut counts)
+                            .await
+                            .map(|message| message.map(|block: Block| block.len())),
+                        Mode::Into => {
+                            polled(pin!(receiver.recv_into(&mut buffer)), &mut counts)
+                                .await
+                        }
+                    };
                     match read {
-                        Ok(Some(message)) => drop::<Block>(message),
+                        Ok(Some(_)) => {}
                         Ok(None) => break 'stream,
                         Err(error) => panic!("read: {error}"),
                     }
@@ -135,20 +146,39 @@ fn serve(node: &Node) -> Results {
     results
 }
 
+/// Polls `read` to its end, and adds its ns, polls, and allocations to `counts`.
+async fn polled<T>(
+    mut read: Pin<&mut impl Future<Output = T>>,
+    counts: &mut (&mut u64, &mut u64, &mut u64),
+) -> T {
+    future::poll_fn(|cx| {
+        let (poll, took, counted) = timed(|| read.as_mut().poll(cx));
+        *counts.0 += took;
+        *counts.1 += 1;
+        *counts.2 += counted;
+        poll
+    })
+    .await
+}
+
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn print(results: &[(Vec<f64>, u64, u64)]) {
-    println!("ns of recv polls per message, over {ROUNDS} rounds of {MESSAGES}");
+    println!("ns of read polls per message, over {ROUNDS} rounds of {MESSAGES}");
     println!(
-        "{:<10} {:>9} {:>9} {:>9} {:>10} {:>11}",
-        "bytes", "p10", "p50", "p90", "polls/msg", "allocs/msg"
+        "{:<5} {:<10} {:>9} {:>9} {:>9} {:>10} {:>11}",
+        "mode", "bytes", "p10", "p50", "p90", "polls/msg", "allocs/msg"
     );
     let messages = per((WARMUP + ROUNDS) * MESSAGES);
-    for (bytes, (nanos, polls, allocations)) in SIZES.iter().zip(results) {
+    let cases = SIZES
+        .iter()
+        .flat_map(|&bytes| MODES.map(|mode| (mode, bytes)));
+    for ((mode, bytes), (nanos, polls, allocations)) in cases.zip(results) {
         let mut nanos = nanos[WARMUP..].to_vec();
         nanos.sort_unstable_by(f64::total_cmp);
         let at = |p: usize| nanos[ROUNDS * p / 100];
         println!(
-            "{bytes:<10} {:>9.1} {:>9.1} {:>9.1} {:>10.2} {:>11.2}",
+            "{:<5} {bytes:<10} {:>9.1} {:>9.1} {:>9.1} {:>10.2} {:>11.2}",
+            format!("{mode:?}"),
             at(10),
             at(50),
             at(90),
@@ -184,7 +214,7 @@ fn filled(pool: &Pool, bytes: usize) -> Block {
 }
 
 fn config(node: &Node, tasks: env::tasks::Tasks, key: PrivateKey) -> Config {
-    let pool = block::Config { budget: 1 << 26 };
+    let pool = block::Config::new(1 << 26).expect("the budget fits");
     let memory = Heap::new(pool.reservation());
     Config {
         private_key: key,
@@ -203,10 +233,4 @@ fn part(node: &Node, port: u16) -> transport::port::Part {
     let at = SocketAddr::new(node.addresses()[0], port);
     let port = Port::bind(&node.net(), at).expect("a port");
     port.split(NonZeroUsize::MIN).pop().expect("one part")
-}
-
-fn public(key: &PrivateKey) -> PublicKey {
-    let pair = Ed25519KeyPair::from_seed_unchecked(&key.0).expect("32 bytes");
-    PublicKey::new(pair.public_key().as_ref().try_into().expect("32 bytes"))
-        .expect("aws-lc makes no key of small order")
 }
