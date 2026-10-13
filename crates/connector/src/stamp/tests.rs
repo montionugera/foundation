@@ -61,26 +61,48 @@ fn the_midpoint_of_the_ends_of_time_does_not_overflow() {
     assert_eq!(stamp, Stamp::from_nanos(i64::MAX - 1));
 }
 
+/// A call of [`Stamps`]: a request that waits and then takes a time, or a refusal
+/// whose stamp before is some time after the last stamp.
+#[derive(Clone, Debug)]
+enum Call {
+    Request { wait: i64, took: i64 },
+    After { ahead: i64 },
+}
+
+fn call() -> impl Strategy<Value = Call> {
+    prop_oneof![
+        3 => (0..1_000i64, 0..1_000i64).prop_map(|(wait, took)| Call::Request { wait, took }),
+        1 => (0..1_000i64).prop_map(|ahead| Call::After { ahead }),
+    ]
+}
+
 proptest! {
-    /// Each stamp is after the one before it, and at the midpoint of its request
-    /// unless the one before it is at or past that midpoint.
+    /// In any order of calls, each stamp is after the one before it. A request is at
+    /// its midpoint when that is later, and a refusal gives the nanosecond after its
+    /// stamp before.
     #[test]
-    fn stamps_go_forward_from_the_midpoints(
-        steps in prop::collection::vec((0..1_000i64, 0..1_000i64), 1..50),
+    fn stamps_strictly_increase_from_the_midpoints(
+        calls in prop::collection::vec(call(), 1..50),
     ) {
         let mut stamps = Stamps::default();
-        let (mut time, mut last) = (0i64, None::<Stamp>);
-        for (wait, took) in steps {
-            let sent = time + wait;
-            time = sent + took;
-            let (_, stamp) = request(&mut stamps, sent, time);
-            let midpoint = sent + took / 2;
-            let expected = match last {
-                Some(last) if last.nanos() >= midpoint => last.nanos() + 1,
-                _ => midpoint,
+        let (mut time, mut last) = (0i64, None::<i64>);
+        for call in calls {
+            let (stamp, expected) = match call {
+                Call::Request { wait, took } => {
+                    let sent = time + wait;
+                    time = sent + took;
+                    let midpoint = sent + took / 2;
+                    let (_, stamp) = request(&mut stamps, sent, time);
+                    (stamp, last.map_or(midpoint, |last| midpoint.max(last + 1)))
+                }
+                Call::After { ahead } => {
+                    let before = last.unwrap_or(0) + ahead;
+                    (stamps.after(Stamp::from_nanos(before)), before + 1)
+                }
             };
             prop_assert_eq!(stamp, Stamp::from_nanos(expected));
-            last = Some(stamp);
+            prop_assert!(last.is_none_or(|last| stamp.nanos() > last));
+            last = Some(stamp.nanos());
         }
     }
 }
