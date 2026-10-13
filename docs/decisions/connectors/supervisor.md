@@ -193,7 +193,8 @@
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
   A count holds across the runs of one call. A kind adds to it with `Count::add`, or
-  replaces it with `Count::set` (`laptop.architect-2`, 2026-10-13T09:52:20Z:
+  replaces it with `Count::set`. The trigger to remove `Count::set` is the end of #435
+  with no kind that calls it (`laptop.architect-2`, 2026-10-13T09:52:20Z:
   https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456).
 
   `error`, and `backoff` but for the end of its wait (below), follow the #1735 ruling
