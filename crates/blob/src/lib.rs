@@ -28,8 +28,8 @@ pub struct Config {
     /// put bodies and the reply heads of [`peer::serve`]. Its largest block bounds a
     /// chunk.
     pub pool: Rc<Pool>,
-    /// The bytes the store leaves free on the disk. A put that takes new room and
-    /// would leave fewer gives [`Error::Floor`].
+    /// The bytes the store leaves free on the disk. A put that would leave fewer gives
+    /// [`Error::Floor`], unless a file of the chunk's length is at its name.
     pub floor_bytes: u64,
 }
 
@@ -47,8 +47,8 @@ pub enum Error {
         /// The digest of the bytes.
         found: Digest,
     },
-    /// A put that takes new room would leave less free on the disk than
-    /// [`Config::floor_bytes`]. Nothing is written.
+    /// A put would leave less free on the disk than [`Config::floor_bytes`], and no
+    /// file of the chunk's length is at its name. Nothing is written.
     Floor {
         /// The bytes of the chunk.
         len: usize,
@@ -216,8 +216,9 @@ impl Store {
     /// than the floor, and [`Error::Files`] when a file call fails, among them `Full`
     /// when the disk has no room; the chunk then reads as absent. A put over a file
     /// of the chunk's length takes no new room, so the floor does not refuse it. Each
-    /// other put counts the whole chunk as new room. The floor does not count the
-    /// puts in flight.
+    /// other put counts the whole chunk as new room, so a disk that is under the floor
+    /// takes no new file, also not the empty chunk. The floor does not count the puts
+    /// in flight.
     pub async fn put(&self, digest: Digest, chunk: &Block) -> Result<(), Error> {
         let put = async {
             let largest = self.pool.largest();
@@ -808,6 +809,43 @@ mod tests {
                     floor_bytes: free_bytes + 1,
                 };
                 assert_eq!(error, expected);
+            })
+            .unwrap();
+        }
+
+        // A new file takes a name in the directory, which the free bytes do not show.
+        #[test]
+        fn of_the_empty_chunk_with_no_file_under_the_floor_gives_floor() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 0);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                let error = store.put(digest, &block).await.unwrap_err();
+                let expected = Error::Floor {
+                    len: 0,
+                    free_bytes,
+                    floor_bytes: free_bytes + 1,
+                };
+                assert_eq!(error, expected);
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, Vec::<PathBuf>::new());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn of_the_empty_chunk_over_an_empty_file_under_the_floor_stores_it() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 0);
+                create_empty(&node, &path(digest)).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                store.put(digest, &block).await.unwrap();
+                let got = store.get(digest).await.unwrap().unwrap();
+                assert_eq!(&got[..], &block[..]);
             })
             .unwrap();
         }
