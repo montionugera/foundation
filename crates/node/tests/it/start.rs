@@ -12,7 +12,9 @@ fn ended(output: &std::process::Output) -> (Option<i32>, &str, &str) {
     )
 }
 
-const RUNS: &str = "node edge runs in foundation-data. Stop it with Ctrl-C.\n";
+/// What `foundation start --name edge` prints on a first start.
+pub(crate) const RUNS: &str =
+    "node edge runs in foundation-data. Stop it with Ctrl-C.\n";
 
 #[test]
 fn a_node_prints_that_it_runs_and_exits_0_at_sigterm() {

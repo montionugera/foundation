@@ -754,8 +754,8 @@ fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
         let plan = planned(&node, &files).await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
         let (head, _) = split(&reply);
-        // The connector and its six status channels.
-        assert_eq!(head["output"]["added"], 7, "{head}");
+        // The connector and its nine status channels.
+        assert_eq!(head["output"]["added"], 10, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
     });
 }
@@ -808,7 +808,7 @@ fn refuses_a_connector_over_a_channel_of_a_subject_with_no_admin_on_its_key() {
     });
 }
 
-/// A connector under `site` that reads `yard.temp`, with six status channels.
+/// A connector under `site` that reads `yard.temp`, with nine status channels.
 const PLC: &str = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
                    read \"yard.temp\" { node_id = \"x\" }\n}\n";
 
@@ -880,7 +880,10 @@ fn refuses_an_apply_that_removes_the_status_channels_of_a_connector() {
         })
         .await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
-        let all = ["time", "state", "class", "restarts", "backoff", "error"];
+        let all = [
+            "time", "state", "class", "restarts", "backoff", "error", "in", "lost",
+            "missed",
+        ];
         assert_eq!(split(&reply), (unheld(&all), &b""[..]));
         assert_eq!(mesh.pointer().version, version);
     });
@@ -899,7 +902,9 @@ fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
         })
         .await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
-        let data = ["state", "class", "restarts", "backoff", "error"];
+        let data = [
+            "state", "class", "restarts", "backoff", "error", "in", "lost", "missed",
+        ];
         assert_eq!(split(&reply), (unheld(&data), &b""[..]));
         assert_eq!(mesh.pointer().version, version);
     });

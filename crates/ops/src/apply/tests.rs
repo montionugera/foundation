@@ -22,7 +22,7 @@ use types::name::{Name, Prefix};
 
 use super::{Applied, Effect, file};
 use crate::common::{
-    ADMIN, NODE, Reader, create_kinds, fail_sync, files, founded, front_ends, keys,
+    ADMIN, INFLUX, NODE, create_kinds, fail_sync, files, founded, front_ends, keys,
     name, placed_site, plant, solo,
 };
 use crate::error::Error;
@@ -611,7 +611,7 @@ fn refuses_each_plan_that_check_refuses_and_proposes_nothing() {
 fn refuses_a_config_that_its_kind_refuses_at_the_apply() {
     solo(|_, mesh| async move {
         let (_, plant) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
-        let refusing = Table::new().with("influx", Reader).with("opcua", Refuser);
+        let refusing = Table::new().with("influx", INFLUX).with("opcua", Refuser);
         let refused = problem("test.refused", "refused", "Fix it");
         refuses(
             &mesh,
@@ -1094,11 +1094,14 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
              + channel site.plc.status.backoff\n\
              + channel site.plc.status.class\n\
              + channel site.plc.status.error\n\
+             + channel site.plc.status.in\n\
+             + channel site.plc.status.lost\n\
+             + channel site.plc.status.missed\n\
              + channel site.plc.status.restarts\n\
              + channel site.plc.status.state\n\
              + channel site.plc.status.time\n\
              - channel site.plc\n\
-             7 to add, 0 to change, 1 to remove.\n\
+             10 to add, 0 to change, 1 to remove.\n\
              note: 2 definitions that Foundation made are not in the files: \
              @admin.@access, @admin.@subject\n"
         );
@@ -1107,7 +1110,7 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
             .expect("an apply");
         assert_eq!(
             applied.text(),
-            "Applied site.plan: 7 added, 1 removed, 2 homes listed.\n",
+            "Applied site.plan: 10 added, 1 removed, 2 homes listed.\n",
             "the plan showed:\n{}",
             output.text()
         );

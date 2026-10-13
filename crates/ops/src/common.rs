@@ -49,6 +49,7 @@ pub(crate) fn plant() -> &'static str {
 
 /// The output that the quickstart page shows, its one `text` block that starts with
 /// `start`.
+/// `shown` of `crates/node/tests/it/quickstart.rs` is its twin.
 pub(crate) fn shown(start: &str) -> &'static str {
     let shown: Vec<_> = blocks("text")
         .filter(|block| block.starts_with(start))
@@ -62,9 +63,16 @@ pub(crate) fn shown(start: &str) -> &'static str {
     text
 }
 
-/// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
-/// each attribute, so it stands in for each kind of the fixtures.
-pub(crate) struct Reader;
+/// A kind whose channels are the labels of its `read` blocks, which it writes, and
+/// whose counts are its field. It takes each attribute, so it stands in for each kind
+/// of the fixtures.
+pub(crate) struct Reader(&'static [&'static str]);
+
+/// The stand-in of the `opcua` kind, with its counts.
+pub(crate) const OPCUA: Reader = Reader(&["in", "lost", "missed"]);
+
+/// The stand-in of the `influx` kind, with its count.
+pub(crate) const INFLUX: Reader = Reader(&["confirmed"]);
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -83,7 +91,7 @@ impl kind::Kind for Reader {
         Ok(Channels {
             reader: None,
             writes: writes.clone(),
-            counts: Vec::new(),
+            counts: self.0.iter().map(|count| name(count)).collect(),
         })
     }
 
@@ -113,7 +121,7 @@ pub(crate) fn front_ends() -> FrontEnds {
 
 /// The kinds of the connectors of the fixtures.
 pub(crate) fn create_kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
+    Table::new().with("influx", INFLUX).with("opcua", OPCUA)
 }
 
 /// The node of `mesh`, whose channel keys count from 1.
