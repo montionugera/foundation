@@ -36,14 +36,6 @@ fn main() {
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
         println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
     }
-    println!("ns per write of a frame over {TICKS} writes");
-    println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
-    for nodes in COUNTS {
-        let mut writes = kind::writes(nodes, WARMUP + TICKS, time).split_off(WARMUP);
-        writes.sort_unstable();
-        let at = |percent: usize| writes[writes.len() * percent / 100];
-        println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
-    }
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");
     println!("{:<10} {:>10} {:>10}", "nodes", "start p50", "parse p50");
     for nodes in STARTS {
