@@ -47,7 +47,7 @@ pub(super) struct Influx {
 pub(super) struct Sample {
     pub(super) time: Stamp,
     pub(super) value: f64,
-    /// The OPC UA status. `None` in InfluxDB for a channel with no quality channel.
+    /// The OPC UA status. `None` in InfluxDB, which keeps no status yet (#2510).
     pub(super) quality: Option<Quality>,
 }
 

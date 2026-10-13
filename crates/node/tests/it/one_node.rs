@@ -1,6 +1,7 @@
 //! The exit tests of ONE NODE: one `foundation` node reads a simulated OPC UA server
 //! and pushes each sample to a simulated InfluxDB. Exit test 1 runs on the real binary
-//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb`.
+//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb --
+//! --include-ignored`.
 
 mod sim;
 
@@ -8,7 +9,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
 use types::quality::Quality;
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use self::sim::{Influx, Opcua, Sample};
 use crate::rig::Rig;
@@ -67,42 +68,34 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
         .replace("localhost:8086", &influx.to_string())
 }
 
-/// What the server served of one variable, and as many of the first samples of its
-/// channel as InfluxDB holds.
+/// The reads that the server answered of one variable, from the read of the first
+/// sample that InfluxDB holds of its channel, and as many of the first samples stored.
 #[derive(Debug)]
 struct Trace {
-    channel: &'static str,
     served: Vec<Sample>,
     stored: Vec<Sample>,
 }
 
-impl Trace {
-    /// Asserts that InfluxDB holds the value of each served sample, in order, each at a
-    /// time within [`BOUND`] of the time it was served.
-    fn assert_held(&self) {
-        let values = |samples: &[Sample]| -> Vec<u64> {
-            samples
-                .iter()
-                .map(|sample| sample.value.to_bits())
-                .collect()
-        };
-        let channel = self.channel;
-        assert_eq!(
-            values(&self.stored),
-            values(&self.served),
-            "{channel}: the values in order"
-        );
-        for (served, stored) in self.served.iter().zip(&self.stored) {
-            assert!(
-                (stored.time - served.time).nanos().abs() <= BOUND.nanos(),
-                "{channel}: {stored:?} is more than {BOUND} from {served:?}"
-            );
-        }
-    }
+/// The reads that the server answered of one variable, up to the last change.
+#[derive(Debug)]
+struct Reads {
+    channel: &'static str,
+    served: Vec<Sample>,
+    /// How many the server answered before the changes.
+    unchanged: usize,
 }
 
-/// Waits until InfluxDB holds a sample of each channel of `variables`.
-fn wait_first(plant: &Plant, variables: &[(&str, &'static str)]) {
+/// Waits until InfluxDB holds a sample of each channel of `variables`, changes each
+/// variable [`TICKS`] times with `quality`, and waits until InfluxDB holds each read
+/// that the server answered from then to the last change. Gives the trace of each
+/// variable. A trace starts at the first sample stored, since a connector's reader can
+/// open after the first reads. Panics when the server answered fewer than [`READS`]
+/// reads of a variable in the changes.
+fn held(
+    plant: &Plant,
+    variables: &[(&str, &'static str)],
+    quality: Quality,
+) -> Vec<Trace> {
     plant.rig.wait("InfluxDB holds the first values", || {
         let stored = plant.influx.stored();
         let empty: Vec<_> = variables
@@ -116,62 +109,73 @@ fn wait_first(plant: &Plant, variables: &[(&str, &'static str)]) {
             Err(format!("no sample of {empty:?}"))
         }
     });
-}
-
-/// Changes each variable [`TICKS`] times with `quality`, and gives each read that the
-/// server answered of each variable of `variables`, by its channel. Panics when the
-/// server answered fewer than [`READS`] reads of a variable.
-fn change(
-    plant: &Plant,
-    variables: &[(&str, &'static str)],
-    quality: Quality,
-) -> BTreeMap<&'static str, Vec<Sample>> {
+    let unchanged = plant.opcua.served();
     plant.opcua.change(TICKS, quality);
     let mut served = plant.opcua.served();
-    variables
+    let reads: Vec<_> = variables
         .iter()
         .map(|&(variable, channel)| {
-            let reads = served
+            let served = served
                 .remove(variable)
                 .expect("invariant: the server serves each variable");
-            assert!(reads.len() >= READS, "{channel}: {} reads", reads.len());
-            (channel, reads)
+            let unchanged = unchanged.get(variable).map_or(0, Vec::len);
+            let changed = served.len() - unchanged;
+            assert!(
+                changed >= READS,
+                "{channel}: {changed} reads in the changes"
+            );
+            Reads {
+                channel,
+                served,
+                unchanged,
+            }
+        })
+        .collect();
+    plant.rig.wait("InfluxDB holds each read", || {
+        caught_up(&reads, plant.influx.stored())
+    })
+}
+
+/// The trace of each of `reads`, once `stored` (by channel) holds each read from one
+/// that the server answered before the changes. Else `Err` with the counts.
+fn caught_up(
+    reads: &[Reads],
+    mut stored: BTreeMap<String, Vec<Sample>>,
+) -> Result<Vec<Trace>, String> {
+    reads
+        .iter()
+        .map(|reads| {
+            let stored = stored.remove(reads.channel).unwrap_or_default();
+            let first = (0..reads.unchanged)
+                .find(|&first| starts_with(&stored, &reads.served[first..]))
+                .ok_or_else(|| {
+                    format!(
+                        "{}: InfluxDB holds {} samples from {:?}, of {} reads served, \
+                         {} before the changes",
+                        reads.channel,
+                        stored.len(),
+                        stored.first(),
+                        reads.served.len(),
+                        reads.unchanged
+                    )
+                })?;
+            let served = reads.served[first..].to_vec();
+            Ok(Trace {
+                stored: stored[..served.len()].to_vec(),
+                served,
+            })
         })
         .collect()
 }
 
-/// The trace of each channel of `served`, once InfluxDB holds as many samples of each
-/// as the server served. Else `Err` with the counts.
-fn caught_up(
-    plant: &Plant,
-    served: &BTreeMap<&'static str, Vec<Sample>>,
-) -> Result<Vec<Trace>, String> {
-    let mut stored = plant.influx.stored();
-    let traces: Vec<_> = served
-        .iter()
-        .map(|(&channel, served)| Trace {
-            channel,
-            served: served.clone(),
-            stored: stored.remove(channel).unwrap_or_default(),
+/// Whether `stored` starts with the value of each of `served`, in order, each at a time
+/// within [`BOUND`] of the time it was served.
+fn starts_with(stored: &[Sample], served: &[Sample]) -> bool {
+    stored.len() >= served.len()
+        && served.iter().zip(stored).all(|(served, stored)| {
+            stored.value.to_bits() == served.value.to_bits()
+                && (stored.time - served.time).nanos().abs() <= BOUND.nanos()
         })
-        .collect();
-    if traces
-        .iter()
-        .all(|trace| trace.stored.len() >= trace.served.len())
-    {
-        return Ok(traces
-            .into_iter()
-            .map(|mut trace| {
-                trace.stored.truncate(trace.served.len());
-                trace
-            })
-            .collect());
-    }
-    let counts: Vec<_> = traces
-        .iter()
-        .map(|trace| (trace.channel, trace.served.len(), trace.stored.len()))
-        .collect();
-    Err(format!("each channel, served, and stored: {counts:?}"))
 }
 
 /// The count `key` of the connector `name` in `status`.
@@ -194,6 +198,56 @@ fn counts_above(rig: &Rig, floor: (u64, u64)) -> Result<(u64, u64), String> {
 }
 
 #[test]
+fn a_trace_starts_at_the_first_stored_read_before_the_changes() {
+    let sample = |nanos, value| Sample {
+        time: Stamp::from_nanos(nanos),
+        value,
+        quality: None,
+    };
+    let served: Vec<_> = (0..5_u32)
+        .map(|at| sample(i64::from(at), f64::from(at)))
+        .collect();
+    let reads = |unchanged| {
+        [Reads {
+            channel: "plant.spike",
+            served: served.clone(),
+            unchanged,
+        }]
+    };
+    let stored_by =
+        |samples: &[Sample]| BTreeMap::from([("plant.spike".into(), samples.to_vec())]);
+    let traces = caught_up(&reads(2), stored_by(&served[1..])).expect("caught up");
+    let [trace] = &traces[..] else {
+        panic!("one variable: {traces:?}");
+    };
+    assert_eq!(
+        (&trace.served[..], &trace.stored[..]),
+        (&served[1..], &served[1..])
+    );
+    let missed = |stored: &[Sample], unchanged| {
+        let first = stored.first();
+        let held = stored.len();
+        let error = format!(
+            "plant.spike: InfluxDB holds {held} samples from {first:?}, of 5 reads \
+             served, {unchanged} before the changes"
+        );
+        (
+            caught_up(&reads(unchanged), stored_by(stored)).unwrap_err(),
+            error,
+        )
+    };
+    let (got, want) = missed(&served[2..], 2);
+    assert_eq!(got, want, "the first read after the changes started");
+    let (got, want) = missed(&[&served[..2], &served[3..]].concat(), 2);
+    assert_eq!(got, want, "a gap");
+    let late = [sample(BOUND.nanos() + 1, 0.0)];
+    let (got, want) = missed(&[&late[..], &served[1..]].concat(), 1);
+    assert_eq!(got, want, "a time out of bound");
+    let (got, want) = missed(&[], 2);
+    assert_eq!(got, want, "none stored");
+}
+
+#[test]
 fn each_config_names_the_served_addresses() {
     let opcua = SocketAddr::from(([127, 0, 0, 1], 4840));
     let influx = SocketAddr::from(([127, 0, 0, 1], 9086));
@@ -209,26 +263,15 @@ fn each_config_names_the_served_addresses() {
 #[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
-    wait_first(&plant, &VARIABLES);
-    let served = change(&plant, &VARIABLES, Quality::GOOD);
-    for trace in plant
-        .rig
-        .wait("InfluxDB holds each read", || caught_up(&plant, &served))
-    {
-        trace.assert_held();
-    }
+    held(&plant, &VARIABLES, Quality::GOOD);
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401, #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
-    wait_first(&plant, spike);
-    let served = change(&plant, spike, BAD);
-    let traces = plant
-        .rig
-        .wait("InfluxDB holds each read", || caught_up(&plant, &served));
+    let traces = held(&plant, spike, BAD);
     let [trace] = &traces[..] else {
         panic!("one variable: {traces:?}");
     };
@@ -327,15 +370,8 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             _ => Err(format!("{status:#?}")),
         }
     });
-    let mut plant = Plant { rig, opcua, influx };
-    let served = change(&plant, &VARIABLES, Quality::GOOD);
-    plant.influx.serve();
-    for trace in plant
-        .rig
-        .wait("InfluxDB holds each read", || caught_up(&plant, &served))
-    {
-        trace.assert_held();
-    }
+    influx.serve();
+    held(&Plant { rig, opcua, influx }, &VARIABLES, Quality::GOOD);
 }
 
 #[test]
