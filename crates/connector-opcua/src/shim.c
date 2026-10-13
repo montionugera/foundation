@@ -617,7 +617,7 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
 }
 
 /* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
- * or NULL on a failure. */
+ * or NULL when out of memory. */
 UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));

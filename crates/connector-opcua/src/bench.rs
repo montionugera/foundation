@@ -21,6 +21,7 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
+use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
 use crate::event::Loop;
@@ -41,15 +42,21 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// Panics if open62541 refuses the client, or, with the status name, if it gives a
-    /// status other than `Good` for the first run or a timer.
+    /// With the status name, if open62541 gives a status other than `Good` for the
+    /// first run or a timer.
+    ///
+    /// # Aborts
+    ///
+    /// If open62541 cannot allocate the client, as [`alloc::exhausted`] says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(clock, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
-        let raw = NonNull::new(client).expect("open62541 refused the client");
+        let Some(raw) = NonNull::new(client) else {
+            alloc::exhausted()
+        };
         let mut client = Self { raw, events };
         client.run();
         let events = &client.events;
@@ -200,7 +207,9 @@ impl Manager {
                 let client = unsafe {
                     ffi::shim_client_new(events.raw(), crate::connection::CHUNKS)
                 };
-                let client = NonNull::new(client).expect("open62541 refused a client");
+                let Some(client) = NonNull::new(client) else {
+                    alloc::exhausted()
+                };
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
                     ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())

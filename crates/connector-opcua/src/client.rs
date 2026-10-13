@@ -100,9 +100,9 @@ impl Client {
     /// is not active after the request timeout of the client (5 s), else the status of
     /// open62541 when it refuses `url` or the connect fails.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// If open62541 refuses the client.
+    /// If open62541 cannot allocate the client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
         net: Net,
@@ -114,7 +114,9 @@ impl Client {
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
+        let Some(raw) = NonNull::new(raw) else {
+            alloc::exhausted()
+        };
         // SAFETY: `raw` is a new client of the loop of `connections`.
         unsafe { Self::start(clock, connections, raw, &url) }.await
     }
