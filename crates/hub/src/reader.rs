@@ -72,10 +72,7 @@ pub struct Config {
 pub struct Received<'a> {
     view: View<'a>,
     lens: &'a Lens,
-    /// The `names` of the reader.
-    names: Option<&'a Names>,
-    /// The `given` of the reader.
-    given: &'a Cell<Option<u64>>,
+    lent: &'a Lent,
 }
 
 impl<'a> Received<'a> {
@@ -99,9 +96,10 @@ impl<'a> Received<'a> {
     /// If `entry` is not an entry that [`Self::view`] gives.
     #[must_use]
     pub fn name(&self, entry: usize) -> &'a str {
-        let names = self
-            .names
-            .expect("invariant: the hub calls no `name` on a reader of a client read");
+        let names =
+            self.lent.names.as_deref().expect(
+                "invariant: the hub calls no `name` on a reader of a client read",
+            );
         let place = names.find(&self.lens.set, entry).unwrap_or_else(|| {
             panic!("the entry {entry} is not a channel of the reader")
         });
@@ -113,7 +111,7 @@ impl<'a> Received<'a> {
     #[must_use]
     pub fn position(&self) -> Position {
         let position = self.lens.after(self.view.frame());
-        self.given.set(Some(position.live));
+        self.lent.given.set(Some(position.live));
         position
     }
 }
@@ -332,13 +330,20 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
+    lent: Lent,
+    /// The frame that the last [`Received`] lends.
+    frame: Option<Frame>,
+}
+
+/// What a reader lends to each [`Received`], by one reference, so that `Received`
+/// stays as small as with no names.
+#[derive(Debug, Default)]
+struct Lent {
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The frame that the last [`Received`] lends.
-    frame: Option<Frame>,
 }
 
 /// Where a reader's frames come from.
@@ -464,14 +469,13 @@ impl Reader {
                 listed.slot(&slots);
                 Self {
                     index: slots[index],
-                    names: None,
                     source: Source::Remote(Box::new(remote)),
-                    given: Cell::new(None),
+                    lent: Lent::default(),
                     frame: None,
                 }
             }
         };
-        reader.names = Some(Box::new(listed));
+        reader.lent.names = Some(Box::new(listed));
         Ok(reader)
     }
 
@@ -499,8 +503,7 @@ impl Reader {
         Ok(Self {
             source: Source::Local(local),
             index: slot,
-            names: None,
-            given: Cell::new(None),
+            lent: Lent::default(),
             frame: None,
         })
     }
@@ -543,8 +546,7 @@ impl Reader {
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
-                names: self.names.as_deref(),
-                given: &self.given,
+                lent: &self.lent,
             })
         }
     }
@@ -566,7 +568,7 @@ impl Reader {
             position.index == self.index,
             "the position is of another index than the reader's"
         );
-        let Some(given) = self.given.get() else {
+        let Some(given) = self.lent.given.get() else {
             panic!(
                 "the position is past each position that this reader gave: it gave none"
             );
@@ -1052,6 +1054,13 @@ mod tests {
     use wire::hub::Refusal;
 
     use super::*;
+
+    /// `Reader::next` returns a `Received` for each frame, so the names add no word
+    /// to it.
+    #[test]
+    fn keeps_a_received_at_32_bytes() {
+        assert_eq!(size_of::<Received<'_>>(), 32);
+    }
 
     #[test]
     fn names_the_code_of_a_refusal_and_what_the_home_meant() {
