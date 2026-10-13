@@ -59,7 +59,8 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
 }
 
 /// Runs the test `name` as `output` does, asserts that it aborts, and gives its
-/// output. On Windows it asserts only the status of a Rust abort.
+/// output. On Windows it asserts the status of a Rust abort, or of a panic that no
+/// frame catches.
 pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     let output = output(name, envs);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -72,11 +73,14 @@ pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     }
     #[cfg(windows)]
     {
-        // Rust aborts through `__fastfail`, which ends the process with this status.
+        // Rust aborts through `__fastfail`. A panic in the `listen` callback of C
+        // ends instead with the exception of the libgcc unwinder, which nothing
+        // handles (#2579).
         const STATUS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409_u32.cast_signed();
+        const STATUS_GCC_THROW: i32 = 0x2047_4343;
         let code = output.status.code();
-        let expected = Some(STATUS_STACK_BUFFER_OVERRUN);
-        assert_eq!(code, expected, "{name} {envs:?}: {stderr}");
+        let ends = [Some(STATUS_STACK_BUFFER_OVERRUN), Some(STATUS_GCC_THROW)];
+        assert!(ends.contains(&code), "{name} {envs:?}: {code:?} {stderr}");
     }
     output
 }
