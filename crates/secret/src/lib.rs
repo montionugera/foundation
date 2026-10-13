@@ -5,10 +5,14 @@ use std::fmt;
 
 use zeroize::Zeroizing;
 
+mod reads;
+mod resolver;
 pub mod seal;
 mod source;
 pub mod store;
 
+pub use reads::Reads;
+pub use resolver::Resolver;
 pub use source::Source;
 
 /// A secret value. `Debug` prints `<secret>`, never the bytes. Its buffer is

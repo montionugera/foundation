@@ -12,6 +12,7 @@ use std::process::Command;
 use std::task::Poll;
 
 use env::files::{Files, Mode};
+use secret::Reads;
 use secret::store::{Error, File, Request, Store};
 use types::name::Name;
 
@@ -60,7 +61,7 @@ where
 }
 
 async fn reads(files: Files, _: PathBuf) {
-    let store = File::new(files, Path::new("secrets"));
+    let store = File::new(Reads::new(files), Path::new("secrets"));
     let value = store.get(&name()).await.expect("the file holds the value");
     assert_eq!(value.expose(), PLAIN, "the file store reads the value");
 }
@@ -68,7 +69,7 @@ async fn reads(files: Files, _: PathBuf) {
 /// Cuts the file to `PLAIN` after the get opened it, so the read fills 32 of its 33
 /// bytes and fails.
 async fn cut(files: Files, data: PathBuf) {
-    let store = File::new(files.clone(), Path::new("secrets"));
+    let store = File::new(Reads::new(files.clone()), Path::new("secrets"));
     let name = name();
     let mut get = store.get(&name);
     hold_read(&files, &data, &mut get).await;
@@ -83,7 +84,7 @@ async fn cut(files: Files, data: PathBuf) {
 
 /// Drops the get while its read waits on the I/O thread.
 async fn dropped(files: Files, data: PathBuf) {
-    let store = File::new(files.clone(), Path::new("secrets"));
+    let store = File::new(Reads::new(files.clone()), Path::new("secrets"));
     let name = name();
     let mut get = store.get(&name);
     hold_read(&files, &data, &mut get).await;

@@ -1,10 +1,10 @@
 use std::future::poll_fn;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::Wake;
+use std::task::{Context, Poll, Wake, Waker};
 
-use env::files::Operation;
+use env::files::{Files, Mode, Operation};
 use types::time::Span;
 
 use super::*;
@@ -50,12 +50,12 @@ async fn get(store: &File, name: &str) -> Result<Vec<u8>, Error> {
 }
 
 fn store(files: Files) -> File {
-    File::new(files, Path::new("secrets"))
+    File::new(Reads::new(files), Path::new("secrets"))
 }
 
 fn missing(path: &str) -> Result<Vec<u8>, Error> {
     Err(Error::Missing {
-        detail: format!("write it to the file /data/{path}"),
+        detail: format!("the file /data/{path} is not there. Write the value to it"),
     })
 }
 
@@ -102,7 +102,7 @@ fn gives_the_new_value_at_the_next_get_after_a_change() {
 #[test]
 fn has_no_value_when_the_directory_or_the_file_is_not_there() {
     on_sim(|_, files| async move {
-        let store = File::new(files.clone(), Path::new("keys/node"));
+        let store = File::new(Reads::new(files.clone()), Path::new("keys/node"));
         assert_eq!(
             get(&store, "plant.token").await,
             missing("keys/node/plant.token")
@@ -254,7 +254,7 @@ fn a_second_get_waits_until_the_first_ends() {
         assert_eq!(first.await, Ok(b"a".to_vec()));
         assert_eq!(wakes(&count), 1, "the end of the first wakes the second");
         assert_eq!(second.await, Ok(b"b".to_vec()));
-        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
+        assert!(store.reads.idle(), "the gets leave no turn");
     });
 }
 
@@ -271,7 +271,7 @@ fn a_dropped_get_that_reads_gives_the_turn_to_the_next() {
         drop(first);
         assert_eq!(wakes(&count), 1, "the drop of the first wakes the second");
         assert_eq!(second.await, Ok(b"b".to_vec()));
-        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
+        assert!(store.reads.idle(), "the gets leave no turn");
     });
 }
 
@@ -293,7 +293,7 @@ fn a_dropped_get_that_waits_keeps_the_order_of_the_others() {
         assert_eq!(wakes(&count_second), 0, "the dropped get left the order");
         assert_eq!(wakes(&count_third), 1, "the first wakes the third");
         assert_eq!(third.await, Ok(b"c".to_vec()));
-        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
+        assert!(store.reads.idle(), "the gets leave no turn");
     });
 }
 
@@ -315,12 +315,12 @@ fn shows_its_directory_and_no_value_in_debug() {
 #[should_panic(expected = "a secret directory is relative with no `..`: /secrets")]
 fn refuses_an_absolute_directory() {
     let (_sim, files) = files();
-    drop(File::new(files, Path::new("/secrets")));
+    drop(File::new(Reads::new(files), Path::new("/secrets")));
 }
 
 #[test]
 #[should_panic(expected = "a secret directory is relative with no `..`: a/../secrets")]
 fn refuses_a_directory_with_a_parent_segment() {
     let (_sim, files) = files();
-    drop(File::new(files, Path::new("a/../secrets")));
+    drop(File::new(Reads::new(files), Path::new("a/../secrets")));
 }

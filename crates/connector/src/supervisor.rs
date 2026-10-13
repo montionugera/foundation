@@ -1127,8 +1127,8 @@ mod tests {
         });
         result.expect("the second run reads the secret");
         let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
-        let missing = "the secret plant.token: the store has no value: write it to the \
-                       file /data/secrets/plant.token";
+        let missing = "the secret plant.token: the file /data/secrets/plant.token is \
+                       not there. Write the value to it";
         assert_eq!(texts, ["", missing, missing, missing, "", ""]);
     }
 

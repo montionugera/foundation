@@ -38,8 +38,8 @@ pub type Request<'a> = Pin<Box<dyn Future<Output = Result<Value, Error>> + 'a>>;
 pub enum Error {
     /// The store has no value for the name.
     Missing {
-        /// The store's own text: why it has no value, and where to put it when the
-        /// store can say.
+        /// The store's own text, which `Display` gives alone: why it has no value,
+        /// and where to put it when the store can say, as whole sentences.
         detail: String,
     },
     /// The store cannot hold the name, at any time. Renaming the secret fixes it.
@@ -62,7 +62,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing { detail } => write!(f, "the store has no value: {detail}"),
+            Self::Missing { detail } => f.write_str(detail),
             Self::BadName { detail } => {
                 write!(f, "the store cannot hold the name. {detail}")
             }
@@ -164,9 +164,10 @@ mod tests {
         let cases = [
             (
                 Error::Missing {
-                    detail: "write it to the file secrets/a".into(),
+                    detail: "the file secrets/a is not there. Write the value to it"
+                        .into(),
                 },
-                "the store has no value: write it to the file secrets/a",
+                "the file secrets/a is not there. Write the value to it",
             ),
             (
                 Error::BadName {

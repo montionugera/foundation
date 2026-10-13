@@ -1113,8 +1113,10 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let secrets =
-                secret::store::File::new(files.clone(), &directory::secrets());
+            let secrets = secret::store::File::new(
+                secret::Reads::new(files.clone()),
+                &directory::secrets(),
+            );
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,

@@ -1025,15 +1025,15 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "the secret plant.influx_token: the store has no value: write it to the \
-             file /data/secrets/plant.influx_token"
+            "the secret plant.influx_token: the file \
+             /data/secrets/plant.influx_token is not there. Write the value to it"
         );
         let source = error.source().map(ToString::to_string);
         assert_eq!(
             source.as_deref(),
             Some(
-                "the store has no value: write it to the file \
-                 /data/secrets/plant.influx_token"
+                "the file /data/secrets/plant.influx_token is not there. Write the \
+                 value to it"
             )
         );
         assert_eq!(read.expect("the store has the value"), b"t0");

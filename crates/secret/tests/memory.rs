@@ -1,17 +1,19 @@
-//! The heap bytes that the gets of one file store hold at once, as SECRET STORES AS
-//! ADAPTERS states them. The count covers every thread, so this binary has no test
+//! The heap bytes that the gets of one resolver hold at once, through its file store
+//! and absolute files, as SECRET STORES AS ADAPTERS states them. The count covers every thread, so this binary has no test
 //! harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::collections::BTreeMap;
 use std::future::poll_fn;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 
 use env::files::Mode;
-use secret::store::{File, Store};
-use types::name::Name;
+use secret::store::File;
+use secret::{Reads, Resolver, Source};
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -41,7 +43,8 @@ fn main() {
 }
 
 /// The most heap bytes held at once during `gets` gets at once of a file of `len`
-/// bytes, more than before them. Each get drops its value when it ends.
+/// bytes, more than before them, half from the store and half from an absolute
+/// file. Each get drops its value when it ends.
 fn peak(len: usize, gets: usize) -> usize {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
@@ -60,13 +63,27 @@ fn peak(len: usize, gets: usize) -> usize {
         file.write_at(0, &[block]).await.expect("writes it");
         file.close().await;
         drop(pool);
-        let store = File::new(files, Path::new("secrets"));
-        let name: Name = "plant.key".parse().expect("a valid name");
-        let read = async || {
-            let value = store.get(&name).await.expect("the file holds the value");
+        let absolute = Path::new("/run/secrets/plant.key");
+        node.paths()
+            .write(absolute, &vec![b'k'; len])
+            .expect("writes it");
+        let reads = Reads::new(files);
+        let store = File::new(reads.clone(), Path::new("secrets"));
+        let resolver = Resolver::new(Arc::new(BTreeMap::new()), reads, Box::new(store));
+        let sources = [
+            Source::Secret("plant.key".parse().expect("a valid name")),
+            Source::File(absolute.into()),
+        ];
+        let read = async |source| {
+            let value = resolver
+                .get(source)
+                .await
+                .expect("the file holds the value");
             assert_eq!(value.expose().len(), len, "the get reads the whole file");
         };
-        let mut reads: Vec<Pin<Box<_>>> = (0..gets).map(|_| Box::pin(read())).collect();
+        let mut reads: Vec<Pin<Box<_>>> = (0..gets)
+            .map(|get| Box::pin(read(&sources[get % 2])))
+            .collect();
         let before = ALLOCATOR.held();
         ALLOCATOR.reset_peak();
         poll_fn(|cx| {
