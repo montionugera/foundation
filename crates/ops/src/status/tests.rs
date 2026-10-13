@@ -731,6 +731,23 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its
 }
 
 #[test]
+fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_channel_of_its_name() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            reader("edge"),
+            "channel \"edge\" { kind = \"index\" }\nplacement \"p\" {\n  select = \
+             \"edge\"\n  home = \"edge\"\n}\n"
+                .to_owned(),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest), (expected, Vec::new()));
+    });
+}
+
+#[test]
 fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
     founded(
         &["site.edge"],
