@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -39,10 +38,36 @@ UA_DateTime UA_DateTime_now(void) { return 0; }
 UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
+/* The bytes of a line to stderr, with its newline. */
+#define LOG_BYTES 512
+
+/* Ends the `length` bytes of `line` with a newline, after a cut to `LOG_BYTES`, and
+ * writes them to stderr in one call, with the same bytes on each OS. So a line takes
+ * no `stdio` lock and does not mix with a line of another thread. */
+static void put_line(char line[LOG_BYTES], size_t length) {
+    if(length > LOG_BYTES - 1)
+        length = LOG_BYTES - 1;
+    line[length] = '\n';
+    /* A failed write of a line to stderr has nowhere to go. */
+#ifdef _WIN32
+    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
+    DWORD written;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    WriteFile(err, line, (DWORD)(length + 1), &written, NULL);
+#else
+    ssize_t written = write(STDERR_FILENO, line, length + 1);
+#endif
+    (void)written;
+}
+
 /* The library calls these only when a config has no event loop, and ours always has
  * one, so a call is a defect. */
 static void refuse(const char *name) {
-    fprintf(stderr, "connector-opcua: open62541 called %s, which is not built\n", name);
+    char line[LOG_BYTES];
+    int length = mp_snprintf(line, sizeof(line),
+                             "connector-opcua: open62541 called %s, which is not built",
+                             name);
+    put_line(line, (size_t)length);
     abort();
 }
 
@@ -334,12 +359,8 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
 static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
                                      "fatal"};
 
-/* The bytes of a log line, with its newline. */
-#define LOG_BYTES 512
-
-/* Writes each message of level warning and up to fd 2, in one `write`, so a line takes
- * no `stdio` lock and does not mix with a line of another thread. A line longer than
- * `LOG_BYTES` is cut. It allocates nothing. */
+/* Writes each message of level warning and up to stderr with `put_line`. It allocates
+ * nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
     (void)context;
@@ -351,20 +372,7 @@ static void log_message(void *context, UA_LogLevel level, UA_LogCategory categor
     int prefix = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s: ",
                              LEVELS[level / 100 - 1]);
     int text = mp_vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, msg, args);
-    size_t length = (size_t)prefix + (size_t)text;
-    if(length > LOG_BYTES - 1)
-        length = LOG_BYTES - 1;
-    line[length] = '\n';
-    /* A failed write of a log line has nowhere to go. */
-#ifdef _WIN32
-    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
-    DWORD written;
-    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    WriteFile(err, line, (DWORD)(length + 1), &written, NULL);
-#else
-    ssize_t written = write(STDERR_FILENO, line, length + 1);
-#endif
-    (void)written;
+    put_line(line, (size_t)prefix + (size_t)text);
 }
 
 /* Logs the `length` bytes at `message` as a warning through the logger of `el`.
@@ -423,8 +431,12 @@ void shim_loop_free(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
     for(int pass = 0; loop->queued; pass++) {
         if(pass == FREE_PASSES) {
-            fprintf(stderr, "connector-opcua: open62541 queued delayed callbacks for "
-                            "%d passes of a loop free\n", FREE_PASSES);
+            char line[LOG_BYTES];
+            int length = mp_snprintf(line, sizeof(line),
+                                     "connector-opcua: open62541 queued delayed "
+                                     "callbacks for %d passes of a loop free",
+                                     FREE_PASSES);
+            put_line(line, (size_t)length);
             abort();
         }
         run_delayed(loop);
