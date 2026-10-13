@@ -48,8 +48,8 @@ pub(crate) struct Status {
     /// Each count that the kind names, by name, or `None` when `state` is `unknown`.
     pub(crate) counts: Option<BTreeMap<String, u64>>,
     /// The error that the running kind shows, or else the error that ended the last
-    /// run. `None` when the last run returned `Ok`, no run ended, the running kind
-    /// cleared the error, or `state` is `unknown`.
+    /// run. `None` when the running kind cleared the error last, when it shows none and
+    /// the last run returned `Ok` or no run ended, or when `state` is `unknown`.
     pub(crate) error: Option<Failure>,
 }
 
