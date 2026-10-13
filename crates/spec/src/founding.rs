@@ -49,7 +49,7 @@ pub fn create(admin: PublicKey) -> BTreeMap<Name, Definition> {
     ])
 }
 
-/// The name of the subject that holds the key in `admin.key`: `@admin`.
+/// The name of the subject that [`create`] makes for the key `admin`: `@admin`.
 #[must_use]
 #[expect(clippy::missing_panics_doc, reason = "`@admin` always reads as a name")]
 pub fn admin() -> Name {

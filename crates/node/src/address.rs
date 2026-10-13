@@ -39,7 +39,7 @@ pub(crate) struct Address {
     pub(crate) bound: SocketAddr,
 }
 
-/// Where a program dials `port`: its UDP socket, as it is bound.
+/// Where `port` is bound: its UDP socket.
 pub(crate) fn bound(port: &transport::Port) -> SocketAddr {
     let udp = port
         .addresses()
