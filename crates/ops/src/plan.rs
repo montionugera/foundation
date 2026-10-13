@@ -1,7 +1,6 @@
 //! Plans the change from config files to the applied spec.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 use document::{Document, Span};
 use schemars::JsonSchema;
@@ -10,7 +9,7 @@ use serde_json::Value;
 use spec::definition::Definition;
 use types::name::Name;
 
-use crate::error::{Error, Place};
+use crate::error::{Error, Place, Sources};
 use crate::front_end::{self, File, FrontEnds};
 
 #[cfg(test)]
@@ -39,7 +38,7 @@ pub(crate) fn plan(
 
 /// The config files of one plan, each read into its Document.
 pub(crate) struct Documents {
-    paths: Vec<PathBuf>,
+    sources: Sources,
     documents: Vec<Document>,
 }
 
@@ -54,10 +53,25 @@ impl Documents {
     ///
     /// As [`front_end::read`] panics.
     pub(crate) fn read(files: &[File], front_ends: &FrontEnds) -> Result<Self, Error> {
-        let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        let sources = Sources::of(files);
         match front_end::read(files, front_ends) {
-            Ok(documents) => Ok(Self { paths, documents }),
-            Err(diagnostics) => Err(Error::config(diagnostics, &paths)),
+            Ok(documents) => Ok(Self { sources, documents }),
+            Err(diagnostics) => Err(Error::config(diagnostics, &sources)),
+        }
+    }
+
+    /// The tree key of each definition of the files, in order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::check`].
+    pub(crate) fn names(
+        &self,
+        kinds: &connector::kind::Table,
+    ) -> Result<Vec<Name>, Error> {
+        match config::check(&self.documents, kinds) {
+            Ok(entries) => Ok(entries.into_keys().collect()),
+            Err(diagnostics) => Err(Error::config(diagnostics, &self.sources)),
         }
     }
 
@@ -74,11 +88,11 @@ impl Documents {
         members: &BTreeSet<Name>,
         kinds: &connector::kind::Table,
     ) -> Result<(Output, config::plan::Plan), Error> {
-        let paths = &self.paths;
+        let sources = &self.sources;
         let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, paths))?;
+            .map_err(|diagnostics| Error::config(diagnostics, sources))?;
         let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
-            .map(|(name, line)| Change::of(name, line, paths))
+            .map(|(name, line)| Change::of(name, line, sources))
             .collect();
         changes.sort_by(|(a, _), (b, _)| a.cmp(b));
         let changes: Vec<Change> =
@@ -128,10 +142,6 @@ impl Output {
     /// One line for each change, with a `key` line under it for each fingerprint, then
     /// the counts, then one `note` line with the tree key of each definition that
     /// Foundation made, when the spec holds one.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the table entries of #1744 call it")
-    )]
     pub(crate) fn text(&self) -> String {
         let lines: Vec<String> = self
             .changes
@@ -328,7 +338,7 @@ fn lines<'a>(
 
 impl Change {
     /// The output of `line` at the tree key `name`.
-    fn of(name: &Name, line: Line<'_>, paths: &[PathBuf]) -> (Order, Self) {
+    fn of(name: &Name, line: Line<'_>, sources: &Sources) -> (Order, Self) {
         let (kind, span, definition) = match line {
             Line::Add(entry) | Line::Change(entry) => {
                 let definition =
@@ -357,7 +367,7 @@ impl Change {
             action: line.action(),
             kind: kind.as_str().to_owned(),
             name: label.to_string(),
-            place: span.map(|span| Place::of(span, paths)),
+            place: span.map(|span| sources.place(span)),
             fingerprints,
         };
         (order, change)
@@ -373,10 +383,6 @@ pub(crate) enum Action {
 }
 
 impl Action {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the table entries of #1744 call it")
-    )]
     const fn symbol(self) -> char {
         match self {
             Self::Add => '+',

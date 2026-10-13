@@ -38,6 +38,26 @@
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104976908). The
   reasons: `laptop.architect` (2026-10-11T03:41:31Z,
   https://github.com/synnaxlabs/foundation/pull/2348#issuecomment-6105112575).
+  A kind returns `Retry` when a session of it ends because the spec removed one of its
+  channels (`hub::reader::Ended::Removed`, `hub::writer::Failure::Removed`): the next
+  start opens the session again from its names or its selector, so it takes a channel
+  that the spec defined again with a new key, and gets the open errors above when the
+  channel is gone (`laptop.architect-2`, 2026-10-12T20:15:39Z:
+  https://github.com/synnaxlabs/foundation/issues/2442#issuecomment-6131873162).
+  A kind returns each end of its reader and each failed write with `?`:
+  `From<hub::reader::Ended>` and `From<hub::writer::Failure>` for `kind::Error` give
+  the class, each in one match with no `_` arm. `Retry`: reader `Behind`, `Removed`,
+  `Replaced`, and `Buffer`, and writer `Removed` and `Home` `Full` and `Disk`.
+  `Config`: writer `Home` `Large` (`connector.large-frame`, with the fix "Give the
+  connector fewer channels"), because only a spec change or a kind that splits its
+  frames fixes it. A panic with `invariant:`: reader `Stream`, `Refused`, `Message`,
+  `Frame`, `Pool`, and `Credit`, because a named reader opens only at its home, and
+  writer `Home` `Resend`, because a kind labels no frame resend. A kind that wants
+  another class matches the end before `?` (the `?`, the two `From` impls, and the
+  match with no `_` arm: `laptop.architect-2`, 2026-10-12T20:24:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2489#issuecomment-6132012409, items
+  1 and 2; the classes: `laptop.architect-2`, 2026-10-13T00:57:58Z:
+  https://github.com/synnaxlabs/foundation/issues/2489#issuecomment-6135722511).
   `Table::check` takes where the file names the kind and puts `connector.unknown-kind`
   there; `discover` and `run` take their kind from the spec, which has no spans
   (`laptop.architect-2`,

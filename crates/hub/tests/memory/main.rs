@@ -1,8 +1,8 @@
 //! A request that the hub refuses for its length allocates no body, the heap of a hub
-//! does not grow over many opens and closes of a named complete reader, and a read
-//! that waits for its home holds no places. This
-//! binary has no test harness: the count covers each thread, and a harness allocates
-//! on its own thread at any time.
+//! does not grow over many opens and closes of a named complete reader, a read that
+//! waits for its home holds no places, and an open defines no channel of the spec
+//! that its hub applied again. This binary has no test harness: the count covers each
+//! thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -23,8 +23,10 @@ mod region;
 mod sessions;
 
 use std::cell::Cell;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Waker};
 
 use agent::{Agent, SUBJECT, name, reset_with};
 use hub::reader::{self, Mode};
@@ -52,6 +54,8 @@ fn main() {
     holds_no_places_while_a_read_waits_for_its_home();
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
+    defines_no_channel_again_at_an_open_of_the_spec_applied();
+    defines_no_channel_again_at_the_first_poll_of_the_spec_task();
 }
 
 /// Patterns `x` that fill the open of a read of `value` to [`OPEN_BYTES_MAX`]: one
@@ -73,9 +77,15 @@ fn holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap() {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
         let transport = Rc::new(transport);
-        let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
-        let hub = common::hub_in(&node, tasks.clone(), Some(region), &[]).await;
+        let region = region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            common::definitions(&[]),
+        )
+        .await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -294,9 +304,11 @@ fn holds_no_places_while_a_read_waits_for_its_home() {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
         let transport = Rc::new(transport);
+        let (other, definitions) = (Vec::new(), common::definitions(&wide));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
-        let hub = common::hub_in(&node, tasks.clone(), Some(region), &wide).await;
+            region::open(&node, &tasks, Rc::clone(&transport), other, definitions)
+                .await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -354,7 +366,7 @@ fn holds_no_places_once_a_read_opens() {
     let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport =
             net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
-        let hub = common::hub_in(&node, tasks.clone(), None, &more).await;
+        let hub = common::hub_alone(&node, tasks.clone(), &more).await;
         hub.set_rules(rules());
         let session = transport.accept().await.expect("a session");
         let link = hub.link(session.clone());
@@ -394,6 +406,70 @@ fn holds_no_places_once_a_read_opens() {
         "a read of {WIDE} channels with long names holds {long} bytes, and one with \
          short names holds {short}: their names differ by {differ} bytes"
     );
+}
+
+/// On a hub whose region uses the spec that the hub applied, the first poll of an
+/// open allocates less than a pointer for each of the [`WIDE`] channels of that spec.
+fn defines_no_channel_again_at_an_open_of_the_spec_applied() {
+    let wide: Vec<_> = (0..WIDE).map(|n| name(&format!("w.{n}"))).collect();
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let definitions = common::definitions(&wide);
+        let region =
+            region::open(&node, &tasks, Rc::new(transport), Vec::new(), definitions)
+                .await;
+        let hub = common::hub_in(&node, tasks, region).await;
+        let mut open = pin!(hub.reader(reader::Config {
+            select: Selector::new(["value"]).expect("a selector"),
+            mode: Mode::Complete,
+            subject: common::name("a"),
+            name: Some(common::name("r")),
+            hold: Span::SECOND,
+        }));
+        ALLOCATOR.reset_peak();
+        let before = ALLOCATOR.held();
+        drop(open.as_mut().poll(&mut Context::from_waker(Waker::noop())));
+        let peak = ALLOCATOR.peak() - before;
+        let pointers = WIDE * size_of::<usize>();
+        assert!(
+            peak < pointers,
+            "the first poll of an open allocates {peak} bytes over those held, and a \
+             pointer for each of {WIDE} channels is {pointers} bytes"
+        );
+    })
+    .expect("the run ends");
+}
+
+/// The spec task of a new hub defines no channel of the spec that `Hub::new` applied.
+fn defines_no_channel_again_at_the_first_poll_of_the_spec_task() {
+    let wide: Vec<_> = (0..WIDE).map(|n| name(&format!("w.{n}"))).collect();
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let definitions = common::definitions(&wide);
+        let region =
+            region::open(&node, &tasks, Rc::new(transport), Vec::new(), definitions)
+                .await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let hub = common::hub_in(&node, tasks, region).await;
+        ALLOCATOR.reset_peak();
+        let before = ALLOCATOR.held();
+        node.clock().sleep(Span::MILLISECOND).await;
+        let peak = ALLOCATOR.peak() - before;
+        let pointers = WIDE * size_of::<usize>();
+        assert!(
+            peak < pointers,
+            "the first poll of the spec task allocates {peak} bytes over those held, \
+             and a pointer for each of {WIDE} channels is {pointers} bytes"
+        );
+        drop(hub);
+    })
+    .expect("the run ends");
 }
 
 /// A complete read of `select` by `agent`, after the program got its places, their

@@ -192,6 +192,12 @@ impl<C> Context<C> {
     /// Opens a writer session on `channels` as this connector: the session's subject
     /// is the connector's name.
     ///
+    /// Return a failed write with `?`: KIND TABLE gives its class. After
+    /// [`hub::writer::Failure::Removed`], the next run opens its writer by name, so a
+    /// channel that the spec defined again with a new key is written. The frame of that
+    /// write is lost, and so is each sample of the device until the next run opens its
+    /// writer.
+    ///
     /// # Errors
     ///
     /// [`Error::Config`] with one diagnostic and no span, for a writer that only a
@@ -218,14 +224,17 @@ impl<C> Context<C> {
         self.inputs.hub.writer(config).await.map_err(writer_error)
     }
 
-    /// Takes the reader that the supervisor opened for this run, under the
-    /// connector's name, from the settings that `check` gave. `None` when `check`
-    /// gave none, or after the first call. When the reader ends with
-    /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
-    /// new reader before the next run. A reader with a hold opens again at its held
-    /// position. While the home keeps no frame there, each later run gets `Behind`.
-    /// Each close starts the hold again, so a hold longer than the wait between two
-    /// runs never ends.
+    /// Takes the reader that the supervisor opened for this run, under the connector's
+    /// name, from the settings that `check` gave. `None` when `check` gave none, or
+    /// after the first call. Return the end of the reader with `?`: KIND TABLE gives
+    /// its class. After [`hub::reader::Ended::Behind`] or
+    /// [`hub::reader::Ended::Removed`], the supervisor opens a new reader from the
+    /// selector before the next run, so a channel that the spec defined again with a
+    /// new key is read, and the open gives `Config` when the selector matches nothing.
+    /// A reader with a hold opens again at its held position while its index keeps its
+    /// key. While the home keeps no frame there, each later run gets `Behind`. Each
+    /// close starts the hold again, so a hold longer than the wait between two runs
+    /// never ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
@@ -374,6 +383,7 @@ const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
+const LARGE_FRAME: Code = Code::new("connector.large-frame");
 
 /// The class of `error` of the open of a named reader.
 ///
@@ -413,6 +423,62 @@ fn writer_error(error: hub::writer::Error) -> Error {
         }
     };
     config_error(code, &error, fix)
+}
+
+/// The class of the end of the reader of a run, for a kind that returns it with `?`:
+/// `Retry` for `Behind`, `Removed`, `Replaced`, and `Buffer`.
+///
+/// # Panics
+///
+/// For an end that only a reader away from its home gives, because a named reader opens
+/// only at its home.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "each panic is an end that no run gets"
+)]
+impl From<hub::reader::Ended> for Error {
+    fn from(ended: hub::reader::Ended) -> Self {
+        use hub::reader::Ended;
+        match ended {
+            Ended::Behind | Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) => {
+                Self::Retry(Box::new(ended))
+            }
+            Ended::Stream(_)
+            | Ended::Refused(_)
+            | Ended::Message(_)
+            | Ended::Frame(_)
+            | Ended::Pool(_)
+            | Ended::Credit { .. } => {
+                panic!("invariant: a named reader away from its home gave: {ended}")
+            }
+        }
+    }
+}
+
+/// The class of a failed write of a run, for a kind that returns it with `?`: `Config`
+/// (`connector.large-frame`) for `Home(Large)`, and `Retry` for `Removed`,
+/// `Home(Full)`, and `Home(Disk)`.
+///
+/// # Panics
+///
+/// For [`hub::home::Error::Resend`], because a kind labels no frame resend.
+#[expect(clippy::fallible_impl_from, reason = "a kind labels no frame resend")]
+impl From<hub::writer::Failure> for Error {
+    fn from(failure: hub::writer::Failure) -> Self {
+        use hub::home::Error as Home;
+        use hub::writer::Failure;
+        match failure {
+            Failure::Removed(_) | Failure::Home(Home::Full | Home::Disk(_)) => {
+                Self::Retry(Box::new(failure))
+            }
+            Failure::Home(Home::Large) => {
+                config_error(LARGE_FRAME, &failure, "Give the connector fewer channels")
+            }
+            Failure::Home(Home::Resend) => {
+                panic!("invariant: a kind labels no frame resend")
+            }
+        }
+    }
 }
 
 /// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
@@ -932,6 +998,77 @@ mod tests {
     fn panics_for_a_writer_error_that_the_hub_never_gives() {
         let unsynced = hub::home::writer::Error::Unsynced;
         drop(writer_error(hub::writer::Error::Home(unsynced)));
+    }
+
+    /// Calls the mapping directly, because a named reader opens only at its home. The
+    /// arm has no test of `Stream`: `connector` cannot build a `transport` error.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home sent \
+                    a frame past the credit of 8 bytes"
+    )]
+    fn panics_for_an_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Credit { limit_bytes: 8 }));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    ended the session with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refused_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Refused(
+            wire::hub::Refusal::NotHome,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a message \
+                    from the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_message_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Message(
+            wire::hub::Error::Empty,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a frame \
+                    from the home is not valid: entry 2 is out of range for a key set \
+                    of 1 entries"
+    )]
+    fn panics_for_a_frame_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Frame(
+            types::frame::Error::OutOfRange {
+                entry: 2,
+                entries: 1,
+            },
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the pool had \
+                    no block for the reader: pool is full: asked for 8 bytes, 0 bytes \
+                    free"
+    )]
+    fn panics_for_a_pool_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Pool(
+            block::Error::Exhausted {
+                requested: 8,
+                available: 0,
+            },
+        )));
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a kind labels no frame resend")]
+    fn panics_for_a_write_of_a_resend_frame() {
+        let resend = hub::home::Error::Resend;
+        drop(Error::from(hub::writer::Failure::Home(resend)));
     }
 
     #[test]

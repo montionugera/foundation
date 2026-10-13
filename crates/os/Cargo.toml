@@ -55,6 +55,10 @@ path = "tests/root/main.rs"
 test = false
 
 [[bench]]
+name = "files"
+harness = false
+
+[[bench]]
 name = "net"
 harness = false
 

@@ -415,7 +415,7 @@ mod tests {
     const BAD: Code = Code::new("test.bad");
 
     /// What one run of [`Script`] does.
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     enum Step {
         /// Returns `Ok` at once.
         Done,
@@ -441,6 +441,10 @@ mod tests {
         /// Spawns a task that ends the span after the cancel, then returns a config
         /// error at once.
         Refuse(Span),
+        /// Returns the end of a reader with `?`.
+        Ended(hub::reader::Ended),
+        /// Returns a failed write with `?`.
+        Failed(hub::writer::Failure),
     }
 
     /// When each run started and ended.
@@ -520,6 +524,8 @@ mod tests {
                     hold(&ctx, span);
                     Err(Error::Config(vec![bad()]))
                 }
+                Some(Step::Ended(ended)) => returned(ended),
+                Some(Step::Failed(failure)) => returned(failure),
                 None => {
                     ctx.cancel().wait().await;
                     Ok(())
@@ -531,6 +537,14 @@ mod tests {
             }
             out
         }
+    }
+
+    /// Returns `end` with `?`, as a kind does.
+    fn returned<E>(end: E) -> Result<(), Error>
+    where
+        Error: From<E>,
+    {
+        Err(end)?
     }
 
     /// Spawns a task of the run that ends `span` after the run's cancel.
@@ -1023,6 +1037,56 @@ mod tests {
             (2, 0, 1),
         ];
         assert_eq!(states(&out.statuses), want);
+    }
+
+    /// A kind returns each end of a session with `?`, and the status gives its class
+    /// and its text.
+    #[test]
+    fn writes_the_class_of_each_end_that_a_kind_returns() {
+        use hub::home::Error as Home;
+        use hub::reader::Ended;
+        use hub::writer::Failure;
+        let key = channel::Key::from_u128(2);
+        let full = || env::files::Error::Full {
+            path: "buffer".into(),
+        };
+        let ended = |ended: Ended| (ended.to_string(), Step::Ended(ended));
+        let failed = |failure: Failure| (failure.to_string(), Step::Failed(failure));
+        let retries = [
+            ended(Ended::Behind),
+            ended(Ended::Removed(key)),
+            ended(Ended::Replaced),
+            ended(Ended::Buffer(full())),
+            failed(Failure::Removed(key)),
+            failed(Failure::Home(Home::Full)),
+            failed(Failure::Home(Home::Disk(full()))),
+        ];
+        let retry = [
+            (0, 0, 0),
+            (3, 3, 0),
+            (1, 3, 0),
+            (0, 3, 1),
+            (3, 0, 1),
+            (2, 0, 1),
+        ];
+        for (text, step) in retries {
+            let steps = vec![step, Step::Done];
+            let out = supervise("script", steps, config(), Cancel::Never);
+            assert_eq!(states(&out.statuses), retry, "{text}");
+            assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text.as_str()));
+        }
+        let (_, large) = failed(Failure::Home(Home::Large));
+        let out = supervise("script", vec![large], config(), Cancel::Never);
+        assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let text = "the frame is too large for one write: split it. Give the connector \
+                    fewer channels";
+        assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
+        let want = unplaced(
+            "connector.large-frame",
+            "the frame is too large for one write: split it",
+            "Give the connector fewer channels",
+        );
+        assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
     }
 
     #[test]
@@ -1734,7 +1798,7 @@ mod tests {
     fn starts_the_backoff_again_after_a_long_run() {
         let mut steps = vec![Step::Device(Span::ZERO); 8];
         steps.push(Step::Device(Span::MINUTE));
-        steps.extend([Step::Device(Span::ZERO); 3]);
+        steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
         let out = supervise("script", steps, config(), Cancel::Never);
         out.result.expect("ok");
@@ -1751,7 +1815,7 @@ mod tests {
     fn counts_no_wait_for_the_tasks_toward_a_long_run() {
         let mut steps = vec![Step::Device(Span::ZERO); 8];
         steps.push(Step::Hold(ms(61_000)));
-        steps.extend([Step::Device(Span::ZERO); 3]);
+        steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
         let out = supervise("script", steps, config(), Cancel::Never);
         out.result.expect("ok");
@@ -2329,6 +2393,49 @@ mod tests {
         (Span::from_nanos(3_000_000_001), 2, 7),
     ];
 
+    /// A kind with the count `samples`. Its run takes frames from the shard's pool
+    /// until it has no room, sets the count to 7, fills the pool again at 900 ms, and
+    /// at 1 s, after the flush gets no block for its frame, gives the frames back and
+    /// returns `Ok`.
+    fn hog_to_flush() -> impl Kind<Config = ()> {
+        counted(|ctx: Context<()>| async move {
+            let channels =
+                ["state", "class", "restarts", "backoff", "error", "samples"]
+                    .map(|c| name(&format!("plant.tally.status.{c}")))
+                    .into();
+            let writer = ctx.writer(channels, Authority(1), None).await;
+            let writer = writer.expect("the writer opens");
+            let mut held = fill(&writer);
+            ctx.count("samples").set(7);
+            ctx.clock().sleep(ms(900)).await;
+            held.extend(fill(&writer));
+            ctx.clock().sleep(ms(100)).await;
+            // The flush at 1 s runs after this task wakes at 1 s, so yield once.
+            let mut flushed = false;
+            poll_fn(|cx| {
+                if flushed {
+                    return Poll::Ready(());
+                }
+                flushed = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+            drop(held);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stamps_a_frame_after_the_stamp_of_a_frame_with_no_block() {
+        let want = [
+            (Span::ZERO, 0, 0),
+            (Span::from_nanos(1_000_000_001), 3, 7),
+            (Span::from_nanos(1_000_000_002), 2, 7),
+        ];
+        assert_eq!(hogged_by(hog_to_flush()), want);
+    }
+
     /// Takes frames of one sample for each channel of `writer` from the shard's pool
     /// until the pool has no room for a frame of any size up to 2 KiB, so that no
     /// status frame and no copy of it in the home gets a block. `writer` has `error`,
@@ -2448,7 +2555,12 @@ mod tests {
 
     /// The time, `state`, and count of each status frame of `hog(full)`.
     fn hogged(full: bool) -> Vec<(Span, i64, i64)> {
-        let statuses = tally(hog(full));
+        hogged_by(hog(full))
+    }
+
+    /// The time, `state`, and count of each status frame of `kind`.
+    fn hogged_by(kind: impl Kind + 'static) -> Vec<(Span, i64, i64)> {
+        let statuses = tally(kind);
         statuses
             .iter()
             .map(|(at, samples, _)| (*at, samples[0], samples[4]))
@@ -2993,12 +3105,25 @@ mod tests {
         stamp: i64,
         sample: i64,
     ) -> Vec<hub::home::Outcome> {
+        let draft = draft_value(writer, stamp, sample, 2);
+        let outcomes = writer.write(Label::Path(Path::Live), draft);
+        outcomes.expect("the home takes it").to_vec()
+    }
+
+    /// A frame of `sample` at `stamp` for `writer`, which writes `plant.value` at
+    /// key `key` and its index.
+    fn draft_value(
+        writer: &hub::writer::Writer,
+        stamp: i64,
+        sample: i64,
+        key: u128,
+    ) -> frame::Draft {
         let entries = writer.set().entries();
         let entry = |key| {
             let key = channel::Key::from_u128(key);
             entries.iter().position(|entry| entry.key == key)
         };
-        let (time, value) = (entry(1).expect("time"), entry(2).expect("value"));
+        let (time, value) = (entry(1).expect("time"), entry(key).expect("value"));
         let group = entries[time].group;
         let mut series = [(time, 8), (value, 8)];
         series.sort_unstable();
@@ -3008,13 +3133,12 @@ mod tests {
         let value = draft.series_mut(value).expect("the value series");
         value.copy_from_slice(&sample.to_le_bytes());
         draft.set_count(group, 1);
-        let outcomes = writer.write(Label::Path(Path::Live), draft);
-        outcomes.expect("the home takes it").to_vec()
+        draft
     }
 
-    /// Defines `plant.time` (key 1), `plant.value` (key 2, `i64`), and the status
+    /// Defines `plant.time` (key 1), `plant.value` (key `key`, `i64`), and the status
     /// channels of `plant.write` on `hub`.
-    fn define(hub: &hub::Hub) {
+    fn define(hub: &hub::Hub, key: u128) {
         let time = Channel {
             key: channel::Key::from_u128(1),
             kind: spec::channel::Kind::Index {
@@ -3025,7 +3149,7 @@ mod tests {
         let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
         let data = Data::new(time.key, None, i64, None).expect("no unit");
         let value = Channel {
-            key: channel::Key::from_u128(2),
+            key: channel::Key::from_u128(key),
             kind: spec::channel::Kind::Data(data),
         };
         let (time, value) = (Definition::Channel(time), Definition::Channel(value));
@@ -3136,7 +3260,7 @@ mod tests {
         let got = run_on(|node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let write = Write::new(vec![30, 10, 20]);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
@@ -3216,7 +3340,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             tasks.spawn(beside(inputs.hub.clone(), node.clock()));
             let supervisor = Supervisor::new(inputs);
@@ -3267,7 +3391,7 @@ mod tests {
             });
             let kinds = Table::new().with("read", kind);
             let inputs = create_config(&node, tasks, kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let hub = inputs.hub.clone();
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3413,7 +3537,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let writes = vec![(ms(100), 7), (ms(300), 8)];
             tasks.spawn(write_at(inputs.hub.clone(), node.clock(), writes));
             let supervisor = Supervisor::new(inputs);
@@ -3623,6 +3747,132 @@ mod tests {
         );
     }
 
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// reader ends, the run returns the end with `?`, which is `Retry`, and the reader
+    /// of the restart reads key 3.
+    #[test]
+    fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            Some(settings(Span::ZERO)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                let next = reader.next().await;
+                let read = next.as_ref().map(|received| series(received, 3));
+                got.lock()
+                    .expect("no panic")
+                    .push(read.map_err(Clone::clone));
+                let _received = next?;
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define(&hub, 3);
+                clock.sleep(ms(1_500)).await;
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                let draft = draft_value(&writer, writer.now().nanos(), 7, 3);
+                let outcomes = writer.write(Label::Path(Path::Live), draft);
+                outcomes.expect("the home takes it");
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
+        let text = removed.to_string();
+        assert_eq!(read.got, [Err(removed), Ok(vec![7])]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+            "{:?}",
+            read.statuses
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, text.as_str()),
+                (wait, text.as_str()),
+                (Span::ZERO, text.as_str()),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
+        );
+    }
+
+    /// One spec change removes `plant.value` and defines it again at key 3. The
+    /// write of the run gives `Removed`, the run returns it with `?`, which is
+    /// `Retry`, and the writer of the restart writes key 3. Lost: the frame of the
+    /// refused write, and each sample until the restart, after the first wait of the
+    /// backoff.
+    #[test]
+    fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
+        let read = read_through(
+            None,
+            |ctx, got| async move {
+                let channels = vec![name("plant.value")];
+                let writer = ctx.writer(channels, Authority(1), None).await;
+                let mut writer = writer.expect("opens");
+                let first = got.lock().expect("no panic").is_empty();
+                let (key, sample) = if first { (2, 5) } else { (3, 7) };
+                if first {
+                    ctx.clock().sleep(ms(200)).await;
+                }
+                let draft = draft_value(&writer, writer.now().nanos(), sample, key);
+                let written = writer.write(Label::Path(Path::Live), draft);
+                let applied = |outcomes: &[_]| {
+                    matches!(outcomes, [hub::home::Outcome::Applied { .. }])
+                };
+                let got_written = written.as_deref().map(applied);
+                got.lock()
+                    .expect("no panic")
+                    .push(got_written.map_err(Clone::clone));
+                let _outcomes = written?;
+                Ok(())
+            },
+            |hub, clock| async move {
+                clock.sleep(ms(100)).await;
+                define(&hub, 3);
+            },
+        );
+        read.end.expect("ok");
+        let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
+        let text = removed.to_string();
+        assert_eq!(read.got, [Err(removed), Ok(true)]);
+        assert_eq!(
+            states(&read.statuses),
+            [
+                (0, 0, 0),
+                (3, 3, 0),
+                (1, 3, 0),
+                (0, 3, 1),
+                (3, 0, 1),
+                (2, 0, 1)
+            ],
+        );
+        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
+        let wait = Span::from_nanos(913_547_843);
+        assert_eq!(
+            errors(&read.statuses),
+            [
+                (Span::ZERO, ""),
+                (Span::ZERO, text.as_str()),
+                (wait, text.as_str()),
+                (Span::ZERO, text.as_str()),
+                (Span::ZERO, ""),
+                (Span::ZERO, "")
+            ],
+        );
+    }
+
     #[test]
     fn ends_with_a_config_error_for_a_reader_that_only_a_spec_change_fixes() {
         for (select, want) in [
@@ -3676,7 +3926,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3705,7 +3955,7 @@ mod tests {
             let kinds = Table::new().with("read", kind);
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let statuses = read_status(&inputs.hub, "plant.write", &[], &tasks).await;
             let supervisor = Supervisor::new(inputs);
             let token = Token::new();
@@ -3785,7 +4035,7 @@ mod tests {
         run_on(move |node, tasks| async move {
             let mut inputs =
                 create_config(&node, tasks, Table::new(), "plant.write").await;
-            define(&inputs.hub);
+            define(&inputs.hub, 2);
             let refusals = Arc::clone(&write.refusals);
             inputs.kinds = Arc::new(Table::new().with("write", write));
             let mut other = None;
@@ -3835,7 +4085,7 @@ mod tests {
             move |tasks| async move {
                 let mut inputs =
                     create_config(&node, tasks, Table::new(), "plant.write").await;
-                define(&inputs.hub);
+                define(&inputs.hub, 2);
                 inputs.kinds = Arc::new(Table::new().with("write", write));
                 let supervisor = Supervisor::new(inputs);
                 let (name, token) = (name("plant.write"), Token::new());
@@ -3854,7 +4104,7 @@ mod tests {
         let (other, own) = sim
             .run_on(&node, |node, tasks| async move {
                 let (hub, _) = hub::testing::open(env(&node, tasks)).await;
-                define(&hub);
+                define(&hub, 2);
                 let other = write_as(&hub, "plant.other").await;
                 (other, write_as(&hub, "plant.write").await)
             })

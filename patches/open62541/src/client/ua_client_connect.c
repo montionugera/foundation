@@ -140,10 +140,6 @@ isFullyConnected(UA_Client *client) {
         /* No Session, but is required */
         if(client->sessionState != UA_SESSIONSTATE_ACTIVATED)
             return false;
-
-        /* NamespaceArray not yet read */
-        if(client->namespacesHandshake || !client->haveNamespaces)
-            return false;
     }
 
     return true;
@@ -1035,10 +1031,6 @@ responseActivateSession(UA_Client *client, void *userdata,
 
     client->sessionState = UA_SESSIONSTATE_ACTIVATED;
     notifyClientState(client);
-
-    /* Read the namespaces array if we don't already have it */
-    if(!client->haveNamespaces)
-        readNamespacesArrayAsync(client);
 
     /* Immediately check if publish requests are outstanding - for example when
      * an existing Session has been reattached / activated. */

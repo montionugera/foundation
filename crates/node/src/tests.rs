@@ -64,7 +64,11 @@ fn refuse(refused: usize, error: os::memory::Error) -> Memory {
 
 /// The seams of `host`, with a pool budget of `budget` from `memory`, a disk budget
 /// of [`DISK`], and the port at [`listen`].
-fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block::Heap> {
+fn config<M>(
+    host: &sim::node::Node,
+    budget: Size,
+    memory: Box<dyn FnMut(usize) -> Result<M, os::memory::Error>>,
+) -> Config<M> {
     Config {
         shards: host.shards(),
         clock: host.clock(),
@@ -802,30 +806,31 @@ mod buffer {
         assert_eq!(node.join(), Ok(()));
     }
 
-    /// A shard's part of the budget must hold the block that its buffer's open
-    /// takes first. A shard that waits for the interner does not open after it.
+    /// A shard's part of the budget must hold the least budget of its buffer. A shard
+    /// that waits for the interner does not open after it.
     #[test]
     fn a_shard_part_too_small_for_the_buffer_stops_the_node() {
         let budget = Size::from_bytes(512 << 10);
         let mut run = start_with(7, 16, &[], budget, Box::new(heap));
         assert_eq!(run.sim.run(), Ok(()));
         let e = run.node.join().unwrap_err();
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         assert_eq!(
             e,
             Error::Buffer {
                 core: 0,
-                error: ::buffer::Error::Pool(pool),
+                error: ::buffer::Error::Budget {
+                    budget: 32_768,
+                    min: 62_272,
+                },
             }
         );
         assert_eq!(
             e.to_string(),
-            "cannot open the buffer of shard-0: the pool has no block: block of 52186 \
-             bytes is above the largest block of 28672 bytes"
+            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry \
+             of 4032 bytes: give it 62272 bytes or more"
         );
+        let made = ["lock", "name", "shards-16"].map(PathBuf::from);
+        assert_eq!(listed(&mut run.sim, &run.host, ""), made);
     }
 
     #[test]
@@ -1783,7 +1788,7 @@ mod home {
                 index,
                 data: &[(values, Type::Scalar(Scalar::I64))],
             }]);
-            home.carry(slot);
+            assert!(home.carry(slot, index));
             let now = mesh_now(&clock, &host.clock()).await;
             let key = home
                 .open_writer(writer::Writer {
@@ -2268,7 +2273,7 @@ mod hub {
     }
 
     /// The position of channel `key` in `set`.
-    fn entry(set: &KeySet, key: u128) -> usize {
+    pub(super) fn entry(set: &KeySet, key: u128) -> usize {
         let key = Key::from_u128(key);
         let entries = set.entries();
         entries.iter().position(|e| e.key == key).expect("an entry")
@@ -2684,6 +2689,172 @@ mod hub {
     }
 }
 
+mod pool {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ::hub::writer::Writer;
+    use block::testing::{Scarce, Switch};
+    use types::frame::{self, Form};
+    use types::time::Monotonic;
+
+    use super::hub::{I64, data, define, entry, index, writer};
+    use super::*;
+
+    const SECOND_NS: i64 = Span::SECOND.nanos();
+
+    /// A shard gives the pages of a block size back to the system 10 to 20 s after
+    /// the last block of that size returned. The last return falls at the open of
+    /// the writer and at each of 1 to 9 s after the start. A return at the open also
+    /// keeps its pages until 20 s after the start, before which the timer cannot
+    /// purge twice.
+    #[test]
+    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
+        for phase in 0..10 {
+            let phase = Span::from_nanos(phase * SECOND_NS);
+            let early = Span::from_nanos(10 * SECOND_NS - 1);
+            let held = kept(phase, Since::Return, early);
+            assert!(held, "the size keeps its pages at {phase:?}");
+            let late = Span::from_nanos(20 * SECOND_NS + 1);
+            let idle = !kept(phase, Since::Return, late);
+            assert!(idle, "the pages went back at {phase:?}");
+        }
+        let early = Span::from_nanos(20 * SECOND_NS - 1);
+        let held = kept(Span::ZERO, Since::Start, early);
+        assert!(held, "the size keeps its pages until 20 s after the start");
+    }
+
+    /// The timer runs from before the open of the buffer, whose reads take blocks of
+    /// 4 KiB. The timer starts less than 1 ms after the start of the node, so that
+    /// size goes back by 20 s and 1 ms after it.
+    #[test]
+    fn a_size_that_the_open_of_the_buffer_used_goes_back_20_s_after_the_start() {
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4056 });
+        let early = probe(4000, Span::ZERO);
+        assert_eq!(early, Ok(()), "the open of the buffer carved the size");
+        let late = probe(4000, Span::from_nanos(20 * SECOND_NS + 1_000_000));
+        assert_eq!(late, Err(refused), "the pages of the size went back");
+    }
+
+    /// The instant from which [`kept`] counts its wait.
+    enum Since {
+        /// The start of the node.
+        Start,
+        /// The return of the last block of the size.
+        Return,
+    }
+
+    /// Whether a block size keeps its pages `wait` after the instant `since`. The last
+    /// block of the size returns at `phase` after the start, or at the open of the
+    /// writer when it comes later. The size keeps its pages when a take of its block
+    /// succeeds while the memory refuses. The memory shows a purge only through its
+    /// next commit: while it refuses, a commit of bytes that the system still holds
+    /// succeeds, and a commit of purged bytes gives `Refused`.
+    fn kept(phase: Span, since: Since, wait: Span) -> bool {
+        let (new, carved, again, later) = on_writer(4096, async move |rig| {
+            let phase = rig.start.checked_add(phase).expect("in range");
+            rig.clock.sleep_until(phase).await;
+            rig.switch.refuse();
+            let new = rig.take();
+            rig.switch.allow();
+            let carved = rig.take();
+            rig.switch.refuse();
+            let again = rig.take();
+            let base = match since {
+                Since::Start => rig.start,
+                Since::Return => rig.clock.now(),
+            };
+            rig.clock
+                .sleep_until(base.checked_add(wait).expect("in range"))
+                .await;
+            let later = rig.take();
+            rig.switch.allow();
+            (new, carved, again, later)
+        });
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
+        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
+        assert_eq!(carved, Ok(()), "the pool carves the block");
+        assert_eq!(again, Ok(()), "a carved size needs no commit");
+        if let Err(error) = &later {
+            assert_eq!(error, &refused, "the memory refused the take");
+        }
+        later.is_ok()
+    }
+
+    /// The take of a block for `bytes` of samples, at `at` after the start of the
+    /// node, while the memory refuses.
+    fn probe(bytes: usize, at: Span) -> Result<(), frame::Error> {
+        on_writer(bytes, async move |rig| {
+            let at = rig.start.checked_add(at).expect("in range");
+            rig.clock.sleep_until(at).await;
+            rig.switch.refuse();
+            let taken = rig.take();
+            rig.switch.allow();
+            taken
+        })
+    }
+
+    /// A writer on a node of one shard whose memory is `Scarce`.
+    struct Rig {
+        writer: Writer,
+        series: [(usize, usize); 2],
+        switch: Switch,
+        clock: env::clock::Clock,
+        start: Monotonic,
+    }
+
+    impl Rig {
+        /// Takes a block for a frame of the rig's samples and drops it at once.
+        fn take(&self) -> Result<(), frame::Error> {
+            self.writer.draft(Form::Raw, &self.series).map(drop)
+        }
+    }
+
+    /// Runs `task` on a writer of 8 bytes of times and `bytes` of values, on a node
+    /// of one shard whose memory is `Scarce`. Returns its output after 40 s of the
+    /// sim, and after the node stops.
+    fn on_writer<T: Send + 'static>(
+        bytes: usize,
+        task: impl AsyncFnOnce(Rig) -> T + Send + 'static,
+    ) -> T {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 1);
+        let switch = Rc::new(RefCell::new(None));
+        let made = Rc::clone(&switch);
+        let memory = Box::new(move |len| {
+            let (memory, switch) = Scarce::new(len);
+            *made.borrow_mut() = Some(switch);
+            Ok(memory)
+        });
+        let start = host.clock().now();
+        let node = Node::start(config(&host, Size::MEBIBYTE, memory));
+        let switch = switch.take().expect("the shard got its memory");
+        let seen = Arc::new(Mutex::new(None));
+        let (out, clock) = (Arc::clone(&seen), host.clock());
+        node.spawn(move |hub| async move {
+            define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
+            let writer = writer(&hub, &["value"]).await;
+            let (time, value) = (entry(writer.set(), 1), entry(writer.set(), 2));
+            let mut series = [(time, 8), (value, bytes)];
+            series.sort_unstable();
+            let rig = Rig {
+                writer,
+                series,
+                switch,
+                clock,
+                start,
+            };
+            *out.lock().unwrap() = Some(task(rig).await);
+        });
+        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND_NS)), Ok(()));
+        let seen = seen.lock().unwrap().take();
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        seen.expect("the task ran to its end")
+    }
+}
+
 mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
@@ -2692,6 +2863,7 @@ mod port {
 
     use super::*;
 
+    mod client;
     mod settings;
 
     /// The key of the peer that dials the node.
@@ -4487,7 +4659,6 @@ mod port {
                         transport: Rc::clone(&transport),
                     }),
                 });
-                hub.set_definitions(&region(&members).definitions);
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
@@ -5545,7 +5716,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], three idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5555,7 +5726,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6092,7 +6263,6 @@ mod port {
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let definitions = founding.definitions.clone();
                 let (opening, clock) = (Opening::Given(founding), own.clock());
                 let (entropy, settings) = (own.entropy(), crate::Settings::default());
                 let endpoint =
@@ -6122,7 +6292,6 @@ mod port {
                         transport: Rc::clone(&transport),
                     }),
                 });
-                hub.set_definitions(&definitions);
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
@@ -6639,6 +6808,59 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             assert_eq!(read.lock().unwrap().take(), Some((vec![WALL], vec![7])));
+        }
+
+        /// A task that a caller of `Mesh::spec` tells of a spec in use opens a reader on
+        /// a channel of that spec, in each order of the tasks that the seed picks.
+        #[test]
+        fn a_task_told_of_a_spec_in_use_opens_a_reader_on_its_channel() {
+            let mut failed = Vec::new();
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+                let told = Arc::new(Mutex::new((false, None::<std::task::Waker>)));
+                let opened = Arc::new(Mutex::new(None));
+                let (wait, out) = (Arc::clone(&told), Arc::clone(&opened));
+                node.spawn(move |hub| async move {
+                    poll_fn(|cx| {
+                        let mut told = wait.lock().unwrap();
+                        if told.0 {
+                            return Poll::Ready(());
+                        }
+                        told.1 = Some(cx.waker().clone());
+                        Poll::Pending
+                    })
+                    .await;
+                    let mode = ::hub::reader::Mode::Complete;
+                    let reader = hub.reader(unnamed("plant.value", mode)).await;
+                    *out.lock().unwrap() = Some(reader.err().map(|e| format!("{e:?}")));
+                });
+                let tell = Arc::clone(&told);
+                node.operate(move |ops| async move {
+                    apply(&ops, text("time", &["value"])).await;
+                    let waker = {
+                        let mut told = tell.lock().unwrap();
+                        told.0 = true;
+                        told.1.take()
+                    };
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                });
+                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let opened = opened.lock().unwrap().take();
+                if opened != Some(None) {
+                    failed.push((seed, opened));
+                }
+            }
+            assert_eq!(failed, []);
         }
 
         /// An apply that removes a channel ends each reader on it.
@@ -7594,13 +7816,12 @@ mod budget {
     /// the next start can give other budgets.
     #[test]
     fn a_start_that_fails_before_each_buffer_opens_keeps_no_budgets() {
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         let buffer = Error::Buffer {
             core: 0,
-            error: ::buffer::Error::Pool(pool),
+            error: ::buffer::Error::Budget {
+                budget: 32_768,
+                min: 62_272,
+            },
         };
         let disk = Error::Disk {
             disk: Size::from_bytes(1),

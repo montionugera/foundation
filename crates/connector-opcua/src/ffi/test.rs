@@ -1,7 +1,9 @@
 use std::ffi::{c_int, c_void};
 use std::mem::offset_of;
 
-use super::{Bytes, ConnectionCallback, ConnectionManager, EventLoop, KeyValueMap, at};
+use super::{
+    Bytes, ConnectionCallback, ConnectionManager, EventLoop, KeyValueMap, Node, at,
+};
 
 /// `UA_Server`, which Rust holds only by pointer.
 #[repr(C)]
@@ -176,23 +178,29 @@ unsafe extern "C" {
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
     pub(crate) fn shim_server_add_double(
         server: *mut Server,
-        namespace: u16,
-        node: u32,
+        node: Node<'_>,
         value: f64,
     ) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
-        namespace: u16,
-        node: u32,
-        length: usize,
+        node: Node<'_>,
+        size: usize,
+    ) -> u32;
+    pub(crate) fn shim_server_add_source(
+        server: *mut Server,
+        node: Node<'_>,
+        source: *mut c_void,
     ) -> u32;
     pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;
+    pub(crate) fn UA_Server_addNamespace(
+        server: *mut Server,
+        name: *const std::ffi::c_char,
+    ) -> u16;
     pub(crate) fn shim_response_result(response: *const c_void) -> u32;
     pub(crate) fn shim_value_status(value: *const c_void) -> u32;
-    pub(crate) fn shim_client_namespaced(client: *mut super::Client) -> bool;
     pub(crate) fn shim_server_discovery_url(
         server: *mut Server,
         index: usize,
