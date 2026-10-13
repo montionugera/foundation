@@ -46,9 +46,8 @@ impl Source {
         let function = &*call.function;
         if !["env", "file", "secret"].contains(&function) {
             return Err(refuse(
-                format!(
-                    "a secret comes from `env`, `file`, or `secret`, not `{function}`"
-                ),
+                "a secret comes from `env`, `file`, or `secret`, not another function"
+                    .into(),
                 FIX,
             ));
         }

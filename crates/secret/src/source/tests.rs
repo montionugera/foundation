@@ -99,7 +99,7 @@ fn refuses_a_value_in_place_of_a_source() {
 fn refuses_another_function() {
     refused(
         &call("vault", vec![string("a")]),
-        "a secret comes from `env`, `file`, or `secret`, not `vault`",
+        "a secret comes from `env`, `file`, or `secret`, not another function",
         WRITE,
     );
 }
@@ -215,7 +215,8 @@ proptest! {
     ) {
         let bare = Value { kind: Kind::String(text.as_str().into()), span: at(3) };
         let arguments = vec![string(&text); count];
-        for value in [bare, call(function, arguments)] {
+        let named = call(&text, vec![string("a")]);
+        for value in [bare, call(function, arguments), named] {
             if let Err(diagnostic) = Source::read(&value) {
                 prop_assert!(!diagnostic.message.contains(&text));
                 prop_assert!(!diagnostic.fix.contains(&text));
