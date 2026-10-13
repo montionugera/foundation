@@ -64,8 +64,8 @@ impl kind::Kind for Scripted {
 }
 
 /// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
-/// `forging` with one whose text, from the device, holds a newline, and `wide` also
-/// names `extra`.
+/// `forging` with one whose text, from the device, holds a newline, `wide` also names
+/// `extra`, and `shifted` names `in` and `other`.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
     let failing = "no route to the device";
@@ -96,6 +96,13 @@ fn kinds() -> Table {
             "wide",
             Scripted {
                 counts: &[("in", 0), ("confirmed", 0), ("extra", 0)],
+                error: None,
+            },
+        )
+        .with(
+            "shifted",
+            Scripted {
+                counts: &[("in", 0), ("other", 0)],
                 error: None,
             },
         )
@@ -141,6 +148,38 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             "address": "opc.tcp://site.a:4840",
             "restarts": 0,
             "counts": { "confirmed": 0, "extra": 0, "in": 0 },
+            "error": null,
+        }]}});
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_frame() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "wide", "edge")).await;
+        let wide = supervise(&fixture, &node, &["site.a"]).await;
+        applied(&fixture, &node, &connector("site.a", "shifted", "edge")).await;
+        wide.cancel();
+        let clock = fixture.sim.clock();
+        let start = clock.now();
+        let (head, rest) = status(&node, "@admin").await;
+        assert!(clock.now() - start < Span::SECOND, "the frame came");
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "shifted")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [{
+            "name": "site.a",
+            "kind": "shifted",
+            "state": "running",
+            "address": "opc.tcp://site.a:4840",
+            "restarts": 0,
+            "counts": { "in": 0, "other": 0 },
             "error": null,
         }]}});
         assert_eq!(head, expected);
