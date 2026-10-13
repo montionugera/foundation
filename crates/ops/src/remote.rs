@@ -10,14 +10,12 @@ use crate::Failure;
 use crate::apply::{Applied, Effect};
 use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
+use crate::operation::DATA;
 use crate::plan::Output;
 use crate::serve;
 
 #[cfg(test)]
 mod tests;
-
-/// The data directory of the node that `plan` and `apply` run on.
-const DATA: &str = "foundation-data";
 
 /// What a command that ran on a node shows.
 pub(crate) enum Shown {

@@ -5,10 +5,11 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::json;
 
-use super::{DATA, Shown, apply, most, plan};
+use super::{Shown, apply, most, plan};
 use crate::common::{create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
 use crate::front_end::File;
+use crate::operation::DATA;
 use crate::{Failure, Node, Run, serve};
 
 /// A failure of `reach`, or of a request.

@@ -13,6 +13,9 @@ use types::name::Name;
 use crate::Start;
 use crate::error::Error;
 
+/// The data directory of a command that names none.
+pub(crate) const DATA: &str = "foundation-data";
+
 /// The facts that the CLI, the MCP tools, and the docs show for one operation.
 pub(crate) struct Spec {
     pub(crate) name: &'static str,
@@ -74,7 +77,7 @@ enum Command {
 struct StartArgs {
     /// The data directory of the node. The start makes it when it is not there, but
     /// not its parents.
-    #[arg(long, default_value = "foundation-data")]
+    #[arg(long, default_value = DATA)]
     data: PathBuf,
     /// The name of the node. The first start on a data directory needs it, and a later
     /// start reads it from there.
