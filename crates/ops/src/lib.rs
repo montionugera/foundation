@@ -70,7 +70,7 @@ pub async fn cli<C>(
     mut output: impl Write,
     errors: impl Write,
     paths: &Paths,
-    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
 ) -> Run
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -92,7 +92,11 @@ where
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
         Ok(Parsed::Plan { files, out, data }) => {
-            match remote::plan(&files, out.as_deref(), paths, &data, reach).await {
+            match remote::plan(&files, out.as_deref(), paths, async || {
+                reach(&data).await
+            })
+            .await
+            {
                 Ok(planned) => {
                     write(&mut output, &render(json, &planned, || planned.text()))
                 }
@@ -100,17 +104,19 @@ where
             }
         }
         Ok(Parsed::Apply { plan, data }) => {
-            match remote::apply(&plan, paths, &data, reach).await {
+            match remote::apply(&plan, paths, async || reach(&data).await).await {
                 Ok(applied) => {
                     write(&mut output, &render(json, &applied, || applied.text()))
                 }
                 Err(error) => Err(Stop::Failed(error)),
             }
         }
-        Ok(Parsed::Status { data }) => match remote::status(&data, reach).await {
-            Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
-            Err(error) => Err(Stop::Failed(error)),
-        },
+        Ok(Parsed::Status { data }) => {
+            match remote::status(async || reach(&data).await).await {
+                Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
+                Err(error) => Err(Stop::Failed(error)),
+            }
+        }
         Ok(Parsed::Mcp) => mcp::serve(input, &mut output),
         Err(error) => Err(Stop::Failed(error)),
     };

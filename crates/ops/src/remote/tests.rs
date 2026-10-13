@@ -91,27 +91,27 @@ impl Remote {
         files: &[PathBuf],
         out: Option<&Path>,
     ) -> Result<Output, Error> {
-        let reach = async |data: &Path| {
-            self.reached(data)?;
+        let reach = async || {
+            self.reached(Path::new(DATA))?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        plan(files, out, paths, Path::new(DATA), reach).await
+        plan(files, out, paths, reach).await
     }
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
-        let reach = async |data: &Path| {
-            self.reached(data)?;
+        let reach = async || {
+            self.reached(Path::new(DATA))?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        apply(file, paths, Path::new(DATA), reach).await
+        apply(file, paths, reach).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
-        let reach = async |data: &Path| {
-            self.reached(data)?;
+        let reach = async || {
+            self.reached(Path::new(DATA))?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        status(Path::new(DATA), reach).await
+        status(reach).await
     }
 
     /// The run, output, and errors of `foundation <args>`.
