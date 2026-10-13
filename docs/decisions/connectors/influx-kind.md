@@ -39,9 +39,9 @@
   batch to the count `confirmed` with `Count::add`, so the count holds across runs. A
   NaN or infinite sample writes no field and is not counted (#2559, the plan that
   `laptop.architect-2` approved on 2026-10-13T09:52:20Z:
-  https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456). A batch whose request
-  takes longer than the timeout of 10 s is sent again with no end, until #2558, as
-  `laptop.architect-2` decided on 2026-10-13T06:20:10Z
+  https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456). A
+  batch whose request takes longer than the timeout of 10 s is sent again with no end,
+  until #2558, as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139570127). A
   restart does not send the batch in flight again (#274). With no `hold`, the next run
   reads from the live frames, so those lines are lost. With a `hold`, each open after
