@@ -49,8 +49,8 @@ fn main() {
         "race",
     );
     check_ticks();
-    status::check(false);
-    status::check(true);
+    status::check(status::Shows::Nothing);
+    status::check(status::Shows::Error);
 }
 
 /// Checks that 64 ticks after two warm-up ticks allocate nothing in their polls. The
@@ -142,7 +142,15 @@ mod status {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
         slept: Arc<AtomicU64>,
-        shows: bool,
+        shows: Shows,
+    }
+
+    /// What a run of [`Sets`] shows before it sets its count.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) enum Shows {
+        Nothing,
+        /// An error, so the status write compares its text at each write.
+        Error,
     }
 
     impl Kind for Sets {
@@ -169,7 +177,7 @@ mod status {
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
-            if self.shows {
+            if let Shows::Error = self.shows {
                 ctx.error(&"refused");
             }
             let allocations = Cell::new(0);
@@ -213,8 +221,10 @@ mod status {
 
     /// Checks that a set of a status count allocates nothing, also the set that wakes
     /// the status writer, and that so does each poll of the supervisor while the kind
-    /// sets its count, with the write of the status, but for the kind's sleeps.
-    pub(super) fn check(shows: bool) {
+    /// sets its count, with the write of the status, but for the kind's sleeps. With
+    /// `Shows::Error`, the run shows an error, so a clone of its text at each write
+    /// fails the check.
+    pub(super) fn check(shows: Shows) {
         let allocations = Arc::new(AtomicU64::new(1));
         let steady = Arc::new(AtomicBool::new(false));
         let slept = Arc::new(AtomicU64::new(0));
@@ -276,7 +286,7 @@ mod status {
             polled.load(Relaxed),
             slept.load(Relaxed),
             "a poll of the supervisor allocates only in the kind's sleeps, shows: \
-             {shows}"
+             {shows:?}"
         );
     }
 }
