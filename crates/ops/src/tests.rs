@@ -195,16 +195,14 @@ fn json_output_parses_back_to_the_typed_output() {
 
 #[test]
 fn version_prints_the_crate_version_and_the_commit() {
+    let commit = Some(env!("FOUNDATION_COMMIT")).filter(|commit| !commit.is_empty());
     let json = cli(&["version", "--json"]);
     let output: Value = serde_json::from_str(&json.stdout).expect("json");
     assert_eq!(
         output,
-        json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "commit": option_env!("FOUNDATION_COMMIT"),
-        })
+        json!({ "version": env!("CARGO_PKG_VERSION"), "commit": commit })
     );
-    let commit = option_env!("FOUNDATION_COMMIT").map_or("unknown", |c| &c[..12]);
+    let commit = commit.map_or("unknown", |commit| &commit[..12]);
     let line = format!("{} ({commit})\n", env!("CARGO_PKG_VERSION"));
     assert_eq!((cli(&["version"]).stdout, json.status), (line, 0));
 }
