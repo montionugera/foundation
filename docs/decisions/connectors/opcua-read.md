@@ -28,6 +28,8 @@
   `BadSecureChannelClosed`. The change that adds a GUID key also changes `SPLIT`, to
   18: a test of the client fails to build until it gives the size of each form of a
   key. Decided by `laptop.architect-2` (2026-10-13T03:51:25Z:
-  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207, and the
+  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207, the
   token size at 2026-10-13T03:52:06Z:
-  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137834758).
+  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137834758, and the
+  trust of the answer in `SPLIT` at 2026-10-13T05:07:37Z:
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801).
