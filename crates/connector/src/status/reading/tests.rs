@@ -185,6 +185,9 @@ const ALL: &[&str] = &["plant.modbus.status.*"];
 const NO_BACKOFF: &[&str] = &[ALL[0], "!plant.modbus.status.backoff"];
 const NO_RESTARTS: &[&str] = &[ALL[0], "!plant.modbus.status.restarts"];
 const NO_ERROR: &[&str] = &[ALL[0], "!plant.modbus.status.error"];
+const NO_STATE: &[&str] = &[ALL[0], "!plant.modbus.status.state"];
+const NO_CLASS: &[&str] = &[ALL[0], "!plant.modbus.status.class"];
+
 #[test]
 fn reads_a_running_connector_and_its_counts() {
     let got = read(vec![Step::Start, Step::Count(7)], ALL);
@@ -304,6 +307,18 @@ fn reads_a_frame_with_no_backoff() {
 #[test]
 fn gives_none_for_a_frame_with_no_restarts() {
     let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_RESTARTS);
+    assert_eq!(got, None);
+}
+
+#[test]
+fn gives_none_for_a_frame_with_no_state() {
+    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_STATE);
+    assert_eq!(got, None);
+}
+
+#[test]
+fn gives_none_for_a_frame_with_no_class() {
+    let got = read(vec![frame([2, 0, 1, 0, 6], "")], NO_CLASS);
     assert_eq!(got, None);
 }
 
