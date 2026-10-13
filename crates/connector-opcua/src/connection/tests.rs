@@ -2511,17 +2511,19 @@ fn listen_on_another_port() {
 }
 
 /// Runs the test `name` of this module in a child process, asserts that it aborts,
-/// and gives its panic message. The test harness writes the message to stdout.
+/// and gives its panic message. The child does not capture its output: on Windows the
+/// unwind from the hook ends the process before the harness prints a captured message.
 fn abort(name: &str) -> String {
-    let output = child::aborted(&format!("connection::tests::{name}"), &[]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let message = stdout
+    let name = format!("connection::tests::{name}");
+    let output = child::aborted(&name, &[("RUST_TEST_NOCAPTURE", "1")]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let message = stderr
         .lines()
         .skip_while(|line| {
             !(line.contains("panicked at") && line.contains("connection.rs:"))
         })
         .nth(1);
-    message.expect(&stdout).to_owned()
+    message.expect(&stderr).to_owned()
 }
 
 #[test]
