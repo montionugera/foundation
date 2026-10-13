@@ -4,6 +4,7 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::collections::VecDeque;
+use std::collections::vec_deque::Drain;
 use std::fmt;
 use std::num::NonZeroU8;
 
@@ -319,15 +320,9 @@ pub(crate) struct Logs {
     tags: hash::Map<(Slot, Path, NonZeroU8), u64>,
     /// No read finds a record before this offset.
     hidden: u64,
-    /// The offset of each record with an item in `items`, and the number after its
-    /// last item, in ring order.
-    records: VecDeque<(u64, u64)>,
-    /// The place in `paths` of the path of each run and each carried tail, in ring
-    /// order. An item is stale once its path has a later holder. Items are numbered
-    /// from 0 in the order that they came, and no number is used twice.
-    items: VecDeque<u32>,
-    /// The number of the front item.
-    base: u64,
+    /// One item for each run and each carried tail. An item is stale once its path
+    /// has a later holder.
+    items: Items,
     /// Each item before this number is stale.
     stale: u64,
     /// An [`idle`](Self::idle) has passed each item before this number.
@@ -418,17 +413,8 @@ impl Logs {
             self.hidden
         );
         self.hidden = tail;
-        while let Some(&(offset, end)) = self.records.front() {
-            if offset >= tail {
-                break;
-            }
-            self.records.pop_front();
-            let count = end
-                .checked_sub(self.base)
-                .and_then(|count| usize::try_from(count).ok())
-                .expect("invariant: a record holds items from the front");
-            self.base = end;
-            for at in self.items.drain(..count) {
+        while let Some((offset, places)) = self.items.pop(tail) {
+            for at in places {
                 let runs = &mut nth_mut(&mut self.paths, at).runs;
                 if runs.front().is_some_and(|run| run.offset == offset) {
                     runs.pop_front();
@@ -444,10 +430,11 @@ impl Logs {
         expect(dead_code, reason = "a commit calls it")
     )]
     pub(crate) fn kept(&mut self) -> Option<u64> {
-        let mut items = numbered(&self.records, &self.items, self.base, self.stale);
-        let holding =
-            items.find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
-        self.stale = holding.map_or_else(|| self.end(), |(number, ..)| number);
+        let holding = self
+            .items
+            .from(self.stale)
+            .find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
+        self.stale = holding.map_or_else(|| self.items.next(), |(number, ..)| number);
         holding.map(|(_, offset, _)| offset)
     }
 
@@ -467,8 +454,7 @@ impl Logs {
         tails: &mut Vec<carry::Tail>,
     ) {
         let mut room = limit;
-        let items = numbered(&self.records, &self.items, self.base, self.scanned);
-        for (number, offset, at) in items {
+        for (number, offset, at) in self.items.from(self.scanned) {
             if offset >= reach {
                 self.scanned = number;
                 return;
@@ -490,12 +476,7 @@ impl Logs {
                 stamp: log.durable.tail.stamp,
             });
         }
-        self.scanned = self.end();
-    }
-
-    /// The number of the next item.
-    fn end(&self) -> u64 {
-        self.records.back().map_or(self.base, |&(_, end)| end)
+        self.scanned = self.items.next();
     }
 
     /// The log of `path` of the index at `slot`.
@@ -510,17 +491,6 @@ impl Logs {
         self.paths.push(log);
         self.places.insert(key, at);
         at
-    }
-
-    /// Adds an item for the log at `at` in the record at `offset`, which is at or
-    /// after the record of each item.
-    fn list(&mut self, offset: u64, at: u32) {
-        let next = self.end().checked_add(1).expect("invariant: numbers fit");
-        match self.records.back_mut() {
-            Some((last, end)) if *last == offset => *end = next,
-            _ => self.records.push_back((offset, next)),
-        }
-        self.items.push_back(at);
     }
 
     /// Gives a path the tail that the carry record at `offset` holds, and makes the
@@ -564,7 +534,7 @@ impl Logs {
             log.appended = log.durable;
             log.holder = Some(offset);
             let at = self.add(key, log);
-            self.list(offset, at);
+            self.items.push(offset, at);
             return Ok(());
         };
         let log = nth_mut(&mut self.paths, at);
@@ -608,7 +578,7 @@ impl Logs {
         log.appended = log.durable;
         log.holder = Some(offset);
         log.origin = None;
-        self.list(offset, at);
+        self.items.push(offset, at);
         Ok(())
     }
 
@@ -647,7 +617,7 @@ impl Logs {
     ) -> Result<(), Invalid> {
         let (added, at) = self.change(slot, header, |log| log.sync(header, offset))?;
         if added {
-            self.list(offset, at);
+            self.items.push(offset, at);
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -699,29 +669,70 @@ fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
     logs.get_mut(at).expect("invariant: a place has its log")
 }
 
-/// Each item of [`Logs`] from the number `from`, or from the front item when it
-/// is past, with its number and the offset of its record, oldest first. `base` is
-/// the number of the front item.
-fn numbered<'a>(
-    records: &'a VecDeque<(u64, u64)>,
-    items: &'a VecDeque<u32>,
+/// The place in a `Vec` of logs of each item, grouped by record in ring order. Items
+/// are numbered from 0 in the order that they came, and no number is used twice.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct Items {
+    /// The offset of each record with an item, and the number after its last item.
+    records: VecDeque<(u64, u64)>,
+    /// The place of each item.
+    places: VecDeque<u32>,
+    /// The number of the front item.
     base: u64,
-    from: u64,
-) -> impl Iterator<Item = (u64, u64, u32)> + 'a {
-    let mut start = from.max(base);
-    let first = records.partition_point(|&(_, end)| end <= start);
-    let skip = start
-        .checked_sub(base)
-        .and_then(|skip| usize::try_from(skip).ok())
-        .expect("invariant: a number from the front fits");
-    let numbers = records.range(first..).flat_map(move |&(offset, end)| {
-        let numbers = start..end;
-        start = end;
-        numbers.map(move |number| (number, offset))
-    });
-    numbers
-        .zip(items.range(skip..))
-        .map(|((number, offset), &at)| (number, offset, at))
+}
+
+impl Items {
+    /// Adds an item for the log at `at` in the record at `offset`, which is at or
+    /// after the record of each item.
+    fn push(&mut self, offset: u64, at: u32) {
+        let next = self.next().checked_add(1).expect("invariant: numbers fit");
+        match self.records.back_mut() {
+            Some((last, end)) if *last == offset => *end = next,
+            _ => self.records.push_back((offset, next)),
+        }
+        self.places.push_back(at);
+    }
+
+    /// The number of the next item.
+    fn next(&self) -> u64 {
+        self.records.back().map_or(self.base, |&(_, end)| end)
+    }
+
+    /// Removes the front record when it is before `tail`, and gives its offset and
+    /// the places of its items.
+    fn pop(&mut self, tail: u64) -> Option<(u64, Drain<'_, u32>)> {
+        let &(offset, end) =
+            self.records.front().filter(|&&(offset, _)| offset < tail)?;
+        self.records.pop_front();
+        let count = self.index(end);
+        self.base = end;
+        Some((offset, self.places.drain(..count)))
+    }
+
+    /// Each item from the number `from`, or from the front item when it is past, with
+    /// its number and the offset of its record, oldest first.
+    fn from(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
+        let mut start = from.max(self.base);
+        let first = self.records.partition_point(|&(_, end)| end <= start);
+        let skip = self.index(start);
+        let numbers = self.records.range(first..).flat_map(move |&(offset, end)| {
+            let numbers = start..end;
+            start = end;
+            numbers.map(move |number| (number, offset))
+        });
+        numbers
+            .zip(self.places.range(skip..))
+            .map(|((number, offset), &at)| (number, offset, at))
+    }
+
+    /// The index in `places` of the item numbered `number`, at or after the front.
+    fn index(&self, number: u64) -> usize {
+        number
+            .checked_sub(self.base)
+            .and_then(|index| usize::try_from(index).ok())
+            .expect("invariant: a number at or after the front fits")
+    }
 }
 
 #[cfg(test)]
@@ -959,9 +970,10 @@ mod tests {
 
         /// Each record's entries are appended, a commit asks for the idle tails
         /// up to a reach, the record is synced and may carry those tails, and a
-        /// trim may pass the records before the oldest holder. Each tail comes once for its holder, oldest
-        /// holder first, with the path's durable end. A call with room left has
-        /// given each path with no queued entry whose holder is before the reach.
+        /// trim may pass the records before the oldest holder. Each tail comes
+        /// once for its holder, oldest holder first, with the path's durable end.
+        /// A call with room left has given each path with no queued entry whose
+        /// holder is before the reach.
         #[test]
         fn gives_each_idle_tail_once_and_keeps_the_oldest_holder(
             records in prop::collection::vec(
@@ -981,8 +993,8 @@ mod tests {
                 hash::Map::default();
             let mut given: hash::Set<(u32, Path, u64)> = hash::Set::default();
             let mut hidden = 0;
-            for ((record, reach, limit, trim, carries), number) in records.iter().zip(1..)
-            {
+            let numbered = records.iter().zip(1..);
+            for ((record, reach, limit, trim, carries), number) in numbered {
                 let offset = 4096 * number;
                 let mut queued = Vec::new();
                 for next in record {
@@ -1039,7 +1051,9 @@ mod tests {
                 if *carries {
                     for tail in &tails {
                         let index = (0..3u32)
-                            .find(|&i| channel::Key::from_u128(u128::from(i)) == tail.index)
+                            .find(|&i| {
+                                channel::Key::from_u128(u128::from(i)) == tail.index
+                            })
                             .expect("a fed index");
                         prop_assert_eq!(logs.carry(slot(index), tail, offset), Ok(()));
                         let end = model[&(index, tail.path)].1;
@@ -1452,8 +1466,8 @@ mod tests {
             .expect("a new path takes any tail");
         logs.carry(slot(5), &carried_of(5, 5, 0), 8192)
             .expect("a new path takes any tail");
-        assert_eq!(logs.records, [(4096, 3), (8192, 5)]);
-        assert_eq!(logs.items.len(), 5);
+        assert_eq!(logs.items.records, [(4096, 3), (8192, 5)]);
+        assert_eq!(logs.items.places.len(), 5);
     }
 
     #[test]
