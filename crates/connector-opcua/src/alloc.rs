@@ -16,6 +16,14 @@ const ALIGN: usize = 16;
 
 const _: () = assert!(size_of::<usize>() <= ALIGN, "the size fits in the header");
 
+/// Stops the process as the Rust allocator does when it has no memory, for a C
+/// constructor that gives NULL. A constructor does not give the size of the block that
+/// failed, so the size in the message is that of a header alone, the smallest block
+/// that this allocator asks for, not the size of the block that failed.
+pub(crate) fn exhausted() -> ! {
+    alloc::handle_alloc_error(layout(0).expect("invariant: a header alone is a layout"))
+}
+
 /// Gives the layout of a block of `size` bytes and its header, or `None` when it is
 /// too large.
 fn layout(size: usize) -> Option<Layout> {
