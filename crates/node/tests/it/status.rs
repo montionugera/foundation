@@ -96,3 +96,34 @@ fn an_error_with_next_is_refused() {
         ),
     );
 }
+
+/// A key that `ops` does not write, on a connector or beside `connectors`, is another
+/// shape.
+#[test]
+fn an_unknown_key_is_refused() {
+    let connector = concat!(
+        r#"{"name":"a","kind":"influx","state":"unknown","address":null,"#,
+        r#""restarts":null,"counts":null,"error":null"#,
+    );
+    let cases = [
+        (
+            format!(r#"{{"connectors":[{connector},"extra":0}}]}}"#),
+            "expected one of `name`, `kind`, `state`, `address`, `restarts`, \
+             `counts`, `error`",
+        ),
+        (
+            format!(r#"{{"connectors":[{connector}}}],"extra":0}}"#),
+            "expected `connectors`",
+        ),
+    ];
+    for (json, expected) in cases {
+        let error = serde_json::from_str::<Output>(&json)
+            .err()
+            .expect("a refusal");
+        let column = json.find(r#""extra""#).expect("the key") + 7;
+        assert_eq!(
+            error.to_string(),
+            format!("unknown field `extra`, {expected} at line 1 column {column}"),
+        );
+    }
+}
