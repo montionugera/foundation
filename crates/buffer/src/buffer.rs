@@ -35,6 +35,9 @@ use crate::read::{self, Read, Reading, Stored};
 use crate::record::{self, ALIGN, AREA_START, Body};
 use crate::wal::{self, Cursor, Layout, Limit, Step, Unfit, Window, Writer};
 
+/// How many reads at once hold records with no allocation.
+const HOLDS: usize = 16;
+
 /// What one shard's buffer is given at open.
 #[derive(Debug)]
 pub struct Config {
@@ -297,6 +300,8 @@ struct State {
     queue: Vec<Closed>,
     /// Where each path stands, and the records that hold it.
     logs: Logs,
+    /// The record that each read in progress holds, in no order.
+    held: Vec<u64>,
     /// How many deadlines took the groups to write.
     taken: u64,
     /// How many deadlines ended with no error.
@@ -355,6 +360,14 @@ impl State {
         self.ended = true;
         self.committing.drain(woken);
         self.ending.drain(woken);
+    }
+
+    /// The oldest record that a trim must keep: the oldest that holds the durable
+    /// tail of a path or that a read in progress holds. `None` when no record does.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    fn kept(&mut self) -> Option<u64> {
+        let held = self.held.iter().min().copied();
+        self.logs.kept().into_iter().chain(held).min()
     }
 
     /// The key of the next [`Commit`] or [`End`].
@@ -451,6 +464,7 @@ impl Buffer {
                 spares: Vec::new(),
                 queue: Vec::new(),
                 logs,
+                held: Vec::with_capacity(HOLDS),
                 taken: 0,
                 commits: 0,
                 committing: wait::Set::new(),
@@ -575,6 +589,9 @@ impl Buffer {
         } = &*self.shared;
         let mut records = self.shared.state.borrow().logs.tagged(path, tag);
         records.sort_unstable_by_key(|&(offset, ..)| offset);
+        // A trim frees the oldest records first, so holding the oldest holds each.
+        let _hold =
+            (records.first()).map(|&(offset, ..)| Hold::new(&self.shared, offset));
         let mut found = Vec::with_capacity(records.len());
         for record in records.chunk_by(|a, b| a.0 == b.0) {
             let [(offset, ..), ..] = *record else {
@@ -597,10 +614,14 @@ impl Buffer {
         slot: Slot,
         path: Path,
     ) -> Result<(), Error> {
+        // No await comes between a lookup and its hold, or between the drop of a
+        // hold and the next lookup, so no trim passes the records the read goes on
+        // to.
         while let Some(from) = reading.next() {
             let found = self.shared.state.borrow().logs.find(slot, path, from);
             match found {
                 Found::Run(index, run) => {
+                    let _hold = Hold::new(&self.shared, run.offset);
                     if !reading.record(index, run).await? {
                         break;
                     }
@@ -928,7 +949,7 @@ fn recover_carried(
     for tail in carry::parse(body).map_err(unread)? {
         let tail = tail.map_err(unread)?;
         let slot = slots.index(tail.index);
-        logs.carry(slot, &tail).map_err(misplaced)?;
+        logs.carry(slot, &tail, offset).map_err(misplaced)?;
     }
     Ok(())
 }
@@ -1093,6 +1114,27 @@ impl Future for End {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.waiter.poll(cx, State::outcome)
+    }
+}
+
+/// A record that a read in progress holds, which no trim frees, until the drop.
+struct Hold<'a> {
+    shared: &'a Shared,
+    offset: u64,
+}
+
+impl<'a> Hold<'a> {
+    fn new(shared: &'a Shared, offset: u64) -> Self {
+        shared.state.borrow_mut().held.push(offset);
+        Self { shared, offset }
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        let held = &mut self.shared.state.borrow_mut().held;
+        let at = held.iter().position(|&offset| offset == self.offset);
+        held.swap_remove(at.expect("invariant: a hold is in `held`"));
     }
 }
 
@@ -1446,6 +1488,71 @@ mod tests {
         let found = found.lock().expect("no panic held the lock");
         let tagged = vec![(Slot::new(0), 0)];
         assert_eq!(*found, [tagged.clone(), tagged, vec![]]);
+    }
+
+    /// A read holds the record it waits on, and `newest` holds the oldest record it
+    /// reads, until the read ends or drops. The tagged entry and [0, 3), [3, 6),
+    /// and [6, 9) of one path are in the records at 4096, 8192, and 12288, so the
+    /// tail of the path holds 12288.
+    #[test]
+    fn a_read_holds_the_record_it_waits_on_until_it_ends_or_drops() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let given = Arc::clone(&kept);
+        with_buffer(
+            &mut sim,
+            &node,
+            "write",
+            |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let tagged = Entry {
+                    len: 0,
+                    tag: 1,
+                    ..entry(1, one, Path::Live, 0, &part)
+                };
+                for batch in [
+                    vec![tagged, entry(1, one, Path::Live, 0, &part)],
+                    vec![entry(1, one, Path::Live, 3, &part)],
+                    vec![entry(1, one, Path::Live, 6, &part)],
+                ] {
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                }
+                let kept_now = || buffer.shared.state.borrow_mut().kept();
+                let mut kept = vec![kept_now()];
+                {
+                    let mut read = pin!(read_from(&buffer, one, 0));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    kept.push(kept_now());
+                    read.await;
+                }
+                kept.push(kept_now());
+                {
+                    let mut read = pin!(read_from(&buffer, one, 3));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    kept.push(kept_now());
+                }
+                kept.push(kept_now());
+                {
+                    let mut newest = pin!(buffer.newest(Path::Live, NonZeroU8::MIN));
+                    let first =
+                        poll_fn(|cx| Poll::Ready(newest.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "newest waits on a file read");
+                    kept.push(kept_now());
+                    newest.await.expect("reads");
+                }
+                kept.push(kept_now());
+                *given.lock().expect("no panic held the lock") = kept;
+                buffer
+            },
+        );
+        let kept = kept.lock().expect("no panic held the lock");
+        let expected = [12288, 4096, 12288, 8192, 12288, 4096, 12288];
+        assert_eq!(*kept, expected.map(Some));
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that
