@@ -239,19 +239,23 @@
   supersedes the bound on each file of that plan. `laptop.architect-2` approved the
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
-  `version` and `foundation --version` give one output: the text `<version> (<commit>)`,
+  `version`, `foundation --version`, and `-V` give one output: the text
+  `<version> (<commit>)`,
   with the first 12 hex digits of the commit or `unknown`, and the JSON
   `{"commit": <40 hex digits, or null>, "version": <version>}`, so a program tests
   `null`, not a word. The commit is that of `HEAD` when the `build.rs` of `ops` runs,
   also in a tree with changes, with no mark of them, and is none outside a git
   repository and on a branch with no commit. Only the script sets it, so a variable of
-  the builder does not reach `ops`. The script watches the paths of `HEAD`, its ref, and
-  `packed-refs` that `git rev-parse --git-path` gives, or the `reftable` folder in a
-  repository of that format, so that a commit, a checkout, and a branch switch in a
-  worktree rebuild `ops`, and a build with no change does not. For a ref with no file,
-  as on a branch in `packed-refs` or with no commit, it watches the nearest folder above
-  it. It watches `packed-refs` only when it is there, as `git pack-refs` moves no ref.
+  the builder does not reach `ops`, and it panics at a commit that is not 40 lowercase
+  hex digits. The script watches
+  the paths that `git rev-parse --git-path` gives for `HEAD` and its ref, and, only
+  while that ref has no file of its own, `packed-refs` and the nearest folder above
+  the ref, since git reads a ref file first. In a reftable repository, it watches the
+  `reftable` folder in their place. So a commit, a checkout, and a branch
+  switch in a worktree rebuild `ops`, and a build with no change does not.
   MCP `serverInfo` keeps the version alone (`laptop.architect-2`, 2026-10-13T21:55:47Z,
-  https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156028343). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156028343; the
+  watch of `packed-refs` and the check of the commit: `laptop.architect-2`, 2026-10-13T22:33:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6156635866). Lost:
   `vergen`, a new dependency for about 30 lines; and a variable that the release sets,
   as each local build must say what it is.
