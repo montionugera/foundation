@@ -654,14 +654,29 @@ fn shows_a_write_that_fails_until_the_run_ends() {
     assert_eq!(errors, ["", refused, ""]);
 }
 
-/// InfluxDB refuses each connection for 6 s, then answers 500 once.
 #[test]
 fn holds_each_sample_once_in_time_order_after_writes_that_fail() {
-    let (points, accepted, errors, first) = run(|node, tasks| async move {
+    stores_each_sample_once_after_writes_that_fail(true);
+}
+
+#[test]
+fn holds_each_sample_after_writes_that_fail_with_no_reader_block() {
+    stores_each_sample_once_after_writes_that_fail(false);
+}
+
+/// Checks that InfluxDB stores each sample once, in time order, when it refuses each
+/// connection for 6 s, then answers 500 once. The config has the `reader` block of
+/// [`config`] when `reader`, else none.
+fn stores_each_sample_once_after_writes_that_fail(reader: bool) {
+    let (points, accepted, errors, first) = run(move |node, tasks| async move {
         let plant = Plant::unserved(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "the disk is full");
         plant.answers.borrow_mut().push_back(failed);
-        let run = plant.start(plant.config());
+        let mut config = plant.config();
+        if !reader {
+            config.blocks.clear();
+        }
+        let run = plant.start(config);
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
