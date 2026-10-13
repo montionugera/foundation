@@ -327,6 +327,12 @@ pub struct Time(Rc<RefCell<State>>);
 
 impl Time {
     /// Mesh time now, as [`Writer::now`] gives it.
+    ///
+    /// # Panics
+    ///
+    /// If called inside a call of the hub that changes its state, such as
+    /// [`Writer::write`]. Mesh time is known for each `Time`: a writer opens only
+    /// after mesh time, which stays.
     #[must_use]
     pub fn now(&self) -> Stamp {
         now(&self.0)
