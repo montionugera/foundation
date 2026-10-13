@@ -1215,7 +1215,8 @@ fn operations(
     let member = mesh.member(key);
     let member = member.expect("invariant: a mesh opens only on a member");
     let name = member.card.card().name.clone();
-    let node = ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
+    let node =
+        ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
     Rc::new(node)
 }
 

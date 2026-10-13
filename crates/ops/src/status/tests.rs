@@ -78,8 +78,8 @@ impl kind::Kind for Failing {
         std::future::ready(Ok(Vec::new()))
     }
 
-    async fn run(&self, _: Context<()>) -> Result<(), kind::Error> {
-        Err(kind::Error::Device("no route to the device".into()))
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+        std::future::ready(Err(kind::Error::Device("no route to the device".into())))
     }
 }
 
