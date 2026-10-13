@@ -53,12 +53,15 @@
   when the node has a mesh and a member of its region, in this node's view, has the
   peer's public key; else it stops with `Code(wire::header::REJECTED)`, and its reply
   half resets with the same code. A `Hub` stream of a `Peer::Client` session is
-  rejected when the node has no mesh (PR 4b of #585, by `laptop.architect-2`, 22:22
-  UTC, https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342).
-  Amended (2026-10-12, #1744): with a mesh, it goes to the hub's link of the session,
-  and `node` answers each `Served::Request` with `ops::serve` for the subject of its
-  hello, then `Reply::send`. Shard 0 gives its hub the access rules of the spec in use
-  before it takes the first session. At the
+  rejected until #1744 (PR 4b of #585, by `laptop.architect-2`, 22:22 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342).
+  Amended (2026-10-12, #1744, by `laptop.architect-2`, 2026-10-13T05:13:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2545#issuecomment-6138748015): with a
+  mesh, it goes to the hub's link of the session, and `node` answers each
+  `Served::Request` with `ops::serve` for the subject of its hello, then `Reply::send`;
+  with no mesh, it is still rejected. Shard 0 gives its hub the access rules of the
+  root region of the spec in use, and of each later spec, the first before it takes
+  the first session. At the
   stop, each session and stream future drops, then the mesh, and shard 0 waits for the
   mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and before
   `Node::join` returns, so a restart at once opens the log:
