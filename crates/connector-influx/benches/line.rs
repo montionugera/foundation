@@ -87,20 +87,23 @@ impl Shape {
         (measurement, fields)
     }
 
-    /// Appends the `POINTS` lines of `measurement` to `body`.
+    /// Appends the `POINTS` lines of `measurement` to `body`. The field count of each
+    /// line stays in the timed work.
     fn body(
         self,
         (measurement, fields): &(Measurement, Vec<Field>),
         mut body: Vec<u8>,
     ) -> Vec<u8> {
         let mut values = vec![None; self.fields.len()];
+        let mut written = 0_usize;
         for k in 0..POINTS {
             (self.values)(k, &mut values);
             let time = Stamp::from_nanos(T0 + i64::from(k));
             let values = fields.iter().zip(&values);
             let values = values.filter_map(|(field, value)| Some((field, (*value)?)));
-            measurement.line(&mut body, values, time);
+            written = written.wrapping_add(measurement.line(&mut body, values, time));
         }
+        std::hint::black_box(written);
         body
     }
 }
