@@ -171,7 +171,7 @@ docker exec influxdb influx -database plant -execute 'SELECT * FROM plant LIMIT 
 ## When something is wrong
 
 A config with an error gives the file, line, column, and a fix, and `plan` writes no
-plan:
+plan. This is the output when `data_type` of `plant.spike` is written as `datatype`:
 
 ```text
 error[document.missing-attribute]: the `channel` block has no `data_type`
