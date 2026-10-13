@@ -353,4 +353,27 @@
   gives them. A kind gets a count through `Context::count`, and `status::Status` stays
   inside the crate (`laptop.architect-2`, 2026-10-09T19:43:41Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088037219, items 1
-  to 3).
+  to 3). A reader of the status uses the public `status::State`, `status::Class`, and
+  `status::Reading`, and `Reading::of(received)` reads the newest status from a frame of
+  a reader of the status index and each channel on it, each channel by the last segment
+  of its name (`laptop.architect-2`, 2026-10-13T01:10:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135890057; the
+  reader by its channels: `laptop.architect-2`, 2026-10-13T01:52:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
+  Each channel on the status index that the supervisor does not write is a count,
+  because a kind adds only counts to the status, and `config` refuses each channel on
+  the index that the connector does not imply (STATUS PLACEMENT; the rule:
+  `laptop.architect-2`, 2026-10-13T01:52:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 1;
+  the reason: `laptop.architect-2`, 2026-10-13T02:08:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136629487, and
+  `laptop.architect`, 2026-10-13T02:09:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136660103; the
+  pointer to STATUS PLACEMENT: `laptop.architect`, 2026-10-13T08:08:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141195975, and
+  `laptop.architect-2`, 2026-10-13T08:08:58Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141198877; the words:
+  `laptop.architect`, 2026-10-13T08:10:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141220969, and
+  `laptop.architect-2`, 2026-10-13T08:11:27Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141238640).
