@@ -214,6 +214,10 @@ impl Node {
     /// - Each `Files` that it gives acts as a clone of one: a write open, a remove, or
     ///   a rename from any of them waits for each call that a drop from any of them
     ///   left to run.
+    /// - `open_absolute` reads the file at its path in [`Node::paths`], the host's
+    ///   tree, and takes no time. It gives `NotFound` when no file is there, and the
+    ///   error of a read of the tree as `Error::Io` with operation `Open`. A later
+    ///   write of the tree does not change the open file.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())

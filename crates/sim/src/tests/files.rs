@@ -110,6 +110,54 @@ fn a_read_after_a_write_ends_sees_it_and_a_new_file_reads_zeros() {
 }
 
 #[test]
+fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
+    let (bytes, span, later) = run(0, MIB, |node, _| async move {
+        let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
+        paths.write(path, b"abc").unwrap();
+        let start = node.clock().now();
+        let file = node.files().open_absolute(path).await.unwrap();
+        let span = node.clock().now() - start;
+        paths.write(path, b"xyz").unwrap();
+        let (pool, len) = (pool(), usize::try_from(file.len()).unwrap());
+        let bytes = read(&file, &pool, 0, len).await;
+        let later = read(&file, &pool, 1, 2).await;
+        file.sync().await.unwrap();
+        file.close().await;
+        (bytes, span, later)
+    });
+    assert_eq!(
+        (bytes, span, later),
+        (b"abc".to_vec(), Span::ZERO, b"bc".to_vec())
+    );
+}
+
+#[test]
+fn open_absolute_reports_each_failure() {
+    let found = run(0, MIB, |node, _| async move {
+        let paths = node.paths();
+        paths.write(Path::new("/run/secrets/a"), b"abc").unwrap();
+        node.fail_path(Path::new("/run/secrets/a"), 13);
+        let files = node.files();
+        let mut found = Vec::new();
+        for path in ["/run/secrets/gone", "/run/secrets", "/run/secrets/a"] {
+            let opened = files.open_absolute(Path::new(path)).await;
+            found.push(opened.map(drop).unwrap_err());
+        }
+        found
+    });
+    assert_eq!(
+        found,
+        [
+            Error::NotFound {
+                path: "/run/secrets/gone".into()
+            },
+            io("/run/secrets", Operation::Open, 21),
+            io("/run/secrets/a", Operation::Open, 13),
+        ]
+    );
+}
+
+#[test]
 fn each_call_takes_up_to_100_us() {
     let spans = run(0, MIB, |node, _| async move {
         let (files, clock) = (node.files(), node.clock());

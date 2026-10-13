@@ -122,6 +122,44 @@ impl Files {
         })
     }
 
+    /// Opens the file at `path`, outside the data directory, to read. A config names
+    /// such a file, such as a secret that the platform mounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Files::open`].
+    ///
+    /// # Panics
+    ///
+    /// When `path` is relative or has a `..` segment.
+    ///
+    /// ```
+    /// use std::path::Path;
+    ///
+    /// async fn token(files: &env::files::Files) -> Option<env::files::File> {
+    ///     files.open_absolute(Path::new("/run/secrets/token")).await.ok()
+    /// }
+    /// ```
+    pub async fn open_absolute(&self, path: &Path) -> Result<File, Error> {
+        assert!(
+            path.is_absolute(),
+            "path {} is relative; give the whole path from the root",
+            path.display()
+        );
+        assert!(
+            !path.components().any(|part| part == Component::ParentDir),
+            "path {} has a `..` segment; give the path with none",
+            path.display()
+        );
+        let descriptor = self.0.open_absolute(path).await?;
+        Ok(File {
+            descriptor,
+            path: path.to_path_buf(),
+            mode: Mode::Read,
+            poisoned: Cell::new(false),
+        })
+    }
+
     /// The names of the files and directories directly in `dir`, sorted. Each is a bare
     /// name, not joined with `dir`. It does not list inside subdirectories. It first
     /// waits for each call on a path directly in `dir` that a dropped future or handle
@@ -807,6 +845,10 @@ pub trait Driver {
         mode: Mode,
     ) -> Request<'a, Box<dyn Descriptor>>;
 
+    /// Opens the file at `path`, an absolute path outside the data directory, to read
+    /// only. It makes no file.
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
+
     /// The bare names of the files and directories directly in `dir`, in any order.
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>>;
 
@@ -933,6 +975,13 @@ mod tests {
                 calls: Rc::clone(&self.calls),
             });
             Box::pin(async { Ok(descriptor) })
+        }
+
+        fn open_absolute<'a>(
+            &'a self,
+            path: &'a Path,
+        ) -> Request<'a, Box<dyn Descriptor>> {
+            self.open(path, Mode::Read)
         }
 
         fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -1155,6 +1204,34 @@ mod tests {
         fn open_panics_on_a_parent_segment() {
             let (files, _) = Fixed::files(0);
             drop(ready(files.open(Path::new("ring/../../etc"), Mode::Read)));
+        }
+
+        #[test]
+        fn open_absolute_opens_to_read() {
+            let (files, calls) = Fixed::files(3);
+            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            assert_eq!(file.map(|file| file.len()), Ok(3));
+            assert_eq!(*calls.borrow(), ["open /run/secrets/token Read"]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "path run/secrets/token is relative; give the whole path from \
+                        the root"
+        )]
+        fn open_absolute_panics_on_a_relative_path() {
+            let (files, _) = Fixed::files(0);
+            drop(ready(files.open_absolute(Path::new("run/secrets/token"))));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "path /run/../etc/shadow has a `..` segment; give the path with \
+                        none"
+        )]
+        fn open_absolute_panics_on_a_parent_segment() {
+            let (files, _) = Fixed::files(0);
+            drop(ready(files.open_absolute(Path::new("/run/../etc/shadow"))));
         }
 
         #[test]

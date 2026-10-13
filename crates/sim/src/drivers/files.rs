@@ -1,16 +1,21 @@
 //! The `env::files` drivers of a simulated node.
 
+use std::future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use block::{Block, Unique};
-use env::files::{Mode, Request};
+use env::files::{Error, Mode, Operation, Request};
+use env::paths::Found;
 
 use super::Node;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
 use crate::state::lock;
+
+/// `EISDIR` on Linux.
+const DIRECTORY: i32 = 21;
 
 impl Node {
     /// Starts `call` on `path` now, keeping `held` until it ends.
@@ -59,6 +64,31 @@ impl env::files::Driver for Node {
                 Box::new(Descriptor { node, handle, len });
             descriptor
         })
+    }
+
+    fn open_absolute<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Request<'a, Box<dyn env::files::Descriptor>> {
+        let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
+        let io = |code| Error::Io {
+            path: path.to_path_buf(),
+            operation: Operation::Open,
+            code,
+        };
+        let opened = match found {
+            Ok(Found::File(bytes)) => {
+                let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host(bytes));
+                Ok(descriptor)
+            }
+            Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
+            Ok(Found::Large) => unreachable!("invariant: no file is over usize::MAX"),
+            Err(env::paths::Error::NotFound) => Err(Error::NotFound {
+                path: path.to_path_buf(),
+            }),
+            Err(env::paths::Error::Io { code }) => Err(io(code)),
+        };
+        Box::pin(future::ready(opened))
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -217,6 +247,46 @@ impl Drop for Descriptor {
             .files()
             .close(self.node.node, self.handle);
         drop(unused);
+    }
+}
+
+/// A file of the host, read whole at its open. `File` opens it to read only, so it
+/// never writes, renames, or removes it.
+struct Host(Vec<u8>);
+
+impl env::files::Descriptor for Host {
+    fn len(&self) -> u64 {
+        u64::try_from(self.0.len()).expect("invariant: usize fits u64")
+    }
+
+    fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn read_at(&self, offset: u64, mut into: Unique) -> Request<'_, Unique> {
+        let start = usize::try_from(offset).expect("invariant: File checked it");
+        let bytes = self.0.get(start..start + into.len());
+        into.copy_from_slice(bytes.expect("invariant: File checked the range"));
+        Box::pin(future::ready(Ok(into)))
+    }
+
+    fn sync(&self) -> Request<'_, ()> {
+        Box::pin(future::ready(Ok(())))
+    }
+
+    fn rename<'a>(&'a self, _: &'a Path, _: &'a Path) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()>>> {
+        Box::pin(future::ready(()))
+    }
+
+    fn remove(
+        self: Box<Self>,
+        _: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        unreachable!("invariant: a host file is open to read")
     }
 }
 

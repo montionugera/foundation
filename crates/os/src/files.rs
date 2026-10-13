@@ -126,6 +126,11 @@ impl env::files::Driver for Disk {
         })
     }
 
+    /// `openat` ignores the data directory for an absolute path.
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.open(path, Mode::Read)
+    }
+
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
         self.call(dir, Operation::List, list)
     }

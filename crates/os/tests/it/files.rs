@@ -226,6 +226,19 @@ fn an_open_of_a_missing_file_gives_not_found() {
 }
 
 #[test]
+fn open_absolute_reads_a_file_outside_the_data_directory() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        let file = files.open_absolute(&path).await.unwrap();
+        assert_eq!(read(&file, &pool(), 0, 3).await, b"abc");
+        let gone = data.parent().unwrap().join("gone");
+        let found = files.open_absolute(&gone).await.unwrap_err();
+        assert_eq!(found, Error::NotFound { path: gone });
+    });
+}
+
+#[test]
 fn a_write_open_of_a_held_file_gives_busy_and_a_read_open_does_not() {
     run(|files, data| async move {
         let held = create(&files, "a", 4 * KIB).await;
