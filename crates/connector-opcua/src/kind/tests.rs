@@ -657,9 +657,10 @@ fn counts_the_samples_of_each_run_after_a_restart() {
     assert_eq!(last(&outcome.statuses, IN), frames * 3);
 }
 
-/// `missed` and `lost` hold across the runs of one supervisor call.
+/// `missed` and `lost` add the ticks and samples of the last run to those of the runs
+/// before it.
 #[test]
-fn counts_the_missed_ticks_and_lost_samples_of_each_run_after_a_restart() {
+fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
     let outcome = run(Setup::three(), |scene| async move {
         let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |scene| async move {
@@ -668,12 +669,20 @@ fn counts_the_missed_ticks_and_lost_samples_of_each_run_after_a_restart() {
         });
         scene.after(ms(2_550), |scene| async move { scene.stop().await });
         scene.after(ms(4_050), |scene| async move { scene.serve() });
-        scene.supervise(ms(6_050)).await
+        scene.after(ms(5_550), |scene| async move {
+            let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+            let held = fill(&rival);
+            scene.node.clock().sleep(Span::SECOND).await;
+            drop(held);
+            drop(rival);
+            scene.node.pause(Span::SECOND);
+        });
+        scene.supervise(ms(9_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     assert_eq!(last(&outcome.statuses, RESTARTS), 2);
-    assert_eq!(last(&outcome.statuses, MISSED), 9);
-    assert_eq!(last(&outcome.statuses, LOST), 33);
+    assert_eq!(last(&outcome.statuses, MISSED), 18);
+    assert_eq!(last(&outcome.statuses, LOST), 63);
 }
 
 #[test]
