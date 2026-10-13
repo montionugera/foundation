@@ -240,16 +240,28 @@
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
   `plan`, `apply`, and `status` take `--data <dir>`, the data directory of the node, by
-  default `foundation-data`, as `start` does (#2526). This supersedes "the node of
-  `foundation-data`" above. The fix of `node.not-running` is ``Start one with
-  `foundation start --name <name>`, or give the data directory of a node that runs with
-  `--data` ``, which supersedes "with no `--data`" above. The fix of `node.session` is
-  `Fix the cause in the message, then run the command again`, because the node writes no
-  log; the PR of #2606 that writes the log points this fix to it. The fix of
-  `ops.unknown-operation` with no close name names the list of its carrier: ``Use a
-  name from `foundation --help` `` on the command line, and ``Use a name from
-  `tools/list` `` in MCP, because `foundation docs` lists only the operations of
-  `TABLE`. By `laptop.architect-2` (2026-10-13T21:30:55Z,
-  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024, and the
-  fix of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
-  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894).
+  default `foundation-data`, as `start` does (#2526). This supersedes "run on the node
+  of `foundation-data`" above and in the doc of `cli` of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. Each fix
+  of a reach names the directory `{dir}` that the command gives. The fix of
+  `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>` on
+  its first start, or give `--data` the data directory of a node that runs``, which
+  supersedes "with no `--data`" above, decision 7 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
+  `{dir}` that is a file is also `node.not-running`, with the message `no node runs in
+  {dir}, which is not a directory` and the fix ``Give `--data` the data directory of a
+  node that runs``. The fix of `node.unanswered` is ``Start the node again with
+  `foundation start --data {dir}` ``. The fix of `node.session` is `Fix the cause in the
+  message, then run the command again`, because the node writes no log, which
+  supersedes the fix of `node.session` of item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936; the PR of
+  #2606 that writes the log points this fix to it. The fix of `ops.unknown-operation`
+  with no close name names the list of its carrier: ``Use a name from `foundation
+  --help` `` on the command line, and ``Use a name from `tools/list` `` in MCP, because
+  `foundation docs` lists only the operations of `TABLE`. By `laptop.architect-2`
+  (2026-10-13T21:30:55Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024; the fix
+  of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155892894; and the
+  texts that name `{dir}` at 2026-10-13T21:52:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2614#issuecomment-6155978119).
