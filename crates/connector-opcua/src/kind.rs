@@ -130,17 +130,13 @@ async fn read(
             break;
         };
         let values = read.map_err(|status| device(Failure::Read(status)))?;
-        let bad = reads.iter().zip(values).find_map(|(of, value)| {
-            let status = *value.as_ref().err()?;
-            Some(Failure::Value {
-                channel: of.channel.clone(),
-                node: of.node.clone(),
+        let values = Values::new(values).map_err(|(at, status)| {
+            device(Failure::Value {
+                channel: reads[at].channel.clone(),
+                node: reads[at].node.clone(),
                 status,
             })
-        });
-        if let Some(bad) = bad {
-            return Err(device(bad));
-        }
+        })?;
         frames.write(values, stamp)?;
     }
     Ok(())
@@ -245,12 +241,8 @@ impl Frames {
     ///
     /// # Panics
     ///
-    /// When a value is a bad status, or the home refuses a group as `Backwards` again.
-    fn write(
-        &mut self,
-        values: &[Result<f64, Status>],
-        stamp: Stamp,
-    ) -> Result<(), Error> {
+    /// When the home refuses a group as `Backwards` again.
+    fn write(&mut self, values: Values<'_>, stamp: Stamp) -> Result<(), Error> {
         let Self {
             layout,
             out,
@@ -295,14 +287,14 @@ impl Out {
     ///
     /// # Panics
     ///
-    /// When a value is a bad status, or the home refuses a group as `Expired` or
-    /// `Codec`, which a writer with no lease and a raw frame never gets.
+    /// When the home refuses a group as `Expired` or `Codec`, which a writer with no
+    /// lease and a raw frame never gets.
     fn send(
         &mut self,
         layout: &Layout,
         series: &[(usize, usize)],
         groups: &[u32],
-        values: &[Result<f64, Status>],
+        values: Values<'_>,
         stamp: Stamp,
         backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
@@ -364,31 +356,48 @@ struct Fill {
 
 /// Fills each series of `draft` with one sample: `stamp` in each index of `groups`, and
 /// the value of its read in each other.
-///
-/// # Panics
-///
-/// When the value of a read is a bad status.
 fn fill(
     draft: &mut Draft,
     fills: &[Fill],
-    values: &[Result<f64, Status>],
+    values: Values<'_>,
     stamp: Stamp,
     groups: &[u32],
 ) {
     for (entry, bytes) in draft.iter_mut() {
         let sample = match fills[entry].read {
             None => stamp.nanos().to_le_bytes(),
-            Some(read) => {
-                let Ok(value) = values[read] else {
-                    panic!("invariant: the run writes only good values")
-                };
-                value.to_le_bytes()
-            }
+            Some(read) => values.get(read).to_le_bytes(),
         };
         bytes.copy_from_slice(&sample);
     }
     for &group in groups {
         draft.set_count(group, 1);
+    }
+}
+
+/// The values of one read, each a good Double.
+#[derive(Clone, Copy)]
+struct Values<'a>(&'a [Result<f64, Status>]);
+
+impl<'a> Values<'a> {
+    /// Gives `values`, or the position and the status of the first bad one.
+    fn new(values: &'a [Result<f64, Status>]) -> Result<Self, (usize, Status)> {
+        match values
+            .iter()
+            .enumerate()
+            .find_map(|(at, value)| Some((at, *value.as_ref().err()?)))
+        {
+            Some(bad) => Err(bad),
+            None => Ok(Self(values)),
+        }
+    }
+
+    /// The value of the read at `at`.
+    fn get(self, at: usize) -> f64 {
+        let Ok(value) = self.0[at] else {
+            panic!("invariant: `Values::new` takes only good values")
+        };
+        value
     }
 }
 
