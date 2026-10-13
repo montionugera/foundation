@@ -625,16 +625,17 @@ impl FromStr for Rate {
             .scaled(places)
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(Error::Period)?;
-        let per_second = NANOS_PER_SECOND.unsigned_abs();
-        if number.fraction.len() > places {
-            // The last digit of the fraction is not 0, so the rate is between
-            // `nanohertz` and the nanohertz after it.
-            return Err(match Self::new(nanohertz.saturating_add(1), per_second) {
-                Err(Error::Period) => Error::Period,
-                _ => Error::Rate,
-            });
+        // The last digit of a fraction is not 0, so a finer fraction puts the rate
+        // between `nanohertz` and the nanohertz after it.
+        let finer = number.fraction.len() > places;
+        let rate = Self::new(
+            nanohertz.saturating_add(u64::from(finer)),
+            NANOS_PER_SECOND.unsigned_abs(),
+        )?;
+        if finer {
+            return Err(Error::Rate);
         }
-        Self::new(nanohertz, per_second)
+        Ok(rate)
     }
 }
 
