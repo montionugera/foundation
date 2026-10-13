@@ -252,15 +252,14 @@
   https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A peer
   that proves a right leaves the bound: its place frees and its sessions stay.
   Membership is the one proof today, which shard 0 reads again for each held place as
-  each new session of a peer outside the region arrives. The client hello of #1744 (#2548)
-  and the ticket join of
-  #1157 must each free the place when its proof holds. Guarantee: a peer outside the
-  region keeps its session until 256 later peers took a place, so the bound never closes
-  a peer that proves its right before that. Limit: a flood that takes 256 places in the
-  time that a peer needs to prove closes that peer's session. Only a limit on handshakes
-  before admission bounds that rate (#563). The stop rule holds: no clone of a session
-  lives outside a future that shard 0 drops. Supersedes the close of each session that
-  gets no place of
+  each new session of a peer outside the region arrives. The client hello of #1744
+  (#2548) and the ticket join of #1157 must each free the place when its proof holds.
+  Guarantee: a peer outside the region keeps its session until 256 later peers took a
+  place, so the bound never closes a peer that proves its right before that. Limit: a
+  flood that takes 256 places in the time that a peer needs to prove closes that peer's
+  session. Only a limit on handshakes before admission bounds that rate (#563). The stop
+  rule holds: no clone of a session lives outside a future that shard 0 drops.
+  Supersedes the close of each session that gets no place of
   https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
   (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
   first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
