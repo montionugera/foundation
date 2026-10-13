@@ -113,7 +113,8 @@ impl Placed<'_> {
     }
 }
 
-/// The type of the samples of `channel`.
+/// The type of the samples of `channel`. `hub` maps it the same way, until #2532
+/// makes one mapping in `spec`.
 fn sample(channel: &Channel) -> Type {
     match &channel.kind {
         Kind::Index { .. } => Type::Scalar(Scalar::Stamp),
