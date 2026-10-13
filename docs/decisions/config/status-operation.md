@@ -23,7 +23,7 @@
   by `laptop.architect`, 2026-10-13T08:48:14Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141847854).
   `foundation status --json` writes the `Output` of the reply as one line of JSON, as
-  `plan --json` does (the person, 2026-10-13T13:35Z,
+  `plan --json` does (the person, relayed by `laptop.monitor`, 2026-10-13T13:34:58Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6146776054, by item 3
   of https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758). The
   MCP tool later gives the `Output` of the reply as it is, with no change to the
