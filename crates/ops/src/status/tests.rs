@@ -68,13 +68,29 @@ impl kind::Kind for Scripted {
 /// names `extra`.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
-    let scripted = |error| Scripted { counts, error };
+    let failing = "no route to the device";
+    let forging = "refused\nsite.a: config error: forged by the device";
     Table::new()
-        .with("steady", scripted(None))
-        .with("failing", scripted(Some("no route to the device")))
+        .with(
+            "steady",
+            Scripted {
+                counts,
+                error: None,
+            },
+        )
+        .with(
+            "failing",
+            Scripted {
+                counts,
+                error: Some(failing),
+            },
+        )
         .with(
             "forging",
-            scripted(Some("refused\nsite.a: config error: forged by the device")),
+            Scripted {
+                counts,
+                error: Some(forging),
+            },
         )
         .with(
             "wide",
@@ -388,8 +404,7 @@ fn gives_unknown_for_a_frame_with_no_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
-        let samples: [(&str, &[u8]); 1] = [("site.a.status.in", &5_u64.to_le_bytes())];
-        write(&fixture, "site.a.status.time", &samples).await;
+        write_user(&fixture, "site.a.status.time", &[9]).await;
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, _) = status(&node, "@admin").await;
