@@ -9,7 +9,12 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
-  writes the `text()` of the reply, as it does for `plan`. `--json` and the MCP tool
+  writes the `text()` of the reply, as it does for `plan` (`laptop.architect`,
+  2026-10-13T08:24:06Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442056,
+  and `laptop.architect-2`, 2026-10-13T08:24:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141442842, which
+  supersede "is a variant of `Response`" of item 2 of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). `--json` and the MCP tool
   later give the same value, with no change to the operation, the type, or the reply.
   The connectors are each connector of the spec in use whose `node` is this node, in
   name order. For each, `serve` opens a `Latest` reader of its status index and each
