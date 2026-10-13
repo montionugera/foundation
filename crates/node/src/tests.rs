@@ -7009,8 +7009,9 @@ mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{},"error":{"class":"config","text":"the selector "#,
-                r#"matches no channel. Select a channel that the spec defines"}}]}}"#,
+                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""the selector matches no channel. Select a channel that the spec "#,
+                r#"defines"}}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
