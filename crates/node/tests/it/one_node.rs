@@ -374,10 +374,17 @@ fn a_lost_read_fails_when_the_last_value_came_before() {
 }
 
 #[test]
-#[should_panic(expected = "plant.spike: no read of the changes steps the value")]
-fn a_trace_with_no_step_panics() {
+fn a_trace_with_no_step_panics_with_the_reads_of_the_changes() {
     let served = vec![create_served()[0]; 7];
-    check(&served, &served).expect_err("it panics first");
+    let panic = std::panic::catch_unwind(|| check(&served, &served))
+        .expect_err("a trace with no step panics");
+    let reads = &served[..6];
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some(&*format!(
+            "plant.spike: no read of the changes steps the value: {reads:?}"
+        ))
+    );
 }
 
 #[test]
