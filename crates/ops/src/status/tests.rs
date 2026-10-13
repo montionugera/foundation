@@ -622,7 +622,7 @@ const STATE: &str = "site.a.status.state";
 
 /// The status channels of `site.a` of `steady` but the index and [`STATE`], with the
 /// sample type of each.
-fn channels() -> Vec<(Name, Type)> {
+fn others() -> Vec<(Name, Type)> {
     let counts = [name("in"), name("confirmed")];
     let channels = connector::status::channels(&name("site.a"), &counts);
     let mut channels = channels.expect("short status names").1;
@@ -640,7 +640,7 @@ fn user_status(index: &str, state: &str) -> String {
         )
     };
     let index = format!("channel \"{index}\" {{ kind = \"index\" }}\n");
-    let others = channels();
+    let others = others();
     let others = others
         .iter()
         .map(|(channel, sample)| (channel.as_str(), sample.to_string()));
@@ -656,7 +656,7 @@ fn user_status(index: &str, state: &str) -> String {
 /// Writes one frame of `index` and each data channel of [`user_status`], with `state`
 /// as the sample of [`STATE`] and zeros for each other.
 async fn write_user(fixture: &Fixture, index: &str, state: &[u8]) {
-    let others = channels();
+    let others = others();
     // Four zeros are one empty text.
     let zeros: Vec<_> = others
         .iter()
