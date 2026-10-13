@@ -124,6 +124,7 @@ fn start_node(
         region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     })
 }
 

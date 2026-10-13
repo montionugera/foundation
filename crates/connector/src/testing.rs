@@ -45,11 +45,13 @@ pub async fn create_config(
     }
 }
 
-/// A store of the secrets on `files` that [`create_secret`] writes.
+/// A resolver with no environment variables, whose store holds the secrets on
+/// `files` that [`create_secret`] writes.
 #[must_use]
-pub fn create_secrets(files: Files) -> Box<dyn secret::store::Store> {
+pub fn create_secrets(files: Files) -> secret::Resolver {
     let reads = secret::Reads::new(files);
-    Box::new(secret::store::File::new(reads, Path::new(SECRETS)))
+    let store = secret::store::File::new(reads.clone(), Path::new(SECRETS));
+    secret::Resolver::new(Arc::default(), reads, Box::new(store))
 }
 
 /// Writes `value` as the secret `name` in the store that [`create_secrets`]

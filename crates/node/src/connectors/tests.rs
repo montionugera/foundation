@@ -879,10 +879,9 @@ async fn create(
         Mesh::Synced => hub::testing::open(env).await.0,
         Mesh::Late(synced) => hub::testing::open_unsynced(env, synced).await,
     };
-    let secrets = secret::store::File::new(
-        secret::Reads::new(node.files()),
-        &crate::directory::secrets(),
-    );
+    let reads = secret::Reads::new(node.files());
+    let store = secret::store::File::new(reads.clone(), &crate::directory::secrets());
+    let secrets = secret::Resolver::new(Arc::default(), reads, Box::new(store));
     count(connector::supervisor::Config {
         kinds: Arc::new(kinds),
         clock: node.clock(),
@@ -890,7 +889,7 @@ async fn create(
         net: node.net(),
         tasks: tasks.clone(),
         hub,
-        secrets: Box::new(secrets),
+        secrets,
     })
 }
 

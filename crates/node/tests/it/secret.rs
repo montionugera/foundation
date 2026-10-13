@@ -2,10 +2,11 @@
 //! own text names, in the data directory that `foundation start --data` gets.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use env::files::Files;
-use secret::Reads;
 use secret::store::{Error, File, Store};
+use secret::{Reads, Resolver, Source};
 use types::name::Name;
 
 #[test]
@@ -34,6 +35,28 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         std::fs::write(&file, b"t\n").expect("writes it");
         let read = store.get(&name).await.map(|value| value.expose().to_vec());
         assert_eq!(read, Ok(b"t".to_vec()));
+    });
+    get.expect("the thread starts")
+        .join()
+        .expect("the get ends");
+    io.join().expect("the I/O thread ends");
+    std::fs::remove_dir_all(&dir).expect("removes the directory");
+}
+
+#[test]
+fn reads_a_file_at_an_absolute_path_outside_the_data_directory() {
+    let dir = std::env::temp_dir()
+        .join(format!("foundation-secret-absolute-{}", std::process::id()));
+    let threads = os::threads().expect("the OS gives the cores");
+    let (disk, io) = os::files(&dir, &threads, "files").expect("the disk opens");
+    let file = dir.join("token");
+    std::fs::write(&file, b"t\r\n").expect("writes it");
+    let get = threads.start("get", move || async move {
+        let reads = Reads::new(Files::new(disk));
+        let store = File::new(reads.clone(), Path::new("secrets"));
+        let resolver = Resolver::new(Arc::default(), reads, Box::new(store));
+        let read = resolver.get(&Source::File(file)).await;
+        assert_eq!(read.map(|value| value.expose().to_vec()), Ok(b"t".to_vec()));
     });
     get.expect("the thread starts")
         .join()

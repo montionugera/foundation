@@ -42,8 +42,8 @@ pub struct Config {
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
     pub hub: hub::Hub,
-    /// The store that [`kind::Context::secret`] reads.
-    pub secrets: Box<dyn secret::store::Store>,
+    /// The sources that [`kind::Context::secret`] reads.
+    pub secrets: secret::Resolver,
 }
 
 /// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
@@ -1095,7 +1095,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
-            let value = ctx.secret(&name(self.0)).await?;
+            let value = ctx.secret(&secret::Source::Secret(name(self.0))).await?;
             assert_eq!(value.expose(), b"t");
             Ok(())
         }
@@ -1127,8 +1127,8 @@ mod tests {
         });
         result.expect("the second run reads the secret");
         let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
-        let missing = "the secret plant.token: the file /data/secrets/plant.token is \
-                       not there. Write the value to it";
+        let missing = "the secret secret(\"plant.token\"): the file \
+                       /data/secrets/plant.token is not there. Write the value to it";
         assert_eq!(texts, ["", missing, missing, missing, "", ""]);
     }
 
@@ -1148,7 +1148,8 @@ mod tests {
             node.clock().sleep(ms(10_000)).await;
             (result, statuses.borrow().clone())
         });
-        let message = "the secret plant.Token has a name that the store cannot hold";
+        let message =
+            "the secret secret(\"plant.Token\") has a name that the store cannot hold";
         let fix = "Rename the secret in lowercase letters, since the file store holds \
                    no name with a capital letter";
         let code = Code::new("connector.bad-secret-name");

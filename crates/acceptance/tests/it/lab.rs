@@ -262,6 +262,7 @@ impl Lab {
                     .parse()
                     .expect("lab failure: a node name is a name"),
                 settings: node::Settings::default(),
+                vars: std::collections::BTreeMap::new(),
             });
             member.node = Some(node);
         }
