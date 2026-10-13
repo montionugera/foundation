@@ -185,7 +185,7 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
             format!("no node answers at {at}, the address in {data}: {error}"),
             match quoted(dir) {
                 Some(dir) => {
-                    format!("Start the node again with `foundation start --data {dir}`")
+                    format!("Start the node again with `foundation start --data={dir}`")
                 }
                 None => {
                     "Start the node again with `foundation start` and `--data` set \
@@ -215,7 +215,7 @@ fn not_running(dir: &Path) -> Failure {
         message: format!("no node runs in {}", dir.display()),
         fix: match quoted(dir) {
             Some(dir) => format!(
-                "Run `foundation start --data {dir}`, with `--name <name>` on its first \
+                "Run `foundation start --data={dir}`, with `--name <name>` on its first \
                  start, or give `--data` the data directory of a node that runs"
             ),
             None => "Run `foundation start` with `--data` set to that directory, with \
@@ -226,9 +226,9 @@ fn not_running(dir: &Path) -> Failure {
     }
 }
 
-/// `dir` as one word of a POSIX shell that `--data` reads as `dir`, so that a command in
-/// a fix runs as printed: with `./` before it when it starts with `-`, and in single
-/// quotes unless it holds only safe characters. `None` when `dir` is not UTF-8 or holds
+/// `dir` as the end of the shell word `--data={dir}` that gives back `dir`, so that a
+/// command in a fix runs as printed: in single quotes unless it holds only safe
+/// characters. `None` when `dir` is not UTF-8 or holds
 /// a character that `char::escape_debug` escapes other than a quote, such as `\` or a
 /// newline, since the text of a fix escapes it.
 fn quoted(dir: &Path) -> Option<String> {
@@ -236,15 +236,9 @@ fn quoted(dir: &Path) -> Option<String> {
         dir.chars()
             .all(|c| matches!(c, '"' | '\'') || c.escape_debug().len() == 1)
     })?;
-    let dir = if dir.starts_with('-') {
-        format!("./{dir}")
-    } else {
-        dir.to_owned()
-    };
-    // No `=` or `~`: zsh expands a word that starts with either.
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+,-".contains(c);
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c);
     Some(if !dir.is_empty() && dir.chars().all(safe) {
-        dir
+        dir.to_owned()
     } else {
         format!("'{}'", dir.replace('\'', r#"'"'"'"#))
     })
@@ -1229,7 +1223,7 @@ mod tests {
         }
     }
 
-    const NOT_RUNNING_FIX: &str = "Run `foundation start --data plant`, with `--name \
+    const NOT_RUNNING_FIX: &str = "Run `foundation start --data=plant`, with `--name \
                                    <name>` on its first start, or give `--data` the \
                                    data directory of a node that runs";
     const UNREADABLE_FIX: &str = "Run the command as the user that started the node";
@@ -1264,14 +1258,18 @@ mod tests {
     fn the_fix_of_a_data_directory_where_no_node_runs_quotes_it_for_the_shell() {
         let fix = |dir| not_running(Path::new(dir)).fix;
         assert_eq!(
-            ["plant", "my plant", "it's"].map(fix),
+            ["plant", "my plant", "it's", "-x", "=plant"].map(fix),
             [
-                "Run `foundation start --data plant`, with `--name <name>` on its first \
+                "Run `foundation start --data=plant`, with `--name <name>` on its first \
                  start, or give `--data` the data directory of a node that runs",
-                "Run `foundation start --data 'my plant'`, with `--name <name>` on its \
+                "Run `foundation start --data='my plant'`, with `--name <name>` on its \
                  first start, or give `--data` the data directory of a node that runs",
-                "Run `foundation start --data 'it'\"'\"'s'`, with `--name <name>` on its \
+                "Run `foundation start --data='it'\"'\"'s'`, with `--name <name>` on its \
                  first start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data=-x`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data==plant`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs",
             ]
         );
     }
@@ -1284,17 +1282,18 @@ mod tests {
                 proptest::prop_assert!(dir.contains(escaped), "{dir:?} has a word");
                 return Ok(());
             };
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("printf %s {word}"))
-                .output()
-                .expect("run sh");
-            let named = if dir.starts_with('-') {
-                format!("./{dir}")
-            } else {
-                dir
-            };
-            proptest::prop_assert_eq!(String::from_utf8_lossy(&output.stdout), named);
+            for shell in ["sh", "zsh"] {
+                let Ok(output) = std::process::Command::new(shell)
+                    .arg("-c")
+                    .arg(format!("printf %s --data={word}"))
+                    .output()
+                else {
+                    proptest::prop_assert_eq!(shell, "zsh", "{} is not there", shell);
+                    continue;
+                };
+                let given = String::from_utf8_lossy(&output.stdout);
+                proptest::prop_assert_eq!(given.strip_prefix("--data="), Some(&*dir), "{}", shell);
+            }
         }
     }
 
@@ -1310,6 +1309,7 @@ mod tests {
             "-x",
             "-my x",
             "=plant",
+            "=my plant",
         ]
         .map(|dir| quoted(Path::new(dir)).expect("a UTF-8 path has a word"));
         assert_eq!(
@@ -1321,9 +1321,10 @@ mod tests {
                 "'it'\"'\"'s'",
                 "''",
                 "'~/a'",
-                "./-x",
-                "'./-my x'",
-                "'=plant'",
+                "-x",
+                "'-my x'",
+                "=plant",
+                "'=my plant'",
             ]
         );
     }
@@ -1436,8 +1437,16 @@ mod tests {
                 UNANSWERED,
                 "no node answers at 127.0.0.1:54321, the address in plant: the peer \
                  stopped answering",
-                "Start the node again with `foundation start --data plant`",
+                "Start the node again with `foundation start --data=plant`",
             )
+        );
+        let error = node::client::Error::Unanswered {
+            at: at(),
+            error: transport::Error::TimedOut,
+        };
+        assert_eq!(
+            unreached(Path::new("my plant"), error).fix,
+            "Start the node again with `foundation start --data='my plant'`"
         );
     }
 

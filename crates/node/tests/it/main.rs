@@ -231,7 +231,7 @@ fn the_start_in_the_fix_of_a_data_directory_runs_as_printed() {
     };
     for (dir, named) in [
         ("my plant", "my plant"),
-        ("-x", "./-x"),
+        ("-x", "-x"),
         ("it's", "it's"),
         ("=plant", "=plant"),
     ] {
@@ -239,10 +239,10 @@ fn the_start_in_the_fix_of_a_data_directory_runs_as_printed() {
         let output = rig.run(&["status", data.as_str()], b"");
         let errors = text(&output.stderr).to_owned();
         let start = (errors.split('`'))
-            .find(|part| part.starts_with("foundation start --data "))
+            .find(|part| part.starts_with("foundation start --data="))
             .unwrap_or_else(|| panic!("no start in {errors}"));
         let words = shell(start.replacen("foundation start", "printf '%s|'", 1));
-        assert_eq!(words.0, format!("--data|{named}|"), "the fix of {errors}");
+        assert_eq!(words.0, format!("--data={named}|"), "the fix of {errors}");
         let parsed = start.replacen("foundation", env!("CARGO_BIN_EXE_foundation"), 1);
         let parsed = shell(format!("{parsed} --unknown"));
         assert_eq!(
@@ -280,7 +280,7 @@ fn status_on_a_data_directory_with_a_space_quotes_it_in_the_fix() {
             Some(1),
             concat!(
                 "error[node.not-running]: no node runs in my plant\nfix: Run `foundation ",
-                "start --data 'my plant'`, with `--name <name>` on its first start, or ",
+                "start --data='my plant'`, with `--name <name>` on its first start, or ",
                 "give `--data` the data directory of a node that runs\n",
             )
         )
@@ -291,7 +291,7 @@ fn status_on_a_data_directory_with_a_space_quotes_it_in_the_fix() {
 fn not_running(dir: &str) -> String {
     format!(
         "error[node.not-running]: no node runs in {dir}\nfix: Run `foundation start \
-         --data {dir}`, with `--name <name>` on its first start, or give `--data` the \
+         --data={dir}`, with `--name <name>` on its first start, or give `--data` the \
          data directory of a node that runs\n"
     )
 }
