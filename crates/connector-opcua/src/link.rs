@@ -150,11 +150,12 @@ fn shim_compiler() -> cc::Tool {
 /// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
 /// lines and expands `_Pragma`.
 fn shim_pragmas(file: &str) -> Vec<String> {
-    let path = src().join(file);
+    // A bare name, as GCC on Windows escapes each `\` of a path in a line marker, and
+    // not `src()`, whose `\\?\` prefix on Windows GCC does not open.
     let output = shim_compiler()
         .to_command()
-        .arg("-E")
-        .arg(&path)
+        .current_dir(std::path::Path::new(ROOT).join("src"))
+        .args(["-E", file])
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -163,7 +164,7 @@ fn shim_pragmas(file: &str) -> Vec<String> {
     for line in String::from_utf8(output.stdout).unwrap().lines() {
         // A line marker, `# <line> "<file>" <flags>`, names the file of the next lines.
         if let Some(marker) = line.strip_prefix("# ") {
-            in_shim = marker.contains(&format!("\"{}\"", path.display()));
+            in_shim = marker.contains(&format!("\"{file}\""));
         } else if in_shim && line.trim_start().starts_with("#pragma") {
             pragmas.push(line.trim().to_owned());
         }
@@ -188,8 +189,9 @@ fn check_shim(after: &str, line: &str) -> String {
     let source = format!("{}\n{line}{}", &text[..at], &text[at..]);
     let mut child = tool
         .to_command()
-        .args(["-c", "-o", "/dev/null", "-x", "c", "-"])
+        .args(["-S", "-o", "-", "-x", "c", "-"])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
@@ -274,7 +276,7 @@ fn the_shim_check_uses_the_compiler_of_cc() {
     let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
     let output = crate::child::output(name, &[("CC", "/missing/gcc")]);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("No such file or directory"), "{stdout}");
+    assert!(stdout.contains("kind: NotFound"), "{stdout}");
 }
 
 unsafe extern "C" {
