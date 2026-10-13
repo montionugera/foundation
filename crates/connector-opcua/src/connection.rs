@@ -26,7 +26,7 @@ use crate::event::Loop;
 use crate::ffi::{self, Bytes, Status};
 
 /// The options of each stream.
-const OPTIONS: tcp::Options = tcp::Options {
+pub(crate) const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
     unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("invariant: 2^14 is not 0"),
@@ -102,7 +102,21 @@ impl Manager {
             backlog,
             options: OPTIONS,
         })?;
-        Ok(Self::make(clock, net, Some(listener), rng))
+        Ok(Self::accepting(clock, net, listener, rng))
+    }
+
+    /// As [`Manager::listening`], on the bound `listener`.
+    ///
+    /// # Panics
+    ///
+    /// When a C allocation fails.
+    pub(crate) fn accepting(
+        clock: Clock,
+        net: Net,
+        listener: Listener,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(clock, net, Some(listener), rng)
     }
 
     fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {

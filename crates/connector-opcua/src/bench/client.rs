@@ -4,11 +4,8 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::cell::RefCell;
-use std::future::{Future as _, poll_fn};
 use std::mem::ManuallyDrop;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::pin;
-use std::task::Poll;
 
 use env::clock::Clock;
 use env::net::Net;
@@ -76,19 +73,7 @@ impl Server {
             url: format!("opc.tcp://{local}"),
             rng: RefCell::new(rng),
         };
-        let value = {
-            let mut serve = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut body = pin!(body(&this));
-            poll_fn(|cx| {
-                assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
-                body.as_mut().poll(cx)
-            })
-            .await
-        };
-        server.close(&manager).await;
+        let value = server.serve(&manager, body(&this)).await;
         drop(ManuallyDrop::into_inner(manager));
         value
     }
