@@ -8,11 +8,11 @@ use document::value::{Kind, Value};
 use types::name::Name;
 
 /// A config that writes a source of a secret wrongly.
-pub const SOURCE: Code = Code::new("secret.source");
+const SOURCE: Code = Code::new("secret.source");
 
 /// Where the value of a secret comes from, as a config writes it: a call of `env`,
-/// `file`, or `secret` with one string. `Display` gives the call as written, never
-/// the value.
+/// `file`, or `secret` with one string. `Display` gives the call with its argument
+/// as a string, never the value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     /// `env("NAME")`: the variable `NAME` of the environment of the node process, as

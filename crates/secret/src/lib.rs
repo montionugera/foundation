@@ -9,7 +9,7 @@ pub mod seal;
 mod source;
 pub mod store;
 
-pub use source::{SOURCE, Source};
+pub use source::Source;
 
 /// A secret value. `Debug` prints `<secret>`, never the bytes. Its buffer is
 /// overwritten with zeros when it drops.

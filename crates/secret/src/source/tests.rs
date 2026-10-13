@@ -38,7 +38,12 @@ fn refused(value: &Value, message: &str, fix: &str) -> Diagnostic {
     let diagnostic = Source::read(value).expect_err("a bad source");
     assert_eq!(
         diagnostic,
-        Diagnostic::new(SOURCE, value.span, message.into(), fix.into())
+        Diagnostic::new(
+            Code::new("secret.source"),
+            value.span,
+            message.into(),
+            fix.into()
+        )
     );
     diagnostic
 }
