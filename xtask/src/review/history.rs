@@ -26,11 +26,11 @@ impl<'a> History<'a> {
     }
 
     /// Where `end` (a SHA or a prefix of at least 7 digits) is on the first-parent
-    /// chain of `head`. Each merge between them must be a clean merge of a commit on
-    /// the base: its tree is the tree that `git merge-tree` makes of its parents, and
-    /// its base side moves no text of its first parent into a code file, as in
-    /// `code_change`. Else, and for text that names no single commit, it is
-    /// [`Place::Off`].
+    /// chain of `head`. Each merge between them must be a merge of a commit on the
+    /// base, else, and for text that names no single commit, it is [`Place::Off`]. Each
+    /// such merge must also be clean, else it is [`Place::Unclean`]: its tree is the
+    /// tree that `git merge-tree` makes of its parents, and its base side moves no text
+    /// of its first parent into a code file, as in `code_change`.
     ///
     /// # Errors
     ///
@@ -50,7 +50,7 @@ impl<'a> History<'a> {
         if end != head && parent != Some(end.as_str()) {
             return Ok(Place::Off);
         }
-        let mut place = Place::Head;
+        let (mut place, mut unclean) = (Place::Head, false);
         for line in chain {
             let commits: Vec<_> = line.split(' ').collect();
             if commits.len() == 2 {
@@ -60,11 +60,9 @@ impl<'a> History<'a> {
             let Some((first, second)) = self.base_merge(line, &base)? else {
                 return Ok(Place::Off);
             };
-            if !self.clean(commits[0], first, second)? {
-                return Ok(Place::Off);
-            }
+            unclean |= !self.clean(commits[0], first, second)?;
         }
-        Ok(place)
+        Ok(if unclean { Place::Unclean } else { place })
     }
 
     /// The first code change of `from..end`, as a phrase: "changes code at
@@ -736,6 +734,9 @@ pub(crate) enum Place {
     /// A commit that clean merges of the base and commits that are not merges follow,
     /// with at least one of the second kind.
     Before,
+    /// A commit that merges of the base and commits that are not merges follow, with at
+    /// least one merge that is not clean.
+    Unclean,
     /// Any other commit.
     Off,
 }

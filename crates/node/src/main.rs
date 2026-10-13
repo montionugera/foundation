@@ -28,6 +28,7 @@ const UNNAMED: Code = Code::new("node.unnamed");
 const RENAMED: Code = Code::new("node.renamed");
 const NAME: Code = Code::new("node.name");
 const RESERVED: Code = Code::new("node.reserved");
+const LONG: Code = Code::new("node.long");
 const DISK: Code = Code::new("node.disk");
 const MEMORY: Code = Code::new("node.memory");
 const BUDGET: Code = Code::new("node.budget");
@@ -539,6 +540,11 @@ fn failure(dir: &Path, error: &node::Error) -> Failure {
                  for Foundation"
             ),
             "Give a name with no segment that starts with `@`".to_owned(),
+        ),
+        error @ node::Error::Long { .. } => (
+            LONG,
+            error.to_string(),
+            "Give a shorter name with `--name`".to_owned(),
         ),
         node::Error::Name => (
             NAME,
