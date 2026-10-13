@@ -73,7 +73,7 @@ pub struct Received<'a> {
     view: View<'a>,
     lens: &'a Lens,
     /// The `names` of the reader.
-    names: &'a Names,
+    names: Option<&'a Names>,
     /// The `given` of the reader.
     given: &'a Cell<Option<u64>>,
 }
@@ -100,9 +100,11 @@ impl<'a> Received<'a> {
     #[must_use]
     pub fn name(&self, entry: usize) -> &'a str {
         let key = self.lens.set.entries()[entry].key;
-        self.names.get(key).unwrap_or_else(|| {
-            panic!("the entry {entry} is not a channel of the reader")
-        })
+        self.names
+            .and_then(|names| names.get(key))
+            .unwrap_or_else(|| {
+                panic!("the entry {entry} is not a channel of the reader")
+            })
     }
 
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
@@ -329,7 +331,8 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
-    names: Names,
+    /// `None` for a reader of a client read. A box keeps the reader small.
+    names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
@@ -443,10 +446,10 @@ impl Reader {
             find(state, || &select, |_, channel| item(channel)).await?;
         // With no wait since `find`, so each key is defined.
         let keys = matched.items.iter().map(|&(key, _)| key);
-        let by_key = Names::new(&state.borrow(), keys);
+        let by_key = Box::new(Names::new(&state.borrow(), keys));
         let home = match home {
             Home::Here(channels) => {
-                return Self::local(state, channels, mode, named, hold, by_key);
+                return Self::local(state, channels, mode, named, hold, Some(by_key));
             }
             Home::Away(home) => home,
         };
@@ -462,7 +465,7 @@ impl Reader {
         let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
         Ok(Self {
             index: slot,
-            names: by_key,
+            names: Some(by_key),
             source: Source::Remote(Box::new(remote)),
             given: Cell::new(None),
             frame: None,
@@ -477,7 +480,7 @@ impl Reader {
         channels: Channels,
         mode: Mode,
     ) -> Result<Self, Error> {
-        Self::local(state, channels, mode, None, Span::ZERO, Names::default())
+        Self::local(state, channels, mode, None, Span::ZERO, None)
     }
 
     /// Opens a reader on `channels` at this node, the home of their index.
@@ -487,7 +490,7 @@ impl Reader {
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
-        by_key: Names,
+        by_key: Option<Box<Names>>,
     ) -> Result<Self, Error> {
         let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
@@ -538,7 +541,7 @@ impl Reader {
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
-                names: &self.names,
+                names: self.names.as_deref(),
                 given: &self.given,
             })
         }
@@ -617,7 +620,7 @@ impl From<Stop> for Ended {
 
 /// The name of each channel of a reader, in one text, so an open makes no allocation
 /// for each name.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Names {
     /// The key of each channel, sorted, with the end of its name in `text`.
     ends: Box<[(channel::Key, usize)]>,
