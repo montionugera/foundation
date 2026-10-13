@@ -9,8 +9,6 @@
 //! - `set`: a set of a status count, with no poll.
 //! - `poll + set (closed)`: as `poll + set`, after a status channel was removed, so
 //!   the status writer writes no more.
-//! - `clear`: a clear of the shown error, with no poll, after a clear.
-//! - `show`: a show of the same error, with no poll, after it was shown.
 //!
 //! Each figure is ns per step, with the count of the allocations of the steps. Judge
 //! `poll` by its p50. A line panics when its last status state is not `stopped`, or
@@ -50,15 +48,7 @@ const STATUS: channel::Key = channel::Key::from_u128(100);
 const STATE: channel::Key = channel::Key::from_u128(101);
 
 fn main() {
-    let lines = [
-        Step::Poll,
-        Step::PollSet,
-        Step::Set,
-        Step::Closed,
-        Step::Clear,
-        Step::Show,
-    ]
-    .map(run);
+    let lines = [Step::Poll, Step::PollSet, Step::Set, Step::Closed].map(run);
     print(&lines);
 }
 
@@ -69,8 +59,6 @@ enum Step {
     PollSet,
     Set,
     Closed,
-    Clear,
-    Show,
 }
 
 impl Step {
@@ -80,8 +68,6 @@ impl Step {
             Self::PollSet => "poll + set",
             Self::Set => "set",
             Self::Closed => "poll + set (closed)",
-            Self::Clear => "clear",
-            Self::Show => "show",
         }
     }
 }
@@ -130,14 +116,13 @@ impl Kind for Steps {
         for round in 0..WARMUP + ROUNDS {
             let (start, mut allocations) = (Instant::now(), 0);
             for i in 0..STEPS {
-                let set = || match self.step {
-                    Step::Poll => {}
-                    Step::Clear => ctx.error(None),
-                    Step::Show => ctx.error(Some(&"refused")),
-                    _ => count.set(std::hint::black_box(i)),
+                let set = || {
+                    if !matches!(self.step, Step::Poll) {
+                        count.set(std::hint::black_box(i));
+                    }
                 };
                 allocations += ALLOCATOR.count(set).1;
-                if !matches!(self.step, Step::Set | Step::Clear | Step::Show) {
+                if !matches!(self.step, Step::Set) {
                     Yield(false).await;
                 }
             }
