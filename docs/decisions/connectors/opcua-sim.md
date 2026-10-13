@@ -31,4 +31,5 @@
   `listener` that the caller binds, which `Manager::accepting` takes, supersedes for
   `sim::serve` the bind in `Manager::listening` of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Both:
-  approval owed.
+  approved by `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257).

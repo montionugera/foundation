@@ -519,10 +519,12 @@
   A server listens on the listener that `Manager::listening` binds on the socket address
   that its owner gives, with the options of each stream of the manager. The server of
   `sim::serve` listens on the listener that the caller of `sim::serve` binds, with the
-  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Each accepted
-  stream is a new connection that gets `ESTABLISHED`, with the context of the listen
-  connection at the accept. A drive accepts at most one stream between two runs of the
-  loop, as the POSIX manager accepts one for each run
+  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Approved by
+  `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257). Each
+  accepted stream is a new connection that gets `ESTABLISHED`, with the context of the
+  listen connection at the accept. A drive accepts at most one stream between two runs
+  of the loop, as the POSIX manager accepts one for each run
   (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541 needs that run: at
   the limit, `purgeFirstChannelWithoutSession`
   (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
