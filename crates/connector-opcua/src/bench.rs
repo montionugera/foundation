@@ -47,7 +47,8 @@ impl Client {
     ///
     /// # Aborts
     ///
-    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    /// When open62541 cannot allocate the loop or the client, as [`alloc::exhausted`]
+    /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(clock, rng);
@@ -164,7 +165,8 @@ impl Manager {
     ///
     /// # Aborts
     ///
-    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    /// When open62541 cannot allocate the loop, the connection manager, or a client,
+    /// as [`alloc::exhausted`] says.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,

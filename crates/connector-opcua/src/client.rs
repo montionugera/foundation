@@ -102,7 +102,8 @@ impl Client {
     ///
     /// # Aborts
     ///
-    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    /// When open62541 cannot allocate the loop, the connection manager, or the
+    /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
         net: Net,
