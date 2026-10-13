@@ -839,6 +839,23 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
 }
 
 #[test]
+fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
+    run(5, |test| async move {
+        let writer = test.writer("a", &["value"]).await;
+        let time = writer.time();
+        test.clock.sleep(Span::SECOND).await;
+        let last = writer.now();
+        assert_eq!(time.now(), last);
+        assert_eq!(last.nanos(), test.now());
+        drop(writer);
+        test.clock.sleep(Span::SECOND).await;
+        let after = time.clone().now();
+        assert!(after >= last, "{after} is before {last}");
+        assert_eq!(after.nanos(), test.now());
+    });
+}
+
+#[test]
 fn opens_no_writer_with_a_lease_of_zero() {
     run(9, |test| async move {
         let config = writer::Config {
