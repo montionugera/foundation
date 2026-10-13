@@ -20,12 +20,12 @@
   connector without it. When the node places a connector and the subject reads none, it
   gives `ops.denied` with `On::Nothing`. A spec with no connector on the node gives an
   empty list. When #1028 checks each open of the hub, this check moves there. Deferred
-  to https://github.com/synnaxlabs/foundation/issues/2530:
-  the time of the next restart, `--json`, and MCP. The CLI and MCP send this one form to
-  a node, and the client reader of #1749 does not replace it. Lost: `serve` replies with
-  the text, so that `--json` and MCP each need a second reply; `status` asks the
-  supervisors, a second source of status with its own access check. Decided by
-  `laptop.architect-2` (2026-10-13T00:58:53Z,
+  to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
+  `--json`, and MCP. The CLI and MCP send this one form to a node, and the client reader
+  of #1749 does not replace it. Lost: `serve` replies with the text, so that `--json`
+  and MCP each need a second reply; `status` asks the supervisors, a second source of
+  status with its own access check. Decided by `laptop.architect-2`
+  (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the text
@@ -41,8 +41,7 @@
   last paragraph of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072).
   `ops::Node::new` takes its seven inputs, the node's name too, as arguments, and an
-  eighth input makes them
-  `ops::Config`: `laptop.architect-2` (2026-10-13T02:25:59Z,
+  eighth input makes them `ops::Config`: `laptop.architect-2` (2026-10-13T02:25:59Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136850796). `unknown`
   only for no frame and for a frame with no status, and `ops.channel-read` for a reader
   that fails: `laptop.architect-2` (2026-10-13T02:30:50Z,
