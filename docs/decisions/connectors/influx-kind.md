@@ -27,7 +27,13 @@
   `influx.sample-type`, and a channel name that is not a field key with
   `influx.bad-channel`. The run writes no gap line until #341. One request is in flight
   at a time. While it is, the run reads the next batch, up to 5,000 lines, and a frame
-  goes in whole. It acks a batch only after a 204. Each other answer, and each failed
+  goes in whole. The run keeps the field of each channel that it saw in the frames of
+  one key set. A frame of another key set builds them again, as the `hub` reader builds
+  its lens, so frames that alternate key sets build them at each change. The trigger to
+  keep them for each key set is a workload whose frames alternate key sets, as
+  `laptop.architect-2` decided on 2026-10-13T07:36:47Z
+  (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
+  a batch only after a 204. Each other answer, and each failed
   request, keeps the batch, shows its text with `Context::error`, and sends the batch
   again after a `retry::Backoff` of 1 s to 1 min. A 204 clears the error. A batch whose
   request takes longer than the timeout of 10 s is sent again with no end, until #2558,

@@ -11,6 +11,9 @@
 //! the ns of each later round, at percentiles over the rounds; the ns for each sample
 //! of a channel in the frame at p50; and the allocations. It checks that `Batch::add`
 //! makes no allocation after the warm-up rounds.
+//!
+//! Then, for each count in `NEW`, it times `Batch::add` of one frame of that many
+//! channels, one sample time each, on a new batch, so each channel is new to it.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -19,7 +22,8 @@ use std::time::Instant;
 use connector::kind::Table;
 use connector::testing;
 use connector_influx::bench::Batch;
-use hub::reader::Mode;
+use hub::Hub;
+use hub::reader::{Mode, Reader};
 use hub::writer::Writer;
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
@@ -51,6 +55,8 @@ const SHAPES: [(usize, usize, usize); 9] = [
     (64, 10, 32),
     (4096, 1, 1),
 ];
+/// Each count of channels of a frame that a new batch adds.
+const NEW: [usize; 4] = [1, 64, 256, 1024];
 
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn main() {
@@ -87,6 +93,52 @@ fn main() {
             per(allocations) / per(frames),
         );
     }
+    println!(
+        "\nns and allocations of the first frame on a new batch, over {ROUNDS} batches"
+    );
+    println!(
+        "{:>8} {:>9} {:>9} {:>9} {:>11} {:>12}",
+        "channels", "p10", "p50", "p90", "ns/channel", "allocs/frame"
+    );
+    for channels in NEW {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let run = move |node, tasks| first(node, tasks, channels);
+        let (mut nanos, allocations) = sim.run_on(&node, run).expect("the run ends");
+        nanos.sort_unstable();
+        let at = |percent: usize| nanos[nanos.len() * percent / 100];
+        println!(
+            "{channels:>8} {:>9} {:>9} {:>9} {:>11.2} {:>12.2}",
+            at(10),
+            at(50),
+            at(90),
+            per(at(50)) / per(channels),
+            per(allocations) / per(ROUNDS),
+        );
+    }
+}
+
+/// The ns of `Batch::add` of one frame of `channels` channels on each of `ROUNDS`
+/// new batches, and the allocations of all of them.
+async fn first(
+    node: sim::node::Node,
+    tasks: env::tasks::Tasks,
+    channels: usize,
+) -> (Vec<u64>, u64) {
+    let (_hub, mut writer, mut reader) = open(&node, tasks, channels).await;
+    let stamp = writer.now().nanos();
+    write(&mut writer, stamp, 1, (1, 0));
+    node.clock().sleep(Span::SECOND).await;
+    let received = reader.next().await.expect("a frame");
+    let (mut nanos, mut allocations) = (Vec::new(), 0);
+    for _ in 0..ROUNDS {
+        let mut batch = Batch::new("telemetry");
+        let (added, (ns, allocs)) = timed(|| batch.add(&received));
+        added.expect("each channel holds f64");
+        nanos.push(ns);
+        allocations += allocs;
+    }
+    (nanos, allocations)
 }
 
 /// The ns per frame of the warm-up rounds, the ns per frame of each timed round, the
@@ -98,33 +150,8 @@ async fn bench(
     samples: usize,
     present: usize,
 ) -> (u64, Vec<u64>, u64, usize) {
-    let env = hub::testing::Env {
-        files: node.files(),
-        clock: node.clock(),
-        wall: node.wall(),
-        entropy: node.entropy(),
-        tasks,
-    };
-    let hub = testing::create_config(env, node.net(), Table::new())
-        .await
-        .hub;
-    let names = define(&hub, channels);
-    let config = hub::writer::Config {
-        subject: name("bench.writer"),
-        authority: Authority::ABSOLUTE,
-        lease: None,
-        channels: names,
-    };
-    let mut writer = hub.writer(config).await.expect("the writer opens");
-    let config = hub::reader::Config {
-        select: Selector::new(["edge.**"]).expect("a selector"),
-        mode: Mode::Complete,
-        subject: name("bench.reader"),
-        name: None,
-        hold: Span::ZERO,
-    };
-    let mut reader = hub.reader(config).await.expect("the reader opens");
-    let mut batch = Batch::new("telemetry".into());
+    let (_hub, mut writer, mut reader) = open(&node, tasks, channels).await;
+    let mut batch = Batch::new("telemetry");
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let groups = channels / present;
     let warmup = groups.div_ceil(FRAMES) + 1;
@@ -161,6 +188,42 @@ async fn bench(
     }
     let frames = u64::try_from(warmup * FRAMES).expect("few");
     (first / frames, nanos, allocations, body)
+}
+
+/// A hub of the index `edge.time` and `channels` `f64` channels, a writer of each
+/// channel, and a complete reader of them.
+async fn open(
+    node: &sim::node::Node,
+    tasks: env::tasks::Tasks,
+    channels: usize,
+) -> (Hub, Writer, Reader) {
+    let env = hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks,
+    };
+    let hub = testing::create_config(env, node.net(), Table::new())
+        .await
+        .hub;
+    let names = define(&hub, channels);
+    let config = hub::writer::Config {
+        subject: name("bench.writer"),
+        authority: Authority::ABSOLUTE,
+        lease: None,
+        channels: names,
+    };
+    let writer = hub.writer(config).await.expect("the writer opens");
+    let config = hub::reader::Config {
+        select: Selector::new(["edge.**"]).expect("a selector"),
+        mode: Mode::Complete,
+        subject: name("bench.reader"),
+        name: None,
+        hold: Span::ZERO,
+    };
+    let reader = hub.reader(config).await.expect("the reader opens");
+    (hub, writer, reader)
 }
 
 /// Defines the index `edge.time` and the `f64` channels `edge.c<i>` for each `i`

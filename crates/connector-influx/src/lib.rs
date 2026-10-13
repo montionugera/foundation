@@ -195,8 +195,7 @@ fn measurement(value: &Value) -> Result<String, Diagnostic> {
     if **text == *gap::MEASUREMENT {
         return Err(bad(format!("{text:?} is the measurement of the gap lines")));
     }
-    line::Measurement::new(text, &[], &["value"])
-        .map_err(|error| bad(error.to_string()))?;
+    line::Measurement::new(text, &[]).map_err(|error| bad(error.to_string()))?;
     Ok(text.to_string())
 }
 

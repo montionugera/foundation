@@ -7,7 +7,7 @@ use types::frame::key_set::{self, KeySet};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
 
-use crate::line::{Float, Measurement, Value};
+use crate::line::{self, Float, Measurement, Value};
 
 const SAMPLE_TYPE: Code = Code::new("influx.sample-type");
 const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
@@ -19,7 +19,7 @@ const LINES_MAX: usize = 5_000;
 /// position after the last of them.
 #[derive(Debug)]
 pub struct Batch {
-    name: String,
+    measurement: Measurement,
     position: Option<Position>,
     layout: Option<Layout>,
     body: Body,
@@ -34,27 +34,24 @@ struct Body {
     lines: usize,
     times: Vec<u8>,
     raw: Vec<u8>,
-    /// The place of each field of the frame, in entry order.
-    places: Vec<usize>,
-    /// The values of each sample time of the frame, by the order of `places`.
+    /// The entry of each data channel of the frame, in view order.
+    entries: Vec<usize>,
+    /// The values of each sample time of the frame, by the order of `entries`.
     values: Vec<Option<Value>>,
 }
 
-/// The measurement of the data channels seen in the frames of one key set, and how
-/// each field reads its samples.
+/// The data channels seen in the frames of one key set.
 #[derive(Debug)]
 struct Layout {
     set: key_set::Key,
-    /// By entry of the key set, the field of each data channel seen.
-    fields: Vec<Option<Field>>,
-    measurement: Measurement,
+    /// By entry of the key set, each data channel seen.
+    channels: Vec<Option<Channel>>,
 }
 
-/// One data channel of a [`Layout`].
-#[derive(Clone, Copy, Debug)]
-struct Field {
-    /// Its place in the measurement.
-    place: usize,
+/// One data channel of a [`Layout`]: its field, and how it reads its samples.
+#[derive(Debug)]
+struct Channel {
+    field: line::Field,
     width: usize,
     convert: Convert,
 }
@@ -63,12 +60,16 @@ struct Field {
 type Convert = fn(&[u8]) -> Option<Value>;
 
 impl Batch {
-    /// An empty batch of lines of the measurement `name`, which
-    /// [`Measurement::new`] takes.
+    /// An empty batch of lines of the measurement `name`.
+    ///
+    /// # Panics
+    ///
+    /// When [`Measurement::new`] refuses `name` with no tags.
     #[must_use]
-    pub fn new(name: String) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
-            name,
+            measurement: Measurement::new(name, &[])
+                .expect("invariant: config checks the measurement name"),
             position: None,
             layout: None,
             body: Body::default(),
@@ -97,12 +98,12 @@ impl Batch {
         };
         let layout = match &mut self.layout {
             Some(layout) if layout.set == set.key() => layout,
-            slot => slot.insert(Layout::new(&self.name, received, first)?),
+            slot => slot.insert(Layout::new(set)),
         };
         for at in data() {
-            layout.add(received, at)?;
+            layout.add(&self.measurement, received, at)?;
         }
-        self.body.write(layout, received, first);
+        self.body.write(&self.measurement, layout, received, first);
         Ok(())
     }
 
@@ -127,9 +128,15 @@ impl Batch {
 }
 
 impl Body {
-    /// Writes the lines of `received`, whose first data channel is at `first`, with
-    /// the `layout` of its channels.
-    fn write(&mut self, layout: &Layout, received: &Received<'_>, first: usize) {
+    /// Writes the lines of `measurement` of `received`, whose first data channel is
+    /// at `first`, with the `layout` of its channels.
+    fn write(
+        &mut self,
+        measurement: &Measurement,
+        layout: &Layout,
+        received: &Received<'_>,
+        first: usize,
+    ) {
         let (view, set) = (received.view(), received.set());
         let group = entry(set, first).group;
         let range = view
@@ -143,34 +150,34 @@ impl Body {
             .expect("invariant: the hub gives valid series");
         let series = || view.iter().filter(|&(entry, _)| entry != index);
         let fields = series().count();
-        self.places.clear();
+        self.entries.clear();
         self.values.clear();
         let cells = count
             .checked_mul(fields)
             .expect("invariant: a frame fits memory");
         self.values.resize(cells, None);
         for (column, (at, bytes)) in series().enumerate() {
-            let field = layout.field(at);
-            self.places.push(field.place);
+            let channel = layout.channel(at);
+            self.entries.push(at);
             codec::decode(entry(set, at).data_type, count, bytes, &mut self.raw)
                 .expect("invariant: the hub gives valid series");
-            let samples = self.raw.chunks_exact(field.width);
+            let samples = self.raw.chunks_exact(channel.width);
             for (line, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
                 let value = line
                     .get_mut(column)
                     .expect("invariant: a line has each field");
-                *value = (field.convert)(sample);
+                *value = (channel.convert)(sample);
             }
         }
         let lines = self.values.chunks_exact(fields);
         for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
             let time = Stamp::from_nanos(i64::from_le_bytes(time));
             let start = self.bytes.len();
-            let values = (self.places.iter().zip(values))
-                .filter_map(|(&place, value)| Some((place, (*value)?)));
-            layout
-                .measurement
-                .line_by_place(&mut self.bytes, values, time);
+            let values =
+                (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
+                    Some((&layout.channel(at).field, (*value)?))
+                });
+            measurement.line(&mut self.bytes, values, time);
             if self.bytes.len() > start {
                 self.lines = self.lines.saturating_add(1);
             }
@@ -179,42 +186,33 @@ impl Body {
 }
 
 impl Layout {
-    /// The layout of the key set of `received`, with the field of its data channel
-    /// at `first`.
-    fn new(name: &str, received: &Received<'_>, first: usize) -> Result<Self, Error> {
-        let (width, convert) = conversion(received, first)?;
-        let key = received.name(first);
-        let measurement =
-            Measurement::new(name, &[], &[key]).map_err(|error| bad_channel(&error))?;
-        let set = received.set();
-        let mut fields = vec![None; set.entries().len()];
-        let field = fields.get_mut(first);
-        *field.expect("invariant: a view gives entries of its key set") = Some(Field {
-            place: 0,
-            width,
-            convert,
-        });
-        Ok(Self {
+    /// The layout of the key set `set`, with no channel seen.
+    fn new(set: &KeySet) -> Self {
+        Self {
             set: set.key(),
-            fields,
-            measurement,
-        })
+            channels: std::iter::repeat_with(|| None)
+                .take(set.entries().len())
+                .collect(),
+        }
     }
 
-    /// Adds the field of the data channel at `at` of `received`, when the layout has
-    /// none.
-    fn add(&mut self, received: &Received<'_>, at: usize) -> Result<(), Error> {
-        let slot = self.fields.get_mut(at);
+    /// Adds the data channel at `at` of `received`, a field of `measurement`, when
+    /// the layout has none.
+    fn add(
+        &mut self,
+        measurement: &Measurement,
+        received: &Received<'_>,
+        at: usize,
+    ) -> Result<(), Error> {
+        let slot = self.channels.get_mut(at);
         let slot = slot.expect("invariant: a view gives entries of its key set");
         if slot.is_none() {
             let (width, convert) = conversion(received, at)?;
-            let key = received.name(at);
-            let place = self
-                .measurement
-                .add_field(key)
+            let field = measurement
+                .field(received.name(at))
                 .map_err(|error| bad_channel(&error))?;
-            *slot = Some(Field {
-                place,
+            *slot = Some(Channel {
+                field,
                 width,
                 convert,
             });
@@ -222,10 +220,10 @@ impl Layout {
         Ok(())
     }
 
-    /// The field of the data channel at `at`.
-    fn field(&self, at: usize) -> Field {
-        let field = self.fields.get(at).copied().flatten();
-        field.expect("invariant: the layout holds each data channel of the frame")
+    /// The data channel at `at`.
+    fn channel(&self, at: usize) -> &Channel {
+        let channel = self.channels.get(at).and_then(Option::as_ref);
+        channel.expect("invariant: the layout holds each data channel of the frame")
     }
 }
 

@@ -48,7 +48,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         body_max: BODY_MAX,
     });
     let uri = write_uri(&config.address, &config.database);
-    let mut batch = Batch::new(config.measurement.clone());
+    let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
