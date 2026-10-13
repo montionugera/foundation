@@ -12,7 +12,7 @@ use std::time::Duration;
 use env::clock::Clock;
 use types::time::Span;
 
-use crate::status::Connector;
+use crate::status::{self, Connector};
 use crate::text;
 
 /// How long [`Rig::wait`] and [`Rig::run`] wait: longer than the 60 s cap of a restart
@@ -275,10 +275,16 @@ impl Rig {
         })
     }
 
-    /// The connectors of `foundation status --json`, by name.
-    #[expect(clippy::todo, reason = "waits on #1735")]
+    /// The connectors of `foundation status --json`, by name. Panics when it fails.
     pub(crate) fn status(&self) -> BTreeMap<String, Connector> {
-        todo!("waits on #1735")
+        let output = self.run(&["status", "--json"], b"");
+        let stderr = text(&output.stderr);
+        assert!(
+            output.status.success() && stderr.is_empty(),
+            "`foundation status --json` exited with {}, stderr: {stderr}",
+            output.status
+        );
+        status::connectors(&output.stdout)
     }
 }
 

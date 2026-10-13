@@ -53,6 +53,8 @@ hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]
