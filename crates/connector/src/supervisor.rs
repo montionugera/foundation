@@ -1072,6 +1072,66 @@ mod tests {
         assert_eq!(texts, ["", "busy", "busy", "busy", "", ""]);
     }
 
+    /// A kind that reads the secret `plant.token` at the start of its run, then
+    /// returns.
+    struct Locked;
+
+    impl Kind for Locked {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn discover(
+            &self,
+            _: &cancel::Token,
+        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+
+        async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+            let value = ctx.secret(&name("plant.token")).await?;
+            assert_eq!(value.expose(), b"t");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn heals_a_run_when_the_missing_secret_is_written() {
+        let (result, statuses) = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("locked", Locked);
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let (shown, files, clock) =
+                (Rc::clone(&statuses), node.files(), node.clock());
+            tasks.spawn(async move {
+                while shown.borrow().len() < 2 {
+                    clock.sleep(ms(10)).await;
+                }
+                testing::create_secret(&files, &name("plant.token"), b"t").await;
+            });
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(Span::SECOND).await;
+            (result, statuses.borrow().clone())
+        });
+        result.expect("the second run reads the secret");
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let missing = "the secret plant.token: the store has no value: write it to the \
+                       file /data/secrets/plant.token";
+        assert_eq!(texts, ["", missing, missing, missing, "", ""]);
+    }
+
     #[test]
     fn writes_the_text_of_a_config_error() {
         let out = supervise("script", vec![Step::Config], config(), Cancel::Never);
