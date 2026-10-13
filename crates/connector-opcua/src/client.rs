@@ -14,6 +14,7 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
 
+use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::ffi::{self, Status};
 use crate::node::Node;
@@ -99,9 +100,10 @@ impl Client {
     /// is not active after the request timeout of the client (5 s), else the status of
     /// open62541 when it refuses `url` or the connect fails.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// If open62541 refuses the client.
+    /// When open62541 cannot allocate the loop, the connection manager, or the
+    /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
         net: Net,
@@ -113,7 +115,9 @@ impl Client {
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
+        let Some(raw) = NonNull::new(raw) else {
+            alloc::exhausted()
+        };
         // SAFETY: `raw` is a new client of the loop of `connections`.
         unsafe { Self::start(clock, connections, raw, &url) }.await
     }
@@ -196,9 +200,9 @@ impl Client {
     /// bytes at the end of each chunk but the last, or the `MaxMessageSize` of the
     /// server when that is smaller. The request comes first.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// If open62541 cannot allocate the request.
+    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
         let request = Nodes::new(nodes, Rc::clone(&self.key));
         // SAFETY: the request lives.
@@ -407,16 +411,18 @@ impl Nodes {
     /// Builds one Read request of the Value of each node of `nodes`, in order, for the
     /// client of `client`, with no check of its size: [`Client::nodes`] checks it.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// If open62541 cannot allocate the request.
+    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
     fn new(nodes: &[Node], client: Rc<()>) -> Self {
         let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
         // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
         let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
+        let Some(raw) = NonNull::new(request) else {
+            alloc::exhausted()
+        };
         Self {
-            raw: NonNull::new(request)
-                .expect("open62541: out of memory for a Read request"),
+            raw,
             count: nodes.len(),
             client,
         }

@@ -21,6 +21,7 @@ use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
+use crate::unwind::caught;
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -1166,33 +1167,41 @@ fn a_read_of_no_nodes_gives_no_values() {
     assert_eq!(after, Ok(value));
 }
 
-/// Reads the list of `nodes` that one client checked on another client.
-fn read_on_another_client(nodes: &'static [Node]) {
+/// Reads the list of `nodes` that one client checked on another client, and gives the
+/// text of the panic. The panic is caught inside `serve`, so the server closes.
+fn read_on_another_client(nodes: &'static [Node]) -> Option<&'static str> {
     run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let first = peer.connected().await;
             let mut second = peer.connected().await;
             let nodes = first.nodes(nodes).expect("the nodes fit");
-            let read = second.read(&nodes).await;
-            unreachable!("the read gives {read:?}");
+            let panic = caught(second.read(&nodes))
+                .await
+                .expect_err("the read panics");
+            panic.downcast_ref::<&str>().copied()
         })
-        .await;
-    });
+        .await
+    })
+    .0
 }
 
 /// A client reads only a list that it checked, as the limits of another session can
 /// be smaller.
 #[test]
-#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
 fn a_read_of_the_nodes_of_another_client_panics() {
-    read_on_another_client(&[VALUE]);
+    assert_eq!(
+        read_on_another_client(&[VALUE]),
+        Some("invariant: a client reads only the nodes that it checked")
+    );
 }
 
 /// A client reads only a list that it checked, also when the list is empty.
 #[test]
-#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
 fn a_read_of_no_nodes_of_another_client_panics() {
-    read_on_another_client(&[]);
+    assert_eq!(
+        read_on_another_client(&[]),
+        Some("invariant: a client reads only the nodes that it checked")
+    );
 }
 
 /// The port of the relay of [`relayed`].

@@ -1,0 +1,12 @@
+connector "influx" {
+  kind = "influx"
+  node = "cloud"
+  address = "http://influx:8086"
+  database = ""
+  measurement = "foundation_gaps"
+  select = "edge.*"
+  reader {
+    mode = "complete"
+    hold = "2h"
+  }
+}

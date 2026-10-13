@@ -54,6 +54,11 @@ impl Server {
     ///
     /// If the port is taken, or if open62541 refuses the server or a step of its
     /// close. A panic in `body` leaks the server and its manager.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop or the connection manager: the process
+    /// stops as the Rust allocator does when it has no memory.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
@@ -90,6 +95,12 @@ impl Server {
     ///
     /// If the connect fails, with its status, or if the request or its answer of
     /// `count` copies needs more than one message of the session.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, the connection manager, the client, or
+    /// a Read request: the process stops as the Rust allocator does when it has no
+    /// memory.
     pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));

@@ -10,6 +10,7 @@ use env::clock::Clock;
 use env::rng::Rng;
 use types::time::Monotonic;
 
+use crate::alloc;
 use crate::ffi;
 
 /// An open62541 event loop, on the thread that made it.
@@ -25,17 +26,18 @@ impl Loop {
     /// thread then uses them, so give each loop on a thread an `rng` whose next value
     /// differs.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When the C allocation of the loop fails.
+    /// When the C allocation of the loop fails, as [`alloc::exhausted`] says.
     pub(crate) fn new(clock: Clock, rng: &mut Rng) -> Self {
         // SAFETY: it writes only the generator of this thread.
         unsafe { ffi::UA_random_seed_deterministic(rng.next_u64()) };
         let clock = NonNull::from(Box::leak(Box::new(clock)));
         // SAFETY: `now` reads the `Clock` at `clock`, which lives until `drop`.
         let raw = unsafe { ffi::shim_loop_new(now, clock.as_ptr().cast()) };
-        let raw =
-            NonNull::new(raw).expect("open62541: out of memory for an event loop");
+        let Some(raw) = NonNull::new(raw) else {
+            alloc::exhausted()
+        };
         Self { raw, clock }
     }
 

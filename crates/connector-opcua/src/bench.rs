@@ -21,6 +21,7 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
+use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
 use crate::event::Loop;
@@ -42,15 +43,22 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// Panics if open62541 refuses the client, or, with the status name, if it gives a
-    /// status other than `Good` for the first run or a timer.
+    /// With the status name, if open62541 gives a status other than `Good` for the
+    /// first run or a timer.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop or the client, as [`alloc::exhausted`]
+    /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(clock, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
-        let raw = NonNull::new(client).expect("open62541 refused the client");
+        let Some(raw) = NonNull::new(client) else {
+            alloc::exhausted()
+        };
         let mut client = Self { raw, events };
         client.run();
         let events = &client.events;
@@ -150,11 +158,16 @@ impl Manager {
     ///
     /// If `idle` is 65535 or more, as open62541 counts sessions in 16 bits, if a
     /// connect fails or does not end in 60 s of `clock`, if open62541 refuses the
-    /// server, a client, or a step of the close, if a channel of a client is not
-    /// closed after the close, or if the port is taken. A panic of the close leaks the
-    /// loop and its connections, and each server and client that it has not deleted,
-    /// and replaces a panic of the connect or `body`. A panic before the connect leaks
-    /// what was made by then: the manager, the server, and each client.
+    /// server or a step of the close, if a channel of a client is not closed after the
+    /// close, or if the port is taken. A panic of the close leaks the loop and its
+    /// connections, and each server and client that it has not deleted, and replaces a
+    /// panic of the connect or `body`. A panic before the connect leaks what was made
+    /// by then: the manager, the server, and each client.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, the connection manager, a client, or
+    /// the Read request of the time of the server, as [`alloc::exhausted`] says.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
@@ -201,7 +214,9 @@ impl Manager {
                 let client = unsafe {
                     ffi::shim_client_new(events.raw(), crate::connection::CHUNKS)
                 };
-                let client = NonNull::new(client).expect("open62541 refused a client");
+                let Some(client) = NonNull::new(client) else {
+                    alloc::exhausted()
+                };
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
                     ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())

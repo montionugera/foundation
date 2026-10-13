@@ -6,7 +6,8 @@ use document::{Document, Source};
 use types::name::Name;
 
 const CONNECTOR: &str = "connector \"plc\" {\n  kind = \"influx\"\n  node = \"edge\"\n  \
-                         address = \"http://influx:8086\"\n  select = \"edge.*\"\n}\n";
+                         address = \"http://influx:8086\"\n  database = \"edge\"\n  \
+                         measurement = \"telemetry\"\n  select = \"edge.*\"\n}\n";
 const SUBJECT: &str = "subject \"plc\" {\n  keys = \"ssh-ed25519 \
                        AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg \
                        alice@laptop\"\n}\n";

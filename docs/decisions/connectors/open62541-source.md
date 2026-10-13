@@ -360,6 +360,13 @@
   The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
   2026-10-11 00:41 UTC).
+  A NULL from a constructor of `shim.c` stops the process through `alloc::exhausted`,
+  which calls `std::alloc::handle_alloc_error` as the Rust allocator does on out of
+  memory. Its message gives the size of a header alone, because a constructor does
+  not give the size of the block that failed. A NULL inside the copy keeps the C
+  contract. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6140602800,
+  2026-10-13 07:30 UTC).
   `build.rs` gives both builds the sanitizers of the Rust build. With
   `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
   -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
