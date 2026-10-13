@@ -11,7 +11,7 @@ use std::ffi::{CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
-use std::panic::{self, AssertUnwindSafe};
+use std::panic;
 use std::pin::{Pin, pin};
 use std::ptr::{self, NonNull};
 use std::task::{Context, Poll, Waker};
@@ -26,6 +26,7 @@ use crate::event::Loop;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::server::Server;
+use crate::unwind::caught;
 
 /// A client of open62541 on its own event loop, which also runs a count of repeated
 /// timers that do nothing.
@@ -425,18 +426,6 @@ unsafe extern "C" fn answer(
     }
 }
 
-/// Runs `future` to its end, and gives the panic of a poll in place of a value.
-async fn caught<F: Future>(future: F) -> std::thread::Result<F::Output> {
-    let mut future = pin!(future);
-    poll_fn(|cx| {
-        match panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
-            Ok(poll) => poll.map(Ok),
-            Err(panic) => Poll::Ready(Err(panic)),
-        }
-    })
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use std::panic::{self, AssertUnwindSafe};
@@ -446,8 +435,9 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager, caught};
+    use super::{Client, Manager};
     use crate::ffi;
+    use crate::unwind::caught;
 
     /// The delay of the default link.
     fn delay() -> Span {
