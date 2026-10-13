@@ -683,9 +683,8 @@ impl Names {
                 self.places[to_usize(entry)] = Self::NONE;
             }
         }
-        if self.places.len() < set.entries().len() {
-            self.places.resize(set.entries().len(), Self::NONE);
-        }
+        let len = self.places.len().max(set.entries().len());
+        self.places.resize(len, Self::NONE);
         for (place, (slot, entry)) in self.channels.iter_mut().enumerate() {
             *entry = set.find(*slot).map_or(Self::NONE, |at| {
                 self.places[at] = u32::try_from(place)
