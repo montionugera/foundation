@@ -39,6 +39,38 @@ Read only the section you need, when you need it.
   targets.
 - `docs/rfc/` -> RFCs.
 
+## 🚨 The person decides the design 🚨
+
+The person approves each high-level connector design and each critical design
+decision before any code builds on it. No architect, director, monitor, or builder
+makes one. A record, code, a test, or a simulator that already assumes a choice does
+not decide it. The record is PERSON DECIDES THE DESIGN
+(`docs/decisions/operations/person-decides-design.md`).
+
+A decision is one of these when a user or an operator sees it or depends on it:
+
+- the external systems, protocols, and versions that a connector supports;
+- security and auth: TLS, tokens, credentials, OPC UA security modes;
+- the config and command line that a user writes: blocks, attributes, defaults;
+- guarantees: loss, order, durability, retry, and what a user sees on a failure;
+- how data maps to and from an external system: types, time, quality;
+- wire and on-disk formats;
+- the structure of the system: a new crate, or a change to the crate map or layers;
+- the servers, versions, and security that an acceptance or exit test runs against;
+- a choice in a test, simulator, or fixture that sets one of the above.
+
+When you are not sure, it is one. To ask:
+
+1. Write it on its issue as one question: the problem, the options, the cost of each,
+   and a recommendation. One decision per question, never in a list of other choices.
+2. Send the link to `laptop.monitor`, which asks the person. Add `blocked`, and build
+   only the parts that the decision does not touch.
+3. Only the person's own words decide it. Record them in `docs/decisions/` with the
+   UTC time and the link.
+
+A PR that makes such a decision links the person's approval. Review fails it without
+one.
+
 ## 🚨 The repo is the memory 🚨
 
 Several Claude sessions work here at once, and any one can compact, crash, or be

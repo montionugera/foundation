@@ -214,12 +214,14 @@ budget, its limits, and step 3. Step 4 checks each by its instance, because they
   person's own OK, approval, or waiver (also as box engineer). A builder acts on it at
   once. The person never has to comment on GitHub.
 - **The person reviews only what only the person can decide.** The architect decides
-  everything inside the decisions the person made, in a comment on the issue. The
-  builder adds the ruling to `docs/decisions/` in the code PR, so the record and the
-  code merge together. Public surfaces (`public-api.txt`) need the architect's approval,
-  not the person's. Only four things go to the person: a change to a decision the person
-  made, the next milestone, new spend, and a security or license risk. The coordinator
-  sends them in one batch a day, except one that blocks the critical path.
+  the rest inside the decisions the person made, in a comment on the issue. The builder
+  adds the ruling to `docs/decisions/` in the code PR, so the record and the code merge
+  together. Public surfaces (`public-api.txt`) need the architect's approval, not the
+  person's. Five things go to the person: a design decision (`CLAUDE.md`, "The person
+  decides the design"), a change to a decision the person made, the next milestone, new
+  spend, and a security or license risk. `laptop.monitor` asks a design decision at
+  once, alone. The coordinator sends the others in one batch a day, except one that
+  blocks the critical path.
 - **A stuck session tells the coordinator at once.** When a permission check refuses
   a call, or work waits on the person, send `coordinator` the refused command, the
   reason text, and the issue or PR. Then stop the work that waits on it, and take other

@@ -133,6 +133,9 @@ take the next issue meanwhile.
   link to that comment at once (`docs/coordination.md`, "Messages"). A comment alone
   reaches no one. When no part of the issue is left to build, add `blocked` and take
   other work (Take an issue). Remove `blocked` when the answer comes.
+- A design decision (`CLAUDE.md`, "The person decides the design") goes to the person
+  before you build on it: ask on the issue, send the link to `laptop.monitor`, and add
+  `blocked`.
 - A design choice that other crates need goes in the PR's Shape decisions; send the link
   to the crate's architect (`docs/factory.md`).
 - When the architect rules in a comment on your issue, act on it at once. Add the ruling
