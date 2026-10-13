@@ -60,10 +60,13 @@ the ONE NODE plan (#1737) holds, was ONE NODE work (`laptop.architect`,
 2026-10-08T02:17:18Z:
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6050814109), and is on
 `main` (64446144f, PR 1 of #1741). An issue of this milestone that `laptop.monitor`
-gives in a batch of the production path of #1737 is ONE NODE work, such as #160 (the
-person, 2026-10-13T21:15:26Z:
-https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6155351878). Protocol 4
-of #1232 and the rest of this milestone wait. The ONE NODE amendment of 2026-10-13 gives
+gives in a batch of the production path of #1737 moves to the ONE NODE milestone, as
+#160 did (the person, 2026-10-13T21:15:26Z:
+https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6155351878).
+`laptop.monitor` decided this, and tells the person each such move
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178). Each
+issue that stays on this milestone waits, also protocol 4 of #1232.
+The ONE NODE amendment of 2026-10-13 gives
 the work that takes its place, the person's words, and the orders of `laptop.monitor`
 with their links. Supersedes, until the new sessions start, "It runs beside FIRST SLICE"
 of this entry (the person's decision of 2026-10-06, which has no link).
