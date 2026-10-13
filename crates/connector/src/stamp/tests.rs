@@ -73,6 +73,19 @@ fn a_request_after_a_refusal_is_stamped_after_its_stamp() {
 }
 
 #[test]
+fn a_refusal_under_a_request_stamp_is_stamped_after_it() {
+    let (stamp, refused, later) = with_writer(async |writer, _| {
+        let mut stamps = Stamps::default();
+        let ((), stamp) = stamps.request(&writer, future::ready(())).await;
+        let refused = stamps.after(stamp - Span::from_nanos(5));
+        let ((), later) = stamps.request(&writer, future::ready(())).await;
+        (stamp, refused, later)
+    });
+    assert_eq!(refused, stamp + Span::NANOSECOND);
+    assert_eq!(later, stamp + Span::from_nanos(2));
+}
+
+#[test]
 #[should_panic(expected = "stamp overflow: 9223372036854775807 ns + 1 ns")]
 fn a_stamp_after_the_last_instant_panics() {
     let mut stamps = Stamps::default();
