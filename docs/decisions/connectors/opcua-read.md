@@ -42,12 +42,13 @@
   (`laptop.architect-2`, 2026-10-13T16:56:50Z:
   https://github.com/synnaxlabs/foundation/issues/2578#issuecomment-6150745226). The
   status is `BadConnectionClosed`, which the copy of open62541 sets
-  (`docs/dependencies.md`, "Local patches"), which the ruling of #2578 leaves to the
-  owner (`laptop.architect-2`, 2026-10-13T16:56:50Z:
-  https://github.com/synnaxlabs/foundation/issues/2578#issuecomment-6150745226). The
-  client still dials again for a switch of the endpoint that open62541 makes, and
-  falls back to the given URL when that dial fails. Each dial, the fallback too, goes
-  to the address of the given URL. A message that the client cannot process on an
-  open channel also ends the connect, or the session, with no new dial; its status is
-  #2592 (`laptop.architect-2`, 2026-10-13T19:25:56Z:
+  (`docs/dependencies.md`, "Local patches"). The client still dials again for a switch
+  of the endpoint that open62541 makes in one connect (the URL of FindServers, or the
+  security mode, the URL, or the certificate of GetEndpoints), and falls back to the
+  given URL when that dial fails. The status and this reading of the switch:
+  `laptop.architect-2`, 2026-10-13T20:30:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2593#issuecomment-6154599442. Each
+  dial, the fallback too, goes to the address of the given URL. A message that the
+  client cannot process on an open channel also ends the connect, or the session, with
+  no new dial; its status is #2592 (`laptop.architect-2`, 2026-10-13T19:25:56Z:
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912).
