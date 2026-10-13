@@ -103,7 +103,7 @@ impl Placed<'_> {
     /// also fixes the name. The frame holds its index, so this checks the index too.
     /// Each write of the supervisor holds every status channel, so a frame with fewer
     /// is of another writer, of a hub that lacks one, or of a run of an earlier spec
-    /// with fewer counts.
+    /// that lacks a count of the spec in use.
     fn defines(&self, received: &Received<'_>) -> bool {
         let (set, view) = (received.set(), received.view());
         view.iter().count() == self.channels.len()
