@@ -29,4 +29,7 @@
   text and the JSON, 2026-10-08T06:29:21Z, that comment). The one form, `read` on each
   channel that `status` reads, and no `next` until the deferred time of the next
   restart: `laptop.architect-2` (2026-10-13T01:00:07Z,
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072).
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). The
+  reader by the channels of the spec in use, in place of a reader of
+  `<connector>.status.*`: `laptop.architect-2` (2026-10-13T01:52:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
