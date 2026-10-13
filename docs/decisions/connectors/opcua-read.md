@@ -24,7 +24,8 @@
   `HEADER`. open62541 moves a value of at most 8 bytes that does not fit whole to the
   next chunk, so the check takes 7 bytes off each chunk but the last (`SPLIT`). The
   answer takes it on trust: a server that leaves more gives a read near the bound
-  `BadSecureChannelClosed`. Decided by `laptop.architect-2` (2026-10-13T03:51:25Z:
+  `BadSecureChannelClosed`. The change that adds a GUID key also changes `SPLIT`, to
+  18. Decided by `laptop.architect-2` (2026-10-13T03:51:25Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207, and the
   token size at 2026-10-13T03:52:06Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137834758).
