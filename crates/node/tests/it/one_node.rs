@@ -398,7 +398,7 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2401"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(plant());
     first_stored(&plant, &VARIABLES);
@@ -407,7 +407,7 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1744, #2326, #2401, #2510"]
+#[ignore = "waits on #337, #435, #1734, #1744, #2401, #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
@@ -467,7 +467,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #274, #337, #435, #1734, #1735, #1744, #2326, #2401"]
+#[ignore = "waits on #274, #337, #435, #1734, #1735, #1744, #2401"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -524,7 +524,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1735, #1744, #2326, #2401"]
+#[ignore = "waits on #337, #435, #1734, #1735, #1744, #2401"]
 fn status_shows_samples_flow() {
     let plant = create_plant(plant());
     let rig = &plant.rig;
