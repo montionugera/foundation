@@ -1,5 +1,6 @@
-//! Runs the request of a remote program on the node.
+//! The requests and replies of a remote program, and how the node runs each request.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::io::{self, Write};
 
@@ -155,24 +156,25 @@ impl<'de> Deserialize<'de> for Request {
     }
 }
 
-/// The first line of the reply of an operation that ran.
-#[derive(Serialize)]
-struct Done<'a, T> {
-    output: &'a T,
-}
-
-/// The first line of the reply of an error, with the exit status of the program.
-#[derive(Serialize)]
-struct Failed<'a> {
-    errors: &'a [Problem],
-    status: u8,
+/// The first line of a reply: the output of an operation that ran, or its errors with
+/// the exit status of the program.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Answer<'a, T> {
+    Done {
+        output: T,
+    },
+    Failed {
+        errors: Cow<'a, [Problem]>,
+        status: u8,
+    },
 }
 
 /// The reply that holds `error`, or `ops.large-reply` when that reply passes the bound.
 fn failed(error: &Error) -> Reply {
     let line = |error: &Error| {
-        Reply::line(&Failed {
-            errors: &error.problems(),
+        Reply::line(&Answer::<()>::Failed {
+            errors: error.problems(),
             status: error.status(),
         })
     };
@@ -203,14 +205,6 @@ pub(crate) fn apply_request(plan: &[u8]) -> Vec<u8> {
     [b"{\"apply\":{}}\n", plan].concat()
 }
 
-/// The first line of a reply, as a command line reads it.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Answer<T> {
-    Done { output: T },
-    Failed { errors: Vec<Problem>, status: u8 },
-}
-
 /// The output of the reply `body` of [`serve`], and the bytes after its first line.
 ///
 /// # Errors
@@ -221,21 +215,27 @@ pub(crate) fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Err
     let bad = |message: &str| Error::Reply {
         message: message.to_owned(),
     };
-    let Some(end) = body.iter().position(|byte| *byte == b'\n') else {
+    let Some((head, rest)) = first_line(body) else {
         return Err(bad("no newline ends the first line"));
     };
-    let (head, rest) = (&body[..end], &body[end + 1..]);
     match serde_json::from_slice(head) {
         Ok(Answer::Done { output }) => Ok((output, rest)),
         Ok(Answer::Failed { errors, status }) if status == 0 || errors.is_empty() => {
             Err(bad("an error has the exit status 0, or no problem"))
         }
         Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
-            problems: errors,
+            problems: errors.into_owned(),
             status,
         }),
         Err(error) => Err(bad(&error.to_string())),
     }
+}
+
+/// The first line of `body` and the bytes after its newline, or `None` when no newline
+/// ends it.
+fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
+    let end = body.iter().position(|byte| *byte == b'\n')?;
+    Some((&body[..end], &body[end + 1..]))
 }
 
 /// `Request` with `message`.
@@ -247,10 +247,9 @@ fn bad(message: impl Into<String>) -> Error {
 
 /// The reply of the request `body` of `subject`.
 async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
-    let Some(end) = body.iter().position(|byte| *byte == b'\n') else {
+    let Some((head, rest)) = first_line(body) else {
         return Err(bad("no newline ends the first line"));
     };
-    let (head, rest) = (&body[..end], &body[end + 1..]);
     let request = serde_json::from_slice(head).map_err(|e| bad(e.to_string()))?;
     match request {
         Request::Plan(_) if !rest.is_empty() => {
@@ -331,7 +330,7 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Reply, Erro
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
-    let mut reply = Reply::line(&Done { output: &output })?;
+    let mut reply = Reply::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
 }
@@ -376,5 +375,5 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
         return Err(check.denied(Action::Apply, On::Nothing));
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
-    Ok(Reply::line(&Done { output: &effect })?)
+    Ok(Reply::line(&Answer::Done { output: &effect })?)
 }
