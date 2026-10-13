@@ -132,7 +132,7 @@ fn status_gives_each_connector_as_json() {
     );
 }
 
-/// `status` reaches the running node, which refuses it while it places no connector.
+/// `status` reaches the running node, which places no connector.
 #[test]
 fn status_runs_on_the_node() {
     let mut rig = Rig::new();
@@ -144,15 +144,7 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
-        (
-            Some(1),
-            "",
-            concat!(
-                "error[ops.denied]: no access policy gives `@admin` the action `read` ",
-                "on a request that names no definition\n",
-                "fix: Ask an admin of the region for an access policy that allows it\n",
-            )
-        )
+        (Some(0), "No connector is placed on this node.\n", "")
     );
 }
 

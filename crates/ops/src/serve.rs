@@ -484,7 +484,8 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
 }
 
 /// The reply of `status`: its output. It leaves out each connector on whose status
-/// channels `subject` has no `read`.
+/// channels `subject` has no `read`. When it leaves out each connector, or the node
+/// places none, it needs `read` on the name of the node.
 async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
@@ -495,9 +496,15 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
             .channels()
             .all(|name| check.allows(Action::Read, name))
     });
-    if placed.is_empty() {
-        return Err(check.denied(Action::Read, On::Nothing));
-    }
-    let output = status::read(node, subject, &placed, asked).await?;
+    let output = if placed.is_empty() {
+        if !check.allows(Action::Read, &node.name) {
+            return Err(check.denied(Action::Read, On::Nothing));
+        }
+        status::Output {
+            connectors: Vec::new(),
+        }
+    } else {
+        status::read(node, subject, &placed, asked).await?
+    };
     Ok(Body::line(&Answer::Done { output: &output })?)
 }

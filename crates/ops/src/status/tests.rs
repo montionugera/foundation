@@ -499,10 +499,28 @@ site.b: device error: no route to the device
 }
 
 #[test]
-fn the_command_line_writes_the_refusal_of_status() {
+fn the_command_line_writes_the_status_of_a_node_with_no_connector() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
+        let paths = fixture.sim.paths();
+        let shown = cli(&node, &paths, &["status"]).await;
+        let line = "No connector is placed on this node.\n";
+        assert_eq!(shown, (Run::Exit(0), line.to_owned(), String::new()));
+        let shown = cli(&node, &paths, &["status", "--json"]).await;
+        let json = "{\"connectors\":[]}\n";
+        assert_eq!(shown, (Run::Exit(0), json.to_owned(), String::new()));
+    });
+}
+
+#[test]
+fn the_command_line_writes_the_refusal_of_status() {
+    let mut founding = spec::founding::create(crate::common::ADMIN.public());
+    let policy = founding[&name("@admin.@access")].clone();
+    // An access policy at a key that is no tree key of its kind: a problem.
+    founding.insert(name("x"), policy);
+    founded(&["edge"], founding, |fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let (run, output, errors) = cli(&node, &fixture.sim.paths(), &["status"]).await;
         let refused = "error[ops.denied]: no access policy gives `@admin` the action \
                        `read` on a request that names no definition\n\
@@ -652,12 +670,55 @@ fn refused(subject: &str) -> Value {
 }
 
 #[test]
-fn refuses_an_admin_on_a_node_that_places_no_connector() {
+fn gives_no_connector_to_an_admin_on_a_node_that_places_none() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
-        let (head, rest) = status(&node, "@admin").await;
-        assert_eq!((head, rest), (refused("@admin"), Vec::new()));
+        let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest, waited), (expected, Vec::new(), Span::ZERO));
+    });
+}
+
+#[test]
+fn refuses_a_subject_that_may_not_read_the_node_when_it_places_no_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &reader()).await;
+        let (head, rest) = status(&node, "sam").await;
+        assert_eq!((head, rest), (refused("sam"), Vec::new()));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_that_may_read_the_node() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = format!(
+            "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  subjects = \
+             \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
+        );
+        applied(&fixture, &node, &text).await;
+        let (head, _) = status(&node, "sam").await;
+        assert_eq!(head, json!({ "output": { "connectors": [] } }));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            format!(
+                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
+                 subjects = \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
+            ),
+            connector("site.a", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest), (expected, Vec::new()));
     });
 }
 
@@ -1080,9 +1141,9 @@ fn the_command_line_writes_the_status_block_of_the_quickstart_page() {
 }
 
 #[test]
-fn writes_no_table_with_no_connector() {
+fn writes_a_line_in_place_of_the_table_with_no_connector() {
     let output = Output {
         connectors: Vec::new(),
     };
-    assert_eq!(output.text(), "");
+    assert_eq!(output.text(), "No connector is placed on this node.\n");
 }
