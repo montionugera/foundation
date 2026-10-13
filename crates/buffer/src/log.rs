@@ -1406,6 +1406,22 @@ mod tests {
         );
     }
 
+    /// S4 bounds the memory of the items by one entry per record.
+    #[test]
+    fn the_items_of_a_record_share_its_entry() {
+        let mut logs = Logs::default();
+        for index in 1..=3 {
+            logs.sync(slot(index), &header(index, Path::Live, 0, 1, None), 4096)
+                .expect("syncs");
+        }
+        logs.carry(slot(4), &carried_of(4, 5, 0), 8192)
+            .expect("a new path takes any tail");
+        logs.carry(slot(5), &carried_of(5, 5, 0), 8192)
+            .expect("a new path takes any tail");
+        assert_eq!(logs.records, [(4096, 3), (8192, 2)]);
+        assert_eq!(logs.items.len(), 5);
+    }
+
     #[test]
     #[should_panic(expected = "invariant: record 4096 comes after record 8192")]
     fn a_record_before_a_hidden_holder_is_a_broken_invariant() {
