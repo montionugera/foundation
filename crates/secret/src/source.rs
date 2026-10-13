@@ -11,8 +11,8 @@ use types::name::Name;
 const SOURCE: Code = Code::new("secret.source");
 
 /// Where the value of a secret comes from, as a config writes it: a call of `env`,
-/// `file`, or `secret` with one string. `Display` gives the call with its argument
-/// as a string, never the value.
+/// `file`, or `secret` with one string, or for `secret` also a reference. `Display`
+/// gives the call with its argument as a string, never the value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     /// `env("NAME")`: the variable `NAME` of the environment of the node process, as
@@ -32,7 +32,8 @@ impl Source {
     /// # Errors
     ///
     /// `secret.source` at the span of `value` when it is not a call of `env`,
-    /// `file`, or `secret` with one valid string. The text never quotes `value`.
+    /// `file`, or `secret` with one valid string, or for `secret` also a reference.
+    /// The text never quotes `value`.
     pub fn read(value: &Value) -> Result<Self, Diagnostic> {
         let refuse = |message: String, fix: &str| {
             Diagnostic::new(SOURCE, value.span, message, fix.into())
