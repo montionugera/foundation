@@ -1028,4 +1028,9 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn a_command_line_that_did_not_run_gives_exit_status_1() {
+        assert_eq!(unrun("no shard"), ExitCode::FAILURE);
+    }
 }
