@@ -22,8 +22,9 @@ pub struct Config {
     pub entropy: env::entropy::Entropy,
     /// Where the transport and the hub client spawn their tasks.
     pub tasks: env::tasks::Tasks,
-    /// The pool of the transport and of the hub client. Its largest block holds at
-    /// least 1472 bytes, else `reach` gives [`Error::Transport`].
+    /// The pool of the transport and of the hub client. After `reach` reads both
+    /// files, it gives [`Error::Transport`] when the largest block holds less than
+    /// 1472 bytes.
     pub pool: Rc<block::Pool>,
 }
 
