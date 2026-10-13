@@ -54,16 +54,10 @@ fn watch_refs() -> Result<(), String> {
     };
     let path = git_path(&name)?;
     if path.exists() {
-        // Git reads a ref file before `packed-refs`, which each worktree shares and
-        // which a `git gc` in any of them rewrites.
         watch(&path);
-        return Ok(());
+    } else {
+        watch_above(&path);
     }
-    let packed = git_path("packed-refs")?;
-    if packed.exists() {
-        watch(&packed);
-    }
-    watch_above(&path);
     Ok(())
 }
 
@@ -95,7 +89,7 @@ fn git_path(name: &str) -> Result<PathBuf, String> {
 }
 
 /// Watches the nearest folder above `path` that is there, where git makes the file of a
-/// ref at its next commit. Cargo runs the script on each build while a watched path is
+/// ref at its next change, also of a ref in `packed-refs`. Cargo runs the script on each build while a watched path is
 /// missing.
 fn watch_above(path: &Path) {
     let there = path.ancestors().find(|path| path.exists());

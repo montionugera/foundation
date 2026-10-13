@@ -249,20 +249,19 @@
   error at a commit that is not 40 or 64 lowercase hex digits and at a ref of a branch
   with a commit that git cannot read. The script watches the paths that
   `git rev-parse --git-path` gives for `HEAD` and its ref, and, only while that ref has
-  no file of its own, `packed-refs` and the nearest folder above the ref, since git
-  reads a ref file first. In a reftable repository, it watches in their place the
+  no file of its own, the nearest folder above the ref, where git writes that file at the next change of the ref. In a reftable repository, it watches in their place the
   `reftable` folder of the worktree, which holds its `HEAD`, and that of the repository,
   which holds each branch. So a commit, a checkout, and a branch switch in a worktree
   rebuild `ops`, and a build with no change does not. MCP `serverInfo` keeps the version
   alone (`laptop.architect-2`, 2026-10-13T21:55:47Z,
   https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156028343; the
-  watch of `packed-refs` and the check of the commit: `laptop.architect-2`,
+  check of the commit: `laptop.architect-2`,
   2026-10-13T22:33:11Z,
   https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6156635866; the
   reftable folder, the empty commit, and the cases with no commit: `laptop.architect-2`,
   2026-10-13T22:39:49Z,
   https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6156732029; the commit
   of 64 digits: `laptop.architect-2`, 2026-10-13T23:24:59Z,
-  https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6157329508). Lost:
-  `vergen`, a new dependency for about 30 lines; and a variable that the release sets,
-  as each local build must say what it is.
+  https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6157329508; no watch of `packed-refs`: `laptop.architect-2`, 2026-10-13T23:38:27Z, https://github.com/synnaxlabs/foundation/pull/2620#issuecomment-6157497960). Lost:
+  `vergen`, a new dependency for about 30 lines; a variable that the release sets,
+  as each local build must say what it is; and a watch of `packed-refs` (git writes the file of a ref at each change of it).
