@@ -119,9 +119,9 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Five more for `start`, `plan`, `apply`, `mcp`, and `help`, which are not
-    // operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 5);
+    // Six more for `start`, `plan`, `apply`, `status`, `mcp`, and `help`, which are
+    // not operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 6);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();

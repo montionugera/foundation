@@ -468,7 +468,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1735"]
+#[ignore = "waits on #435"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -490,6 +490,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     assert_eq!(
         failing,
         Connector {
+            name: "influx".into(),
             kind: "influx".into(),
             state: "running".into(),
             address: Some(format!("http://{influx_address}")),
@@ -501,7 +502,6 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
                     "the write to InfluxDB failed: the connect failed: {influx_address} \
                      refused the connection"
                 ),
-                next: None,
             }),
         }
     );
@@ -519,7 +519,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1735"]
+#[ignore = "waits on #435"]
 fn status_shows_samples_flow() {
     let plant = create_plant(PLANT);
     let rig = &plant.rig;

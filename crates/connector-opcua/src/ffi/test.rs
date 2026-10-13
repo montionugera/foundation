@@ -116,6 +116,11 @@ const _: () = {
 };
 
 unsafe extern "C" {
+    pub(crate) fn UA_readNumber(
+        buf: *const u8,
+        length: usize,
+        number: *mut u32,
+    ) -> usize;
     pub(crate) fn UA_UInt32_random() -> u32;
     pub(crate) fn UA_DateTime_now() -> i64;
     pub(crate) fn UA_DateTime_nowMonotonic() -> i64;

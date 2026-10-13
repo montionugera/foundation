@@ -6947,7 +6947,7 @@ mod port {
             assert_eq!(node.join(), Ok(()));
             let unknown = concat!(
                 r#"{"errors":[{"code":"connector.unknown-kind","#,
-                r#""fix":"Use one of [\"influx\"]","#,
+                r#""fix":"Use one of [\"influx\", \"opcua\"]","#,
                 r#""message":"this build has no connector kind \"modbus\"","#,
                 r#""notes":[],"place":{"column":10,"file":"plant.hcl","line":2}}]}"#,
             );

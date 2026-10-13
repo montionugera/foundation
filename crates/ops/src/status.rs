@@ -301,7 +301,6 @@ impl Output {
     /// A table of the connectors, then a line `<name>: <class> error: <text>` for
     /// each connector with an error, after a blank line. Each control character of a
     /// value is escaped, so a value stays on its line. Empty with no connector.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the CLI of `status` calls it"))]
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
             return String::new();
