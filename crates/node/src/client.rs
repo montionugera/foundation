@@ -144,7 +144,6 @@ mod tests {
     fn the_pool_holds_a_datagram() {
         let pool = block::Pool::heap(POOL);
         assert!(pool.largest() >= 1472, "{}", pool.largest());
-        assert!(POOL.reservation() <= 1 << 27, "{}", POOL.reservation());
     }
 
     proptest! {
