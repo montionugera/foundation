@@ -124,7 +124,8 @@ pub(crate) fn placed<'a>(
 /// # Errors
 ///
 /// [`Error::ChannelRead`] for the first of `placed` whose reader does not open or
-/// ends, other than as [`newest`] gives `None`.
+/// ends, other than for status channels that the hub does not define or that an apply
+/// removes.
 pub(crate) async fn read(
     node: &Node,
     subject: &Name,
