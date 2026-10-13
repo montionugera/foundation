@@ -15,14 +15,14 @@ fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
 
 /// The config of the page, its one `hcl` block.
 pub(crate) fn plant() -> &'static str {
-    let [hcl] = blocks("hcl").collect::<Vec<_>>()[..] else {
-        panic!("the page has not one `hcl` block");
+    let hcl: Vec<_> = blocks("hcl").collect();
+    let [hcl] = hcl[..] else {
+        panic!("the page has {} `hcl` blocks, not one", hcl.len());
     };
     hcl
 }
 
 #[test]
-#[ignore = "waits on #337, #1735"]
 fn the_help_names_each_command_and_flag_on_the_quickstart_page() {
     let commands: Vec<Vec<&str>> = blocks("sh")
         .flat_map(str::lines)

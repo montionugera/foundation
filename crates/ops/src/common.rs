@@ -40,8 +40,9 @@ fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
 
 /// The config of the quickstart page, its one `hcl` block.
 pub(crate) fn plant() -> &'static str {
-    let [hcl] = blocks("hcl").collect::<Vec<_>>()[..] else {
-        panic!("the page has not one `hcl` block");
+    let hcl: Vec<_> = blocks("hcl").collect();
+    let [hcl] = hcl[..] else {
+        panic!("the page has {} `hcl` blocks, not one", hcl.len());
     };
     hcl
 }
@@ -49,9 +50,14 @@ pub(crate) fn plant() -> &'static str {
 /// The output that the quickstart page shows, its one `text` block that starts with
 /// `start`.
 pub(crate) fn shown(start: &str) -> &'static str {
-    let shown = blocks("text").filter(|block| block.starts_with(start));
-    let [text] = shown.collect::<Vec<_>>()[..] else {
-        panic!("the page has not one `text` block that starts with {start:?}");
+    let shown: Vec<_> = blocks("text")
+        .filter(|block| block.starts_with(start))
+        .collect();
+    let [text] = shown[..] else {
+        panic!(
+            "the page has {} `text` blocks that start with {start:?}, not one",
+            shown.len()
+        );
     };
     text
 }
