@@ -6,7 +6,11 @@
   run as backwards when the run before it wrote a stamp at or after it on the same
   index. Each stamp given counts as the stamp before the next, written or not
   (`laptop.architect-2`, 2026-10-13T01:39:14Z, item 4:
-  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136202010). After a
+  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136202010). So "the
+  last stamp of the writer" in CONNECTOR STATUS is the last stamp that `Stamps` gave,
+  also to a frame for which the pool gave no block (`laptop.architect`,
+  2026-10-13T02:15:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136738770). After a
   refusal as backwards, the frame is written again 1 ns after the stamp that the
   refusal gives, or 1 ns after the last stamp when that is later (`laptop.architect-2`,
   2026-10-13T01:08:55Z, item 7:
