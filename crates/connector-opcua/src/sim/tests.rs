@@ -7,6 +7,7 @@ use types::quality::Quality;
 
 use super::{Served, Variables, serve};
 use crate::client::Client;
+use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
 
@@ -43,10 +44,15 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let mut times = Vec::new();
         let mut reads = Vec::new();
         let until = async {
-            let mut client =
-                (Client::connect(node.clock(), node.net(), &mut rng, &url))
-                    .await
-                    .expect("connect");
+            let mut client = (Client::connect(
+                node.clock(),
+                event::monotonic(node.clock()),
+                node.net(),
+                &mut rng,
+                &url,
+            ))
+            .await
+            .expect("connect");
             for quality in [Quality::GOOD, BAD] {
                 variables.change(quality);
                 let before = clock.now();
@@ -108,13 +114,25 @@ fn a_server_has_room_for_4_sessions() {
         let until = async {
             let mut clients = Vec::new();
             for _ in 0..4 {
-                let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
+                let connect = Client::connect(
+                    node.clock(),
+                    event::monotonic(node.clock()),
+                    node.net(),
+                    &mut rng,
+                    &url,
+                );
                 clients.push(connect.await.expect("connect"));
             }
             for client in &mut clients {
                 reads.push(client.read_one(&spike).await);
             }
-            let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
+            let connect = Client::connect(
+                node.clock(),
+                event::monotonic(node.clock()),
+                node.net(),
+                &mut rng,
+                &url,
+            );
             fifth = connect.await.err();
             for client in clients {
                 client.close().await;

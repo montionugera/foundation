@@ -13,6 +13,7 @@ use types::quality::Quality;
 use types::time::Monotonic;
 
 use crate::connection::Manager;
+use crate::event;
 use crate::node::Node;
 use crate::server::Server;
 
@@ -142,7 +143,8 @@ pub async fn serve(
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let manager = Manager::accepting(Clock::clone(&clock), net, listener, rng);
+    let wall = event::monotonic(Clock::clone(&clock));
+    let manager = Manager::accepting(Clock::clone(&clock), wall, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();

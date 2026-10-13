@@ -16,6 +16,7 @@ use types::time::Span;
 
 use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
+use crate::event::Wall;
 use crate::ffi::{self, Status};
 use crate::node::Node;
 
@@ -88,9 +89,9 @@ struct Reads {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
-    /// the server at the endpoint `url` with the security mode `None` and an anonymous
-    /// session, and gives it once the session is active. On an error, it closes the
+    /// Makes a client on its own manager over `clock`, `wall`, `net`, and `rng`,
+    /// connects it to the server at the endpoint `url` with the security mode `None`
+    /// and an anonymous session, and gives it once the session is active. On an error, it closes the
     /// session that it made with [`Client::close`] first, which can take up to two more
     /// request timeouts.
     ///
@@ -106,13 +107,14 @@ impl Client {
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
+        wall: Wall,
         net: Net,
         rng: &mut Rng,
         url: &str,
     ) -> Result<Self, Status> {
         let url =
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
-        let connections = Manager::new(Clock::clone(&clock), net, rng);
+        let connections = Manager::new(Clock::clone(&clock), wall, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let Some(raw) = NonNull::new(raw) else {

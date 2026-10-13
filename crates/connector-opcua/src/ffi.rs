@@ -429,7 +429,11 @@ unsafe extern "C" {
     pub(crate) fn UA_StatusCode_name(code: u32) -> *const c_char;
     pub(crate) fn UA_random_seed_deterministic(value: u64);
 
-    pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
+    pub(crate) fn shim_loop_new(
+        now: Now,
+        wall: Now,
+        clock: *mut c_void,
+    ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;

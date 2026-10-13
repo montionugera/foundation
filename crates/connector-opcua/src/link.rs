@@ -4,7 +4,7 @@
 
 use env::rng::Rng;
 
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::Bytes;
 use crate::ffi::Status;
 use crate::ffi::test as ffi;
@@ -87,7 +87,11 @@ fn call_refused() {
 fn call_member(name: &str) -> ! {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(clock, &mut Rng::from_seed(0));
+    let events = Loop::new(
+        clock.clone(),
+        event::monotonic(clock),
+        &mut Rng::from_seed(0),
+    );
     let (members, raw, none) = (events.members(), events.raw(), std::ptr::null_mut());
     let status = match name {
         "UA_EventLoop.stop" => {

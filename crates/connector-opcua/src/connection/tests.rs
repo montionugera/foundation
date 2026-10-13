@@ -20,7 +20,7 @@ use types::time::{Monotonic, Span};
 
 use super::{CLOSES, LINGER, Manager, OPTIONS, READ_BYTES, SENDS};
 use crate::child;
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::test::{
     Members, NUMERIC, NodeId, QualifiedName, UA_Client_disconnect,
     UA_KeyValueMap_clear, UA_KeyValueMap_getScalar, UA_KeyValueMap_setScalar,
@@ -153,8 +153,12 @@ struct Side {
 impl Side {
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
-        let manager =
-            Manager::new(Clock::clone(&clock), node.net(), &mut node.entropy().rng());
+        let manager = Manager::new(
+            Clock::clone(&clock),
+            event::monotonic(node.clock()),
+            node.net(),
+            &mut node.entropy().rng(),
+        );
         Self::of(clock, manager)
     }
 
@@ -162,9 +166,15 @@ impl Side {
     fn listening(node: &node::Node, local: SocketAddr) -> Self {
         let clock = node.clock();
         let rng = &mut node.entropy().rng();
-        let manager =
-            Manager::listening(Clock::clone(&clock), node.net(), local, 512, rng)
-                .expect("the port is free");
+        let manager = Manager::listening(
+            Clock::clone(&clock),
+            event::monotonic(node.clock()),
+            node.net(),
+            local,
+            512,
+            rng,
+        )
+        .expect("the port is free");
         Self::of(clock, manager)
     }
 
@@ -2685,9 +2695,15 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
         extra: Arc::clone(&extra),
     });
     let rng = &mut node.entropy().rng();
-    let manager =
-        Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
-            .expect("the port is free");
+    let manager = Manager::listening(
+        Clock::clone(&clock),
+        event::monotonic(node.clock()),
+        node.net(),
+        local(node),
+        4,
+        rng,
+    )
+    .expect("the port is free");
     let side = Side::of(clock, manager);
     // SAFETY: the server is deleted before `side` drops.
     let server = unsafe { Server::start(&side.manager, c"", 1) };
@@ -3091,7 +3107,14 @@ fn a_manager_that_listens_at_a_taken_address_fails() {
             let local = local(&node);
             let _side = Side::listening(&node, local);
             let rng = &mut node.entropy().rng();
-            let second = Manager::listening(node.clock(), node.net(), local, 4, rng);
+            let second = Manager::listening(
+                node.clock(),
+                event::monotonic(node.clock()),
+                node.net(),
+                local,
+                4,
+                rng,
+            );
             (second.err(), local)
         })
         .expect("the run ends");

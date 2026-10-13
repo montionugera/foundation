@@ -11,6 +11,7 @@ use env::rng::Rng;
 use super::PORT;
 use crate::client::Nodes;
 use crate::connection;
+use crate::event;
 use crate::node::{Key, Name, Node};
 
 /// The Double variable of a [`Server`].
@@ -69,6 +70,7 @@ impl Server {
         let local = SocketAddr::new(address, PORT);
         let manager = connection::Manager::listening(
             Clock::clone(&clock),
+            event::monotonic(Clock::clone(&clock)),
             Net::clone(&net),
             local,
             u32::from(SESSIONS),
@@ -104,11 +106,12 @@ impl Server {
     pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        let session =
-            match crate::client::Client::connect(clock, net, rng, &self.url).await {
-                Ok(session) => session,
-                Err(status) => panic!("a connect failed: {status:?}"),
-            };
+        let wall = event::monotonic(Clock::clone(&clock));
+        let connect = crate::client::Client::connect(clock, wall, net, rng, &self.url);
+        let session = match connect.await {
+            Ok(session) => session,
+            Err(status) => panic!("a connect failed: {status:?}"),
+        };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
             session.nodes(&nodes).expect("the nodes fit in one message")

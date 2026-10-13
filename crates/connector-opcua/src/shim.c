@@ -147,7 +147,8 @@ AT(unlock, 22);
 /* The last tick of a clock of `u64` ns. */
 #define LAST_TICK ((UA_DateTime)(UINT64_MAX / 100))
 
-/* Gives the monotonic time of `clock` in ticks of 100 ns, at most `LAST_TICK`. */
+/* Gives a time of `clock` in ticks of 100 ns: the monotonic time, at most `LAST_TICK`,
+ * or the wall time from the Unix epoch. */
 typedef UA_DateTime (*shim_now)(void *clock);
 
 /* An event loop with no I/O. It runs on one thread and never blocks. */
@@ -157,6 +158,7 @@ struct shim_loop {
     UA_Timer timer;
     UA_Logger logger;
     shim_now now;
+    shim_now wall;
     void *clock;
     /* The delayed callbacks for the next run, in order, and `tail` at the `next` of
      * the last. */
@@ -243,7 +245,8 @@ static UA_StatusCode el_run(UA_EventLoop *el, UA_UInt32 timeout) {
 static void el_cancel(UA_EventLoop *el) { (void)el; }
 
 static UA_DateTime el_now(UA_EventLoop *el) {
-    return now_of(el) + UA_DATETIME_UNIX_EPOCH;
+    struct shim_loop *loop = loop_of(el);
+    return loop->wall(loop->clock) + UA_DATETIME_UNIX_EPOCH;
 }
 
 static UA_Int64 el_utc_offset(UA_EventLoop *el) {
@@ -364,13 +367,15 @@ void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
     UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
 }
 
-/* Gives a fresh loop whose time is `now(clock)`, or NULL when out of memory. */
-UA_EventLoop *shim_loop_new(shim_now now, void *clock) {
+/* Gives a fresh loop whose monotonic time is `now(clock)` and whose wall time is
+ * `wall(clock)`, or NULL when out of memory. */
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *clock) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
     UA_Timer_init(&loop->timer);
     loop->now = now;
+    loop->wall = wall;
     loop->clock = clock;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;

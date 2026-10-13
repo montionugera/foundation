@@ -1,5 +1,5 @@
-//! The event loop that open62541 runs on. It reads an injected clock, runs the timers
-//! and the delayed callbacks of the copy, and does no I/O.
+//! The event loop that open62541 runs on. It reads an injected clock and wall time,
+//! runs the timers and the delayed callbacks of the copy, and does no I/O.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -8,37 +8,60 @@ use std::ptr::NonNull;
 
 use env::clock::Clock;
 use env::rng::Rng;
-use types::time::Monotonic;
+use types::time::{Monotonic, Stamp};
 
 use crate::alloc;
 use crate::ffi;
+
+/// The wall time of a loop, which open62541 puts in each request header and compares
+/// with the time of each channel token. The loop calls it inside each call of its
+/// client or server, so it must not borrow what such a call borrows. A panic in it
+/// aborts the process.
+pub(crate) type Wall = Box<dyn Fn() -> Stamp>;
+
+/// Gives the monotonic time of `clock` as the wall time, from the Unix epoch, for a
+/// test server, which has no wall time of a node.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn monotonic(clock: Clock) -> Wall {
+    Box::new(move || {
+        let nanos = i64::try_from(clock.now().0).expect("a clock under 292 years");
+        Stamp::from_nanos(nanos)
+    })
+}
+
+/// What the C loop reads.
+struct Time {
+    clock: Clock,
+    wall: Wall,
+}
 
 /// An open62541 event loop, on the thread that made it.
 pub(crate) struct Loop {
     raw: NonNull<ffi::EventLoop>,
     /// The C loop reads it until `drop` frees the loop.
-    clock: NonNull<Clock>,
+    time: NonNull<Time>,
 }
 
 impl Loop {
-    /// Makes a loop whose time is `clock`. It sets the random values of open62541 on
-    /// this thread from `rng`, so a run on a simulated clock replays. Each loop on this
-    /// thread then uses them, so give each loop on a thread an `rng` whose next value
-    /// differs.
+    /// Makes a loop whose monotonic time is `clock` and whose wall time is `wall`. It
+    /// sets the random values of open62541 on this thread from `rng`, so a run on a
+    /// simulated clock replays. Each loop on this thread then uses them, so give each
+    /// loop on a thread an `rng` whose next value differs.
     ///
     /// # Aborts
     ///
     /// When the C allocation of the loop fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(clock: Clock, rng: &mut Rng) -> Self {
+    pub(crate) fn new(clock: Clock, wall: Wall, rng: &mut Rng) -> Self {
         // SAFETY: it writes only the generator of this thread.
         unsafe { ffi::UA_random_seed_deterministic(rng.next_u64()) };
-        let clock = NonNull::from(Box::leak(Box::new(clock)));
-        // SAFETY: `now` reads the `Clock` at `clock`, which lives until `drop`.
-        let raw = unsafe { ffi::shim_loop_new(now, clock.as_ptr().cast()) };
+        let time = NonNull::from(Box::leak(Box::new(Time { clock, wall })));
+        // SAFETY: `now` and `wall_now` read the `Time` at `time`, which lives until
+        // `drop`.
+        let raw = unsafe { ffi::shim_loop_new(now, wall_now, time.as_ptr().cast()) };
         let Some(raw) = NonNull::new(raw) else {
             alloc::exhausted()
         };
-        Self { raw, clock }
+        Self { raw, time }
     }
 
     /// Gives the loop for a client or server config with `externalEventLoop`. Delete
@@ -100,19 +123,32 @@ impl Drop for Loop {
         // and server on it first.
         unsafe { ffi::shim_loop_free(self.raw.as_ptr()) };
         // SAFETY: `new` leaked the box, and the loop that read it is gone.
-        drop(unsafe { Box::from_raw(self.clock.as_ptr()) });
+        drop(unsafe { Box::from_raw(self.time.as_ptr()) });
     }
 }
 
-/// Gives the time of the `Clock` at `clock` in ticks of 100 ns.
+/// Gives the monotonic time of the `Time` at `time` in ticks of 100 ns.
 ///
 /// # Safety
 ///
-/// `clock` points at a live `Clock`.
-unsafe extern "C" fn now(clock: *mut c_void) -> i64 {
-    // SAFETY: the caller keeps the clock live.
-    let clock = unsafe { &*clock.cast::<Clock>() };
-    i64::try_from(clock.now().0 / 100).expect("invariant: u64::MAX / 100 fits in i64")
+/// `time` points at a live `Time`.
+unsafe extern "C" fn now(time: *mut c_void) -> i64 {
+    // SAFETY: the caller keeps the time live.
+    let time = unsafe { &*time.cast::<Time>() };
+    i64::try_from(time.clock.now().0 / 100)
+        .expect("invariant: u64::MAX / 100 fits in i64")
+}
+
+/// Gives the wall time of the `Time` at `time` in ticks of 100 ns from the Unix
+/// epoch, rounded down.
+///
+/// # Safety
+///
+/// `time` points at a live `Time`.
+unsafe extern "C" fn wall_now(time: *mut c_void) -> i64 {
+    // SAFETY: the caller keeps the time live.
+    let time = unsafe { &*time.cast::<Time>() };
+    (time.wall)().nanos().div_euclid(100)
 }
 
 #[cfg(test)]
