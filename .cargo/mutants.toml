@@ -151,6 +151,11 @@ exclude_re = [
   # back. `each_commit_of_the_logs_syncs_one_entry_of_each_index` kills it through the
   # private logs.
   'crates/buffer/src/bench\.rs:.*replace Logs::commit with \(\)$',
+  # No caller reads `State::kept` until the commit trims (#160, step 3c, which removes
+  # these lines). Only the private reads of
+  # `a_read_holds_the_record_it_waits_on_until_it_ends_or_drops` kill the mutants.
+  'crates/buffer/src/buffer\.rs:.*replace State::kept -> Option<u64> with',
+  'crates/buffer/src/buffer\.rs:.*replace <impl Drop for Hold<.*>>::drop with \(\)$',
   # A connector on another node runs here only in a mesh of two nodes, which no test of
   # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
   # `a_connector_on_another_node_starts_no_run` kills it.
