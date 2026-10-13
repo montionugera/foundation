@@ -166,6 +166,8 @@ struct Layout {
     fills: Vec<Fill>,
     /// The count of data samples of each group in one frame, by its number.
     samples: Vec<u64>,
+    /// The group of each index, in the order of the key set.
+    groups: Vec<u32>,
 }
 
 /// The writer of the frames, and the counts of their samples.
@@ -192,20 +194,22 @@ impl Frames {
         if !wrong.is_empty() {
             return Err(Error::Config(wrong));
         }
+        let mut reads_of = vec![None; entries.len()];
+        for (read, &entry) in writer.entries().iter().enumerate() {
+            reads_of[entry] = Some(read);
+        }
         let mut samples = vec![0; set.groups().len()];
-        let fills = (entries.iter().enumerate())
-            .map(|(entry, &key_set::Entry { group, .. })| {
-                if set.groups().contains(&entry) {
-                    return Fill { group, read: None };
+        let fills: Vec<_> = (entries.iter().zip(reads_of))
+            .map(|(&key_set::Entry { group, .. }, read)| {
+                if read.is_some() {
+                    samples[to_usize(group)] += 1;
                 }
-                let read = writer.entries().iter().position(|&of| of == entry);
-                let read = read.expect("invariant: a writer has only its channels");
-                samples[to_usize(group)] += 1;
-                Fill {
-                    group,
-                    read: Some(read),
-                }
+                Fill { group, read }
             })
+            .collect();
+        let groups = (fills.iter())
+            .filter(|fill| fill.read.is_none())
+            .map(|fill| fill.group)
             .collect();
         let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
         Ok(Self {
@@ -215,6 +219,7 @@ impl Frames {
                 series,
                 fills,
                 samples,
+                groups,
             },
             out: Out {
                 applied: Total::new(ctx.count("in")),
@@ -253,8 +258,9 @@ impl Frames {
             again,
             backwards,
         } = self;
-        let all = &layout.series;
-        let Some(before) = out.send(layout, all, values, stamp, backwards)? else {
+        let (all, groups) = (&layout.series, &layout.groups);
+        let Some(before) = out.send(layout, all, groups, values, stamp, backwards)?
+        else {
             return Ok(());
         };
         let stamp = stamps.after(before);
@@ -263,7 +269,8 @@ impl Frames {
         };
         again.clear();
         again.extend(all.iter().filter(refused));
-        if let Some(again) = out.send(layout, again, values, stamp, backwards)? {
+        let none = &mut Vec::new();
+        if let Some(again) = out.send(layout, again, backwards, values, stamp, none)? {
             panic!(
                 "invariant: a frame stamped after {before}, the last stamp of its \
                  index, is not backwards, but the home gives {again} as last"
@@ -275,7 +282,8 @@ impl Frames {
 
 impl Out {
     /// Writes one frame of `series` of `layout` with `values` at `stamp`, and counts
-    /// its samples. A frame for which the pool has no block now loses its samples.
+    /// its samples. `groups` are the groups of the indexes of `series`, in order. A
+    /// frame for which the pool has no block now loses its samples.
     ///
     /// Returns the latest stamp that the home gives for a group that it refuses as
     /// `Backwards`, and puts those groups in `backwards`.
@@ -293,34 +301,29 @@ impl Out {
         &mut self,
         layout: &Layout,
         series: &[(usize, usize)],
+        groups: &[u32],
         values: &[Result<f64, Status>],
         stamp: Stamp,
         backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
         let Layout { fills, samples, .. } = layout;
-        let groups = || {
-            let indexes = series.iter().map(|&(entry, _)| &fills[entry]);
-            indexes
-                .filter(|fill| fill.read.is_none())
-                .map(|fill| fill.group)
-        };
         let mut draft = match self.writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
             Err(frame::Error::Pool(
                 block::Error::Exhausted { .. } | block::Error::Refused { .. },
             )) => {
-                let lost = groups().map(|group| samples[to_usize(group)]).sum();
+                let lost = groups.iter().map(|&group| samples[to_usize(group)]).sum();
                 self.lost.add(lost);
                 return Ok(None);
             }
             Err(error) => return Err(error.into()),
         };
-        fill(&mut draft, fills, values, stamp, groups());
+        fill(&mut draft, fills, values, stamp, groups);
         let outcomes = self.writer.write(Label::Path(Path::Live), draft)?;
         backwards.clear();
         let mut latest = None;
         let (mut wrote, mut gone) = (0, 0);
-        for (group, outcome) in groups().zip(outcomes) {
+        for (&group, outcome) in groups.iter().zip(outcomes) {
             let n = samples[to_usize(group)];
             match outcome {
                 Outcome::Applied { .. } => wrote += n,
@@ -370,7 +373,7 @@ fn fill(
     fills: &[Fill],
     values: &[Result<f64, Status>],
     stamp: Stamp,
-    groups: impl Iterator<Item = u32>,
+    groups: &[u32],
 ) {
     for (entry, bytes) in draft.iter_mut() {
         let sample = match fills[entry].read {
@@ -384,7 +387,7 @@ fn fill(
         };
         bytes.copy_from_slice(&sample);
     }
-    for group in groups {
+    for &group in groups {
         draft.set_count(group, 1);
     }
 }
