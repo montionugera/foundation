@@ -309,15 +309,13 @@ fn problems(
                 let number = round.number;
                 problems.extend(misnumbered(round, before));
                 before = Some(number);
-                let later = i > 0 || number > 1;
                 problems.extend(unnamed(
                     round,
                     &record.files,
                     i == 0,
                     last,
                     code_change,
-                    (later && round.posted.as_str() >= DECISION_CUTOFF)
-                        .then_some(decision_change),
+                    decision_change,
                 )?);
             }
             Err(e) => {
@@ -507,17 +505,18 @@ fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
 /// when true, names for a PR that changes `files`. A round comment after the first may
 /// skip `breaker` when its range changes no code, which only the `last` round checks
 /// with `code_change`: a rebase can drop the range of an earlier round from the clone,
-/// but the last round's end must be on the head's chain. A round with a
-/// `decision_change` requires `architecture` too when that gives a phrase for its
-/// range. When `required` does not already ask for `architecture`, its problem gives
-/// the remedy, then the phrase.
+/// but the last round's end must be on the head's chain. A round comment posted at or
+/// after `DECISION_CUTOFF`, after the first or numbered above 1, requires
+/// `architecture` too when `decision_change` gives a phrase for its range. When
+/// `required` does not already ask for `architecture`, its problem gives the remedy,
+/// then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
     first: bool,
     last: bool,
     code_change: Change<'_>,
-    decision_change: Option<Change<'_>>,
+    decision_change: Change<'_>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
     let mut missing: Vec<&str> = required(round, files, first)
@@ -542,7 +541,9 @@ fn unnamed(
     }
     if !round.reviewers.contains("architecture")
         && !missing.contains(&"architecture")
-        && let Some(decision_change) = decision_change
+        // A first comment numbered above 1 continues the count of the PR it replaces.
+        && (!first || round.number > 1)
+        && round.posted.as_str() >= DECISION_CUTOFF
         && let Some(change) = decision_change(&round.from, &round.end)?
     {
         problems.push(format!(
