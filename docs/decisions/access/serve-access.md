@@ -10,7 +10,7 @@
   that the request did not hold. Lost: a check of `<node>.@node_settings`, whose grant
   means "may read the policy"; and a problem for a definition at the name of a member,
   which needs a check across crates for a case that shows nothing (`laptop.architect`,
-  2026-10-13,
+  2026-10-13T22:16:29Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156368387).
   `plan` needs the action `plan` on each name of the files, and on each name of the spec
   in use that `plan` compares (`config::plan::planned`). A founding definition, which
