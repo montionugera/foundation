@@ -400,7 +400,7 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734"]
+#[ignore = "waits on #435"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
     first_stored(&plant, &VARIABLES);
@@ -409,7 +409,7 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734, #2510"]
+#[ignore = "waits on #435, #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
@@ -433,7 +433,7 @@ fn a_bad_status_keeps_its_quality() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734"]
+#[ignore = "waits on #435"]
 fn a_wrong_config_gives_its_file_line_and_fix() {
     let mut rig = Rig::new();
     let hcl = PLANT
@@ -469,7 +469,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #274, #435, #1734, #1735"]
+#[ignore = "waits on #435, #1735, #2559"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -480,35 +480,29 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     rig.config(&served(PLANT, opcua_address, influx_address));
     rig.start();
     rig.apply();
-    let restarting = rig.wait("`influx` restarts", || {
+    let failing = rig.wait("`influx` shows the failed write", || {
         let status = rig.status();
         status
             .get("influx")
-            .filter(|connector| {
-                connector.state == "restarting" && connector.restarts >= Some(1)
-            })
+            .filter(|connector| connector.error.is_some())
             .cloned()
             .ok_or_else(|| format!("{status:#?}"))
     });
-    let next = restarting
-        .error
-        .as_ref()
-        .and_then(|error| error.next.clone());
-    assert!(next.is_some(), "{restarting:#?}");
     assert_eq!(
-        restarting,
+        failing,
         Connector {
             kind: "influx".into(),
-            state: "restarting".into(),
+            state: "running".into(),
             address: Some(format!("http://{influx_address}")),
-            restarts: restarting.restarts,
+            restarts: Some(0),
             counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
             error: Some(Error {
-                class: "device".into(),
+                class: "retry".into(),
                 text: format!(
-                    "the connect failed: {influx_address} refused the connection"
+                    "the write to InfluxDB failed: the connect failed: {influx_address} \
+                     refused the connection"
                 ),
-                next,
+                next: None,
             }),
         }
     );
@@ -526,7 +520,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734, #1735"]
+#[ignore = "waits on #435, #1735, #2559"]
 fn status_shows_samples_flow() {
     let plant = create_plant(PLANT);
     let rig = &plant.rig;

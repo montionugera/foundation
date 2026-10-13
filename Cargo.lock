@@ -427,6 +427,7 @@ name = "connector-influx"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "codec",
  "connector",
  "connector-influx",
  "counting",
@@ -438,6 +439,7 @@ dependencies = [
  "influxdb-line-protocol",
  "proptest",
  "sim",
+ "spec",
  "types",
  "unicode-properties",
 ]
