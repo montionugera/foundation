@@ -56,8 +56,8 @@ impl File {
             Err(files::Error::NotFound { .. }) => {
                 return Err(Error::Missing {
                     detail: format!(
-                        "write it to the file {} of the data directory",
-                        path.display()
+                        "write it to the file {}",
+                        self.files.shown(&path).display()
                     ),
                 });
             }
@@ -67,7 +67,7 @@ impl File {
             return Err(Error::Unavailable {
                 detail: format!(
                     "the file {} is {} bytes, more than {LEN_MAX}",
-                    path.display(),
+                    self.files.shown(&path).display(),
                     file.len()
                 ),
             });
@@ -83,8 +83,8 @@ impl File {
         if value.is_empty() {
             return Err(Error::Missing {
                 detail: format!(
-                    "the file {} of the data directory is empty. Write the value to it",
-                    path.display()
+                    "the file {} is empty. Write the value to it",
+                    self.files.shown(&path).display()
                 ),
             });
         }
@@ -98,7 +98,7 @@ impl Store for File {
     /// # Errors
     ///
     /// [`Error::Missing`] when `dir` or the file is not there, or the value is empty,
-    /// with the path to write it to, and when `name` has an ASCII capital, with the
+    /// with the path to write it to, as [`Files::shown`] gives it, and when `name` has an ASCII capital, with the
     /// fix to rename it. [`Error::Unavailable`] when the file is more than 64 KiB, or
     /// a file call fails, with the call's error.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a> {

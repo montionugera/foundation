@@ -48,7 +48,7 @@ fn store(files: Files) -> File {
 
 fn missing(path: &str) -> Result<Vec<u8>, Error> {
     Err(Error::Missing {
-        detail: format!("write it to the file {path} of the data directory"),
+        detail: format!("write it to the file /data/{path}"),
     })
 }
 
@@ -118,9 +118,9 @@ fn has_no_value_when_the_file_holds_only_a_line_end() {
     on_sim(|_, files| async move {
         let store = store(files.clone());
         let empty = Err(Error::Missing {
-            detail: "the file secrets/plant.token of the data directory is empty. \
-                     Write the value to it"
-                .into(),
+            detail:
+                "the file /data/secrets/plant.token is empty. Write the value to it"
+                    .into(),
         });
         for file in [&b""[..], b"\n", b"\r\n"] {
             put(&files, "secrets/plant.token", file).await;
@@ -159,7 +159,8 @@ fn reads_a_file_of_64_kib_and_refuses_one_byte_more() {
         )
         .await;
         let large = Err(Error::Unavailable {
-            detail: "the file secrets/plant.key is 65537 bytes, more than 65536".into(),
+            detail: "the file /data/secrets/plant.key is 65537 bytes, more than 65536"
+                .into(),
         });
         assert_eq!(get(&store, "plant.key").await, large);
     });

@@ -281,10 +281,9 @@ impl<C> Context<C> {
     /// # Errors
     ///
     /// [`Error::Retry`] for each error of the store, with a text that names the
-    /// secret and holds the store's text, such as `the secret plant.influx_token:
-    /// the store has no value: write it to the file secrets/plant.influx_token of
-    /// the data directory`. The supervisor restarts the run with backoff, so a value
-    /// added to the store heals it.
+    /// secret and holds the store's text, such as where to put the value. The
+    /// supervisor restarts the run with backoff, so a value added to the store heals
+    /// it.
     pub async fn secret(&self, name: &Name) -> Result<secret::Value, Error> {
         let get = self.inputs.secrets.get(name).await;
         get.map_err(|error| {
@@ -1018,14 +1017,14 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the secret plant.influx_token: the store has no value: write it to the \
-             file secrets/plant.influx_token of the data directory"
+             file /data/secrets/plant.influx_token"
         );
         let source = error.source().map(ToString::to_string);
         assert_eq!(
             source.as_deref(),
             Some(
                 "the store has no value: write it to the file \
-                 secrets/plant.influx_token of the data directory"
+                 /data/secrets/plant.influx_token"
             )
         );
         assert_eq!(read.expect("the store has the value"), b"t0");
