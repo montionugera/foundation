@@ -110,6 +110,7 @@ impl Status {
     pub(crate) fn new(counts: Vec<Name>) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
+            shown: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
         }))
@@ -138,6 +139,24 @@ impl Status {
             values: Rc::clone(&self.0),
             at,
         }
+    }
+
+    /// Shows `error` as the class `Retry` and its text, or clears both with `None`,
+    /// from the next write until the end of the run. The same value again stages
+    /// nothing.
+    pub(crate) fn show(&self, error: Option<&dyn fmt::Display>) {
+        let last = match error {
+            Some(error) => (Class::Retry, cut(&error.to_string())),
+            None => (Class::None, String::new()),
+        };
+        let mut shown = self.0.shown.borrow_mut();
+        if shown.last.as_ref() == Some(&last) {
+            return;
+        }
+        shown.last = Some(last);
+        shown.changed = true;
+        drop(shown);
+        self.0.stage();
     }
 }
 
@@ -208,9 +227,11 @@ impl Class {
     }
 }
 
-/// The last value of each count, and whether the status waits for a write.
+/// The last value of each count and the error that the run shows, and whether the
+/// status waits for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
+    shown: RefCell<Shown>,
     staged: Cell<bool>,
     /// The flush, while it waits for a staged count of an open session, so that a set
     /// after the close wakes nothing.
@@ -228,10 +249,21 @@ impl Values {
     }
 }
 
+/// The error that the running kind shows.
+#[derive(Debug, Default)]
+struct Shown {
+    /// The class and the text of the last error or clear of this run, `None` before
+    /// the first.
+    last: Option<(Class, String)>,
+    /// Set when `last` changed after the last write.
+    changed: bool,
+}
+
 impl fmt::Debug for Values {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Values")
             .field("counts", &self.counts)
+            .field("shown", &self.shown.borrow())
             .field("staged", &self.staged.get())
             .finish_non_exhaustive()
     }
@@ -338,12 +370,14 @@ impl Writer {
         true
     }
 
-    /// Writes `state` 3 with the class and the text of a run that ended with `end`. It
-    /// takes them at the call, so the caller can drop `end` before it awaits.
+    /// Writes `state` 3 with the class and the text of a run that ended with `end`,
+    /// in place of the error that the run showed. It takes them at the call, so the
+    /// caller can drop `end` before it awaits.
     pub(crate) fn end(
         &self,
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
+        self.values.shown.take();
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
@@ -517,6 +551,14 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
+        let mut shown = values.shown.borrow_mut();
+        if std::mem::take(&mut shown.changed)
+            && let Some((class, text)) = &shown.last
+        {
+            self.class = *class;
+            self.error.set(&mut self.series, text.clone());
+        }
+        drop(shown);
         if self.closed {
             self.unapplied = false;
             return;
@@ -892,8 +934,10 @@ mod tests {
     fn debugs_each_value_but_the_waker() {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
+        status.show(Some(&"busy"));
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], staged: true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], shown: Shown { last: \
+                    Some((Retry, \"busy\")), changed: true }, staged: true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 

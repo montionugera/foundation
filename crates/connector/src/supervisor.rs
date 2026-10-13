@@ -445,6 +445,11 @@ mod tests {
         Ended(hub::reader::Ended),
         /// Returns a failed write with `?`.
         Failed(hub::writer::Failure),
+        /// Shows the error `refused`, waits the span, shows it again, waits the span,
+        /// clears it twice, waits the span, then returns `Ok`.
+        Show(Span),
+        /// Shows the error `refused`, then returns a device error at once.
+        ShowEnd,
     }
 
     /// When each run started and ended.
@@ -526,6 +531,20 @@ mod tests {
                 }
                 Some(Step::Ended(ended)) => returned(ended),
                 Some(Step::Failed(failure)) => returned(failure),
+                Some(Step::Show(span)) => {
+                    ctx.error(Some(&"refused"));
+                    clock.sleep(span).await;
+                    ctx.error(Some(&"refused"));
+                    clock.sleep(span).await;
+                    ctx.error(None);
+                    ctx.error(None);
+                    clock.sleep(span).await;
+                    Ok(())
+                }
+                Some(Step::ShowEnd) => {
+                    ctx.error(Some(&"refused"));
+                    Err(Error::Device("no reply".into()))
+                }
                 None => {
                     ctx.cancel().wait().await;
                     Ok(())
@@ -846,6 +865,46 @@ mod tests {
             (Span::ZERO, ""),
         ];
         assert_eq!(errors(&out.statuses), want);
+    }
+
+    #[test]
+    fn writes_the_error_that_a_run_shows_and_its_clear() {
+        let steps = vec![Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((at, _, text), state)| (*at, state, text.as_str()))
+            .collect();
+        let want = [
+            (Span::ZERO, (0, 0, 0), ""),
+            (ms(1_000), (0, 3, 0), "refused"),
+            (ms(4_000), (0, 0, 0), ""),
+            (ms(6_000), (3, 0, 0), ""),
+            (Span::from_nanos(ms(6_000).nanos() + 1), (2, 0, 0), ""),
+        ];
+        assert_eq!(got, want);
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn writes_the_end_of_a_run_in_place_of_the_error_it_showed() {
+        let steps = vec![Step::ShowEnd];
+        let out = supervise("script", steps, config(), Cancel::After(ms(500)));
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["", "no reply", "no reply", "no reply"]);
+        let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
+        assert_eq!(classes, [0, 2, 2, 2]);
+    }
+
+    #[test]
+    fn writes_the_error_that_a_restart_shows_again() {
+        let steps = vec![Step::ShowEnd, Step::Show(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
+        let want = [
+            "", "no reply", "no reply", "no reply", "refused", "", "", "",
+        ];
+        assert_eq!(texts, want);
     }
 
     #[test]

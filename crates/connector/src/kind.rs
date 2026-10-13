@@ -251,6 +251,13 @@ impl<C> Context<C> {
         self.status.count(name)
     }
 
+    /// Shows `error` in the status of the running connector, as an attempt that
+    /// failed with the class `retry`, or clears the class and the text with `None`.
+    /// The status gives it within one second. The end of the run replaces both.
+    pub fn error(&self, error: Option<&dyn fmt::Display>) {
+        self.status.show(error);
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {
