@@ -263,18 +263,18 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// reviewers it requires, and the last round must end at `head`, or at a commit on its
 /// first-parent chain after which each merge is a clean merge of the base. Below round
 /// [`ROUNDS`], the last round must also find nothing, the range to `head` must change
-/// no code, and a commit that is not a merge after it needs a `Text fixes:` line.
-/// `place` gives where a commit (a SHA or its prefix) is from `head`
-/// (`History::place`). A later round may skip `breaker` when the range of the last
-/// round changes no code; an earlier round's skip is taken as written. `code_change`
-/// gives the first code change in a range, with a merge of the base read by its
-/// resolution, as a phrase, or `None` (`History::code_change`). A later round posted at
-/// or after `DECISION_CUTOFF` must name `architecture` when `decision_change` gives a
-/// phrase for its range (`History::decision_change`). For that rule, a round comment
-/// after the first is a later round, whatever its number, and so is a first round
-/// comment whose number is above 1. The last round, when posted at or after
-/// `LINK_CUTOFF`, must link the OK of each deferral of a PR that changes a risk crate,
-/// and an approval of its public surface ([`unlinked`]).
+/// no code, and a commit that is not a merge after it needs a `Text fixes:` line. A
+/// round comment after the first is a later round, whatever its number, and so is a
+/// first round comment whose number is above 1. `place` gives where a commit (a SHA or
+/// its prefix) is from `head` (`History::place`). A later round may skip `breaker` when
+/// the range of the last round changes no code; an earlier round's skip is taken as
+/// written. `code_change` gives the first code change in a range, with a merge of the
+/// base read by its resolution, as a phrase, or `None` (`History::code_change`). A
+/// later round posted at or after `DECISION_CUTOFF` must name `architecture` when
+/// `decision_change` gives a phrase for its range (`History::decision_change`). The
+/// last round, when posted at or after `LINK_CUTOFF`, must link the OK of each deferral
+/// of a PR that changes a risk crate, and an approval of its public surface
+/// ([`unlinked`]).
 fn problems(
     record: &Record,
     head: &str,
@@ -303,6 +303,7 @@ fn problems(
                 problems.extend(unnamed(
                     round,
                     &record.files,
+                    later,
                     last,
                     code_change,
                     (later && round.posted.as_str() >= DECISION_CUTOFF)
@@ -406,26 +407,27 @@ fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The problems with the reviewers that `round` names for a PR that changes `files`.
-/// A later round may skip `breaker` when its range changes no code, which only the
-/// `last` round checks with `code_change`: a rebase can drop the range of an earlier
-/// round from the clone, but the last round's end must be on the head's chain. A
-/// round with a `decision_change` requires `architecture` too when that gives a phrase
-/// for its range. When `required` does not already ask for `architecture`, its problem
-/// gives the remedy, then the phrase.
+/// The problems with the reviewers that `round`, a `later` round when true, names for a
+/// PR that changes `files`. A later round may skip `breaker` when its range changes no
+/// code, which only the `last` round checks with `code_change`: a rebase can drop the
+/// range of an earlier round from the clone, but the last round's end must be on the
+/// head's chain. A round with a `decision_change` requires `architecture` too when that
+/// gives a phrase for its range. When `required` does not already ask for
+/// `architecture`, its problem gives the remedy, then the phrase.
 fn unnamed(
     round: &Round,
     files: &[String],
+    later: bool,
     last: bool,
     code_change: Change<'_>,
     decision_change: Option<Change<'_>>,
 ) -> Result<Vec<String>, String> {
     let mut problems = Vec::new();
-    let mut missing: Vec<&str> = required(round, files)
+    let mut missing: Vec<&str> = required(round, files, later)
         .into_iter()
         .filter(|name| !round.reviewers.contains(*name))
         .collect();
-    if round.number > 1 && round.breakerless && missing.contains(&"breaker") {
+    if later && round.breakerless && missing.contains(&"breaker") {
         missing.retain(|name| *name != "breaker");
         if last && let Some(change) = code_change(&round.from, &round.end)? {
             problems.push(format!(
@@ -459,12 +461,12 @@ fn unnamed(
 
 /// The reviewers that `round` must name for a PR that changes `files`, by REVIEW
 /// TIERS in `docs/decisions/operations/review-tiers.md`: on round 1, `reviewer`, plus
-/// `architecture` and `breaker` for a code PR; on a later round, `reviewer`, plus
+/// `architecture` and `breaker` for a code PR; on a `later` round, `reviewer`, plus
 /// `breaker` for a code PR; and `performance` when the round names a hot path.
-fn required(round: &Round, files: &[String]) -> Vec<&'static str> {
+fn required(round: &Round, files: &[String], later: bool) -> Vec<&'static str> {
     let code = files.iter().any(|f| tiered(f));
     let mut required = vec!["reviewer"];
-    if code && round.number <= 1 {
+    if code && !later {
         required.push("architecture");
     }
     if code {

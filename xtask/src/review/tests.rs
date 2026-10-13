@@ -2932,7 +2932,7 @@ fn a_second_round_comment_numbered_1_of_a_code_pr_gets_one_problem() {
     ]);
     assert_eq!(
         check_at(&repo, &record),
-        vec!["review round 1 names no architecture, which this round requires."]
+        vec![DECISION.replace("round 2", "round 1")]
     );
     repo.remove();
 }
@@ -3712,4 +3712,28 @@ fn a_last_round_3_with_findings_needs_each_reviewer_that_it_requires() {
 /// `ROUND` as round 2, below the round cap, so that its findings and its end count.
 fn second() -> String {
     ROUND.replace("## Review round 3", "## Review round 2")
+}
+
+/// A second round 1 comment, as for a late report or a merge, with the range `from`
+/// to `HEAD`.
+fn repeated(from: &str) -> Comment {
+    bot(&ROUND
+        .replace("## Review round 3", "## Review round 1")
+        .replace("38cba24f..c77c67d7", &format!("{from}..{HEAD}")))
+}
+
+#[test]
+fn a_second_round_1_comment_is_a_later_round() {
+    assert_eq!(
+        check(&record(vec![first(END), repeated(HEAD)])),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_second_round_1_comment_that_skips_breaker_on_code_fails() {
+    assert_eq!(
+        check(&record(vec![first(END), repeated(CODE)])),
+        vec!["review round 1 skips `breaker`, but its range changes code at `a.rs:2`."]
+    );
 }
