@@ -1130,6 +1130,22 @@ mod tests {
         supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
     }
 
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 1 \
+                               follows entry 2: entries must increase")]
+    fn panics_when_a_kind_returns_series_out_of_order() {
+        let error = frame::Error::Unordered { entry: 1, last: 2 };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 2 is \
+                               present but its index, entry 0, is absent")]
+    fn panics_when_a_kind_returns_a_series_with_no_index() {
+        let error = frame::Error::IndexAbsent { entry: 2, index: 0 };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
     /// No draft gives an end of another node.
     #[test]
     #[should_panic(expected = "invariant: a draft gives no end of another node: the \
