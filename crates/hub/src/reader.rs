@@ -612,14 +612,15 @@ pub(crate) enum Home {
 }
 
 /// What the selector that `select` gives matches once the home of its index is known,
-/// with an item that `item` makes for each channel, and that home. It calls `select`
-/// before and after each wait for the home, and keeps no selector or item across a
-/// wait.
+/// with an item that `item` makes for each channel, and that home. It first applies
+/// the spec in use. It calls `select` before and after each wait for the home, and
+/// keeps no selector or item across a wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
     mut item: impl FnMut(&Name, &Channel) -> T,
 ) -> Result<(Matched<T>, Home), Error> {
+    state.borrow_mut().catch_up();
     loop {
         let index = defined(&state.borrow(), select().borrow())?[0].1.index();
         let away = match crate::homes(state, &[index]).await {
@@ -627,7 +628,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             Err(Away::Remote(home)) => Some(home),
             Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
         };
-        // A call of `set_definitions` while the open waits can change a channel.
+        // A change of the definitions while the open waits can change a channel.
         let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
         if keys[found.index] != index {
             continue;
