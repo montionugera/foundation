@@ -3759,3 +3759,144 @@ fn a_last_round_gives_the_problem_of_each_end_line_after_its_other_problems() {
     expected.extend(no_link());
     assert_eq!(risk(vec![round]), expected);
 }
+
+/// `ROUND`, rated, with the `Public surface:` value `surface`, posted at the cutoff of
+/// the kept items.
+fn kept_at(surface: &str) -> Comment {
+    let end = format!("Deferred: none\nLater steps: none\nPublic surface: {surface}");
+    ended_at(&end, KEPT_CUTOFF)
+}
+
+/// An approval for the end of a `Public surface:` value.
+const APPROVED: &str =
+    ", approved in https://github.com/synnaxlabs/foundation/pull/1#issuecomment-1";
+
+/// What the check gives for a round with the `Public surface:` value `before`, then a
+/// round with `after`, each with an approval.
+fn kept_check(before: &str, after: &str) -> Vec<String> {
+    let before = kept_at(&format!("{before}{APPROVED}"));
+    let after = numbered(kept_at(&format!("{after}{APPROVED}")), 4);
+    check(&record(vec![before, after]))
+}
+
+/// `comment`, a round 3 comment, as round `number`.
+fn numbered(comment: Comment, number: u32) -> Comment {
+    let heading = format!("## Review round {number}");
+    Comment {
+        body: comment.body.replace("## Review round 3", &heading),
+        ..comment
+    }
+}
+
+fn dropped_path(path: &str) -> Vec<String> {
+    vec![format!(
+        "review round 4 drops `{path}` from its `Public surface:` line, which round 3 \
+         names. Keep each item of the round before. For an item that the PR renamed \
+         or removed, keep its old name, then what it became, as in \
+         \"`node::Serve::serve`, now `node::Serve::run` (private)\"."
+    )]
+}
+
+#[test]
+fn a_round_from_the_cutoff_of_the_kept_items_keeps_each_path_of_the_round_before() {
+    let before = "the docs of `Client::connect` and `Client::close`";
+    assert_eq!(
+        kept_check(before, "the docs of `Client::close`"),
+        dropped_path("Client::connect")
+    );
+    assert_eq!(kept_check(before, before), Vec::<String>::new());
+    assert_eq!(
+        kept_check(before, "`Client::close`, and `Client::connect` (gone)"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_path_is_kept_by_an_end_of_it_or_by_a_longer_path_at_a_boundary() {
+    let long = "`connector::reader::Settings::hold`";
+    assert_eq!(kept_check(long, "`Settings::hold`"), Vec::<String>::new());
+    assert_eq!(kept_check("`Settings::hold`", long), Vec::<String>::new());
+    assert_eq!(
+        kept_check(long, "`hold`"),
+        dropped_path("connector::reader::Settings::hold")
+    );
+    assert_eq!(
+        kept_check("`a::Key`", "`a::KeyMap`"),
+        dropped_path("a::Key")
+    );
+    assert_eq!(
+        kept_check("`a::KeyMap`", "`a::Key`"),
+        dropped_path("a::KeyMap")
+    );
+    assert_eq!(kept_check("`a::Key`", "`ba::Key`"), dropped_path("a::Key"));
+}
+
+#[test]
+fn a_renamed_path_is_kept_by_its_old_name() {
+    assert_eq!(
+        kept_check(
+            "`node::Serve::serve`",
+            "`node::Serve::serve`, now `node::Serve::run` (private)"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        kept_check("`node::Serve::serve`", "`node::Serve::run` (private)"),
+        dropped_path("node::Serve::serve")
+    );
+}
+
+#[test]
+fn only_a_path_is_checked() {
+    // A SHA, a line range, a file, a word, and a link change with no problem.
+    let before = "`crates/node/src/lib.rs:10-20` at `7bd494a90`, `home`, and \
+                  `docs/decisions/node/start.md`";
+    let after = "`crates/node/src/lib.rs:12-22` at `a9486b9df`";
+    assert_eq!(kept_check(before, after), Vec::<String>::new());
+    assert_eq!(kept_check("none", "none"), Vec::<String>::new());
+}
+
+#[test]
+fn a_path_is_read_from_the_text_that_github_shows() {
+    // GitHub shows a code span with no backticks, so a path with none counts too, and
+    // a path ends at each character that is no letter, digit, `_`, or `:`.
+    assert_eq!(
+        kept_check("`Client::connect(addr: &str)`", "Client::connect"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        kept_check("Client::connect", "none"),
+        dropped_path("Client::connect")
+    );
+    assert_eq!(kept_check("`::a::b::`", "`a::b`"), Vec::<String>::new());
+    assert_eq!(kept_check("`::a::`", "none"), Vec::<String>::new());
+}
+
+#[test]
+fn a_round_before_the_cutoff_of_the_kept_items_drops_paths() {
+    let before = kept_at(&format!("`a::B`{APPROVED}"));
+    let after = Comment {
+        created: "2026-10-14T11:59:59Z".to_string(),
+        ..numbered(kept_at("none"), 4)
+    };
+    assert_eq!(check(&record(vec![before, after])), Vec::<String>::new());
+    let earlier = Comment {
+        created: "2026-10-14T11:59:59Z".to_string(),
+        ..kept_at(&format!("`a::B`{APPROVED}"))
+    };
+    assert_eq!(
+        check(&record(vec![earlier, numbered(kept_at("none"), 4)])),
+        dropped_path("a::B")
+    );
+}
+
+#[test]
+fn each_round_keeps_the_paths_of_the_round_before_it_not_only_the_last() {
+    let first = kept_at(&format!("`a::B`{APPROVED}"));
+    let second = numbered(kept_at("none"), 4);
+    let third = numbered(kept_at("none"), 5);
+    assert_eq!(
+        check(&record(vec![first, second, third])),
+        dropped_path("a::B")
+    );
+}

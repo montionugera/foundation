@@ -105,6 +105,11 @@ const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 /// came before it.
 const LATER_CUTOFF: &str = "2026-10-14T00:00:00Z";
 
+/// A round posted before this UTC time need not keep the Rust paths of the
+/// `Public surface:` line of the round before it ([`dropped`]), so that the rule does
+/// not fail the rounds that came before it.
+const KEPT_CUTOFF: &str = "2026-10-14T12:00:00Z";
+
 /// The text that names the decisions entry that holds the trigger of a later step.
 const DECISIONS: &str = "docs/decisions/";
 
@@ -319,6 +324,7 @@ fn problems(
         }
         problems.extend(parsed.performance.clone());
     }
+    problems.extend(dropped(&rounds));
     if let Some(Parsed {
         round: Ok(round), ..
     }) = rounds.last()
@@ -860,6 +866,57 @@ fn issue(value: &str, breaks: &[usize], at: usize) -> Option<usize> {
 fn undigited(text: &str) -> Option<&str> {
     let rest = text.trim_start_matches(|c: char| c.is_ascii_digit());
     (rest.len() < text.len()).then_some(rest)
+}
+
+/// The problem for each round in `rounds` posted at or after [`KEPT_CUTOFF`] whose
+/// `Public surface:` line does not keep ([`kept`]) a Rust path ([`rust_paths`]) of
+/// that line of the round before it: the first such path.
+fn dropped(rounds: &[Parsed]) -> Vec<String> {
+    fn surface(round: &Round) -> Option<Vec<&str>> {
+        round.ends.as_ref().map(|ends| rust_paths(&ends.surface))
+    }
+    let ended = rounds
+        .iter()
+        .filter_map(|parsed| parsed.round.as_ref().ok());
+    ended
+        .clone()
+        .zip(ended.skip(1))
+        .filter(|(_, later)| later.posted.as_str() >= KEPT_CUTOFF)
+        .filter_map(|(earlier, later)| {
+            let (before, after) = (surface(earlier)?, surface(later)?);
+            let path = before
+                .into_iter()
+                .find(|path| !after.iter().any(|other| kept(path, other)))?;
+            Some(format!(
+                "review round {} drops `{path}` from its `Public surface:` line, which \
+                 round {} names. Keep each item of the round before. For an item that \
+                 the PR renamed or removed, keep its old name, then what it became, as \
+                 in \"`node::Serve::serve`, now `node::Serve::run` (private)\".",
+                later.number, earlier.number
+            ))
+        })
+        .collect()
+}
+
+/// Each Rust path in `text`: a run of letters, digits, `_`, and `:`, with each `:` at
+/// its ends removed, that holds `::`.
+fn rust_paths(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+        .map(|run| run.trim_matches(':'))
+        .filter(|run| run.contains("::"))
+        .collect()
+}
+
+/// Whether the path `other` keeps the path `path`: one of the two ends the other at a
+/// `::`, or they are the same.
+fn kept(path: &str, other: &str) -> bool {
+    let (short, long) = if path.len() <= other.len() {
+        (path, other)
+    } else {
+        (other, path)
+    };
+    long.strip_suffix(short)
+        .is_some_and(|rest| rest.is_empty() || rest.ends_with("::"))
 }
 
 /// The problem when `surface`, the value of the `Public surface:` line of round

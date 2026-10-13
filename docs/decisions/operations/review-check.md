@@ -346,6 +346,26 @@
   director as goal 6 of https://github.com/synnaxlabs/foundation/issues/1211
   (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6068406481), with
   the plan https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6134166601.
+  From the cutoff `KEPT_CUTOFF` in `xtask/src/review.rs` (2026-10-14T12:00:00Z), a
+  round fails when its `Public surface:` line drops a Rust path of the line of the round
+  before it: "review round 4 drops `node::Serve::serve` from its `Public surface:` line,
+  which round 3 names. Keep each item of the round before. For an item that the PR
+  renamed or removed, keep its old name, then what it became, as in
+  "`node::Serve::serve`, now `node::Serve::run` (private)"." A Rust path is a run of
+  letters, digits, `_`, and `:` in the text that GitHub shows, with each `:` at its ends
+  removed, that holds `::`. So `Client::connect(addr: &str)` gives `Client::connect`,
+  and a path with no backticks counts too. A time and a URL hold no `::` and give no
+  path. A path is kept when the later line has the same path, or when one of the two
+  ends the other at a `::`: `Settings::hold` keeps `connector::reader::Settings::hold`,
+  and the reverse is also true, but `a::Key` does not keep `a::KeyMap`. The limit: an
+  item with no `::`, such as a decision or doc file, a crate dependency, or a rule
+  change, is not checked. The `reviewer` and the audit read those. A round posted before
+  the cutoff is not checked, so that the rule does not fail the rounds that came before
+  it. Ruled by the director as B for goal 5 of
+  https://github.com/synnaxlabs/foundation/issues/1211 at 2026-10-12T22:49:41Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6134119167), and
+  ruled for a path with no backticks at 2026-10-12T23:47:43Z
+  (https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6134802156).
   The director approves the text of this record. A PR that changes it, and no public
   item of a crate and no dependency, needs no approval of an architect: `xtask` is on no
   architect's list, and the review rule is the director's.
