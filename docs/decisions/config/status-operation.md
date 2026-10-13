@@ -50,7 +50,7 @@
   names the connector and gives the text of the hub. `status` needs `read` on each
   status channel of a connector through the `Check` of `plan` and `apply`, and leaves
   out each connector without it. When the subject reads no connector of the node, also
-  when the node places none or uses no spec, `status` needs `read` on the tree key of
+  when the node places none or uses no spec, `status` needs `read` on the name of
   the node. With it, the reply is the output with no connector, and with no grant, it
   is `ops.denied` with `On::Nothing`, so the reply does not tell whether the node places
   a connector that the subject does not read (`laptop.architect`, 2026-10-13T02:42:31Z,
@@ -61,7 +61,7 @@
   https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156024198, which
   supersedes the refusal of a node that places no connector of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724). The
-  tree key of a node is its name. The text of the output with no connector is the line
+  name of the node is a name of the check (SERVE ACCESS). The text of the output with no connector is the line
   `You can read no connector on this node.`, which is true in each of these
   cases (`laptop.architect-2`, 2026-10-13T22:11:03Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When
