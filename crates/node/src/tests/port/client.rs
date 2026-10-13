@@ -112,16 +112,51 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
 fn reach_whose_read_of_address_fails_gives_the_file_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
-    let read = env::files::Operation::ReadAt;
-    host.fail_file(Path::new(crate::address::FILE), read);
-    let reached = reached(&mut sim, &host, 1 << 20);
-    let Err(client::Error::Files(env::files::Error::Io {
-        path, operation, ..
-    })) = reached
-    else {
-        panic!("a failed read gives Files: {reached:?}");
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(crate::address::FILE), operation);
+    let error = env::files::Error::Io {
+        path: PathBuf::from("address"),
+        operation,
+        code: 5,
     };
-    assert_eq!((path, operation), (PathBuf::from("address"), read));
+    assert_eq!(
+        reached(&mut sim, &host, 1 << 20),
+        Err(client::Error::Files(error))
+    );
+}
+
+#[test]
+fn reach_whose_read_of_the_admin_key_fails_gives_the_file_error() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = crashed(&mut sim);
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(crate::admin::FILE), operation);
+    let error = env::files::Error::Io {
+        path: PathBuf::from("admin.key"),
+        operation,
+        code: 5,
+    };
+    assert_eq!(
+        reached(&mut sim, &host, 1 << 20),
+        Err(client::Error::Files(error))
+    );
+}
+
+#[test]
+fn reach_makes_no_file() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let list = |sim: &mut sim::Sim| {
+        sim.run_on(&host, |host, _| async move {
+            host.files().list(Path::new("")).await
+        })
+    };
+    let before = list(&mut sim);
+    assert_eq!(
+        reached(&mut sim, &host, 1 << 20),
+        Err(client::Error::NotRunning)
+    );
+    assert_eq!(list(&mut sim), before);
 }
 
 #[test]
@@ -172,6 +207,8 @@ fn reach_on_a_running_node_dials_its_bound_address() {
     assert_eq!(sim.run(), Ok(()));
 }
 
+/// `sim` has no loopback, so the dial times out where an OS gives the reply of the
+/// node (#2521).
 #[test]
 fn reach_dials_the_loopback_ip_of_the_family_for_an_unspecified_ip() {
     let families = [
