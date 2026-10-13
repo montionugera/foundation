@@ -266,12 +266,12 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// The problems with the review in `record` at `head`. Each round comment must have a
 /// number that [`misnumbered`] allows and name the reviewers that [`unnamed`] requires.
 /// The last round is each round comment with the number of the last one. Below
-/// [`ROUNDS`], it may have no findings. Its last comment must end as [`unended`] says,
-/// and its links are read by [`unlinked`]. A red-team PR labeled `oracle` needs the
-/// director's approval at `head`. `place` gives where a commit (a SHA or its prefix) is
-/// from `head` (`History::place`). `code_change` and `decision_change` give the first
-/// change to code or to a decision in a range, as a phrase, or `None`
-/// (`History::code_change`, `History::decision_change`).
+/// [`ROUNDS`], it may have no findings ([`unfixed`]). Its last comment must end as
+/// [`unended`] says, and its links are read by [`unlinked`]. A red-team PR labeled
+/// `oracle` needs the director's approval at `head`. `place` gives where a commit (a
+/// SHA or its prefix) is from `head` (`History::place`). `code_change` and
+/// `decision_change` give the first change to code or to a decision in a range, as a
+/// phrase, or `None` (`History::code_change`, `History::decision_change`).
 fn problems(
     record: &Record,
     head: &str,
@@ -327,16 +327,7 @@ fn problems(
             .filter_map(|p| p.round.as_ref().ok())
             .filter(|r| r.number == round.number)
             .collect();
-        let findings = comments
-            .iter()
-            .fold(0u32, |sum, r| sum.saturating_add(r.findings));
-        if findings > 0 && round.number < ROUNDS {
-            problems.push(format!(
-                "review round {} has findings ({findings}). Fix or answer them, then \
-                 run another round.",
-                round.number
-            ));
-        }
+        problems.extend(unfixed(&comments));
         problems.extend(unended(
             round,
             &comments[0].end,
@@ -353,6 +344,21 @@ fn problems(
         problems.extend(approval(record, head));
     }
     Ok(problems)
+}
+
+/// The problem when `comments`, the round comments of the last round, have findings
+/// below round [`ROUNDS`], or `None`.
+fn unfixed(comments: &[&Round]) -> Option<String> {
+    let number = comments.first()?.number;
+    let findings = comments
+        .iter()
+        .fold(0u32, |sum, r| sum.saturating_add(r.findings));
+    (findings > 0 && number < ROUNDS).then(|| {
+        format!(
+            "review round {number} has findings ({findings}). Fix or answer them, then \
+             run another round."
+        )
+    })
 }
 
 /// The problems with the number of `round`, after a round comment numbered `before`,
@@ -467,16 +473,20 @@ fn unended(
 /// `Public surface:` line of the last comment lacks ([`unapproved`]). None for a
 /// comment posted before [`LINK_CUTOFF`].
 fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
-    fn ends<'a>(round: &&'a Round) -> Option<(u32, &'a Ends)> {
+    fn ends(round: &Round) -> Option<(u32, &Ends)> {
         let bound = round.posted.as_str() >= LINK_CUTOFF;
-        round.ends.as_ref().filter(|_| bound).map(|ends| (round.number, ends))
+        round
+            .ends
+            .as_ref()
+            .filter(|_| bound)
+            .map(|ends| (round.number, ends))
     }
     let risky = files.iter().any(|file| {
         let file = file.to_ascii_lowercase();
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let deferrals = comments.iter().filter_map(ends).filter(|_| risky);
+    let deferrals = comments.iter().copied().filter_map(ends).filter(|_| risky);
     let unokayed = deferrals.filter_map(|(number, ends)| {
         unokayed(&ends.deferred, &ends.breaks).map(|issue| {
             format!(
@@ -487,7 +497,7 @@ fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
             )
         })
     });
-    let last = comments.last().and_then(ends);
+    let last = comments.last().copied().and_then(ends);
     let unapproved = last.and_then(|(number, ends)| unapproved(number, &ends.surface));
     unokayed.chain(unapproved).collect()
 }

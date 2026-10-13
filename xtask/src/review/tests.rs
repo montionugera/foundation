@@ -3543,7 +3543,9 @@ fn only_the_last_round_posted_at_the_link_cutoff_needs_its_links() {
         assert_eq!(risk(vec![ended_at(end, after)]), problems, "{end}");
         let earlier = ended_at(end, LINK_CUTOFF);
         let earlier = Comment {
-            body: earlier.body.replace("## Review round 3", "## Review round 2"),
+            body: earlier
+                .body
+                .replace("## Review round 3", "## Review round 2"),
             ..earlier
         };
         let last = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
