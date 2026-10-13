@@ -446,8 +446,8 @@
   2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
   1 of #1737 passes"
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
-  2026-10-13 07:03 UTC), and the person added this part to ONE NODE, relayed by
-  `laptop.monitor`
+  2026-10-13 07:03 UTC), and the person added this part to ONE NODE ("Yes thats
+  fine"), relayed by `laptop.monitor`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
   2026-10-13 13:40 UTC). The certificate part of #1992 keeps its trigger: the PR of
   the first connection with a security policy other than `None`.
