@@ -152,6 +152,58 @@ fn a_git_before_the_path_format_gives_the_commit() {
     assert_eq!(built_with(&root, &[("PATH", &path)]), head);
 }
 
+/// Commits the probe at `root`, and adds a worktree of it on a new branch `other`.
+fn create_worktree(root: &Path) -> PathBuf {
+    git(root, &["add", "-A"]);
+    commit(root);
+    let path = root.with_extension("worktree");
+    match std::fs::remove_dir_all(&path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            panic!("remove {}: {error}", path.display())
+        }
+        _ => {}
+    }
+    let worktree = path.to_str().expect("utf8");
+    git(root, &["worktree", "add", "-q", "-b", "other", worktree]);
+    path
+}
+
+#[test]
+fn a_commit_and_a_switch_in_a_worktree_rebuild() {
+    for (name, init) in [
+        ("worktree", &[][..]),
+        ("reftable-worktree", &["--ref-format=reftable"]),
+    ] {
+        let worktree = create_worktree(&create_probe(name, init));
+        let first = git(&worktree, &["rev-parse", "HEAD"]);
+        assert_eq!(built(&worktree), first, "{name}");
+        let second = commit(&worktree);
+        assert_eq!(built(&worktree), second, "{name}");
+        git(&worktree, &["switch", "-q", "-c", "next", &first]);
+        assert_eq!(built(&worktree), first, "{name}");
+    }
+}
+
+#[test]
+fn a_broken_ref_stops_the_build() {
+    let root = create_probe("broken", &[]);
+    commit(&root);
+    std::fs::write(root.join(".git/refs/heads/main"), "broken\n").expect("write");
+    let output = Command::new(env!("CARGO"))
+        .args(["build", "--offline", "--target-dir"])
+        .arg(root.join("target"))
+        .current_dir(&root)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("spawn");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("`git rev-parse HEAD` fails on a branch that has a commit"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn a_commit_on_an_orphan_branch_rebuilds() {
     let root = create_probe("orphan", &[]);

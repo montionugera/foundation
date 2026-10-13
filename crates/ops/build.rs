@@ -13,6 +13,10 @@ fn main() {
     // Also on a branch with no commit, whose first commit must rebuild `ops`.
     watch_refs();
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+    assert!(
+        !commit.is_empty() || unborn(),
+        "`git rev-parse HEAD` fails on a branch that has a commit"
+    );
     let hex = commit.len() == 40
         && commit
             .bytes()
@@ -48,6 +52,18 @@ fn watch_refs() {
         watch(&packed);
     }
     watch_above(&path);
+}
+
+/// Whether `HEAD` names a branch with no commit.
+fn unborn() -> bool {
+    let Some(name) = git(&["symbolic-ref", "-q", "HEAD"]) else {
+        return false;
+    };
+    // `show-ref` exits with 1 for a missing ref, and with 128 for a broken one.
+    let status = Command::new("git")
+        .args(["show-ref", "--verify", "-q", &name])
+        .status();
+    status.is_ok_and(|status| status.code() == Some(1))
 }
 
 /// The trimmed output of `git` with `args`, or `None` when it fails.
