@@ -252,6 +252,10 @@ impl Files {
     /// The path that a person sees for `path`, for a text that tells a person where a
     /// file is. On `os`, the absolute path under the data directory.
     ///
+    /// # Panics
+    ///
+    /// When `path` is absolute or has a `..` segment.
+    ///
     /// ```
     /// fn tell(files: &env::files::Files) -> String {
     ///     format!("write it to {}", files.shown("key".as_ref()).display())
@@ -259,6 +263,7 @@ impl Files {
     /// ```
     #[must_use]
     pub fn shown(&self, path: &Path) -> PathBuf {
+        check(path);
         self.0.shown(path)
     }
 }
@@ -1197,6 +1202,13 @@ mod tests {
         fn create_dir_panics_on_a_parent_segment() {
             let (files, _) = Fixed::files(0);
             drop(ready(files.create_dir(Path::new("segments/.."))));
+        }
+
+        #[test]
+        #[should_panic(expected = "path /etc/key is absolute")]
+        fn shown_panics_on_an_absolute_path() {
+            let (files, _) = Fixed::files(0);
+            drop(files.shown(Path::new("/etc/key")));
         }
 
         #[test]
