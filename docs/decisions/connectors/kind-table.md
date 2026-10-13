@@ -49,11 +49,14 @@
   the class, each in one match with no `_` arm. `Retry`: reader `Behind`, `Removed`,
   `Replaced`, and `Buffer`, and writer `Removed` and `Home` `Full` and `Disk`.
   `Config`: writer `Home` `Large` (`connector.large-frame`, with the fix "Give the
-  connector fewer channels"), since only a spec change or a kind that splits its frames
-  fixes it. A panic with `invariant:`: reader `Stream`, `Refused`, `Message`, `Frame`,
-  `Pool`, and `Credit`, because a named reader opens only at its home, and writer
-  `Home` `Resend`, because a kind labels no frame resend. A kind that wants another
-  class matches the end before `?` (`laptop.architect-2`, 2026-10-13T00:57:58Z:
+  connector fewer channels"), because only a spec change or a kind that splits its
+  frames fixes it. A panic with `invariant:`: reader `Stream`, `Refused`, `Message`,
+  `Frame`, `Pool`, and `Credit`, because a named reader opens only at its home, and
+  writer `Home` `Resend`, because a kind labels no frame resend. A kind that wants
+  another class matches the end before `?` (the `?`, the two `From` impls, and the
+  match with no `_` arm: `laptop.architect-2`, 2026-10-12T20:24:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2489#issuecomment-6132012409, items
+  1 and 2; the classes: `laptop.architect-2`, 2026-10-13T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/2489#issuecomment-6135722511).
   `Table::check` takes where the file names the kind and puts `connector.unknown-kind`
   there; `discover` and `run` take their kind from the spec, which has no spans

@@ -425,7 +425,8 @@ fn writer_error(error: hub::writer::Error) -> Error {
     config_error(code, &error, fix)
 }
 
-/// The class of the end of the reader of a run, for a kind that returns it with `?`.
+/// The class of the end of the reader of a run, for a kind that returns it with `?`:
+/// `Retry` for `Behind`, `Removed`, `Replaced`, and `Buffer`.
 ///
 /// # Panics
 ///
@@ -454,7 +455,8 @@ impl From<hub::reader::Ended> for Error {
     }
 }
 
-/// The class of a failed write of a run, for a kind that returns it with `?`.
+/// The class of a failed write of a run, for a kind that returns it with `?`:
+/// `Config` (`connector.large-frame`) for `Home(Large)`, else `Retry`.
 ///
 /// # Panics
 ///
