@@ -435,9 +435,10 @@
   2026-10-13 14:28 UTC). The kind gives the wall time of the node through
   `hub::writer::Writer::time`, the midpoint of mesh time. Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
-  2026-10-13 13:56 UTC). Supersedes condition 3 of
-  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211, the
-  monotonic time from the Unix epoch.
+  2026-10-13 13:56 UTC). This meets condition 3 of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211 for the
+  loop of the kind. No connection that checks a certificate runs on
+  `event::Time::monotonic`.
   `sim::serve` gives the wall time that its caller gives; the benches and the unit
   tests give the monotonic time from the Unix epoch (`event::Time::monotonic`).
   Approved by `laptop.architect-2`
