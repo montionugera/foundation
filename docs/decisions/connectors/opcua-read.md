@@ -32,4 +32,6 @@
   token size at 2026-10-13T03:52:06Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137834758, and the
   trust of the answer in `SPLIT` at 2026-10-13T05:07:37Z:
-  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801).
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801). The
+  `SPLIT` of a GUID key: `laptop.architect-2` at 2026-10-13T05:31:13Z,
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138961019.
