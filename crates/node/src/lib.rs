@@ -1132,7 +1132,6 @@ impl Serve {
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(
                     transport,
-                    mesh,
                     handles.clone(),
                     clock,
                     tasks.clone(),
@@ -1221,7 +1220,8 @@ fn runs(
 }
 
 /// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match
-/// that spec ([`connectors::Runs::apply`]). Then gives the future that does the same
+/// that spec ([`connectors::Runs::apply`]), with no wait: the watch gives the spec in
+/// use at once ([`mesh::used::Watch::next`]). Then gives the future that does the same
 /// for each later spec, and that ends with the stop of the group.
 async fn follow(
     mesh: &mesh::Mesh,
