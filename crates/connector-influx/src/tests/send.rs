@@ -714,3 +714,60 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
     let full = "InfluxDB answered 500 Internal Server Error: the disk is full";
     assert_eq!(errors, ["", refused, full, ""]);
 }
+
+#[test]
+fn adds_a_field_before_the_fields_of_the_layout() {
+    let (got, first) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write_columns(&mut writer, first, &[(3, &[3.0])]);
+        write(&mut writer, first + 1, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::SECOND).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        (plant.got(), first)
+    });
+    let body = [
+        format!("telemetry edge.b=3e0 {first}\n"),
+        line("1e0", "2e0", first + 1),
+    ];
+    let got: Vec<_> = got.into_iter().map(|(_, body)| body).collect();
+    assert_eq!(got.concat(), body.concat());
+}
+
+/// With no `hold`, a restart loses the batch in flight, as INFLUX KIND states until
+/// #274.
+#[test]
+fn loses_the_batch_in_flight_at_a_restart_with_no_hold() {
+    let (first, second) = run(move |node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+        plant.answers.borrow_mut().extend([failed; 100]);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        let mut bodies = Vec::new();
+        for value in [1.0, 2.0] {
+            let mut config = plant.config();
+            config.blocks.clear();
+            let run = plant.start(config);
+            plant.clock.sleep(Span::SECOND).await;
+            let first = writer.now().nanos();
+            write(&mut writer, first, &[(value, value)]);
+            plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
+            plant.stop(run).await.expect("ok after a cancel");
+            plant.answers.borrow_mut().clear();
+            let got = std::mem::take(&mut *plant.got.borrow_mut());
+            bodies.push(got.into_iter().map(|(_, body)| body).collect::<Vec<_>>());
+        }
+        let second = bodies.pop().expect("two runs");
+        (bodies.pop().expect("two runs"), second)
+    });
+    assert!(first.len() > 1, "{first:?}");
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(
+        second[0].starts_with("telemetry edge.a=2e0,edge.b=2e0 "),
+        "{second:?}"
+    );
+    assert_eq!(second[0].lines().count(), 1, "{second:?}");
+}
