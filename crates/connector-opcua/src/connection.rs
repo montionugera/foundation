@@ -989,7 +989,8 @@ unsafe extern "C" fn open(
 /// # Panics
 ///
 /// When the manager has no listener or gave it to an earlier listen open, or when the
-/// listener is not on `port`. A panic in a hook aborts.
+/// listener is not on `port`. A panic in a hook ends the process: on Linux it aborts,
+/// and on Windows a panic here ends with an exception that nothing handles (#2579).
 ///
 /// # Safety
 ///
