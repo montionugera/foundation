@@ -1106,17 +1106,14 @@ fn a_limit_of_0_from_a_server_is_no_limit() {
 /// whole, and that part does not build past `SPLIT + 1`.
 #[test]
 fn no_form_of_a_key_leaves_more_than_split() {
-    // Each `const` runs when the test builds, also with no key of its form.
-    let check = |key: &Key| match key {
+    // The match and its `const` blocks are the test: each runs when the test builds,
+    // with no call.
+    let _ = |key: &Key| match key {
         // The mask, the namespace, and the number of a NodeId by number.
         Key::Number(_) => const { assert!(7 - 1 <= SPLIT) },
         // The length of the string of a NodeId by name: its bytes split.
         Key::Name(_) => const { assert!(4 - 1 <= SPLIT) },
     };
-    let name = Name::new("a").expect("a name of 1 byte");
-    for key in [Key::Number(u32::MAX), Key::Name(name)] {
-        check(&key);
-    }
 }
 
 /// The most nodes that one request takes are read, also when open62541 leaves the end
