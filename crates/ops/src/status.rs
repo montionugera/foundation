@@ -98,7 +98,8 @@ impl Placed<'_> {
 
     /// Whether the channels of `received` are the status channels of the spec, each
     /// with the key and the sample type that the spec gives its name. The frame holds
-    /// its index, so this checks the index too.
+    /// its index, so this checks the index too. Each write of the supervisor holds
+    /// every status channel, so a frame with fewer is of a hub that lacks one.
     fn defines(&self, received: &Received<'_>) -> bool {
         let (set, view) = (received.set(), received.view());
         view.iter().count() == self.channels.len()
