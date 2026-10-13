@@ -16,7 +16,7 @@ use super::{Client, Reads, answer};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
-use crate::node::{Key, Node};
+use crate::node::{Key, Name, Node};
 use crate::server::Server;
 
 /// The port of the test server.
@@ -176,29 +176,41 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
-/// past ASCII, and a node whose name is its prefix holds another value.
+/// past ASCII, and a node whose name is its prefix holds another value. The name in
+/// namespace 0 holds no value.
 #[test]
 fn a_read_of_a_name_node_gives_its_value() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let named = |name: &str| Node {
                 namespace: 1,
-                key: Key::Name(name.to_owned()),
+                key: Key::Name(Name::new(name).expect("a name of 1 to 4096 bytes")),
             };
             peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
             peer.server.add_double(&named("plant.spike"), 3.5);
+            let longest = named(&"x".repeat(Name::BYTES));
+            peer.server.add_double(&longest, 4.5);
             let mut client = peer.connected().await;
             let reads = (
                 client.read(&named("plant.spike;x=ü")).await,
                 client.read(&named("plant.spike")).await,
                 client.read(&named("plant.dip")).await,
+                client.read(&longest).await,
+                client
+                    .read(&Node {
+                        namespace: 0,
+                        ..named("plant.spike")
+                    })
+                    .await,
             );
             client.close().await;
             reads
         })
         .await
     });
-    assert_eq!(reads, (Ok(2.5), Ok(3.5), Err(Status::BAD_NODE_ID_UNKNOWN)));
+    let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
+    let expected = (Ok(2.5), Ok(3.5), unknown, Ok(4.5), unknown);
+    assert_eq!(reads, expected);
 }
 
 #[test]
@@ -500,15 +512,11 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             let client = peer.connected().await;
             let outside = Reads::default();
             let mut request = 0;
-            let (namespace, number, name, length) = ffi::node(&VALUE);
             // SAFETY: the client lives, and `outside` outlives it.
             let status = Status(unsafe {
                 ffi::shim_client_read(
                     client.raw.as_ptr(),
-                    namespace,
-                    number,
-                    name,
-                    length,
+                    (&VALUE).into(),
                     answer,
                     std::ptr::from_ref(&outside).cast_mut().cast(),
                     &raw mut request,

@@ -151,16 +151,12 @@ impl Client {
                 .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
         }
         let mut request = 0;
-        let (namespace, number, name, length) = ffi::node(node);
         // SAFETY: the client lives, `reads` outlives it, and open62541 encodes the
         // request before it returns, so it keeps no pointer to the name of `node`.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
-                namespace,
-                number,
-                name,
-                length,
+                node.into(),
                 answer,
                 ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                 &raw mut request,

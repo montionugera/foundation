@@ -5,14 +5,36 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::ptr;
 
-/// Gives the arguments of `shim_node` for `node`, whose name they borrow.
-pub(crate) fn node(node: &crate::node::Node) -> (u16, u32, *const u8, usize) {
-    match &node.key {
-        crate::node::Key::Number(number) => (node.namespace, *number, ptr::null(), 0),
-        crate::node::Key::Name(name) => (node.namespace, 0, name.as_ptr(), name.len()),
+/// `shim_node`: a node that borrows its name from a [`crate::node::Node`].
+#[repr(C)]
+pub(crate) struct Node<'a> {
+    namespace: u16,
+    number: u32,
+    /// NULL for a node by number.
+    name: *const u8,
+    length: usize,
+    borrowed: PhantomData<&'a str>,
+}
+
+impl<'a> From<&'a crate::node::Node> for Node<'a> {
+    fn from(node: &'a crate::node::Node) -> Self {
+        let (number, name, length) = match &node.key {
+            crate::node::Key::Number(number) => (*number, ptr::null(), 0),
+            crate::node::Key::Name(name) => {
+                (0, name.as_str().as_ptr(), name.as_str().len())
+            }
+        };
+        Self {
+            namespace: node.namespace,
+            number,
+            name,
+            length,
+            borrowed: PhantomData,
+        }
     }
 }
 
@@ -134,6 +156,8 @@ const _: () = {
         offset_of!(DecodeOptions, decoded) == 32,
         "decodedLength moved"
     );
+    assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
+    assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
 };
 
 /// Gives `UA_TYPES`, the table of built-in types.
@@ -417,10 +441,7 @@ unsafe extern "C" {
     );
     pub(crate) fn shim_client_read(
         client: *mut Client,
-        namespace: u16,
-        number: u32,
-        name: *const u8,
-        length: usize,
+        node: Node<'_>,
         callback: Read,
         data: *mut c_void,
         request: *mut u32,

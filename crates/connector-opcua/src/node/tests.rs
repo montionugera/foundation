@@ -1,10 +1,16 @@
 use proptest::prelude::*;
 
-use super::{Error, Key, Node};
+use super::{Error, Key, Name, Node};
+
+fn name(text: &str) -> Key {
+    Key::Name(Name::new(text).expect("a name of 1 to 4096 bytes"))
+}
 
 fn node() -> impl Strategy<Value = Node> {
-    let key =
-        prop_oneof![any::<u32>().prop_map(Key::Number), ".+".prop_map(Key::Name),];
+    let key = prop_oneof![
+        any::<u32>().prop_map(Key::Number),
+        ".{1,64}".prop_map(|name| Key::Name(Name::new(&name).expect("1 to 64 chars"))),
+    ];
     (any::<u16>(), key).prop_map(|(namespace, key)| Node { namespace, key })
 }
 
@@ -18,10 +24,11 @@ proptest! {
 #[test]
 fn a_text_gives_its_node() {
     let cases = [
-        ("ns=3;s=SpikeData", 3, Key::Name("SpikeData".to_owned())),
+        ("ns=3;s=SpikeData", 3, name("SpikeData")),
         ("ns=1;i=1000", 1, Key::Number(1000)),
         ("i=2258", 0, Key::Number(2258)),
-        ("s=a;b=c", 0, Key::Name("a;b=c".to_owned())),
+        ("s=a;b=c", 0, name("a;b=c")),
+        ("s=x", 0, name("x")),
         ("ns=65535;i=4294967295", u16::MAX, Key::Number(u32::MAX)),
         ("ns=007;i=08", 7, Key::Number(8)),
     ];
@@ -81,8 +88,29 @@ fn another_text_is_refused() {
     assert_eq!(
         Error::Syntax.to_string(),
         "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an index to \
-         65535 and a number to 4294967295"
+         65535, a number to 4294967295, and a name of 1 to 4096 bytes"
     );
+}
+
+#[test]
+fn a_name_is_at_most_4096_bytes() {
+    let longest = "ü".repeat(Name::BYTES / 2);
+    let text = format!("ns=1;s={longest}");
+    assert_eq!(
+        text.parse(),
+        Ok(Node {
+            namespace: 1,
+            key: name(&longest)
+        })
+    );
+    let text = format!("ns=1;s={longest}x");
+    assert_eq!(text.parse::<Node>(), Err(Error::Syntax));
+    assert_eq!(Name::new(&format!("{longest}x")), None);
+}
+
+#[test]
+fn a_name_is_not_empty() {
+    assert_eq!(Name::new(""), None);
 }
 
 #[test]
@@ -94,7 +122,7 @@ fn namespace_0_has_no_index_in_its_text() {
     assert_eq!(node.to_string(), "i=2258");
     let node = Node {
         namespace: 3,
-        key: Key::Name("SpikeData".to_owned()),
+        key: name("SpikeData"),
     };
     assert_eq!(node.to_string(), "ns=3;s=SpikeData");
 }

@@ -322,12 +322,9 @@ impl FromStr for Span {
             Some(body) => (true, body),
             None => (false, s),
         };
-        let quantity::Quantity {
-            whole,
-            fraction,
-            unit,
-        } = quantity::split(body).ok_or(Error::Span)?;
-        let unit = match unit {
+        let number = quantity::split(body).ok_or(Error::Span)?;
+        let fraction = number.fraction;
+        let unit = match number.unit {
             "ns" => 1,
             "us" => Self::MICROSECOND.0,
             "ms" => Self::MILLISECOND.0,
@@ -342,13 +339,7 @@ impl FromStr for Span {
         if fraction.len() > 16 {
             return Err(Error::Fraction);
         }
-        let mantissa = whole
-            .bytes()
-            .chain(fraction.bytes())
-            .try_fold(0_u128, |n, b| {
-                n.checked_mul(10)?.checked_add(u128::from(b - b'0'))
-            })
-            .ok_or(Error::Long)?;
+        let mantissa = number.scaled(fraction.len()).ok_or(Error::Long)?;
         let scale = fraction.bytes().fold(1_u128, |scale, _| scale * 10);
         let scaled = mantissa
             .checked_mul(unit.unsigned_abs().into())
@@ -610,6 +601,44 @@ impl Rate {
     }
 }
 
+impl FromStr for Rate {
+    type Err = Error;
+
+    /// Reads a number and a unit with no space: `Hz`, `kHz`, or `MHz`. The number
+    /// may have a decimal fraction, and must give a whole number of nanohertz. The
+    /// rate is exact: `2.5kHz` is 2500/1, and `0.5Hz` is 1/2.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Zero`] for a rate of zero. [`Error::Period`] for a rate over 1 GHz.
+    /// [`Error::Rate`] for each other text that is not a rate.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let number = quantity::split(s).ok_or(Error::Rate)?;
+        // 1 Hz, 1 kHz, and 1 MHz are 10^places nHz.
+        let places = match number.unit {
+            "Hz" => 9,
+            "kHz" => 12,
+            "MHz" => 15,
+            _ => return Err(Error::Rate),
+        };
+        let nanohertz = number
+            .scaled(places)
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or(Error::Period)?;
+        // The last digit of a fraction is not 0, so a finer fraction puts the rate
+        // between `nanohertz` and the nanohertz after it.
+        let finer = number.fraction.len() > places;
+        let rate = Self::new(
+            nanohertz.saturating_add(u64::from(finer)),
+            NANOS_PER_SECOND.unsigned_abs(),
+        )?;
+        if finer {
+            return Err(Error::Rate);
+        }
+        Ok(rate)
+    }
+}
+
 /// [`NANOS_PER_SECOND`] as a `u128`.
 fn nanos_per_second() -> u128 {
     u128::from(NANOS_PER_SECOND.unsigned_abs())
@@ -649,6 +678,9 @@ pub enum Error {
     Zero,
     /// The sample period of a rate is under 1 ns or does not fit in a [`Span`].
     Period,
+    /// The text is not a number and a unit, `Hz`, `kHz`, or `MHz`, or the number is
+    /// finer than 1 nHz and the rate is not over 1 GHz, such as `0.0000000001Hz`.
+    Rate,
 }
 
 impl Error {
@@ -671,6 +703,7 @@ impl Error {
             Self::Reversed => "Put the earlier time first",
             Self::Zero => "Use a numerator and a denominator above zero",
             Self::Period => "Use a rate from one sample in 106751d to 1000MHz",
+            Self::Rate => "Write a rate such as 10Hz, 2.5kHz, or 1MHz",
         }
     }
 }
@@ -691,6 +724,9 @@ impl fmt::Display for Error {
             Self::Zero => "a rate has a zero numerator or denominator",
             Self::Period => {
                 "the sample period of a rate is under 1 ns or longer than a span"
+            }
+            Self::Rate => {
+                "a rate is not a number and a unit of `Hz`, `kHz`, or `MHz`, to 1 nHz"
             }
         })
     }
@@ -760,6 +796,11 @@ mod tests {
                 Error::Period,
                 "the sample period of a rate is under 1 ns or longer than a span",
                 "Use a rate from one sample in 106751d to 1000MHz",
+            ),
+            (
+                Error::Rate,
+                "a rate is not a number and a unit of `Hz`, `kHz`, or `MHz`, to 1 nHz",
+                "Write a rate such as 10Hz, 2.5kHz, or 1MHz",
             ),
         ] {
             assert_eq!(error.to_string(), message);
@@ -1276,6 +1317,77 @@ mod tests {
             ] {
                 let rate = rate(num, den);
                 assert_eq!((rate.num(), rate.den()), reduced, "{num}/{den}");
+            }
+        }
+
+        #[test]
+        fn reads_a_number_and_a_unit() {
+            for (text, num, den) in [
+                ("10Hz", 10, 1),
+                ("10kHz", 10_000, 1),
+                ("1MHz", 1_000_000, 1),
+                ("2.5kHz", 2500, 1),
+                ("0.5Hz", 1, 2),
+                ("0.000000001Hz", 1, 1_000_000_000),
+            ] {
+                assert_eq!(text.parse(), Ok(rate(num, den)), "{text}");
+            }
+            let fastest: Rate = "1000MHz".parse().unwrap();
+            assert_eq!(fastest.span(1), Span::from_nanos(1));
+        }
+
+        #[test]
+        fn a_rate_over_1_ghz_with_a_fraction_finer_than_1_nhz_is_too_fast() {
+            for text in [
+                format!("{}.0000000001Hz", "9".repeat(60)),
+                "2000.0000000000000001MHz".to_owned(),
+                "1000.0000000000000001MHz".to_owned(),
+            ] {
+                assert_eq!(text.parse::<Rate>(), Err(Error::Period), "{text}");
+            }
+            let text = "999.9999999999999999MHz";
+            assert_eq!(text.parse::<Rate>(), Err(Error::Rate));
+        }
+
+        #[test]
+        fn a_rate_past_u64_nanohertz_is_too_fast() {
+            for text in [
+                "18446744083.709551616Hz",
+                "340282366920938463463374607431768211459Hz",
+                "18446744073.7095516159Hz",
+            ] {
+                assert_eq!(text.parse::<Rate>(), Err(Error::Period), "{text}");
+            }
+        }
+
+        #[test]
+        fn refuses_a_text_that_is_not_a_rate() {
+            for (text, error) in [
+                ("0Hz", Error::Zero),
+                ("0.0kHz", Error::Zero),
+                ("1000.001MHz", Error::Period),
+                (&format!("{}Hz", "9".repeat(60)), Error::Period),
+                (&format!("{}Hz", "9".repeat(30)), Error::Period),
+                ("340282366920938463463374607431768211466Hz", Error::Period),
+                ("10", Error::Rate),
+                ("Hz", Error::Rate),
+                ("10 Hz", Error::Rate),
+                ("10hz", Error::Rate),
+                ("10khz", Error::Rate),
+                ("10GHz", Error::Rate),
+                ("1e3Hz", Error::Rate),
+                ("-1Hz", Error::Rate),
+                (".5Hz", Error::Rate),
+                ("0.0000000001Hz", Error::Rate),
+            ] {
+                assert_eq!(text.parse::<Rate>(), Err(error), "{text}");
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn reads_a_whole_number_of_hertz(n in 1..=1_000_000_000_u64) {
+                prop_assert_eq!(format!("{n}Hz").parse(), Ok(rate(n, 1)));
             }
         }
 
