@@ -149,6 +149,35 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
 }
 
 #[test]
+fn gives_the_old_state_until_the_run_with_fewer_counts_writes_its_start_frame() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "wide", "edge")).await;
+        let wide = supervise(&fixture, &node, &["site.a"]).await;
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        wide.cancel();
+        let running = |counts| {
+            json!({ "output": { "connectors": [{
+                "name": "site.a",
+                "kind": "steady",
+                "state": "running",
+                "address": "opc.tcp://site.a:4840",
+                "restarts": 0,
+                "counts": counts,
+                "error": null,
+            }]}})
+        };
+        let (head, rest) = status(&node, "@admin").await;
+        assert_eq!(head, running(json!({ "confirmed": 0, "in": 0 })));
+        assert_eq!(rest, b"");
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, rest) = status(&node, "@admin").await;
+        assert_eq!(head, running(json!({ "confirmed": 10, "in": 12 })));
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
 fn escapes_a_newline_in_the_text_of_an_error() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
