@@ -95,10 +95,9 @@ fn reads_the_address_and_the_reader() {
     let config = config(string("http://influx:8086"));
     let expected = Config {
         address: "http://influx:8086".parse().expect("a URI"),
-        database: "plant".into(),
+        target: Target::Database("plant".into()),
         measurement: "telemetry".into(),
-        reader: reader::read(&config, &["address", "database", "measurement"], &[])
-            .expect("the reader settings"),
+        reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
 }
@@ -106,7 +105,7 @@ fn reads_the_address_and_the_reader() {
 #[test]
 fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
     let config = config(string("http://influx:8086"));
-    let reader = reader::read(&config, &["address", "database", "measurement"], &[]);
+    let reader = reader::read(&config, &KEYS, &[]);
     let table = Table::new().with("influx", Kind);
     assert_eq!(
         table.check("influx", None, &config),
@@ -220,8 +219,112 @@ fn refuses_a_database_that_is_empty_or_not_a_string() {
 fn reads_a_database_name_as_it_is_written() {
     let config = with(influx(), "database", &string("plant a/b"));
     assert_eq!(
-        Kind.parse(&config).map(|config| config.database),
-        Ok("plant a/b".into())
+        Kind.parse(&config).map(|config| config.target),
+        Ok(Target::Database("plant a/b".into()))
+    );
+}
+
+/// `config` with `attributes` added, each as [`document`] places it.
+fn plus(mut config: Document, attributes: &[(u32, &str, Value)]) -> Document {
+    let added = document(attributes, Vec::new()).attributes;
+    let attributes = config.attributes.iter().chain(added.iter()).cloned();
+    config.attributes = Map::new(attributes.collect()).expect("unique keys");
+    config
+}
+
+/// `config` with no `key`.
+fn without(mut config: Document, key: &str) -> Document {
+    let attributes = config
+        .attributes
+        .iter()
+        .filter(|attribute| *attribute.key != *key);
+    config.attributes = Map::new(attributes.cloned().collect()).expect("unique keys");
+    config
+}
+
+/// The config of an influx connector that writes to the bucket `edge` in `acme`.
+fn bucket() -> Document {
+    plus(
+        without(influx(), "database"),
+        &[(60, "bucket", string("edge")), (62, "org", string("acme"))],
+    )
+}
+
+#[test]
+fn reads_a_bucket_and_an_org() {
+    assert_eq!(
+        Kind.parse(&bucket()).map(|config| config.target),
+        Ok(Target::Bucket {
+            name: "edge".into(),
+            org: "acme".into()
+        })
+    );
+}
+
+#[test]
+fn refuses_a_database_and_a_bucket() {
+    let config = plus(influx(), &[(60, "bucket", string("edge"))]);
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![refused(
+            "influx.two-targets",
+            60,
+            "the connector has a `database` and a `bucket`",
+            "Keep `database` for InfluxDB 1, or `bucket` and `org` for InfluxDB 2 \
+             and 3",
+        )])
+    );
+}
+
+#[test]
+fn refuses_an_org_with_a_database() {
+    let config = plus(influx(), &[(62, "org", string("acme"))]);
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![refused(
+            "influx.org-with-database",
+            62,
+            "the connector has an `org`, which only a `bucket` takes",
+            "Remove it, or write a `bucket` in place of the `database`",
+        )])
+    );
+}
+
+#[test]
+fn refuses_a_bucket_with_no_org() {
+    assert_eq!(
+        Kind.parse(&without(bucket(), "org")),
+        Err(vec![Diagnostic::new(
+            Code::new("document.missing-attribute"),
+            None,
+            "the connector has no `org`".into(),
+            "Add an `org` attribute with the InfluxDB organization, such as \"plant\". \
+             InfluxDB 3 takes any name"
+                .into(),
+        )])
+    );
+}
+
+#[test]
+fn refuses_a_bucket_and_an_org_that_are_empty_or_not_strings() {
+    let config = with(bucket(), "bucket", &string(""));
+    let config = with(config, "org", &Value::Integer(1));
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![
+            refused(
+                "influx.bad-bucket",
+                61,
+                "the bucket name is empty",
+                "Write the name of an InfluxDB bucket, such as \"plant\"",
+            ),
+            refused(
+                "influx.bad-org",
+                63,
+                "an org is a string, not an integer",
+                "Write the name of an InfluxDB org, such as \"plant\"",
+            ),
+        ])
     );
 }
 
@@ -280,9 +383,9 @@ fn refuses_a_config_with_no_address_or_select() {
             Diagnostic::new(
                 Code::new("document.missing-attribute"),
                 None,
-                "the connector has no `database`".into(),
-                "Add a `database` attribute with the InfluxDB database, such as \
-                 \"plant\""
+                "the connector has no `database` or `bucket`".into(),
+                "Add a `bucket` attribute and an `org` attribute, such as \"plant\", \
+                 or a `database` attribute for InfluxDB 1"
                     .into(),
             ),
             Diagnostic::new(
@@ -324,7 +427,8 @@ fn refuses_each_key_it_does_not_take() {
                 "document.unknown-attribute",
                 60,
                 "`token` is not an attribute of the connector",
-                "Use `select`, `address`, `database`, or `measurement`, or remove it",
+                "Use `select`, `address`, `database`, `bucket`, `org`, or \
+                 `measurement`, or remove it",
             ),
             refused(
                 "document.unknown-block",

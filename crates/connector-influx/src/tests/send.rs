@@ -360,6 +360,25 @@ fn writes_one_line_for_each_sample_time_to_its_database() {
 const WRITE: &str = "/write?db=plant&precision=ns";
 
 #[test]
+fn writes_to_a_bucket_in_its_org() {
+    let got = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let target = [(60, "bucket", string("edge/1")), (62, "org", string("a b"))];
+        let run = plant.start(plus(without(plant.config(), "database"), &target));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::SECOND).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        (plant.got(), first)
+    });
+    let (got, first) = got;
+    let uri = "/api/v2/write?org=a%20b&bucket=edge%2F1&precision=ns";
+    assert_eq!(got, vec![(uri.into(), line("1e0", "2e0", first))]);
+}
+
+#[test]
 fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204() {
     let (got, errors) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
