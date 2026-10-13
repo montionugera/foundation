@@ -239,3 +239,16 @@
   supersedes the bound on each file of that plan. `laptop.architect-2` approved the
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
+  `plan`, `apply`, and `status` take `--data <dir>`, the data directory of the node, by
+  default `foundation-data`, as `start` does (#2526). This supersedes "the node of
+  `foundation-data`" above. The fix of `node.not-running` is ``Start one with
+  `foundation start --name <name>`, or give the data directory of a node that runs with
+  `--data` ``, which supersedes "with no `--data`" above. The fix of `node.session` is
+  `Fix the cause in the message, then run the command again`, because the node writes no
+  log; the PR of #2606 that writes the log points this fix to it. The fix of
+  `ops.unknown-operation` with no close name is ``Use a name from `foundation --help`,
+  or from `tools/list` in MCP``, because `foundation docs` lists only the operations of
+  `TABLE`. By `laptop.architect-2` (2026-10-13T21:30:55Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024, and the
+  fix of `ops.unknown-operation` at 2026-10-13T21:35:53Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155703839).
