@@ -193,18 +193,40 @@ fn json_output_parses_back_to_the_typed_output() {
     }
 }
 
+/// The commit of `HEAD` that `git` reads here, or `None` when it fails.
+fn head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).expect("UTF-8");
+    output.status.success().then(|| text.trim().to_owned())
+}
+
 #[test]
 fn version_prints_the_crate_version_and_the_commit() {
-    let commit = Some(env!("FOUNDATION_COMMIT")).filter(|commit| !commit.is_empty());
+    let commit = head();
     let json = cli(&["version", "--json"]);
     let output: Value = serde_json::from_str(&json.stdout).expect("json");
     assert_eq!(
         output,
         json!({ "version": env!("CARGO_PKG_VERSION"), "commit": commit })
     );
-    let commit = commit.map_or("unknown", |commit| &commit[..12]);
+    let commit = commit.as_deref().map_or("unknown", |commit| &commit[..12]);
     let line = format!("{} ({commit})\n", env!("CARGO_PKG_VERSION"));
     assert_eq!((cli(&["version"]).stdout, json.status), (line, 0));
+}
+
+#[test]
+fn version_gives_no_commit_when_the_build_reads_none() {
+    let built = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        (
+            crate::operation::commit(""),
+            crate::operation::commit(built)
+        ),
+        (None, Some(built.to_owned()))
+    );
 }
 
 #[test]

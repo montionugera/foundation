@@ -326,13 +326,18 @@ impl Request {
         match self {
             Self::Version(Empty {}) => Response::Version(Version {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                commit: Some(env!("FOUNDATION_COMMIT"))
-                    .filter(|commit| !commit.is_empty())
-                    .map(str::to_owned),
+                commit: commit(env!("FOUNDATION_COMMIT")),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
         }
     }
+}
+
+/// The commit that the build script gives, which is empty when it reads none.
+pub(crate) fn commit(built: &str) -> Option<String> {
+    Some(built)
+        .filter(|commit| !commit.is_empty())
+        .map(str::to_owned)
 }
 
 impl Response {
