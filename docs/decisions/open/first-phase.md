@@ -55,8 +55,10 @@ https://github.com/synnaxlabs/foundation/issues/1477#issuecomment-6042249280).
 Amendment (2026-10-13): STORE AND FORWARD waits until the new sessions start, and no
 session starts new work on it before then. `laptop.monitor` says on #1737 when the new
 sessions have started. Of the PRs in flight on its issues, #2461 and #2477 finish, and
-the drafts #2565 and #2454 wait. Work that the ONE NODE plan (#1737) names on an issue
-of this milestone, such as the store half of #1232, is ONE NODE work. The ONE NODE
+the drafts #2565 and #2454 wait. The store half of #1232, which item 6 of the path of the
+ONE NODE plan (#1737) holds, is ONE NODE work (`laptop.architect`, 2026-10-08T02:17:18Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6050814109). Protocol
+4 of #1232 waits with the rest of this milestone. The ONE NODE
 amendment of 2026-10-13 gives the work that takes its place, the person's words, and the
 orders of `laptop.monitor` with their links. Supersedes, until the new sessions start,
 "It runs beside FIRST SLICE" of this entry (the person's decision of 2026-10-06, which
@@ -107,7 +109,7 @@ relay, `laptop.monitor` ordered that no session starts new STORE AND FORWARD wor
 that the ONE NODE PRs in flight finish
 (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233). It
 decided later that the STORE AND FORWARD PRs #2461 and #2477 finish and the drafts #2565
-and #2454 wait, that this work gets a new part of the path of #1737, that ONE NODE stays
+and #2454 wait, that the wider ONE NODE work of 2026-10-13 gets a new part of the path of #1737, that ONE NODE stays
 open after the five tests of #1733 pass until the new sessions start, and that it says
 on #1737 when they have started (factory message `4226c412`, recorded at
 2026-10-13T21:00:24Z:
