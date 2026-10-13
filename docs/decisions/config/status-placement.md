@@ -38,3 +38,7 @@
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
   of the write check, 2026-10-12T22:33:22Z,
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580).
+  In the same stage, `check` refuses each other channel with an edge to a status
+  channel of a connector, with `config.implied-channel`, since `plan` gives
+  `config.unknown-channel` for such an edge in files, and a second writer on the
+  status index can hold its control gate (#2468, round 7).

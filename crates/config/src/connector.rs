@@ -230,7 +230,8 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
 
 /// The `config.implied-channel` diagnostic of each channel that a connector of
 /// `writes` implies and that `definitions`, the definitions of a spec with the name
-/// of each channel by key in `names`, lack or hold as another channel.
+/// of each channel by key in `names`, lack or hold as another channel, then of each
+/// other channel with an edge to such a channel.
 pub(crate) fn implied_definitions(
     definitions: &BTreeMap<Name, definition::Definition>,
     names: &BTreeMap<types::channel::Key, &Name>,
@@ -262,6 +263,35 @@ pub(crate) fn implied_definitions(
                     "Make the plan file with `plan`".into(),
                 ));
             }
+        }
+    }
+    let implied: BTreeMap<&Name, Implied<'_>> = writes
+        .iter()
+        .flat_map(|(connector, writes)| {
+            writes.implied().map(move |(channel, _)| {
+                let implied = Implied {
+                    connector,
+                    channel,
+                    label: writes.label,
+                };
+                (channel, implied)
+            })
+        })
+        .collect();
+    for (from, definition) in definitions {
+        let definition::Definition::Channel(channel) = definition else {
+            continue;
+        };
+        if implied.contains_key(from) {
+            continue;
+        }
+        let pointed = channel.kind.edges().filter_map(|(_, key)| names.get(key));
+        for implied in pointed.filter_map(|to| implied.get(*to)) {
+            diagnostics.push(implied.refuse(
+                None,
+                &format!("the channel `{from}` cannot point at it"),
+                "Make the plan file with `plan`".into(),
+            ));
         }
     }
     diagnostics

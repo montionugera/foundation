@@ -905,6 +905,48 @@ fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
     });
 }
 
+/// Only the connector writes its status, so a subject with no `admin` cannot put a
+/// new channel on the status index of a connector.
+#[test]
+fn refuses_an_apply_that_puts_a_channel_on_the_status_index_of_a_connector() {
+    solo(|_, mesh| async move {
+        let node = create_node(mesh.clone());
+        let people = people();
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
+        applied(&node, &files).await;
+        let version = mesh.pointer().version;
+        let x = format!(
+            "{PLC}channel \"site.t\" {{ kind = \"index\" }}\nchannel \"site.x\" \
+             {{\n  data_type = \"f64\"\n  index = \"site.t\"\n}}\n"
+        );
+        let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", &*x)];
+        let plan = planned(&node, &files).await;
+        let mut plan = config::plan::Plan::decode(&plan).expect("a plan");
+        plan.changes.remove(&name("site.t")).expect("a change");
+        plan.homes.clear();
+        let change = plan.changes.get_mut(&name("site.x")).expect("a change");
+        let new = change.new.as_mut().expect("a new channel");
+        let data_type = "f64".parse().expect("a type");
+        let index = name("site.plc.status.time");
+        let data = spec::channel::Data::new(index, None, data_type, None);
+        let data = spec::channel::Kind::Data(data.expect("no unit"));
+        new.definition = config::Definition::Channel(data);
+        let reply = serve(&node, &name("sam"), &apply_body(&plan.encode())).await;
+        let message = "the connector `site.plc` implies the channel \
+                       `site.plc.status.time`, so the channel `site.x` cannot point \
+                       at it";
+        let error = json!({
+            "code": "config.implied-channel",
+            "message": message,
+            "fix": "Make the plan file with `plan`",
+            "notes": [],
+        });
+        let head = json!({ "errors": [error], "status": 2 });
+        assert_eq!(split(&reply), (head, &b""[..]));
+        assert_eq!(mesh.pointer().version, version);
+    });
+}
+
 /// A hand-made plan can remove a name that the spec does not hold, and the check
 /// refuses it before `Plan::definitions` reads the spec.
 #[test]

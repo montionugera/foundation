@@ -104,7 +104,8 @@ pub fn plan(
 ///    `config.subject-is-connector`.
 /// 3. `config.implied-channel` for each status channel that the kind of a connector
 ///    writes, then for each status channel of a connector that `definitions` lack or
-///    hold as another channel.
+///    hold as another channel, then for each other channel with an edge to a status
+///    channel.
 /// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
