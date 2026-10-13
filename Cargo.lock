@@ -1190,6 +1190,7 @@ dependencies = [
  "os",
  "proptest",
  "secret",
+ "serde",
  "serde_json",
  "sim",
  "spec",

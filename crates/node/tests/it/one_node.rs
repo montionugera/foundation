@@ -498,6 +498,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     assert_eq!(
         restarting,
         Connector {
+            name: "influx".into(),
             kind: "influx".into(),
             state: "restarting".into(),
             address: Some(format!("http://{influx_address}")),

@@ -2,11 +2,20 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde::Deserialize;
+
+/// The output of `foundation status --json`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Output {
+    connectors: Vec<Connector>,
+}
 
 /// One connector in `foundation status --json`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Connector {
+    pub(crate) name: String,
     pub(crate) kind: String,
     /// `running`, `restarting`, `stopped`, or `unknown`.
     pub(crate) state: String,
@@ -23,7 +32,8 @@ pub(crate) struct Connector {
 }
 
 /// The last error of a connector in `foundation status --json`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Error {
     /// `config`, `device`, or `retry`.
     pub(crate) class: String,
@@ -32,38 +42,11 @@ pub(crate) struct Error {
     pub(crate) next: Option<String>,
 }
 
-/// The connectors of the JSON of `foundation status --json`, by name. Panics when a
-/// field has another type.
-pub(crate) fn connectors(json: &Value) -> BTreeMap<String, Connector> {
-    let list = json["connectors"].as_array().expect("a list of connectors");
-    (list.iter())
-        .map(|connector| {
-            let counts = connector["counts"].as_object().map(|counts| {
-                (counts.iter())
-                    .map(|(name, count)| {
-                        (name.clone(), count.as_u64().expect("a count"))
-                    })
-                    .collect()
-            });
-            let error = &connector["error"];
-            let shown = Connector {
-                kind: string(&connector["kind"]).expect("a kind"),
-                state: string(&connector["state"]).expect("a state"),
-                address: string(&connector["address"]),
-                restarts: connector["restarts"].as_u64(),
-                counts,
-                error: (!error.is_null()).then(|| Error {
-                    class: string(&error["class"]).expect("a class"),
-                    text: string(&error["text"]).expect("a text"),
-                    next: string(&error["next"]),
-                }),
-            };
-            (string(&connector["name"]).expect("a name"), shown)
-        })
+/// The connectors of `json`, the output of `foundation status --json`, by name.
+/// Panics when `json` has another shape.
+pub(crate) fn connectors(json: &[u8]) -> BTreeMap<String, Connector> {
+    let output: Output = serde_json::from_slice(json).expect("the status JSON");
+    (output.connectors.into_iter())
+        .map(|connector| (connector.name.clone(), connector))
         .collect()
-}
-
-/// The text of `value`, or `None` when it is not a string.
-fn string(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned)
 }

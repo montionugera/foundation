@@ -284,7 +284,7 @@ impl Rig {
             "`foundation status --json` exited with {}, stderr: {stderr}",
             output.status
         );
-        status::connectors(&serde_json::from_slice(&output.stdout).expect("JSON"))
+        status::connectors(&output.stdout)
     }
 }
 
