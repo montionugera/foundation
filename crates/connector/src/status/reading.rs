@@ -10,6 +10,7 @@ use types::sample::Type;
 use super::{Class, State, TIME, segment};
 
 #[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 /// The values of one frame of a connector's status channels.
