@@ -278,7 +278,7 @@ impl fmt::Debug for Values {
 }
 
 /// The writer of one connector's status channels: the supervisor sets each change of
-/// state, and [`Writer::flush`] writes the counts.
+/// state, and [`Writer::flush`] writes the counts and the error that the kind shows.
 pub(crate) struct Writer {
     session: RefCell<Session>,
     values: Rc<Values>,
