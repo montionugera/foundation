@@ -8,6 +8,7 @@ use std::task::Poll;
 
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
+use crate::node::Node;
 
 /// A started test server of open62541 on the loop of a connection manager.
 /// [`Server::close`] deletes it, and a drop leaks it.
@@ -61,15 +62,10 @@ impl Server {
     /// # Panics
     ///
     /// If open62541 refuses the node.
-    pub(crate) fn add_double(&self, node: crate::client::Node, value: f64) {
-        // SAFETY: the server lives.
+    pub(crate) fn add_double(&self, node: &Node, value: f64) {
+        // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_double(
-                self.raw(),
-                node.namespace,
-                node.key,
-                value,
-            )
+            ffi::test::shim_server_add_double(self.raw(), node.into(), value)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
@@ -80,15 +76,10 @@ impl Server {
     ///
     /// If open62541 refuses the node.
     #[cfg(test)]
-    pub(crate) fn add_bytes(&self, node: crate::client::Node, length: usize) {
-        // SAFETY: the server lives.
+    pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
+        // SAFETY: the server lives, and it copies the name of `node`.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_bytes(
-                self.raw(),
-                node.namespace,
-                node.key,
-                length,
-            )
+            ffi::test::shim_server_add_bytes(self.raw(), node.into(), size)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }

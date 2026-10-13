@@ -484,7 +484,8 @@ not reached from the corpus: `transport::message` (#55), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
-each connector's protocol parser, the file `name` of the data directory
+each connector's protocol parser, the `node_id` text of the `opcua` kind
+(`connector_opcua::node`, #2523), the file `name` of the data directory
 (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of
 `/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the request
