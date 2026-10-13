@@ -440,8 +440,8 @@
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
   2026-10-13 13:56 UTC). The certificate part of #1992 lands in the PR of the first
   connection with a security policy other than `None`, so no connection that checks a
-  certificate runs before it. `bench` also gives a connection manager with the test server
-  and its clients on the loop of the manager. Approved by `laptop.architect-2` at
+  certificate runs before it. `bench` also gives a connection manager with the test
+  server and its clients on the loop of the manager. Approved by `laptop.architect-2` at
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
