@@ -22,11 +22,11 @@ pub trait Store: fmt::Debug {
     ///
     /// # Errors
     ///
-    /// [`Error::Missing`] when the store holds no value at that key, with where to
-    /// put it, [`Error::BadName`] when the store cannot hold `name`, with how to
-    /// rename it, [`Error::Denied`] when the store refuses this node's credentials,
-    /// and [`Error::Unavailable`] when the store does not answer or fails before it
-    /// decides.
+    /// [`Error::Missing`] when the store holds no value at that key, with why, and
+    /// where to put it when the store can say, [`Error::BadName`] when the store
+    /// cannot hold `name`, with how to rename it, [`Error::Denied`] when the store
+    /// refuses this node's credentials, and [`Error::Unavailable`] when the store
+    /// does not answer or fails before it decides.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a>;
 }
 
