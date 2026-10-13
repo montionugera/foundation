@@ -17,6 +17,7 @@
 
 #include "shim.h"
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -39,37 +40,45 @@ UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
 /* The bytes of a line to stderr, with its newline. */
-#define LOG_BYTES 512
+#define LINE_BYTES 512
 
-/* Ends the `length` bytes of `line` with a newline, after a cut to `LOG_BYTES`, and
- * writes them to stderr in one call, with the same bytes on each OS. So a line takes
- * no `stdio` lock and does not mix with a line of another thread. */
-static void put_line(char line[LOG_BYTES], size_t length) {
-    if(length > LOG_BYTES - 1)
-        length = LOG_BYTES - 1;
+/* Writes `connector-opcua: open62541 `, then `level` and `: ` when `level` is not NULL,
+ * then `format` with `args`, to stderr as one line of at most `LINE_BYTES` bytes, in
+ * one call, with the same bytes on each OS. So a line takes no `stdio` lock and does
+ * not mix with a line of another thread. */
+static void put_line(const char *level, const char *format, va_list args) {
+    char line[LINE_BYTES];
+    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
+    int length = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s%s",
+                             level ? level : "", level ? ": " : "");
+    length += mp_vsnprintf(line + length, sizeof(line) - (size_t)length, format, args);
+    if(length > LINE_BYTES - 1)
+        length = LINE_BYTES - 1;
     line[length] = '\n';
     /* A failed write of a line to stderr has nowhere to go. */
 #ifdef _WIN32
     /* `write` puts a CR before each LF of fd 2, which is in text mode. */
     DWORD written;
     HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    WriteFile(err, line, (DWORD)(length + 1), &written, NULL);
+    WriteFile(err, line, (DWORD)length + 1, &written, NULL);
 #else
-    ssize_t written = write(STDERR_FILENO, line, length + 1);
+    ssize_t written = write(STDERR_FILENO, line, (size_t)length + 1);
 #endif
     (void)written;
 }
 
-/* The library calls these only when a config has no event loop, and ours always has
- * one, so a call is a defect. */
-static void refuse(const char *name) {
-    char line[LOG_BYTES];
-    int length = mp_snprintf(line, sizeof(line),
-                             "connector-opcua: open62541 called %s, which is not built",
-                             name);
-    put_line(line, (size_t)length);
+/* Writes `format` with its arguments to stderr with `put_line`, and aborts. */
+static void die(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    put_line(NULL, format, args);
+    va_end(args);
     abort();
 }
+
+/* The library calls these only when a config has no event loop, and ours always has
+ * one, so a call is a defect. */
+static void refuse(const char *name) { die("called %s, which is not built", name); }
 
 UA_EventLoop *UA_EventLoop_new_POSIX(const UA_Logger *logger) {
     (void)logger;
@@ -359,26 +368,20 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
 static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
                                      "fatal"};
 
-/* Writes each message of level warning and up to stderr with `put_line`. It allocates
- * nothing. */
+/* Writes each message of level warning and up to stderr. It allocates nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
     (void)context;
     (void)category;
     if(level < UA_LOGLEVEL_WARNING)
         return;
-    char line[LOG_BYTES];
-    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
-    int prefix = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s: ",
-                             LEVELS[level / 100 - 1]);
-    int text = mp_vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, msg, args);
-    put_line(line, (size_t)prefix + (size_t)text);
+    put_line(LEVELS[level / 100 - 1], msg, args);
 }
 
 /* Logs the `length` bytes at `message` as a warning through the logger of `el`.
  * `length` is above 0: mp_printf reads a precision of 0 as none, and reads to a NUL. */
 void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
-    int bytes = length < LOG_BYTES ? (int)length : LOG_BYTES;
+    int bytes = length < LINE_BYTES ? (int)length : LINE_BYTES;
     UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
 }
 
@@ -430,15 +433,8 @@ const int shim_free_passes = FREE_PASSES;
 void shim_loop_free(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
     for(int pass = 0; loop->queued; pass++) {
-        if(pass == FREE_PASSES) {
-            char line[LOG_BYTES];
-            int length = mp_snprintf(line, sizeof(line),
-                                     "connector-opcua: open62541 queued delayed "
-                                     "callbacks for %d passes of a loop free",
-                                     FREE_PASSES);
-            put_line(line, (size_t)length);
-            abort();
-        }
+        if(pass == FREE_PASSES)
+            die("queued delayed callbacks for %d passes of a loop free", FREE_PASSES);
         run_delayed(loop);
     }
     UA_Timer_clear(&loop->timer);
