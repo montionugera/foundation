@@ -190,6 +190,32 @@ fn a_data_directory_that_is_a_file_fails() {
     );
 }
 
+/// The OS gives the program name, so it can read as a flag.
+#[test]
+fn a_failed_start_json_is_json_for_a_program_named_double_dash() {
+    use std::os::unix::process::CommandExt;
+
+    let rig = Rig::new();
+    std::fs::write(rig.dir.join("plain"), "").expect("write the file");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_foundation"))
+        .arg0("--")
+        .args(["start", "--json", "--data", "plain", "--name", "edge"])
+        .current_dir(&rig.dir)
+        .output()
+        .expect("foundation runs");
+    assert_eq!(
+        ended(&output),
+        (
+            Some(1),
+            "",
+            "{\"errors\":[{\"code\":\"node.data\",\"fix\":\"Make plain a directory \
+             that this user can write, and let it write each file in it, or give \
+             another directory with `--data`\",\"message\":\"cannot write the data \
+             directory plain: Not a directory (os error 20)\",\"notes\":[]}]}\n"
+        )
+    );
+}
+
 #[test]
 fn a_data_directory_whose_parent_is_missing_fails() {
     let rig = Rig::new();
@@ -476,7 +502,8 @@ fn a_region_with_no_name_file_and_no_key_file_fails_with_and_with_no_name() {
                  file `name`, and the file `node.key` is not there or holds a key that \
                  the founding of the region does not hold; restore `node.key` from a \
                  backup of this node, or give another data directory\n\
-                 fix: Fix the cause that the message states, then run the command again\n"
+                 fix: Fix the cause that the message states, then run the command \
+                 again\n"
             ),
             "{args:?}"
         );

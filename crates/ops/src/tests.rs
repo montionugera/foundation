@@ -833,6 +833,35 @@ mod start {
              fix: Stop that node, or give another data directory with `--data`\n"
         );
     }
+
+    /// The OS gives the program name, so it can read as a flag.
+    #[test]
+    fn json_skips_the_program_name() {
+        for (program, flags, json) in [
+            ("--", &["start", "--json"][..], true),
+            ("--json", &["start"][..], false),
+        ] {
+            let args: Vec<OsString> =
+                [program].iter().chain(flags).map(OsString::from).collect();
+            let run = now(crate::cli(
+                args.clone(),
+                io::empty(),
+                io::sink(),
+                io::sink(),
+            ));
+            let Run::Start(start) = run else {
+                panic!("{args:?} starts a node");
+            };
+            let mut written = Vec::new();
+            crate::fail(&args, &busy(), &mut written);
+            assert_eq!(
+                (start.json, written.starts_with(b"{")),
+                (json, json),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&written)
+            );
+        }
+    }
 }
 
 mod mcp {

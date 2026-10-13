@@ -46,7 +46,8 @@ fn main() -> ExitCode {
 
 /// The exit status of the command line `args`, and of the node that it starts.
 fn run(args: &[OsString]) -> Result<u8, Failure> {
-    // `shards` starts no thread, so `os::interrupt` in `node` still comes first.
+    // No thread runs when `node` calls `os::interrupt`: `shards` starts none, and
+    // `command_line` joins its shard.
     let shards = os::shards().map_err(failed)?;
     match command_line(&shards, args.to_vec())? {
         Run::Exit(status) => Ok(status),
