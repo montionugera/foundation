@@ -196,3 +196,45 @@ fn variables_panic_on_a_text_that_is_not_a_node_id() {
 fn variables_panic_on_two_texts_of_one_node() {
     drop(Variables::new(&[DIP, "ns=03;i=7"]));
 }
+
+/// Serves with a `wall` that panics in a child process, and does nothing outside one.
+#[test]
+fn serves_with_a_wall_that_panics() {
+    if !crate::child::running() {
+        return;
+    }
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, move |node, _| async move {
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE]);
+        let wall = || -> types::time::Stamp { panic!("the wall fails") };
+        let (clock, net) = (node.clock(), node.net());
+        serve(
+            clock,
+            wall,
+            net,
+            listen(&node),
+            &mut rng,
+            &variables,
+            async {},
+        )
+        .await;
+    });
+    drop(run);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_panic_in_the_wall_of_a_server_aborts() {
+    use std::os::unix::process::ExitStatusExt;
+    const SIGABRT: i32 = 6;
+    let output =
+        crate::child::output("sim::tests::serves_with_a_wall_that_panics", &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.signal(), Some(SIGABRT), "{stderr}");
+    assert!(
+        stderr.contains("panic in a function that cannot unwind"),
+        "{stderr}"
+    );
+}
