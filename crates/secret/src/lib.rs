@@ -1,5 +1,6 @@
-//! Resolves a named secret on the node that runs a connector, through store adapters
-//! chosen by policy; `node` hands it the sealed ciphertexts it pulls from `mesh`.
+//! Resolves the source of a secret on the node that runs a connector: a variable of the
+//! node's environment, a file, or a name in a store adapter chosen by policy; `node`
+//! hands it the sealed ciphertexts it pulls from `mesh`.
 
 use std::fmt;
 

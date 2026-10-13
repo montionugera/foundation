@@ -1,8 +1,10 @@
-- **SECRET STORES AS ADAPTERS** `ctx.secret(name)` is the only path for kinds. Adapters:
-  the built-in sealed store (default, works offline), a node environment variable or
-  file, HashiCorp Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, and
-  Kubernetes Secrets. A policy picks the store per name. External adapters authenticate
-  with the node key and may cache values sealed to it (this delays revocation).
+- **SECRET STORES AS ADAPTERS** `ctx.secret(source)` is the only path for kinds, and a
+  store gives the value of `secret()` (SECRET SOURCES). Adapters: the built-in sealed
+  store (default, works offline), HashiCorp Vault, AWS Secrets Manager, Azure Key
+  Vault, GCP Secret Manager, and Kubernetes Secrets. A policy picks the store per name.
+  External adapters authenticate with the node key and may cache values sealed to it
+  (this delays revocation). A node environment variable or file is a source of its
+  own, `env()` or `file()`, outside the store (SECRET SOURCES).
 
   The first store is a file store, and every name resolves through it until the policy
   of #239 (ruling in the body of #2583, approved by the person on 2026-10-13 at
@@ -35,7 +37,8 @@
   footprint of class 35 (65,600 bytes). The allocation is the reservation of the pool,
   5.2 MiB for that file. A `File` runs one get at a time, and the next get waits its
   turn in the order it came (`laptop.architect-2`, 2026-10-13T19:49:00Z:
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153847139). So the
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153847139), also
+  behind a read of `file()` (SECRET SOURCES). So the
   gets of one shard hold at most 5.4 MiB of heap at once, plus less than 1 KiB for each
   get that waits for its turn, and 5.4 MiB for each read that a dropped get left
   running, until the disk ends that read. Those of a node hold that bound times the
