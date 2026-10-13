@@ -565,9 +565,7 @@ impl Session {
             Shown::Ended | Shown::Nothing => {}
             Shown::Cleared => {
                 self.class = Class::None;
-                if !self.error.value.is_empty() {
-                    self.error.set(&mut self.series, String::new());
-                }
+                self.error.set(&mut self.series, String::new());
             }
             Shown::Error(text) => {
                 self.class = Class::Retry;
