@@ -12,4 +12,6 @@
   not name it (the director,
   https://github.com/synnaxlabs/foundation/issues/1211#issuecomment-6106799591).
   Amended (2026-10-13, REVIEW ROUNDS): after round 3, no round runs but one that does
-  not count, and a fix of a defect has only its test and CI.
+  not count, and a fix of a defect gets no `reviewer` or `breaker`: only its test, CI,
+  an `architecture` run, and each approval and `performance` run that REVIEW ROUNDS
+  keeps.
