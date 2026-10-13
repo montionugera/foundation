@@ -11,26 +11,26 @@
   boundary, a decision, or the owner of state. The design approver of an item is the
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect wrote the PR, it is
-  the other architect. When `laptop.director` wrote the PR, `laptop.architect` takes the place of `laptop.director`.
-  After round 3, no other round runs, and no PR replaces it, other than a new design
-  that its design approver approves, which starts at round 1. Each round comment
-  numbered 3 marks each finding `defect` (wrong behavior, data loss, a crash, or an
-  oracle weakening), `design flaw`, or neither, as its reviewer marked it. The author
-  fixes each defect with a test that fails without the fix, CI checks it, and a defect
-  is never deferred. Each other finding is a deferral, and the deferral of a design flaw
-  needs the explicit OK of its design approver, or the PR closes for the new design.
-  After round 3, the PR changes only by these changes: merges of `main` and the commits
-  that fix what one broke, the fixes of defects, the `Text fixes:` items of round 3, and
-  each change that an approval or OK of the `review` skill asks for, with the link to
-  the comment that asks for it. When the PR changes by more than clean merges and text
-  fixes, an `architecture` run on the whole range after round 3 names its public surface
-  and hot path. A defect that the run finds gets its fix, its test, and a new run. Each
-  item of that surface, and each decision or public doc that states what a crate does
-  and that the range changes, needs the approval of its design approver and each
-  approval that the `review` skill asks for. The approvals, OKs, links, and
-  `performance` runs that the `review` skill asks for stay. A PR whose last round was
-  round 3 or later when this rule merged runs no new round. A `reviewer` marks the
-  findings of that round, and its changes after that round meet the same limit.
+  the other architect. When `laptop.director` wrote the PR, `laptop.architect` takes the
+  place of `laptop.director`. After round 3, no other round runs, and no PR replaces it,
+  other than a new design that its design approver approves, which starts at round 1.
+  Each round comment numbered 3 marks each finding `defect` (wrong behavior, data loss,
+  a crash, or an oracle weakening), `design flaw`, or neither, as its reviewer marked
+  it. The author fixes each defect with a test that fails without the fix, CI checks it,
+  and a defect is never deferred. Each other finding is a deferral, and the deferral of
+  a design flaw needs the explicit OK of its design approver, or the PR closes for the
+  new design. After round 3, the PR changes only by these changes: merges of `main` and
+  the commits that fix what one broke, the fixes of defects, the `Text fixes:` items of
+  round 3, and each change that an approval or OK of the `review` skill asks for, with
+  the link to the comment that asks for it. When the PR changes by more than clean
+  merges and text fixes, an `architecture` run on the whole range after round 3 names
+  its public surface and hot path. A defect that the run finds gets its fix, its test,
+  and a new run. Each item of that surface, and each decision or public doc that states
+  what a crate does and that the range changes, needs the approval of its design
+  approver and each approval that the `review` skill asks for. The approvals, OKs,
+  links, and `performance` runs that the `review` skill asks for stay. A PR whose last
+  round was round 3 or later when this rule merged runs no new round. A `reviewer` marks
+  the findings of that round, and its changes after that round meet the same limit.
   Reviewers put first what costs the most after merge, and a matter of style that leaves
   each statement true is no finding. The person, relayed by `laptop.monitor`
   (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6150302970,
@@ -55,15 +55,19 @@
     2026-10-13T17:34:11Z);
   - the design approver of a PR that `laptop.director` wrote, in round 1 of #2600
     (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154549130,
-    2026-10-13T20:27:57Z), so that no PR waits for the person beyond its approval to merge, after the person's words of 2026-10-13T19:52:40Z
+    2026-10-13T20:27:57Z), so that no PR waits for the person beyond its approval to
+    merge, after the person's words of 2026-10-13T19:52:40Z
     (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
 
   Cost: a fix after round 3 gets no `reviewer` or `breaker`, only its test, CI, an
   `architecture` run, and the approvals and `performance` runs that stay. In 4 of the 5
   worst escaped defects, the defect came in through a fix or a deferral that nothing
-  checked again. A style finding waits for the weekly `code-quality` pass. Supersedes "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" of round 3 of #2586 (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969, 2026-10-13T17:34:11Z). Supersedes,
-  after round 3, "a code fix keeps its round" of TEXT FIXES (the person,
-  2026-10-10T15:50:57Z,
+  checked again. A style finding waits for the weekly `code-quality` pass. Supersedes
+  "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" of
+  round 3 of #2586
+  (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969,
+  2026-10-13T17:34:11Z). Supersedes, after round 3, "a code fix keeps its round" of TEXT
+  FIXES (the person, 2026-10-10T15:50:57Z,
   https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621) and "A
   second round runs `reviewer` and `breaker` again on the fix commits only" of REVIEW
   TIERS. From #2585 (REVIEW CHECK), `cargo xtask review` checks that no round number
