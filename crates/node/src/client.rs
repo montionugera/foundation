@@ -8,13 +8,12 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
-/// The pool of the transport and of the hub client. It holds a request of
-/// `BODY_BYTES_MAX` bytes with its header, and its largest block a datagram.
-const POOL: block::Config =
-    match block::Config::new(2 * wire::hub::client::BODY_BYTES_MAX) {
-        Ok(config) => config,
-        Err(_) => panic!("invariant: the budget fits"),
-    };
+/// The pool of the transport and of the hub client. Its largest block holds a
+/// datagram, and the client sends a body in chunks of its largest block.
+const POOL: block::Config = match block::Config::new(1 << 21) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
 
 /// What [`reach`] dials with: the files of the data directory, and the seams of the
 /// program's transport and of its hub client.
@@ -137,12 +136,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pool_holds_a_datagram_and_the_largest_request() {
+    fn the_pool_holds_a_datagram() {
         let pool = block::Pool::heap(POOL);
         assert!(pool.largest() >= 1472, "{}", pool.largest());
-        let request = wire::hub::client::BODY_BYTES_MAX
-            + u64::try_from(wire::hub::client::Request::LEN).unwrap();
-        assert!(u64::try_from(pool.budget()).unwrap() >= request);
     }
 
     proptest! {
