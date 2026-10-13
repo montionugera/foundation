@@ -243,15 +243,16 @@
   `<version> (<commit>)`, with the first 12 hex digits of the commit or `unknown`, and
   the JSON `{"commit": <40 hex digits, or null>, "version": <version>}`, so a program
   tests `null`, not a word. The commit is that of `HEAD` when the `build.rs` of `ops`
-  runs, also in a tree with changes, with no mark of them, and is none with no `git`, outside a git
-  repository, and on a branch with no commit. Only the script sets it, so a variable of
-  the builder does not reach `ops`, and it panics at a commit that is not 40 lowercase
-  hex digits. The script watches the paths that `git rev-parse --git-path` gives for
-  `HEAD` and its ref, and, only while that ref has no file of its own, `packed-refs` and
-  the nearest folder above the ref, since git reads a ref file first. In a reftable
-  repository, it watches the `reftable` folder in their place. So a commit, a checkout,
-  and a branch switch in a worktree rebuild `ops`, and a build with no change does not.
-  MCP `serverInfo` keeps the version alone (`laptop.architect-2`, 2026-10-13T21:55:47Z,
+  runs, also in a tree with changes, with no mark of them, and is none with no `git`,
+  outside a git repository, and on a branch with no commit. Only the script sets it, so
+  a variable of the builder does not reach `ops`, and it panics at a commit that is not
+  40 lowercase hex digits. The script watches the paths that `git rev-parse --git-path`
+  gives for `HEAD` and its ref, and, only while that ref has no file of its own,
+  `packed-refs` and the nearest folder above the ref, since git reads a ref file first.
+  In a reftable repository, it watches the `reftable` folder in their place. So a
+  commit, a checkout, and a branch switch in a worktree rebuild `ops`, and a build with
+  no change does not. MCP `serverInfo` keeps the version alone (`laptop.architect-2`,
+  2026-10-13T21:55:47Z,
   https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156028343; the
   watch of `packed-refs` and the check of the commit: `laptop.architect-2`,
   2026-10-13T22:33:11Z,
