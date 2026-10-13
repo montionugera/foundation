@@ -250,9 +250,8 @@ impl Phase {
 }
 
 /// How the last run of a connector ended with an error, or the error that its running
-/// kind shows, as its `class` channel gives it. The value of `class` is 0 when the
-/// running kind cleared the error last, or when it shows none and the last run returned
-/// `Ok` or no run ended.
+/// kind shows, as its `class` channel gives it. The value of `class` is 0 when
+/// [`Reading::error`] is `None`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// `kind::Error::Config`.
