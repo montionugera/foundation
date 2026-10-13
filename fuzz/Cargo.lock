@@ -320,6 +320,7 @@ dependencies = [
  "hub",
  "hyper",
  "loom",
+ "spec",
  "types",
 ]
 
@@ -327,9 +328,12 @@ dependencies = [
 name = "connector-influx"
 version = "0.0.0"
 dependencies = [
+ "bytes",
+ "codec",
  "connector",
  "document",
  "http",
+ "hub",
  "types",
  "unicode-properties",
 ]
@@ -957,6 +961,7 @@ dependencies = [
  "connector",
  "document",
  "env",
+ "hub",
  "mesh",
  "schemars",
  "serde",

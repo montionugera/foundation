@@ -50,7 +50,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             for quality in [Quality::GOOD, BAD] {
                 variables.change(quality);
                 let before = clock.now();
-                reads.push(client.read(&spike).await);
+                reads.push(client.read_one(&spike).await);
                 times.push((before, clock.now()));
             }
             client.close().await;
@@ -112,7 +112,7 @@ fn a_server_has_room_for_4_sessions() {
                 clients.push(connect.await.expect("connect"));
             }
             for client in &mut clients {
-                reads.push(client.read(&spike).await);
+                reads.push(client.read_one(&spike).await);
             }
             let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
             fifth = connect.await.err();

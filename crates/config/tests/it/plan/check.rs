@@ -312,7 +312,8 @@ fn gives_no_span_or_note_for_a_problem_in_a_connector_config_that_holds_spans() 
         "Write a name such as \"site_a.node_1\"".into(),
     );
     assert_eq!(refused, [bad_name]);
-    let config = "address = \"http://influx:8086\"\nselect = \"x.*\"\n\
+    let config = "address = \"http://influx:8086\"\ndatabase = \"x\"\n\
+                  measurement = \"x\"\nselect = \"x.*\"\n\
                   reader {\n}\nreader {\n}\n";
     let definitions = [connector("x", "influx", "n", config)]
         .into_iter()
@@ -346,4 +347,74 @@ fn refuses_the_empty_allow_fuzz_input_at_its_allow() {
 fn gives_a_private_key_problem_for_each_string_that_holds_one() {
     let found = checked([writer(MARK), placement("x", &[MARK], home(MARK))]);
     assert_eq!(found, [alarm(), alarm(), alarm()]);
+}
+
+/// The problem of a block at the name of the status channel `c.status.state`.
+fn implied() -> Problem {
+    (
+        "config.implied-channel",
+        None,
+        "the connector `c` implies the channel `c.status.state`, so a block cannot \
+         have its name"
+            .into(),
+        "Give the block another name".into(),
+    )
+}
+
+fn unknown_index(index: &str) -> Problem {
+    (
+        "config.unknown-channel",
+        None,
+        format!("no `channel` block defines the index channel `{index}`"),
+        "Name a channel that a `channel` block defines".into(),
+    )
+}
+
+/// The `config_check` fuzz inputs of influx connectors, in the form with `database`
+/// and `measurement`, reach the checks that the old form reached on `main`.
+#[test]
+fn checks_the_influx_fuzz_inputs_with_a_database_and_a_measurement() {
+    let check = |text: &str| checked_files(&text.split('\x1e').collect::<Vec<_>>());
+    let text = include_str!(
+        "../../../../../oracles/fuzz/config_check/influx_database_measurement"
+    );
+    let found = config::check(&documents(&[text]), &kinds()).expect("no problems");
+    assert_eq!(found.len(), 7);
+    let text = include_str!(
+        "../../../../../oracles/fuzz/config_check/influx_status_name_database"
+    );
+    assert_eq!(check(text), [implied(), unknown_index("c.status.time")]);
+    let text = include_str!(
+        "../../../../../oracles/fuzz/config_check/influx_long_name_database"
+    );
+    let long = (
+        "config.long-name",
+        None,
+        format!(
+            "the name of a status channel of the connector `{}` is 256 bytes, and the \
+             most is 255",
+            "c".repeat(244)
+        ),
+        "Shorten the name of the connector".into(),
+    );
+    assert_eq!(check(text), [long]);
+    let duplicate = duplicate("c", "connector", "c", "`connector`");
+    let text = include_str!(
+        "../../../../../oracles/fuzz/config_check/influx_repeated_connector_database"
+    );
+    let expected = [duplicate.clone(), implied(), unknown_index("a.time")];
+    assert_eq!(check(text), expected);
+    let text = include_str!(
+        "../../../../../oracles/fuzz/config_check/\
+         influx_failed_repeated_connector_database"
+    );
+    let no_node = (
+        "document.missing-attribute",
+        None,
+        "the `connector` block has no `node`".into(),
+        "Add a `node` attribute with the name of the node that runs it, such as \
+         \"edge\""
+            .into(),
+    );
+    assert_eq!(check(text), [no_node, duplicate, unknown_index("a.time")]);
 }

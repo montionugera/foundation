@@ -6956,8 +6956,9 @@ mod port {
 
         /// The node runs a connector that an apply places on it, and runs it again when
         /// an apply changes its config. Its status gives how the run ended: `influx`
-        /// ends with a config error, and does not restart. The reader opens after the
-        /// first run, because the status channels come with the connector.
+        /// ends with a config error, since its `select` matches no channel, and does
+        /// not restart. The reader opens after the first run, because the status
+        /// channels come with the connector.
         #[test]
         fn a_node_runs_a_connector_that_an_apply_places_on_it() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -7008,9 +7009,8 @@ mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{},"error":{"class":"config","text":"this build cannot "#,
-                r#"run the influx kind yet. Remove the connector, or run it on a "#,
-                r#"build that has the influx writer"}}]}}"#,
+                r#""counts":{},"error":{"class":"config","text":"the selector "#,
+                r#"matches no channel. Select a channel that the spec defines"}}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7018,10 +7018,12 @@ mod port {
 
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
-        /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader opens after the run of the start, which no
-        /// reader sees: its open and the open of that run wait for the same home. The
-        /// seq of the first frame that it reads counts the three frames of that run.
+        /// `influx` ends with a config error, since its `select` matches no channel, so
+        /// each later apply runs it again, also one that keeps it. That apply adds
+        /// `plant.other`, so the run reads it until the next apply changes the config.
+        /// The reader opens after the run of the start, which no reader sees: its open
+        /// and the open of that run wait for the same home. The seq of the first frame
+        /// that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             for seed in 0..16 {
@@ -7054,14 +7056,7 @@ mod port {
                 assert_eq!(sim.run(), Ok(()));
                 assert_eq!(node.join(), Ok(()));
                 let read = read.lock().unwrap();
-                let runs = [
-                    (6, 0, 0),
-                    (7, 3, 1),
-                    (8, 2, 1),
-                    (9, 0, 0),
-                    (10, 3, 1),
-                    (11, 2, 1),
-                ];
+                let runs = [(6, 0, 0), (7, 3, 0), (8, 2, 0), (9, 0, 0)];
                 assert_eq!(*read, runs, "seed {seed}");
             }
         }
@@ -7146,6 +7141,7 @@ mod port {
         /// The config of the connector `plant.influx`: its body without `kind` and
         /// `node`.
         const INFLUX: &str = "address = \"http://influx:8086\"\nselect = \"plant.*\"\n\
+                              database = \"plant\"\nmeasurement = \"telemetry\"\n\
                               reader {\n  mode = \"complete\"\n}\n";
 
         /// The text of a spec with the connector `plant.influx` of `kind` on [`OWN`].
