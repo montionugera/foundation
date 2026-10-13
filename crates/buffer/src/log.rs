@@ -48,6 +48,8 @@ pub(crate) enum Invalid {
         end: Mark,
         stamp: Option<Stamp>,
     },
+    /// A carry record lists the path twice.
+    Repeated { index: channel::Key, path: Path },
 }
 
 impl fmt::Display for Invalid {
@@ -89,6 +91,10 @@ impl fmt::Display for Invalid {
                 carried.stamp,
                 end.seq,
                 end.given
+            ),
+            Self::Repeated { index, path } => write!(
+                f,
+                "a carry record lists index {index} on path {path:?} twice"
             ),
         }
     }
@@ -252,6 +258,23 @@ impl Log {
     /// positions hold the same entries.
     fn queued(&self) -> bool {
         self.appended != self.durable
+    }
+
+    /// Starts each run past `passed` more entries with no samples at `seq`.
+    fn pass(&mut self, seq: u64, passed: u64) {
+        for run in &mut self.runs {
+            let given = if run.start.seq == seq {
+                run.start.given
+            } else {
+                0
+            };
+            run.start = Mark {
+                seq,
+                given: given
+                    .checked_add(passed)
+                    .expect("invariant: the carried count bounds it"),
+            };
+        }
     }
 
     /// Moves the durable tail past the entry. When the record at `offset` is not
@@ -509,7 +532,8 @@ impl Logs {
     /// [`Invalid::Carried`] when the walk met the path and the carried end has
     /// another seq than its end, fewer entries with no samples, or more while a
     /// walked entry is not one at that seq or after an earlier carried tail, or the
-    /// path has a stamp and the carried stamp is another. Nothing changes.
+    /// path has a stamp and the carried stamp is another. [`Invalid::Repeated`] when
+    /// the record at `offset` already gave the path its tail. Nothing changes.
     ///
     /// # Panics
     ///
@@ -550,6 +574,12 @@ impl Logs {
             "invariant: a carry comes when every entry of index {} is durable",
             carried.index
         );
+        if log.holder == Some(offset) {
+            return Err(Invalid::Repeated {
+                index: carried.index,
+                path: carried.path,
+            });
+        }
         let end = log.durable.mark();
         let stamp = log.durable.tail.stamp;
         let passed = carried.given.checked_sub(end.given).filter(|&passed| {
@@ -565,29 +595,14 @@ impl Logs {
             });
         };
         if passed > 0 {
-            for run in &mut log.runs {
-                let given = if run.start.seq == end.seq {
-                    run.start.given
-                } else {
-                    0
-                };
-                run.start = Mark {
-                    seq: end.seq,
-                    given: given
-                        .checked_add(passed)
-                        .expect("invariant: the carried count bounds it"),
-                };
-            }
+            log.pass(end.seq, passed);
         }
         log.durable.given = carried.given;
         log.durable.tail.stamp = carried.stamp;
         log.appended = log.durable;
-        let held = log.holder.replace(offset) == Some(offset);
+        log.holder = Some(offset);
         log.origin = None;
-        // A record that lists the path twice holds it once.
-        if !held {
-            self.list(offset, at);
-        }
+        self.list(offset, at);
         Ok(())
     }
 
@@ -1619,16 +1634,31 @@ mod tests {
             assert_eq!(logs, before);
         }
 
+        /// The record at 8192 gave the path its tail, as a new path and as a met
+        /// one.
         #[test]
-        fn gives_a_path_once_after_a_carry_record_lists_it_twice() {
-            let mut logs = Logs::default();
+        fn refuses_a_carry_record_that_lists_a_path_twice() {
+            let mut new = Logs::default();
             let tail = carried(5, 0, None);
-            logs.carry(slot(1), &tail, 8192).expect("a new path");
-            logs.carry(slot(1), &tail, 8192).expect("the same tail");
-            let mut tails = Vec::new();
-            logs.idle(u64::MAX, 8, &mut tails);
-            assert_eq!(tails, [tail]);
-            assert_eq!(logs.records, [(8192, 1)]);
+            new.carry(slot(1), &tail, 8192).expect("a new path");
+            let mut met = walked(None);
+            let end = carried(3, 1, None);
+            met.carry(slot(1), &end, 8192)
+                .expect("the walk met the end");
+            let repeated = Invalid::Repeated {
+                index: channel::Key::from_u128(1),
+                path: Path::Live,
+            };
+            for (logs, tail) in [(new, tail), (met, end)] {
+                let mut again = logs.clone();
+                assert_eq!(again.carry(slot(1), &tail, 8192), Err(repeated));
+                assert_eq!(again, logs);
+            }
+            assert_eq!(
+                repeated.to_string(),
+                "a carry record lists index 00000000-0000-0000-0000-000000000001 on \
+                 path Live twice"
+            );
         }
 
         /// The walk met an entry with no samples at seq 3, then one at seq 5.
