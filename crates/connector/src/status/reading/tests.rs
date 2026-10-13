@@ -27,6 +27,10 @@ enum Step {
     Start,
     /// Sets the count `in`, and writes it.
     Count(u64),
+    /// Shows the error of this text, and writes it.
+    Show(&'static str),
+    /// Clears the shown error, and writes it.
+    Clear,
     End(Result<(), kind::Error>),
     Wait,
     Stop,
@@ -70,6 +74,14 @@ fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
                 Step::Start => assert!(writer.start().await),
                 Step::Count(value) => {
                     status.count("in").set(value);
+                    writer.during(clock.sleep(Span::SECOND)).await;
+                }
+                Step::Show(text) => {
+                    status.show(&text);
+                    writer.during(clock.sleep(Span::SECOND)).await;
+                }
+                Step::Clear => {
+                    status.clear();
                     writer.during(clock.sleep(Span::SECOND)).await;
                 }
                 Step::End(end) => writer.end(&end).await,
@@ -213,6 +225,19 @@ fn reads_the_restarts_and_keeps_the_last_error_after_a_restart() {
     let got = read(vec![Step::Start, device(), Step::Wait, Step::Start], ALL);
     let want = reading(State::Running, 1, Some((Class::Device, "busy")), 0);
     assert_eq!(got, Some(want));
+}
+
+#[test]
+fn reads_the_error_that_the_running_kind_shows() {
+    let got = read(vec![Step::Start, Step::Show("refused")], ALL);
+    let want = reading(State::Running, 0, Some((Class::Retry, "refused")), 0);
+    assert_eq!(got, Some(want));
+}
+
+#[test]
+fn reads_no_error_after_the_running_kind_clears_the_last_one() {
+    let steps = vec![Step::Start, device(), Step::Wait, Step::Start, Step::Clear];
+    assert_eq!(read(steps, ALL), Some(reading(State::Running, 1, None, 0)));
 }
 
 #[test]
