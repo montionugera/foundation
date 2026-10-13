@@ -93,7 +93,10 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
     let config = ctx.config();
     let (clock, net) = (ctx.clock().clone(), ctx.net().clone());
-    let connect = Client::connect(clock, net, &mut ctx.rng(), &config.address).await;
+    let time = frames.out.writer.time();
+    let wall = Box::new(move || time.now());
+    let rng = &mut ctx.rng();
+    let connect = Client::connect(clock, wall, net, rng, &config.address).await;
     let mut client = connect.map_err(|status| {
         device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),
