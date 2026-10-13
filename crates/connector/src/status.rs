@@ -71,7 +71,8 @@ const PERIOD: Span = Span::SECOND;
 
 /// The status channels of `connector`: the name of their index, then the name and
 /// sample type of each channel on it, the supervisor's first, then each of `counts`
-/// as `u64`. `counts` is as [`kind::Table::check`] gives them.
+/// as `u64`. `counts` is as [`kind::Table::check`] gives them. Each frame that the
+/// supervisor writes holds one sample of each of these channels.
 ///
 /// # Errors
 ///
