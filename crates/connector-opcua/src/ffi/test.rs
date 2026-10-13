@@ -1,7 +1,9 @@
 use std::ffi::{c_int, c_void};
 use std::mem::offset_of;
 
-use super::{Bytes, ConnectionCallback, ConnectionManager, EventLoop, KeyValueMap, at};
+use super::{
+    Bytes, ConnectionCallback, ConnectionManager, EventLoop, KeyValueMap, Node, at,
+};
 
 /// `UA_Server`, which Rust holds only by pointer.
 #[repr(C)]
@@ -176,15 +178,13 @@ unsafe extern "C" {
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
     pub(crate) fn shim_server_add_double(
         server: *mut Server,
-        namespace: u16,
-        node: u32,
+        node: Node<'_>,
         value: f64,
     ) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
-        namespace: u16,
-        node: u32,
-        length: usize,
+        node: Node<'_>,
+        size: usize,
     ) -> u32;
     pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;

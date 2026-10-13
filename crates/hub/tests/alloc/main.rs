@@ -10,6 +10,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../common/node.rs"]
@@ -170,7 +171,7 @@ fn open_of_a_reader_of_many_channels() {
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
         let more: Vec<_> = (0..MANY).map(|n| name(&format!("w.{n}"))).collect();
-        let hub = common::hub_in(&node, tasks, None, &more).await;
+        let hub = common::hub_alone(&node, tasks, &more).await;
         let _first = open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
         let (_second, allocations) =
             open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;

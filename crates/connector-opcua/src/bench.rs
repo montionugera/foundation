@@ -24,6 +24,7 @@ use types::time::{Monotonic, Span};
 use crate::connection;
 use crate::event::Loop;
 use crate::ffi::{self, Status};
+use crate::node::{Key, Node};
 use crate::server::Server;
 
 /// A client of open62541 on its own event loop, which also runs a count of repeated
@@ -265,8 +266,11 @@ impl Manager {
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.clients[0].as_ptr(),
-                0,
-                node,
+                (&Node {
+                    namespace: 0,
+                    key: Key::Number(node),
+                })
+                    .into(),
                 answer,
                 data,
                 ptr::null_mut(),
