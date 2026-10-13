@@ -213,9 +213,14 @@
   `Network` arm, 2026-10-13T02:20:08Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136786579.
   Supersedes `ops::Unreached` and "`node`: no new public item" of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935, and
-  the map of item 3 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274.
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935; the
+  map of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274;
+  `Config::pool`, the doc of `Error::Transport`, and the `hub` error in
+  `Error::Unanswered` of the 2d surface of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913; and
+  the pool that holds a request of `BODY_BYTES_MAX` bytes of
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936.
   A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
   choice of its parent, does not reach it (ENV SEAMS): a node that
   `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
