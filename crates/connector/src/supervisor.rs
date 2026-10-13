@@ -456,8 +456,8 @@ mod tests {
         Clear(Span),
         /// Lends its context to a task that shows the error `late`, or clears the
         /// error when `cleared`, at the cancel of the run. Then returns `Ok` at once,
-        /// or a device error when `device`.
-        Late { device: bool, cleared: bool },
+        /// or a device error when `failed`.
+        Late { failed: bool, cleared: bool },
     }
 
     /// When each run started and ended.
@@ -577,7 +577,7 @@ mod tests {
                 clock.sleep(span).await;
                 Ok(())
             }
-            Some(Step::Late { device, cleared }) => show_late(lent, device, cleared),
+            Some(Step::Late { failed, cleared }) => show_late(lent, failed, cleared),
             None => {
                 ctx.cancel().wait().await;
                 Ok(())
@@ -588,7 +588,7 @@ mod tests {
     /// Runs [`Step::Late`].
     fn show_late(
         lent: &Rc<Context<bool>>,
-        device: bool,
+        failed: bool,
         cleared: bool,
     ) -> Result<(), Error> {
         let late = Rc::clone(lent);
@@ -600,7 +600,7 @@ mod tests {
                 late.error(&"late");
             }
         });
-        if device {
+        if failed {
             return Err(Error::Device("no reply".into()));
         }
         Ok(())
@@ -999,7 +999,7 @@ mod tests {
             ((2, 0, 0), String::new()),
         ];
         let late = Step::Late {
-            device: false,
+            failed: false,
             cleared: false,
         };
         assert_eq!(supervise_late(late, ms(500)), want);
@@ -1014,7 +1014,7 @@ mod tests {
             ((0, 2, 1), "no reply".to_owned()),
         ];
         let late = Step::Late {
-            device: true,
+            failed: true,
             cleared: false,
         };
         assert_eq!(supervise_late(late, ms(5_000))[..4], want);
@@ -1029,7 +1029,7 @@ mod tests {
             ((0, 2, 1), "no reply".to_owned()),
         ];
         let late = Step::Late {
-            device: true,
+            failed: true,
             cleared: true,
         };
         assert_eq!(supervise_late(late, ms(5_000))[..4], want);
