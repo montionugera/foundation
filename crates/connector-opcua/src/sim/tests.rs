@@ -16,6 +16,16 @@ use crate::value::Value;
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
 const BAD: Quality = Quality(0x8000_0000);
+const CLAMPED: Quality = Quality(0x0030_0000);
+const UNCERTAIN: Quality = Quality(0x4090_0000);
+const QUALITIES: [Quality; 4] = [Quality::GOOD, CLAMPED, UNCERTAIN, BAD];
+/// The reads of a variable with each of [`QUALITIES`] in turn.
+const READS: [Result<Value, Status>; 4] = [
+    Ok(Value::F64(1.0)),
+    Ok(Value::F64(2.0)),
+    Err(Status(UNCERTAIN.0)),
+    Err(Status(BAD.0)),
+];
 
 /// Binds a listener of `node` on its port 4840.
 fn listen(node: &node::Node) -> Listener {
@@ -55,7 +65,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             ))
             .await
             .expect("connect");
-            for quality in [Quality::GOOD, BAD] {
+            for quality in QUALITIES {
                 variables.change(quality);
                 let before = clock.now();
                 reads.push(client.read_one(&spike).await);
@@ -74,14 +84,16 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             until,
         )
         .await;
-        assert_eq!(reads, [Ok(Value::F64(1.0)), Err(Status(BAD.0))]);
+        assert_eq!(reads, READS);
         let record = variables.served();
         assert_eq!(record[DIP], []);
         let spike = &record[SPIKE];
         let answers: Vec<_> = (spike.iter())
             .map(|served| (served.value, served.quality))
             .collect();
-        assert_eq!(answers, [(1.0, Quality::GOOD), (2.0, BAD)]);
+        let expected: Vec<_> =
+            [1.0, 2.0, 3.0, 4.0].into_iter().zip(QUALITIES).collect();
+        assert_eq!(answers, expected);
         for (Served { time, .. }, (before, after)) in spike.iter().zip(times) {
             assert!(
                 before <= *time && *time <= after,
@@ -99,50 +111,6 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             async {},
         )
         .await;
-    })
-    .expect("the run ends");
-}
-
-#[test]
-fn a_read_gives_the_value_of_a_good_subcode_and_the_status_of_an_uncertain() {
-    const CLAMPED: Quality = Quality(0x0030_0000);
-    const UNCERTAIN: Quality = Quality(0x4090_0000);
-    let mut sim = Sim::new(::sim::Config::default());
-    let node = sim.node(node::Config::default());
-    sim.run_on(&node, move |node, _| async move {
-        let listener = listen(&node);
-        let url =
-            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
-        let mut rng = node.entropy().rng();
-        let variables = Variables::new(&[SPIKE]);
-        let spike = SPIKE.parse::<Node>().expect("a node");
-        let mut reads = Vec::new();
-        let until = async {
-            let connect = Client::connect(
-                event::Time::monotonic(node.clock()),
-                node.net(),
-                &mut rng,
-                &url,
-            );
-            let mut client = connect.await.expect("connect");
-            for quality in [CLAMPED, UNCERTAIN] {
-                variables.change(quality);
-                reads.push(client.read_one(&spike).await);
-            }
-            client.close().await;
-        };
-        let mut served = node.entropy().rng();
-        serve(
-            node.clock(),
-            event::Time::monotonic(node.clock()).wall,
-            node.net(),
-            listener,
-            &mut served,
-            &variables,
-            until,
-        )
-        .await;
-        assert_eq!(reads, [Ok(Value::F64(1.0)), Err(Status(UNCERTAIN.0))]);
     })
     .expect("the run ends");
 }

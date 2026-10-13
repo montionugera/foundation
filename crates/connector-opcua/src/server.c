@@ -106,22 +106,6 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t si
     return status;
 }
 
-/* Adds to `server` the variable `node`, which holds the String "text", under the
- * Objects folder. */
-UA_StatusCode shim_server_add_string(UA_Server *server, shim_node node) {
-    UA_String text = UA_STRING("text");
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, &text, &UA_TYPES[UA_TYPES_STRING]);
-    attributes.dataType = UA_TYPES[UA_TYPES_STRING].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "string"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
 /* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
  * of `server`, each 0 for the default of open62541. */
 void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,

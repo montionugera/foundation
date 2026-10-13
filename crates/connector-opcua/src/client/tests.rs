@@ -315,12 +315,20 @@ fn sent(value: Value) -> Value {
     }
 }
 
-/// `value` with each float as its bits, which tell each NaN and -0.0 apart.
-fn exact(value: Result<Value, Status>) -> Result<Result<Value, u64>, Status> {
+/// A [`Value`] that compares each float by its bits, which tell each NaN and -0.0
+/// apart.
+#[derive(Clone, Debug, PartialEq)]
+enum Exact {
+    F32(u32),
+    F64(u64),
+    Other(Value),
+}
+
+fn exact(value: Result<Value, Status>) -> Result<Exact, Status> {
     value.map(|value| match value {
-        Value::F32(float) => Err(u64::from(float.to_bits())),
-        Value::F64(double) => Err(double.to_bits()),
-        other => Ok(other),
+        Value::F32(float) => Exact::F32(float.to_bits()),
+        Value::F64(double) => Exact::F64(double.to_bits()),
+        other => Exact::Other(other),
     })
 }
 
@@ -353,24 +361,46 @@ fn a_read_gives_each_scalar_type_at_its_bounds() {
 }
 
 #[test]
-fn a_read_of_an_array_or_a_string_fails_with_a_type_mismatch() {
+fn the_kind_of_each_scalar_type_is_its_index_in_ua_types() {
+    let kinds = [
+        ffi::BOOLEAN,
+        ffi::SBYTE,
+        ffi::BYTE,
+        ffi::INT16,
+        ffi::UINT16,
+        ffi::INT32,
+        ffi::UINT32,
+        ffi::INT64,
+        ffi::UINT64,
+        ffi::FLOAT,
+        ffi::DOUBLE,
+    ];
+    let names = kinds.map(|kind| ffi::types()[usize::from(kind)].name());
+    assert_eq!(
+        names,
+        [
+            "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64",
+            "UInt64", "Float", "Double",
+        ]
+    );
+}
+
+#[test]
+fn a_read_of_an_array_or_a_byte_string_fails_with_a_type_mismatch() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let array = Node {
                 namespace: 1,
                 key: Key::Number(1001),
             };
-            let string = Node {
+            let bytes = Node {
                 namespace: 1,
                 key: Key::Number(1002),
             };
             peer.server.add_doubles(&array);
-            peer.server.add_string(&string);
+            peer.server.add_bytes(&bytes, 1);
             let mut client = peer.connected().await;
-            (
-                client.read_one(&array).await,
-                client.read_one(&string).await,
-            )
+            (client.read_one(&array).await, client.read_one(&bytes).await)
         })
         .await
     });

@@ -39,5 +39,7 @@
   rule of `SPLIT` and the test of each form of a key at 2026-10-13T05:45:02Z,
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974. The
   trigger of a value larger than a Double: `laptop.architect-2` at
-  2026-10-13T22:01:26Z, which supersedes the trigger of another type in the first
-  ruling: https://github.com/synnaxlabs/foundation/pull/2613#issuecomment-6156112949.
+  2026-10-13T22:01:26Z,
+  https://github.com/synnaxlabs/foundation/pull/2613#issuecomment-6156112949.
+  Supersedes the trigger of another type of
+  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207.

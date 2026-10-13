@@ -174,20 +174,6 @@ impl Server {
         unsafe { (*source.as_ptr()).added = true };
     }
 
-    /// Adds the variable `node` with the String "text".
-    ///
-    /// # Panics
-    ///
-    /// If open62541 refuses the node, or the key of `node` is the number 0.
-    #[cfg(test)]
-    pub(crate) fn add_string(&self, node: &Node) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_string(self.raw(), added(node))
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
-    }
-
     /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
     ///
     /// # Panics

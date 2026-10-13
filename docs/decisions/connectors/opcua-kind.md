@@ -14,9 +14,8 @@
   the sample type of the same width and sign (Float to `f32`, Int32 to `i32`, Boolean
   to `bool`), with no conversion. A channel of another type is a config error. A node
   whose value has another type than the sample type of its channel ends the run with
-  a device error. The
-  `influx` kind writes the same types (#2555). String, DateTime, and arrays come when a
-  user needs them (question:
+  a device error. The `influx` kind writes the same types (#2555). String, DateTime,
+  and arrays come when a user needs them (question:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150342865). Time:
   each frame has the midpoint of the request on mesh time (STAMP). The SourceTimestamp
   comes with the device clock and its fit to mesh time, when a user needs the time of
@@ -24,6 +23,6 @@
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343218). Status:
   a Good with a subcode counts as Good, and Uncertain counts as Bad. A Bad value ends
   the run with a device error now. Next, the kind leaves out the sample of a Bad node
-  from the frame, counts it, and keeps the others. A quality channel comes
-  with the quality model of the MVP (question:
+  from the frame, counts it, and keeps the others. A quality channel comes with the
+  quality model of the MVP (question:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343529).
