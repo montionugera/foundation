@@ -952,8 +952,8 @@ mod tests {
         }
 
         /// Each record's entries are appended, a commit asks for the idle tails
-        /// up to a reach, the record is synced, and a trim may pass the records
-        /// before the oldest holder. Each tail comes once for its holder, oldest
+        /// up to a reach, the record is synced and may carry those tails, and a
+        /// trim may pass the records before the oldest holder. Each tail comes once for its holder, oldest
         /// holder first, with the path's durable end. A call with room left has
         /// given each path with no queued entry whose holder is before the reach.
         #[test]
@@ -964,6 +964,7 @@ mod tests {
                     0..14u64,
                     0..4usize,
                     prop::option::of(0..14u64),
+                    any::<bool>(),
                 ),
                 1..12,
             ),
@@ -974,7 +975,8 @@ mod tests {
                 hash::Map::default();
             let mut given: hash::Set<(u32, Path, u64)> = hash::Set::default();
             let mut hidden = 0;
-            for ((record, reach, limit, trim), number) in records.iter().zip(1..) {
+            for ((record, reach, limit, trim, carries), number) in records.iter().zip(1..)
+            {
                 let offset = 4096 * number;
                 let mut queued = Vec::new();
                 for next in record {
@@ -1027,6 +1029,16 @@ mod tests {
                     let key = (*index, header.path);
                     let end = model.get(&key).map_or(Mark::at(0), |&(_, end)| end);
                     model.insert(key, (offset, end.after(header.first, header.len)));
+                }
+                if *carries {
+                    for tail in &tails {
+                        let index = (0..3u32)
+                            .find(|&i| channel::Key::from_u128(u128::from(i)) == tail.index)
+                            .expect("a fed index");
+                        prop_assert_eq!(logs.carry(slot(index), tail, offset), Ok(()));
+                        let end = model[&(index, tail.path)].1;
+                        model.insert((index, tail.path), (offset, end));
+                    }
                 }
                 let kept = model.values().map(|&(holder, _)| holder).min();
                 prop_assert_eq!(logs.kept(), kept);
@@ -1571,9 +1583,33 @@ mod tests {
             };
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
+            let mut tails = Vec::new();
+            logs.clone().idle(16384, 2, &mut tails);
+            assert_eq!(tails, [carried(3, 4, Some(20))]);
             logs.append(slot(1), &header(1, Path::Live, 3, 2, None))
                 .expect("appends past the carried end");
-            assert!(logs.log(slot(1), Path::Live).expect("a log").queued());
+            tails.clear();
+            logs.idle(16384, 2, &mut tails);
+            assert_eq!(tails, [], "a queued path is not idle");
+            assert_eq!(logs.kept(), Some(12288));
+        }
+
+        /// A trim that passes the carry record of a path keeps the run of a later
+        /// record.
+        #[test]
+        fn a_trim_past_a_carry_record_keeps_the_later_run() {
+            let mut logs = walked(None);
+            logs.carry(slot(1), &carried(3, 1, None), 8192)
+                .expect("the walk met the end");
+            let header = header(1, Path::Live, 3, 2, None);
+            logs.append(slot(1), &header).expect("appends");
+            logs.sync(slot(1), &header, 12288).expect("syncs");
+            logs.hide(12288);
+            let later = run(3, 1, 12288);
+            assert_eq!(
+                logs.find(slot(1), Path::Live, mark(0, 0)),
+                Found::Run(channel::Key::from_u128(1), later)
+            );
             assert_eq!(logs.kept(), Some(12288));
         }
 

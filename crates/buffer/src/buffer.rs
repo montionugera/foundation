@@ -1546,12 +1546,20 @@ mod tests {
                     newest.await.expect("reads");
                 }
                 kept.push(kept_now());
+                {
+                    let mut newest = pin!(buffer.newest(Path::Live, NonZeroU8::MIN));
+                    let first =
+                        poll_fn(|cx| Poll::Ready(newest.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "newest waits on a file read");
+                    kept.push(kept_now());
+                }
+                kept.push(kept_now());
                 *given.lock().expect("no panic held the lock") = kept;
                 buffer
             },
         );
         let kept = kept.lock().expect("no panic held the lock");
-        let expected = [12288, 4096, 12288, 8192, 12288, 4096, 12288];
+        let expected = [12288, 4096, 12288, 8192, 12288, 4096, 12288, 4096, 12288];
         assert_eq!(*kept, expected.map(Some));
     }
 
