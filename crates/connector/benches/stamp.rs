@@ -5,7 +5,8 @@
 //! - `request`: `Stamps::request` of a request that is ready at once, so the line is
 //!   its two reads of mesh time and the rule of the stamp.
 //!
-//! Each figure is ns per call, with the count of the allocations of the calls.
+//! Each figure is ps per call, so a change under 1 ns shows, with the count of the
+//! allocations of the calls.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -74,10 +75,10 @@ fn request(writer: &Writer) -> Line {
     })
 }
 
-/// The ns per call of each timed round, and the allocations of all of them.
+/// The ps per call of each timed round, and the allocations of all of them.
 struct Line {
     name: &'static str,
-    nanos: Vec<u64>,
+    picos: Vec<u64>,
     allocations: u64,
 }
 
@@ -86,7 +87,7 @@ struct Line {
 fn time(name: &'static str, mut call: impl FnMut()) -> Line {
     let mut line = Line {
         name,
-        nanos: Vec::new(),
+        picos: Vec::new(),
         allocations: 0,
     };
     for round in 0..WARMUP + ROUNDS {
@@ -98,26 +99,27 @@ fn time(name: &'static str, mut call: impl FnMut()) -> Line {
         });
         let nanos = Instant::now().duration_since(start).as_nanos();
         if round >= WARMUP {
-            let nanos = u64::try_from(nanos).expect("a round takes under 2^64 ns");
-            line.nanos.push(nanos / CALLS);
+            let picos =
+                u64::try_from(nanos * 1000).expect("a round takes under 2^64 ps");
+            line.picos.push(picos / CALLS);
             line.allocations += allocations;
         }
     }
     line
 }
 
-/// Prints p10, p50, and p90 of the ns per call of each line, and its allocations.
+/// Prints p10, p50, and p90 of the ps per call of each line, and its allocations.
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn print(lines: &[Line]) {
-    println!("ns per call over {ROUNDS} rounds of {CALLS} calls");
+    println!("ps per call over {ROUNDS} rounds of {CALLS} calls");
     println!(
         "{:<10} {:>7} {:>7} {:>7} {:>7}",
         "line", "p10", "p50", "p90", "allocs"
     );
     for line in lines {
-        let mut nanos = line.nanos.clone();
-        nanos.sort_unstable();
-        let at = |percent: usize| nanos[nanos.len() * percent / 100];
+        let mut picos = line.picos.clone();
+        picos.sort_unstable();
+        let at = |percent: usize| picos[picos.len() * percent / 100];
         println!(
             "{:<10} {:>7} {:>7} {:>7} {:>7}",
             line.name,
