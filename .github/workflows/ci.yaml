@@ -277,43 +277,30 @@ jobs:
           path: fuzz/artifacts
           if-no-files-found: ignore
 
-  mutants:
+  mutants-shard:
     needs: changes
     if: >-
       !cancelled() && needs.changes.outputs.rust != 'false' &&
-      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      github.event_name == 'pull_request'
     # A mutant that hangs runs until its timeout, so the run needs parallel jobs and
-    # memory that the 2-core hosted runner lacks. In the queue, the job runs no mutant:
-    # it carries the result of this job at the head of the PR to the group. The rule
-    # that a missed mutant fails CI is in `docs/claude/testing.md`.
-    runs-on: >-
-      ${{ github.event_name == 'merge_group' && 'ubuntu-latest' ||
-      fromJSON('["self-hosted", "Linux", "ARM64"]') }}
+    # memory that the 2-core hosted runner lacks. Each shard runs a fourth of the
+    # mutants, round robin, on its own runner. The rule that a missed mutant fails CI
+    # is in `docs/claude/testing.md`.
+    name: mutants shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 90
     permissions:
       contents: read
-      checks: read
     steps:
-      - if: github.event_name == 'merge_group'
-        uses: actions/checkout@v4
-        with:
-          # The check that runs is the one on the default branch, never the PR's.
-          ref: ${{ github.event.repository.default_branch }}
-      - if: github.event_name == 'merge_group'
-        uses: Swatinem/rust-cache@v2
-      - if: github.event_name == 'merge_group'
-        name: The mutants result at the head of the PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          GROUP: ${{ github.event.merge_group.head_sha }}
-        run: cargo xtask queue mutants "$GROUP"
       # A mutant can allocate in a loop until the host runs out of memory. Each runner
       # unit on the host has a cap, the caps leave 2 GiB of the host free, and the
       # unit's OOMPolicy=continue keeps the runner up, so only a test process dies
       # (#803). Hosts whose template sets none of this: #898.
-      - if: github.event_name == 'pull_request'
-        name: Check the memory cap of the runner
+      - name: Check the memory cap of the runner
         run: |
           set -o pipefail
           c=$(cut -d: -f3 /proc/self/cgroup)
@@ -345,25 +332,23 @@ jobs:
             exit 1
           }
           echo "The runner caps take $sum KiB of $total KiB"
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - if: github.event_name == 'pull_request'
-        name: Add cargo to the path
+      - name: Add cargo to the path
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - if: github.event_name == 'pull_request'
-        uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0
-      - if: github.event_name == 'pull_request'
-        name: Mutants in the diff
+      - name: Mutants in the diff
         env:
           TMPDIR: ${{ runner.temp }}
+          SHARD: ${{ matrix.shard }}
         run: |
           git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 || status=$?
+          cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 \
+            --shard "$SHARD/4" --sharding round-robin || status=$?
           # A timeout is a mutant that made a test hang, so a test caught it. Exit 3
           # (timeout) wins over exit 2 (missed), so read the missed list too.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then
@@ -371,3 +356,38 @@ jobs:
             status=0
           fi
           exit "$status"
+
+  # The required check. On a PR it passes when each shard passed. In the queue no shard
+  # runs: it carries the result of this job at the head of the PR to the group.
+  mutants:
+    needs: [changes, mutants-shard]
+    if: >-
+      !cancelled() && needs.changes.outputs.rust != 'false' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - if: github.event_name == 'pull_request'
+        name: The result of the shards
+        env:
+          RESULT: ${{ needs.mutants-shard.result }}
+        run: |
+          [ "$RESULT" = success ] ||
+            { echo "::error::The mutants shards ended in $RESULT."; exit 1; }
+      - if: github.event_name == 'merge_group'
+        uses: actions/checkout@v4
+        with:
+          # The check that runs is the one on the default branch, never the PR's.
+          ref: ${{ github.event.repository.default_branch }}
+      - if: github.event_name == 'merge_group'
+        uses: Swatinem/rust-cache@v2
+      - if: github.event_name == 'merge_group'
+        name: The mutants result at the head of the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GROUP: ${{ github.event.merge_group.head_sha }}
+        run: cargo xtask queue mutants "$GROUP"

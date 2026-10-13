@@ -8,3 +8,12 @@
   reverse dependencies (`cargo xtask affected`); main tests the whole workspace.
   Decided by the advisor (#782). The person said: "We need to make the agentic
   engineering the bottleneck, not CI".
+  Amended (the person, 2026-10-13T16:27:23Z, to the proposal of `laptop.monitor` to
+  split mutants across 4 runners: "That's fine"): a PR runs its mutants as four jobs
+  `mutants shard <k>`, each with `cargo mutants --shard <k>/4 --sharding round-robin` on
+  its own ARM runner, and the required check `mutants` passes when each shard passed. In
+  the queue no shard runs, and `mutants` carries the result at the head of the PR to the
+  group, as before. Each shard checks the memory cap of its runner unit (#803), so four
+  shards at once take four caps that the sum check already bounds. Cost: each shard
+  builds and tests the code without mutants, so a PR spends four baselines in place of
+  one.
