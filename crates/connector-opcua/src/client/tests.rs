@@ -86,8 +86,9 @@ struct Peer<'s> {
 
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
+        let url = CString::new(url).expect("the URL holds no NUL");
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        Client::connect(clock, net, &mut self.rng, url).await
+        Client::connect(clock, net, &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -332,7 +333,7 @@ fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
     let (statuses, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut statuses = Vec::new();
-            for url in ["http://127.0.0.1:4840", "opc.tcp://a\0b:4840"] {
+            for url in ["http://127.0.0.1:4840", "opc.tcp://plc:99999"] {
                 statuses.push(peer.connect(url).await.err());
             }
             statuses
@@ -659,7 +660,7 @@ async fn connect_to_listener(
     let clock = node.clock();
     let start = clock.now();
     let mut rng = node.entropy().rng();
-    let url = format!("opc.tcp://{local}");
+    let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
     let mut connect = pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
     let status = poll_fn(|cx| {
         while let Poll::Ready(stream) = listener.poll_accept(cx) {
@@ -820,11 +821,12 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
     let ((first, took, second), _) = run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
+            let raw = CString::new(url.as_str()).expect("no NUL");
             let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
             let start = peer.clock.now();
             let first = {
                 let mut connect =
-                    pin!(Client::connect(clock, net, &mut peer.rng, &url));
+                    pin!(Client::connect(clock, net, &mut peer.rng, &raw));
                 let mut flips: Vec<_> = flips
                     .iter()
                     .map(|at| Box::pin(peer.clock.sleep(*at)))

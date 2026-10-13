@@ -97,7 +97,7 @@ fn reads_the_address_the_rate_and_each_read() {
     assert_eq!(
         parse(&config(string(ADDRESS), reads)),
         Ok(Config {
-            address: ADDRESS.into(),
+            address: CString::new(ADDRESS).expect("no NUL"),
             rate: Rate::new(10, 1).expect("a rate"),
             reads: vec![
                 read("plant.spike", "ns=3;s=SpikeData"),
@@ -131,6 +131,48 @@ fn refuses_a_bad_address() {
             Err(vec![refused("opcua.bad-address", 1, message, fix)]),
             "{address:?}"
         );
+    }
+}
+
+/// Each address that open62541 refuses at the connect is a config error, never a
+/// failed connect that the supervisor retries.
+#[test]
+fn refuses_an_address_that_open62541_refuses() {
+    let fix = "Write an address such as \"opc.tcp://plc:4840\"";
+    for address in [
+        "opc.tcp://",
+        "opc.tcp://:4840",
+        "opc.tcp://[]:4840",
+        "opc.tcp://[::1",
+        "opc.tcp://plc:",
+        "opc.tcp://plc:65536",
+        "opc.tcp://plc:99999",
+        "opc.tcp://plc:4840x",
+        "opc.tcp://plc:x",
+    ] {
+        let reads = vec![read(20, "plant.spike", "ns=3;s=SpikeData")];
+        let message = format!(
+            "the address {address:?} has no host, or a port that is not 0 to 65535"
+        );
+        assert_eq!(
+            parse(&config(string(address), reads)),
+            Err(vec![refused("opcua.bad-address", 1, &message, fix)]),
+            "{address:?}"
+        );
+    }
+}
+
+#[test]
+fn reads_an_address_with_no_port_a_path_or_an_ipv6_host() {
+    for address in [
+        "opc.tcp://plc",
+        "opc.tcp://plc/",
+        "opc.tcp://plc:65535/path/of/server",
+        "opc.tcp://[::1]:4840",
+    ] {
+        let reads = vec![read(20, "plant.spike", "ns=3;s=SpikeData")];
+        let config = parse(&config(string(address), reads)).expect("the config");
+        assert_eq!(config.address.to_str(), Ok(address));
     }
 }
 

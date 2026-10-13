@@ -1,5 +1,7 @@
 //! The config of one `opcua` connector, read from its document.
 
+use std::ffi::CString;
+
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::Value;
@@ -7,6 +9,7 @@ use document::{Block, Document, read};
 use types::name::Name;
 use types::time::Rate;
 
+use crate::client;
 use crate::node::Node;
 
 #[cfg(test)]
@@ -25,8 +28,9 @@ const SCHEME: &str = "opc.tcp://";
 /// [`Kind`](crate::Kind) makes one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// The endpoint URL, with no NUL.
-    pub(crate) address: String,
+    /// The endpoint URL, which open62541 reads as a host and an optional port and
+    /// path.
+    pub(crate) address: CString,
     pub(crate) rate: Rate,
     /// One or more, each of another channel.
     pub(crate) reads: Vec<Read>,
@@ -79,8 +83,9 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     }
 }
 
-/// Reads an endpoint URL: a string that starts with `opc.tcp://`, with no NUL.
-fn address(value: &Value) -> Result<String, Diagnostic> {
+/// Reads an endpoint URL: `opc.tcp://`, a host, and an optional port and path, as
+/// open62541 reads it at the connect, with no NUL.
+fn address(value: &Value) -> Result<CString, Diagnostic> {
     let refused = |message| {
         Diagnostic::new(
             BAD_ADDRESS,
@@ -100,10 +105,13 @@ fn address(value: &Value) -> Result<String, Diagnostic> {
             "the address {text:?} does not start with {SCHEME}"
         )));
     }
-    if text.contains('\0') {
-        return Err(refused("the address holds a NUL".into()));
+    if !client::endpoint(text) {
+        return Err(refused(format!(
+            "the address {text:?} has no host, or a port that is not 0 to 65535"
+        )));
     }
-    Ok(text.to_string())
+    CString::new(text.as_bytes())
+        .map_err(|_nul| refused("the address holds a NUL".into()))
 }
 
 /// Reads the `read` blocks of `config`, and adds each problem to `diagnostics`.

@@ -100,7 +100,7 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let connect = Client::connect(clock, net, &mut ctx.rng(), &config.address).await;
     let mut client = connect.map_err(|status| {
         device(Failure::Connect {
-            address: config.address.clone(),
+            address: config.address.to_string_lossy().into_owned(),
             status,
         })
     })?;
