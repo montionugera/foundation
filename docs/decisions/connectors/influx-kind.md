@@ -22,9 +22,10 @@
   settings and no written channel. `run` writes each frame of the reader to InfluxDB 1
   with `POST /write?db=<database>&precision=ns`: one line for each sample time, with
   a field for each channel of the frame, keyed by the channel name. A NaN or infinite
-  value is left out, and so is a line with no other value. Only `f64` channels are
-  written: another type ends the run with `Error::Config` and `influx.sample-type`,
-  and a channel name that is not a field key with `influx.bad-channel`. One request
+  value is left out, and so is a line with no other value. Until #2555, only `f64`
+  channels are written: another type ends the run with `Error::Config` and
+  `influx.sample-type`, and a channel name that is not a field key with
+  `influx.bad-channel`. The run writes no gap line until #341. One request
   is in flight at a time. While it is, the run reads the next batch, up to 5,000
   lines, and a frame goes in whole. It acks a batch only after a 204. Each other
   answer, and each failed request, keeps the batch, shows its text with
