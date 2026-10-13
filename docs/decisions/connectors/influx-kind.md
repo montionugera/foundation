@@ -1,11 +1,8 @@
 - **INFLUX KIND** `connector_influx::Kind` reads `address` and the reader settings
   (READER SETTINGS). `address` is an `http::Uri`, since a `Name` is a mesh name. `parse`
   reads `address` through `connector::http::uri`, so a plan finds an address that
-  `send` refuses before a run. `node` puts the kind in its table only in #1734, when
-  `run` works, so until then a file with an influx connector gives
-  `connector.unknown-kind` at plan. `check` gives no channels, and `discover` no
-  documents. Until #1734, `run` fails with `Error::Config` and `influx.not-yet`.
-  Decided by `laptop.architect-2` on #1153
+  `send` refuses before a run. `discover` gives no documents. Decided by
+  `laptop.architect-2` on #1153
   (https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
   2026-10-08 03:02 UTC). The kind also refuses a path other than empty or `/`, and a
   query, at the value: a path (a proxy prefix) can come later as a compatible change,
@@ -19,3 +16,20 @@
   2026-10-08 04:51 UTC), and approved by item 4 of
   https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931
   (2026-10-08 05:03 UTC).
+  The kind also reads `database`, which is not empty (`influx.bad-database`), and
+  `measurement`, a name that `line::Measurement::new` takes other than
+  `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its
+  settings and no written channel. `run` writes each frame of the reader to InfluxDB 1
+  with `POST /write?db=<database>&precision=ns`: one line for each sample time, with
+  a field for each channel of the frame, keyed by the channel name. A NaN or infinite
+  value is left out, and so is a line with no other value. Only `f64` channels are
+  written: another type ends the run with `Error::Config` and `influx.sample-type`,
+  and a channel name that is not a field key with `influx.bad-channel`. One request
+  is in flight at a time. While it is, the run reads the next batch, up to 5,000
+  lines, and a frame goes in whole. It acks a batch only after a 204. Each other
+  answer, and each failed request, keeps the batch, shows its text with
+  `Context::error`, and sends the batch again after a `retry::Backoff` of 1 s to
+  1 min. A 204 clears the error. Decided by the ONE NODE record, section 4
+  (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217), and
+  the plan that `laptop.architect-2` approved on #1734
+  (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432).
