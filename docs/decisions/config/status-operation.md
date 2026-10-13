@@ -81,4 +81,7 @@
   `laptop.architect-2` (2026-10-13T03:32:04Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137583351, which
   corrects the scope of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437).
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). The
+  count of the channels is inside item 1 of that ruling: `laptop.architect-2`
+  (2026-10-13T03:45:13Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137750716).
