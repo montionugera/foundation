@@ -27,6 +27,11 @@ const READS: u16 = 16;
 /// (8), the channel (4), the token (4), and the sequence header (8).
 const HEADER: usize = 24;
 
+/// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
+/// last: it moves a value that does not fit whole to the next chunk, and splits each
+/// value of more than 8 bytes past the first chunk.
+const SPLIT: usize = 7;
+
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
     "the other half of the sends of a connection is for the requests of open62541"
@@ -44,7 +49,8 @@ pub(crate) struct Client {
     /// read in flight.
     reads: Box<Reads>,
     /// The values of the last read, which [`Client::read`] gives. It swaps them with
-    /// [`Reads::values`], so neither grows past the most nodes of a read.
+    /// [`Reads::values`]. An answer with more values than nodes fails before it is
+    /// copied, so neither grows past the most nodes of a read.
     values: Vec<Result<f64, Status>>,
     clock: Clock,
     /// The request timeout of the client.
@@ -66,6 +72,8 @@ struct Reads {
     /// of another request, and `read` clears the late answer of a last read that timed
     /// out or whose future dropped.
     request: Cell<Option<u32>>,
+    /// The count of nodes of the last read.
+    count: Cell<usize>,
     /// The status of the answer of the last read: `Good` when [`Reads::values`]
     /// holds its values.
     answer: Cell<Option<Status>>,
@@ -173,8 +181,9 @@ impl Client {
     ///
     /// [`Large`] when the request, or a good answer with each field of a Double for
     /// each node, needs more bytes than one message of the session: its chunk size
-    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, or the
-    /// `MaxMessageSize` of the server when that is smaller. The request comes first.
+    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7
+    /// bytes at the end of each chunk but the last, or the `MaxMessageSize` of the
+    /// server when that is smaller. The request comes first.
     ///
     /// # Panics
     ///
@@ -195,9 +204,10 @@ impl Client {
 
     /// Reads the Value of each node of `nodes` in one request, and gives the value of
     /// each node in order: its scalar Double, the bad status of its value, or
-    /// `BadTypeMismatch` for another value. A read that times out or whose future
-    /// dropped stays in flight until the server answers it or the connection closes.
-    /// While [`READS`] are in flight, a read first waits until one ends.
+    /// `BadTypeMismatch` for another value. A read of no nodes gives no values and
+    /// sends nothing. A read that times out or whose future dropped stays in flight
+    /// until the server answers it or the connection closes. While [`READS`] are in
+    /// flight, a read first waits until one ends.
     ///
     /// # Errors
     ///
@@ -211,6 +221,9 @@ impl Client {
         &mut self,
         nodes: &Nodes,
     ) -> Result<&[Result<f64, Status>], Status> {
+        if nodes.count == 0 {
+            return Ok(&[]);
+        }
         let deadline = self.clock.now() + self.timeout;
         if self.reads.pending.get() == READS {
             self.connections
@@ -241,6 +254,7 @@ impl Client {
         }
         self.reads.pending.set(self.reads.pending.get() + 1);
         self.reads.request.set(Some(request));
+        self.reads.count.set(nodes.count);
         // It can hold the late answer of the last read.
         self.reads.answer.set(None);
         let status = self
@@ -258,9 +272,6 @@ impl Client {
         self.reads
             .values
             .set(mem::replace(&mut self.values, values));
-        if self.values.len() != nodes.count {
-            return Err(Status::BAD_UNEXPECTED_ERROR);
-        }
         Ok(&self.values)
     }
 
@@ -326,17 +337,17 @@ pub(crate) struct Large {
     pub(crate) most: usize,
 }
 
-/// Gives the most bytes of the body of one message in chunks of `buffer` bytes, with
-/// the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the server, each
-/// 0 for none.
+/// Gives the most bytes of the body of one message of a Read in chunks of `buffer`
+/// bytes, with the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the
+/// server, each 0 for none.
 fn most(buffer: usize, message: usize, chunks: usize) -> usize {
-    let local = usize::try_from(CHUNKS).expect("a usize holds the chunks");
+    let local = usize::try_from(CHUNKS).expect("invariant: a usize holds CHUNKS");
     let chunks = if chunks == 0 {
         local
     } else {
         chunks.min(local)
     };
-    let most = chunks * (buffer - HEADER);
+    let most = chunks * (buffer - HEADER) - (chunks - 1) * SPLIT;
     if message == 0 {
         most
     } else {
@@ -425,12 +436,15 @@ unsafe extern "C" fn answer(
         return;
     }
     // SAFETY: open62541 gives a live response.
-    let status = Status(unsafe { ffi::shim_response_result(response.cast()) });
+    let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
+    // SAFETY: open62541 gives a live response.
+    let count = unsafe { ffi::shim_read_count(response) };
+    if status == Status::GOOD && count != reads.count.get() {
+        status = Status::BAD_UNEXPECTED_ERROR;
+    }
     if status == Status::GOOD {
         let mut values = reads.values.take();
         values.clear();
-        // SAFETY: open62541 gives a live response.
-        let count = unsafe { ffi::shim_read_count(response) };
         values.extend((0..count).map(|index| {
             let mut double = 0.0;
             // SAFETY: the response lives and has more results than `index`.

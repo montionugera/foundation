@@ -104,3 +104,8 @@ void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
 }
+
+/* Gives the request handle that the last send of `request` gave it. */
+UA_UInt32 shim_read_handle(const UA_ReadRequest *request) {
+    return request->requestHeader.requestHandle;
+}

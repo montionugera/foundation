@@ -4,7 +4,7 @@ use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::task::Poll;
 
@@ -886,38 +886,60 @@ fn long(length: usize) -> Node {
     }
 }
 
-/// Gives the length of the name of a [`long`] node whose request on `client` is the
-/// most bytes of one message, from a name of `probe` bytes, whose request is past it.
-fn fitting(client: &Client, probe: usize) -> usize {
-    match client.nodes(&[long(probe)]) {
+/// Gives the length of the name of a [`long`] node after `nodes` whose request on
+/// `client` is the most bytes of one message, from a name of `probe` bytes, whose
+/// request is past it.
+fn fitting(client: &Client, nodes: &[Node], probe: usize) -> usize {
+    let mut nodes = nodes.to_vec();
+    nodes.push(long(probe));
+    match client.nodes(&nodes) {
         Err(Large { bytes, most }) => probe - (bytes - most),
         Ok(_) => panic!("a name of {probe} bytes fits"),
     }
 }
 
+/// Gives the most [`long`] nodes of `length` bytes that `client` takes in one request.
+fn most_of(client: &Client, length: usize) -> usize {
+    let (mut fits, mut past) = (1, 1 << 14);
+    while past - fits > 1 {
+        let count = usize::midpoint(fits, past);
+        if client.nodes(&vec![long(length); count]).is_ok() {
+            fits = count;
+        } else {
+            past = count;
+        }
+    }
+    fits
+}
+
 /// The request of a session takes 8 chunks, [`CHUNKS`], of 65536 bytes less the
-/// 24 bytes of their headers. The client refuses to send 1 byte more.
+/// 24 bytes of their headers, less 7 bytes at the end of each chunk but the last. The
+/// client refuses to send 1 byte more. A request whose one name fills each chunk to
+/// its end is 49 bytes longer when open62541 refuses it.
 #[test]
 fn a_request_takes_the_chunks_of_one_message() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            let length = fitting(&client, 1 << 20);
+            let length = fitting(&client, &[], 1 << 20);
             peer.server.add_double(&long(length), 2.5);
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
             let after = client.read_one(&VALUE).await;
-            let unchecked = Nodes::new(&[long(length + 1)]);
+            let unchecked = Nodes::new(&[long(length + 49)]);
+            let full = client.read(&unchecked).await.map(<[_]>::to_vec);
+            let unchecked = Nodes::new(&[long(length + 50)]);
             let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
             client.close().await;
-            (read, past, after, sent, peer.value)
+            (read, past, after, full, sent, peer.value)
         })
         .await
     });
-    let (read, past, after, sent, value) = reads;
+    let (read, past, after, full, sent, value) = reads;
     assert_eq!(read, Ok(vec![Ok(2.5)]));
-    let most = 8 * (65_536 - 24);
+    assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
+    let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
         bytes: most + 1,
         most,
@@ -939,7 +961,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
                 ..Limits::default()
             });
             let mut client = peer.connected().await;
-            let length = fitting(&client, 9000);
+            let length = fitting(&client, &[], 9000);
             peer.server.add_double(&long(length), 2.5);
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
@@ -964,7 +986,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
 }
 
 /// A server with buffers of 8192 bytes and a `MaxChunkCount` of 4 gives a message of 4
-/// chunks of 8168 bytes: 959 nodes, and not 960.
+/// chunks of 8168 bytes less 21: 959 nodes, and not 960.
 #[test]
 fn a_read_takes_the_buffers_and_chunks_of_the_server() {
     let (reads, _) = run(0, async |node| {
@@ -987,40 +1009,40 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
     assert_eq!(values, Ok(vec![Ok(value); 959]));
     let large = Large {
         bytes: 36 + 960 * 34,
-        most: 4 * 8168,
+        most: 4 * 8168 - 3 * 7,
     };
     assert_eq!(past, Err(large));
 }
 
 /// A client with a receive buffer of 8192 bytes sends chunks of 65536 bytes and takes
-/// chunks of 8192 bytes: a request takes 8 chunks of 65512 bytes, and a good answer 8
-/// chunks of 8168 bytes, 1920 Doubles and not 1921.
+/// chunks of 8192 bytes: a request takes 8 chunks of 65512 bytes less 49, and a good
+/// answer 8 chunks of 8168 bytes less 49, 1919 Doubles and not 1920.
 #[test]
 fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.receiving(8192).await;
-            let length = fitting(&client, 1 << 20);
+            let length = fitting(&client, &[], 1 << 20);
             let request = client.nodes(&[long(length + 1)]).map(drop);
-            let most = client.nodes(&vec![VALUE; 1920]).expect("1920 nodes fit");
+            let most = client.nodes(&vec![VALUE; 1919]).expect("1919 nodes fit");
             let values = client.read(&most).await.map(<[_]>::to_vec);
-            let answer = client.nodes(&vec![VALUE; 1921]).map(drop);
+            let answer = client.nodes(&vec![VALUE; 1920]).map(drop);
             client.close().await;
             (request, values, answer, peer.value)
         })
         .await
     });
     let (request, values, answer, value) = reads;
-    let most = 8 * (65_536 - 24);
+    let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
         bytes: most + 1,
         most,
     };
     assert_eq!(request, Err(large));
-    assert_eq!(values, Ok(vec![Ok(value); 1920]));
+    assert_eq!(values, Ok(vec![Ok(value); 1919]));
     let large = Large {
-        bytes: 36 + 1921 * 34,
-        most: 8 * 8168,
+        bytes: 36 + 1920 * 34,
+        most: 8 * 8168 - 7 * 7,
     };
     assert_eq!(answer, Err(large));
 }
@@ -1058,8 +1080,152 @@ fn the_key_of_the_limits_gives_no_value_without_a_copy() {
 
 #[test]
 fn a_limit_of_0_from_a_server_is_no_limit() {
-    assert_eq!(most(8192, 0, 0), 8 * 8168);
-    assert_eq!(most(8192, 0, 9), 8 * 8168);
-    assert_eq!(most(8192, 0, 7), 7 * 8168);
+    assert_eq!(most(8192, 0, 0), 8 * 8168 - 7 * 7);
+    assert_eq!(most(8192, 0, 9), 8 * 8168 - 7 * 7);
+    assert_eq!(most(8192, 0, 7), 7 * 8168 - 6 * 7);
     assert_eq!(most(8192, 50_000, 0), 50_000);
+}
+
+/// The most nodes that one request takes are read, also when open62541 leaves the end
+/// of a chunk empty: names of 37 and 44 bytes in chunks of 65536 bytes, and 450 to 469
+/// numbers and a name that fills the request in chunks of 8192 bytes.
+#[test]
+fn the_most_nodes_of_one_request_are_read() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let mut reads = Vec::new();
+            for length in [37, 44] {
+                let count = most_of(&client, length);
+                let nodes = client.nodes(&vec![long(length); count]).expect("it fits");
+                reads.push((count, client.read(&nodes).await.map(<[_]>::len)));
+            }
+            client.close().await;
+            peer.server.set_limits(Limits {
+                buffer: 8192,
+                chunks: 4,
+                ..Limits::default()
+            });
+            let mut client = peer.connected().await;
+            for count in 450..470 {
+                let mut list = vec![VALUE; count];
+                list.push(long(fitting(&client, &list, 1 << 15)));
+                let nodes = client.nodes(&list).expect("it fits");
+                reads.push((count + 1, client.read(&nodes).await.map(<[_]>::len)));
+            }
+            client.close().await;
+            reads
+        })
+        .await
+    });
+    for (count, read) in reads {
+        assert_eq!(read, Ok(count));
+    }
+}
+
+/// A read of no nodes gives no values, and the next read its value.
+#[test]
+fn a_read_of_no_nodes_gives_no_values() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let none = client.nodes(&[]).expect("no nodes fit");
+            let read = client.read(&none).await.map(<[_]>::to_vec);
+            let after = client.read_one(&VALUE).await;
+            client.close().await;
+            (read, after, peer.value)
+        })
+        .await
+    });
+    let (read, after, value) = reads;
+    assert_eq!(read, Ok(vec![]));
+    assert_eq!(after, Ok(value));
+}
+
+/// Each read of one request has a new request handle.
+#[test]
+fn each_read_of_one_request_has_its_own_handle() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let nodes = client.nodes(&[VALUE]).expect("it fits");
+            let mut reads = Vec::new();
+            for _ in 0..2 {
+                let read = client.read(&nodes).await.map(<[_]>::len);
+                // SAFETY: the request lives.
+                reads.push((read, unsafe { ffi::test::shim_read_handle(nodes.raw()) }));
+            }
+            client.close().await;
+            reads
+        })
+        .await
+    });
+    let [(first, one), (second, two)] = reads[..] else {
+        panic!("two reads, not {}", reads.len());
+    };
+    assert_eq!((first, second), (Ok(1), Ok(1)));
+    assert_eq!(two, one + 1);
+}
+
+/// Gives the answer of a read of 1 node that gets a Read response with `count` empty
+/// results, and the capacity of the values of the read.
+fn answer_of(count: i32) -> (Option<Status>, usize) {
+    // The response header: no timestamp, no handle, Good, no diagnostics, no string
+    // table, and no extension.
+    let mut bytes = vec![0; 17];
+    bytes.extend((-1_i32).to_le_bytes());
+    bytes.extend([0; 3]);
+    bytes.extend(count.to_le_bytes());
+    bytes.extend(vec![
+        0;
+        usize::try_from(count).expect("a count of 0 or more")
+    ]);
+    bytes.extend((-1_i32).to_le_bytes());
+    let data_type = ffi::types()
+        .iter()
+        .find(|data_type| data_type.name() == "ReadResponse")
+        .expect("open62541 has a Read response");
+    let mut response = vec![0_u64; data_type.size().div_ceil(8)];
+    let input = ffi::Bytes {
+        length: bytes.len(),
+        data: bytes.as_mut_ptr(),
+    };
+    let mut options = ffi::DecodeOptions::default();
+    // SAFETY: `response` has room for a Read response with 8-byte alignment, and the
+    // decoder only reads the input.
+    let decoded = Status(unsafe {
+        ffi::UA_decodeBinary(
+            &raw const input,
+            response.as_mut_ptr().cast(),
+            data_type,
+            &raw mut options,
+        )
+    });
+    assert_eq!(decoded, Status::GOOD);
+    let reads = Reads::default();
+    reads.request.set(Some(1));
+    reads.count.set(1);
+    reads.pending.set(1);
+    // SAFETY: `reads` lives, and `response` holds a decoded Read response.
+    unsafe {
+        answer(
+            ptr::null_mut(),
+            ptr::from_ref(&reads).cast_mut().cast(),
+            1,
+            response.as_mut_ptr().cast(),
+        );
+    }
+    // SAFETY: `response` holds a decoded Read response, not used again.
+    unsafe { ffi::UA_clear(response.as_mut_ptr().cast(), data_type) };
+    (reads.answer.get(), reads.values.take().capacity())
+}
+
+/// An answer with a value for more or fewer nodes than its read fails, and copies no
+/// value.
+#[test]
+fn an_answer_of_another_count_of_values_fails_and_copies_none() {
+    for count in [0, 3] {
+        assert_eq!(answer_of(count), (Some(Status::BAD_UNEXPECTED_ERROR), 0));
+    }
+    assert_eq!(answer_of(1).0, Some(Status::GOOD));
 }
