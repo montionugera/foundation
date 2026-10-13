@@ -20,23 +20,14 @@ use crate::Node;
 use crate::common::{Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
 
-/// A kind whose run sets the count `in` to 12 and `confirmed` to 10, then waits for
-/// its cancel.
-struct Steady;
-
-/// A kind whose run ends with a device error.
-struct Failing;
-
-/// The counts that both kinds name.
-fn counts() -> Channels {
-    Channels {
-        reader: None,
-        writes: Vec::new(),
-        counts: vec![name("in"), name("confirmed")],
-    }
+/// A kind that names the counts `counts`, and whose run sets each to its value, then
+/// waits for its cancel, or ends at once with a device error of the text `error`.
+struct Scripted {
+    counts: &'static [(&'static str, u64)],
+    error: Option<&'static str>,
 }
 
-impl kind::Kind for Steady {
+impl kind::Kind for Scripted {
     type Config = ();
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -44,7 +35,11 @@ impl kind::Kind for Steady {
     }
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-        Ok(counts())
+        Ok(Channels {
+            reader: None,
+            writes: Vec::new(),
+            counts: self.counts.iter().map(|(count, _)| name(count)).collect(),
+        })
     }
 
     fn discover(
@@ -55,71 +50,37 @@ impl kind::Kind for Steady {
     }
 
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
-        context.count("in").set(12);
-        context.count("confirmed").set(10);
+        if let Some(error) = self.error {
+            return Err(kind::Error::Device(error.into()));
+        }
+        for (count, value) in self.counts {
+            context.count(count).set(*value);
+        }
         context.cancel().wait().await;
         Ok(())
     }
 }
 
-impl kind::Kind for Failing {
-    type Config = ();
-
-    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-        Ok(())
-    }
-
-    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-        Ok(counts())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
-    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
-        std::future::ready(Err(kind::Error::Device("no route to the device".into())))
-    }
-}
-
+/// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
+/// `forging` with one whose text, from the device, holds a newline, and `wide` also
+/// names `extra`.
 fn kinds() -> Table {
+    let counts = &[("in", 12), ("confirmed", 10)];
+    let scripted = |error| Scripted { counts, error };
     Table::new()
-        .with("steady", Steady)
-        .with("failing", Failing)
-        .with("forging", Forging)
-        .with("wide", Wide)
-}
-
-/// A kind that names the counts of [`counts`] and `extra`.
-struct Wide;
-
-impl kind::Kind for Wide {
-    type Config = ();
-
-    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-        Ok(())
-    }
-
-    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-        let mut channels = counts();
-        channels.counts.push(name("extra"));
-        Ok(channels)
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
-    async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
-        context.cancel().wait().await;
-        Ok(())
-    }
+        .with("steady", scripted(None))
+        .with("failing", scripted(Some("no route to the device")))
+        .with(
+            "forging",
+            scripted(Some("refused\nsite.a: config error: forged by the device")),
+        )
+        .with(
+            "wide",
+            Scripted {
+                counts: &[("in", 0), ("confirmed", 0), ("extra", 0)],
+                error: None,
+            },
+        )
 }
 
 #[test]
@@ -135,35 +96,6 @@ fn gives_unknown_while_the_hub_lacks_one_status_channel_of_the_spec() {
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
-}
-
-/// A kind whose run ends with a device error whose text, from the device, holds a
-/// newline.
-struct Forging;
-
-impl kind::Kind for Forging {
-    type Config = ();
-
-    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-        Ok(())
-    }
-
-    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-        Ok(counts())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
-    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
-        std::future::ready(Err(kind::Error::Device(
-            "refused\nsite.a: config error: forged by the device".into(),
-        )))
-    }
 }
 
 #[test]
