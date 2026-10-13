@@ -2518,7 +2518,7 @@ fn abort(name: &str) -> String {
     let message = stdout
         .lines()
         .skip_while(|line| {
-            !line.contains("panicked at crates/connector-opcua/src/connection.rs")
+            !(line.contains("panicked at") && line.contains("connection.rs:"))
         })
         .nth(1);
     message.expect(&stdout).to_owned()
