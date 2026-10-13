@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::{Error, Key, NAME, Name, Node};
+use super::{Error, Key, Name, Node};
 
 fn name(text: &str) -> Key {
     Key::Name(Name::new(text).expect("a name of 1 to 4096 bytes"))
@@ -93,7 +93,7 @@ fn another_text_is_refused() {
 
 #[test]
 fn a_name_is_at_most_4096_bytes() {
-    let longest = "ü".repeat(NAME / 2);
+    let longest = "ü".repeat(Name::BYTES / 2);
     let text = format!("ns=1;s={longest}");
     assert_eq!(
         text.parse(),

@@ -16,7 +16,7 @@ use super::{Client, Reads, answer};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
-use crate::node::{Key, NAME, Name, Node};
+use crate::node::{Key, Name, Node};
 use crate::server::Server;
 
 /// The port of the test server.
@@ -188,7 +188,7 @@ fn a_read_of_a_name_node_gives_its_value() {
             };
             peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
             peer.server.add_double(&named("plant.spike"), 3.5);
-            let longest = named(&"x".repeat(NAME));
+            let longest = named(&"x".repeat(Name::BYTES));
             peer.server.add_double(&longest, 4.5);
             let mut client = peer.connected().await;
             let reads = (

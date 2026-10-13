@@ -23,19 +23,19 @@ pub(crate) enum Key {
     Name(Name),
 }
 
-/// The name of a node: 1 to [`NAME`] bytes.
+/// The name of a node: 1 to [`Name::BYTES`] bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Name(String);
 
-/// The most bytes in the name of a node. A request with a name past the chunks of one
-/// message closes its channel.
-pub(crate) const NAME: usize = 4096;
-
 impl Name {
-    /// Gives `text` as a name, or `None` when it is empty or has more than [`NAME`]
-    /// bytes.
+    /// The most bytes in a name. A request with a name past the chunks of one message
+    /// closes its channel.
+    pub(crate) const BYTES: usize = 4096;
+
+    /// Gives `text` as a name, or `None` when it is empty or has more than
+    /// [`Self::BYTES`] bytes.
     pub(crate) fn new(text: &str) -> Option<Self> {
-        (1..=NAME)
+        (1..=Self::BYTES)
             .contains(&text.len())
             .then(|| Self(text.to_owned()))
     }
