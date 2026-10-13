@@ -1,6 +1,7 @@
 //! A connector of the `opcua` kind that reads Double variables of the sim server on
-//! one sim node, with a measure of each poll of its run, for the `alloc` test and the
-//! `kind` bench.
+//! one sim node, with a measure of each poll of its run, and one that writes the
+//! frames of its reads with no server, with a measure of each write. For the `alloc`
+//! test and the `kind` bench.
 
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
@@ -11,7 +12,7 @@ use std::task::Poll;
 
 use connector::cancel::Token;
 use connector::kind::{self, Channels, Context, Error, Table};
-use connector::supervisor::Supervisor;
+use connector::supervisor::{self, Supervisor};
 use connector::testing;
 use connector_opcua::Config;
 use connector_opcua::sim::{Served, Variables, serve};
@@ -98,29 +99,11 @@ pub(crate) fn run(
         measure,
         polls: Arc::clone(&polls),
     };
-    let keys = (2..).take(nodes);
-    let texts: Vec<String> = keys.clone().map(|key| read(key).1).collect();
+    let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let kinds = Table::new().with("opcua", kind);
-        let inputs = testing::create_config(env, node.net(), kinds).await;
-        let plc = name("plant.plc");
-        let counts = ["in", "missed", "lost"].map(name);
-        let first = channel::Key::from_u128(1_000_000);
-        let mut definitions = testing::create_status(&plc, &counts, first);
-        definitions.push((name("plant.time"), index(1)));
-        definitions.extend(keys.map(|key| (name(&read(key).0), data(key))));
-        inputs
-            .hub
-            .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+        let inputs = inputs(&node, &tasks, kind, nodes).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
@@ -140,7 +123,7 @@ pub(crate) fn run(
             canceller.cancel();
         });
         let supervisor = Supervisor::new(inputs);
-        let open = supervisor.open("opcua", plc, &config, &token);
+        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         stop.cancel();
         serving.ended().await;
@@ -154,6 +137,103 @@ pub(crate) fn run(
         &polls.lock().expect("no panic under the lock"),
         &served[..count],
     )
+}
+
+/// The `opcua` kind, with a run that writes `count` frames of its reads with no
+/// server and keeps what `measure` gives for each.
+struct Writes<M> {
+    count: usize,
+    measure: M,
+    measures: Arc<Mutex<Vec<u64>>>,
+}
+
+impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind for Writes<M> {
+    type Config = Config;
+
+    fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
+        connector_opcua::Kind::default().parse(config)
+    }
+
+    fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
+        connector_opcua::Kind::default().check(config)
+    }
+
+    fn discover(
+        &self,
+        _: &Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
+        let writes = connector_opcua::bench::kind::writes;
+        let measures = writes(&ctx, self.count, &self.measure).await?;
+        *self.measures.lock().expect("no panic under the lock") = measures;
+        Ok(())
+    }
+}
+
+/// Writes `count` frames of a connector that reads `nodes` Double variables, with no
+/// server, and gives what `measure` gives for the check of the values and the write
+/// of each frame. `measure` calls the work that it gets once.
+///
+/// # Panics
+///
+/// If the run ends with an error.
+pub(crate) fn writes(
+    nodes: usize,
+    count: usize,
+    measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
+) -> Vec<u64> {
+    let measures = Arc::<Mutex<Vec<u64>>>::default();
+    let kind = Writes {
+        count,
+        measure,
+        measures: Arc::clone(&measures),
+    };
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let supervisor = Supervisor::new(inputs(&node, &tasks, kind, nodes).await);
+        let config = config("opc.tcp://plc:4840", nodes);
+        let token = Token::new();
+        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
+        open.await.run().await
+    });
+    let result = run.expect("the run ends");
+    assert!(result.is_ok(), "the run ends ok: {result:?}");
+    let measures = measures.lock().expect("no panic under the lock");
+    measures.clone()
+}
+
+/// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
+/// `plant.plc`, a connector that reads `nodes` nodes: its status, the index
+/// `plant.time` of key 1, and an `f64` channel of key 2 on for each read.
+async fn inputs(
+    node: &sim::node::Node,
+    tasks: &env::tasks::Tasks,
+    kind: impl kind::Kind,
+    nodes: usize,
+) -> supervisor::Config {
+    let env = hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks: tasks.clone(),
+    };
+    let kinds = Table::new().with("opcua", kind);
+    let inputs = testing::create_config(env, node.net(), kinds).await;
+    let counts = ["in", "missed", "lost"].map(name);
+    let first = channel::Key::from_u128(1_000_000);
+    let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
+    definitions.push((name("plant.time"), index(1)));
+    let reads = (2..).take(nodes).map(|key| (name(&read(key).0), data(key)));
+    definitions.extend(reads);
+    inputs
+        .hub
+        .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+    inputs
 }
 
 /// What a measure gives for the polls of a run of the `opcua` kind.

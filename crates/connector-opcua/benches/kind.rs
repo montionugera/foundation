@@ -1,7 +1,8 @@
 //! The ns of the `opcua` kind against the sim server over the sim net: the polls of
 //! its run for one tick (the read of 1 or of 256 nodes, its frame, and the write of
-//! the frame, with no time of the server), the polls of its run start, and its parse.
-//! Run with `cargo bench -p connector-opcua --bench kind`.
+//! the frame, with no time of the server), the check of the values of one read and
+//! the write of its frame alone, the polls of its run start, and its parse. Run with
+//! `cargo bench -p connector-opcua --bench kind`.
 
 #![expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
 
@@ -33,6 +34,14 @@ fn main() {
             .split_off(WARMUP);
         ticks.sort_unstable();
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
+        println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
+    }
+    println!("ns per write of a frame over {TICKS} writes");
+    println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
+    for nodes in COUNTS {
+        let mut writes = kind::writes(nodes, WARMUP + TICKS, time).split_off(WARMUP);
+        writes.sort_unstable();
+        let at = |percent: usize| writes[writes.len() * percent / 100];
         println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
     }
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");

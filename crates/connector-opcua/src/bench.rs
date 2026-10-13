@@ -5,6 +5,7 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 pub mod client;
+pub mod kind;
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};

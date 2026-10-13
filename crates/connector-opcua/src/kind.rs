@@ -14,6 +14,8 @@ use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;
 use types::sample::{Scalar, Type};
+#[cfg(feature = "sim")]
+use types::time::Span;
 use types::time::Stamp;
 
 use crate::client::{Client, Large};
@@ -88,14 +90,8 @@ impl kind::Kind for Kind {
 }
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
+    let mut frames = Frames::open(&ctx).await?;
     let config = ctx.config();
-    let channels = config
-        .reads
-        .iter()
-        .map(|read| read.channel.clone())
-        .collect();
-    let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
-    let mut frames = Frames::new(&ctx, writer)?;
     let (clock, net) = (ctx.clock().clone(), ctx.net().clone());
     let connect = Client::connect(clock, net, &mut ctx.rng(), &config.address).await;
     let mut client = connect.map_err(|status| {
@@ -142,6 +138,41 @@ async fn read(
     Ok(())
 }
 
+/// Writes `count` frames of the reads of `ctx` with no server, each value 1 and each
+/// frame 1 ms of its clock after the last, and gives what `measure` gives for the
+/// check of the values and the write of each frame. `measure` calls the work that it
+/// gets once. For benchmarks.
+///
+/// # Errors
+///
+/// As [`Kind::run`](kind::Kind::run), with no connect or read.
+///
+/// # Panics
+///
+/// When the home refuses a frame for a cause that a run never gets: `Backwards` after
+/// the stamp that a refusal gives, `Expired`, or `Codec`.
+#[cfg(feature = "sim")]
+pub async fn writes(
+    ctx: &Context<Config>,
+    count: usize,
+    mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
+) -> Result<Vec<u64>, Error> {
+    let mut frames = Frames::open(ctx).await?;
+    let values = vec![Ok(1.0); ctx.config().reads.len()];
+    let mut measures = Vec::with_capacity(count);
+    for _ in 0..count {
+        ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
+        let ((), stamp) = frames.request(future::ready(())).await;
+        let mut written = Ok(());
+        measures.push(measure(&mut || {
+            let values = Values::new(&values).expect("each value is good");
+            written = frames.write(values, stamp);
+        }));
+        written?;
+    }
+    Ok(measures)
+}
+
 /// The frames of the ticks of a run: one sample in each series of the key set of its
 /// writer, the stamp in each index and a value in each other.
 struct Frames {
@@ -174,16 +205,18 @@ struct Out {
 }
 
 impl Frames {
-    /// The frames of `writer`, whose channels are those of the reads of `ctx`.
+    /// Opens the writer of the channels of the reads of `ctx`, and gives its frames.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `opcua.sample-type` for each channel whose sample type
-    /// is not `f64`.
-    fn new(ctx: &Context<Config>, writer: Writer) -> Result<Self, Error> {
+    /// The error of [`Context::writer`]. [`Error::Config`] with `opcua.sample-type`
+    /// for each channel whose sample type is not `f64`.
+    async fn open(ctx: &Context<Config>) -> Result<Self, Error> {
+        let reads = &ctx.config().reads;
+        let channels = reads.iter().map(|read| read.channel.clone()).collect();
+        let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
         let set = writer.set();
         let entries = set.entries();
-        let reads = &ctx.config().reads;
         let wrong = (reads.iter().zip(writer.entries()))
             .filter_map(|(read, &entry)| sample_type(read, entries[entry].data_type))
             .collect::<Vec<_>>();

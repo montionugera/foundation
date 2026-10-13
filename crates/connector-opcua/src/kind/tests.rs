@@ -24,7 +24,6 @@ use spec::definition::Definition;
 use types::channel;
 use types::name::Selector;
 use types::quality::Quality;
-use types::time::Span;
 
 use super::*;
 use crate::sim::{Served, Variables, serve};
