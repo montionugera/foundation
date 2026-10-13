@@ -109,13 +109,25 @@ foundation plan plant.hcl --out plant.plan
 + channel plant.dip
 + channel plant.trend
 + connector plc
-  + channel plc.running
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
 + connector influx
-  + channel influx.running
-8 to add, 0 to change, 0 to remove. Wrote plant.plan.
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.error
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
+18 to add, 0 to change, 0 to remove.
+note: 2 definitions that Foundation made are not in the files: @admin.@access, @admin.@subject
 ```
 
-A connector implies the channels under its name, such as `plc.running`.
+A connector implies the status channels under its name, such as `plc.status.state`. The
+note names the definitions that the first start made, which no file holds.
 
 Apply exactly that plan:
 
@@ -124,7 +136,7 @@ foundation apply plant.plan
 ```
 
 ```text
-Applied plant.plan: 8 added.
+Applied plant.plan: 18 added, 3 homes listed.
 ```
 
 `apply` refuses a plan when the node's config changed after the plan. Plan again.
@@ -156,6 +168,10 @@ A config with an error gives the file, line, column, and a fix, and `plan` write
 plan:
 
 ```text
+error[document.missing-attribute]: the `channel` block has no `data_type`
+  --> plant.hcl:5:1
+fix: Add a `data_type` attribute such as "f64"
+
 error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
   --> plant.hcl:6:3
 fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
