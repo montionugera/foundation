@@ -325,7 +325,9 @@ impl Request {
         match self {
             Self::Version(Empty {}) => Response::Version(Version {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                commit: option_env!("FOUNDATION_COMMIT").map(str::to_owned),
+                commit: Some(env!("FOUNDATION_COMMIT"))
+                    .filter(|commit| !commit.is_empty())
+                    .map(str::to_owned),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
         }
