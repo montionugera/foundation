@@ -211,3 +211,53 @@ impl Drop for Erased {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, Pool};
+
+    fn committed(memory: &Erased) -> Vec<Range<usize>> {
+        memory.committed.borrow().clone()
+    }
+
+    #[test]
+    fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
+        let memory = Erased::new(4096);
+        let first = slice::from_ref(&(0..ALIGN));
+        assert_eq!(committed(&memory), first, "the first bytes");
+        let commits = [
+            ((1000, 100), [0..ALIGN, 1000..1100]),
+            ((ALIGN, 100), [0..164, 1000..1100]),
+            ((1100, 50), [0..164, 1000..1150]),
+            ((950, 50), [0..164, 950..1150]),
+            ((1000, 10), [0..164, 950..1150]),
+        ];
+        for ((offset, len), ranges) in commits {
+            memory.commit(offset, len).expect("heap memory commits");
+            assert_eq!(committed(&memory), ranges, "after a commit at {offset}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "a commit lies in the memory")]
+    fn erased_panics_on_a_commit_past_its_end() {
+        let memory = Erased::new(4096);
+        memory.commit(4000, 97).expect("the commit panics first");
+    }
+
+    #[test]
+    fn erased_erases_a_pool_that_drops_before_its_block() {
+        let config = Config::new(1 << 14).expect("the budget fits");
+        let memory = Erased::new(config.reservation());
+        let pool = Pool::new(config, memory);
+        let mut block = pool.alloc(3000).expect("the budget has room");
+        block.fill(0x5a);
+        let block = block.freeze();
+        drop(pool);
+        assert!(
+            block.iter().all(|&byte| byte == 0x5a),
+            "the block outlives its pool"
+        );
+    }
+}

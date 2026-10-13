@@ -1,73 +1,51 @@
 //! A pool on `Erased` leaves the bytes of its blocks in no freed allocation. The
 //! scan covers every thread, so this binary has no test harness.
 
-#![expect(unsafe_code, reason = "a scanning allocator implements `GlobalAlloc`")]
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::slice;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use block::{Config, Erased, Heap, Memory, Pool};
 
-use block::{ALIGN, Config, Erased, Heap, Memory, Pool};
+#[global_allocator]
+static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
 const PLAIN: [u8; 32] = [0x5a; 32];
 
-/// Counts the frees of allocations of `size` bytes that hold `PLAIN`.
-struct Scanning {
-    size: AtomicUsize,
-    held: AtomicU64,
-}
-
-// SAFETY: every call goes to `System` unchanged.
-unsafe impl GlobalAlloc for Scanning {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc`.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if layout.size() == self.size.load(Relaxed) {
-            // SAFETY: only a `Heap` allocates this size here, through
-            // `alloc_zeroed`, so each byte is initialized.
-            let bytes = unsafe { slice::from_raw_parts(ptr, layout.size()) };
-            if bytes.windows(PLAIN.len()).any(|window| window == PLAIN) {
-                self.held.fetch_add(1, Relaxed);
-            }
-        }
-        // SAFETY: the caller keeps the contract of `GlobalAlloc::dealloc`.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Scanning = Scanning {
-    size: AtomicUsize::new(0),
-    held: AtomicU64::new(0),
-};
-
 fn main() {
+    // Miri stops at the read of a freed byte that the program never wrote (COUNTING
+    // ALLOCATOR). The unit tests of `Erased` run its erase under Miri.
+    if cfg!(miri) {
+        return;
+    }
     for (len, at) in [(32, 0), (3000, 1), (3000, 0)] {
-        let held = freed(Heap::new, len, at);
+        let held = freed(Heap::new, |pool| lent(pool, len, at));
         assert_eq!(
             held, 1,
             "a dropped `Heap::new` frees the bytes ({len}, {at})"
         );
-        let held = freed(Erased::new, len, at);
+        let held = freed(Erased::new, |pool| lent(pool, len, at));
         assert_eq!(held, 0, "a dropped `Erased` erases them ({len}, {at})");
     }
+    assert_eq!(freed(Heap::new, recarved), 1, "`Heap::new` frees the bytes");
+    assert_eq!(
+        freed(Erased::new, recarved),
+        0,
+        "a dropped `Erased` erases a block that the pool carved again after a purge"
+    );
 }
 
-/// Drops a pool on the memory that `memory` gives while it lends a block of 32 bytes
-/// and one of `len` bytes, then the blocks. Block `at` holds `PLAIN` at its end. Gives
-/// the count of freed allocations that hold `PLAIN`.
-fn freed<M: Memory + 'static>(memory: fn(usize) -> M, len: usize, at: usize) -> u64 {
+/// Gives the count of freed allocations that hold `PLAIN`, after `case` runs on a pool
+/// on the memory that `memory` gives and drops it.
+fn freed<M: Memory + 'static>(memory: fn(usize) -> M, case: impl FnOnce(Pool)) -> u64 {
     let config = Config::new(1 << 14).expect("the budget fits");
     let memory = memory(config.reservation());
-    ALLOCATOR.size.store(memory.len() + ALIGN, Relaxed);
-    let before = ALLOCATOR.held.load(Relaxed);
-    let pool = Pool::new(config, memory);
+    let ((), found) =
+        ALLOCATOR.freed_holding(&PLAIN, || case(Pool::new(config, memory)));
+    found
+}
+
+/// Drops `pool` while it lends a block of 32 bytes and one of `len` bytes, then the
+/// blocks. Block `at` holds `PLAIN` at its end.
+fn lent(pool: Pool, len: usize, at: usize) {
     let blocks: Vec<_> = [32, len]
         .into_iter()
         .enumerate()
@@ -85,6 +63,19 @@ fn freed<M: Memory + 'static>(memory: fn(usize) -> M, len: usize, at: usize) -> 
         blocks.iter().any(|block| block.ends_with(&PLAIN)),
         "a lent block outlives its pool"
     );
-    drop(blocks);
-    ALLOCATOR.held.load(Relaxed) - before
+}
+
+/// Puts `PLAIN` in a block, purges its class, and carves the class again with a block
+/// that ends before `PLAIN`.
+fn recarved(pool: Pool) {
+    let mut first = pool.alloc(32).expect("the budget has room");
+    first.fill(0x11);
+    let mut second = pool.alloc(32).expect("the budget has room");
+    second.copy_from_slice(&PLAIN);
+    drop(first);
+    drop(second);
+    pool.purge();
+    pool.purge();
+    drop(pool.alloc(32).expect("the budget has room"));
+    drop(pool);
 }

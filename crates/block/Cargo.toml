@@ -12,6 +12,7 @@ sim = []
 zeroize = { workspace = true }
 
 [dev-dependencies]
+counting = { path = "../counting" }
 divan = { workspace = true }
 proptest = { workspace = true }
 
