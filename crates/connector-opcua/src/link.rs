@@ -111,14 +111,11 @@ fn call_member(name: &str) -> ! {
 }
 
 #[test]
-#[cfg(unix)]
 fn each_refused_call_prints_its_name_and_aborts() {
     for name in REFUSED {
-        let output = crate::child::aborted("link::call_refused", &[(CHILD, name)]);
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap(),
-            format!("connector-opcua: open62541 called {name}, which is not built\n")
-        );
+        let line =
+            format!("connector-opcua: open62541 called {name}, which is not built\n");
+        crate::child::aborted_in_c("link::call_refused", &[(CHILD, name)], &line);
     }
 }
 
