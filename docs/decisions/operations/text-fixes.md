@@ -92,11 +92,12 @@
   director ruled at 2026-10-13T13:49:02Z
   (https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6147056819) that a
   missing or stale link to an approval, an OK, or a ruling that Round 1, "Findings" step
-  3, or "Done" asks for is no Low finding, because such a link is the record of a gate,
-  not a citation. Cost: no round checks a Low item that has no exact new text, so a
-  wrong link or word can reach `main`. `cargo xtask review` does not change: a `Text
-  fixes:` line already lets commits that change no code follow the last round. Lost: a
-  severity grade in each `reviewer` report, which the check would read (a new field, and
-  a grade for each finding of each round). Supersedes, for a Low item, the exact new
-  text of https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6103180556
+  3, or "Done" of the `review` skill asks for is no Low finding, because such a link is
+  the record of a gate, not a citation. Cost: no round checks a Low item that has no
+  exact new text, so a wrong link or word can reach `main`. `cargo xtask review` does
+  not change: a `Text fixes:` line already lets commits that change no code follow the
+  last round. Lost: a severity grade in each `reviewer` report, which the check would
+  read (a new field, and a grade for each finding of each round). Supersedes, for a Low
+  item, the exact new text of
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6103180556
   (2026-10-10T23:10:22Z) and the facts-and-links sentence of this record.
