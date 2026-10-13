@@ -230,7 +230,6 @@ fn exhausts() {
 /// global. #2566 lists each caller, and holds a fix of `shim_client_new` and a test of
 /// what `Client::connect` reaches.
 #[test]
-#[cfg(unix)]
 fn exhausted_aborts_with_the_size_of_a_header() {
     assert_eq!(
         String::from_utf8(child::aborted("alloc::tests::exhausts", &[]).stderr)

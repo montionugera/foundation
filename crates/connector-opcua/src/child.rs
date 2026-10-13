@@ -58,18 +58,25 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
     child.output().unwrap()
 }
 
-/// Runs the test `name` as `output` does, asserts that it fails, and on Unix that it
-/// aborts, and gives its output.
+/// Runs the test `name` as `output` does, asserts that it aborts, and gives its
+/// output. On Windows only an abort of Rust passes: a C `abort` has another status.
 pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     let output = output(name, envs);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{name} {envs:?} ends: {stderr}");
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         const SIGABRT: i32 = 6;
         let signal = output.status.signal();
         assert_eq!(signal, Some(SIGABRT), "{name} {envs:?}: {stderr}");
+    }
+    #[cfg(windows)]
+    {
+        // Rust aborts through `__fastfail`, which ends the process with this status.
+        const STATUS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409_u32.cast_signed();
+        let code = output.status.code();
+        let expected = Some(STATUS_STACK_BUFFER_OVERRUN);
+        assert_eq!(code, expected, "{name} {envs:?}: {stderr}");
     }
     output
 }
