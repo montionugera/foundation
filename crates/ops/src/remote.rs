@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use env::paths::{self, Found, Paths};
-use serde_json::Value;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
@@ -16,29 +15,6 @@ use crate::serve;
 
 #[cfg(test)]
 mod tests;
-
-/// What a command that ran on a node shows.
-pub(crate) enum Shown {
-    Plan(Output),
-    Apply(Applied),
-}
-
-impl Shown {
-    /// The output as JSON.
-    pub(crate) fn json(&self) -> Value {
-        match self {
-            Self::Plan(output) => output.json(),
-            Self::Apply(applied) => applied.json(),
-        }
-    }
-
-    pub(crate) fn text(&self) -> String {
-        match self {
-            Self::Plan(output) => output.text(),
-            Self::Apply(applied) => applied.text(),
-        }
-    }
-}
 
 /// Plans on the node the change from the config files at `files`, read through
 /// `paths`, and writes the plan file to `out` when it is given. `reach` gives what
@@ -57,7 +33,7 @@ pub(crate) async fn plan<C>(
     out: Option<&Path>,
     paths: &Paths,
     reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
-) -> Result<Shown, Error>
+) -> Result<Output, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
@@ -94,7 +70,7 @@ where
             error,
         })?;
     }
-    Ok(Shown::Plan(output))
+    Ok(output)
 }
 
 /// Applies on the node the plan file at `plan`, read through `paths`. `reach` gives
@@ -111,7 +87,7 @@ pub(crate) async fn apply<C>(
     plan: &Path,
     paths: &Paths,
     reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
-) -> Result<Shown, Error>
+) -> Result<Applied, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
@@ -122,10 +98,10 @@ where
     let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes), reach).await?;
     let effect = serve::apply_reply(&reply)?;
-    Ok(Shown::Apply(Applied {
+    Ok(Applied {
         file: name.to_owned(),
         effect,
-    }))
+    })
 }
 
 /// The most bytes that one request holds.
