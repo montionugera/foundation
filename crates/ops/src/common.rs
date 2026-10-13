@@ -48,8 +48,7 @@ pub(crate) fn plant() -> &'static str {
 }
 
 /// The output that the quickstart page shows, its one `text` block that starts with
-/// `start`.
-/// `shown` of `crates/node/tests/it/quickstart.rs` is its twin.
+/// `start`. `shown` of `crates/node/tests/it/quickstart.rs` is its twin.
 pub(crate) fn shown(start: &str) -> &'static str {
     let shown: Vec<_> = blocks("text")
         .filter(|block| block.starts_with(start))

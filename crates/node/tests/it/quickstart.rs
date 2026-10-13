@@ -22,7 +22,8 @@ pub(crate) fn plant() -> &'static str {
     hcl
 }
 
-/// The output that the page shows, its one `text` block that starts with `start`.
+/// The output that the page shows, its one `text` block that starts with `start`, as
+/// `shown` of `crates/ops/src/common.rs` gives it.
 fn shown(start: &str) -> &'static str {
     let shown: Vec<_> = blocks("text")
         .filter(|block| block.starts_with(start))
