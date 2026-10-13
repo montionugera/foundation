@@ -2,7 +2,17 @@
   `access::Rules`, built from the definitions of the spec in use: the same spec that the
   operation then compares, so `ops` holds no rules of its own. A name of the check is
   the tree key of a definition, such as `plant.@access` for an access policy and the
-  label for a channel or a connector. `plan` needs the action `plan` on each name of the
+  label for a channel or a connector. The name of a member, as `mesh` gives it, is a
+  name of the check too. `status` checks `read` on it when the subject reads no
+  connector of the node. A definition at the same name shares its grant: a grant on a
+  channel or a connector at the name of a member also gives the empty output of `status`
+  on that member. The output then shows no connector, so the shared grant shows nothing
+  that the request did not hold. Lost: a check of `<node>.@node_settings`, whose grant
+  means "may read the policy"; and a problem for a definition at the name of a member,
+  which needs a check across crates for a case that shows nothing (`laptop.architect`,
+  2026-10-13,
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156368387).
+  `plan` needs the action `plan` on each name of the
   files, and on each name of the spec in use that `plan` compares
   (`config::plan::planned`). A founding definition, which `plan` leaves out (FIRST
   ADMIN), is not in the check. Lost: a check on the changed names alone, with which the
