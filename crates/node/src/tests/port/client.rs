@@ -6,9 +6,11 @@ use crate::client::{self, reach};
 
 use super::*;
 
-/// What [`reach`] gave on a shard of `host`, once `sim` has run for a minute. A node
-/// on `host` can run meanwhile.
-fn reached(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), client::Error> {
+/// What [`reach`] gives on a shard of `host`, once it ends.
+type Reached = Arc<Mutex<Option<Result<(), client::Error>>>>;
+
+/// Calls [`reach`] on a shard of `host`.
+fn reach_on(host: &sim::node::Node) -> Reached {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
@@ -22,9 +24,24 @@ fn reached(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), client::Err
         .await;
         *slot.lock().expect("no test thread panicked") = Some(reached.map(drop));
     });
+    out
+}
+
+/// What `reached` holds once `sim` has run for a minute.
+fn after_a_minute(sim: &mut sim::Sim, reached: &Reached) -> Result<(), client::Error> {
     assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-    let reached = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let reached = reached
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
     reached.expect("reach ends in a minute")
+}
+
+/// What [`reach`] gave on a shard of `host`, once `sim` has run for a minute. A node
+/// on `host` can run meanwhile.
+fn reached(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), client::Error> {
+    let reached = reach_on(host);
+    after_a_minute(sim, &reached)
 }
 
 /// Starts a node on `host`, which [`keyed`] made, at `listen`, with `region`.
@@ -222,6 +239,28 @@ fn reach_whose_hub_stream_ends_with_no_challenge_gives_session() {
             at,
             error: ::hub::client::Error::Unanswered,
         })
+    );
+}
+
+/// The socket of the program breaks while it dials a crashed node, so no session
+/// exists.
+#[test]
+fn reach_whose_socket_breaks_during_the_dial_gives_transport() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = crashed(&mut sim);
+    let reached = reach_on(&host);
+    assert_eq!(
+        sim.run_for(Span::from_nanos(100 * Span::MILLISECOND.nanos())),
+        Ok(())
+    );
+    // The simulated net gives the first bind its first ephemeral port.
+    host.fail_udp(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 49_152));
+    let error = transport::Error::Network {
+        error: env::net::Error::Io { code: 5 },
+    };
+    assert_eq!(
+        after_a_minute(&mut sim, &reached),
+        Err(client::Error::Transport(error))
     );
 }
 

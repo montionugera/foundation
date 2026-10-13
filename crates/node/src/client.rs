@@ -75,6 +75,9 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
         .await
         .map_err(|error| match error {
             hub::client::Error::Refused(refusal) => Error::Refused(refusal),
+            hub::client::Error::Transport(error @ transport::Error::Network { .. }) => {
+                Error::Transport(error)
+            }
             hub::client::Error::Transport(
                 error @ transport::Error::Unreachable { .. },
             ) => Error::Unanswered { at, error },
@@ -92,7 +95,7 @@ pub enum Error {
     Key,
     /// A file call on the directory failed.
     Files(env::files::Error),
-    /// The transport of the program did not start.
+    /// The transport of the program did not start, or its socket broke.
     Transport(transport::Error),
     /// No node answers at `at`, where the file `address` says the node is: the dial
     /// gave no session.
