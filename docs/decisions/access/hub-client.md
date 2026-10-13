@@ -37,7 +37,7 @@
   stated once, in `wire`, and its `Display` gives the cause. A close with 0 or a code
   outside the set stays `Error::Transport`. Lost: one dial for each request (a handshake
   for each request, and a read stream of HUB LINK needs a session that lives;
-  `laptop.architect`,
+  `laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724); `&mut
   self` with the renewal inside `request` (an idle program loses its session at the
   expiry); a queue in a task that owns the session; a lock of a library

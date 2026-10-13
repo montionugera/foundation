@@ -13,7 +13,7 @@
   waits at most 1 s in all. A link holds one open request for each session, and
   `node::Settings::places_max` bounds the sessions of programs, so at most that bound
   times the connectors of the node are open readers of `status` at once
-  (`laptop.architect`,
+  (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
@@ -27,7 +27,7 @@
   out each connector without it. When the node places a connector and the subject reads
   none, it gives `ops.denied` with `On::Nothing`. A node that places no connector gives
   `ops.denied` with `On::Nothing` too, also with no spec in use, as SERVE ACCESS refuses
-  a request with no name to check (`laptop.architect`,
+  a request with no name to check (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724, which
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
