@@ -47,8 +47,9 @@ pub(crate) struct Status {
     pub(crate) restarts: Option<u64>,
     /// Each count that the kind names, by name, or `None` when `state` is `unknown`.
     pub(crate) counts: Option<BTreeMap<String, u64>>,
-    /// The error that ended the last run, or `None` when the last run returned `Ok`,
-    /// no run ended, or `state` is `unknown`.
+    /// The error that the running kind shows, or else the error that ended the last
+    /// run. `None` when the last run returned `Ok`, no run ended, the running kind
+    /// cleared the error, or `state` is `unknown`.
     pub(crate) error: Option<Failure>,
 }
 
@@ -67,7 +68,7 @@ pub(crate) enum State {
     Unknown,
 }
 
-/// The error that ended the last run of a connector.
+/// The error that ended the last run of a connector, or that its running kind shows.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Failure {
     pub(crate) class: Class,
@@ -75,7 +76,7 @@ pub(crate) struct Failure {
     pub(crate) text: String,
 }
 
-/// The class of the error that ended a run.
+/// The class of the error that ended a run, or that a running kind shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Class {
