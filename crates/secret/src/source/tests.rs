@@ -64,6 +64,10 @@ fn reads_each_source() {
             Source::File("/run/secrets/influx token".into()),
         ),
         (
+            call("file", vec![string("/a/..b")]),
+            Source::File("/a/..b".into()),
+        ),
+        (
             call("secret", vec![string("plant.token")]),
             Source::Secret(name.clone()),
         ),
@@ -160,6 +164,10 @@ fn refuses_a_relative_path_or_one_with_a_parent_segment() {
         "secrets/token",
         "/run/../etc/shadow",
         "/a/..",
+        "C:\\x",
+        "x",
+        "/a\\..\\b",
+        "\\a\\b",
     ] {
         refused(
             &call("file", vec![string(path)]),
