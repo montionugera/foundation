@@ -69,8 +69,9 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
 }
 
 /// The reads that the server answered of one variable, from the first to the end of
-/// the changes, and the samples that InfluxDB holds of them to the last read before
-/// the last step of the value.
+/// the changes, and the samples that InfluxDB holds of them to the last step of the
+/// value. A later read can stand in for the read of the last step: only a change
+/// steps the value and sets the status, so it has the same status.
 #[derive(Debug)]
 struct Trace {
     served: Vec<Sample>,
@@ -195,7 +196,7 @@ fn caught_up(
             }
             Ok(Trace {
                 served: served[..reads.changed].to_vec(),
-                stored: stored[..end].to_vec(),
+                stored: stored[..=end].to_vec(),
                 unchanged: reads.unchanged,
             })
         })
@@ -284,7 +285,7 @@ fn a_trace_holds_each_read_to_the_last_step_within_the_bound() {
         let traces = check(&served, &stored).expect("caught up");
         let pairs = (traces.iter())
             .map(|trace| (&trace.served[..], &trace.stored[..], trace.unchanged));
-        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..6], &stored[..5], 3)]);
+        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..6], &stored[..6], 3)]);
     }
 }
 
