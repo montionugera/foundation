@@ -105,7 +105,7 @@ const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
 /// A round comment posted before this UTC time, when the round cap reached `main`, may
 /// have any number, since the rules on `main` ran its rounds.
-const ROUNDS_CUTOFF: &str = "9999-12-31T23:59:59Z";
+const ROUNDS_CUTOFF: &str = "2026-10-13T20:12:19Z";
 
 /// The most review rounds that a PR gets. A last round of this number or above may
 /// have findings and may end before a commit that changes code, since no round follows
