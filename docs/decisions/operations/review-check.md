@@ -136,17 +136,16 @@
   to bring the reviewed commits back onto that chain. Each merge after the end of its
   last round comment must also be a clean merge of the base; else the check asks for a
   round comment with its number that checks the merge and ends at the head. When the
-  number of the last round is 3 or more and a commit
-  after the end of its first round comment changes a decision (`decision_change` on that
-  end to the head), the check fails unless the `Public surface:` line of its last round
-  comment names an item, since a round comment that only holds a late report or only
-  checks a merge does not move the end of the round (REVIEW ROUNDS), and because REVIEW
-  ROUNDS has the author add each such change to that line with its approval. Each other
-  problem of that round stays: the reviewers that it requires, the OK of each deferral
-  in a risk crate, after the issue on the `Deferred:` line of one of its round comments,
-  the approvals
-  of its `Public surface:` line, and the director's approval of a red-team PR labeled
-  `oracle`. The check does not check that each finding of that round has its fix commit
+  number of the last round is 3 or more and a commit after the end of its first round
+  comment changes a decision (`decision_change` on that end to the head), the check
+  fails unless the `Public surface:` line of its last round comment names an item, since
+  a round comment that only holds a late report or only checks a merge does not move the
+  end of the round (REVIEW ROUNDS), and because REVIEW ROUNDS has the author add each
+  such change to that line with its approval. Each other problem of that round stays:
+  the reviewers that it requires, the OK of each deferral in a risk crate, after the
+  issue on the `Deferred:` line of one of its round comments, the approvals of its
+  `Public surface:` line, and the director's approval of a red-team PR labeled `oracle`.
+  The check does not check that each finding of that round has its fix commit
   or its deferral, or that each commit after it that changes code fixes a defect of that
   round. For the reviewers that a round comment requires and for its `breaker` skip, the
   first round comment on a PR is round 1 and each round comment after it is a later
