@@ -907,6 +907,98 @@ mod tests {
         assert_eq!(texts, want);
     }
 
+    /// A kind whose run lends its context to a task that shows the error `late` at the
+    /// cancel of the run, then returns `Ok` at once, or a device error when `device`.
+    struct Late {
+        device: bool,
+    }
+
+    impl Kind for Late {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn discover(
+            &self,
+            _: &cancel::Token,
+        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+
+        fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            let ctx = Rc::new(ctx);
+            let late = Rc::clone(&ctx);
+            ctx.tasks().spawn(async move {
+                late.cancel().wait().await;
+                late.error(Some(&"late"));
+            });
+            std::future::ready(if self.device {
+                Err(Error::Device("no reply".into()))
+            } else {
+                Ok(())
+            })
+        }
+    }
+
+    /// The state, the class, and the text of each status that a `Late` run gives,
+    /// cancelled at 500 ms.
+    fn supervise_late(device: bool) -> Vec<((i64, i64, i64), String)> {
+        let statuses = run_on(move |node, tasks| async move {
+            let kinds = Table::new().with("script", Late { device });
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.script").await;
+            let statuses = read_status(&inputs.hub, "plant.script", &[], &tasks).await;
+            let supervisor = Supervisor::new(inputs);
+            let clock = node.clock();
+            let token = Token::new();
+            let canceller = token.clone();
+            let sleeper = clock.clone();
+            tasks.spawn(async move {
+                sleeper.sleep(ms(500)).await;
+                canceller.cancel();
+            });
+            let name = "plant.script".parse().expect("a valid name");
+            let result = supervisor
+                .open("script", name, &config(), &token)
+                .await
+                .run()
+                .await;
+            result.expect("ok after a cancel");
+            clock.sleep(Span::SECOND).await;
+            statuses.borrow().clone()
+        });
+        (statuses.iter())
+            .zip(states(&statuses))
+            .map(|((_, _, text), state)| (state, text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn writes_no_error_that_a_task_shows_after_an_ok_end() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 0, 0), String::new()),
+            ((2, 0, 0), String::new()),
+        ];
+        assert_eq!(supervise_late(false), want);
+    }
+
+    #[test]
+    fn writes_no_error_that_a_task_shows_after_a_device_end() {
+        let want = [
+            ((0, 0, 0), String::new()),
+            ((3, 2, 0), "no reply".to_owned()),
+            ((1, 2, 0), "no reply".to_owned()),
+        ];
+        assert_eq!(supervise_late(true)[..3], want);
+    }
+
     #[test]
     fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =

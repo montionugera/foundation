@@ -142,19 +142,24 @@ impl Status {
     }
 
     /// Shows `error` as the class `Retry` and its text, or clears both with `None`,
-    /// from the next write until the end of the run. The same value again stages
-    /// nothing.
+    /// from the next write until the end of the run. The same value again, or a call
+    /// while no run runs, stages nothing.
     pub(crate) fn show(&self, error: Option<&dyn fmt::Display>) {
-        let last = match error {
+        if matches!(*self.0.shown.borrow(), Shown::Ended) {
+            return;
+        }
+        let (class, text) = match error {
             Some(error) => (Class::Retry, cut(&error.to_string())),
             None => (Class::None, String::new()),
         };
         let mut shown = self.0.shown.borrow_mut();
-        if shown.last.as_ref() == Some(&last) {
+        if let Shown::Last(last, last_text) = &*shown
+            && *last == class
+            && *last_text == text
+        {
             return;
         }
-        shown.last = Some(last);
-        shown.changed = true;
+        *shown = Shown::Last(class, text);
         drop(shown);
         self.0.stage();
     }
@@ -200,7 +205,8 @@ impl State {
     }
 }
 
-/// How the last run ended, as `class` gives it: `None` also before the first end.
+/// How the last run ended, or the error that the running kind shows, as `class` gives
+/// it: `None` also before the first end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     None = 0,
@@ -251,12 +257,14 @@ impl Values {
 
 /// The error that the running kind shows.
 #[derive(Debug, Default)]
-struct Shown {
-    /// The class and the text of the last error or clear of this run, `None` before
-    /// the first.
-    last: Option<(Class, String)>,
-    /// Set when `last` changed after the last write.
-    changed: bool,
+enum Shown {
+    /// No run runs: an error that a task of the last run shows is not written.
+    #[default]
+    Ended,
+    /// The run showed nothing yet, so the status keeps the end of the last run.
+    Nothing,
+    /// The class and the text of the last error or clear of the run.
+    Last(Class, String),
 }
 
 impl fmt::Debug for Values {
@@ -367,6 +375,7 @@ impl Writer {
             session.started = true;
             session.state = State::Running;
         });
+        self.values.shown.replace(Shown::Nothing);
         true
     }
 
@@ -377,7 +386,7 @@ impl Writer {
         &self,
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
-        self.values.shown.take();
+        self.values.shown.replace(Shown::Ended);
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
@@ -551,14 +560,10 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
-        let mut shown = values.shown.borrow_mut();
-        if std::mem::take(&mut shown.changed)
-            && let Some((class, text)) = &shown.last
-        {
+        if let Shown::Last(class, text) = &*values.shown.borrow() {
             self.class = *class;
             self.error.set(&mut self.series, text.clone());
         }
-        drop(shown);
         if self.closed {
             self.unapplied = false;
             return;
@@ -934,10 +939,9 @@ mod tests {
     fn debugs_each_value_but_the_waker() {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
-        status.show(Some(&"busy"));
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], shown: Shown { last: \
-                    Some((Retry, \"busy\")), changed: true }, staged: true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, staged: \
+                    true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 

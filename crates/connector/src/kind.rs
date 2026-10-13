@@ -253,7 +253,8 @@ impl<C> Context<C> {
 
     /// Shows `error` in the status of the running connector, as an attempt that
     /// failed with the class `retry`, or clears the class and the text with `None`.
-    /// The status gives it within one second. The end of the run replaces both.
+    /// The status gives it within one second. The end of the run replaces both, and a
+    /// call after the run returned, from a task of the run, shows nothing.
     pub fn error(&self, error: Option<&dyn fmt::Display>) {
         self.status.show(error);
     }

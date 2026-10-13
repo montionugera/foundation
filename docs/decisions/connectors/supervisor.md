@@ -232,16 +232,21 @@
 
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or
-  `error` is written as soon as the home applied the state before it (below). A change
-  of counts alone is written at most once each second after the last write, timed with
-  the clock of `supervisor::Config` (`laptop.architect-2`, 2026-10-08T06:38:42Z:
+  `error` that the supervisor makes is written as soon as the home applied the state
+  before it (below). A change of counts alone is written at most once each second after
+  the last write, timed with the clock of `supervisor::Config` (`laptop.architect-2`,
+  2026-10-08T06:38:42Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
-  to 3). A running kind shows an error with `Context::error`, as an attempt that
-  failed: `class` 3 and the text of the error, cut as above. `None` clears `class` to 0
-  and the text. The end of the run replaces both. A change of it is written as a change
-  of counts, and the same value again writes nothing (`laptop.architect-2`,
-  2026-10-13T01:12:06Z:
-  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432). When a
+  to 3). A running kind shows an error with `Context::error`, as an attempt that failed:
+  `class` 3 and the text of the error, cut as above. `None` clears `class` to 0 and the
+  text. A change of it is written within one second, as a change of counts
+  (`laptop.architect-2`, 2026-10-13T01:12:06Z:
+  https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432), which
+  supersedes "at once" of rule 3 for it. Until the first call of a run, `class` and
+  `error` keep the end of the last run, so a kind that wants a clear status clears it at
+  its start. The same value again writes nothing. The end of the run replaces both, and
+  a call after the run returned, from a task of the run, shows nothing (decided by the
+  `connector` builder on #2535). When a
   run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
   when the call returns
