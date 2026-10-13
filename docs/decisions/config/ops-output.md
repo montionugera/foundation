@@ -187,8 +187,8 @@
   and `apply` are by `laptop.architect-2` (2026-10-12T18:30:05Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6130219053), which
   supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. STATUS
-  OPERATION adds `status` to `plan` and `apply` there. Lost:
-  one JSON value with the plan file as a list of numbers, which is four times the bytes.
+  OPERATION adds `status` to `plan` and `apply` there. Lost: one JSON value with the
+  plan file as a list of numbers, which is four times the bytes.
   `plan` and `apply` run on the node of `foundation-data`, which `node::client::reach`
   reaches. The command line gives four codes of its own. `ops.read`: `no file is at
   <path>`, `<path> is a directory, not a file`, or `the text of <path> is not UTF-8`,
