@@ -190,6 +190,14 @@ unsafe extern "C" {
         length: usize,
         size: usize,
     ) -> u32;
+    pub(crate) fn shim_server_add_source(
+        server: *mut Server,
+        namespace: u16,
+        number: u32,
+        name: *const u8,
+        length: usize,
+        source: *mut c_void,
+    ) -> u32;
     pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;

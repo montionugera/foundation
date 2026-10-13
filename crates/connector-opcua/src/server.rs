@@ -78,6 +78,34 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
+    /// Adds the Double variable `node`, whose reads `source` answers.
+    ///
+    /// # Safety
+    ///
+    /// `source` points at a `#[repr(C)]` value whose first field is the read function
+    /// of `shim_source` in `server.c`, and it lives until the server is deleted.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    #[cfg(feature = "sim")]
+    pub(crate) unsafe fn add_source(&self, node: &Node, source: *mut std::ffi::c_void) {
+        let (namespace, number, name, length) = ffi::node(node);
+        // SAFETY: the server lives, it copies the name of `node`, and `source` lives
+        // as the caller ensures.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_source(
+                self.raw(),
+                namespace,
+                number,
+                name,
+                length,
+                source,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
     /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
     ///
     /// # Panics

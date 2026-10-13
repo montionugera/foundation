@@ -44,6 +44,8 @@ mod node;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod server;
+#[cfg(feature = "sim")]
+pub mod sim;
 
 #[cfg(test)]
 mod child;

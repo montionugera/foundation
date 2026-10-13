@@ -96,3 +96,54 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, UA_UInt16 namespace,
 void shim_server_chunks(UA_Server *server, UA_UInt32 chunks) {
     UA_Server_getConfig(server)->tcpMaxChunks = chunks;
 }
+
+/* The node context of a variable of `shim_server_add_source`, as the first field of
+ * the context that Rust holds. */
+typedef struct shim_source shim_source;
+struct shim_source {
+    /* Gives the value and the status of a read of the variable. */
+    void (*read)(shim_source *source, UA_Double *value, UA_StatusCode *status);
+};
+
+static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessionId,
+                                      void *sessionContext, const UA_NodeId *nodeId,
+                                      void *nodeContext,
+                                      UA_Boolean includeSourceTimeStamp,
+                                      const UA_NumericRange *range,
+                                      UA_DataValue *value) {
+    (void)server;
+    (void)sessionId;
+    (void)sessionContext;
+    (void)nodeId;
+    (void)includeSourceTimeStamp;
+    value->hasStatus = true;
+    if(range) {
+        value->status = UA_STATUSCODE_BADINDEXRANGEINVALID;
+        return UA_STATUSCODE_GOOD;
+    }
+    shim_source *source = nodeContext;
+    UA_Double read;
+    source->read(source, &read, &value->status);
+    UA_StatusCode status =
+        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[UA_TYPES_DOUBLE]);
+    value->hasValue = status == UA_STATUSCODE_GOOD;
+    return status;
+}
+
+/* Adds to `server` the Double variable of `shim_node` under the Objects folder, whose
+ * reads `source` answers. `source` lives until the server is deleted. */
+UA_StatusCode shim_server_add_source(UA_Server *server, UA_UInt16 namespace,
+                                     UA_UInt32 number, const UA_Byte *name,
+                                     size_t length, shim_source *source) {
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.valueRank = UA_VALUERANK_SCALAR;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
+    return UA_Server_addCallbackValueSourceVariableNode(
+        server, shim_node(namespace, number, name, length),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "source"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, callbacks,
+        source, NULL);
+}
