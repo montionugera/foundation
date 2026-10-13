@@ -158,7 +158,7 @@ fn spike(seed: u64) -> ((f64, Result<f64, Status>), u64) {
 }
 
 #[test]
-fn a_client_reads_a_double_and_a_seed_replays() {
+fn a_client_reads_a_double_and_a_run_replays() {
     let ((value, read), digest) = spike(7);
     assert_eq!(read, Ok(value));
     assert_eq!(spike(7), ((value, Ok(value)), digest));
