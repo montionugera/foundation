@@ -9,15 +9,15 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
-  writes the `text()` of the reply, as it does for `plan`. `--json`
-  and the MCP tool later give the same value, with no change to the operation, the type,
-  or the reply. The connectors are each connector of the spec in use whose `node` is
-  this node, in name order. For each, `serve` opens a `Latest` reader of its status
-  index and each channel on it through the node's hub, with the request's subject. All
-  reads run at once, and a connector with no frame within 1 s of the request is
-  `unknown`, so a reply waits at most 1 s in all. A link holds one open request for each
-  session, and `node::Settings::places_max` bounds the sessions of programs, so at most
-  that bound times the connectors of the node are open readers of `status` at once
+  writes the `text()` of the reply, as it does for `plan`. `--json` and the MCP tool
+  later give the same value, with no change to the operation, the type, or the reply.
+  The connectors are each connector of the spec in use whose `node` is this node, in
+  name order. For each, `serve` opens a `Latest` reader of its status index and each
+  channel on it through the node's hub, with the request's subject. All reads run at
+  once, and a connector with no frame within 1 s of the request is `unknown`, so a reply
+  waits at most 1 s in all. A link holds one open request for each session, and
+  `node::Settings::places_max` bounds the sessions of programs, so at most that bound
+  times the connectors of the node are open readers of `status` at once
   (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
