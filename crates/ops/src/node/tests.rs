@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    NODE, PLANT, create_kinds, create_node, create_node_reading, fail_sync, front_ends,
-    placed_site, solo,
+    Fixture, NODE, PLANT, create_kinds, create_node, create_node_reading, fail_sync,
+    front_ends, placed_site, solo,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -45,8 +45,8 @@ fn site() -> Vec<(PathBuf, String)> {
 
 #[test]
 fn applies_with_each_connector_kind_of_the_node() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
         let (plan, _) = node.plan(files).await.expect("a plan");
         let applied = node.apply(Path::new("plant.plan"), &plan).await;
@@ -68,8 +68,8 @@ fn applies_with_each_connector_kind_of_the_node() {
 
 #[test]
 fn plans_and_applies_in_the_json_of_the_cli() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let expected = planned(&mesh, site()).await;
         let (plan, output) = node.plan(site()).await.expect("a plan");
         assert_eq!(output["added"], 3, "{output}");
@@ -103,8 +103,8 @@ fn plans_and_applies_in_the_json_of_the_cli() {
 
 #[test]
 fn plans_with_each_connector_kind_of_the_node() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
         let expected = planned(&mesh, files.clone()).await;
         let (_, output) = node.plan(files).await.expect("a plan");
@@ -114,15 +114,15 @@ fn plans_with_each_connector_kind_of_the_node() {
 
 #[test]
 fn gives_the_json_error_of_a_plan() {
-    solo(|_, mesh| async move {
-        assert_unknown(mesh, front_ends(), "`.hcl`").await;
+    solo(|fixture, mesh| async move {
+        assert_unknown(&fixture, mesh, front_ends(), "`.hcl`").await;
     });
 }
 
 #[test]
 fn gives_the_json_error_of_an_apply() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let base = mesh.pointer();
         let (plan, _) = node.plan(site()).await.expect("a plan");
         let path = Path::new("site.plan");
@@ -135,8 +135,8 @@ fn gives_the_json_error_of_an_apply() {
 
 #[test]
 fn debug_names_each_front_end() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let expected = r#"Node { front_ends: FrontEnds(["hcl"]), .. }"#;
         assert_eq!(format!("{node:?}"), expected);
         assert_eq!(
@@ -153,8 +153,13 @@ fn debug_names_each_front_end() {
 
 /// Plans a `.txt` file on a node of `mesh` that reads with `front_ends`, and asserts
 /// that its error names `extensions` in the fix.
-async fn assert_unknown(mesh: Mesh, front_ends: FrontEnds, extensions: &str) {
-    let node = create_node_reading(mesh, front_ends);
+async fn assert_unknown(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    extensions: &str,
+) {
+    let node = create_node_reading(fixture, mesh, front_ends);
     let files = vec![(PathBuf::from("site.txt"), placed_site())];
     let error = node.plan(files).await.expect_err("an unknown extension");
     let expected = json!({ "errors": [{
@@ -169,27 +174,27 @@ async fn assert_unknown(mesh: Mesh, front_ends: FrontEnds, extensions: &str) {
 
 #[test]
 fn names_each_extension_of_the_table_in_the_fix() {
-    solo(|_, mesh| async move {
+    solo(|fixture, mesh| async move {
         let two = front_ends().with(
             "toml",
             FrontEnd {
                 read: config_hcl::read,
             },
         );
-        assert_unknown(mesh.clone(), two.clone(), "`.hcl` or `.toml`").await;
+        assert_unknown(&fixture, mesh.clone(), two.clone(), "`.hcl` or `.toml`").await;
         let three = two.with(
             "yaml",
             FrontEnd {
                 read: config_hcl::read,
             },
         );
-        assert_unknown(mesh, three, "`.hcl`, `.toml`, or `.yaml`").await;
+        assert_unknown(&fixture, mesh, three, "`.hcl`, `.toml`, or `.yaml`").await;
     });
 }
 
 #[test]
 fn reads_with_the_last_front_end_of_an_extension() {
-    solo(|_, mesh| async move {
+    solo(|fixture, mesh| async move {
         let refuse = FrontEnd {
             read: |source, _| {
                 let start = Position {
@@ -211,7 +216,7 @@ fn reads_with_the_last_front_end_of_an_extension() {
                 read: config_hcl::read,
             },
         );
-        let node = create_node_reading(mesh.clone(), front_ends);
+        let node = create_node_reading(&fixture, mesh.clone(), front_ends);
         let expected = planned(&mesh, site()).await;
         let (_, output) = node.plan(site()).await.expect("a plan");
         assert_eq!(output, expected);
@@ -230,10 +235,10 @@ fn stopped_errors(stopped: &mesh::Stopped) -> Value {
 
 #[test]
 fn gives_a_stop_of_the_group_as_stopped_in_plan() {
-    solo(|sim, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let (plan, _) = node.plan(site()).await.expect("a plan");
-        let stopped = fail_sync(&sim);
+        let stopped = fail_sync(&fixture.sim);
         let applied = node.apply(Path::new("site.plan"), &plan).await;
         assert_eq!(applied, Err(stopped_errors(&stopped)));
         let planned = node.plan(site()).await.map(|(_, output)| output);
@@ -246,13 +251,13 @@ fn gives_a_stop_of_the_group_as_stopped_in_plan() {
 
 #[test]
 fn gives_a_stop_of_the_group_as_stopped_in_apply_of_a_plan_with_no_change() {
-    solo(|sim, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let (plan, _) = node.plan(site()).await.expect("a plan");
         let (empty, output) = node.plan(Vec::new()).await.expect("a plan");
         assert_eq!(output["added"], json!(0));
         assert_eq!(output["removed"], json!(0));
-        let stopped = fail_sync(&sim);
+        let stopped = fail_sync(&fixture.sim);
         let applied = node.apply(Path::new("site.plan"), &plan).await;
         assert_eq!(applied, Err(stopped_errors(&stopped)));
         let applied = node.apply(Path::new("empty.plan"), &empty).await;

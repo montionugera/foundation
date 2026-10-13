@@ -145,9 +145,9 @@ fn read(code: &str, message: &str, status: u8) -> (String, String, u8) {
 
 #[test]
 fn plans_writes_the_plan_file_and_applies_it() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
-        let remote = Remote::new(create_node(mesh.clone()));
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh.clone()));
         let files = vec![(PathBuf::from("site.hcl"), placed_site())];
         let (expected, output) = remote.node.plan(files).await.expect("a plan");
 
@@ -171,9 +171,9 @@ fn plans_writes_the_plan_file_and_applies_it() {
 
 #[test]
 fn plan_with_no_out_writes_no_file() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
-        let remote = Remote::new(create_node(mesh));
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh));
         let before = paths.read(Path::new("/"), most());
         let files = [PathBuf::from("site.hcl")];
         remote.plan(&paths, &files, None).await.expect("a plan");
@@ -184,16 +184,16 @@ fn plan_with_no_out_writes_no_file() {
 
 #[test]
 fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
         paths
             .write(Path::new("config/a.hcl"), b"")
             .expect("a write");
         paths
             .write(Path::new("latin.hcl"), b"\xff")
             .expect("a write");
-        host.fail_path(Path::new("site.hcl"), 5);
-        let remote = Remote::new(create_node(mesh));
+        fixture.sim.fail_path(Path::new("site.hcl"), 5);
+        let remote = Remote::new(create_node(&fixture, mesh));
         let cases = [
             ("gone.hcl", Unread::NotFound, "no file is at gone.hcl", 2),
             (
@@ -231,8 +231,8 @@ fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
 
 #[test]
 fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         let empty = [File {
             path: PathBuf::from("big.hcl"),
             text: String::new(),
@@ -242,7 +242,7 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
         paths
             .write(Path::new("big.hcl"), text.as_bytes())
             .expect("a write");
-        let remote = Remote::new(create_node(mesh));
+        let remote = Remote::new(create_node(&fixture, mesh));
         let files = [PathBuf::from("big.hcl")];
         let planned = remote.plan(&paths, &files, None).await;
         let Err(error) = planned else {
@@ -273,12 +273,12 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
 /// `b.hcl` is not UTF-8, so [`Unread::NotUtf8`] shows that `plan` checked its text.
 #[test]
 fn plan_gives_large_request_once_the_files_that_it_read_pass_the_most() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         let half = most() / 2 + 1;
         let b = vec![0xff; half];
         paths.write(Path::new("b.hcl"), &b).expect("a write");
-        let remote = Remote::new(create_node(mesh));
+        let remote = Remote::new(create_node(&fixture, mesh));
         let files = [PathBuf::from("a.hcl"), PathBuf::from("b.hcl")];
         let a = "#".repeat(half);
         paths
@@ -308,12 +308,12 @@ fn plan_gives_large_request_once_the_files_that_it_read_pass_the_most() {
 /// `most()` bytes.
 #[test]
 fn plan_of_a_file_of_exactly_the_most_reads_it() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         paths
             .write(Path::new("a.hcl"), &vec![0xff; most()])
             .expect("a write");
-        let remote = Remote::new(create_node(mesh));
+        let remote = Remote::new(create_node(&fixture, mesh));
         let planned = remote.plan(&paths, &[PathBuf::from("a.hcl")], None).await;
         let path = PathBuf::from("a.hcl");
         let cause = Unread::NotUtf8;
@@ -325,8 +325,8 @@ fn plan_of_a_file_of_exactly_the_most_reads_it() {
 /// `config` take.
 #[test]
 fn plan_of_a_directory_after_a_large_file_gives_read() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         for n in 0..10 {
             let path = PathBuf::from(format!("config/f{n}.hcl"));
             paths.write(&path, b"").expect("a write");
@@ -335,7 +335,7 @@ fn plan_of_a_directory_after_a_large_file_gives_read() {
         paths
             .write(Path::new("a.hcl"), a.as_bytes())
             .expect("a write");
-        let remote = Remote::with(create_node(mesh), Mode::Unsent);
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Unsent);
         let alone = remote.plan(&paths, &[PathBuf::from("a.hcl")], None).await;
         assert_eq!(alone.err(), Some(Error::Node(lost())), "a.hcl fits");
         let files = [PathBuf::from("a.hcl"), PathBuf::from("config")];
@@ -348,11 +348,11 @@ fn plan_of_a_directory_after_a_large_file_gives_read() {
 
 #[test]
 fn plan_whose_write_of_out_fails_gives_write_and_leaves_no_file() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
         let out = Path::new("site.plan");
-        host.fail_path(out, 13);
-        let remote = Remote::new(create_node(mesh));
+        fixture.sim.fail_path(out, 13);
+        let remote = Remote::new(create_node(&fixture, mesh));
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
         let Err(error) = planned else {
@@ -381,10 +381,10 @@ fn write_of_a_plan_file_whose_directory_is_not_there_names_the_directory() {
 
 #[test]
 fn a_failure_of_reach_or_of_the_request_is_the_error_of_the_command() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
         let files = [PathBuf::from("site.hcl")];
-        let remote = Remote::with(create_node(mesh), Mode::Unreached);
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Unreached);
         let planned = remote.plan(&paths, &files, None).await;
         let Err(error) = planned else {
             panic!("reach fails");
@@ -403,9 +403,9 @@ fn a_failure_of_reach_or_of_the_request_is_the_error_of_the_command() {
 
 #[test]
 fn a_reply_that_is_no_reply_gives_bad_reply() {
-    solo(|host, mesh| async move {
-        let node = create_node(mesh);
-        let paths = with_site(&host);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let paths = with_site(&fixture.sim);
         let files = [PathBuf::from("site.hcl")];
         let cases: [(&[u8], &str); 5] = [
             (b"{\"output\":{}}", "no newline ends the first line"),
@@ -439,9 +439,9 @@ fn a_reply_that_is_no_reply_gives_bad_reply() {
 
 #[test]
 fn plan_whose_reply_holds_no_plan_gives_bad_reply_and_writes_no_file() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let node = create_node(&fixture, mesh);
         let files = vec![(PathBuf::from("site.hcl"), placed_site())];
         let (_, output) = node.plan(files).await.expect("a plan");
         let reply = format!("{}\n", json!({ "output": output }));
@@ -458,12 +458,13 @@ fn plan_whose_reply_holds_no_plan_gives_bad_reply_and_writes_no_file() {
 
 #[test]
 fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         paths.write(Path::new("site.plan"), b"x").expect("a write");
         let reply = b"{\"output\":{\"pointer\":{\"version\":1,\"root\":\"00\"},\
                       \"added\":0,\"changed\":0,\"removed\":0,\"homes\":0}}\nx";
-        let remote = Remote::with(create_node(mesh), Mode::Reply(reply.to_vec()));
+        let remote =
+            Remote::with(create_node(&fixture, mesh), Mode::Reply(reply.to_vec()));
         let applied = remote.apply(&paths, Path::new("site.plan")).await;
         let message = "bytes follow the first line of the reply of `apply`".to_owned();
         assert_eq!(applied.err(), Some(Error::Reply { message }));
@@ -472,12 +473,12 @@ fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
 
 #[test]
 fn apply_of_a_plan_file_that_does_not_fit_a_request_reaches_no_node() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         let around = serve::apply_request(b"").expect("a request").len();
         let plan = vec![b'x'; most() - around + 1];
         paths.write(Path::new("big.plan"), &plan).expect("a write");
-        let remote = Remote::new(create_node(mesh));
+        let remote = Remote::new(create_node(&fixture, mesh));
         let applied = remote.apply(&paths, Path::new("big.plan")).await;
         assert_eq!(applied.err(), Some(Error::LargeRequest));
         let plan = [plan, b"x".to_vec()].concat();
@@ -494,10 +495,10 @@ fn apply_of_a_plan_file_that_does_not_fit_a_request_reaches_no_node() {
 
 #[test]
 fn an_error_of_the_node_keeps_its_problems_and_status() {
-    solo(|host, mesh| async move {
-        let paths = host.paths();
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
-        let remote = Remote::new(create_node(mesh));
+        let remote = Remote::new(create_node(&fixture, mesh));
         let files = [PathBuf::from("bad.hcl")];
         let planned = remote.plan(&paths, &files, None).await;
         let body = serve::plan_request(&[File {
@@ -548,9 +549,9 @@ fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    solo(|host, mesh| async move {
-        let paths = host.paths();
-        let remote = Remote::new(create_node(mesh));
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
+        let remote = Remote::new(create_node(&fixture, mesh));
         let path = PathBuf::from(OsStr::from_bytes(b"a\xff.hcl"));
         let planned = remote.plan(&paths, std::slice::from_ref(&path), None).await;
         let Err(error) = planned else {
@@ -568,14 +569,19 @@ fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
 
 #[test]
 fn the_command_line_plans_and_applies_on_the_node() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
-        let remote = Remote::new(create_node(mesh));
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh));
         let (status, output, errors) = remote
             .cli(&paths, &["plan", "site.hcl", "--out", "site.plan"])
             .await;
         assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
         assert!(output.contains("3 to add"), "{output}");
+        let (status, output, errors) =
+            remote.cli(&paths, &["plan", "site.hcl", "--json"]).await;
+        assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
+        let output: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+        assert_eq!(output["added"], 3);
         let (status, output, errors) =
             remote.cli(&paths, &["apply", "site.plan", "--json"]).await;
         assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
@@ -584,16 +590,16 @@ fn the_command_line_plans_and_applies_on_the_node() {
         let (status, output, errors) = remote.cli(&paths, &["plan", "gone.hcl"]).await;
         assert_eq!((status, output.as_str()), (Run::Exit(2), ""));
         assert!(errors.contains("no file is at gone.hcl"), "{errors}");
-        assert_eq!(remote.calls(), (2, 2));
+        assert_eq!(remote.calls(), (3, 3));
     });
 }
 
 /// The line of an apply escapes the name of its plan file as an error does.
 #[test]
 fn the_command_line_escapes_the_name_of_the_plan_file() {
-    solo(|host, mesh| async move {
-        let paths = with_site(&host);
-        let remote = Remote::new(create_node(mesh));
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh));
         let plan = "it's \"b\\c\".plan";
         let (status, _, errors) = remote
             .cli(&paths, &["plan", "site.hcl", "--out", plan])

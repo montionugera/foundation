@@ -715,6 +715,7 @@ mod tests {
 
     /// Reads the status frames of `connector` with `counts`, whose status channels
     /// have keys from [`STATUS`] on, into the vector it gives, in a task on `tasks`.
+    /// Panics on a frame that lacks one of [`status::channels`].
     async fn read_status(
         hub: &hub::Hub,
         connector: &str,
@@ -746,6 +747,11 @@ mod tests {
         tasks.spawn(async move {
             let mut first = None;
             while let Ok(received) = reader.next().await {
+                let held: Vec<_> = (received.view().iter())
+                    .map(|(entry, _)| received.name(entry))
+                    .collect();
+                let lacks = names.iter().find(|name| !held.contains(&name.as_str()));
+                assert_eq!(lacks, None, "a status frame holds each status channel");
                 let stamps = series(&received, STATUS.as_u128());
                 let samples: Vec<_> = keys
                     .clone()

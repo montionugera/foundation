@@ -2,7 +2,7 @@
 //! their own, and their writes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::fmt;
 use std::future::{pending, poll_fn};
@@ -17,6 +17,8 @@ use std::task::{self, Poll, Wake, Waker};
 
 use codec::Variable;
 use env::clock::Clock;
+use spec::channel::{Channel, Kind};
+use spec::definition::Definition;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path};
 use types::name::Name;
@@ -70,7 +72,8 @@ const PERIOD: Span = Span::SECOND;
 
 /// The status channels of `connector`: the name of their index, then the name and
 /// sample type of each channel on it, the supervisor's first, then each of `counts`
-/// as `u64`. `counts` is as [`kind::Table::check`] gives them.
+/// as `u64`. `counts` is as [`kind::Table::check`] gives them. Each frame that the
+/// supervisor writes holds one sample of each of these channels.
 ///
 /// # Errors
 ///
@@ -90,6 +93,37 @@ pub fn channels(
         .map(|(last, sample)| Ok((status(last)?, sample)))
         .collect::<Result<_, _>>()?;
     Ok((time, channels))
+}
+
+/// The status channels that `definitions` defines for the connector `name`: its
+/// status index, then each data channel on it, in name order.
+///
+/// # Panics
+///
+/// When `definitions` has no status index for `name`, which `config` refuses.
+#[must_use]
+pub fn defined<'a>(
+    definitions: &'a BTreeMap<Name, Definition>,
+    name: &Name,
+) -> Vec<(&'a Name, &'a Channel)> {
+    let index = channels(name, &[]).map(|(index, _)| index);
+    let index = index.expect("invariant: `config` refuses a status name that is long");
+    let Some((index, Definition::Channel(found))) = definitions.get_key_value(&index)
+    else {
+        panic!("invariant: `config` defines the status index `{index}`");
+    };
+    let on = definitions
+        .iter()
+        .filter_map(|(channel, definition)| match definition {
+            Definition::Channel(
+                on @ Channel {
+                    kind: Kind::Data(data),
+                    ..
+                },
+            ) if *data.index() == found.key => Some((channel, on)),
+            _ => None,
+        });
+    std::iter::once((index, found)).chain(on).collect()
 }
 
 /// Panics when `kind` names a count of more than one segment, a count that the index
@@ -867,6 +901,31 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::testing::create_status;
+
+    #[test]
+    fn defines_the_status_channels_of_one_connector() {
+        let (a, b) = (name("site.a"), name("site.b"));
+        let counts = [name("in")];
+        let mine = create_status(&a, &counts, types::channel::Key::from_u128(100));
+        let theirs = create_status(&b, &counts, types::channel::Key::from_u128(200));
+        let definitions: BTreeMap<_, _> = mine.iter().chain(&theirs).cloned().collect();
+        let mut expected: Vec<_> = mine
+            .iter()
+            .map(|(name, definition)| match definition {
+                Definition::Channel(channel) => (name, channel),
+                _ => unreachable!("a status definition is a channel"),
+            })
+            .collect();
+        expected[1..].sort_by_key(|(name, _)| *name);
+        assert_eq!(defined(&definitions, &a), expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "defines the status index `site.a.status.time`")]
+    fn panics_with_no_status_index() {
+        drop(defined(&BTreeMap::new(), &name("site.a")));
+    }
 
     /// A side of [`beside`] that counts its polls and keeps its last waker.
     fn side(
