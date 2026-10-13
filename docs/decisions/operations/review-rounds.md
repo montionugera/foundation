@@ -11,8 +11,9 @@
   boundary, a decision, or the owner of state. The design approver of an item is the
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect wrote the PR, it is
-  the other architect. When `laptop.director` wrote the PR, `laptop.architect` takes the
-  place of `laptop.director`. After round 3, no other round runs, and no PR replaces it,
+  the other architect. When `laptop.director` wrote the PR, `laptop.architect` is the
+  design approver in place of `laptop.director`.
+  After round 3, no other round runs, and no PR replaces it,
   other than a new design that its design approver approves, which starts at round 1.
   Each round comment numbered 3 marks each finding `defect` (wrong behavior, data loss,
   a crash, or an oracle weakening), `design flaw`, or neither, as its reviewer marked

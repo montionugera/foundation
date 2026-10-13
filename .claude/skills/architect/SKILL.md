@@ -30,7 +30,8 @@ Two architects split the crates (`docs/factory.md`, Architects). Rule only on th
 crates you own, and send a question about another crate to its architect.
 `laptop.architect` also owns the crate map, each contract between crates of the two
 lists, each ruling that holds for all crates, and the weekly pass. `laptop.architect-2`
-sends those to it.
+sends those to it. `laptop.architect` is also the design approver in place of
+`laptop.director` on a PR that `laptop.director` wrote (`/review`, "Round cap").
 
 ## Interface issues
 

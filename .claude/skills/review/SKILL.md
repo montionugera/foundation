@@ -45,7 +45,7 @@ decision, or the owner of state. The design approver of an item is the crate's
 architect, `laptop.architect` for a contract between the two lists (`docs/factory.md`),
 or `laptop.director` for any other item. When the crate's architect wrote the PR, it is
 the other architect (Round 1). When `laptop.director` wrote the PR, `laptop.architect`
-takes the place of `laptop.director`.
+is the design approver in place of `laptop.director`.
 
 A PR that replaces another before round 3 continues its count: its first round reviews
 its whole diff with each reviewer of the table (Round 1). After round 3, no PR replaces
