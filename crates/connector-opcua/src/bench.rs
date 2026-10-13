@@ -47,7 +47,7 @@ impl Client {
     ///
     /// # Aborts
     ///
-    /// If open62541 cannot allocate the client, as [`alloc::exhausted`] says.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(clock, rng);
@@ -156,11 +156,15 @@ impl Manager {
     ///
     /// If `idle` is 65535 or more, as open62541 counts sessions in 16 bits, if a
     /// connect fails or does not end in 60 s of `clock`, if open62541 refuses the
-    /// server, a client, or a step of the close, if a channel of a client is not
-    /// closed after the close, or if the port is taken. A panic of the close leaks the
-    /// loop and its connections, and each server and client that it has not deleted,
-    /// and replaces a panic of the connect or `body`. A panic before the connect leaks
-    /// what was made by then: the manager, the server, and each client.
+    /// server or a step of the close, if a channel of a client is not closed after the
+    /// close, or if the port is taken. A panic of the close leaks the loop and its
+    /// connections, and each server and client that it has not deleted, and replaces a
+    /// panic of the connect or `body`. A panic before the connect leaks what was made
+    /// by then: the manager, the server, and each client.
+    ///
+    /// # Aborts
+    ///
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,

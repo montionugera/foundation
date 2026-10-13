@@ -102,7 +102,7 @@ impl Client {
     ///
     /// # Aborts
     ///
-    /// If open62541 cannot allocate the client, as [`alloc::exhausted`] says.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
         net: Net,
