@@ -65,6 +65,7 @@
 | NODE PORT (#2089, 6089294422): the hub's task of a reader whose home is another node holds the transport until its next poll after the drop of the reader | NODE PORT amendment (#2244, 6095943720): a task of the hub holds it until its next poll after the hub and each value and future that it gave drop (`hub::Hub::new`) |
 | HOME TYPE REFUSAL (#963): `open_writer` refuses a series of a type the home does not write | HOME EVERY TYPE |
 | FIRST SLICE order, for ONE NODE work only; the order "after FIRST SLICE" of 6050540089 | FIRST SLICE amendment (2026-10-08) |
+| STORE AND FORWARD "It runs beside FIRST SLICE", until the new sessions start | STORE AND FORWARD amendment (2026-10-13) |
 | HUB SESSIONS (#340, 6066821273): `reader::Error::Remote` gives a reader of an index at another node | HUB SESSIONS amendment (#340 PR 4d-b, 6069259471): the reader reads from that home over one hub stream |
 | `hub::Config::mesh` of 6067438821 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
 | `hub::Config::transport` of 6048960511 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
