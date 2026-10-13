@@ -266,10 +266,9 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// The problems with the review in `record` at `head`: each round must name the
 /// reviewers it requires, and the last round must end at `head`, or at a commit on its
 /// first-parent chain after which each merge is a clean merge of the base. Below round
-/// [`ROUNDS`], the last round must also find nothing, the range to `head` must change
-/// no code, and a commit that is not a merge after it needs a `Text fixes:` line. From
-/// round [`ROUNDS`], a change to a decision after the last round needs an item on its
-/// `Public surface:` line. A round comment posted at or after `NUMBER_CUTOFF` must have
+/// [`ROUNDS`], no round comment with the number of the last round may have findings,
+/// the range to `head` must change no code, and a commit that is not a merge after the
+/// last round needs a `Text fixes:` line. A round comment posted at or after `NUMBER_CUTOFF` must have
 /// a number that [`misnumbered`] allows. `place` gives where a commit (a SHA or its
 /// prefix) is from `head` (`History::place`). A round comment after the first may skip
 /// `breaker` when the range of the last round changes no code; an earlier round's skip
@@ -334,20 +333,19 @@ fn problems(
         round: Ok(round), ..
     }) = rounds.last()
     {
-        if round.findings > 0 && round.number < ROUNDS {
+        let findings: u32 = rounds
+            .iter()
+            .filter_map(|p| p.round.as_ref().ok())
+            .filter(|r| r.number == round.number)
+            .fold(0, |sum, r| sum.saturating_add(r.findings));
+        if findings > 0 && round.number < ROUNDS {
             problems.push(format!(
-                "review round {} has findings ({}). Fix or answer them, then run \
-                 another round.",
-                round.number, round.findings
+                "review round {} has findings ({findings}). Fix or answer them, then \
+                 run another round.",
+                round.number
             ));
         }
-        problems.extend(unended(
-            round,
-            head,
-            place(&round.end)?,
-            code_change,
-            decision_change,
-        )?);
+        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
         problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")
@@ -389,15 +387,13 @@ fn misnumbered(number: u32, before: Option<u32>) -> Option<String> {
 }
 
 /// The problem with the end of the last round, `round`, at `head`, where `place` is
-/// where its end is from `head`, or `None`. From round [`ROUNDS`], a [`Place::Off`] end
-/// is a problem, and so is a change to a decision after the end (`decision_change`)
-/// when the `Public surface:` line of the round names no item.
+/// where its end is from `head`, or `None`. From round [`ROUNDS`], only a
+/// [`Place::Off`] end is a problem.
 fn unended(
     round: &Round,
     head: &str,
     place: Place,
     code_change: Change<'_>,
-    decision_change: Change<'_>,
 ) -> Result<Option<String>, String> {
     let (number, end) = (round.number, &round.end);
     if place == Place::Off {
@@ -409,17 +405,7 @@ fn unended(
         )));
     }
     if number >= ROUNDS {
-        if round.ends.as_ref().is_some_and(|e| stated(&e.surface)) {
-            return Ok(None);
-        }
-        return Ok(decision_change(end, head)?.map(|change| {
-            format!(
-                "review round {number} ends at `{end}`, and the range from it to the \
-                 head `{head}` {change}. Add the change to the `Public surface:` line \
-                 of the round, with its approval (REVIEW ROUNDS in \
-                 `docs/decisions/operations/review-rounds.md`)."
-            )
-        }));
+        return Ok(None);
     }
     if let Some(change) = code_change(end, head)? {
         return Ok(Some(format!(

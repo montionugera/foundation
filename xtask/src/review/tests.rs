@@ -161,6 +161,15 @@ fn first(end: &str) -> Comment {
     ))
 }
 
+/// `first(END)` with no findings.
+fn settled() -> Comment {
+    let round = first(END);
+    Comment {
+        body: round.body.replace("Findings: 2", "Findings: none"),
+        ..round
+    }
+}
+
 #[test]
 fn fails_an_earlier_round_with_no_end_line() {
     assert_eq!(
@@ -1790,14 +1799,16 @@ fn passes_a_code_block_after_a_byte_order_mark_at_the_start() {
 #[test]
 fn reads_no_heading_after_two_byte_order_marks() {
     // GitHub drops only the first mark, so it shows the heading line as text.
-    let earlier = second().replace("Findings: none", "Findings: 2");
+    let earlier = second()
+        .replace("Findings: none", "Findings: 2")
+        .replace("## Review round 2", "## Review round 1");
     let at = second().find("## Review round 2").unwrap();
     for (marks, expected) in [
         ("\u{feff}", vec![]),
         (
             "\u{feff}\u{feff}",
             vec![
-                "review round 2 has findings (2). Fix or answer them, then run another \
+                "review round 1 has findings (2). Fix or answer them, then run another \
                  round."
                     .to_owned(),
             ],
@@ -3738,39 +3749,41 @@ fn a_last_round_3_passes_with_findings_and_a_code_commit_after_it() {
     );
 }
 
-/// What the check gives for `round`, the last round, when the range from its end to
-/// the head changes a decision ([`CHANGE`]).
-fn decided(round: &str) -> Vec<String> {
-    problems(
-        &reviewed(vec![bot(round)]),
-        HEAD,
-        &|_| Ok(Place::Before),
-        &|_, _| Ok(None),
-        &|from, end| {
-            assert_eq!([from, end], [CODE, HEAD]);
-            Ok(Some(CHANGE.to_string()))
-        },
-    )
-    .unwrap()
+/// `opening` with `Findings: 1`, numbered `number`.
+fn found(number: u32) -> Comment {
+    let round = opening();
+    Comment {
+        body: round
+            .body
+            .replace("Findings: none", "Findings: 1")
+            .replace("## Review round 2", &format!("## Review round {number}")),
+        ..round
+    }
 }
 
 #[test]
-fn a_last_round_3_fails_when_a_decision_changes_after_it_with_no_public_surface() {
+fn a_last_round_2_fails_with_the_findings_of_an_earlier_round_2_comment() {
+    let late = opening();
+    let late = Comment {
+        body: late.body.replace("`38cba24f..", "`c77c67d7.."),
+        ..late
+    };
     assert_eq!(
-        decided(&capped()),
-        vec![format!(
-            "review round 3 ends at `{CODE}`, and the range from it to the head \
-             `{HEAD}` {CHANGE}. Add the change to the `Public \
-             surface:` line of the round, with its approval (REVIEW ROUNDS in \
-             `docs/decisions/operations/review-rounds.md`)."
-        )]
+        check(&record(vec![found(2), late])),
+        vec![
+            "review round 2 has findings (1). Fix or answer them, then run another \
+             round."
+                .to_string()
+        ]
     );
 }
 
 #[test]
-fn a_last_round_3_passes_a_decision_change_after_it_with_a_public_surface_item() {
-    let named = capped().replace("Public surface: none", "Public surface: `x.md`");
-    assert_eq!(decided(&named), Vec::<String>::new());
+fn a_last_round_2_passes_with_findings_only_in_round_1() {
+    assert_eq!(
+        check(&record(vec![found(1), opening()])),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -3827,7 +3840,7 @@ fn repeated(from: &str) -> Comment {
 #[test]
 fn a_second_round_1_comment_is_a_later_round() {
     assert_eq!(
-        check(&record(vec![first(END), repeated(HEAD)])),
+        check(&record(vec![settled(), repeated(HEAD)])),
         Vec::<String>::new()
     );
 }
@@ -3835,7 +3848,7 @@ fn a_second_round_1_comment_is_a_later_round() {
 #[test]
 fn a_second_round_1_comment_that_skips_breaker_on_code_fails() {
     assert_eq!(
-        check(&record(vec![first(END), repeated(CODE)])),
+        check(&record(vec![settled(), repeated(CODE)])),
         vec!["review round 1 skips `breaker`, but its range changes code at `a.rs:2`."]
     );
 }
@@ -3908,7 +3921,7 @@ fn passes_a_round_comment_numbered_1_above_or_the_same_as_the_one_before_it() {
         ROUND.replace("## Review round 3", "## Review round 1"),
     ] {
         assert_eq!(
-            check(&record(vec![first(END), numbered(&round)])),
+            check(&record(vec![settled(), numbered(&round)])),
             Vec::<String>::new(),
             "{round}"
         );
