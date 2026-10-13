@@ -1281,8 +1281,9 @@ async fn relayed<T>(
 struct Relay {
     /// The streams that it accepted.
     accepts: Cell<usize>,
-    /// It closes its listener at the first accept, so each later dial is refused.
-    once: bool,
+    /// When set, it closes its listener at each accept and binds it again this long
+    /// after that stream ends, so each dial in between is refused.
+    pause: Option<Span>,
     /// When set, it drops both streams of the relay that runs at its next poll, and
     /// clears it.
     cut: Cell<bool>,
@@ -1291,6 +1292,7 @@ struct Relay {
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
 /// back, and gives each message of the server to `rewrite` before the client gets it.
 /// A relay ends when the client ends its side or `control` cuts it.
+#[expect(clippy::infinite_loop, reason = "it runs until its test ends")]
 async fn relay(
     node: &node::Node,
     control: &Relay,
@@ -1302,13 +1304,16 @@ async fn relay(
         backlog: 4,
         options: options(),
     };
-    let mut listener = Some(node.net().listen(&listen).expect("the port is free"));
-    while let Some(open) = &mut listener {
+    let mut listener = None;
+    loop {
+        let open = listener.get_or_insert_with(|| {
+            node.net().listen(&listen).expect("the port is free")
+        });
         let mut client = poll_fn(|cx| open.poll_accept(cx))
             .await
             .expect("the accept works");
         control.accepts.set(control.accepts.get() + 1);
-        if control.once {
+        if control.pause.is_some() {
             listener = None;
         }
         let config = tcp::Config {
@@ -1334,8 +1339,10 @@ async fn relay(
             }
         })
         .await;
+        if let Some(pause) = control.pause {
+            node.clock().sleep(pause).await;
+        }
     }
-    poll_fn(|_| Poll::<()>::Pending).await;
 }
 
 /// The URL of [`RELAY`] on `node`.
@@ -1363,7 +1370,8 @@ fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) {
 }
 
 /// A server that gives another URL than the one that the client dialed has the client
-/// close its channel and dial again with that URL, and the connect works.
+/// close its channel and dial the address of the given URL again, with that URL in its
+/// HEL, and the connect works.
 #[test]
 fn a_connect_through_a_switch_of_the_url_reads() {
     let ((read, value, accepts), _) = run(0, async |node| {
@@ -1392,7 +1400,7 @@ fn a_connect_whose_dial_after_a_switch_fails_takes_the_fallback() {
     let (out, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let control = Relay {
-                once: true,
+                pause: Some(Span::from_nanos(10_000_000_000)),
                 ..Relay::default()
             };
             let url = relay_url(&node);
@@ -1403,6 +1411,151 @@ fn a_connect_whose_dial_after_a_switch_fails_takes_the_fallback() {
         .await
     });
     assert_eq!(out, (Some(Status::BAD_CONNECTION_REJECTED), 1));
+}
+
+/// A refused dial after the switch of the URL takes the fallback to the given URL, and
+/// the connect reads through it. The relay binds again one link delay after the FIN of
+/// the client, with which the dial after the switch comes, and one link delay before
+/// the dial of the fallback.
+#[test]
+fn a_connect_whose_dial_after_a_switch_is_refused_reads_through_the_fallback() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay {
+                pause: Some(Span::from_nanos(250_000)),
+                ..Relay::default()
+            };
+            let url = relay_url(&node);
+            let mut to = to_server(&node);
+            // The stream of the fallback gives the URL that the client dialed.
+            let rewrite = |message: &mut Vec<u8>| {
+                if control.accepts.get() == 1 {
+                    to(message);
+                }
+            };
+            let read = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// The binary encoding of a `GetEndpoints` response, a `NodeId` of 4 bytes.
+const ENDPOINTS_RESPONSE: [u8; 4] = [0x01, 0x00, 0xAF, 0x01];
+
+/// A server whose endpoint has another URL than the one that `FindServers` gave has the
+/// client close its channel and dial again, and the connect works.
+#[test]
+fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                let endpoints = message.starts_with(b"MSG")
+                    && message[24..28] == ENDPOINTS_RESPONSE;
+                if endpoints && control.accepts.get() == 1 {
+                    to(message);
+                }
+            };
+            let read = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// A message on an open channel that the client cannot process ends the session, and
+/// the client does not dial again, also after a switch of the URL.
+#[test]
+fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && message.starts_with(b"MSG") {
+                    // The key of another channel.
+                    message[8] ^= 0xFF;
+                }
+            };
+            let reads = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                let reads =
+                    (client.read_one(&VALUE).await, client.read_one(&VALUE).await);
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                reads
+            })
+            .await;
+            (reads, control.accepts.get())
+        })
+        .await
+    });
+    let reads = (
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        Err(Status::BAD_SERVER_NOT_CONNECTED),
+    );
+    assert_eq!(out, (reads, 2));
+}
+
+/// Connects through a relay that gives the client the first `pass` messages of the
+/// server, and cuts both streams at the next one. Gives the status of the connect, and
+/// the accepts 10 ms after it ends.
+fn cut_after(pass: usize) -> (Option<Status>, usize) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let mut given = 0;
+            let rewrite = |message: &mut Vec<u8>| {
+                if given == pass {
+                    message.clear();
+                    control.cut.set(true);
+                } else {
+                    given += 1;
+                }
+            };
+            let status = relayed(&node, &control, rewrite, async {
+                let status = peer.connect(&url).await.err();
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                status
+            })
+            .await;
+            (status, control.accepts.get())
+        })
+        .await
+    });
+    out
+}
+
+/// A reset while the request that creates or activates the session waits ends the
+/// connect with `BadConnectionClosed` after one dial, though the end of that request
+/// gives `BadSecureChannelClosed` first.
+#[test]
+fn a_reset_while_a_session_request_waits_ends_the_connect_with_no_dial() {
+    let closed = (Some(Status::BAD_CONNECTION_CLOSED), 1);
+    assert_eq!((cut_after(4), cut_after(5)), (closed, closed));
 }
 
 /// A reset of the streams of an active session ends it: each later read fails, and
