@@ -236,7 +236,8 @@ fn quoted(dir: &Path) -> Option<String> {
         dir.chars()
             .all(|c| matches!(c, '"' | '\'') || c.escape_debug().len() == 1)
     })?;
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c);
+    // No `=` or `~`: zsh with `MAGIC_EQUAL_SUBST` expands either after `--data=`.
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+,-".contains(c);
     Some(if !dir.is_empty() && dir.chars().all(safe) {
         dir.to_owned()
     } else {
@@ -1268,8 +1269,8 @@ mod tests {
                  first start, or give `--data` the data directory of a node that runs",
                 "Run `foundation start --data=-x`, with `--name <name>` on its first \
                  start, or give `--data` the data directory of a node that runs",
-                "Run `foundation start --data==plant`, with `--name <name>` on its first \
-                 start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data='=plant'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
             ]
         );
     }
@@ -1282,17 +1283,19 @@ mod tests {
                 proptest::prop_assert!(dir.contains(escaped), "{dir:?} has a word");
                 return Ok(());
             };
-            for shell in ["sh", "zsh"] {
-                let Ok(output) = std::process::Command::new(shell)
+            let shells: [&[&str]; 3] = [&["sh"], &["zsh"], &["zsh", "-o", "magic_equal_subst"]];
+            for shell in shells {
+                let Ok(output) = std::process::Command::new(shell[0])
+                    .args(&shell[1..])
                     .arg("-c")
                     .arg(format!("printf %s --data={word}"))
                     .output()
                 else {
-                    proptest::prop_assert_eq!(shell, "zsh", "{} is not there", shell);
+                    proptest::prop_assert_eq!(shell[0], "zsh", "{} is not there", shell[0]);
                     continue;
                 };
                 let given = String::from_utf8_lossy(&output.stdout);
-                proptest::prop_assert_eq!(given.strip_prefix("--data="), Some(&*dir), "{}", shell);
+                proptest::prop_assert_eq!(given.strip_prefix("--data="), Some(&*dir), "{:?}", shell);
             }
         }
     }
@@ -1323,7 +1326,7 @@ mod tests {
                 "'~/a'",
                 "-x",
                 "'-my x'",
-                "=plant",
+                "'=plant'",
                 "'=my plant'",
             ]
         );
@@ -1337,9 +1340,10 @@ mod tests {
             dir,
             Path::new("a\\b"),
             Path::new("a\nb"),
-            Path::new("e\u{301}"),
+            Path::new("cafe\u{301}"),
+            Path::new("a\u{200b}b"),
         ];
-        assert_eq!(words.map(quoted), [None, None, None, None]);
+        assert_eq!(words.map(quoted), [None, None, None, None, None]);
         assert_eq!(
             not_running(dir).fix,
             "Run `foundation start` with `--data` set to that directory, with `--name \
