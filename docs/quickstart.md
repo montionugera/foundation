@@ -6,8 +6,9 @@ pushes each sample to InfluxDB.
 ## What you need
 
 - Rust 1.98 or later, and a C compiler.
-- An OPC UA server with security policy None, and InfluxDB 1.8 or later. To use your
-  own, change the addresses and the node ids in step 2. Else run these two in Docker:
+- An OPC UA server with security policy None, and InfluxDB 1.8 or a later 1.x release
+  with no authentication. To use your own, change the addresses and the node ids in
+  step 2. Else run these two in Docker:
 
 ```sh
 docker run -d --name opcua -p 50000:50000 \
@@ -65,7 +66,7 @@ connector "plc" {
   read "plant.trend" { node_id = "ns=3;s=PositiveTrendData" }
 }
 
-# On node "edge", pushes each sample to InfluxDB, and keeps it while InfluxDB is down.
+# On node "edge", pushes each sample to InfluxDB.
 connector "influx" {
   kind        = "influx"
   node        = "edge"
@@ -177,9 +178,8 @@ error[document.unknown-attribute]: `datatype` is not an attribute of the `channe
 fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
 ```
 
-A connector that cannot reach its address shows as `restarting` in `status`, with the
-cause and the time of the next try. Fix the address in `plant.hcl`, then plan and apply
-again. The node does not need a restart.
+A connector that cannot reach its address shows the cause in `status`. Fix the address
+in `plant.hcl`, then plan and apply again.
 
 ## Clean up
 
