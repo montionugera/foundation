@@ -4609,79 +4609,28 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// Starts the member [`OTHER`] of `members` on `host` without a `Node`: an
-        /// endpoint and a hub with its key, which serve the mesh as a node's do. Runs
-        /// `act` with the mesh, then drops the mesh and its port.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        fn operations(
+            mesh: &::mesh::Mesh,
+            key: types::node::Key,
+            hub: &::hub::Hub,
+            clock: env::clock::Clock,
+            time: &clock::Reader,
+            entropy: &env::entropy::Entropy,
+        ) -> Rc<ops::Node> {
+            let member = mesh.member(key).expect("the peer is a member");
+            let name = member.card.card().name.clone();
+            let kinds = Arc::new(crate::kinds());
+            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+        }
+
+        /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
         fn peer<F: Future<Output = ()> + 'static>(
             host: &sim::node::Node,
-            members: Vec<Member>,
+            members: &[Member],
             act: impl FnOnce(::mesh::Mesh, sim::node::Node) -> F + Send + 'static,
         ) {
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = host.clone();
-            let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
-                let identity = Identity {
-                    key: OTHER.0,
-                    private_key: OTHER.1,
-                    opener: Opener::from_bytes(SEAL),
-                };
-                let (opening, clock) = (Opening::Given(region(&members)), own.clock());
-                let (entropy, settings) = (own.entropy(), crate::Settings::default());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await.expect("the transport opens");
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let kinds = Arc::new(crate::kinds());
-                let ops = crate::operations(&mesh, &time, &entropy, kinds);
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time,
-                    entropy,
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
-                let clock = own.clock();
-                let port = route::accept(
-                    transport,
-                    crate::task::Handles {
-                        hub,
-                        ops: Some(ops),
-                    },
-                    clock,
-                    tasks,
-                    settings.header_wait,
-                    settings.places_max,
-                );
-                let (mut port, mut act) = (pin!(port), pin!(act(mesh, own)));
-                poll_fn(|cx| {
-                    let stopped = port.as_mut().poll(cx);
-                    assert!(stopped.is_pending(), "the peer's transport stopped");
-                    act.as_mut().poll(cx)
-                })
-                .await;
-            });
-            drop(started.expect("the peer starts"));
+            peer_hub(host, region(members), |_, mesh, own| act(mesh, own));
         }
 
         /// The members of the region of the node [`OWN`] on `hosts[0]` and the peer
@@ -4704,7 +4653,7 @@ mod port {
             let node = start(&hosts[0], region(&members));
             let set = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&set);
-            peer(&hosts[1], members, move |mesh, _| async move {
+            peer(&hosts[1], &members, move |mesh, _| async move {
                 let set = mesh.set_home(INDEX, OTHER.0).await;
                 out.lock().unwrap().push(set);
             });
@@ -6057,7 +6006,7 @@ mod port {
 
         /// Starts the peer [`OTHER`] of `members` on `host`, which sets a home in the
         /// mesh, one after another, until a set waits [`TEN`].
-        fn set_homes(host: &sim::node::Node, members: Vec<Member>) {
+        fn set_homes(host: &sim::node::Node, members: &[Member]) {
             peer(host, members, |mesh, host| async move {
                 let clock = host.clock();
                 for key in 100.. {
@@ -6094,7 +6043,7 @@ mod port {
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
                 let node = start(&hosts[0], region(&members));
-                set_homes(&hosts[1], members);
+                set_homes(&hosts[1], &members);
                 let after = Span::from_nanos(after);
                 assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
                 node.stop();
@@ -6129,7 +6078,7 @@ mod port {
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let members = pair(&hosts);
             let node = start(&hosts[0], region(&members));
-            set_homes(&hosts[1], members);
+            set_homes(&hosts[1], &members);
             assert_eq!(sim.run_for(Span::from_nanos(1_700_000_000)), Ok(()));
             hosts[0].fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             let (waited, port, _, _) = probe(&mut sim, &hosts[0]);
@@ -6204,7 +6153,7 @@ mod port {
                 let node = start(&hosts[0], region(&members));
                 let set = Arc::new(Mutex::new(Vec::new()));
                 let out = Arc::clone(&set);
-                peer(&hosts[1], members.clone(), move |mesh, host| async move {
+                peer(&hosts[1], &members, move |mesh, host| async move {
                     let set = mesh.set_home(INDEX, OTHER.0).await;
                     out.lock().unwrap().push(set);
                     host.clock().sleep(TEN).await;
@@ -6247,7 +6196,9 @@ mod port {
             founding
         }
 
-        /// As [`peer`], with `founding`, and `act` gets the peer's hub and mesh.
+        /// Starts the member [`OTHER`] of the region `founding` on `host` without a
+        /// `Node`: an endpoint and a hub with its key, which serve the mesh as a node's
+        /// do. Runs `act` with the hub and the mesh, then drops the mesh and its port.
         fn peer_hub<F: Future<Output = ()> + 'static>(
             host: &sim::node::Node,
             founding: Founding,
@@ -6285,21 +6236,20 @@ mod port {
                 let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
-                let kinds = Arc::new(crate::kinds());
-                let ops = crate::operations(&mesh, &time, &entropy, kinds);
                 let hub = ::hub::Hub::new(::hub::Config {
                     home,
                     interner,
                     tasks: tasks.clone(),
                     node: key,
-                    time,
-                    entropy,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
                     region: Some(::hub::Region {
                         mesh: mesh.clone(),
                         transport: Rc::clone(&transport),
                     }),
                 });
                 let clock = own.clock();
+                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
                 let port = route::accept(
                     transport,
                     crate::task::Handles {
@@ -7027,6 +6977,43 @@ mod port {
             assert_eq!(node.join(), Ok(()));
             // `state` running, ending, then stopped; `class` none, then config.
             assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
+        }
+
+        /// `status` through `operate` gives the connector that an apply places on the
+        /// node, read through its hub as a subject that may read its status.
+        #[test]
+        fn status_gives_the_connector_on_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.influx.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{}{watch}", connector("influx"));
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
+                r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
+                r#""counts":{},"error":{"class":"config","text":"the selector "#,
+                r#"matches no channel. Select a channel that the spec defines"}}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
         }
 
         /// A node that starts on a spec that places a connector on it applies that

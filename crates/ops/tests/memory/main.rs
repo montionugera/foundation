@@ -63,6 +63,14 @@ fn serve_large(text: &str) {
     let ran = sim.run_on(&sim_node, move |sim_node, tasks| async move {
         let definitions = spec::founding::create(ADMIN.public());
         let mesh = create_mesh(&sim_node, &tasks, &["edge"], definitions).await;
+        let env = hub::testing::Env {
+            files: sim_node.files(),
+            clock: sim_node.clock(),
+            wall: sim_node.wall(),
+            entropy: sim_node.entropy(),
+            tasks,
+        };
+        let (hub, _) = hub::testing::open(env).await;
         let front_ends = FrontEnds::new(
             "hcl",
             FrontEnd {
@@ -74,6 +82,9 @@ fn serve_large(text: &str) {
             || Key::from_u128(1),
             front_ends,
             Arc::new(connector::kind::Table::new()),
+            hub,
+            sim_node.clock(),
+            "edge".parse().expect("a name"),
         );
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

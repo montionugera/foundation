@@ -509,6 +509,10 @@ fn every() -> Vec<Error> {
             on: On::Spec,
         },
         Error::LargeReply,
+        Error::ChannelRead {
+            connector: "site.a".parse().expect("a name"),
+            message: String::new(),
+        },
         Error::Read {
             path: PathBuf::new(),
             cause: Unread::NotFound,
@@ -544,6 +548,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Request { .. }
             | Error::Denied { .. }
             | Error::LargeReply
+            | Error::ChannelRead { .. }
             | Error::Read { .. }
             | Error::Write { .. }
             | Error::LargeRequest

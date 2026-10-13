@@ -320,6 +320,7 @@ dependencies = [
  "hub",
  "hyper",
  "loom",
+ "spec",
  "types",
 ]
 
@@ -960,6 +961,7 @@ dependencies = [
  "connector",
  "document",
  "env",
+ "hub",
  "mesh",
  "schemars",
  "serde",
