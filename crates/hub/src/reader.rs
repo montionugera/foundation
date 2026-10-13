@@ -673,7 +673,8 @@ impl Names {
     }
 
     /// Makes the entries and places those of `set`. It costs a search of `set` for each
-    /// channel, and no work for each other entry of `set`.
+    /// channel, and work for each other entry of `set` only when `set` is larger than
+    /// each key set before it.
     fn place(&mut self, set: &KeySet) {
         if self.set == Some(set.key()) {
             return;
