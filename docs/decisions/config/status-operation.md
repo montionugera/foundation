@@ -69,15 +69,17 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
   two cases). `unknown` also for a hub that holds a channel of another spec under a
   status name, found by the name, the key, and the sample type of each channel of the
-  frame, its index too, and by `ManyIndexes`: `laptop.architect-2`
+  frame, its index too, by a frame that lacks a status channel of the spec, and by
+  `ManyIndexes`: `laptop.architect-2`
   (2026-10-13T03:18:41Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102 and
   supersedes, for `ManyIndexes`, its third bullet and item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108). That
-  check finds another key, sample type, or index under a status name, and the gap of a
-  channel that `config` carries over: `laptop.architect-2` (2026-10-13T03:32:04Z,
+  check finds another key, sample type, or index under a status name, but not a
+  channel that `config` carries over with its key and definition (the gap above):
+  `laptop.architect-2` (2026-10-13T03:32:04Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137583351, which
   corrects the scope of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437).
