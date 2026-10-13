@@ -1112,6 +1112,32 @@ fn check_refuses_an_index_whose_control_channel_is_a_status_channel() {
 }
 
 #[test]
+fn check_refuses_a_data_channel_whose_quality_channel_is_a_status_channel() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        let index = *data.index();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_an_index_whose_error_channel_is_a_status_channel() {
+    let found = pointed("a.time", |kind, keys| {
+        let error = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: Some(error),
+            control: None,
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
 fn check_refuses_two_edges_to_one_status_channel_once() {
     let found = pointed("a.time", |kind, keys| {
         let state = keys[&name("c.status.state")];
@@ -1134,6 +1160,26 @@ fn check_refuses_an_index_and_a_quality_channel_on_one_status_channel_once() {
         *data = Data::new(index, Some(index), data_type, None).expect("no unit");
     });
     assert_eq!(found, [points("a.x", "c.status.time")]);
+}
+
+#[test]
+fn check_refuses_edges_to_two_status_channels_once_each() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(
+        found,
+        [
+            points("a.x", "c.status.time"),
+            points("a.x", "c.status.state")
+        ]
+    );
 }
 
 /// The problems of `plan::check` on `counted` after `edit` of the kind of the

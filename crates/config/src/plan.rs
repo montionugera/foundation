@@ -51,14 +51,14 @@ const WRONG_CHANNEL: Code = Code::new("config.wrong-channel");
 /// - `config.connector-home` at the `home` of a placement that wins for a connector and
 ///   names a node other than the connector's `node`.
 /// - `config.split-placement` at each index whose writers, the connectors that write
-///   or imply it or a channel on it, are on one node, when the winner of a writer is
-///   not the winner of the index: once, naming each such writer, at the label of the
+///   it or a channel on it, are on one node, when the winner of a writer is not the
+///   winner of the index: once, naming each such writer, at the label of the
 ///   index's placement, or of the first such writer's when no placement selects the
 ///   index.
 ///   Its fix is the one fix of the unit of the index: its writers, each connector
 ///   that writes another index of theirs, and so on.
 /// - `config.writer-nodes` at the `node` of the first connector, in name order, on a
-///   second node that writes or implies an index or a channel on it.
+///   second node that writes an index or a channel on it.
 /// - `config.unknown-node` at each node that a connector or a placement names and that
 ///   is not in `members`. The fix names a member that is equal to it without case.
 ///
@@ -105,7 +105,7 @@ pub fn plan(
 /// 3. `config.implied-channel` for each status channel that the kind of a connector
 ///    writes, then for each status channel of a connector that `definitions` lack or
 ///    hold as another channel, then for each other channel with an edge to a status
-///    channel.
+///    channel, once for each status channel that it points at.
 /// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
@@ -434,9 +434,9 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Reports whether `connector` writes or implies `index` or a channel on it.
+    /// Reports whether `connector` writes `index` or a channel on it.
     fn feeds(&self, connector: &Connector<'_>, index: &Name) -> bool {
-        connector.writes.names().any(|name| {
+        connector.writes.channels().any(|name| {
             name == index || self.index_of.get(name).copied() == Some(index)
         })
     }
@@ -528,8 +528,7 @@ fn wrong(found: &Found<'_>, channels: &BTreeMap<Name, Channel>) -> Vec<Diagnosti
 
 /// An index, as the rules after `config.wrong-channel` read it.
 struct Index<'f> {
-    /// Each connector that writes or implies the index or a channel on it, in name
-    /// order.
+    /// Each connector that writes the index or a channel on it, in name order.
     writers: Vec<&'f Connector<'f>>,
     /// Where [`place`] puts the index, with the node of its first writer, or, for an
     /// index that a connector implies, where it puts the connector.
