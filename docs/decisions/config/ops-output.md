@@ -148,24 +148,23 @@
   `laptop.architect-2` (2026-10-12T18:47:07Z,
   https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
   A remote program runs `plan`, `apply`, and `status` (STATUS OPERATION) on a node
-  through `ops::serve`. The request
-  form is private to `ops`: one line of JSON with one operation and its input, a
-  newline, then the bytes of a plan file as they are. `plan` sends the path and the text
-  of each file: `{"plan":{"files":[{"path":"site.hcl","text":"..."}]}}`, with no byte
-  after the newline. `apply` sends `{"apply":{}}` and then only the plan. The command
-  line checks the path and fills `Applied::file`, so the node sees no path and gives the
-  apply output with no `file`. The reply is `{"output":<the output>}` and a newline,
-  then the plan file for `plan`. The reply of an error is `{"errors":[...],
-  "status":<n>}` and a newline, with the `errors` of each error of `ops` and the exit
-  status that the error has (2 for a `Config` or a `Plan` error), not always 1. Three
-  codes are new, each with status 1. A body that is not this form is `ops.bad-request`,
-  with the cause in the message and the fix ``Use a `foundation` program of the same
-  version as the node``. So is each operation other than `plan`, `apply`, and
-  `status`, with the
-  cause ``the operation `<name>` does not run on a node``. A subject with no grant gets
-  `ops.denied` (SERVE ACCESS). A reply of more than `wire::hub::client::BODY_BYTES_MAX`
-  bytes is `ops.large-reply`, with the bound in the message and the fix `Plan and apply
-  the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
+  through `ops::serve`. The request form is private to `ops`: one line of JSON with one
+  operation and its input, a newline, then the bytes of a plan file as they are. `plan`
+  sends the path and the text of each file:
+  `{"plan":{"files":[{"path":"site.hcl","text":"..."}]}}`, with no byte after the
+  newline. `apply` sends `{"apply":{}}` and then only the plan. The command line checks
+  the path and fills `Applied::file`, so the node sees no path and gives the apply
+  output with no `file`. The reply is `{"output":<the output>}` and a newline, then the
+  plan file for `plan`. The reply of an error is `{"errors":[...], "status":<n>}` and a
+  newline, with the `errors` of each error of `ops` and the exit status that the error
+  has (2 for a `Config` or a `Plan` error), not always 1. Three codes are new, each with
+  status 1. A body that is not this form is `ops.bad-request`, with the cause in the
+  message and the fix ``Use a `foundation` program of the same version as the node``. So
+  is each operation other than `plan`, `apply`, and `status`, with the cause ``the
+  operation `<name>` does not run on a node``. A subject with no grant gets `ops.denied`
+  (SERVE ACCESS). A reply of more than `wire::hub::client::BODY_BYTES_MAX` bytes is
+  `ops.large-reply`, with the bound in the message and the fix `Plan and apply the
+  change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
   (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
   bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
@@ -187,6 +186,6 @@
   status of `ops.bad-request`, its fix, and its use for each operation other than `plan`
   and `apply` are by `laptop.architect-2` (2026-10-12T18:30:05Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6130219053), which
-  supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan.
-  STATUS OPERATION adds `status` to `plan` and `apply` there. Lost:
-  one JSON value with the plan file as a list of numbers, which is four times the bytes.
+  supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. STATUS
+  OPERATION adds `status` to `plan` and `apply` there. Lost: one JSON value with the
+  plan file as a list of numbers, which is four times the bytes.
