@@ -368,4 +368,7 @@
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136629487, and
   `laptop.architect`, 2026-10-13T02:09:57Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136660103; the
-  pointer to STATUS PLACEMENT: approval owed).
+  pointer to STATUS PLACEMENT: `laptop.architect`, 2026-10-13T08:10:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141220969, and
+  `laptop.architect-2`, 2026-10-13T08:11:27Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141238640).
