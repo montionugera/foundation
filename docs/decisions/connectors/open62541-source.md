@@ -420,16 +420,21 @@
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
   `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
   `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
-  until #1992 gives it the wall time of the node through `hub`, in the PR of the first
-  connection with a security policy other than `None`. No connection that checks a
-  certificate runs before. Its drop runs the queued delayed callbacks in at most 64
-  passes, then aborts: a callback that queues itself at each pass is a defect. The
-  hidden module `bench`, behind the feature `sim`, gives the benchmark and the
-  allocation test a client on the loop. Decided by `laptop.architect-2`
+  until #1992 gives it the wall time of the node through `hub`, when exit test 1 of
+  #1737 passes, or in the PR of the first connection with a security policy other than
+  `None`, whichever comes first. Until then, each connect and each token renewal logs
+  that the token time does not match the clock, and each request header carries a time
+  near 1970. No connection that checks a certificate runs before. Its drop runs the
+  queued delayed callbacks in at most 64 passes, then aborts: a callback that queues
+  itself at each pass is a defect. The hidden module `bench`, behind the feature `sim`,
+  gives the benchmark and the allocation test a client on the loop. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC). `bench` also gives a connection manager with the test server
+  2026-10-08 20:22 UTC); the trigger of #1992
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
+  2026-10-13 07:03 UTC). `bench` also gives a connection manager with the test server
   and its clients on the loop of the manager. Approved by `laptop.architect-2` at
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,

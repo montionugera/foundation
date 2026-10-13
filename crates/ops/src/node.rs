@@ -85,7 +85,7 @@ impl Node {
             &self.kinds,
         )
         .map_err(|e| e.json())?;
-        Ok((plan.encode(), output.json()))
+        Ok((plan.encode(), crate::value(&output)))
     }
 
     /// Applies the plan file `bytes`, read from `path`, and gives the JSON output that
@@ -97,7 +97,7 @@ impl Node {
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
         apply::file(path, bytes, &self.mesh, &self.kinds, &self.key)
             .await
-            .map(|applied| applied.json())
+            .map(|applied| crate::value(&applied))
             .map_err(|e| e.json())
     }
 }

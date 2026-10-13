@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    Fixture, NODE, PLANT, create_kinds, create_node, create_node_reading, fail_sync,
-    front_ends, placed_site, solo,
+    Fixture, NODE, create_kinds, create_node, create_node_reading, fail_sync,
+    front_ends, placed_site, plant, shown, solo,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -17,8 +17,8 @@ use crate::used;
 
 const REFUSED: Code = Code::new("test.refused");
 
-/// The JSON output of `plan::plan` of `files` on `mesh`.
-async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> Value {
+/// The output of `plan::plan` of `files` on `mesh`.
+async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> plan::Output {
     let spec = mesh.spec().await.expect("a spec");
     let files: Vec<File> = files
         .into_iter()
@@ -36,7 +36,6 @@ async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> Value {
     )
     .expect("a plan")
     .0
-    .json()
 }
 
 fn site() -> Vec<(PathBuf, String)> {
@@ -47,7 +46,7 @@ fn site() -> Vec<(PathBuf, String)> {
 fn applies_with_each_connector_kind_of_the_node() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
-        let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
+        let files = vec![(PathBuf::from("plant.hcl"), plant().to_owned())];
         let (plan, _) = node.plan(files).await.expect("a plan");
         let applied = node.apply(Path::new("plant.plan"), &plan).await;
         let expected = Applied {
@@ -55,14 +54,23 @@ fn applies_with_each_connector_kind_of_the_node() {
             effect: Effect {
                 pointer: plan::Pointer::from(mesh.pointer()),
                 counts: Counts {
-                    added: 18,
+                    added: 22,
                     changed: 0,
                     removed: 0,
                 },
                 homes: 3,
             },
         };
+        assert_eq!(expected.text(), shown("Applied"));
         assert_eq!(applied, Ok(serde_json::to_value(expected).expect("JSON")));
+    });
+}
+
+#[test]
+fn plans_the_config_of_the_quickstart_page_as_the_page_shows() {
+    solo(|_, mesh| async move {
+        let files = vec![(PathBuf::from("plant.hcl"), plant().to_owned())];
+        assert_eq!(planned(&mesh, files).await.text(), shown("+ channel"));
     });
 }
 
@@ -70,7 +78,7 @@ fn applies_with_each_connector_kind_of_the_node() {
 fn plans_and_applies_in_the_json_of_the_cli() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
-        let expected = planned(&mesh, site()).await;
+        let expected = crate::value(&planned(&mesh, site()).await);
         let (plan, output) = node.plan(site()).await.expect("a plan");
         assert_eq!(output["added"], 3, "{output}");
         assert_eq!(output, expected);
@@ -105,8 +113,8 @@ fn plans_and_applies_in_the_json_of_the_cli() {
 fn plans_with_each_connector_kind_of_the_node() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
-        let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
-        let expected = planned(&mesh, files.clone()).await;
+        let files = vec![(PathBuf::from("plant.hcl"), plant().to_owned())];
+        let expected = crate::value(&planned(&mesh, files.clone()).await);
         let (_, output) = node.plan(files).await.expect("a plan");
         assert_eq!(output, expected);
     });
@@ -217,7 +225,7 @@ fn reads_with_the_last_front_end_of_an_extension() {
             },
         );
         let node = create_node_reading(&fixture, mesh.clone(), front_ends);
-        let expected = planned(&mesh, site()).await;
+        let expected = crate::value(&planned(&mesh, site()).await);
         let (_, output) = node.plan(site()).await.expect("a plan");
         assert_eq!(output, expected);
     });

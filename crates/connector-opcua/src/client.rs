@@ -3,7 +3,7 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::cell::Cell;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
@@ -96,9 +96,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
-    /// is not active after the request timeout of the client (5 s), else the status of
-    /// open62541 when it refuses `url` or the connect fails.
+    /// `BadTimeout` when the session is not active after the request timeout of the
+    /// client (5 s), else the status of open62541 when it refuses `url` or the connect
+    /// fails.
     ///
     /// # Aborts
     ///
@@ -108,10 +108,8 @@ impl Client {
         clock: Clock,
         net: Net,
         rng: &mut Rng,
-        url: &str,
+        url: &CStr,
     ) -> Result<Self, Status> {
-        let url =
-            CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
@@ -119,7 +117,7 @@ impl Client {
             alloc::exhausted()
         };
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        unsafe { Self::start(clock, connections, raw, &url) }.await
+        unsafe { Self::start(clock, connections, raw, url) }.await
     }
 
     /// Connects `raw` as [`Client::connect`] does.
@@ -485,4 +483,29 @@ unsafe extern "C" fn answer(
         reads.values.set(values);
     }
     reads.answer.set(Some(status));
+}
+
+/// Whether open62541 reads `url` as an endpoint URL with a host.
+pub(crate) fn endpoint(url: &str) -> bool {
+    let url = ffi::Bytes {
+        length: url.len(),
+        data: url.as_ptr().cast_mut(),
+    };
+    let empty = || ffi::Bytes {
+        length: 0,
+        data: ptr::null_mut(),
+    };
+    let (mut host, mut path, mut port) = (empty(), empty(), 0);
+    // SAFETY: `url` points at `length` bytes that live through the call, which only
+    // reads them. It sets `host` and `path` to point into them, and they are not
+    // freed.
+    let status = unsafe {
+        ffi::UA_parseEndpointUrl(
+            &raw const url,
+            &raw mut host,
+            &raw mut port,
+            &raw mut path,
+        )
+    };
+    Status(status) == Status::GOOD && host.length > 0
 }

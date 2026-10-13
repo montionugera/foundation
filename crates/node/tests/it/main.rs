@@ -6,10 +6,13 @@
 
 mod one_node;
 mod port;
+mod quickstart;
 mod rig;
 #[cfg(unix)]
 mod start;
 mod status;
+
+use std::collections::BTreeMap;
 
 use rig::Rig;
 
@@ -84,6 +87,72 @@ fn plan_and_apply_run_on_the_node() {
             text(&output.stderr)
         ),
         (Some(0), unchanged, "")
+    );
+}
+
+/// `status --json` gives each connector that the node places, with its error.
+#[test]
+fn status_gives_each_connector_as_json() {
+    let mut rig = Rig::new();
+    rig.config(concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+        "connector \"plant.influx\" {\n  kind = \"influx\"\n  node = \"edge\"\n",
+        "  address = \"http://127.0.0.1:1\"\n  database = \"plant\"\n",
+        "  measurement = \"telemetry\"\n  select = \"plant.missing\"\n",
+        "  reader {\n    mode = \"complete\"\n  }\n}\n",
+    ));
+    rig.start();
+    rig.apply();
+    let stopped = rig.wait("`plant.influx` stops", || {
+        let status = rig.status();
+        (status.get("plant.influx"))
+            .filter(|connector| connector.state == "stopped")
+            .cloned()
+            .ok_or_else(|| format!("{status:#?}"))
+    });
+    assert_eq!(
+        stopped,
+        status::Connector {
+            name: "plant.influx".into(),
+            kind: "influx".into(),
+            state: "stopped".into(),
+            address: Some("http://127.0.0.1:1".into()),
+            restarts: Some(0),
+            counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
+            error: Some(status::Error {
+                class: "config".into(),
+                text: concat!(
+                    "the selector matches no channel. ",
+                    "Select a channel that the spec defines",
+                )
+                .into(),
+            }),
+        }
+    );
+}
+
+/// `status` reaches the running node, which refuses it while it places no connector.
+#[test]
+fn status_runs_on_the_node() {
+    let mut rig = Rig::new();
+    rig.start();
+    let output = rig.run(&["status"], b"");
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (
+            Some(1),
+            "",
+            concat!(
+                "error[ops.denied]: no access policy gives `@admin` the action `read` ",
+                "on a request that names no definition\n",
+                "fix: Ask an admin of the region for an access policy that allows it\n",
+            )
+        )
     );
 }
 

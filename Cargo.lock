@@ -467,13 +467,19 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "block",
  "cc",
+ "codec",
+ "connector",
  "connector-opcua",
  "counting",
  "divan",
+ "document",
  "env",
+ "hub",
  "proptest",
  "sim",
+ "spec",
  "types",
 ]
 
@@ -1192,6 +1198,8 @@ dependencies = [
  "os",
  "proptest",
  "secret",
+ "serde",
+ "serde_json",
  "sim",
  "spec",
  "transport",

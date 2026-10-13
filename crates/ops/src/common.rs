@@ -1,4 +1,4 @@
-//! Fixtures that the tests of `plan`, `apply`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -10,6 +10,7 @@ use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::files::{self, Operation};
+use env::paths::Paths;
 use env::tasks::Tasks;
 use hub::Hub;
 use mesh::Mesh;
@@ -18,16 +19,18 @@ use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
 
-use crate::Node;
 use crate::front_end::{File, FrontEnd, FrontEnds};
+use crate::{Failure, Node, Run};
 
 #[path = "../tests/common/founding.rs"]
 mod founding;
 
-pub(crate) use founding::{ADMIN, NODE, create_mesh};
+#[path = "../tests/common/quickstart.rs"]
+mod quickstart;
 
-pub(crate) const PLANT: &str =
-    include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
+pub(crate) use founding::{ADMIN, NODE, create_mesh};
+pub(crate) use quickstart::{plant, shown};
+
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
@@ -50,7 +53,20 @@ pub(crate) const SAM: &str = concat!(
 
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
 /// each attribute, so it stands in for each kind of the fixtures.
-pub(crate) struct Reader;
+pub(crate) struct Reader {
+    /// The counts of the kind.
+    counts: &'static [&'static str],
+}
+
+/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
+pub(crate) const OPCUA: Reader = Reader {
+    counts: &["in", "lost", "missed"],
+};
+
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+pub(crate) const INFLUX: Reader = Reader {
+    counts: &["confirmed"],
+};
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -69,7 +85,7 @@ impl kind::Kind for Reader {
         Ok(Channels {
             reader: None,
             writes: writes.clone(),
-            counts: Vec::new(),
+            counts: self.counts.iter().map(|count| name(count)).collect(),
         })
     }
 
@@ -99,7 +115,7 @@ pub(crate) fn front_ends() -> FrontEnds {
 
 /// The kinds of the connectors of the fixtures.
 pub(crate) fn create_kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
+    Table::new().with("influx", INFLUX).with("opcua", OPCUA)
 }
 
 /// The sim node of a run, and a hub on it.
@@ -152,6 +168,24 @@ pub(crate) fn files(files: &[(&str, &str)]) -> Vec<File> {
             text: (*text).to_owned(),
         })
         .collect()
+}
+
+/// The run, output, and errors of `foundation <args>`, whose requests go through
+/// `reach`.
+pub(crate) async fn cli<C>(
+    paths: &Paths,
+    args: &[&str],
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> (Run, String, String)
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let args = ["foundation"].iter().chain(args).map(Into::into);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let input = std::io::empty();
+    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
 }
 
 /// `site.hcl` with a placement that homes its index on `edge`.

@@ -101,3 +101,5 @@
   item, the exact new text of
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6103180556
   (2026-10-10T23:10:22Z) and the facts-and-links sentence of this record.
+  Amended (2026-10-13, REVIEW ROUNDS): after round 3, a code fix keeps no round, and
+  gets only its test, CI, and the `architecture` run and approvals of REVIEW ROUNDS.

@@ -1,4 +1,4 @@
-//! Runs `plan` and `apply` of a command line on its node.
+//! Runs `plan`, `apply`, and `status` of a command line on its node.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
 use crate::operation::DATA;
 use crate::plan::Output;
-use crate::serve;
+use crate::{serve, status};
 
 #[cfg(test)]
 mod tests;
@@ -82,7 +82,7 @@ where
 /// - [`Error::Read`] when the plan file does not read.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::apply_reply`].
+/// - Each error of [`serve::reply`].
 pub(crate) async fn apply<C>(
     plan: &Path,
     paths: &Paths,
@@ -97,11 +97,27 @@ where
     };
     let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes)?, reach).await?;
-    let effect = serve::apply_reply(&reply)?;
+    let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
         file: name.to_owned(),
         effect,
     })
+}
+
+/// The status of each connector on the node. `reach` gives what sends the request.
+///
+/// # Errors
+///
+/// - [`Error::Node`] with the failure of `reach` or of the request.
+/// - Each error of [`serve::reply`].
+pub(crate) async fn status<C>(
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> Result<status::Output, Error>
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let reply = request(serve::STATUS_REQUEST, reach).await?;
+    serve::reply(&reply, "status")
 }
 
 /// The most bytes that one request holds.

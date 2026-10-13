@@ -15,7 +15,6 @@ use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::apply::Effect;
 use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
@@ -262,6 +261,9 @@ pub(crate) fn apply_request(plan: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(body.0)
 }
 
+/// The body of a request of `status`, for [`serve`].
+pub(crate) const STATUS_REQUEST: &[u8] = b"{\"status\":{}}\n";
+
 /// The output of the reply `body` of [`serve`] to a request of `plan`, and the plan
 /// file after its first line.
 ///
@@ -278,19 +280,22 @@ pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
     Ok((output, plan))
 }
 
-/// The output of the reply `body` of [`serve`] to a request of `apply`.
+/// The output of the reply `body` of [`serve`] to a request of `operation`.
 ///
 /// # Errors
 ///
 /// Each error of [`answer`], and [`Error::Reply`] when bytes follow the output.
-pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
-    let (effect, rest) = answer(body)?;
+pub(crate) fn reply<T: DeserializeOwned>(
+    body: &[u8],
+    operation: &str,
+) -> Result<T, Error> {
+    let (output, rest) = answer(body)?;
     if !rest.is_empty() {
-        return Err(bad_reply(
-            "bytes follow the first line of the reply of `apply`",
-        ));
+        return Err(bad_reply(format!(
+            "bytes follow the first line of the reply of `{operation}`"
+        )));
     }
-    Ok(effect)
+    Ok(output)
 }
 
 /// The output of the reply `body` of [`serve`], and the bytes after its first line.
