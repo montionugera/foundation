@@ -87,7 +87,6 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
 
 /// Why [`reach`] gave no client.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Error {
     /// No node runs on the directory: its file `address` holds no address of a node.
     NotRunning,
