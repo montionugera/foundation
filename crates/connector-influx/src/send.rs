@@ -28,8 +28,8 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took.
-    Sent(Position),
+    /// The position after the batch that InfluxDB took, and its samples.
+    Sent(Position, u64),
     Frame(Result<Received<'a>, Ended>),
 }
 
@@ -49,7 +49,6 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     });
     let uri = write_uri(&config.address, &config.database);
     let confirmed = ctx.count(CONFIRMED);
-    let mut sending = 0;
     let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
@@ -64,8 +63,11 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             if body.is_empty() {
                 reader.ack(position);
             } else {
-                sending = samples;
-                flight.set(Some(send(&client, ctx, &uri, body.into(), position)));
+                let sent = send(&client, ctx, &uri, body.into());
+                flight.set(Some(async move {
+                    sent.await;
+                    (position, samples)
+                }));
             }
         }
         let full = batch.full();
@@ -82,9 +84,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
                     return Poll::Ready(Event::Cancelled);
                 }
                 if let Some(sending) = flight.as_mut().as_pin_mut()
-                    && let Poll::Ready(sent) = sending.poll(cx)
+                    && let Poll::Ready((position, samples)) = sending.poll(cx)
                 {
-                    return Poll::Ready(Event::Sent(sent));
+                    return Poll::Ready(Event::Sent(position, samples));
                 }
                 frame.as_mut().poll(cx).map(Event::Frame)
             })
@@ -92,10 +94,10 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         };
         match event {
             Event::Cancelled => return Ok(()),
-            Event::Sent(position) => {
+            Event::Sent(position, samples) => {
                 flight.set(None);
                 reader.ack(position);
-                confirmed.add(sending);
+                confirmed.add(samples);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -103,16 +105,10 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     }
 }
 
-/// Sends `body` until InfluxDB answers 204, and gives `position`. Shows each other
-/// answer as the run's error and waits a backoff before the next attempt. Never
-/// ends after the cancel of the run, which the caller sees first.
-async fn send(
-    client: &Client,
-    ctx: &Context<Config>,
-    uri: &Uri,
-    body: Bytes,
-    position: Position,
-) -> Position {
+/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
+/// error and waits a backoff before the next attempt. Never ends after the cancel of
+/// the run, which the caller sees first.
+async fn send(client: &Client, ctx: &Context<Config>, uri: &Uri, body: Bytes) {
     let mut backoff = None;
     loop {
         let request = Request::post(uri.clone()).body(body.clone());
@@ -120,7 +116,7 @@ async fn send(
         match client.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
-                return position;
+                return;
             }
             Ok(answer) => ctx.error(&format_args!(
                 "InfluxDB answered {}: {}",
