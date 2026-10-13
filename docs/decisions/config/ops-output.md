@@ -242,12 +242,15 @@
   `plan`, `apply`, and `status` take `--data <dir>`, the data directory of the node, by
   default `foundation-data`, as `start` does (#2526). This supersedes "run on the node
   of `foundation-data`" above and in the doc of `cli` of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In the
-  fixes below, `{dir}` is the data directory that the command gives, as one word of a
-  POSIX shell: in single quotes, with each `'` as `'\''`, when it holds a character
-  other than `[A-Za-z0-9_./:@%+=,-]`. Each message keeps the plain path. The fix of
-  `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>` on
-  its first start, or give `--data` the data directory of a node that runs``, which
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In each
+  command of a fix below, `{dir}` is the data directory that the command gives, as one
+  word of a POSIX shell: with `./` before it when it starts with `-`, and in single
+  quotes, with each `'` as `'"'"'`, when it is empty or holds a character other than
+  `[A-Za-z0-9_./:@%+,-]`. When `{dir}` is not UTF-8, or holds a character that the text
+  of a fix escapes, such as `\` or a newline, the command is `foundation start`, and the
+  fix says to set `--data` to that directory. Each message keeps the plain path. The fix
+  of `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>`
+  on its first start, or give `--data` the data directory of a node that runs``, which
   supersedes "with no `--data`" above, decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
   `{dir}` that is a file, or whose `{dir}/data` is a file, is also `node.not-running`,
