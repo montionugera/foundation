@@ -211,7 +211,10 @@ fn refuses_a_field_key_as_new_refuses_a_key() {
     for (key, error) in cases {
         assert_eq!(measurement.field(key), Err(error));
     }
-    assert_eq!(measurement.field("b c"), Ok(Field(b"b\\ c".to_vec())));
+    let field = measurement.field("b c").unwrap();
+    let mut out = Vec::new();
+    measurement.line(&mut out, [(&field, Value::Integer(1))], Stamp::EPOCH);
+    assert_eq!(text(&out), "m,k=v b\\ c=1i 0\n");
 }
 
 #[test]
