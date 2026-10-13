@@ -1,6 +1,7 @@
 //! The simulated servers of ONE NODE, served by the test process over `os` on
 //! loopback.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
@@ -115,15 +116,17 @@ impl Opcua {
     /// Changes each variable `ticks` times at 10 Hz, each change with the status
     /// `quality`, and returns after the last change.
     pub(super) fn change(&self, ticks: usize, quality: Quality) {
-        let start = self.clock.now();
-        for tick in 1..=ticks {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the test thread is not a thread that env started"
-            )]
-            std::thread::sleep(wait(start, tick, self.clock.now()));
-            self.variables.change(quality);
-        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test thread is not a thread that env started"
+        )]
+        let sleep = std::thread::sleep;
+        pace(
+            ticks,
+            || self.clock.now(),
+            sleep,
+            || self.variables.change(quality),
+        );
     }
 
     /// Each read that the server answered, by node id, in order: the value and status
@@ -231,7 +234,23 @@ impl Drop for Server {
     }
 }
 
-/// The time from `now` to change `tick` of [`Opcua::change`], which is due `tick`
+/// Calls `change` `ticks` times at 10 Hz, each after a `sleep`. Change `tick` is due
+/// `tick` ticks after the first read of `now`, so a late wake does not move the later
+/// changes.
+fn pace(
+    ticks: usize,
+    mut now: impl FnMut() -> Monotonic,
+    mut sleep: impl FnMut(Duration),
+    mut change: impl FnMut(),
+) {
+    let start = now();
+    for tick in 1..=ticks {
+        sleep(wait(start, tick, now()));
+        change();
+    }
+}
+
+/// The time from `now` to change `tick` of [`pace`], which is due `tick`
 /// ticks after `start`: 0 when it is late.
 fn wait(start: Monotonic, tick: usize, now: Monotonic) -> Duration {
     let ticks = i64::try_from(tick).expect("a count of ticks fits an i64");
@@ -383,18 +402,43 @@ fn opcua_changes_at_10_hz_and_records_no_read_that_no_client_made() {
 
 #[test]
 fn each_change_is_due_its_ticks_after_the_start_whatever_the_wakes() {
-    let ms = |n: u64| Monotonic(n * 1_000_000);
-    let wait = |tick, now| wait(ms(1000), tick, now).as_millis();
-    assert_eq!(wait(1, ms(1000)), 100);
-    assert_eq!(wait(3, ms(1150)), 150);
-    assert_eq!(wait(5, ms(1500)), 0);
-    assert_eq!(wait(2, ms(1500)), 0);
+    let ms = |n: i64| Span::from_nanos(n * Span::MILLISECOND.nanos());
+    // Paces 3 changes with the first wake `late` late, and gives each sleep and the
+    // time of each change after the start.
+    let paced = |late: Span| {
+        let start = Monotonic(0) + ms(1000);
+        let now = Cell::new(start);
+        let (mut sleeps, mut changes) = (Vec::new(), Vec::new());
+        let sleep = |wait: Duration| {
+            let slept =
+                Span::from_nanos(i64::try_from(wait.as_nanos()).expect("short"));
+            let late = if sleeps.is_empty() { late } else { Span::ZERO };
+            sleeps.push(slept);
+            now.set(now.get() + slept + late);
+        };
+        pace(3, || now.get(), sleep, || changes.push(now.get() - start));
+        (sleeps, changes)
+    };
+    let (sleeps, changes) = paced(ms(50));
+    assert_eq!(sleeps, [ms(100), ms(50), ms(100)]);
+    assert_eq!(changes, [ms(150), ms(200), ms(300)]);
+    let (sleeps, changes) = paced(ms(250));
+    assert_eq!(sleeps, [ms(100), Span::ZERO, Span::ZERO]);
+    assert_eq!(changes, [ms(350); 3]);
+}
+
+#[test]
+fn a_served_opcua_answers_on_its_address_with_no_http() {
+    let mut opcua = Opcua::default();
+    let address = opcua.serve();
+    let written = write(address, "m f=1 1");
+    assert_eq!(written, "the exchange failed: invalid HTTP version parsed");
 }
 
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),
-    ignore = "a child of a rig test may hold the port"
+    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
 )]
 fn a_dropped_opcua_stops_each_server_that_it_served() {
     let mut opcua = Opcua::default();
