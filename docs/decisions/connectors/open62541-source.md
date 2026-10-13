@@ -418,25 +418,41 @@
   (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6071050895,
   2026-10-08 23:26 UTC).
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
-  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
-  `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
-  until #1992 gives it the wall time of the node through `hub`, when exit test 1 of
-  #1737 passes, or in the PR of the first connection with a security policy other than
-  `None`, whichever comes first. Until then, each connect and each token renewal logs
-  that the token time does not match the clock, and each request header carries a time
-  near 1970. No connection that checks a certificate runs before. Its drop runs the
-  queued delayed callbacks in at most 64 passes, then aborts: a callback that queues
-  itself at each pass is a defect. The hidden module `bench`, behind the feature `sim`,
-  gives the benchmark and the allocation test a client on the loop. Decided by
-  `laptop.architect-2`
+  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`, and the
+  UTC offset is 0. Its drop runs the queued delayed callbacks in at most 64 passes,
+  then aborts: a callback that queues itself at each pass is a defect. The hidden
+  module `bench`, behind the feature `sim`, gives the benchmark and the allocation test
+  a client on the loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC); the trigger of #1992
+  2026-10-08 20:22 UTC).
+  `dateTime_now` gives the wall time of the `event::Time` that `event::Loop::new`
+  takes. Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147646436,
+  2026-10-13 14:18 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147864860,
+  2026-10-13 14:28 UTC). The kind gives the wall time of the node through
+  `hub::writer::Writer::time`, the midpoint of mesh time. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC). This meets condition 3 of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211 for the
+  loop of the kind. No connection that checks a certificate runs on
+  `event::Time::monotonic`.
+  `sim::serve` gives the wall time that its caller gives; the benches and the unit
+  tests give the monotonic time from the Unix epoch (`event::Time::monotonic`).
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
+  2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
+  1 of #1737 passes"
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
-  2026-10-13 07:03 UTC). `bench` also gives a connection manager with the test server
-  and its clients on the loop of the manager. Approved by `laptop.architect-2` at
-  `3b508e494`
+  2026-10-13 07:03 UTC), and the person added this part to ONE NODE ("Yes thats
+  fine"), relayed by `laptop.monitor`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
+  2026-10-13 13:40 UTC). The certificate part of #1992 keeps its trigger: the PR of
+  the first connection with a security policy other than `None`.
+  `bench` also gives a connection manager with the test server and its clients on the
+  loop of the manager. Approved by `laptop.architect-2` at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
   `bench::client` gives a test server on its own manager, and clients of it that each

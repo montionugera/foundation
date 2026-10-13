@@ -108,7 +108,8 @@ impl Repo {
     /// Whether a last round with a `Text fixes:` line that ends at `end` passes at
     /// `head`.
     fn passes(&self, end: &str, head: &str) -> Result<bool, String> {
-        Ok(self.place(end, head)? != Place::Off
+        let place = self.place(end, head)?;
+        Ok(matches!(place, Place::Head | Place::Before)
             && self.code_change(end, head)?.is_none())
     }
 
@@ -180,7 +181,7 @@ fn refuses_a_merge_that_resolves_a_conflict() {
     std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
     repo.git(&["add", "a.txt"]);
     repo.git(&["commit", "--quiet", "--no-edit"]);
-    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Unclean));
     repo.remove();
 }
 
@@ -191,7 +192,7 @@ fn refuses_a_clean_merge_with_an_added_change() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     std::fs::write(repo.dir.join("b.txt"), "slipped in\n").unwrap();
     repo.git(&["commit", "--quiet", "--all", "--amend", "--no-edit"]);
-    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Unclean));
     repo.remove();
 }
 
@@ -203,6 +204,26 @@ fn refuses_a_merge_of_a_branch_that_is_not_main() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", &other]);
     assert_eq!(repo.code_change(&end, &repo.head()), Ok(None));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    repo.remove();
+}
+
+#[test]
+fn a_merge_of_another_branch_is_off_also_before_a_merge_that_is_not_clean() {
+    let (repo, end) = Repo::with_pr("other-then-conflict");
+    repo.git(&["switch", "--quiet", "-c", "other", "main"]);
+    let other = repo.commit("c.md", "other\n");
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &other]);
+    repo.commit("a.txt", "pr side\n");
+    repo.advance_main("a.txt", "main side\n");
+    repo.command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
+    repo.git(&["add", "a.txt"]);
+    repo.git(&["commit", "--quiet", "--no-edit"]);
     assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
     repo.remove();
 }
@@ -1059,7 +1080,7 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
         Some("fn unreviewed() {}")
     );
     assert_eq!(repo.passes(&end, &merge), Ok(false));
-    assert_eq!(repo.place(&end, &merge), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Unclean));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(

@@ -4,7 +4,7 @@
 
 use env::rng::Rng;
 
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::Bytes;
 use crate::ffi::Status;
 use crate::ffi::test as ffi;
@@ -87,7 +87,7 @@ fn call_refused() {
 fn call_member(name: &str) -> ! {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(clock, &mut Rng::from_seed(0));
+    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
     let (members, raw, none) = (events.members(), events.raw(), std::ptr::null_mut());
     let status = match name {
         "UA_EventLoop.stop" => {
@@ -113,15 +113,8 @@ fn call_member(name: &str) -> ! {
 #[test]
 #[cfg(unix)]
 fn each_refused_call_prints_its_name_and_aborts() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
     for name in REFUSED {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "link::call_refused"])
-            .env(CHILD, name)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.signal(), Some(SIGABRT), "{name}");
+        let output = crate::child::aborted("link::call_refused", &[(CHILD, name)]);
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
             format!("connector-opcua: open62541 called {name}, which is not built\n")

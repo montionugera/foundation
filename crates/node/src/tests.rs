@@ -6232,7 +6232,8 @@ mod port {
                 let home = opened.expect("the buffer opens");
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
+                let opened =
+                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
                 let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
@@ -7264,10 +7265,10 @@ mod name {
     fn a_name_of_the_most_bytes_is_kept() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
-        let long = "a".repeat(255);
+        let long = "a".repeat(191);
         assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
         let kept = read(&mut sim, &host).expect("the file");
-        assert_eq!((kept.len(), kept[17]), (277, 255));
+        assert_eq!((kept.len(), kept[17]), (277, 191));
         assert_eq!(resolve(&mut sim, &host, None), Ok(name(&long)));
         assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
     }
@@ -7468,6 +7469,48 @@ mod name {
         });
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+    }
+
+    /// A name longer than 191 bytes stops a start with no region before the claim,
+    /// and a later start with another name runs.
+    #[test]
+    fn a_long_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = "a".repeat(192);
+        let error = Error::Long { name: name(&long) };
+        assert_eq!(start_and_stop(&mut sim, &host, &long), Err(error));
+        assert_eq!(host.shard_starts().len(), 0);
+        assert_eq!(read(&mut sim, &host), None, "keeps no name");
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+    }
+
+    /// A long name fails after a reserved name, and before a listen address that no
+    /// peer reaches and a disk budget that holds no ring.
+    #[test]
+    fn a_long_name_comes_after_a_reserved_name_and_before_the_other_checks() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = name(&"a".repeat(192));
+        let reserved = name(&format!("@{}", "a".repeat(191)));
+        let cases = [
+            (long.clone(), Error::Long { name: long }),
+            (reserved.clone(), Error::Reserved { name: reserved }),
+        ];
+        for (given, error) in cases {
+            let node = Node::start(Config {
+                name: given,
+                listen: "224.0.0.1:0".parse().expect("a socket address"),
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk: Size::from_bytes(1),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(error));
+        }
+        assert_eq!(host.shard_starts().len(), 0);
     }
 
     /// A file of another length that is not 0, or that `encode` does not give, is
