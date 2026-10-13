@@ -4,7 +4,9 @@
   it when that is later, so no stamp is at or before the stamp before it. The first
   stamp of a run has no stamp before it, so the home can refuse the first frame of a
   run as backwards when the run before it wrote a stamp at or after it on the same
-  index. Each stamp given counts as the stamp before the next, written or not. After a
+  index. Each stamp given counts as the stamp before the next, written or not
+  (`laptop.architect-2`, 2026-10-13T01:39:14Z, item 4:
+  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136202010). After a
   refusal as backwards, the frame is written again 1 ns after the stamp that the
   refusal gives, or 1 ns after the last stamp when that is later (`laptop.architect-2`,
   2026-10-13T01:08:55Z, item 7:
@@ -14,12 +16,14 @@
   `connector` writer that writes a refused frame again inside is deferred to #2527. The
   status writer of the supervisor stamps its frames with `Stamps::next` of its one
   read of mesh time, so one module holds the stamp rule (`laptop.architect-2`,
-  2026-10-13T01:08:55Z:
-  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6135871024). The
+  item 2 of https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136191164,
+  approved in item 3 of
+  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136552780). The
   person put the module in `connector` for each kind that reads by request (ONE NODE
   record, section 3, 2026-10-13T00:50:41Z,
   https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217). Lost:
   the stamp at the answer (it is late by the whole answer time); the module in
   `connector-opcua` (each later kind that reads by request copies it); a method on
   `hub::writer::Writer` (the hub then knows that a request has two ends); a panic for
-  a `before` under the last stamp, since the case has a correct answer.
+  a `before` under the last stamp, since the case has a correct answer; `now` as a
+  closure (a caller can pass a clock that is not mesh time).
