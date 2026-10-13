@@ -71,6 +71,15 @@ When you are not sure, it is one. To ask:
 A PR that makes such a decision links the person's approval. Review fails it without
 one.
 
+## 🚨 Three review rounds 🚨
+
+A PR gets at most 3 review rounds (`/review`, "Round cap"). Reviewers report every
+finding in one round, never a few at a time. The author fixes all findings of a round in
+one batch of commits, then asks for the next round. After round 3, only a defect (wrong
+behavior, data loss, a crash, or an oracle weakening) gets its fix, with a test that
+fails without it. Each other finding goes to an issue. Review hunts deep flaws (a wrong
+design, wrong behavior, lost data), not style.
+
 ## 🚨 The repo is the memory 🚨
 
 Several Claude sessions work here at once, and any one can compact, crash, or be

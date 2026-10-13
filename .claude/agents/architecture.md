@@ -68,5 +68,9 @@ So is a stub that its caller on record will run so, and code in a crate's `src/`
 exists only for tests and benchmarks and that a benchmark runs in its timed loop, such
 as a counting `GlobalAlloc`. A change to a bench file alone is not one.
 
+A PR gets at most 3 review rounds, so report every finding that you can show in this one
+report, never a few at a time. Put first each flaw that costs the most to change after
+merge: a wrong boundary, owner of state, or public surface.
+
 For each finding: file and line, the rule, why it matters here, and the fix. Most
 severe first. Report nothing you cannot point to in the code.

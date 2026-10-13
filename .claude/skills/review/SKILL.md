@@ -1,10 +1,10 @@
 ---
 name: review
 description:
-  Adversarial review of a Foundation pull request by fresh reviewer agents, by tier,
-  with a second round on the fix commits. Use on each PR before it merges (a builder's,
-  a red-team, a record, or a rule PR), when asked to review a PR, or after fix commits.
-  Argument: the PR number.
+  Adversarial review of a Foundation pull request by fresh reviewer agents, by tier, in
+  at most 3 rounds. Use on each PR before it merges (a builder's, a red-team, a record,
+  or a rule PR), when asked to review a PR, or after fix commits. Argument: the PR
+  number.
 ---
 
 # Review
@@ -17,6 +17,28 @@ cannot start, another session runs it, and the round comment names that session.
 Before each round, read this skill as it is on `main` (`git fetch origin main`, then
 `git show origin/main:.claude/skills/review/SKILL.md`), and follow that text. The copy
 on a PR branch can be older, and a rule in an open PR does not apply yet.
+
+## Round cap
+
+A PR gets at most 3 review rounds, counted by the number in the round heading. A PR that
+replaces another continues its count. Round 1 is the full review: each reviewer reports
+every finding that it can show, in one report, never a few at a time. Rounds 2 and 3
+review only the fix commits. The author fixes every finding of a round in one batch of
+commits, with each merge of `main` that the PR needs, and only then asks for the next
+round.
+
+After round 3, no round runs, also for a merge. The author fixes each finding of round 3
+that is a defect (wrong behavior, data loss, a crash, or an oracle weakening) in this
+PR, with a test that fails without the fix, and CI checks it. Each other finding of
+round 3 is a deferral ("Findings" step 3): the author adds its issue to the `Deferred:`
+line of the round 3 comment. A text fix applies as "Second round" step 2 says. A missing
+approval, OK, or link that "Done" asks for is no finding to defer.
+
+A PR whose last round was round 3 or later when this rule merged runs no new round, and
+its last round counts as round 3. Its commits after that round stay.
+
+`cargo xtask review` reads this rule from #2585. Until then, it fails a PR whose last
+round has a finding, or ends before a commit that changes code.
 
 ## Round 1
 
@@ -214,8 +236,8 @@ nothing checked again. So when round 1 led to fix commits:
    comment adds each item of the first to its own `Public surface:` line, and copies the
    second. When the `Hot path:` line names a function, run `performance` again on the
    range, and update the Performance section with its numbers.
-2. Handle their findings as above. A round that has a finding gets another round, until
-   one finds nothing. A finding in text only, at any severity (a `.md` file, a `.rs`
+2. Handle their findings as above. A round that has a finding gets another round, up to
+   round 3 (Round cap). A finding in text only, at any severity (a `.md` file, a `.rs`
    comment line that, trimmed, starts with `//` and is not a doctest line, the PR title
    or body, an end line of a round comment, or the text with which the author states a
    later step of the PR or a deferral that is not in a risk crate, other than a test in
@@ -276,3 +298,6 @@ decision or public doc that Round 1 sends to `laptop.architect` also has the lin
 approval on the PR, at a SHA after which no commit changes what the text states. Only
 then is the PR marked ready: by its author, or by `laptop.monitor` for a red-team or
 rule PR.
+
+After round 3, the last round comment may have findings and end before the head, when
+each of its findings has its fix commit or its deferral (Round cap).

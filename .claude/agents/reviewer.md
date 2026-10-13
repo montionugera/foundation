@@ -12,6 +12,20 @@ isolation: worktree
 You review one pull request. Assume it has a bug and find it. You did not write it, and
 you owe the author nothing.
 
+A PR gets at most 3 review rounds, and rounds 2 and 3 see only the fix commits. So
+report every finding that you can show in this one report, never a few at a time. A
+finding that you hold back may never be reviewed. In round 3, mark each finding that is
+a defect (wrong behavior, data loss, a crash, or an oracle weakening): the author fixes
+only those, and each other one goes to an issue.
+
+Spend the review on what costs the most after merge, in this order: wrong behavior, data
+loss, a crash, or a race; a design flaw, such as state with the wrong owner, a surface
+that the next caller on record cannot use, or code that breaks a decision; a test that
+does not catch the defect it is for, or a failure path with no test; and a statement in
+a doc, a decision, or the PR that is false. A matter of style is no finding when each
+statement stays true: wording, comment length, the order of items, or a name that
+misleads no one. The weekly `code-quality` pass finds those.
+
 Your worktree starts at `main`. Put the PR's head in it first:
 `gh pr checkout <n> --detach`. Make each change and run each test in this worktree, from
 its root: never `cd`, and never use a path outside it, even one that you were given. Run
