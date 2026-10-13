@@ -764,45 +764,49 @@ fn closes_the_session_at_each_end_with_an_error() {
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
 }
 
+/// Each refused group is written again after the latest stamp that the home gives,
+/// whichever index has it.
 #[test]
 fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
-    let mut setup = Setup::three();
-    setup.channels.push(("plant.other", index(10)));
-    setup.channels[3] = ("plant.c", data(4, 10, F64));
-    let outcome = run(setup, move |scene| async move {
-        let mut rival = open_rival(&scene.hub, Authority::ABSOLUTE).await;
-        let set = Arc::clone(rival.set());
-        let entries = set.entries();
-        let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
-        let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
-        let now = rival.now().nanos();
-        for (entry, bytes) in draft.iter_mut() {
-            let sample = match entries[entry].key.as_u128() {
-                1 => (now + ms(300).nanos()).to_le_bytes(),
-                10 => (now + ms(600).nanos()).to_le_bytes(),
-                _ => 0.0_f64.to_le_bytes(),
-            };
-            bytes.copy_from_slice(&sample);
-        }
-        for &index in set.groups() {
-            draft.set_count(entries[index].group, 1);
-        }
-        let outcomes = rival.write(Label::Path(Path::Live), draft);
-        assert!(
-            matches!(
-                outcomes,
-                Ok([Outcome::Applied { .. }, Outcome::Applied { .. }])
-            ),
-            "{outcomes:?}"
-        );
-        drop(rival);
-        scene.supervise(ms(1_050)).await
-    });
-    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let (frames, other) = (&outcome.frames, &outcome.indexes[&10]);
-    let ahead = stamp(&other[0], 10);
-    assert_eq!(stamp(&frames[1], 1), ahead + 1);
-    assert_eq!(stamp(&other[1], 10), ahead + 1);
+    for (one, ten) in [(300, 600), (600, 300)] {
+        let mut setup = Setup::three();
+        setup.channels.push(("plant.other", index(10)));
+        setup.channels[3] = ("plant.c", data(4, 10, F64));
+        let outcome = run(setup, move |scene| async move {
+            let mut rival = open_rival(&scene.hub, Authority::ABSOLUTE).await;
+            let set = Arc::clone(rival.set());
+            let entries = set.entries();
+            let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
+            let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
+            let now = rival.now().nanos();
+            for (entry, bytes) in draft.iter_mut() {
+                let sample = match entries[entry].key.as_u128() {
+                    1 => (now + ms(one).nanos()).to_le_bytes(),
+                    10 => (now + ms(ten).nanos()).to_le_bytes(),
+                    _ => 0.0_f64.to_le_bytes(),
+                };
+                bytes.copy_from_slice(&sample);
+            }
+            for &index in set.groups() {
+                draft.set_count(entries[index].group, 1);
+            }
+            let outcomes = rival.write(Label::Path(Path::Live), draft);
+            assert!(
+                matches!(
+                    outcomes,
+                    Ok([Outcome::Applied { .. }, Outcome::Applied { .. }])
+                ),
+                "{outcomes:?}"
+            );
+            drop(rival);
+            scene.supervise(ms(1_050)).await
+        });
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        let (frames, other) = (&outcome.frames, &outcome.indexes[&10]);
+        let ahead = stamp(&frames[0], 1).max(stamp(&other[0], 10));
+        assert_eq!(stamp(&frames[1], 1), ahead + 1, "{one} {ten}");
+        assert_eq!(stamp(&other[1], 10), ahead + 1, "{one} {ten}");
+    }
 }
 
 /// When the home refuses only the second index as `Backwards`, the run writes only
