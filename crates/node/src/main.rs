@@ -9,7 +9,9 @@ use std::sync::mpsc;
 
 use document::diagnostic::Code;
 use env::shards::Shards;
+use env::tasks::Tasks;
 use env::threads::Threads;
+use hub::client::Client;
 use node::Budget;
 use ops::{Failure, Run, Start};
 use types::byte::Size;
@@ -31,6 +33,14 @@ const MEMORY: Code = Code::new("node.memory");
 const BUDGET: Code = Code::new("node.budget");
 const PORT: Code = Code::new("node.port");
 const FAILED: Code = Code::new("node.failed");
+const NOT_RUNNING: Code = Code::new("node.not-running");
+const UNREADABLE: Code = Code::new("node.unreadable");
+const ADMIN_KEY: Code = Code::new("node.admin-key");
+const SOCKET: Code = Code::new("node.socket");
+const UNANSWERED: Code = Code::new("node.unanswered");
+const SESSION: Code = Code::new("node.session");
+const KEY_REFUSED: Code = Code::new("node.refused");
+const NO_REPLY: Code = Code::new("node.no-reply");
 
 /// Runs the command line on a shard that ends before a node starts, then the node of
 /// `foundation start`. A failure of either goes to standard error through
@@ -72,12 +82,14 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         name: "cli".into(),
         core: None,
     };
-    let shard = shards.start(config, move |_| async move {
+    let shard = shards.start(config, move |tasks| async move {
         let run = ops::cli(
             args,
             io::stdin().lock(),
             io::stdout().lock(),
             io::stderr().lock(),
+            &os::paths(),
+            async |dir: &Path| reach(dir, &tasks).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
@@ -89,6 +101,115 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     Ok(run
         .try_recv()
         .expect("invariant: the shard sends its run before it ends"))
+}
+
+/// The client of the node that runs on the data directory `dir`. It blocks the shard
+/// of `tasks` until the I/O thread that reads `dir` ends.
+async fn reach(dir: &Path, tasks: &Tasks) -> Result<Client, Failure> {
+    let threads = os::threads().map_err(failed)?;
+    let (disk, handle) =
+        os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
+    let reached = node::client::reach(node::client::Config {
+        files: env::files::Files::new(disk),
+        net: net(),
+        clock: os::clock(),
+        entropy: os::entropy(),
+        tasks: tasks.clone(),
+    })
+    .await;
+    handle.join().map_err(failed)?;
+    reached.map_err(|error| unreached(dir, error))
+}
+
+/// What sends a request through `client` and gives the reply.
+fn send(client: Client) -> impl AsyncFn(&[u8]) -> Result<Vec<u8>, Failure> {
+    async move |body: &[u8]| {
+        client.request(body).await.map_err(|error| no_reply(&error))
+    }
+}
+
+/// The failure of a reach whose `os::stored` of the data directory `dir` failed.
+fn stored(dir: &Path, error: os::Error) -> Failure {
+    match error {
+        os::Error::Dir(error) if error.kind() == io::ErrorKind::NotFound => {
+            not_running(dir)
+        }
+        os::Error::Dir(error) => unreadable(dir, error),
+        error => failed(error),
+    }
+}
+
+/// The failure of a reach of the node of the data directory `dir` that gave `error`.
+///
+/// # Panics
+///
+/// When `error` is a variant that this function does not know.
+fn unreached(dir: &Path, error: node::client::Error) -> Failure {
+    let data = dir.display();
+    let (code, message, fix) = match error {
+        node::client::Error::NotRunning => return not_running(dir),
+        node::client::Error::Files(error) => return unreadable(dir, error),
+        node::client::Error::Key => (
+            ADMIN_KEY,
+            format!("{data} holds no admin.key that a node wrote"),
+            "Put back the `admin.key` that the first start wrote",
+        ),
+        node::client::Error::Transport(error) => (
+            SOCKET,
+            format!("the socket of this program failed: {error}"),
+            "Fix the cause in the message, then run the command again",
+        ),
+        node::client::Error::Unanswered { at, error } => (
+            UNANSWERED,
+            format!("no node answers at {at}, the address in {data}: {error}"),
+            "Start the node again with `foundation start`",
+        ),
+        node::client::Error::Session { at, error } => (
+            SESSION,
+            format!("the session with the node at {at} failed: {error}"),
+            "Read the log of the node, then run the command again",
+        ),
+        node::client::Error::Refused(refusal) => (
+            KEY_REFUSED,
+            format!("the node refused the key in {data}/data/admin.key: {refusal}"),
+            "Use the key of a subject in the node's spec",
+        ),
+        error => panic!("`unreached` knows no failure of {error:?}"),
+    };
+    Failure {
+        code,
+        message,
+        fix: fix.to_owned(),
+    }
+}
+
+/// The failure of a data directory `dir` where no node runs.
+fn not_running(dir: &Path) -> Failure {
+    Failure {
+        code: NOT_RUNNING,
+        message: format!("no node runs in {}", dir.display()),
+        fix: "Start one with `foundation start --name <name>`".to_owned(),
+    }
+}
+
+/// The failure of a data directory `dir` that this user cannot read.
+fn unreadable(dir: &Path, error: impl std::fmt::Display) -> Failure {
+    Failure {
+        code: UNREADABLE,
+        message: format!("cannot read the data directory {}: {error}", dir.display()),
+        fix: "Run the command as the user that started the node".to_owned(),
+    }
+}
+
+/// The failure of a request that the node gave no reply to.
+fn no_reply(error: &hub::client::Error) -> Failure {
+    Failure {
+        code: NO_REPLY,
+        message: format!("the node gave no reply: {error}"),
+        fix: "See that the node runs, then run the command again. After `apply`, plan \
+              again to see whether the change applied"
+            .to_owned(),
+    }
 }
 
 /// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
@@ -1027,6 +1148,168 @@ mod tests {
             failed(
                 "the group of the node's mesh stopped: open of mesh/log/log-0 failed \
                  with OS error 28"
+            )
+        );
+    }
+
+    /// The address in the `address` file of a test.
+    fn at() -> std::net::SocketAddr {
+        "127.0.0.1:54321".parse().expect("an address")
+    }
+
+    /// The failure of `code`, `message`, and `fix`.
+    fn of_reach(code: Code, message: &str, fix: &str) -> Failure {
+        Failure {
+            code,
+            message: message.to_owned(),
+            fix: fix.to_owned(),
+        }
+    }
+
+    const NOT_RUNNING_FIX: &str = "Start one with `foundation start --name <name>`";
+    const UNREADABLE_FIX: &str = "Run the command as the user that started the node";
+
+    #[test]
+    fn a_directory_with_no_node_is_not_running() {
+        let not_running = of_reach(
+            NOT_RUNNING,
+            "no node runs in foundation-data",
+            NOT_RUNNING_FIX,
+        );
+        assert_eq!(
+            unreached(dir(), node::client::Error::NotRunning),
+            not_running
+        );
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+        assert_eq!(stored(dir(), os::Error::Dir(missing)), not_running);
+    }
+
+    #[test]
+    fn a_directory_that_does_not_read_is_unreadable() {
+        let error = env::files::Error::Io {
+            path: PathBuf::from("admin.key"),
+            operation: env::files::Operation::ReadAt,
+            code: 13,
+        };
+        assert_eq!(
+            unreached(dir(), node::client::Error::Files(error)),
+            of_reach(
+                UNREADABLE,
+                "cannot read the data directory foundation-data: read_at of admin.key \
+                 failed with OS error 13",
+                UNREADABLE_FIX,
+            )
+        );
+        let denied = io::Error::from_raw_os_error(13);
+        assert_eq!(
+            stored(dir(), os::Error::Dir(denied)),
+            of_reach(
+                UNREADABLE,
+                "cannot read the data directory foundation-data: Permission denied (os \
+                 error 13)",
+                UNREADABLE_FIX,
+            )
+        );
+    }
+
+    #[test]
+    fn a_stored_thread_that_does_not_start_is_a_failure() {
+        let error = os::Error::Thread(env::thread::Error::Start {
+            name: "files-reach".to_owned(),
+            reason: "no memory".to_owned(),
+        });
+        assert_eq!(
+            stored(dir(), error),
+            failed("cannot start thread files-reach: no memory")
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_admin_key_names_the_file() {
+        assert_eq!(
+            unreached(dir(), node::client::Error::Key),
+            of_reach(
+                ADMIN_KEY,
+                "foundation-data holds no admin.key that a node wrote",
+                "Put back the `admin.key` that the first start wrote",
+            )
+        );
+    }
+
+    #[test]
+    fn a_broken_socket_is_the_socket_of_this_program() {
+        let error = transport::Error::Network {
+            error: env::net::Error::Io { code: 5 },
+        };
+        assert_eq!(
+            unreached(dir(), node::client::Error::Transport(error)),
+            of_reach(
+                SOCKET,
+                "the socket of this program failed: the socket broke: network call \
+                 failed with OS error 5",
+                "Fix the cause in the message, then run the command again",
+            )
+        );
+    }
+
+    #[test]
+    fn a_dial_with_no_session_is_unanswered() {
+        let error = node::client::Error::Unanswered {
+            at: at(),
+            error: transport::Error::TimedOut,
+        };
+        assert_eq!(
+            unreached(dir(), error),
+            of_reach(
+                UNANSWERED,
+                "no node answers at 127.0.0.1:54321, the address in foundation-data: \
+                 the peer stopped answering",
+                "Start the node again with `foundation start`",
+            )
+        );
+    }
+
+    #[test]
+    fn a_session_that_fails_names_the_address() {
+        let error = node::client::Error::Session {
+            at: at(),
+            error: hub::client::Error::Unanswered,
+        };
+        assert_eq!(
+            unreached(dir(), error),
+            of_reach(
+                SESSION,
+                "the session with the node at 127.0.0.1:54321 failed: the node \
+                 finished a stream with no answer",
+                "Read the log of the node, then run the command again",
+            )
+        );
+    }
+
+    #[test]
+    fn a_refused_hello_names_the_key_file() {
+        let refused = node::client::Error::Refused(wire::hub::client::Refusal::Refused);
+        assert_eq!(
+            unreached(dir(), refused),
+            of_reach(
+                KEY_REFUSED,
+                "the node refused the key in foundation-data/data/admin.key: the spec \
+                 has no such subject, does not list the key for it, or the signature \
+                 is not valid",
+                "Use the key of a subject in the node's spec",
+            )
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_reply_says_to_plan_again() {
+        assert_eq!(
+            no_reply(&hub::client::Error::Unanswered),
+            of_reach(
+                NO_REPLY,
+                "the node gave no reply: the node finished a stream with no answer",
+                "See that the node runs, then run the command again. After `apply`, \
+                 plan again to see whether the change applied",
             )
         );
     }
