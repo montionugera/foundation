@@ -312,7 +312,8 @@ fn gives_no_span_or_note_for_a_problem_in_a_connector_config_that_holds_spans() 
         "Write a name such as \"site_a.node_1\"".into(),
     );
     assert_eq!(refused, [bad_name]);
-    let config = "address = \"http://influx:8086\"\nselect = \"x.*\"\n\
+    let config = "address = \"http://influx:8086\"\ndatabase = \"x\"\n\
+                  measurement = \"x\"\nselect = \"x.*\"\n\
                   reader {\n}\nreader {\n}\n";
     let definitions = [connector("x", "influx", "n", config)]
         .into_iter()
