@@ -280,15 +280,23 @@ impl<C> Context<C> {
     ///
     /// # Errors
     ///
-    /// [`Error::Retry`] for each error of the store, with a text that names the
-    /// secret and holds the store's text, such as where to put the value. The
-    /// supervisor restarts the run with backoff, so a value added to the store heals
-    /// it.
+    /// [`Error::Config`] with code `connector.bad-secret-name` when the store cannot
+    /// hold `name`, with the store's text as the fix. [`Error::Retry`] for each other
+    /// error of the store, with a text that names the secret and holds the store's
+    /// text, such as where to put the value. The supervisor restarts the run with
+    /// backoff, so a value added to the store heals it.
     pub async fn secret(&self, name: &Name) -> Result<secret::Value, Error> {
         let get = self.inputs.secrets.get(name).await;
-        get.map_err(|error| {
-            let name = name.clone();
-            Error::Retry(Box::new(Unread { name, error }))
+        get.map_err(|error| match error {
+            secret::store::Error::BadName { detail } => {
+                let error =
+                    format!("the secret {name} has a name that the store cannot hold");
+                config_error(BAD_SECRET_NAME, &error, &detail)
+            }
+            error => {
+                let name = name.clone();
+                Error::Retry(Box::new(Unread { name, error }))
+            }
         })
     }
 
@@ -419,6 +427,7 @@ const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
 const LARGE_FRAME: Code = Code::new("connector.large-frame");
+const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
 /// The fix of [`LARGE_FRAME`].
 const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
@@ -1029,6 +1038,27 @@ mod tests {
         );
         assert_eq!(read.expect("the store has the value"), b"t0");
         assert_eq!(changed.expect("the store has the new value"), b"t1");
+    }
+
+    #[test]
+    fn gives_a_secret_name_that_the_store_cannot_hold_as_a_config_error() {
+        let bad = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
+            ctx.secret(&name("plant.Token")).await.map(drop)
+        });
+        let Err(Error::Config(diagnostics)) = bad else {
+            panic!("a bad name is a config error: {bad:?}");
+        };
+        let fix = "Rename the secret in lowercase letters, since the file store holds \
+                   no name with a capital letter";
+        let message = "the secret plant.Token has a name that the store cannot hold";
+        let expected =
+            Diagnostic::new(BAD_SECRET_NAME, None, message.into(), fix.into());
+        assert_eq!(diagnostics, [expected]);
     }
 
     #[test]

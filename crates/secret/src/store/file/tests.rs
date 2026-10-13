@@ -133,9 +133,9 @@ fn has_no_value_when_the_file_holds_only_a_line_end() {
 fn holds_no_name_with_a_capital_also_when_its_file_is_there() {
     on_sim(|_, files| async move {
         let store = store(files.clone());
-        let capital = Err(Error::Missing {
-            detail: "the file store holds no name with a capital letter. Rename the \
-                     secret in lowercase letters"
+        let capital = Err(Error::BadName {
+            detail: "Rename the secret in lowercase letters, since the file store \
+                     holds no name with a capital letter"
                 .into(),
         });
         put(&files, "secrets/plant.Token", b"t").await;

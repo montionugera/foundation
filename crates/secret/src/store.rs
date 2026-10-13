@@ -23,8 +23,9 @@ pub trait Store: fmt::Debug {
     /// # Errors
     ///
     /// [`Error::Missing`] when the store holds no value at that key, with where to
-    /// put it, [`Error::Denied`] when the store refuses this node's credentials, and
-    /// [`Error::Unavailable`] when the store does not answer or fails before it
+    /// put it, [`Error::BadName`] when the store cannot hold `name`, with how to
+    /// rename it, [`Error::Denied`] when the store refuses this node's credentials,
+    /// and [`Error::Unavailable`] when the store does not answer or fails before it
     /// decides.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a>;
 }
@@ -39,6 +40,11 @@ pub enum Error {
     Missing {
         /// The store's own text: why it has no value, and where to put it when the
         /// store can say.
+        detail: String,
+    },
+    /// The store cannot hold the name, at any time. Renaming the secret fixes it.
+    BadName {
+        /// The store's own text: how to rename the secret, and why.
         detail: String,
     },
     /// The store refused this node.
@@ -57,6 +63,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing { detail } => write!(f, "the store has no value: {detail}"),
+            Self::BadName { detail } => {
+                write!(f, "the store cannot hold the name: {detail}")
+            }
             Self::Denied { detail } => write!(
                 f,
                 "the store refused this node: {detail}. Grant the node access in the \
@@ -158,6 +167,12 @@ mod tests {
                     detail: "write it to the file secrets/a".into(),
                 },
                 "the store has no value: write it to the file secrets/a",
+            ),
+            (
+                Error::BadName {
+                    detail: "Rename the secret in lowercase letters".into(),
+                },
+                "the store cannot hold the name: Rename the secret in lowercase letters",
             ),
             (
                 Error::Denied {

@@ -44,9 +44,9 @@ impl File {
 
     async fn read(&self, name: &Name) -> Result<Value, Error> {
         if name.as_str().bytes().any(|byte| byte.is_ascii_uppercase()) {
-            return Err(Error::Missing {
-                detail: "the file store holds no name with a capital letter. Rename \
-                         the secret in lowercase letters"
+            return Err(Error::BadName {
+                detail: "Rename the secret in lowercase letters, since the file store \
+                         holds no name with a capital letter"
                     .into(),
             });
         }
@@ -98,9 +98,10 @@ impl Store for File {
     /// # Errors
     ///
     /// [`Error::Missing`] when `dir` or the file is not there, or the value is empty,
-    /// with the path to write it to, as [`Files::shown`] gives it, and when `name` has an ASCII capital, with the
-    /// fix to rename it. [`Error::Unavailable`] when the file is more than 64 KiB, or
-    /// a file call fails, with the call's error.
+    /// with the path to write it to, as [`Files::shown`] gives it.
+    /// [`Error::BadName`] when `name` has an ASCII capital. [`Error::Unavailable`]
+    /// when the file is more than 64 KiB, or a file call fails, with the call's
+    /// error.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a> {
         Box::pin(self.read(name))
     }
