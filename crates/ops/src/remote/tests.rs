@@ -273,20 +273,37 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
     });
 }
 
+/// `b.hcl` is not UTF-8, so a read of it gives [`Unread::NotUtf8`] and a read that
+/// stops at the bytes left gives [`Error::LargeRequest`].
 #[test]
-fn plan_of_files_over_the_most_in_all_gives_large_request() {
+fn plan_reads_each_file_up_to_the_bytes_that_the_files_before_it_leave() {
     solo(|host, mesh| async move {
         let paths = host.paths();
-        let half = "#".repeat(most() / 2 + 1);
-        for path in ["a.hcl", "b.hcl"] {
-            paths
-                .write(Path::new(path), half.as_bytes())
-                .expect("a write");
-        }
+        let half = most() / 2 + 1;
+        let b = vec![0xff; half];
+        paths.write(Path::new("b.hcl"), &b).expect("a write");
         let remote = Remote::new(create_node(mesh));
         let files = [PathBuf::from("a.hcl"), PathBuf::from("b.hcl")];
+        let a = "#".repeat(half);
+        paths
+            .write(Path::new("a.hcl"), a.as_bytes())
+            .expect("a write");
         let planned = remote.plan(&paths, &files, None).await;
-        assert!(matches!(planned, Err(Error::LargeRequest)));
+        assert_eq!(
+            planned.err(),
+            Some(Error::LargeRequest),
+            "over the most in all"
+        );
+
+        paths.write(Path::new("a.hcl"), b"##").expect("a write");
+        let planned = remote.plan(&paths, &files, None).await;
+        let path = PathBuf::from("b.hcl");
+        let cause = Unread::NotUtf8;
+        assert_eq!(
+            planned.err(),
+            Some(Error::Read { path, cause }),
+            "within it"
+        );
         assert_eq!(remote.calls(), (0, 0));
     });
 }
@@ -454,9 +471,15 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
             panic!("an error of the node");
         };
         assert_eq!(error.status(), 7);
-        assert_eq!(*error.problems(), [problem.clone(), problem]);
+        assert_eq!(*error.problems(), [problem.clone(), problem.clone()]);
         assert!(error.text().contains("a\\u{1b}b"), "{}", error.text());
         assert_eq!(error.to_string(), "the node gave 2 problems");
+
+        let reply = format!("{}\n", json!({ "errors": [problem], "status": 7 }));
+        let remote = Remote::with(remote.node, Mode::Reply(reply.into_bytes()));
+        let planned = remote.plan(&paths, &files, None).await;
+        let shown = planned.err().map(|error| error.to_string());
+        assert_eq!(shown.as_deref(), Some("a\u{1b}b"), "one problem");
     });
 }
 
