@@ -578,6 +578,11 @@ fn the_command_line_plans_and_applies_on_the_node() {
         assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
         assert!(output.contains("3 to add"), "{output}");
         let (status, output, errors) =
+            remote.cli(&paths, &["plan", "site.hcl", "--json"]).await;
+        assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
+        let output: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+        assert_eq!(output["added"], 3);
+        let (status, output, errors) =
             remote.cli(&paths, &["apply", "site.plan", "--json"]).await;
         assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
         let output: serde_json::Value = serde_json::from_str(&output).expect("JSON");
@@ -585,7 +590,7 @@ fn the_command_line_plans_and_applies_on_the_node() {
         let (status, output, errors) = remote.cli(&paths, &["plan", "gone.hcl"]).await;
         assert_eq!((status, output.as_str()), (Run::Exit(2), ""));
         assert!(errors.contains("no file is at gone.hcl"), "{errors}");
-        assert_eq!(remote.calls(), (2, 2));
+        assert_eq!(remote.calls(), (3, 3));
     });
 }
 
