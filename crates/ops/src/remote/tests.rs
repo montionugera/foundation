@@ -311,6 +311,21 @@ fn plan_gives_large_request_once_the_files_that_it_read_pass_the_most() {
 /// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
 /// `config` take.
 #[test]
+fn plan_of_files_of_exactly_the_most_reads_them_all() {
+    solo(|host, mesh| async move {
+        let paths = host.paths();
+        paths
+            .write(Path::new("a.hcl"), &vec![0xff; most()])
+            .expect("a write");
+        let remote = Remote::new(create_node(mesh));
+        let planned = remote.plan(&paths, &[PathBuf::from("a.hcl")], None).await;
+        let path = PathBuf::from("a.hcl");
+        let cause = Unread::NotUtf8;
+        assert_eq!(planned.err(), Some(Error::Read { path, cause }));
+    });
+}
+
+#[test]
 fn plan_of_a_directory_after_a_large_file_gives_read() {
     solo(|host, mesh| async move {
         let paths = host.paths();
