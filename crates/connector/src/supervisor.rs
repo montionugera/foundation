@@ -445,6 +445,8 @@ mod tests {
         Ended(hub::reader::Ended),
         /// Returns a failed write with `?`.
         Failed(hub::writer::Failure),
+        /// Returns a pool with no block for a frame with `?`.
+        Pool(block::Error),
     }
 
     /// When each run started and ended.
@@ -526,6 +528,7 @@ mod tests {
                 }
                 Some(Step::Ended(ended)) => returned(ended),
                 Some(Step::Failed(failure)) => returned(failure),
+                Some(Step::Pool(error)) => returned(error),
                 None => {
                     ctx.cancel().wait().await;
                     Ok(())
@@ -1052,6 +1055,7 @@ mod tests {
         };
         let ended = |ended: Ended| (ended.to_string(), Step::Ended(ended));
         let failed = |failure: Failure| (failure.to_string(), Step::Failed(failure));
+        let pool = |error: block::Error| (error.to_string(), Step::Pool(error));
         let retries = [
             ended(Ended::Behind),
             ended(Ended::Removed(key)),
@@ -1060,6 +1064,11 @@ mod tests {
             failed(Failure::Removed(key)),
             failed(Failure::Home(Home::Full)),
             failed(Failure::Home(Home::Disk(full()))),
+            pool(block::Error::Exhausted {
+                requested: 16,
+                available: 8,
+            }),
+            pool(block::Error::Refused { requested: 16 }),
         ];
         let retry = [
             (0, 0, 0),
@@ -1084,6 +1093,21 @@ mod tests {
         let want = unplaced(
             "connector.large-frame",
             "the frame is too large for one write: split it",
+            "Give the connector fewer channels",
+        );
+        assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
+        let (_, large) = pool(block::Error::TooLarge {
+            requested: 16,
+            largest: 8,
+        });
+        let out = supervise("script", vec![large], config(), Cancel::Never);
+        assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let text = "block of 16 bytes is above the largest block of 8 bytes. Give the \
+                    connector fewer channels";
+        assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
+        let want = unplaced(
+            "connector.large-frame",
+            "block of 16 bytes is above the largest block of 8 bytes",
             "Give the connector fewer channels",
         );
         assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
