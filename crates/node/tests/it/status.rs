@@ -76,3 +76,23 @@ fn a_connector_that_lacks_a_nullable_key_is_refused() {
         );
     }
 }
+
+/// `ops` writes no `next` until #2530, so an error with that key has another shape.
+#[test]
+fn an_error_with_next_is_refused() {
+    let json = concat!(
+        r#"{"connectors":[{"name":"a","kind":"influx","state":"stopped","#,
+        r#""address":null,"restarts":0,"counts":{},"#,
+        r#""error":{"class":"config","text":"t","next":null}}]}"#,
+    );
+    let error = serde_json::from_str::<Output>(json)
+        .err()
+        .expect("a refusal");
+    let column = json.find(r#""next""#).expect("the key") + 6;
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "unknown field `next`, expected `class` or `text` at line 1 column {column}"
+        ),
+    );
+}
