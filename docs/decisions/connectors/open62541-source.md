@@ -588,8 +588,9 @@
   options of the client, so the cost of a second copy of the options is accepted for
   `sim::serve`. Supersedes the bind in `Manager::listening` of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582 for
-  `sim::serve`: approval owed. The parameters of the first callbacks: approved by
-  `laptop.architect-2` at `feb6c21a4`
+  `sim::serve`: approved by `laptop.architect-2` (2026-10-13T02:23:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136822544). The
+  parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
   2026-10-09 21:25 UTC).
   A server on the loop of a manager is `STOPPED` when its last connection closes after
