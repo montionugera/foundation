@@ -134,7 +134,7 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
     for idle in [0, 15] {
         for (at, counts) in reads(idle).into_iter().enumerate() {
             let read = at + 2;
-            assert_eq!(counts, [4, 5, 2, 0], "{idle} idle, read {read}");
+            assert_eq!(counts, [3, 5, 2, 0], "{idle} idle, read {read}");
         }
     }
 }
@@ -170,13 +170,16 @@ fn client_reads(variable: client::Variable) -> Vec<u64> {
     sim.run_on(&node, run).expect("the run ends")
 }
 
-/// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
-/// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
+/// As through the manager, the ask allocates 3 and the read of the answer 2. Each read
+/// is a new drive, whose sleep until the next timer of the loop allocates 1 more. The
+/// client swaps two buffers of values, and read 2 is the first to fill the second.
 fn a_read_of_a_client_allocates_a_fixed_count() {
+    let mut counts = vec![7];
+    counts.extend([6; 98]);
     for variable in [client::Variable::Number, client::Variable::Name] {
         assert_eq!(
             client_reads(variable),
-            [7; 99],
+            counts,
             "reads 2 to 100 of {variable:?}"
         );
     }

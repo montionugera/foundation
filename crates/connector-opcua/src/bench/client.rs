@@ -15,6 +15,7 @@ use env::net::Net;
 use env::rng::Rng;
 
 use super::PORT;
+use crate::client::Nodes;
 use crate::connection;
 use crate::node::{Key, Name, Node};
 
@@ -115,8 +116,9 @@ impl Server {
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
         match crate::client::Client::connect(clock, net, rng, &self.url).await {
             Ok(client) => Client {
-                client,
-                name: named(),
+                session: client,
+                number: Nodes::new(&[VALUE]),
+                name: Nodes::new(&[named()]),
             },
             Err(status) => panic!("a connect failed: {status:?}"),
         }
@@ -141,8 +143,9 @@ fn named() -> Node {
 
 /// A client of a [`Server`].
 pub struct Client {
-    client: crate::client::Client,
-    name: Node,
+    session: crate::client::Client,
+    number: Nodes,
+    name: Nodes,
 }
 
 impl Client {
@@ -152,20 +155,22 @@ impl Client {
     ///
     /// If the read fails, with its status, or gives another value.
     pub async fn read(&mut self, variable: Variable) {
-        let node = match variable {
-            Variable::Number => &VALUE,
+        let nodes = match variable {
+            Variable::Number => &self.number,
             Variable::Name => &self.name,
         };
-        match self.client.read(node).await {
-            Ok(value) => assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}"),
-            Err(status) => panic!("a read failed: {status:?}"),
+        match self.session.read(nodes).await.map(|values| values[0]) {
+            Ok(Ok(value)) => {
+                assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}")
+            }
+            Ok(Err(status)) | Err(status) => panic!("a read failed: {status:?}"),
         }
     }
 
     /// Closes the session and the connection of the client. A client that drops with no
     /// close holds one of the 4 sessions of its server until the session times out.
     pub async fn close(self) {
-        self.client.close().await;
+        self.session.close().await;
     }
 }
 

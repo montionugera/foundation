@@ -194,8 +194,7 @@ unsafe extern "C" {
         server: *mut Server,
         name: *const std::ffi::c_char,
     ) -> u16;
-    pub(crate) fn shim_response_result(response: *const c_void) -> u32;
-    pub(crate) fn shim_value_status(value: *const c_void) -> u32;
+    pub(crate) fn shim_value_status(value: *const super::DataValue) -> u32;
     pub(crate) fn shim_server_discovery_url(
         server: *mut Server,
         index: usize,

@@ -667,23 +667,62 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Asks `client` for the Value of `node`, and has `callback` called
- * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
- * ends at its answer or at the close of the channel. */
-UA_StatusCode shim_client_read(UA_Client *client, shim_node node,
-                               UA_ClientAsyncReadValueAttributeCallback callback,
-                               void *data, UA_UInt32 *request) {
+/* Gives a Read request of the Value of each of the `count` nodes at `nodes`, with no
+ * timestamps, which copies their names, or NULL when an allocation fails. */
+UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
+    UA_ReadRequest *request = UA_ReadRequest_new();
+    if(!request)
+        return NULL;
+    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    request->nodesToRead =
+        (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
+    if(!request->nodesToRead) {
+        UA_ReadRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToReadSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_ReadValueId *read = &request->nodesToRead[i];
+        read->attributeId = UA_ATTRIBUTEID_VALUE;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_ReadRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+void shim_read_free(UA_ReadRequest *request) { UA_ReadRequest_delete(request); }
+
+/* Sends `request` on `client`, and has `callback` called with `data` and the answer.
+ * Writes the id of the request to `id`. The request times out only after 2^32 - 1 ms
+ * (49.7 days), so in practice it ends at its answer or at the close of the channel. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
+                               UA_ClientAsyncReadCallback callback, void *data,
+                               UA_UInt32 *id) {
     /* open62541 takes the timeout hint of a request from the config, and makes 0
      * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
-     * hint 0. */
+     * hint 0. A send keeps the handle that it gives a request with handle 0. */
     UA_ClientConfig *config = UA_Client_getConfig(client);
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
-    UA_StatusCode status = UA_Client_readValueAttribute_async(
-        client, shim_node_id(node), callback, data, request);
+    request->requestHeader.requestHandle = 0;
+    UA_StatusCode status =
+        UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
     config->timeout = timeout;
     return status;
+}
+
+/* Gives the count of results of `response`, a Read response. */
+size_t shim_read_count(const UA_ReadResponse *response) {
+    return response->resultsSize;
+}
+
+/* Gives result `index` of `response`, a Read response with more results than
+ * `index`. */
+const UA_DataValue *shim_read_result(const UA_ReadResponse *response, size_t index) {
+    return &response->results[index];
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no

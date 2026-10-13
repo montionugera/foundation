@@ -21,6 +21,7 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
+use crate::client::Nodes;
 use crate::connection;
 use crate::event::Loop;
 use crate::ffi::{self, Status};
@@ -124,6 +125,8 @@ pub struct Manager {
     server: Server,
     /// C holds its address while a read waits.
     answers: Box<Answers>,
+    /// The read of the current time of the server.
+    time: Nodes,
     /// Only `close` drops it, after it deletes the server and the clients on its loop.
     /// After a panic of the close, nothing runs its loop again.
     connections: ManuallyDrop<connection::Manager>,
@@ -210,6 +213,10 @@ impl Manager {
             clients,
             server,
             answers: Box::default(),
+            time: Nodes::new(&[Node {
+                namespace: 0,
+                key: Key::Number(ffi::test::TIME),
+            }]),
             connections: manager,
         }
     }
@@ -256,21 +263,17 @@ impl Manager {
     ///
     /// If open62541 refuses the read.
     pub fn ask(&self) {
-        self.drive_after(|| self.read(ffi::test::TIME));
+        self.drive_after(|| self.read(&self.time));
     }
 
-    /// Asks the first client for a read of the Value of `node` of namespace 0.
-    fn read(&self, node: u32) {
+    /// Asks the first client for the read of `nodes`, which holds one node.
+    fn read(&self, nodes: &Nodes) {
         let data = ptr::from_ref::<Answers>(&self.answers).cast_mut().cast();
-        // SAFETY: the client lives, and `answers` outlives it.
+        // SAFETY: the client and the request live, and `answers` outlives the client.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.clients[0].as_ptr(),
-                (&Node {
-                    namespace: 0,
-                    key: Key::Number(node),
-                })
-                    .into(),
+                nodes.raw(),
                 answer,
                 data,
                 ptr::null_mut(),
@@ -404,20 +407,22 @@ impl std::fmt::Debug for Manager {
 ///
 /// # Safety
 ///
-/// `data` points at live `Answers`, and `value` at the answer when `status` is `Good`.
+/// `data` points at live `Answers`, and `response` at the answer.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
     data: *mut c_void,
     _: u32,
-    status: u32,
-    value: *mut c_void,
+    response: *mut ffi::ReadResponse,
 ) {
     // SAFETY: `read` gives live answers.
     let answers = unsafe { &*data.cast::<Answers>() };
     answers.count.set(answers.count.get() + 1);
-    let mut status = Status(status);
+    // SAFETY: open62541 gives a live response.
+    let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
     if status == Status::GOOD {
-        // SAFETY: open62541 gives the answer with `Good`.
+        // SAFETY: the response lives and has one result, as its request has one node.
+        let value = unsafe { ffi::shim_read_result(response, 0) };
+        // SAFETY: the value lives with the response.
         status = Status(unsafe { ffi::test::shim_value_status(value) });
     }
     if status != Status::GOOD && answers.failed.get().is_none() {
@@ -447,7 +452,9 @@ mod tests {
     use types::time::Span;
 
     use super::{Client, Manager, caught};
+    use crate::client::Nodes;
     use crate::ffi;
+    use crate::node::{Key, Node};
 
     /// The delay of the default link.
     fn delay() -> Span {
@@ -744,7 +751,11 @@ mod tests {
     #[test]
     fn a_read_of_an_unknown_node_fails_with_its_status() {
         check(0, async |manager, clock| {
-            manager.drive_after(|| manager.read(999_999));
+            let unknown = Nodes::new(&[Node {
+                namespace: 0,
+                key: Key::Number(999_999),
+            }]);
+            manager.drive_after(|| manager.read(&unknown));
             clock.sleep(delay()).await;
             manager.drive();
             clock.sleep(delay()).await;
