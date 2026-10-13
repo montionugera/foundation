@@ -34,4 +34,6 @@
   trust of the answer in `SPLIT` at 2026-10-13T05:07:37Z:
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801). The
   `SPLIT` of a GUID key: `laptop.architect-2` at 2026-10-13T05:31:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138961019.
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138961019, and the
+  rule of `SPLIT` and the test of each form of a key at 2026-10-13T05:45:02Z,
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974.

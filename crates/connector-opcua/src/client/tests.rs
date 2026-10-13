@@ -1378,7 +1378,8 @@ fn each_read_of_one_request_has_its_own_handle() {
 
 /// An answer with a value for more or fewer nodes than its read fails, copies none of
 /// them, and the next read gives the value of each node. The test reads the buffer of
-/// the client, as no call shows a copy into it.
+/// the client: no call gives its size, and the next good answer clears it before it
+/// copies, so no caller sees a copied value.
 #[test]
 fn an_answer_of_another_count_of_values_fails() {
     for count in [0, 2] {
