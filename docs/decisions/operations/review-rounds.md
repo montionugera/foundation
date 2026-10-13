@@ -11,8 +11,10 @@
   boundary, a decision, or the owner of state. The design approver of an item is the
   crate's architect, `laptop.architect` for a contract between the two lists, or
   `laptop.director` for any other item. When the crate's architect wrote the PR, it is
-  the other architect. When `laptop.director` wrote the PR, it is the person, through
-  `laptop.monitor`. After round 3, no other round runs, and no PR replaces it, other
+  the other architect. When `laptop.director` wrote the PR, it is `laptop.director`,
+  which sends each OK and approval that it gives to `laptop.monitor` at once. They go
+  ahead unless the person objects, and the person approves the PR before it merges.
+  After round 3, no other round runs, and no PR replaces it, other
   than a new design that its design approver approves, which starts at round 1. Each
   round comment numbered 3 marks each finding `defect` (wrong behavior, data loss, a
   crash, or an oracle weakening), `design flaw`, or neither, as its reviewer marked it.
@@ -52,7 +54,10 @@
   - the end of a round, the design approver, the marks, the changes that an approval
     asks for, and the run after round 3, in round 3 of #2586
     (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6151416969,
-    2026-10-13T17:34:11Z).
+    2026-10-13T17:34:11Z);
+  - the design approver of a PR that `laptop.director` wrote, to fit PERSON DECIDES THE
+    DESIGN after the person's words of 2026-10-13T19:52:40Z
+    (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
 
   Cost: a fix after round 3 gets no `reviewer` or `breaker`, only its test, CI, an
   `architecture` run, and the approvals and `performance` runs that stay. In 4 of the 5
