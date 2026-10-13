@@ -358,12 +358,22 @@
   reader by its channels: `laptop.architect-2`, 2026-10-13T01:52:03Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
   Each channel on the status index that the supervisor does not write is a count,
-  because a kind adds only counts to the status, and `config` refuses each channel that
-  no connector implies and that points at a channel that a connector implies
-  (`laptop.architect-2`, 2026-10-13T02:00:57Z:
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136466855;
-  `laptop.architect`, 2026-10-13T01:57:10Z:
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136397268).
+  because a kind adds only counts to the status, and `config` refuses each channel on
+  the index that the connector does not imply (STATUS PLACEMENT; the rule:
+  `laptop.architect-2`, 2026-10-13T01:52:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 1;
+  the reason: `laptop.architect-2`, 2026-10-13T02:08:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136629487, and
+  `laptop.architect`, 2026-10-13T02:09:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136660103; the
+  pointer to STATUS PLACEMENT: `laptop.architect`, 2026-10-13T08:08:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141195975, and
+  `laptop.architect-2`, 2026-10-13T08:08:58Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141198877; the words:
+  `laptop.architect`, 2026-10-13T08:10:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141220969, and
+  `laptop.architect-2`, 2026-10-13T08:11:27Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141238640).
   `status::defined(definitions, name)` gives the status channels that the definitions
   define for the connector `name`, the index first, and panics with no index, which
   `config` refuses. `node` and `ops` each take the status channels from it, and

@@ -445,6 +445,8 @@ mod tests {
         Ended(hub::reader::Ended),
         /// Returns a failed write with `?`.
         Failed(hub::writer::Failure),
+        /// Returns a failed draft of a frame with `?`.
+        Draft(frame::Error),
         /// Shows the error `refused`, waits the span, shows it again, waits the span,
         /// clears it twice, waits the span, then returns `Ok`.
         Show(Span),
@@ -553,6 +555,7 @@ mod tests {
             }
             Some(Step::Ended(ended)) => returned(ended),
             Some(Step::Failed(failure)) => returned(failure),
+            Some(Step::Draft(error)) => returned(error),
             Some(Step::Show(span)) => {
                 ctx.error(&"refused");
                 clock.sleep(span).await;
@@ -1245,6 +1248,10 @@ mod tests {
         };
         let ended = |ended: Ended| (ended.to_string(), Step::Ended(ended));
         let failed = |failure: Failure| (failure.to_string(), Step::Failed(failure));
+        let pool = |error: block::Error| {
+            let error = frame::Error::Pool(error);
+            (error.to_string(), Step::Draft(error))
+        };
         let retries = [
             ended(Ended::Behind),
             ended(Ended::Removed(key)),
@@ -1253,6 +1260,11 @@ mod tests {
             failed(Failure::Removed(key)),
             failed(Failure::Home(Home::Full)),
             failed(Failure::Home(Home::Disk(full()))),
+            pool(block::Error::Exhausted {
+                requested: 16,
+                available: 8,
+            }),
+            pool(block::Error::Refused { requested: 16 }),
         ];
         let retry = [
             (0, 0, 0),
@@ -1280,6 +1292,60 @@ mod tests {
             "Give the connector fewer channels",
         );
         assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
+        let (_, large) = pool(block::Error::TooLarge {
+            requested: 16,
+            largest: 8,
+        });
+        let out = supervise("script", vec![large], config(), Cancel::Never);
+        assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let text = "no block for the frame: block of 16 bytes is above the largest \
+                    block of 8 bytes. Give the connector fewer channels";
+        assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
+        let want = unplaced(
+            "connector.large-frame",
+            "no block for the frame: block of 16 bytes is above the largest block of 8 \
+             bytes",
+            "Give the connector fewer channels",
+        );
+        assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
+    }
+
+    /// A draft of series that do not follow the key set is a defect of the kind.
+    #[test]
+    #[should_panic(
+        expected = "invariant: the series follow the key set: entry 3 is out of range"
+    )]
+    fn panics_when_a_kind_returns_series_that_do_not_follow_the_key_set() {
+        let error = frame::Error::OutOfRange {
+            entry: 3,
+            entries: 2,
+        };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 1 \
+                               follows entry 2: entries must increase")]
+    fn panics_when_a_kind_returns_series_out_of_order() {
+        let error = frame::Error::Unordered { entry: 1, last: 2 };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: the series follow the key set: entry 2 is \
+                               present but its index, entry 0, is absent")]
+    fn panics_when_a_kind_returns_a_series_with_no_index() {
+        let error = frame::Error::IndexAbsent { entry: 2, index: 0 };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
+    /// No draft gives an end of another node.
+    #[test]
+    #[should_panic(expected = "invariant: a draft gives no end of another node: the \
+                               ends do not fit the series")]
+    fn panics_when_a_kind_returns_an_end_of_another_node() {
+        let error = frame::Error::End(frame::BadEnd::Before { end: 4, start: 8 });
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
     }
 
     #[test]
