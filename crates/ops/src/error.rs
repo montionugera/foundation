@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
@@ -8,8 +8,11 @@ use mesh::used::{Behind, Cause};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use types::name::Name;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
+use crate::front_end::File;
 
 const ARGUMENT: Code = Code::new("ops.argument");
 const UNKNOWN: Code = Code::new("ops.unknown-operation");
@@ -20,6 +23,9 @@ const BEHIND: Code = Code::new("ops.behind");
 const STALE_PLAN: Code = Code::new("ops.stale-plan");
 const APPLY: Code = Code::new("ops.apply");
 const STOPPED: Code = Code::new("ops.stopped");
+const BAD_REQUEST: Code = Code::new("ops.bad-request");
+const DENIED: Code = Code::new("ops.denied");
+const LARGE_REPLY: Code = Code::new("ops.large-reply");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -55,12 +61,75 @@ pub(crate) enum Error {
     Start(Failure),
     /// The group of the mesh stopped, so the node can neither plan nor apply.
     Stopped(mesh::Stopped),
+    /// The body that a node got is no request.
+    Request { message: String },
+    /// No access policy gives `subject` the action `action` on `on`.
+    Denied {
+        subject: Name,
+        action: Action,
+        on: On,
+    },
+    /// The reply of a node has more bytes than one reply holds.
+    LargeReply,
+}
+
+/// An action that an operation on a node needs: the action of its name, and `Admin`
+/// on a changed key of a definition other than a channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    Plan,
+    Apply,
+    Admin,
+}
+
+/// What a refusal of an operation on a node names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum On {
+    /// A name that the request holds.
+    Name(Name),
+    /// A definition of the spec in use that the files do not hold.
+    Spec,
+    /// No name: the request names no definition.
+    Nothing,
+}
+
+impl fmt::Display for On {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => write!(f, "`{name}`"),
+            Self::Spec => f.write_str(
+                "a definition of the spec in use that the files do not hold",
+            ),
+            Self::Nothing => f.write_str("a request that names no definition"),
+        }
+    }
+}
+
+impl Action {
+    /// The word of the action in a config file.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Apply => "apply",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl From<Action> for spec::access::Action {
+    fn from(action: Action) -> Self {
+        match action {
+            Action::Plan => Self::Plan,
+            Action::Apply => Self::Apply,
+            Action::Admin => Self::Admin,
+        }
+    }
 }
 
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
-    /// at `paths`, by source.
-    pub(crate) fn config(diagnostics: Vec<Diagnostic>, paths: &[PathBuf]) -> Self {
+    /// at `paths`.
+    pub(crate) fn config(diagnostics: Vec<Diagnostic>, paths: &Paths) -> Self {
         Self::Config(
             diagnostics
                 .into_iter()
@@ -81,7 +150,10 @@ impl Error {
             | Self::Stale { .. }
             | Self::Apply(_)
             | Self::Start(_)
-            | Self::Stopped(_) => 1,
+            | Self::Stopped(_)
+            | Self::Request { .. }
+            | Self::Denied { .. }
+            | Self::LargeReply => 1,
         }
     }
 
@@ -121,6 +193,19 @@ impl Error {
                 STOPPED,
                 "Fix the cause in the message, then start the node and plan again"
                     .to_owned(),
+            ),
+            Self::Request { .. } => (
+                BAD_REQUEST,
+                "Use a `foundation` program of the same version as the node".to_owned(),
+            ),
+            Self::Denied { .. } => (
+                DENIED,
+                "Ask an admin of the region for an access policy that allows it"
+                    .to_owned(),
+            ),
+            Self::LargeReply => (
+                LARGE_REPLY,
+                "Plan and apply the change in smaller steps".to_owned(),
             ),
         };
         Cow::Owned(vec![Problem {
@@ -173,20 +258,19 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
-    /// The problem of `diagnostic`, whose spans are in the files at `paths`, by
-    /// source.
-    pub(crate) fn of(diagnostic: Diagnostic, paths: &[PathBuf]) -> Self {
+    /// The problem of `diagnostic`, whose spans are in the files at `paths`.
+    pub(crate) fn of(diagnostic: Diagnostic, paths: &Paths) -> Self {
         Self {
             code: diagnostic.code.as_str().to_owned(),
             message: diagnostic.message,
             fix: diagnostic.fix,
-            place: diagnostic.span.map(|span| Place::of(span, paths)),
+            place: diagnostic.span.map(|span| paths.place(span)),
             notes: diagnostic
                 .notes
                 .into_iter()
                 .map(|note| Note {
                     text: note.text,
-                    place: Place::of(note.span, paths),
+                    place: paths.place(note.span),
                 })
                 .collect(),
         }
@@ -227,26 +311,41 @@ pub(crate) struct Note {
 pub(crate) struct Place {
     /// The exact path, as the user or a directory listing gave it. A path that is not
     /// UTF-8 gives `ops.path-not-utf8` instead.
-    pub(crate) file: String,
+    pub(crate) file: Arc<str>,
     /// The line, from 1.
     pub(crate) line: u32,
     /// The column, from 1, in Unicode scalar values.
     pub(crate) column: u32,
 }
 
-impl Place {
-    /// The start of `span`, in the file at `paths` of its source.
-    pub(crate) fn of(span: Span, paths: &[PathBuf]) -> Self {
+/// The path of each file of a plan, by source. Each place in a file shares its path,
+/// so the problems of a file do not repeat it in memory.
+#[derive(Default)]
+pub(crate) struct Paths(Vec<Option<Arc<str>>>);
+
+impl Paths {
+    /// The path of each of `files`, by source.
+    pub(crate) fn of(files: &[File]) -> Self {
+        Self(
+            files
+                .iter()
+                .map(|file| file.path.to_str().map(Arc::from))
+                .collect(),
+        )
+    }
+
+    /// The start of `span`, in the file of its source.
+    pub(crate) fn place(&self, span: Span) -> Place {
         let path = usize::try_from(span.source().0)
             .ok()
-            .and_then(|source| paths.get(source))
+            .and_then(|source| self.0.get(source))
             .expect("invariant: a span is in a file of the plan");
         let start = span.start();
-        Self {
-            file: path
-                .to_str()
-                .expect("invariant: `read` refuses a path that is not UTF-8")
-                .to_owned(),
+        Place {
+            file: Arc::clone(
+                path.as_ref()
+                    .expect("invariant: `read` refuses a path that is not UTF-8"),
+            ),
             line: start.line + 1,
             column: start.column + 1,
         }
@@ -307,6 +406,25 @@ impl fmt::Display for Error {
             Self::Apply(error) => error.fmt(f),
             Self::Start(failure) => f.write_str(&failure.message),
             Self::Stopped(stopped) => stopped.fmt(f),
+            Self::Request { message } => {
+                write!(f, "the body is no request: {message}")
+            }
+            Self::Denied {
+                subject,
+                action,
+                on,
+            } => {
+                let action = action.word();
+                write!(
+                    f,
+                    "no access policy gives `{subject}` the action `{action}` on {on}"
+                )
+            }
+            Self::LargeReply => write!(
+                f,
+                "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
+                 holds"
+            ),
         }
     }
 }
