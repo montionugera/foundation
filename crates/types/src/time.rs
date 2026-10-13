@@ -1355,6 +1355,8 @@ mod tests {
                 ("0.0kHz", Error::Zero),
                 ("1000.001MHz", Error::Period),
                 (&format!("{}Hz", "9".repeat(60)), Error::Period),
+                (&format!("{}Hz", "9".repeat(30)), Error::Period),
+                ("340282366920938463463374607431768211466Hz", Error::Period),
                 ("10", Error::Rate),
                 ("Hz", Error::Rate),
                 ("10 Hz", Error::Rate),
