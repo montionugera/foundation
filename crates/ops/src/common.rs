@@ -22,56 +22,31 @@ use crate::front_end::{File, FrontEnd, FrontEnds};
 #[path = "../tests/common/founding.rs"]
 mod founding;
 
+#[path = "../tests/common/quickstart.rs"]
+mod quickstart;
+
 pub(crate) use founding::{ADMIN, NODE, create_mesh};
+pub(crate) use quickstart::{plant, shown};
 
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
-const PAGE: &str = include_str!("../../../docs/quickstart.md");
-
-/// The text of each fenced block of the quickstart page whose language is `language`,
-/// as `blocks` of `crates/node/tests/it/quickstart.rs` gives it.
-fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
-    PAGE.split("```")
-        .skip(1)
-        .step_by(2)
-        .filter_map(move |block| block.strip_prefix(language)?.strip_prefix('\n'))
+/// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
+/// each attribute, so it stands in for each kind of the fixtures.
+pub(crate) struct Reader {
+    /// The counts of the kind.
+    counts: &'static [&'static str],
 }
-
-/// The config of the quickstart page, its one `hcl` block.
-pub(crate) fn plant() -> &'static str {
-    let hcl: Vec<_> = blocks("hcl").collect();
-    let [hcl] = hcl[..] else {
-        panic!("the page has {} `hcl` blocks, not one", hcl.len());
-    };
-    hcl
-}
-
-/// The output that the quickstart page shows, its one `text` block that starts with
-/// `start`. `shown` of `crates/node/tests/it/quickstart.rs` is its twin.
-pub(crate) fn shown(start: &str) -> &'static str {
-    let shown: Vec<_> = blocks("text")
-        .filter(|block| block.starts_with(start))
-        .collect();
-    let [text] = shown[..] else {
-        panic!(
-            "the page has {} `text` blocks that start with {start:?}, not one",
-            shown.len()
-        );
-    };
-    text
-}
-
-/// A kind whose channels are the labels of its `read` blocks, which it writes, and
-/// whose counts are its field. It takes each attribute, so it stands in for each kind
-/// of the fixtures.
-pub(crate) struct Reader(&'static [&'static str]);
 
 /// The stand-in of the `opcua` kind, with its counts.
-pub(crate) const OPCUA: Reader = Reader(&["in", "lost", "missed"]);
+pub(crate) const OPCUA: Reader = Reader {
+    counts: &["in", "lost", "missed"],
+};
 
 /// The stand-in of the `influx` kind, with its count.
-pub(crate) const INFLUX: Reader = Reader(&["confirmed"]);
+pub(crate) const INFLUX: Reader = Reader {
+    counts: &["confirmed"],
+};
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -90,7 +65,7 @@ impl kind::Kind for Reader {
         Ok(Channels {
             reader: None,
             writes: writes.clone(),
-            counts: self.0.iter().map(|count| name(count)).collect(),
+            counts: self.counts.iter().map(|count| name(count)).collect(),
         })
     }
 
