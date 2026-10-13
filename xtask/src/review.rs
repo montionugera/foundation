@@ -167,7 +167,8 @@ struct Record {
     files: Vec<String>,
     comments: Vec<Comment>,
     /// Each issue or PR that a merge condition of the body names ([`conditions`]) and
-    /// that is open, in body order, or the problem of a body that the check cannot read.
+    /// that is open, in body order, or the problem of a body that the check cannot
+    /// read.
     waits: Result<Vec<u64>, String>,
 }
 

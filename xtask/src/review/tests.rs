@@ -3343,8 +3343,8 @@ fn fails_the_run_on_a_footnote_inside_a_footnote_of_the_body() {
             waiting(&body.into(), &states),
             Ok(vec![format!(
                 "the PR body has a footnote inside a footnote, which the check cannot \
-                 read as GitHub shows it, in the line `{line}`. Move it out of the other \
-                 footnote."
+                 read as GitHub shows it, in the line `{line}`. Move it out of the \
+                 other footnote."
             )]),
             "{body}"
         );
