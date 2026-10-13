@@ -189,7 +189,8 @@ fn failed(error: &Error) -> Reply {
 ///
 /// When the path of a file is not UTF-8.
 pub(crate) fn plan_request(files: &[File]) -> Vec<u8> {
-    let files = serde_json::to_value(files).expect("the path of each file is UTF-8");
+    let files =
+        serde_json::to_value(files).expect("invariant: the path of each file is UTF-8");
     let mut body = json!({ "plan": { "files": files } })
         .to_string()
         .into_bytes();
