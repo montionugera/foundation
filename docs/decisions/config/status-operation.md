@@ -62,7 +62,8 @@
   supersedes the refusal of a node that places no connector of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724). The
   tree key of a node is its name. The text of the output with no connector is the line
-  `No connector to show.`, which is true in each of these cases. When #1028 checks each
+  `No connector of this node that you can read.`, which is true in each of these
+  cases. When #1028 checks each
   open of the hub, the check of the status channels moves there, and the check on the
   node stays in `serve`, as it opens no reader. Deferred to
   https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
