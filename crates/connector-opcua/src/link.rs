@@ -142,24 +142,54 @@ fn shim_compiler() -> cc::Tool {
         .get_compiler()
 }
 
-/// Runs `shim_compiler` with `args` on `source`, which it reads as C from stdin, with
-/// its output to `output` (`-` for stdout, which it drops). Gives its status and
-/// stderr. Each line marker of `source` names `<stdin>`, whatever the path of the
-/// crate.
-fn shim_compile(
-    args: &[&str],
-    output: &std::path::Path,
-    source: &str,
-) -> std::process::Output {
+/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
+/// lines and expands `_Pragma`.
+fn shim_pragmas(file: &str) -> Vec<String> {
+    // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+    let path = std::path::Path::new(ROOT).join("src").join(file);
+    let output = shim_compiler()
+        .to_command()
+        .arg("-E")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let mut main = None;
+    let mut in_shim = false;
+    let mut pragmas = Vec::new();
+    for line in text.lines() {
+        // A line marker, `# <line> "<file>" <flags>`, names the file of the next lines.
+        // The first names `path`, with the escapes that each marker gives it.
+        if let Some(marker) = line.strip_prefix("# ") {
+            let name =
+                &marker[marker.find('"').unwrap() + 1..marker.rfind('"').unwrap()];
+            in_shim = *main.get_or_insert(name) == name;
+        } else if in_shim && line.trim_start().starts_with("#pragma") {
+            pragmas.push(line.trim().to_owned());
+        }
+    }
+    pragmas
+}
+
+/// Compiles `shim.c` with `line` added after the line `after`, with `shim_compiler`.
+/// Gives the compiler's errors, which are empty when it compiles.
+fn check_shim(after: &str, line: &str) -> String {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = shim_compiler()
+    let tool = shim_compiler();
+    let text =
+        std::fs::read_to_string(std::path::Path::new(ROOT).join("src/shim.c")).unwrap();
+    let (at, _) = text
+        .match_indices(after)
+        .next()
+        .expect("shim.c holds the line");
+    let at = at + after.len();
+    let source = format!("{}\n{line}{}", &text[..at], &text[at..]);
+    let mut child = tool
         .to_command()
-        .args(args)
-        .arg("-o")
-        .arg(output)
-        .args(["-x", "c", "-"])
+        .args(["-S", "-o", "-", "-x", "c", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -171,44 +201,7 @@ fn shim_compile(
         .unwrap()
         .write_all(source.as_bytes())
         .unwrap();
-    child.wait_with_output().unwrap()
-}
-
-/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
-/// lines and expands `_Pragma`.
-fn shim_pragmas(file: &str) -> Vec<String> {
-    let path = std::path::Path::new(ROOT).join("src").join(file);
-    let source = std::fs::read_to_string(&path).unwrap();
-    let expanded = std::path::Path::new(env!("OUT_DIR"))
-        .join(path.file_name().unwrap())
-        .with_extension("i");
-    let output = shim_compile(&["-E"], &expanded, &source);
-    assert!(output.status.success(), "{output:?}");
-    let mut in_shim = false;
-    let mut pragmas = Vec::new();
-    for line in std::fs::read_to_string(expanded).unwrap().lines() {
-        // A line marker, `# <line> "<file>" <flags>`, names the file of the next lines.
-        if let Some(marker) = line.strip_prefix("# ") {
-            in_shim = marker.split('"').nth(1) == Some("<stdin>");
-        } else if in_shim && line.trim_start().starts_with("#pragma") {
-            pragmas.push(line.trim().to_owned());
-        }
-    }
-    pragmas
-}
-
-/// Compiles `shim.c` with `line` added after the line `after`, with `shim_compiler`.
-/// Gives the compiler's errors, which are empty when it compiles.
-fn check_shim(after: &str, line: &str) -> String {
-    let text =
-        std::fs::read_to_string(std::path::Path::new(ROOT).join("src/shim.c")).unwrap();
-    let (at, _) = text
-        .match_indices(after)
-        .next()
-        .expect("shim.c holds the line");
-    let at = at + after.len();
-    let source = format!("{}\n{line}{}", &text[..at], &text[at..]);
-    let output = shim_compile(&["-S"], std::path::Path::new("-"), &source);
+    let output = child.wait_with_output().unwrap();
     let errors = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.success(), errors.is_empty(), "{errors}");
     errors
@@ -216,8 +209,10 @@ fn check_shim(after: &str, line: &str) -> String {
 
 #[test]
 fn the_pragma_check_reads_a_file_whose_path_is_not_ascii() {
-    // Clang writes each byte that is not ASCII in a line marker as an octal escape.
-    let dir = std::path::Path::new(env!("OUT_DIR")).join("José");
+    // Clang writes each byte that is not ASCII in a line marker as an octal escape, and
+    // each compiler escapes a `"`, which Windows does not allow in a name.
+    let name = if cfg!(unix) { "José \"q\"" } else { "José" };
+    let dir = std::path::Path::new(env!("OUT_DIR")).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("pragma.c");
     std::fs::write(&file, "#pragma GCC diagnostic push\nint x;\n").unwrap();
