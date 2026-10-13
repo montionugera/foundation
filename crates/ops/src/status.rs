@@ -98,7 +98,7 @@ impl Placed<'_> {
 
     /// Whether each channel of `received` has the key and the sample type that the
     /// spec gives its name. The frame holds its index, so this checks the index too.
-    fn holds(&self, received: &Received<'_>) -> bool {
+    fn defines(&self, received: &Received<'_>) -> bool {
         let set = received.set();
         received.view().iter().all(|(entry, _)| {
             let found = &set.entries()[entry];
@@ -197,7 +197,7 @@ async fn newest(
         Err(error) => return Err(failed(error.to_string())),
     };
     match reader.next().await {
-        Ok(received) if placed.holds(&received) => {
+        Ok(received) if placed.defines(&received) => {
             Ok(connector::status::Reading::of(&received))
         }
         Ok(_) | Err(reader::Ended::Removed(_)) => Ok(None),
