@@ -531,7 +531,9 @@
   `Paths` goes only to `ops::cli`, never to a shard of a node or to `ops::serve`, so a
   path that a remote program names never reaches the disk of the node. "Of a node" is
   by `laptop.architect-2` (2026-10-13T02:14:36Z, item 3 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489), since
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489;
+  approved by `laptop.architect`, 2026-10-13T03:51:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137828742), because
   `cli` runs on a shard of the command line. `os` writes a file beside the
   path and renames it over the path. `sim` keeps one tree in memory for each node, apart
   from its disk, where a directory is there while a file is under it, and
