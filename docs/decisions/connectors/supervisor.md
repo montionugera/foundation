@@ -361,10 +361,10 @@
   reader by its channels: `laptop.architect-2`, 2026-10-13T01:52:03Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680, item 2).
   Each channel on the status index that the supervisor does not write is a count,
-  because a kind adds only counts to the status, and `config` refuses each other channel
-  on the index (STATUS PLACEMENT) (`laptop.architect-2`, 2026-10-13T02:08:32Z:
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136629487;
+  because a kind adds only counts to the status, and `config` refuses each channel on the index that the connector does not imply (STATUS PLACEMENT; the rule: item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680; the
+  reason: `laptop.architect-2`, 2026-10-13T02:08:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136629487, and
   `laptop.architect`, 2026-10-13T02:09:57Z:
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136660103; the rule
-  from item 3 of
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136338680).
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136660103; the pointer
+  to STATUS PLACEMENT: approval owed).
