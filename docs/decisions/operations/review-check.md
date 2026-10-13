@@ -312,10 +312,12 @@
   Rust reads a character. In a PR that changes a file of a risk crate (`crates/<name>/`,
   with `<name>` in `RISK` in `xtask/src/review.rs`, which holds the risk crates of
   ENGINEERS in `docs/decisions/operations/engineers.md`), the last round also fails when
-  the `Deferred:` line of one of its round comments names an issue that, on the `Deferred:` line of each of its round comments that names it, has no comment link after it and no words `not in a risk crate` between it and the next issue of the line. The
-  first word `none` does not stop this rule. A file that the PR moves counts at its old
-  path and at its new one, in each rule that reads the files of the PR. An issue is each
-  `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
+  the `Deferred:` line of one of its round comments names an issue that, on the
+  `Deferred:` line of each of its round comments that names it, has no comment link
+  after it and no words `not in a risk crate` between it and the next issue of the line.
+  The first word `none` does not stop this rule. A file that the PR moves counts at its
+  old path and at its new one, in each rule that reads the files of the PR. An issue is
+  each `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
   issue only when it starts a text node of the line as GitHub shows it, or follows in
