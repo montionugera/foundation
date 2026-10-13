@@ -63,8 +63,8 @@ pub(crate) enum Error {
     },
     /// The region did not apply the plan.
     Apply(mesh::Error),
-    /// The node did not start, stopped with an error, or a command line did not reach
-    /// it.
+    /// The command line did not run, its node did not start or stopped with an error,
+    /// or the command line did not reach its node.
     Node(Failure),
     /// The group of the mesh stopped, so the node can neither plan nor apply.
     Stopped(mesh::Stopped),

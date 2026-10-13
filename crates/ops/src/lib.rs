@@ -77,7 +77,7 @@ where
     let render = |value: Value, text: String| {
         if json { format!("{value}\n") } else { text }
     };
-    let done = match operation::parse(&args) {
+    let done = match operation::parse(&args, json) {
         Ok(Parsed::Start(start)) => return Run::Start(start),
         Ok(Parsed::Run(request)) => {
             let response = request.run();
@@ -107,14 +107,16 @@ where
 
 /// Writes `failure`, why the command line `args` did not run or why its node failed,
 /// to `errors` as [`cli`] writes its own errors: as JSON when `args` has `--json`
-/// before any `--`, else as text. Gives exit status 1.
+/// after the program name and before any `--`, else as text. Gives exit status 1.
 pub fn fail(args: &[OsString], failure: &Failure, errors: impl Write) -> u8 {
     report(&Error::Node(failure.clone()), json(args), errors)
 }
 
-/// Whether `args` asks for JSON: a `--json` flag before any `--`.
+/// Whether `args` asks for JSON: a `--json` flag after the program name and before any
+/// `--`.
 fn json(args: &[OsString]) -> bool {
     args.iter()
+        .skip(1)
         .take_while(|arg| *arg != "--")
         .map(|arg| arg.as_encoded_bytes())
         .any(|arg| arg == b"--json" || arg.starts_with(b"--json="))

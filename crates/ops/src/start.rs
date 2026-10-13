@@ -22,8 +22,8 @@ pub struct Start {
     pub listen: SocketAddr,
 }
 
-/// Why a node did not start, stopped with an error, or why a command line did not
-/// reach its node.
+/// Why the command line did not run, why its node did not start or stopped with an
+/// error, or why the command line did not reach its node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     /// What kind of failure it is, such as `node.busy`.
