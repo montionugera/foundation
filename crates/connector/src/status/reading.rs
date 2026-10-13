@@ -30,9 +30,9 @@ pub struct Reading {
 impl Reading {
     /// The newest status in `received`, a frame of a reader of the status channels of
     /// one connector: their index and each channel on it. A count is each channel that
-    /// the supervisor does not write. Returns `None` when the frame holds no sample of `state`, `class`,
-    /// or `restarts`, a value of `state` or `class` that no state or class has, or a
-    /// class with no sample of `error`.
+    /// the supervisor does not write. Returns `None` when the frame holds no sample of
+    /// `state`, `class`, or `restarts`, a value of `state` or `class` that no state or
+    /// class has, or a class with no sample of `error`.
     ///
     /// # Panics
     ///
