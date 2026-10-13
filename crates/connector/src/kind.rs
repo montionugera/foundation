@@ -430,8 +430,8 @@ fn writer_error(error: hub::writer::Error) -> Error {
 ///
 /// # Panics
 ///
-/// For an end that only a reader away from its home gives, since a named reader opens
-/// only at its home.
+/// For an end that only a reader away from its home gives, because a named reader
+/// opens only at its home.
 #[expect(
     clippy::fallible_impl_from,
     reason = "each panic is an end that no run gets"
@@ -456,11 +456,12 @@ impl From<hub::reader::Ended> for Error {
 }
 
 /// The class of a failed write of a run, for a kind that returns it with `?`:
-/// `Config` (`connector.large-frame`) for `Home(Large)`, else `Retry`.
+/// `Config` (`connector.large-frame`) for `Home(Large)`, and `Retry` for `Removed`,
+/// `Home(Full)`, and `Home(Disk)`.
 ///
 /// # Panics
 ///
-/// For [`hub::home::Error::Resend`], since a kind labels no frame resend.
+/// For [`hub::home::Error::Resend`], because a kind labels no frame resend.
 #[expect(clippy::fallible_impl_from, reason = "a kind labels no frame resend")]
 impl From<hub::writer::Failure> for Error {
     fn from(failure: hub::writer::Failure) -> Self {
@@ -999,7 +1000,7 @@ mod tests {
         drop(writer_error(hub::writer::Error::Home(unsynced)));
     }
 
-    /// Calls the mapping directly, since a named reader opens only at its home. The
+    /// Calls the mapping directly, because a named reader opens only at its home. The
     /// arm has no test of `Stream`: `connector` cannot build a `transport` error.
     #[test]
     #[should_panic(
