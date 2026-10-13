@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
@@ -23,10 +24,33 @@ use crate::common::{Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
 
 /// A kind that names the counts `counts`, and whose run sets each to its value, then
-/// waits for its cancel, or ends at once with a device error of the text `error`.
+/// waits for its cancel, or ends at once, as `script` says.
 struct Scripted {
     counts: &'static [(&'static str, u64)],
-    error: Option<&'static str>,
+    script: Script,
+    failed: AtomicBool,
+}
+
+/// What a run of [`Scripted`] does with an error of the text it holds.
+#[derive(Clone, Copy)]
+enum Script {
+    Steady,
+    /// Each run ends at once with a device error.
+    Fails(&'static str),
+    /// Each run shows the error.
+    Shows(&'static str),
+    /// The first run ends at once with a device error, and each later run clears it.
+    Clears(&'static str),
+}
+
+impl Scripted {
+    fn new(counts: &'static [(&'static str, u64)], script: Script) -> Self {
+        Self {
+            counts,
+            script,
+            failed: AtomicBool::new(false),
+        }
+    }
 }
 
 impl kind::Kind for Scripted {
@@ -52,8 +76,16 @@ impl kind::Kind for Scripted {
     }
 
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
-        if let Some(error) = self.error {
-            return Err(kind::Error::Device(error.into()));
+        match self.script {
+            Script::Steady => {}
+            Script::Fails(error) => return Err(kind::Error::Device(error.into())),
+            Script::Shows(error) => context.error(&error),
+            Script::Clears(error) => {
+                if !self.failed.swap(true, Ordering::Relaxed) {
+                    return Err(kind::Error::Device(error.into()));
+                }
+                context.clear_error();
+            }
         }
         for (count, value) in self.counts {
             context.count(count).set(*value);
@@ -64,47 +96,24 @@ impl kind::Kind for Scripted {
 }
 
 /// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
-/// `forging` with one whose text, from the device, holds a newline, `wide` also names
+/// `forging` with one whose text, from the device, holds a newline, `showing` shows an
+/// error, `clearing` clears the error of its failed first run, `wide` also names
 /// `extra`, and `shifted` names `in` and `other`.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
     let failing = "no route to the device";
     let forging = "refused\nsite.a: config error: forged by the device";
+    let wide = &[("in", 0), ("confirmed", 0), ("extra", 0)];
     Table::new()
-        .with(
-            "steady",
-            Scripted {
-                counts,
-                error: None,
-            },
-        )
-        .with(
-            "failing",
-            Scripted {
-                counts,
-                error: Some(failing),
-            },
-        )
-        .with(
-            "forging",
-            Scripted {
-                counts,
-                error: Some(forging),
-            },
-        )
-        .with(
-            "wide",
-            Scripted {
-                counts: &[("in", 0), ("confirmed", 0), ("extra", 0)],
-                error: None,
-            },
-        )
+        .with("steady", Scripted::new(counts, Script::Steady))
+        .with("failing", Scripted::new(counts, Script::Fails(failing)))
+        .with("forging", Scripted::new(counts, Script::Fails(forging)))
+        .with("showing", Scripted::new(counts, Script::Shows("busy")))
+        .with("clearing", Scripted::new(counts, Script::Clears(failing)))
+        .with("wide", Scripted::new(wide, Script::Steady))
         .with(
             "shifted",
-            Scripted {
-                counts: &[("in", 0), ("other", 0)],
-                error: None,
-            },
+            Scripted::new(&[("in", 0), ("other", 0)], Script::Steady),
         )
 }
 
@@ -428,6 +437,48 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
             },
             unknown("site.c", "steady"),
         ]}});
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_the_error_that_a_running_kind_shows() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "showing", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [{
+            "name": "site.a",
+            "kind": "showing",
+            "state": "running",
+            "address": "opc.tcp://site.a:4840",
+            "restarts": 0,
+            "counts": { "confirmed": 10, "in": 12 },
+            "error": { "class": "retry", "text": "busy" },
+        }]}});
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_no_error_once_the_running_kind_clears_the_error_of_a_failed_run() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "clearing", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [{
+            "name": "site.a",
+            "kind": "clearing",
+            "state": "running",
+            "address": "opc.tcp://site.a:4840",
+            "restarts": 1,
+            "counts": { "confirmed": 10, "in": 12 },
+            "error": null,
+        }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
