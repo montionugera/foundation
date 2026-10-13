@@ -1,5 +1,7 @@
-//! The number grammar that spans and byte sizes share: digits, then an optional `.`
-//! and digits, then a unit.
+//! The number grammar that spans, rates, and byte sizes share: digits, then an
+//! optional `.` and digits, then a unit.
+
+use std::iter;
 
 /// A decimal number and the unit text after it, as in `1.5s` or `200GiB`.
 pub(crate) struct Quantity<'a> {
@@ -25,4 +27,20 @@ pub(crate) fn split(text: &str) -> Option<Quantity<'_>> {
         fraction: fraction.trim_end_matches('0'),
         unit,
     })
+}
+
+impl Quantity<'_> {
+    /// Gives the number times 10^`places`, with each fraction digit past `places` cut
+    /// off, or `None` when it does not fit in a `u128`.
+    pub(crate) fn scaled(&self, places: usize) -> Option<u128> {
+        let kept = self.fraction.get(..places).unwrap_or(self.fraction);
+        let zeros = iter::repeat_n(b'0', places - kept.len());
+        self.whole
+            .bytes()
+            .chain(kept.bytes())
+            .chain(zeros)
+            .try_fold(0_u128, |n, b| {
+                n.checked_mul(10)?.checked_add(u128::from(b - b'0'))
+            })
+    }
 }

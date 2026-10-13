@@ -24,6 +24,7 @@ cc = { workspace = true }
 connector-opcua = { path = ".", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
+proptest = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]
