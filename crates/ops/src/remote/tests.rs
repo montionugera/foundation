@@ -308,10 +308,10 @@ fn plan_gives_large_request_once_the_files_that_it_read_pass_the_most() {
     });
 }
 
-/// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
-/// `config` take.
+/// `a.hcl` is not UTF-8, so [`Unread::NotUtf8`] shows that `plan` read all of its
+/// `most()` bytes.
 #[test]
-fn plan_of_files_of_exactly_the_most_reads_them_all() {
+fn plan_of_a_file_of_exactly_the_most_reads_it() {
     solo(|host, mesh| async move {
         let paths = host.paths();
         paths
@@ -325,6 +325,8 @@ fn plan_of_files_of_exactly_the_most_reads_them_all() {
     });
 }
 
+/// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
+/// `config` take.
 #[test]
 fn plan_of_a_directory_after_a_large_file_gives_read() {
     solo(|host, mesh| async move {
