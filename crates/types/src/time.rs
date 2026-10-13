@@ -634,19 +634,27 @@ impl FromStr for Rate {
             "MHz" => 15,
             _ => return Err(Error::Rate),
         };
-        // The last digit of the fraction is not 0, so each digit past `digits` is
-        // finer than 1 nHz.
-        let shift = digits.checked_sub(fraction.len()).ok_or(Error::Rate)?;
+        let kept = fraction.get(..digits).unwrap_or(fraction);
+        let shift = digits - kept.len();
         let nanohertz = whole
             .bytes()
-            .chain(fraction.bytes())
+            .chain(kept.bytes())
             .try_fold(0_u128, |n, b| {
                 n.checked_mul(10)?.checked_add(u128::from(b - b'0'))
             })
             .and_then(|n| n.checked_mul(10_u128.pow(u32::try_from(shift).ok()?)))
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(Error::Period)?;
-        Self::new(nanohertz, NANOS_PER_SECOND.unsigned_abs())
+        let per_second = NANOS_PER_SECOND.unsigned_abs();
+        if kept.len() < fraction.len() {
+            // The last digit of the fraction is not 0, so the rate is between
+            // `nanohertz` and the nanohertz after it.
+            return Err(match Self::new(nanohertz.saturating_add(1), per_second) {
+                Err(Error::Period) => Error::Period,
+                _ => Error::Rate,
+            });
+        }
+        Self::new(nanohertz, per_second)
     }
 }
 
@@ -1345,6 +1353,19 @@ mod tests {
             }
             let fastest: Rate = "1000MHz".parse().unwrap();
             assert_eq!(fastest.span(1), Span::from_nanos(1));
+        }
+
+        #[test]
+        fn a_rate_over_1_ghz_with_a_fraction_finer_than_1_nhz_is_too_fast() {
+            for text in [
+                format!("{}.0000000001Hz", "9".repeat(60)),
+                "2000.0000000000000001MHz".to_owned(),
+                "1000.0000000000000001MHz".to_owned(),
+            ] {
+                assert_eq!(text.parse::<Rate>(), Err(Error::Period), "{text}");
+            }
+            let text = "999.9999999999999999MHz";
+            assert_eq!(text.parse::<Rate>(), Err(Error::Rate));
         }
 
         #[test]
