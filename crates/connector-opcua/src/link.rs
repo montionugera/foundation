@@ -309,6 +309,20 @@ fn the_shim_check_finds_a_cc_relative_to_the_crate() {
 }
 
 #[test]
+#[cfg(unix)]
+fn the_shim_check_writes_no_file() {
+    // Tests that run at the same time would share the file, and GCC writes it in place.
+    use std::os::unix::fs::PermissionsExt;
+    let cc = std::path::Path::new(env!("OUT_DIR")).join("stdout-cc");
+    let script = "#!/bin/sh\nfor arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && \
+                  exit 1\n  last=$arg\ndone\nexec cc \"$@\"\n";
+    std::fs::write(&cc, script).unwrap();
+    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
+    crate::child::run(name, &[("CC", cc.to_str().unwrap())]);
+}
+
+#[test]
 fn the_shim_check_uses_the_compiler_of_cc() {
     let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
     let output = crate::child::output(name, &[("CC", "/missing/gcc")]);
