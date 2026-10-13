@@ -49,8 +49,9 @@ enum Mode {
 struct Remote {
     node: Node,
     mode: Mode,
-    /// The data directory of each call of `reach`.
-    reached: RefCell<Vec<PathBuf>>,
+    reaches: Cell<usize>,
+    /// The data directory of each call of `reach` by the command line.
+    data: RefCell<Vec<PathBuf>>,
     requests: Cell<usize>,
 }
 
@@ -63,7 +64,8 @@ impl Remote {
         Self {
             node,
             mode,
-            reached: RefCell::new(Vec::new()),
+            reaches: Cell::new(0),
+            data: RefCell::new(Vec::new()),
             requests: Cell::new(0),
         }
     }
@@ -77,8 +79,8 @@ impl Remote {
         }
     }
 
-    fn reached(&self, data: &Path) -> Result<(), Failure> {
-        self.reached.borrow_mut().push(data.to_owned());
+    fn reached(&self) -> Result<(), Failure> {
+        self.reaches.set(self.reaches.get() + 1);
         match self.mode {
             Mode::Unreached => Err(lost()),
             Mode::Serve | Mode::Reply(_) | Mode::Unsent => Ok(()),
@@ -92,7 +94,7 @@ impl Remote {
         out: Option<&Path>,
     ) -> Result<Output, Error> {
         let reach = async || {
-            self.reached(Path::new(DATA))?;
+            self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
         plan(files, out, paths, reach).await
@@ -100,7 +102,7 @@ impl Remote {
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
         let reach = async || {
-            self.reached(Path::new(DATA))?;
+            self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
         apply(file, paths, reach).await
@@ -108,7 +110,7 @@ impl Remote {
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
         let reach = async || {
-            self.reached(Path::new(DATA))?;
+            self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
         status(reach).await
@@ -117,7 +119,8 @@ impl Remote {
     /// The run, output, and errors of `foundation <args>`.
     async fn cli(&self, paths: &Paths, args: &[&str]) -> (Run, String, String) {
         let reach = async |data: &Path| {
-            self.reached(data)?;
+            self.data.borrow_mut().push(data.to_owned());
+            self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
         common::cli(paths, args, reach).await
@@ -125,7 +128,7 @@ impl Remote {
 
     /// The count of calls of `reach`, and of requests.
     fn calls(&self) -> (usize, usize) {
-        (self.reached.borrow().len(), self.requests.get())
+        (self.reaches.get(), self.requests.get())
     }
 }
 
@@ -166,9 +169,7 @@ fn plans_writes_the_plan_file_and_applies_it() {
         assert_eq!(applied.file, "plans/site.plan");
         assert_eq!(applied.effect.counts.added, 3);
         assert_eq!(mesh.pointer().version, 1);
-        let data = PathBuf::from(DATA);
-        assert_eq!(*remote.reached.borrow(), [data.clone(), data]);
-        assert_eq!(remote.requests.get(), 2);
+        assert_eq!(remote.calls(), (2, 2));
     });
 }
 
@@ -482,7 +483,6 @@ fn status_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
         let message = "bytes follow the first line of the reply of `status`".to_owned();
         assert_eq!(remote.status().await, Err(Error::Reply { message }));
         assert_eq!(remote.calls(), (1, 1));
-        assert_eq!(*remote.reached.borrow(), [PathBuf::from(DATA)]);
     });
 }
 
@@ -656,7 +656,7 @@ fn the_command_line_reaches_the_node_of_data() {
         }
         let (other, data) = (PathBuf::from("other"), PathBuf::from(DATA));
         let reached = [other.clone(), other.clone(), data.clone()];
-        assert_eq!(*remote.reached.borrow(), reached);
+        assert_eq!(*remote.data.borrow(), reached);
 
         let reply = b"{\"output\":{\"connectors\":[]}}\n".to_vec();
         let remote = Remote::with(create_node(&fixture, mesh), Mode::Reply(reply));
@@ -664,6 +664,6 @@ fn the_command_line_reaches_the_node_of_data() {
             let (status, _, errors) = remote.cli(&paths, args).await;
             assert_eq!((status, errors.as_str()), (Run::Exit(0), ""), "{args:?}");
         }
-        assert_eq!(*remote.reached.borrow(), [other, data]);
+        assert_eq!(*remote.data.borrow(), [other, data]);
     });
 }
