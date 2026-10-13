@@ -20,14 +20,15 @@
   each tick); a split of the nodes into as many requests as one message takes (trigger:
   a user with more nodes per connector than one message of the server takes). The check
   sizes each answer value as a Double and each chunk header for the security mode None:
-  the change that reads a value larger than a Double or adds a mode also changes
-  `shim_read_answer` or `HEADER`. open62541 moves a value of a fixed size that does
-  not fit whole to the next chunk, and splits a string. The largest such value of a
-  Read today is a Double (8 bytes), so the check takes 7 bytes off each chunk but the
-  last (`SPLIT`). The answer takes it on trust: a server that leaves more gives a read
-  near the bound `BadSecureChannelClosed`. The change that adds a GUID key also
-  changes `SPLIT`, to 18: a test of the client fails to build until it gives the size
-  of each form of a key. Decided by `laptop.architect-2` (2026-10-13T03:51:25Z:
+  the change that reads a value larger than a Double also changes `shim_read_answer` and
+  `SPLIT`, and the change that adds a mode also changes `HEADER`. open62541 moves a
+  value of a fixed size that does not fit whole to the next chunk, and splits a string.
+  The largest such value of a Read today is a Double (8 bytes), so the check takes 7
+  bytes off each chunk but the last (`SPLIT`). The answer takes it on trust: a server
+  that leaves more gives a read near the bound `BadSecureChannelClosed`. The change that
+  adds a GUID key also changes `SPLIT`, to 18: a test of the client fails to build until
+  it gives the size of each form of a key. Decided by `laptop.architect-2`
+  (2026-10-13T03:51:25Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207, the
   token size at 2026-10-13T03:52:06Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137834758, and the
@@ -36,4 +37,7 @@
   `SPLIT` of a GUID key: `laptop.architect-2` at 2026-10-13T05:31:13Z,
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138961019, and the
   rule of `SPLIT` and the test of each form of a key at 2026-10-13T05:45:02Z,
-  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974.
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974. The
+  trigger of a value larger than a Double: `laptop.architect-2` at
+  2026-10-13T22:01:26Z, which supersedes the trigger of another type in the first
+  ruling: https://github.com/synnaxlabs/foundation/pull/2613#issuecomment-6156112949.
