@@ -20,8 +20,8 @@ pub struct Reading {
     pub state: State,
     /// The runs that the supervisor started again.
     pub restarts: u64,
-    /// The class and text of the error that ended the last run, or `None` when the
-    /// last run returned `Ok` or no run ended.
+    /// The class and text of the error that ended the last run, or that the running
+    /// kind shows, or `None` when neither holds.
     pub error: Option<(Class, String)>,
     /// Each count, by the last segment of its name.
     pub counts: BTreeMap<Name, u64>,
