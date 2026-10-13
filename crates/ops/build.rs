@@ -4,61 +4,67 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn main() {
+/// Stops the build with the error of a checkout that gives no commit or a wrong one.
+fn main() -> Result<(), String> {
     println!("cargo::rerun-if-changed=build.rs");
     if git(&["rev-parse", "--git-dir"]).is_none() {
         println!("cargo::rustc-env=FOUNDATION_COMMIT=");
-        return;
+        return Ok(());
     }
     // Also on a branch with no commit, whose first commit must rebuild `ops`.
-    watch_refs();
+    watch_refs()?;
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
-    assert!(
-        !commit.is_empty() || unborn(),
-        "`git rev-parse HEAD` fails on a branch that has a commit"
-    );
+    if commit.is_empty() && !unborn() {
+        return Err(
+            "`git rev-parse HEAD` fails on a branch that has a commit".to_owned()
+        );
+    }
     let hex = commit.len() == 40
         && commit
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    assert!(
-        hex || commit.is_empty(),
-        "`git rev-parse HEAD` gives `{commit}`, not 40 lowercase hex digits"
-    );
+    if !hex && !commit.is_empty() {
+        return Err(format!(
+            "`git rev-parse HEAD` gives `{commit}`, not 40 lowercase hex digits"
+        ));
+    }
     println!("cargo::rustc-env=FOUNDATION_COMMIT={commit}");
+    Ok(())
 }
 
 /// Watches what a commit, a checkout, and a branch switch change. In a worktree, `.git`
 /// is a file, so only git knows where these are.
-fn watch_refs() {
+fn watch_refs() -> Result<(), String> {
     if git(&["rev-parse", "--show-ref-format"]).as_deref() == Some("reftable") {
         // `HEAD` and each ref file are stubs. The stack of a worktree holds its `HEAD`,
         // and the common stack holds each branch.
-        watch(&git_path("reftable"));
-        let common = git(&["rev-parse", "--git-common-dir"]).expect("a git folder");
+        watch(&git_path("reftable")?);
+        let common = git(&["rev-parse", "--git-common-dir"])
+            .ok_or("git gives no common folder")?;
         watch(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(common)
                 .join("reftable"),
         );
-        return;
+        return Ok(());
     }
-    watch(&git_path("HEAD"));
+    watch(&git_path("HEAD")?);
     let Some(name) = git(&["symbolic-ref", "-q", "HEAD"]) else {
-        return;
+        return Ok(());
     };
-    let path = git_path(&name);
+    let path = git_path(&name)?;
     if path.exists() {
         // Git reads a ref file before `packed-refs`, which each worktree shares and
         // which a `git gc` in any of them rewrites.
         watch(&path);
-        return;
+        return Ok(());
     }
-    let packed = git_path("packed-refs");
+    let packed = git_path("packed-refs")?;
     if packed.exists() {
         watch(&packed);
     }
     watch_above(&path);
+    Ok(())
 }
 
 /// Whether `HEAD` names a branch with no commit.
@@ -82,21 +88,18 @@ fn git(args: &[&str]) -> Option<String> {
 
 /// The absolute path of `name` in the git folder. Git gives it relative to the folder of
 /// the package, where cargo runs the script.
-fn git_path(name: &str) -> PathBuf {
+fn git_path(name: &str) -> Result<PathBuf, String> {
     let path = git(&["rev-parse", "--git-path", name]);
-    let path = path.unwrap_or_else(|| panic!("git gives no path of `{name}`"));
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
+    let path = path.ok_or_else(|| format!("git gives no path of `{name}`"))?;
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
 }
 
 /// Watches the nearest folder above `path` that is there, where git makes the file of a
 /// ref at its next commit. Cargo runs the script on each build while a watched path is
 /// missing.
 fn watch_above(path: &Path) {
-    let there = path
-        .ancestors()
-        .find(|path| path.exists())
-        .unwrap_or_else(|| panic!("no folder above {} is there", path.display()));
-    watch(there);
+    let there = path.ancestors().find(|path| path.exists());
+    watch(there.expect("invariant: the path is absolute, so `/` is there"));
 }
 
 /// Runs the script again when `path` changes.
