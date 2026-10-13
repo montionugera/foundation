@@ -300,11 +300,11 @@ impl From<connector::status::Class> for Class {
 impl Output {
     /// A table of the connectors, then a line `<name>: <class> error: <text>` for
     /// each connector with an error, after a blank line. Each control character of a
-    /// value is escaped, so a value stays on its line. One line that says so with no
-    /// connector.
+    /// value is escaped, so a value stays on its line. With no connector, one line
+    /// that does not tell whether the node places a connector.
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
-            return "No connector is placed on this node.\n".to_owned();
+            return "No connector to show.\n".to_owned();
         }
         let count = |status: &Status, name: &str| {
             let value = status.counts.as_ref().and_then(|counts| counts.get(name));

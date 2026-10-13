@@ -144,7 +144,7 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
-        (Some(0), "No connector is placed on this node.\n", "")
+        (Some(0), "No connector to show.\n", "")
     );
 }
 
