@@ -41,7 +41,9 @@
   In the same stage, `check` refuses each channel that no connector implies and that
   has an edge to a status channel of a connector, with `config.implied-channel`, once
   for each status channel that it points at. Only the connector writes its status, and
-  a second writer on the status index can hold its control gate (#2468, round 7).
+  a second writer on the status index can hold its control gate
+  (`laptop.architect-2`, 2026-10-13T01:13:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6135917943).
   `plan` refuses such an edge in files with `config.unknown-channel`, and #2513 gives
   it `config.implied-channel`. Lost: a new code, since the rule is that of
   `config.implied-channel`; and the rule in the stage of the rules of `plan`, which
