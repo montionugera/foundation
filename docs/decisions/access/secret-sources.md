@@ -11,8 +11,12 @@
   `status` show the source and never the value. The person decided this on
   2026-10-13T20:59:00Z: "Yeah that's fine", to the three forms that `laptop.monitor`
   gave in https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155082412.
-  It supersedes the bare secret name of K4 and Q5 of #2583. `laptop.architect-2`
-  approved the reference form on 2026-10-13T22:18:44Z
+  Supersedes the bare secret name of K4 (`docs/decisions/access/k4.md`), item 2 of the
+  ruling in the body of https://github.com/synnaxlabs/foundation/issues/2583 ("The
+  token is a secret name"), and Q5 of
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009.
+  `laptop.architect-2` approved the reference form and the display of the argument as a
+  string on 2026-10-13T22:18:44Z
   (https://github.com/synnaxlabs/foundation/pull/2619#issuecomment-6156410171). The path
   rule is the same text rule on every host, since no node runs on Windows and a rule can
   widen later with no break. The trigger to take a drive letter is the first node that
