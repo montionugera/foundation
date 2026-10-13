@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn erased_keeps_a_block_that_outlives_its_pool() {
+    fn erased_erases_a_pool_that_drops_before_its_block() {
         let config = Config::new(1 << 14).expect("the budget fits");
         let memory = Erased::new(config.reservation());
         let pool = Pool::new(config, memory);
