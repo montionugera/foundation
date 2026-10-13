@@ -77,20 +77,21 @@ impl Measurement {
     /// Appends one line at `time` to `out`, with each field of `values` and its
     /// value, in order. Each field comes from [`Measurement::field`] of this
     /// measurement: a field of another one can repeat a tag key of this one. With no
-    /// value, nothing is written. A field that comes twice is written twice.
+    /// value, nothing is written. A field that comes twice is written twice. Gives
+    /// the number of fields written.
     #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
     pub fn line<'a>(
         &self,
         out: &mut Vec<u8>,
         values: impl IntoIterator<Item = (&'a Field, Value)>,
         time: Stamp,
-    ) {
+    ) -> usize {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
-        let mut separator = b' ';
+        let mut fields = 0_usize;
         for (Field(key), value) in values {
-            out.push(separator);
-            separator = b',';
+            out.push(if fields == 0 { b' ' } else { b',' });
+            fields = fields.saturating_add(1);
             out.extend_from_slice(key);
             out.push(b'=');
             let wrote = match value {
@@ -103,12 +104,13 @@ impl Measurement {
             };
             wrote.expect("invariant: a write to a Vec never fails");
         }
-        if separator == b' ' {
+        if fields == 0 {
             out.truncate(start);
-            return;
+            return 0;
         }
         writeln!(out, " {}", time.nanos())
             .expect("invariant: a write to a Vec never fails");
+        fields
     }
 }
 

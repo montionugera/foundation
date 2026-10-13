@@ -186,17 +186,16 @@ impl Body {
         let lines = self.values.chunks_exact(fields);
         for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
             let time = Stamp::from_nanos(i64::from_le_bytes(time));
-            let start = self.bytes.len();
             let values =
                 (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
-                    let value = (*value)?;
-                    self.samples = self.samples.saturating_add(1);
-                    Some((&layout.channel(at).field, value))
+                    Some((&layout.channel(at).field, (*value)?))
                 });
-            measurement.line(&mut self.bytes, values, time);
-            if self.bytes.len() > start {
+            let wrote = measurement.line(&mut self.bytes, values, time);
+            if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
             }
+            let wrote = u64::try_from(wrote).expect("invariant: usize fits u64");
+            self.samples = self.samples.saturating_add(wrote);
         }
     }
 }
