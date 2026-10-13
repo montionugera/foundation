@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use connector::cancel::Token;
@@ -13,8 +14,9 @@ use connector::http::Client;
 use connector_influx::sim::{Field, Store};
 use connector_opcua::sim::{Served, Variables, serve};
 use env::clock::Clock;
-use env::net::Listener;
-use env::net::tcp::{Listen, Options};
+use env::net::tcp::{Config, Listen, Options};
+use env::net::{Error, Listener};
+use env::tasks::Tasks;
 use env::thread::Handle;
 use http::Request;
 use types::quality::Quality;
@@ -39,7 +41,7 @@ pub(super) struct Opcua {
     clock: Clock,
     /// The wall time at `Monotonic(0)` of `clock`.
     zero: Stamp,
-    serving: Option<Serving>,
+    server: Option<Server>,
 }
 
 impl Default for Opcua {
@@ -51,12 +53,12 @@ impl Default for Opcua {
             reason = "the test maps the times of the server to wall time"
         )]
         let time = wall.now().time;
-        let zero = time - Span::from_nanos(clock.now().0.cast_signed());
+        let zero = time - (clock.now() - Monotonic(0));
         Self {
             variables: Variables::new(&super::VARIABLES.map(|(node, _)| node)),
             clock,
             zero,
-            serving: None,
+            server: None,
         }
     }
 }
@@ -70,17 +72,17 @@ pub(super) struct Influx {
     address: Option<SocketAddr>,
     /// The panic tests put a shard that panics or blocks here, since no input to
     /// [`Influx::serve`] makes it do so.
-    serving: Option<Serving>,
+    server: Option<Server>,
 }
 
 /// The shard of a simulated server. Drop cancels it, and joins it unless the thread
 /// panics: then a join can block, and a second panic aborts the test binary.
 #[derive(Debug)]
-struct Serving {
-    /// The server in the panic of a join.
+struct Server {
+    /// The server in the panic of a join, and the name of its shard.
     name: &'static str,
     /// The token that stops `shard`.
-    stop: Token,
+    token: Token,
     shard: Option<Handle>,
 }
 
@@ -99,14 +101,14 @@ impl Opcua {
     pub(super) fn serve(&mut self) -> SocketAddr {
         let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
         let address = listener.local();
-        let (stop, variables) = (Token::new(), Variables::clone(&self.variables));
-        let (stopped, clock) = (stop.clone(), Clock::clone(&self.clock));
-        let shard = start("opcua", move |_| async move {
+        let (variables, clock) =
+            (Variables::clone(&self.variables), self.clock.clone());
+        let server = Server::start("OPC UA server", move |_, token| async move {
             let mut rng = os::entropy().rng();
             let net = os::net();
-            serve(clock, net, listener, &mut rng, &variables, stopped.wait()).await;
+            serve(clock, net, listener, &mut rng, &variables, token.wait()).await;
         });
-        self.serving = Some(Serving::new("OPC UA server", stop, shard));
+        self.server = Some(server);
         address
     }
 
@@ -128,7 +130,7 @@ impl Opcua {
     /// of the answer, at the time of the answer.
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
         let sample = |served: &Served| Sample {
-            time: self.zero + Span::from_nanos(served.time.0.cast_signed()),
+            time: self.zero + (served.time - Monotonic(0)),
             value: served.value,
             quality: Some(served.quality),
         };
@@ -145,23 +147,22 @@ impl Influx {
         let listener = listen(self.address.unwrap_or((Ipv4Addr::LOCALHOST, 0).into()));
         let address = listener.local();
         self.address = Some(address);
-        let (stop, store) = (Token::new(), Arc::clone(&self.store));
-        let stopped = stop.clone();
-        let shard = start("influx", move |tasks| async move {
+        let store = Arc::clone(&self.store);
+        let server = Server::start("InfluxDB", move |tasks, token| async move {
             let serve =
                 connector_influx::sim::serve(listener, tasks, store, "plant".into());
-            if let Some(error) = stopped.race(serve).await {
+            if let Some(error) = token.race(serve).await {
                 panic!("the simulated InfluxDB stopped: {error}");
             }
         });
-        self.serving = Some(Serving::new("InfluxDB", stop, shard));
+        self.server = Some(server);
         address
     }
 
     /// Stops, and panics when the server panicked. A process that holds or takes the
     /// port before the next [`Influx::serve`] makes that serve panic.
     pub(super) fn stop(&mut self) {
-        self.serving.take().expect("it serves").stop();
+        self.server.take().expect("it serves").stop();
     }
 
     /// Each sample stored in the measurement `plant`, by field key (the channel name),
@@ -186,11 +187,21 @@ impl Influx {
     }
 }
 
-impl Serving {
-    fn new(name: &'static str, stop: Token, shard: Handle) -> Self {
+impl Server {
+    /// Starts `main` on a new `os` shard named `name`, with the token that stops it.
+    fn start<F>(
+        name: &'static str,
+        main: impl FnOnce(Tasks, Token) -> F + Send + 'static,
+    ) -> Self
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        let token = Token::new();
+        let stopped = token.clone();
+        let shard = start(name, move |tasks| main(tasks, stopped));
         Self {
             name,
-            stop,
+            token,
             shard: Some(shard),
         }
     }
@@ -201,7 +212,7 @@ impl Serving {
     }
 
     fn join(&mut self, state: &str) {
-        self.stop.cancel();
+        self.token.cancel();
         if let Some(shard) = self.shard.take()
             && !std::thread::panicking()
             && let Err(panicked) = shard.join()
@@ -214,7 +225,7 @@ impl Serving {
     }
 }
 
-impl Drop for Serving {
+impl Drop for Server {
     fn drop(&mut self) {
         self.join("serves");
     }
@@ -222,10 +233,11 @@ impl Drop for Serving {
 
 /// The time from `now` to change `tick` of [`Opcua::change`], which is due `tick`
 /// ticks after `start`: 0 when it is late.
-fn wait(start: Monotonic, tick: usize, now: Monotonic) -> std::time::Duration {
-    let ticks = u64::try_from(tick).expect("a count of ticks fits a u64");
-    let due = start.0 + ticks * TICK.nanos().cast_unsigned();
-    std::time::Duration::from_nanos(due.saturating_sub(now.0))
+fn wait(start: Monotonic, tick: usize, now: Monotonic) -> Duration {
+    let ticks = i64::try_from(tick).expect("a count of ticks fits an i64");
+    let due = start + Span::from_nanos(ticks * TICK.nanos());
+    let wait = (due - now).max(Span::ZERO);
+    Duration::from_nanos(wait.nanos().cast_unsigned())
 }
 
 /// Listens on `local`, with the options of each simulated server.
@@ -240,10 +252,7 @@ fn listen(local: SocketAddr) -> Listener {
 }
 
 /// Starts `main` on a new `os` shard named `name`.
-fn start<F>(
-    name: &str,
-    main: impl FnOnce(env::tasks::Tasks) -> F + Send + 'static,
-) -> Handle
+fn start<F>(name: &str, main: impl FnOnce(Tasks) -> F + Send + 'static) -> Handle
 where
     F: Future<Output = ()> + 'static,
 {
@@ -258,18 +267,13 @@ where
 /// Writes `lines` to the database `plant` at `address` from a shard of its own, and
 /// gives the status of the answer or the error of the client.
 fn write(address: SocketAddr, lines: &'static str) -> String {
-    write_within(address, lines, Span::MINUTE)
-}
-
-/// [`write`], with a client timeout of `timeout`.
-fn write_within(address: SocketAddr, lines: &'static str, timeout: Span) -> String {
     let (send, answer) = mpsc::channel();
     let shard = start("write", move |tasks| async move {
         let client = Client::new(connector::http::Config {
             net: os::net(),
             clock: os::clock(),
             tasks,
-            timeout,
+            timeout: Span::MINUTE,
             body_max: 1 << 10,
         });
         let request = Request::post(format!("http://{address}/write?db=plant"))
@@ -285,10 +289,22 @@ fn write_within(address: SocketAddr, lines: &'static str, timeout: Span) -> Stri
     answer.try_recv().expect("the shard sent the answer")
 }
 
-/// What [`write`] gives when no server listens at `address`. On macOS, a child that a
-/// rig test spawns may hold the port (`os::net`), so only Linux checks a refusal.
-fn refused(address: SocketAddr) -> String {
-    format!("the connect failed: {address} refused the connection")
+/// Connects to `address` from a shard of its own, and gives the error of the connect,
+/// or `None` when it connects. On macOS, a child that a rig test spawns may hold the
+/// port (`os::net`), so only Linux checks a refusal.
+fn connect(address: SocketAddr) -> Option<Error> {
+    let (send, error) = mpsc::channel();
+    let shard = start("connect", move |_| async move {
+        let config = Config {
+            remote: address,
+            options: OPTIONS,
+        };
+        let connected = os::net().connect(&config).await;
+        send.send(connected.err())
+            .expect("the test reads the error");
+    });
+    shard.join().expect("the connect runs with no panic");
+    error.try_recv().expect("the shard sent the error")
 }
 
 /// The time of each sample of the field `f` that `influx` stored.
@@ -346,7 +362,7 @@ fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
     let address = influx.serve();
     assert_eq!(write(address, "plant f=1 1"), "204 No Content");
     influx.stop();
-    assert_eq!(write(address, "plant f=2 2"), refused(address));
+    assert_eq!(connect(address), Some(Error::Refused { remote: address }));
     assert_eq!(influx.serve(), address);
     assert_eq!(write(address, "plant f=3 3"), "204 No Content");
     assert_eq!(times(&influx), [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
@@ -386,8 +402,7 @@ fn a_dropped_opcua_stops_each_server_that_it_served() {
     let second = opcua.serve();
     drop(opcua);
     for address in [first, second] {
-        let written = write_within(address, "m f=1 1", Span::SECOND);
-        assert_eq!(written, refused(address));
+        assert_eq!(connect(address), Some(Error::Refused { remote: address }));
     }
 }
 
@@ -400,22 +415,23 @@ fn a_dropped_influx_ends_its_shard() {
     drop(influx);
     assert_eq!(Arc::strong_count(&store), 1, "the shard holds no store");
     if cfg!(target_os = "linux") {
-        assert_eq!(write(address, "m f=2 2"), refused(address));
+        assert_eq!(connect(address), Some(Error::Refused { remote: address }));
     }
 }
 
 #[test]
 fn a_dropped_influx_does_not_join_its_server_when_the_test_panics() {
     let (release, released) = mpsc::channel::<()>();
-    let mut influx = Influx::default();
-    let shard = start("influx", move |_| async move {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the shard blocks until the test releases it"
-        )]
-        let _waited = released.recv_timeout(std::time::Duration::from_secs(30));
-    });
-    influx.serving = Some(Serving::new("InfluxDB", Token::new(), shard));
+    let influx = Influx {
+        server: Some(Server::start("InfluxDB", move |_, _| async move {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the shard blocks until the test releases it"
+            )]
+            let _waited = released.recv_timeout(Duration::from_secs(30));
+        })),
+        ..Influx::default()
+    };
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _influx = influx;
         panic!("the test broke");
@@ -445,11 +461,11 @@ fn a_dropped_influx_stops_its_server_when_the_test_panics() {
         Span::from_nanos(5_000_000_000),
         "the server stops",
         || {
-            let written = write_within(address, "m f=1 1", Span::SECOND);
-            if written == refused(address) {
+            let error = connect(address);
+            if error == Some(Error::Refused { remote: address }) {
                 Ok(())
             } else {
-                Err(written)
+                Err(format!("{error:?}"))
             }
         },
     );
@@ -458,26 +474,35 @@ fn a_dropped_influx_stops_its_server_when_the_test_panics() {
 #[test]
 #[should_panic(expected = "the simulated InfluxDB serves with no panic")]
 fn a_dropped_influx_panics_when_its_server_panicked() {
-    let mut influx = Influx::default();
-    let shard = start("influx", |_| async { panic!("the server broke") });
-    influx.serving = Some(Serving::new("InfluxDB", Token::new(), shard));
+    let influx = Influx {
+        server: Some(Server::start("InfluxDB", |_, _| async {
+            panic!("the server broke")
+        })),
+        ..Influx::default()
+    };
     drop(influx);
 }
 
 #[test]
 #[should_panic(expected = "the simulated InfluxDB stops with no panic")]
 fn a_stopped_influx_panics_when_its_server_panicked() {
-    let mut influx = Influx::default();
-    let shard = start("influx", |_| async { panic!("the server broke") });
-    influx.serving = Some(Serving::new("InfluxDB", Token::new(), shard));
+    let mut influx = Influx {
+        server: Some(Server::start("InfluxDB", |_, _| async {
+            panic!("the server broke")
+        })),
+        ..Influx::default()
+    };
     influx.stop();
 }
 
 #[test]
 #[should_panic(expected = "the test broke")]
 fn a_dropped_influx_does_not_panic_again_when_the_test_panics() {
-    let mut influx = Influx::default();
-    let shard = start("influx", |_| async { panic!("the server broke") });
-    influx.serving = Some(Serving::new("InfluxDB", Token::new(), shard));
+    let _influx = Influx {
+        server: Some(Server::start("InfluxDB", |_, _| async {
+            panic!("the server broke")
+        })),
+        ..Influx::default()
+    };
     panic!("the test broke");
 }
