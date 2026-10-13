@@ -1483,18 +1483,40 @@ fn fetch(pr: &str, api: gh::Read<'_>) -> Result<Record, String> {
     let pull = api(&path)?;
     let files = api(&format!("{path}/files"))?;
     let comments = api(&format!("repos/{{owner}}/{{repo}}/issues/{pr}/comments"))?;
-    let read = || record_of(&pull, &files, &comments, waits(&pull, api)?);
+    let read = || -> Result<Record, String> {
+        let pull = pull.first().ok_or("gh returned no PR")?;
+        Ok(Record {
+            branch: field::text(&pull["head"], "ref")?.to_string(),
+            base: field::text(&pull["base"], "ref")?.to_string(),
+            labels: field::list(pull, "labels")?
+                .iter()
+                .map(|l| field::text(l, "name").map(str::to_string))
+                .collect::<Result<_, _>>()?,
+            files: files
+                .iter()
+                .map(paths)
+                .collect::<Result<Vec<_>, _>>()?
+                .concat(),
+            comments: comments
+                .iter()
+                .map(|c| {
+                    Ok(Comment {
+                        author: field::text(&c["user"], "login")?.to_string(),
+                        body: field::text(c, "body")?.to_string(),
+                        created: utc(field::text(c, "created_at")?)?.to_string(),
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+            waits: waits(pull, api)?,
+        })
+    };
     read().map_err(|e| format!("PR {pr}: {e}"))
 }
 
 /// Each open issue that a merge condition of the body of `pull` names, read with
 /// `api`, or the problem of a body that the check cannot read ([`conditions`]).
 /// Errors when a read fails.
-fn waits(
-    pull: &[Value],
-    api: gh::Read<'_>,
-) -> Result<Result<Vec<u64>, String>, String> {
-    let pull = pull.first().ok_or("gh returned no PR")?;
+fn waits(pull: &Value, api: gh::Read<'_>) -> Result<Result<Vec<u64>, String>, String> {
     let body = if pull["body"].is_null() {
         ""
     } else {
@@ -1556,41 +1578,6 @@ fn conditions(body: &str) -> Result<Vec<u64>, String> {
         }
     }
     Ok(found)
-}
-
-/// The record from the `gh api` objects of a PR, its files, and its comments, and the
-/// open issues that its merge conditions name ([`waits`]).
-fn record_of(
-    pull: &[Value],
-    files: &[Value],
-    comments: &[Value],
-    waits: Result<Vec<u64>, String>,
-) -> Result<Record, String> {
-    let pull = pull.first().ok_or("gh returned no PR")?;
-    Ok(Record {
-        branch: field::text(&pull["head"], "ref")?.to_string(),
-        base: field::text(&pull["base"], "ref")?.to_string(),
-        labels: field::list(pull, "labels")?
-            .iter()
-            .map(|l| field::text(l, "name").map(str::to_string))
-            .collect::<Result<_, _>>()?,
-        files: files
-            .iter()
-            .map(paths)
-            .collect::<Result<Vec<_>, _>>()?
-            .concat(),
-        comments: comments
-            .iter()
-            .map(|c| {
-                Ok(Comment {
-                    author: field::text(&c["user"], "login")?.to_string(),
-                    body: field::text(c, "body")?.to_string(),
-                    created: utc(field::text(c, "created_at")?)?.to_string(),
-                })
-            })
-            .collect::<Result<_, String>>()?,
-        waits,
-    })
 }
 
 /// The paths of `file`, a file of a PR: its path before the PR when the PR moves it,

@@ -3739,7 +3739,7 @@ fn only_a_file_of_a_risk_crate_asks_a_deferred_issue_for_an_ok() {
 fn a_pr_that_moves_a_file_changes_it_at_its_old_path_and_at_its_new_one() {
     use serde_json::json;
     let pull =
-        [json!({ "head": { "ref": "a" }, "base": { "ref": "main" }, "labels": [] })];
+        json!({ "head": { "ref": "a" }, "base": { "ref": "main" }, "labels": [] });
     let comment = json!({
         "user": { "login": BOT },
         "body": deferred("#12").body,
@@ -3748,21 +3748,28 @@ fn a_pr_that_moves_a_file_changes_it_at_its_old_path_and_at_its_new_one() {
     let [old, new] = ["crates/raft/tests/it/log.rs", "crates/hub/tests/it/log.rs"];
     for (from, to) in [(old, new), (new, old)] {
         let moved = [json!({ "filename": to, "previous_filename": from })];
-        let read = record_of(
-            &pull,
-            &moved,
-            std::slice::from_ref(&comment),
-            Ok(Vec::new()),
-        )
-        .unwrap();
+        let read = fetched(&pull, &moved, std::slice::from_ref(&comment)).unwrap();
         assert_eq!(read.files, [from, to]);
         assert_eq!(check(&read), no_ok("#12"), "{from} to {to}");
     }
     let named = [json!({ "filename": new, "previous_filename": 1 })];
     assert_eq!(
-        record_of(&pull, &named, &[comment], Ok(Vec::new())).unwrap_err(),
-        "JSON has no string field `previous_filename`"
+        fetched(&pull, &named, &[comment]).unwrap_err(),
+        "PR 1: JSON has no string field `previous_filename`"
     );
+}
+
+#[test]
+fn names_the_pr_when_gh_returns_no_pr() {
+    let read = |path: &str| -> Result<Vec<Value>, String> {
+        Ok(match path {
+            "repos/{owner}/{repo}/pulls/1"
+            | "repos/{owner}/{repo}/pulls/1/files"
+            | "repos/{owner}/{repo}/issues/1/comments" => Vec::new(),
+            _ => panic!("no read of {path}"),
+        })
+    };
+    assert_eq!(fetch("1", &read).unwrap_err(), "PR 1: gh returned no PR");
 }
 
 #[test]
