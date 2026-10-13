@@ -3529,8 +3529,24 @@ fn only_the_last_round_posted_at_the_link_cutoff_needs_its_links() {
         assert_eq!(risk(vec![ended_at(end, LINK_CUTOFF)]), problems, "{end}");
         assert_eq!(risk(vec![ended_at(end, after)]), problems, "{end}");
         let earlier = ended_at(end, LINK_CUTOFF);
+        let earlier = Comment {
+            body: earlier.body.replace("## Review round 3", "## Review round 2"),
+            ..earlier
+        };
         let last = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
         assert_eq!(risk(vec![earlier, last]), Vec::<String>::new(), "{end}");
+    }
+}
+
+#[test]
+fn only_the_last_round_comment_of_the_last_round_needs_its_surface_links() {
+    let last = || ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
+    for end in [
+        "Deferred: none\nPublic surface: `hub::Route`, approval owed",
+        "Deferred: none\nPublic surface: `hub::Route`",
+    ] {
+        let earlier = ended_at(end, LINK_CUTOFF);
+        assert_eq!(risk(vec![earlier, last()]), Vec::<String>::new(), "{end}");
     }
 }
 
@@ -3989,4 +4005,53 @@ fn passes_a_round_comment_posted_before_the_cutoff_of_the_round_numbers() {
         check(&record(vec![first(END), bot(ROUND)])),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn a_merge_check_after_round_3_does_not_move_the_range_after_round_3() {
+    let (repo, start) = Repo::with_pr("breaker-merge-check");
+    let two = repo.commit("c.rs", "fn two() {}\n");
+    let three = repo.commit("a.txt", "pr side\n");
+    // The fix of a defect of round 3 changes a decision.
+    let decided = repo.commit("docs/decisions/x.md", "a new rule\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let main = repo.commit("a.txt", "main side\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &main]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    // A merge that resolves a conflict in `a.txt`, so it is not clean.
+    repo.git(&["merge", "--quiet", "-X", "ours", "--no-edit", "origin/main"]);
+    let head = repo.head();
+    assert_eq!(
+        Place::Off,
+        history::History::new(&repo.dir, "main")
+            .place(&decided, &head)
+            .unwrap()
+    );
+    let round2 = clean(2, "reviewer, breaker", &format!("{start}..{two}"));
+    let round3 = clean(3, "reviewer, breaker", &format!("{two}..{three}"))
+        .replace("Findings: none", "Findings: 2");
+    // The merge check: its range starts at the first parent of the merge.
+    let check3 = clean(3, "reviewer, breaker", &format!("{decided}..{head}"));
+    let record = record(vec![
+        first(END),
+        numbered(&round2),
+        numbered(&round3),
+        numbered(&check3),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 3 ends at `{three}`, and the range from it to the head \
+             `{head}` changes the decision `docs/decisions/x.md`. Add the change to \
+             the `Public surface:` line of the round, with its approval (REVIEW \
+             ROUNDS in `docs/decisions/operations/review-rounds.md`)."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_merge_check_after_round_3_does_not_hide_a_deferral_of_round_3_with_no_ok() {
+    let check = ended_at("Deferred: none\nPublic surface: none", LINK_CUTOFF);
+    assert_eq!(risk(vec![deferred("#12"), check]), no_ok("#12"));
 }

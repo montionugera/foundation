@@ -332,7 +332,15 @@ fn problems(
         round: Ok(round), ..
     }) = rounds.last()
     {
-        let findings = found(&rounds, round.number);
+        // The comments of the last round, which ends where the first of them ends.
+        let comments: Vec<&Round> = rounds
+            .iter()
+            .filter_map(|p| p.round.as_ref().ok())
+            .filter(|r| r.number == round.number)
+            .collect();
+        let findings = comments
+            .iter()
+            .fold(0u32, |sum, r| sum.saturating_add(r.findings));
         if findings > 0 && round.number < ROUNDS {
             problems.push(format!(
                 "review round {} has findings ({findings}). Fix or answer them, then \
@@ -342,12 +350,13 @@ fn problems(
         }
         problems.extend(unended(
             round,
+            &comments[0].end,
             head,
             place(&round.end)?,
             code_change,
             decision_change,
         )?);
-        problems.extend(unlinked(round, &record.files));
+        problems.extend(unlinked(&comments, &record.files));
     }
     if record.branch.starts_with("red-team/")
         && record.labels.iter().any(|l| l == "oracle")
@@ -355,15 +364,6 @@ fn problems(
         problems.extend(approval(record, head));
     }
     Ok(problems)
-}
-
-/// The findings of each round comment in `rounds` numbered `number`.
-fn found(rounds: &[Parsed], number: u32) -> u32 {
-    rounds
-        .iter()
-        .filter_map(|p| p.round.as_ref().ok())
-        .filter(|r| r.number == number)
-        .fold(0, |sum, r| sum.saturating_add(r.findings))
 }
 
 /// The problems with the number of `round`, after a round comment numbered `before`,
@@ -416,12 +416,14 @@ fn uncapped(number: u32, before: Option<u32>) -> Option<String> {
     })
 }
 
-/// The problem with the end of the last round, `round`, at `head`, where `place` is
-/// where its end is from `head`, or `None`. From round [`ROUNDS`], a [`Place::Off`] end
-/// is a problem, and so is a change to a decision after the end (`decision_change`)
-/// when the `Public surface:` line of the round names no item.
+/// The problem with the end of `round`, the last round comment, at `head`, where
+/// `place` is where its end is from `head`, or `None`. A [`Place::Off`] end is a
+/// problem. From round [`ROUNDS`], so is a change to a decision from `start`, the end
+/// of the first comment of the round, to `head` (`decision_change`), when the `Public
+/// surface:` line of `round` names no item.
 fn unended(
     round: &Round,
+    start: &str,
     head: &str,
     place: Place,
     code_change: Change<'_>,
@@ -440,9 +442,9 @@ fn unended(
         if round.ends.as_ref().is_some_and(|e| stated(&e.surface)) {
             return Ok(None);
         }
-        return Ok(decision_change(end, head)?.map(|change| {
+        return Ok(decision_change(start, head)?.map(|change| {
             format!(
-                "review round {number} ends at `{end}`, and the range from it to the \
+                "review round {number} ends at `{start}`, and the range from it to the \
                  head `{head}` {change}. Add the change to the `Public surface:` line \
                  of the round, with its approval (REVIEW ROUNDS in \
                  `docs/decisions/operations/review-rounds.md`)."
@@ -463,36 +465,35 @@ fn unended(
     }))
 }
 
-/// The problems with the links on the end lines of `round`, the last round of a PR
-/// that changes `files`: the first issue of its `Deferred:` line with no OK
-/// ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what its
-/// `Public surface:` line lacks ([`unapproved`]). None for a round posted before
-/// [`LINK_CUTOFF`].
-fn unlinked(round: &Round, files: &[String]) -> Vec<String> {
-    let bound = round.posted.as_str() >= LINK_CUTOFF;
-    let Some(ends) = round.ends.as_ref().filter(|_| bound) else {
-        return Vec::new();
-    };
-    let number = round.number;
+/// The problems with the links on the end lines of `comments`, the round comments of
+/// the last round of a PR that changes `files`: the first issue of a `Deferred:` line
+/// with no OK ([`unokayed`]) when a file is in a risk crate ([`RISK`]), and what the
+/// `Public surface:` line of the last comment lacks ([`unapproved`]). None for a
+/// comment posted before [`LINK_CUTOFF`].
+fn unlinked(comments: &[&Round], files: &[String]) -> Vec<String> {
+    fn ends<'a>(round: &&'a Round) -> Option<(u32, &'a Ends)> {
+        let bound = round.posted.as_str() >= LINK_CUTOFF;
+        round.ends.as_ref().filter(|_| bound).map(|ends| (round.number, ends))
+    }
     let risky = files.iter().any(|file| {
         let file = file.to_ascii_lowercase();
         let name = file.strip_prefix("crates/").and_then(|f| f.split_once('/'));
         name.is_some_and(|(name, _)| RISK.contains(&name))
     });
-    let problem = unokayed(&ends.deferred, &ends.breaks)
-        .filter(|_| risky)
-        .map(|issue| {
+    let deferrals = comments.iter().filter_map(ends).filter(|_| risky);
+    let unokayed = deferrals.filter_map(|(number, ends)| {
+        unokayed(&ends.deferred, &ends.breaks).map(|issue| {
             format!(
                 "review round {number} defers to {issue} with no link to the OK of the \
                  architect after it on its `Deferred:` line. Add the link, or the \
                  words `{UNRISKY}` after the issue when its work is in no risk crate. \
                  {LINK}"
             )
-        });
-    problem
-        .into_iter()
-        .chain(unapproved(number, &ends.surface))
-        .collect()
+        })
+    });
+    let last = comments.last().and_then(ends);
+    let unapproved = last.and_then(|(number, ends)| unapproved(number, &ends.surface));
+    unokayed.chain(unapproved).collect()
 }
 
 /// The problems with the reviewers that `round`, the `first` round comment on its PR
