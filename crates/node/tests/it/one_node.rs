@@ -410,7 +410,7 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #435, #2510"]
+#[ignore = "waits on #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
@@ -434,7 +434,6 @@ fn a_bad_status_keeps_its_quality() {
 }
 
 #[test]
-#[ignore = "waits on #435"]
 fn a_wrong_config_gives_its_file_line_and_fix() {
     let mut rig = Rig::new();
     let hcl = PLANT
@@ -470,7 +469,6 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #435"]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -521,7 +519,6 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #435"]
 fn status_shows_samples_flow() {
     let plant = create_plant(PLANT);
     let rig = &plant.rig;
