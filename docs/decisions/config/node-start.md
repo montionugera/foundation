@@ -179,6 +179,19 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
   2026-10-11T10:50:50Z, this text,
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
+  `node::client::reach` gives a program on the host of a node a hub client of the node
+  that runs on a data directory, as `@admin` (`spec::founding::admin`). It reads
+  `address`, then `admin.key`, through `env::files` with the readers of `node`, so a
+  simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
+  opens `dir/data` of a directory that is there and makes nothing. A file `address`
+  with no address of a node is `Error::NotRunning`, which also covers a node that
+  still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an
+  unspecified IP in `address`, it dials the loopback IP of its family. A dial, session,
+  or hello that fails is `Error::Unanswered` with the address it dialed, and a refused
+  hello is `Error::Refused`. Lost: `ops::Unreached`, worded in `ops`, which would name
+  the files that only `node` reads and take `hub` for the error of a dial. Decided by
+  `laptop.architect-2` (2026-10-11T07:10:55Z, plan revision 4, decision 8 and the 2d
+  surface, https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
   A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
   choice of its parent, does not reach it (ENV SEAMS): a node that
   `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
