@@ -42,12 +42,21 @@ const TIME: &str = "time";
 /// The channels that the supervisor writes, with the sample type of each. `error`
 /// is last, so it is entry [`ERROR`] of a frame.
 const SUPERVISOR: [(&str, Type); 5] = [
-    ("state", Type::Scalar(Scalar::U8)),
-    ("class", Type::Scalar(Scalar::U8)),
-    ("restarts", Type::Scalar(Scalar::U64)),
-    ("backoff", Type::Scalar(Scalar::Span)),
-    ("error", Type::String),
+    (last::STATE, Type::Scalar(Scalar::U8)),
+    (last::CLASS, Type::Scalar(Scalar::U8)),
+    (last::RESTARTS, Type::Scalar(Scalar::U64)),
+    (last::BACKOFF, Type::Scalar(Scalar::Span)),
+    (last::ERROR, Type::String),
 ];
+
+/// The last segment of the name of each channel that the supervisor writes.
+mod last {
+    pub(super) const STATE: &str = "state";
+    pub(super) const CLASS: &str = "class";
+    pub(super) const RESTARTS: &str = "restarts";
+    pub(super) const BACKOFF: &str = "backoff";
+    pub(super) const ERROR: &str = "error";
+}
 
 /// The entry of `error` in a frame, after the index and the other channels of the
 /// supervisor.
@@ -195,17 +204,6 @@ impl State {
     }
 }
 
-impl fmt::Display for State {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Running => "running",
-            Self::Restarting => "restarting",
-            Self::Stopped => "stopped",
-            Self::Ending => "ending",
-        })
-    }
-}
-
 /// What the writer of a status does: its state, with the time of the next try by the
 /// node's clock while it restarts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,16 +267,6 @@ impl Class {
         [Self::Config, Self::Device, Self::Retry]
             .into_iter()
             .find(|class| u64::from(*class as u8) == code)
-    }
-}
-
-impl fmt::Display for Class {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Config => "config",
-            Self::Device => "device",
-            Self::Retry => "retry",
-        })
     }
 }
 
