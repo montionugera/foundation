@@ -17,4 +17,10 @@
   `Client::read`: it reads the array for each session and gives the server's index, so
   the read and the wire do not change. Decided by `laptop.architect-2`
   (2026-10-12T16:12:25Z:
-  https://github.com/synnaxlabs/foundation/issues/2401#issuecomment-6128082633).
+  https://github.com/synnaxlabs/foundation/issues/2401#issuecomment-6128082633). A
+  `node_id` is `ns=<index>;i=<number>` or `ns=<index>;s=<name>`, with no
+  `ns=<index>;` for namespace 0, and the name is the rest of the text. The kind refuses
+  `nsu=`, a GUID (`g=`), and an opaque key (`b=`), each with an exact error. Trigger
+  for `g=` and `b=`: a user whose server has a variable with no number or name key.
+  Decided by `laptop.architect-2` (#435 PR 1, 2026-10-13T01:16:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2511#issuecomment-6135949538).

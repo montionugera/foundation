@@ -36,6 +36,7 @@ fn build() {
     println!("cargo::rerun-if-changed={}", copy.display());
     println!("cargo::rerun-if-changed=src/shim.c");
     println!("cargo::rerun-if-changed=src/server.c");
+    println!("cargo::rerun-if-changed=src/shim.h");
     println!("cargo::rerun-if-changed=src/alloc.h");
     let read = |name| {
         let path = copy.join(name);
