@@ -3,6 +3,9 @@
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::fmt;
 use std::ptr::NonNull;
+use std::slice;
+
+use zeroize::Zeroize;
 
 use crate::ALIGN;
 
@@ -52,12 +55,15 @@ pub unsafe trait Memory: Send {
 pub struct Refused;
 
 /// Memory from the heap, usable in full from the start. It never gives pages back.
-/// It serves tests and simulation, where no OS mapping exists.
+/// It serves tests and simulation, where no OS mapping exists, and memory whose
+/// blocks hold a secret (`Heap::erased`).
 pub struct Heap {
     /// What the allocator gave. `base` rounds it up to [`ALIGN`].
     allocation: NonNull<u8>,
     layout: Layout,
     base: NonNull<u8>,
+    /// The drop writes zero over the bytes from `base`.
+    erased: bool,
 }
 
 impl Heap {
@@ -93,7 +99,22 @@ impl Heap {
             allocation,
             layout,
             base,
+            erased: false,
         }
+    }
+
+    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does, and
+    /// writes zero over each of them at the drop, with writes that the compiler
+    /// keeps. For memory whose blocks hold a secret.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is 0 or too large to allocate.
+    #[must_use]
+    pub fn erased(len: usize) -> Self {
+        let mut heap = Self::new(len);
+        heap.erased = true;
+        heap
     }
 }
 
@@ -126,6 +147,13 @@ impl fmt::Debug for Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
+        if self.erased {
+            // SAFETY: the `len` bytes at `base` lie in the allocation, are initialized
+            // since `new` zeroed them, and nothing else holds them at the drop.
+            let bytes =
+                unsafe { slice::from_raw_parts_mut(self.base.as_ptr(), self.len()) };
+            bytes.zeroize();
+        }
         // SAFETY: `new` got `allocation` from the allocator with this layout.
         unsafe { dealloc(self.allocation.as_ptr(), self.layout) };
     }

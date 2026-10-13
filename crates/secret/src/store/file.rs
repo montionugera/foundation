@@ -3,7 +3,6 @@ use std::path::{Component, Path, PathBuf};
 
 use env::files::{self, Files, Mode};
 use types::name::Name;
-use zeroize::Zeroize;
 
 use super::{Error, Request, Store};
 use crate::Value;
@@ -73,13 +72,14 @@ impl File {
             });
         }
         let len = usize::try_from(file.len()).expect("invariant: at most `LEN_MAX`");
-        let pool = block::Pool::heap(pool(len));
+        let config = pool(len);
+        let memory = block::Heap::erased(config.reservation());
+        let pool = block::Pool::new(config, memory);
         let into = pool.alloc(len).expect("invariant: the pool holds the file");
         let read = file.read_at(0, into).await;
         file.close().await;
-        let mut read = read.map_err(|error| unavailable(&error))?;
+        let read = read.map_err(|error| unavailable(&error))?;
         let value = cut(&read).to_vec();
-        read.zeroize();
         if value.is_empty() {
             return Err(Error::Missing {
                 detail: format!(

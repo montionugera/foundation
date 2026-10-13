@@ -23,10 +23,14 @@
   the store's text, which says where to put a missing value, as the full path of the
   file (`laptop.architect-2`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6150793141), so a
-  value added heals the run at its next restart. Each get holds a pool of at most 132
-  KiB until it returns, and gives a value of at most 64 KiB, both outside the pool
-  budget of the node. So the gets at once hold at most 196 KiB for each run of a
-  connector. The store does not check the owner or mode of the file. Deferred; trigger:
+  value added heals the run at its next restart. Each get reads into a pool on
+  `block::Heap::erased`, which writes zero over all of its memory at the drop, also
+  after a failed or dropped read (`laptop.architect`:
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798). That
+  memory is the reservation of the pool: at most 5.2 MiB, for a file of 64 KiB, held
+  until the get returns, or until the read of a dropped get ends. The value is at most
+  64 KiB while a kind holds it. Both are outside the pool budget of the node. The store does not check the owner or
+  mode of the file. Deferred; trigger:
   `env::files` gives the mode of a file. The person has not yet answered this question:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190. The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
