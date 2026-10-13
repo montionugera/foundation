@@ -332,7 +332,7 @@ fn problems(
             round,
             &comments[0].end,
             head,
-            place(&round.end)?,
+            place,
             code_change,
             decision_change,
         )?);
@@ -412,27 +412,44 @@ fn uncapped(number: u32, before: Option<u32>) -> Option<String> {
 }
 
 /// The problem with the end of `round`, the last round comment, at `head`, where
-/// `place` is where its end is from `head`, or `None`. A [`Place::Off`] end is a
-/// problem. From round [`ROUNDS`], so is a change to a decision from `start`, the end
-/// of the first comment of the round, to `head` (`decision_change`), when the `Public
-/// surface:` line of `round` names no item.
+/// `place` gives where an end is from `head`, or `None`. An end that is
+/// [`Place::Off`] or [`Place::Unclean`] is a problem. From round [`ROUNDS`], so is a
+/// [`Place::Off`] `start`, the end of the first comment of the round, and a change to
+/// a decision from `start` to `head` (`decision_change`), when the `Public surface:`
+/// line of `round` names no item.
 fn unended(
     round: &Round,
     start: &str,
     head: &str,
-    place: Place,
+    place: &dyn Fn(&str) -> Result<Place, String>,
     code_change: Change<'_>,
     decision_change: Change<'_>,
 ) -> Result<Option<String>, String> {
-    let (number, end) = (round.number, &round.end);
-    if place == Place::Off && number >= ROUNDS {
+    let (number, end) = (round.number, round.end.as_str());
+    let at = place(end)?;
+    if number >= ROUNDS {
+        let first = if start == end { at } else { place(start)? };
+        let off = [(start, first), (end, at)]
+            .into_iter()
+            .find(|&(_, at)| at == Place::Off);
+        if let Some((end, _)) = off {
+            return Ok(Some(format!(
+                "review round {number} ends at {end}, which is not a commit on the \
+                 first-parent chain of the head {head}, or a merge of a branch other \
+                 than the base follows it. Correct the range of the round comment when \
+                 it names the wrong commit. Else bring the reviewed commits back onto \
+                 that chain, with only merges of the base after them."
+            )));
+        }
+    }
+    if at == Place::Unclean && number >= ROUNDS {
         return Ok(Some(format!(
             "review round {number} ends at {end}, not at the head {head}. Post a round \
              comment numbered {number} that checks the merge of the base that is not \
              clean, and ends at the head."
         )));
     }
-    if place == Place::Off {
+    if matches!(at, Place::Off | Place::Unclean) {
         return Ok(Some(format!(
             "review round {number} ends at {end}, not at the head {head}. A commit \
              after the round needs a new round; only a clean merge of the base, or a \
@@ -459,7 +476,7 @@ fn unended(
              `{head}` {change}. A commit that changes code needs a new round."
         )));
     }
-    Ok((place == Place::Before && !round.fixed).then(|| {
+    Ok((at == Place::Before && !round.fixed).then(|| {
         format!(
             "review round {number} ends at `{end}`, not at the head `{head}`, and has \
              no `Text fixes:` line."

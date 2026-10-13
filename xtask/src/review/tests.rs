@@ -1038,15 +1038,45 @@ fn fails_a_range_that_ends_off_the_first_parent_chain() {
 }
 
 #[test]
-fn a_round_3_that_ends_off_the_first_parent_chain_asks_for_a_merge_check() {
+fn a_round_3_that_ends_off_the_first_parent_chain_asks_to_correct_its_range() {
     let round = ROUND.replace("..c77c67d7", "..0badc0de");
     assert_eq!(
         check(&reviewed(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at 0badc0de, not at the head {HEAD}. Post a round \
+            "review round 3 ends at 0badc0de, which is not a commit on the first-parent \
+             chain of the head {HEAD}, or a merge of a branch other than the base \
+             follows it. Correct the range of the round comment when it names the \
+             wrong commit. Else bring the reviewed commits back onto that chain, with \
+             only merges of the base after them."
+        )]
+    );
+}
+
+#[test]
+fn a_round_3_before_a_merge_that_is_not_clean_asks_for_a_merge_check() {
+    let record = reviewed(vec![bot(ROUND)]);
+    let none = |_: &str, _: &str| Ok(None);
+    assert_eq!(
+        problems(&record, HEAD, &|_| Ok(Place::Unclean), &none, &none),
+        Ok(vec![format!(
+            "review round 3 ends at c77c67d7, not at the head {HEAD}. Post a round \
              comment numbered 3 that checks the merge of the base that is not clean, \
              and ends at the head."
-        )]
+        )])
+    );
+}
+
+#[test]
+fn a_round_2_before_a_merge_that_is_not_clean_needs_a_new_round() {
+    let record = reviewed(vec![bot(&second())]);
+    let none = |_: &str, _: &str| Ok(None);
+    assert_eq!(
+        problems(&record, HEAD, &|_| Ok(Place::Unclean), &none, &none),
+        Ok(vec![format!(
+            "review round 2 ends at c77c67d7, not at the head {HEAD}. A commit after \
+             the round needs a new round; only a clean merge of the base, or a commit \
+             that changes no code after a round with a `Text fixes:` line, does not."
+        )])
     );
 }
 
@@ -4037,7 +4067,7 @@ fn a_merge_check_after_round_3_does_not_move_the_range_after_round_3() {
     repo.git(&["merge", "--quiet", "-X", "ours", "--no-edit", "origin/main"]);
     let head = repo.head();
     assert_eq!(
-        Place::Off,
+        Place::Unclean,
         history::History::new(&repo.dir, "main")
             .place(&decided, &head)
             .unwrap()
@@ -4098,4 +4128,77 @@ fn a_first_round_comment_numbered_2_may_not_skip_breaker() {
         check(&record(vec![bot(&round)])),
         vec!["review round 2 names no breaker, which this round requires.".to_string()]
     );
+}
+
+#[test]
+fn a_rebase_after_round_3_fails_after_a_round_3_comment_at_the_head() {
+    let (repo, start) = Repo::with_pr("breaker-rebase-after-3");
+    let two = repo.commit("c.rs", "fn two() {}\n");
+    let three = repo.commit("c.rs", "fn three() {}\n");
+    repo.git(&["switch", "--quiet", "main"]);
+    let main = repo.commit("m.txt", "main\n");
+    repo.git(&["update-ref", "refs/remotes/origin/main", &main]);
+    repo.git(&["switch", "--quiet", "pr"]);
+    // A rebase after round 3 moves the end of round 3 off the head's chain.
+    repo.git(&["rebase", "--quiet", "main"]);
+    let head = repo.head();
+    assert_eq!(
+        Place::Off,
+        history::History::new(&repo.dir, "main")
+            .place(&three, &head)
+            .unwrap()
+    );
+    let round2 = clean(2, "reviewer, breaker", &format!("{start}..{two}"));
+    let round3 = clean(3, "reviewer, breaker", &format!("{two}..{three}"));
+    let check3 = clean(3, "reviewer, breaker", &format!("{main}..{head}"));
+    let record = record(vec![
+        first(END),
+        numbered(&round2),
+        numbered(&round3),
+        numbered(&check3),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 3 ends at {three}, which is not a commit on the first-parent \
+             chain of the head {head}, or a merge of a branch other than the base \
+             follows it. Correct the range of the round comment when it names the \
+             wrong commit. Else bring the reviewed commits back onto that chain, with \
+             only merges of the base after them."
+        )]
+    );
+    repo.remove();
+}
+
+#[test]
+fn a_round_3_whose_first_end_names_no_commit_fails_after_a_round_3_at_the_head() {
+    let (repo, start) = Repo::with_pr("breaker-unnamed-end-after-3");
+    let two = repo.commit("c.rs", "fn two() {}\n");
+    let head = repo.commit("c.rs", "fn three() {}\n");
+    let surface = format!("Public surface: `hub::Route`, approved at {OK}");
+    let round2 = clean(2, "reviewer, breaker", &format!("{start}..{two}"));
+    let round3 = clean(
+        3,
+        "reviewer, architecture, breaker",
+        &format!("{two}..0badc0de"),
+    );
+    let check3 = clean(3, "reviewer, breaker", &format!("{two}..{head}"))
+        .replace("Public surface: none", &surface);
+    let record = record(vec![
+        first(END),
+        numbered(&round2),
+        numbered(&round3),
+        numbered(&check3),
+    ]);
+    assert_eq!(
+        check_at(&repo, &record),
+        vec![format!(
+            "review round 3 ends at 0badc0de, which is not a commit on the first-parent \
+             chain of the head {head}, or a merge of a branch other than the base \
+             follows it. Correct the range of the round comment when it names the \
+             wrong commit. Else bring the reviewed commits back onto that chain, with \
+             only merges of the base after them."
+        )]
+    );
+    repo.remove();
 }
