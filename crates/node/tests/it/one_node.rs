@@ -400,7 +400,6 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #435"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(PLANT);
     first_stored(&plant, &VARIABLES);
