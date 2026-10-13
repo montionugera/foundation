@@ -145,21 +145,17 @@ impl Status {
     /// from the next write until the end of the run. The same value again, or a call
     /// while no run runs, stages nothing.
     pub(crate) fn show(&self, error: Option<&dyn fmt::Display>) {
-        if matches!(*self.0.shown.borrow(), Shown::Ended) {
-            return;
-        }
-        let (class, text) = match error {
-            Some(error) => (Class::Retry, cut(&error.to_string())),
-            None => (Class::None, String::new()),
-        };
+        let text = error.map(|error| cut(&error.to_string()));
         let mut shown = self.0.shown.borrow_mut();
-        if let Shown::Last(last, last_text) = &*shown
-            && *last == class
-            && *last_text == text
-        {
+        let same = match (&*shown, &text) {
+            (Shown::Ended, _) | (Shown::Cleared, None) => true,
+            (Shown::Error(last), Some(text)) => *last == *text,
+            _ => false,
+        };
+        if same {
             return;
         }
-        *shown = Shown::Last(class, text);
+        *shown = text.map_or(Shown::Cleared, Shown::Error);
         drop(shown);
         self.0.stage();
     }
@@ -263,8 +259,10 @@ enum Shown {
     Ended,
     /// The run showed nothing yet, so the status keeps the end of the last run.
     Nothing,
-    /// The class and the text of the last error or clear of the run.
-    Last(Class, String),
+    /// The run cleared the error last.
+    Cleared,
+    /// The text of the last error that the run showed, as the class `Retry`.
+    Error(String),
 }
 
 impl fmt::Debug for Values {
@@ -560,9 +558,16 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
-        if let Shown::Last(class, text) = &*values.shown.borrow() {
-            self.class = *class;
-            self.error.set(&mut self.series, text.clone());
+        match &*values.shown.borrow() {
+            Shown::Ended | Shown::Nothing => {}
+            Shown::Cleared => {
+                self.class = Class::None;
+                self.error.set(&mut self.series, String::new());
+            }
+            Shown::Error(text) => {
+                self.class = Class::Retry;
+                self.error.set(&mut self.series, text.clone());
+            }
         }
         if self.closed {
             self.unapplied = false;
