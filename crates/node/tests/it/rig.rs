@@ -267,8 +267,9 @@ impl Rig {
             let stderr = text(&output.stderr);
             assert!(
                 output.status.success() && stderr.is_empty(),
-                "`foundation {}` failed: {stderr}",
-                args.join(" ")
+                "`foundation {}` exited with {}, stderr: {stderr}",
+                args.join(" "),
+                output.status
             );
             text(&output.stdout).to_owned()
         })
