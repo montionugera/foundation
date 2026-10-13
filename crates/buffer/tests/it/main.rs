@@ -57,6 +57,7 @@ const COVER: usize = 512;
 /// next record is the CRC of a data record and the body of a restart record.
 const DATA: u8 = 1;
 const RESTART: u8 = 3;
+const CARRY: u8 = 4;
 
 /// The disk that the files of a test are on.
 enum Disk {
@@ -230,7 +231,7 @@ impl Shard {
     }
 
     /// Fixes the CRC of the record at `offset` of the area, so that it still follows
-    /// the record before it, a restart record or a data record. The tail offset in
+    /// the record before it, a restart, data, or carry record. The tail offset in
     /// each header block must be 0. The first record follows the tail chain of the
     /// header, so for it the two header blocks must be the same up to the seq.
     async fn seal(&self, offset: u64) {
@@ -259,13 +260,21 @@ impl Shard {
                 u32_at(CHAIN_AT)
             }
             Some((before, RESTART)) => u32_at(before + 9),
-            Some((before, DATA)) => u32_at(before + 4),
+            Some((before, DATA | CARRY)) => u32_at(before + 4),
             Some((_, kind)) => panic!("no chain value of kind {kind} before {offset}"),
         };
         let crc = crc32c::crc32c_append(chain, &file[start..start + 4]);
         let end = start + 9 + len_at(start);
         let crc = crc32c::crc32c_append(crc, &file[start + 8..end]);
         self.put(start + 4, &crc.to_le_bytes()).await;
+    }
+
+    /// Puts a carry record with `body` at `offset` of the area and seals it.
+    async fn put_carry(&self, offset: u64, body: &[u8]) {
+        let len = u32::try_from(body.len()).expect("a short body");
+        let record = [&len.to_le_bytes()[..], &[0; 4], &[CARRY], body].concat();
+        self.put(to_usize(AREA_START + offset), &record).await;
+        self.seal(offset).await;
     }
 
     /// Makes a ring with a data record at `BLOCK` and one at `2 * BLOCK`.
@@ -364,6 +373,28 @@ fn tail(seq: u64, stamp: Option<i64>) -> Tail {
 
 fn mark(seq: u64, given: u64) -> Mark {
     Mark { seq, given }
+}
+
+/// One tail of a carry record of the live path of index `index`, as on disk.
+fn carried(index: u32, seq: u64, given: u64, stamp: Option<i64>) -> Vec<u8> {
+    let last = match stamp {
+        Some(stamp) => [&[1][..], &stamp.to_le_bytes()].concat(),
+        None => vec![0; 9],
+    };
+    let fields = [
+        &u128::from(index).to_le_bytes()[..],
+        &[0],
+        &seq.to_le_bytes(),
+        &given.to_le_bytes(),
+        &last,
+    ];
+    fields.concat()
+}
+
+/// The body of a carry record that holds `tails`.
+fn carry_body(tails: &[Vec<u8>]) -> Vec<u8> {
+    let count = u32::try_from(tails.len()).expect("few tails");
+    [count.to_le_bytes().to_vec(), tails.concat()].concat()
 }
 
 /// What a read gives back for an `entry` with tag 0 and `bytes`.
@@ -3386,7 +3417,7 @@ fn a_record_of_an_unknown_kind_at_the_start_of_the_ring_is_invalid() {
     run(118, |shard| async move {
         let buffer = shard.open(layout(AREA, BODY_MAX), &mut Slots::new()).await;
         drop(buffer.expect("opens"));
-        shard.put(to_usize(AREA_START) + 8, &[4]).await;
+        shard.put(to_usize(AREA_START) + 8, &[5]).await;
         shard.seal(0).await;
         shard.open_invalid(layout(AREA, BODY_MAX), 0).await;
     });
@@ -3429,7 +3460,7 @@ fn a_record_of_an_unknown_kind_after_a_long_record_is_invalid() {
         let ring = shard.create_long_record().await;
         let kind = to_usize(AREA_START + 3 * BLOCK) + 8;
         assert_eq!(shard.bytes().await[kind - to_usize(BLOCK)], DATA);
-        shard.put(kind, &[4]).await;
+        shard.put(kind, &[5]).await;
         shard.seal(3 * BLOCK).await;
         shard.open_invalid(ring, 3 * BLOCK).await;
     });
@@ -3440,7 +3471,7 @@ fn a_record_of_an_unknown_kind_is_invalid() {
     run(109, |shard| async move {
         shard.create_two_records().await;
         let kind = to_usize(AREA_START + 2 * BLOCK) + 8;
-        shard.put(kind, &[4]).await;
+        shard.put(kind, &[5]).await;
         shard.seal(2 * BLOCK).await;
         shard.open_invalid(layout(AREA, BODY_MAX), 2 * BLOCK).await;
     });
@@ -3458,6 +3489,241 @@ fn a_block_of_kind_zero_that_follows_the_chain_ends_the_walk() {
         assert_eq!(opened.map(drop), Ok(()));
         assert_eq!(shard.bytes().await[kind], RESTART);
     });
+}
+
+/// A trim passed the only record of index 1, and a carry record after the record
+/// of index 2 holds its tail. Each open gives that tail, a read gives the seqs
+/// before it as a gap, and the next entry of index 1 goes on from it.
+#[test]
+fn an_open_gives_the_carried_tail_of_a_path_with_no_record() {
+    run(158, |shard| async move {
+        let ring = layout(AREA, BODY_MAX);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        for appended in [
+            entry(1, a, Path::Live, 0, 3, Some(30), Parts::default()),
+            entry(2, b, Path::Live, 0, 2, Some(40), shard.block(20).into()),
+        ] {
+            buffer.append([appended]).expect("queues");
+            buffer.committed().await.expect("commits");
+        }
+        drop(buffer);
+        shard
+            .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 0, Some(30))]))
+            .await;
+        let chain = to_usize(AREA_START + BLOCK) + 4;
+        let chain = shard.bytes().await[chain..chain + 4].to_vec();
+        shard.tamper(TAIL_AT, &(2 * BLOCK).to_le_bytes()).await;
+        shard.tamper(CHAIN_AT, &chain).await;
+        let hidden = Read {
+            gap: Some(0..3),
+            entries: vec![],
+            next: mark(3, 0),
+        };
+        for open in ["the first open", "the second open"] {
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+            assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)), "{open}");
+            assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)), "{open}");
+            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            assert_eq!(read, Ok(hidden.clone()), "{open}");
+            let read = buffer.read(b, Path::Live, mark(0, 0), usize::MAX).await;
+            let entries = vec![stored(0, 2, Some(40), shard.block(20))];
+            assert_eq!(read, Ok(whole(entries, mark(2, 0))), "{open}");
+        }
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        let next = entry(1, a, Path::Live, 3, 3, None, shard.block(10).into());
+        buffer.append([next]).expect("queues");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(30)));
+        let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+        let expected = Read {
+            gap: Some(0..3),
+            entries: vec![stored(3, 3, None, shard.block(10))],
+            next: mark(6, 0),
+        };
+        assert_eq!(read, Ok(expected));
+    });
+}
+
+/// A carry record after the records of a path holds the tail that they give, or
+/// the open refuses the ring. The tail of each case is index 1 on the live path,
+/// whose records give seq 6 with stamp 60.
+#[test]
+fn an_open_refuses_a_carried_tail_that_is_not_the_tail_of_the_records() {
+    let cases = [
+        (carried(1, 3, 0, Some(30)), false),
+        (carried(1, 6, 1, Some(60)), false),
+        (carried(1, 7, 0, Some(60)), false),
+        (carried(1, 6, 0, Some(61)), false),
+        (carried(1, 6, 0, None), false),
+        (carried(1, 6, 0, Some(60)), true),
+    ];
+    for (carried, valid) in cases {
+        run(159, move |shard| async move {
+            shard.create_two_records().await;
+            shard.put_carry(3 * BLOCK, &carry_body(&[carried])).await;
+            let ring = layout(AREA, BODY_MAX);
+            if !valid {
+                shard.open_invalid(ring, 3 * BLOCK).await;
+                return;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(60)));
+            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let entries = vec![
+                stored(0, 3, Some(30), shard.block(0)),
+                stored(3, 3, Some(60), shard.block(0)),
+            ];
+            assert_eq!(read, Ok(whole(entries, mark(6, 0))));
+        });
+    }
+}
+
+/// A carried `given` of `u64::MAX`, then a data record with an entry with no
+/// samples at the carried seq. The open refuses the carry record, and does not
+/// count past `u64::MAX`.
+#[test]
+fn an_open_refuses_a_carried_given_that_no_ring_holds() {
+    run(161, |shard| async move {
+        shard.create_two_records().await;
+        shard
+            .put_carry(3 * BLOCK, &carry_body(&[carried(2, 4, 5, None)]))
+            .await;
+        let ring = layout(AREA, BODY_MAX);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let b = slots.index(key(2));
+        assert_eq!(buffer.durable(b, Path::Live), tail(4, None));
+        let empty = entry(2, b, Path::Live, 4, 0, None, Parts::default());
+        buffer.append([empty]).expect("queues");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        let kind = to_usize(AREA_START + 5 * BLOCK) + 8;
+        assert_eq!(shard.bytes().await[kind], DATA, "the data record");
+        shard
+            .put_carry(3 * BLOCK, &carry_body(&[carried(2, 4, u64::MAX, None)]))
+            .await;
+        shard.seal(4 * BLOCK).await;
+        shard.open_invalid(ring, 3 * BLOCK).await;
+    });
+}
+
+/// A carried `given` of 2^63 - 1 is the largest that the open takes.
+#[test]
+fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
+    for (given, taken) in [((1 << 63) - 1, true), (1 << 63, false)] {
+        run(163, move |shard| async move {
+            shard.create_two_records().await;
+            let body = carry_body(&[carried(2, 4, given, None)]);
+            shard.put_carry(3 * BLOCK, &body).await;
+            let ring = layout(AREA, BODY_MAX);
+            if !taken {
+                shard.open_invalid(ring, 3 * BLOCK).await;
+                return;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let b = slots.index(key(2));
+            assert_eq!(buffer.durable(b, Path::Live), tail(4, None));
+        });
+    }
+}
+
+/// A carry body over `body_max` makes a record longer than the window of the layout.
+/// The walk cannot check such a record, of any kind, so it ends there.
+#[test]
+fn an_open_ends_at_a_carry_record_over_body_max() {
+    run(162, |shard| async move {
+        shard.create_two_records().await;
+        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let body = carry_body(&tails);
+        assert!(body.len() > BODY_MAX, "a body of {} bytes", body.len());
+        shard.put_carry(3 * BLOCK, &body).await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(layout(AREA, BODY_MAX), &mut slots).await;
+        let buffer = buffer.expect("opens");
+        let b = slots.index(key(2));
+        assert_eq!(buffer.durable(b, Path::Live), tail(0, None));
+    });
+}
+
+/// A record that follows the chain with a body over `body_max` is a wrong shape, also
+/// within the window. At a `body_max` of 4088 the window is two blocks, so a body of
+/// 4120 bytes fits it.
+#[test]
+fn an_open_refuses_a_carry_body_over_body_max_within_the_window() {
+    run(162, |shard| async move {
+        let ring = layout(AREA, 4088);
+        {
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            for (first, stamp) in [(0, 30), (3, 60)] {
+                let parts = Parts::default();
+                buffer
+                    .append([entry(1, a, Path::Live, first, 3, Some(stamp), parts)])
+                    .expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+        }
+        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let body = carry_body(&tails);
+        assert!(body.len() > 4088, "a body of {} bytes", body.len());
+        shard.put_carry(3 * BLOCK, &body).await;
+        shard.open_invalid(ring, 3 * BLOCK).await;
+    });
+}
+
+/// A data record over `body_max` within the window is a wrong shape too: the header
+/// of a ring of three-block records says 4088, so its two-block record passes it.
+#[test]
+fn an_open_refuses_a_data_body_over_body_max_within_the_window() {
+    run(164, |shard| async move {
+        shard.create_long_record().await;
+        shard.tamper(BODY_MAX_AT, &4088_u32.to_le_bytes()).await;
+        shard.open_invalid(layout(AREA, 4088), BLOCK).await;
+    });
+}
+
+/// A carry record of the wrong shape: no count, a count over the tails it holds,
+/// bytes after its tails, a wrong path byte, a `given` over the maximum, and a wrong
+/// presence byte.
+#[test]
+fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
+    let one = carry_body(&[carried(2, 4, 0, None)]);
+    let with = |at: usize, byte: u8| {
+        let mut body = one.clone();
+        body[4 + at] = byte;
+        body
+    };
+    let mut short = one.clone();
+    short[0] = 2;
+    let bodies = [
+        vec![1, 0, 0],
+        short,
+        [one.clone(), vec![0]].concat(),
+        with(16, 2),
+        with(32, 0x80),
+        with(33, 2),
+    ];
+    for body in bodies {
+        run(160, move |shard| async move {
+            shard.create_two_records().await;
+            shard.put_carry(3 * BLOCK, &body).await;
+            shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+        });
+    }
 }
 
 #[test]

@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
 
+use crate::carry;
 use crate::entry::{self, ENTRIES_MAX};
 use crate::record::{
     self, ALIGN, AREA_START, BLOCK, Body, Check, HEADER_LEN, Head, Kind, Record,
@@ -40,6 +41,10 @@ const _: () = assert!(entry::table_len(1) <= BODY_MIN, "a body holds one entry")
 
 /// Bytes of the whole blocks that hold a record header and the largest entry table.
 const TABLE: usize = (HEADER_LEN + entry::TABLE_MAX).next_multiple_of(ALIGN);
+const _: () = assert!(
+    carry::body_len(carry::TAILS_MAX) <= TABLE - HEADER_LEN,
+    "the walk holds a full carry body whole"
+);
 
 fn to_u64(len: usize) -> u64 {
     u64::try_from(len).expect("invariant: a length in memory fits in u64")
@@ -374,21 +379,13 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// Makes the headers of the data record, with `body` as its bytes, chained
+    /// Makes the headers of the record of `kind`, with `body` as its bytes, chained
     /// from `chain`, and returns them with the boundaries after its records.
     ///
     /// # Panics
     ///
     /// When `body` is not the length the record was placed for.
     pub(crate) fn seal<'a>(
-        self,
-        chain: u32,
-        body: impl IntoIterator<Item = &'a [u8], IntoIter: Clone>,
-    ) -> (Sealed, Ends) {
-        self.headers(chain, Kind::Data, body)
-    }
-
-    fn headers<'a>(
         self,
         chain: u32,
         kind: Kind,
@@ -636,6 +633,8 @@ pub(crate) struct Window {
 pub(crate) enum Step<'a> {
     /// The body of the next data record.
     Data(Body<'a>),
+    /// The whole body of the next carry record.
+    Carry(&'a [u8]),
     /// A wrap or restart record. The cursor moved; ask for the next window.
     Moved,
     /// The record goes on past the bytes given; ask for the next window.
@@ -645,9 +644,9 @@ pub(crate) enum Step<'a> {
 }
 
 /// A record that follows the chain but that this version cannot read: a kind it
-/// does not know, a wrap or restart record of the wrong shape, or a record that
-/// ends past the end of the offsets. The ring is from another version or a defect
-/// wrote it.
+/// does not know, a body over `body_max`, a wrap, restart, or carry record of the
+/// wrong shape, or a record that ends past the end of the offsets. The ring is from
+/// another version or a defect wrote it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Invalid {
     pub(crate) offset: u64,
@@ -723,7 +722,7 @@ pub(crate) struct Cursor {
     layout: Layout,
     tail: u64,
     at: Position,
-    /// The boundary after the last data record read, or the tail.
+    /// The boundary after the last data or carry record read, or the tail.
     head: Position,
     /// The boundary after each record read, of any kind, oldest first.
     ends: VecDeque<Position>,
@@ -789,8 +788,7 @@ impl Cursor {
     }
 
     /// The largest window at the read position: the largest record, the rest of the
-    /// area,
-    /// or the rest of one lap.
+    /// area, or the rest of one lap.
     fn bound(&self) -> Window {
         let area = self.layout.area;
         let place = self.layout.place(self.at.offset);
@@ -891,10 +889,14 @@ impl Cursor {
             crc,
         } = record;
         let offset = self.at.offset;
+        if body.len > self.layout.body_max {
+            return Err(Invalid { offset, kind });
+        }
         let unread = self.unread();
         let rest = self.layout.area - self.layout.place(offset);
         let (moved, chain, step) = match (Kind::decode(kind), body.whole()) {
             (Some(Kind::Data), _) => (to_u64(size), crc, Step::Data(body)),
+            (Some(Kind::Carry), Some(body)) => (to_u64(size), crc, Step::Carry(body)),
             (Some(Kind::Wrap), Some([])) if rest < unread => (rest, crc, Step::Moved),
             (Some(Kind::Restart), Some(&[c0, c1, c2, c3])) => {
                 let chain = u32::from_le_bytes([c0, c1, c2, c3]);
@@ -908,16 +910,16 @@ impl Cursor {
             chain,
         };
         self.ends.push_back(self.at);
-        if let Step::Data(_) = step {
+        if let Step::Data(_) | Step::Carry(_) = step {
             self.head = self.at;
         }
         Ok(step)
     }
 
-    /// Makes the writer that continues the ring after the last data record walked,
-    /// or from the tail when the walk read none, with the records before the offset
-    /// `tail` released, and seals its restart record with `chain`, a new random
-    /// value, as the body. The chain continues from `chain`.
+    /// Makes the writer that continues the ring after the last data or carry
+    /// record walked, or from the tail when the walk read none, with the records
+    /// before the offset `tail` released, and seals its restart record with `chain`,
+    /// a new random value, as the body. The chain continues from `chain`.
     ///
     /// # Errors
     ///
@@ -928,7 +930,7 @@ impl Cursor {
     /// # Panics
     ///
     /// Before [`Step::End`], or when `tail` is before the tail of the walk or past
-    /// the end of its last data record.
+    /// the end of its last data or carry record.
     pub(crate) fn writer(
         self,
         tail: u64,
@@ -936,7 +938,8 @@ impl Cursor {
     ) -> Result<(Writer, Sealed), Full> {
         assert!(self.ended, "invariant: the chain ends at the last step");
         let Self { head, mut ends, .. } = self;
-        // The restart record goes over the records after the last data record.
+        // The restart record goes over the records after the last data or carry
+        // record.
         ends.truncate(ends.partition_point(|end| end.offset <= head.offset));
         let mut writer = Writer {
             layout: self.layout,
@@ -948,7 +951,7 @@ impl Cursor {
         writer.release(tail);
         let plan = writer.append(RESTART_LEN)?;
         let body = chain.to_le_bytes();
-        let (sealed, ends) = plan.headers(head.chain, Kind::Restart, [&body[..]]);
+        let (sealed, ends) = plan.seal(head.chain, Kind::Restart, [&body[..]]);
         // The open syncs the restart record before the first commit, and the chain
         // continues from its body.
         let offset = plan.next;
@@ -1048,7 +1051,7 @@ mod tests {
             asked += to_u64(len);
             match cursor.next(&area[index(place)..index(place) + len])? {
                 Step::Data(body) => data.push(whole(area, place, body)),
-                Step::Moved | Step::More => {}
+                Step::Carry(_) | Step::Moved | Step::More => {}
                 Step::End => {
                     let walked = cursor.at.offset - tail.offset;
                     let window =
@@ -1166,7 +1169,7 @@ mod tests {
                 plan.offset >= self.head.offset,
                 "the offset is at or past the head"
             );
-            let (sealed, ends) = plan.seal(self.head.chain, [body]);
+            let (sealed, ends) = plan.seal(self.head.chain, Kind::Data, [body]);
             self.apply(&sealed, body, true);
             self.head = ends.record;
             self.writer.synced(ends);
@@ -1625,7 +1628,7 @@ mod tests {
                 (plan.wrap, plan.place, plan.next),
                 (Some(15 * 4096), 0, 18 * 4096)
             );
-            let (sealed, ends) = plan.seal(9, [[7; ALIGN].as_slice()]);
+            let (sealed, ends) = plan.seal(9, Kind::Data, [[7; ALIGN].as_slice()]);
             let (wrap, after_wrap) = record::header(9, Kind::Wrap, []);
             let (header, after) =
                 record::header(after_wrap, Kind::Data, [[7; ALIGN].as_slice()]);
@@ -1651,8 +1654,8 @@ mod tests {
             let mut ring = Ring::new();
             let first = ring.writer.append(1).expect("the ring has room");
             let second = ring.writer.append(1).expect("the ring has room");
-            let (a, ends) = first.seal(ring.head.chain, [b"a".as_slice()]);
-            let (b, _) = second.seal(ends.record.chain, [b"b".as_slice()]);
+            let (a, ends) = first.seal(ring.head.chain, Kind::Data, [b"a".as_slice()]);
+            let (b, _) = second.seal(ends.record.chain, Kind::Data, [b"b".as_slice()]);
             for (sealed, body) in [(a, b"a"), (b, b"b")] {
                 let mut bytes = sealed.record.header.to_vec();
                 bytes.extend_from_slice(body);
@@ -1660,7 +1663,8 @@ mod tests {
             }
             let (data, _) = walk(&ring.area, START).expect("a valid ring");
             assert_eq!(data, [b"a", b"b"]);
-            let (wrong, _) = second.seal(ring.head.chain, [b"b".as_slice()]);
+            let (wrong, _) =
+                second.seal(ring.head.chain, Kind::Data, [b"b".as_slice()]);
             let mut bytes = wrong.record.header.to_vec();
             bytes.extend_from_slice(b"b");
             ring.write(wrong.record.place, &bytes, 0);
@@ -1674,7 +1678,7 @@ mod tests {
         )]
         fn seal_panics_on_a_body_of_another_length() {
             let plan = writer(0, 1).append(1).expect("the ring has room");
-            let _sealed = plan.seal(0, [b"ab".as_slice()]);
+            let _sealed = plan.seal(0, Kind::Data, [b"ab".as_slice()]);
         }
 
         #[test]
@@ -1683,7 +1687,7 @@ mod tests {
         )]
         fn seal_panics_on_a_body_shorter_than_the_record() {
             let plan = writer(0, 1).append(1).expect("the ring has room");
-            let _sealed = plan.seal(0, []);
+            let _sealed = plan.seal(0, Kind::Data, []);
         }
 
         #[test]
@@ -2317,6 +2321,67 @@ mod tests {
             assert_eq!(ring.trim(None), Some(end));
         }
 
+        /// A carry record comes whole, and the restart record of an open goes right
+        /// after it.
+        #[test]
+        fn gives_a_carry_record_whole_and_starts_a_writer_after_it() {
+            let mut area = vec![0; index(AREA)];
+            let chain = put(&mut area, 0, START.chain, Kind::Data.byte(), b"a");
+            let chain = put(&mut area, 1, chain, Kind::Carry.byte(), b"tails");
+            put(
+                &mut area,
+                2,
+                chain,
+                Kind::Restart.byte(),
+                &5u32.to_le_bytes(),
+            );
+            let mut cursor = Cursor::new(layout(), START, PIECE);
+            let steps = [data(b"a"), Step::Carry(b"tails"), Step::Moved, Step::End];
+            for (block, step) in steps.into_iter().enumerate() {
+                let window = Window {
+                    place: to_u64(block * ALIGN),
+                    len: ALIGN,
+                };
+                assert_eq!(cursor.window(), window, "block {block}");
+                let read = cursor.next(&area[block * ALIGN..(block + 1) * ALIGN]);
+                assert_eq!(read, Ok(step), "block {block}");
+            }
+            let (writer, sealed) = cursor.writer(0, 6).expect("the ring has room");
+            assert_eq!((sealed.record.place, writer.head()), (2 * 4096, 3 * 4096));
+        }
+
+        /// The length of the body of the carry record of `len` bytes at the start
+        /// of a long ring, as the walk gives it.
+        fn carried(len: usize) -> Result<usize, Invalid> {
+            let mut area = vec![0; 4 * LONG];
+            put(&mut area, 0, START.chain, Kind::Carry.byte(), &vec![4; len]);
+            let mut cursor = Cursor::new(long_layout(), START, PIECE);
+            for _ in 0..LONG / ALIGN {
+                let Window { place, len } = cursor.window();
+                match cursor.next(&area[index(place)..index(place) + len])? {
+                    Step::Moved | Step::More => {}
+                    Step::Carry(body) if body.iter().all(|byte| *byte == 4) => {
+                        return Ok(body.len());
+                    }
+                    other => panic!("the walk read {other:?}"),
+                }
+            }
+            panic!("the walk did not reach the carry record");
+        }
+
+        /// The walk holds a carry record whole only within the table bound.
+        #[test]
+        fn gives_a_carry_record_whole_only_within_the_table_bound() {
+            let bound = TABLE - HEADER_LEN;
+            for len in [0, ALIGN - HEADER_LEN, ALIGN - HEADER_LEN + 1, bound] {
+                assert_eq!(carried(len), Ok(len), "a body of {len} bytes");
+            }
+            let invalid = Invalid { offset: 0, kind: 4 };
+            for len in [bound + 1, LONG - HEADER_LEN] {
+                assert_eq!(carried(len), Err(invalid), "a body of {len} bytes");
+            }
+        }
+
         /// The writer starts before the restart records after the last data record,
         /// so a tail past the last data record is outside its records.
         #[test]
@@ -2397,8 +2462,8 @@ mod tests {
         #[test]
         fn reports_a_record_of_a_kind_it_does_not_know() {
             let mut area = vec![0; index(AREA)];
-            put(&mut area, 0, START.chain, 4, b"");
-            let invalid = Invalid { offset: 0, kind: 4 };
+            put(&mut area, 0, START.chain, 5, b"");
+            let invalid = Invalid { offset: 0, kind: 5 };
             assert_eq!(walk(&area, START).map(drop), Err(invalid));
         }
 

@@ -26,6 +26,7 @@ use types::hash;
 use types::time::Span;
 use types::wait;
 
+use crate::carry;
 use crate::entry::{self, ENTRIES_MAX, Entry};
 use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
@@ -880,6 +881,7 @@ async fn walk(
             Step::Data(body) => {
                 recover(body, offset, pool.largest(), slots, &mut logs)?;
             }
+            Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
             Step::Moved | Step::More => {}
             Step::End => break,
         }
@@ -910,6 +912,23 @@ fn recover(
         let slot = slots.index(header.index);
         logs.append(slot, &header).map_err(misplaced)?;
         logs.sync(slot, &header, offset).map_err(misplaced)?;
+    }
+    Ok(())
+}
+
+/// Feeds the logs the tails of a carry record body at `offset`.
+fn recover_carried(
+    body: &[u8],
+    offset: u64,
+    slots: &mut Slots,
+    logs: &mut Logs,
+) -> Result<(), Error> {
+    let unread = |_: entry::Invalid| Error::Invalid { offset };
+    let misplaced = |_: log::Invalid| Error::Invalid { offset };
+    for tail in carry::parse(body).map_err(unread)? {
+        let tail = tail.map_err(unread)?;
+        let slot = slots.index(tail.index);
+        logs.carry(slot, &tail).map_err(misplaced)?;
     }
     Ok(())
 }

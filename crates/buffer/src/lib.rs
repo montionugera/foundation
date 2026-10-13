@@ -5,6 +5,7 @@
 #[doc(hidden)]
 pub mod bench;
 mod buffer;
+mod carry;
 mod crc32c;
 mod entry;
 mod group;
