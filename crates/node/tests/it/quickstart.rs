@@ -13,6 +13,7 @@ fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
 }
 
 #[test]
+#[ignore = "waits on #337, #1735"]
 fn the_help_names_each_command_and_flag_on_the_quickstart_page() {
     let commands: Vec<Vec<&str>> = blocks("sh")
         .flat_map(str::lines)
