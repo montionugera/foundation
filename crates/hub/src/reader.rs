@@ -72,6 +72,8 @@ pub struct Config {
 pub struct Received<'a> {
     view: View<'a>,
     lens: &'a Lens,
+    /// The `names` of the reader.
+    names: &'a Names,
     /// The `given` of the reader.
     given: &'a Cell<Option<u64>>,
 }
@@ -87,6 +89,20 @@ impl<'a> Received<'a> {
     #[must_use]
     pub fn set(&self) -> &'a Arc<KeySet> {
         &self.lens.set
+    }
+
+    /// The name of the channel at `entry` of [`Self::set`], as it was when the reader
+    /// opened. The entry's `data_type` is the type of its samples.
+    ///
+    /// # Panics
+    ///
+    /// If `entry` is not an entry that [`Self::view`] gives.
+    #[must_use]
+    pub fn name(&self, entry: usize) -> &'a str {
+        let key = self.lens.set.entries()[entry].key;
+        self.names.get(key).unwrap_or_else(|| {
+            panic!("the entry {entry} is not a channel of the reader")
+        })
     }
 
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
@@ -313,6 +329,7 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
+    names: Names,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
@@ -424,9 +441,12 @@ impl Reader {
         let item = |channel: &Channel| (channel.key(), channel.sample());
         let (matched, home) =
             find(state, || &select, |_, channel| item(channel)).await?;
+        // With no wait since `find`, so each key is defined.
+        let keys = matched.items.iter().map(|&(key, _)| key);
+        let by_key = Names::new(&state.borrow(), keys);
         let home = match home {
             Home::Here(channels) => {
-                return Self::local(state, channels, mode, named, hold);
+                return Self::local(state, channels, mode, named, hold, by_key);
             }
             Home::Away(home) => home,
         };
@@ -442,6 +462,7 @@ impl Reader {
         let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
         Ok(Self {
             index: slot,
+            names: by_key,
             source: Source::Remote(Box::new(remote)),
             given: Cell::new(None),
             frame: None,
@@ -449,13 +470,14 @@ impl Reader {
     }
 
     /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
-    /// [`find`] gave them.
+    /// [`find`] gave them. It holds no names: the places of a served read carry them,
+    /// so [`Received::name`] panics.
     pub(crate) fn here(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
     ) -> Result<Self, Error> {
-        Self::local(state, channels, mode, None, Span::ZERO)
+        Self::local(state, channels, mode, None, Span::ZERO, Names::default())
     }
 
     /// Opens a reader on `channels` at this node, the home of their index.
@@ -465,12 +487,14 @@ impl Reader {
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
+        by_key: Names,
     ) -> Result<Self, Error> {
         let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
         Ok(Self {
             source: Source::Local(local),
             index: slot,
+            names: by_key,
             given: Cell::new(None),
             frame: None,
         })
@@ -514,6 +538,7 @@ impl Reader {
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
+                names: &self.names,
                 given: &self.given,
             })
         }
@@ -587,6 +612,58 @@ impl From<Stop> for Ended {
             Stop::Removed(key) => Self::Removed(key),
             Stop::Replaced => Self::Replaced,
         }
+    }
+}
+
+/// The name of each channel of a reader, in one text, so an open copies no name.
+#[derive(Debug, Default)]
+struct Names {
+    /// The key of each channel, sorted, with the end of its name in `text`.
+    ends: Box<[(channel::Key, usize)]>,
+    text: Box<str>,
+}
+
+impl Names {
+    /// The names in `state` of `keys`.
+    ///
+    /// # Panics
+    ///
+    /// If `state` does not define each of `keys`.
+    fn new(state: &State, keys: impl Iterator<Item = channel::Key>) -> Self {
+        fn name(found: Option<&Name>) -> &str {
+            found
+                .expect("invariant: each channel of a reader is defined at its open")
+                .as_str()
+        }
+        let mut found: Vec<(channel::Key, Option<&Name>)> =
+            keys.map(|key| (key, None)).collect();
+        found.sort_unstable_by_key(|&(key, _)| key);
+        for (name, channel) in state.channels.iter() {
+            if let Ok(at) = found.binary_search_by_key(&channel.key(), |&(key, _)| key)
+            {
+                found[at].1 = Some(name);
+            }
+        }
+        let len = found.iter().map(|&(_, found)| name(found).len()).sum();
+        let mut text = String::with_capacity(len);
+        let ends = found
+            .into_iter()
+            .map(|(key, found)| {
+                text.push_str(name(found));
+                (key, text.len())
+            })
+            .collect();
+        Self {
+            ends,
+            text: text.into_boxed_str(),
+        }
+    }
+
+    /// The name of `key`, or `None` when it is not a channel of the reader.
+    fn get(&self, key: channel::Key) -> Option<&str> {
+        let at = self.ends.binary_search_by_key(&key, |&(key, _)| key).ok()?;
+        let start = at.checked_sub(1).map_or(0, |before| self.ends[before].1);
+        Some(&self.text[start..self.ends[at].1])
     }
 }
 
