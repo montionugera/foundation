@@ -98,22 +98,21 @@ impl Placed<'_> {
     }
 
     /// Whether the channels of `received` are the status channels of the spec, each
-    /// with the key and the sample type that the spec gives its name. The frame holds
-    /// its index, so this checks the index too. Each write of the supervisor holds
-    /// every status channel, so a frame with fewer is of another writer, of a hub that
-    /// lacks one, or of a run of an earlier spec with fewer counts.
+    /// with a key and the sample type that the spec gives it. The reader selects the
+    /// names of the spec, and `config` never gives a key to a second name, so the key
+    /// also fixes the name. The frame holds its index, so this checks the index too.
+    /// Each write of the supervisor holds every status channel, so a frame with fewer
+    /// is of another writer, of a hub that lacks one, or of a run of an earlier spec
+    /// with fewer counts.
     fn defines(&self, received: &Received<'_>) -> bool {
         let (set, view) = (received.set(), received.view());
         view.iter().count() == self.channels.len()
             && view.iter().all(|(entry, _)| {
                 let found = &set.entries()[entry];
-                let name = received.name(entry);
                 let mut defined = self.channels.iter();
                 defined
-                    .find(|(defined, _)| defined.as_str() == name)
-                    .is_some_and(|(_, channel)| {
-                        channel.key == found.key && sample(channel) == found.data_type
-                    })
+                    .find(|(_, channel)| channel.key == found.key)
+                    .is_some_and(|(_, channel)| sample(channel) == found.data_type)
             })
     }
 }
