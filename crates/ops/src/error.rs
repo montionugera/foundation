@@ -13,7 +13,6 @@ use serde_json::{Value, json};
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::Failure;
 use crate::front_end::File;
 
 const ARGUMENT: Code = Code::new("ops.argument");
@@ -295,6 +294,18 @@ impl Error {
             .collect();
         problems.join("\n")
     }
+}
+
+/// Why the command line did not run, why its node did not start or stopped with an
+/// error, or why the command line did not reach its node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    /// What kind of failure it is, such as `node.busy`.
+    pub code: Code,
+    /// What went wrong.
+    pub message: String,
+    /// What to do about it.
+    pub fix: String,
 }
 
 /// One problem, as the JSON and the text of each error give it.

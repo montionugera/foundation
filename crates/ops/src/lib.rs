@@ -26,11 +26,12 @@ mod tests;
 mod used;
 
 use error::Error;
+pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
 pub use node::Node;
 use operation::Parsed;
 pub use serve::serve;
-pub use start::{Failure, Start};
+pub use start::Start;
 
 /// What the process does once [`cli`] returns.
 #[derive(Debug, PartialEq, Eq)]
