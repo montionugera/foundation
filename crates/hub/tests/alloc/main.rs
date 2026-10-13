@@ -19,6 +19,7 @@ mod node;
 #[path = "../common/woken.rs"]
 mod woken;
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
@@ -56,6 +57,25 @@ fn read(reader: &mut Reader) -> u64 {
         (0..2).any(|_| match pin!(reader.next()).poll(context) {
             Poll::Ready(received) => received.is_ok(),
             Poll::Pending => false,
+        })
+    });
+    assert!(taken, "a committed frame waits for the reader");
+    allocations
+}
+
+/// Takes the next frame of `reader`, as [`read`] does, and gives the name of each entry
+/// of its view, with the allocations of both.
+fn read_named(reader: &mut Reader) -> u64 {
+    let (taken, allocations) = ALLOCATOR.count(|| {
+        let context = &mut Context::from_waker(Waker::noop());
+        (0..2).any(|_| match pin!(reader.next()).poll(context) {
+            Poll::Ready(Ok(received)) => {
+                for (entry, _) in received.view().iter() {
+                    black_box(received.name(entry));
+                }
+                true
+            }
+            Poll::Ready(Err(_)) | Poll::Pending => false,
         })
     });
     assert!(taken, "a committed frame waits for the reader");
@@ -185,8 +205,10 @@ fn open_of_a_reader_of_many_channels() {
     .expect("the run ends");
 }
 
-/// The `next` of a reader at each change between a large key set and a small one:
-/// after the first change to each, a named reader's places make no allocation.
+/// The `next` of a reader at each change between a large key set and a small one. The
+/// first two frames get no name, and make no places. Then each frame gets a name for
+/// each entry of its view: the places allocate at the first large key set, and then
+/// never again.
 fn next_at_each_change_of_key_set() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
@@ -220,14 +242,18 @@ fn next_at_each_change_of_key_set() {
             now = writer.now().nanos().max(now + 1);
             write(&mut writer, now);
             node.clock().sleep(SETTLE).await;
-            counts.push(read(&mut reader));
+            counts.push(if n < 2 {
+                read(&mut reader)
+            } else {
+                read_named(&mut reader)
+            });
             drop(writer);
             node.clock().sleep(SETTLE).await;
         }
         assert_eq!(
-            counts[2..],
-            [4, 1, 4, 1, 4, 1],
-            "allocations of each `next`: {counts:?}"
+            counts,
+            [4, 1, 5, 1, 4, 1, 4, 1],
+            "allocations of each `next` and its names: {counts:?}"
         );
     })
     .expect("the run ends");

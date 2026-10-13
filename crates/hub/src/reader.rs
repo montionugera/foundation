@@ -102,7 +102,7 @@ impl<'a> Received<'a> {
         let names = self
             .names
             .expect("invariant: the hub calls no `name` on a reader of a client read");
-        let place = names.find(entry).unwrap_or_else(|| {
+        let place = names.find(&self.lens.set, entry).unwrap_or_else(|| {
             panic!("the entry {entry} is not a channel of the reader")
         });
         names.get(place)
@@ -540,9 +540,6 @@ impl Reader {
                 Source::Remote(remote) => remote.take().await?,
             };
             let frame = self.frame.insert(frame);
-            if let Some(names) = &mut self.names {
-                names.place(&lens.set);
-            }
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
@@ -624,29 +621,19 @@ impl From<Stop> for Ended {
 }
 
 /// The name of each channel of a reader, in the order of its channels, in one text,
-/// so an open makes no allocation for each name, and the place of each entry of the
-/// key set of the reader's last frame.
+/// so an open makes no allocation for each name, and the places of the key set of the
+/// last name.
 #[derive(Debug)]
 struct Names {
     /// The end in `text` of the name of each channel.
     ends: Box<[usize]>,
     text: Box<str>,
-    /// The slot of each channel, and its entry in `set` or [`Names::NONE`]. Empty until
-    /// the open knows the home of the index.
-    channels: Box<[(channel::Slot, u32)]>,
-    /// The key set that the entries and `places` are of, or `None` before the first
-    /// frame.
-    set: Option<key_set::Key>,
-    /// The place in the channels of each entry of `set`, or [`Names::NONE`]. As long
-    /// as the largest key set so far, with [`Names::NONE`] past `set`, so that a new
-    /// key set allocates only when it is larger.
-    places: Vec<u32>,
+    /// Made on the first name of each key set, so a reader that gives no name does no
+    /// work for them.
+    places: RefCell<Places>,
 }
 
 impl Names {
-    /// The place of an entry that is not a channel of the reader.
-    const NONE: u32 = u32::MAX;
-
     /// The names of `found`, in their order, with no slots.
     fn new(found: &[(&Name, &Channel)]) -> Self {
         let len = found.iter().map(|(name, _)| name.as_str().len()).sum();
@@ -661,53 +648,72 @@ impl Names {
         Self {
             ends,
             text: text.into_boxed_str(),
-            channels: Box::default(),
-            set: None,
-            places: Vec::new(),
+            places: RefCell::default(),
         }
     }
 
     /// Gives the slot of each channel, in their order.
     fn slot(&mut self, slots: &[channel::Slot]) {
-        self.channels = slots.iter().map(|&slot| (slot, Self::NONE)).collect();
+        self.places.get_mut().channels =
+            slots.iter().map(|&slot| (slot, Places::NONE)).collect();
     }
 
-    /// Makes the entries and places those of `set`. It costs a search of `set` for each
-    /// channel, and work for each other entry of `set` only when `set` is larger than
-    /// each key set before it.
-    fn place(&mut self, set: &KeySet) {
-        if self.set == Some(set.key()) {
-            return;
-        }
-        for &(_, entry) in &self.channels {
-            if entry != Self::NONE {
-                self.places[to_usize(entry)] = Self::NONE;
-            }
-        }
-        let len = self.places.len().max(set.entries().len());
-        self.places.resize(len, Self::NONE);
-        for (place, (slot, entry)) in self.channels.iter_mut().enumerate() {
-            *entry = set.find(*slot).map_or(Self::NONE, |at| {
-                self.places[at] = u32::try_from(place)
-                    .expect("invariant: a reader has fewer than u32::MAX channels");
-                u32::try_from(at)
-                    .expect("invariant: a key set has fewer than u32::MAX entries")
-            });
-        }
-        self.set = Some(set.key());
-    }
-
-    /// The place in the channels of `entry` of the last key set, or `None` when it is
-    /// not one.
-    fn find(&self, entry: usize) -> Option<usize> {
-        let place = *self.places.get(entry)?;
-        (place != Self::NONE).then(|| to_usize(place))
+    /// The place in the channels of `entry` of `set`, or `None` when it is not one.
+    fn find(&self, set: &KeySet, entry: usize) -> Option<usize> {
+        let mut places = self.places.borrow_mut();
+        places.make(set);
+        let place = *places.entries.get(entry)?;
+        (place != Places::NONE).then(|| to_usize(place))
     }
 
     /// The name of the channel at `place`.
     fn get(&self, place: usize) -> &str {
         let start = place.checked_sub(1).map_or(0, |before| self.ends[before]);
         &self.text[start..self.ends[place]]
+    }
+}
+
+/// The place in a reader's channels of each entry of one key set.
+#[derive(Debug, Default)]
+struct Places {
+    /// The key set that the entries are of, or `None` before the first name.
+    set: Option<key_set::Key>,
+    /// The slot of each channel, and its entry in `set` or [`Places::NONE`]. Empty
+    /// until the open knows the home of the index.
+    channels: Box<[(channel::Slot, u32)]>,
+    /// The place of each entry of `set`, or [`Places::NONE`]. As long as the largest
+    /// key set so far, with [`Places::NONE`] past `set`, so that a new key set
+    /// allocates only when it is larger.
+    entries: Vec<u32>,
+}
+
+impl Places {
+    /// The place of an entry that is not a channel of the reader.
+    const NONE: u32 = u32::MAX;
+
+    /// Makes the places those of `set`. It costs a search of `set` for each channel,
+    /// and work for each other entry of `set` only when `set` is larger than each key
+    /// set before it.
+    fn make(&mut self, set: &KeySet) {
+        if self.set == Some(set.key()) {
+            return;
+        }
+        for &(_, entry) in &self.channels {
+            if entry != Self::NONE {
+                self.entries[to_usize(entry)] = Self::NONE;
+            }
+        }
+        let len = self.entries.len().max(set.entries().len());
+        self.entries.resize(len, Self::NONE);
+        for (place, (slot, entry)) in self.channels.iter_mut().enumerate() {
+            *entry = set.find(*slot).map_or(Self::NONE, |at| {
+                self.entries[at] = u32::try_from(place)
+                    .expect("invariant: a reader has fewer than u32::MAX channels");
+                u32::try_from(at)
+                    .expect("invariant: a key set has fewer than u32::MAX entries")
+            });
+        }
+        self.set = Some(set.key());
     }
 }
 
