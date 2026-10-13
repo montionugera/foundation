@@ -657,6 +657,25 @@ fn counts_the_samples_of_each_run_after_a_restart() {
     assert_eq!(last(&outcome.statuses, IN), frames * 3);
 }
 
+/// `missed` and `lost` hold across the runs of one supervisor call.
+#[test]
+fn counts_the_missed_ticks_and_lost_samples_of_each_run_after_a_restart() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
+        scene.after(ms(1_050), move |scene| async move {
+            drop(rival);
+            scene.node.pause(Span::SECOND);
+        });
+        scene.after(ms(2_550), |scene| async move { scene.stop().await });
+        scene.after(ms(4_050), |scene| async move { scene.serve() });
+        scene.supervise(ms(6_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 2);
+    assert_eq!(last(&outcome.statuses, MISSED), 9);
+    assert_eq!(last(&outcome.statuses, LOST), 33);
+}
+
 #[test]
 fn ends_the_run_with_a_device_error_on_a_bad_status() {
     let outcome = run(Setup::three(), |scene| async move {
