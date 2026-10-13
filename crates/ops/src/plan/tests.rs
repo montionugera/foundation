@@ -17,7 +17,7 @@ use types::name::Name;
 use types::sample;
 
 use super::{Output, plan};
-use crate::common::{ADMIN, PLANT, Reader, SITE, files, front_ends, name, placed_site};
+use crate::common::{ADMIN, Reader, SITE, files, front_ends, name, placed_site, plant};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
@@ -67,7 +67,7 @@ const INDEX: channel::Kind = channel::Kind::Index {
 
 #[test]
 fn shows_each_definition_in_file_order_then_the_counts() {
-    let planned = run(&[("plant.hcl", PLANT)], &BTreeMap::new()).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &BTreeMap::new()).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -158,7 +158,7 @@ fn gives_the_json_of_the_site_plan() {
 
 #[test]
 fn gives_each_problem_with_its_place_and_fix() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
+    let wrong = plant().replacen("data_type", "datatype", 1);
     assert_eq!(
         problems(&[("plant.hcl", &wrong)]).text(),
         "\
@@ -373,7 +373,7 @@ fn gives_the_json_of_a_change_and_a_removal() {
 
 #[test]
 fn names_one_problem_or_the_count_and_exits_with_2() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
+    let wrong = plant().replacen("data_type", "datatype", 1);
     let two = problems(&[("plant.hcl", &wrong)]);
     assert_eq!(
         (two.to_string(), two.status()),
@@ -644,7 +644,7 @@ fn breaker_names_the_applied_channel_that_a_connector_replaces() {
     let kinds = Table::new().with("influx", Reader).with("opcua", Reader);
     let members = BTreeSet::from([name("edge")]);
     let (output, planned) = plan(
-        &files(&[("plant.hcl", PLANT)]),
+        &files(&[("plant.hcl", plant())]),
         empty(),
         &applied,
         &members,
@@ -677,7 +677,7 @@ fn breaker_names_the_applied_channel_that_a_connector_replaces() {
 #[test]
 fn shows_a_kind_change_as_an_add_and_a_removal() {
     let applied = BTreeMap::from([(name("plc"), channel(9, INDEX))]);
-    let planned = run(&[("plant.hcl", PLANT)], &applied).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -711,7 +711,7 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
     let connector = Connector::new(name("opcua"), name("edge"), config);
     let applied =
         BTreeMap::from([(name("plant.time"), Definition::Connector(connector))]);
-    let planned = run(&[("plant.hcl", PLANT)], &applied).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
     assert_eq!(
         planned.text(),
         "\

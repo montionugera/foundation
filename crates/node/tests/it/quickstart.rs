@@ -12,6 +12,14 @@ fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
         .filter_map(move |block| block.strip_prefix(language)?.strip_prefix('\n'))
 }
 
+/// The config of the page, its one `hcl` block.
+pub(crate) fn plant() -> &'static str {
+    let [hcl] = blocks("hcl").collect::<Vec<_>>()[..] else {
+        panic!("the page has not one `hcl` block");
+    };
+    hcl
+}
+
 #[test]
 #[ignore = "waits on #337, #1735"]
 fn the_help_names_each_command_and_flag_on_the_quickstart_page() {

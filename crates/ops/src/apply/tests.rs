@@ -22,8 +22,8 @@ use types::name::{Name, Prefix};
 
 use super::{Applied, Effect, file};
 use crate::common::{
-    ADMIN, NODE, PLANT, Reader, create_kinds, fail_sync, files, founded, front_ends,
-    keys, name, placed_site, solo,
+    ADMIN, NODE, Reader, create_kinds, fail_sync, files, founded, front_ends, keys,
+    name, placed_site, plant, solo,
 };
 use crate::error::Error;
 use crate::plan::{self, Counts, Output, plan};
@@ -103,7 +103,7 @@ fn refuses_a_plan_of_a_spec_that_changed_and_proposes_nothing() {
     solo(|_, mesh| async move {
         let base = mesh.pointer();
         let (_, site) = plan_on(&mesh, &[("site.hcl", &placed_site())]).await;
-        let (_, plant) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, plant) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         file(path(), &site.encode(), &mesh, &create_kinds(), keys(0))
             .await
             .expect("an apply");
@@ -164,7 +164,7 @@ fn refuses_a_stale_plan_with_a_founding_change_as_stale() {
         let founding = spec::founding::create(ADMIN.public());
         let other =
             Subject::new(vec![PrivateKey([8; 32]).public()]).expect("a subject");
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let founding = one(
             &planned,
             "@admin.@subject",
@@ -191,7 +191,7 @@ fn gives_a_stale_plan_when_another_apply_commits_first() {
     solo(|_, mesh| async move {
         let base = mesh.pointer();
         let (_, site) = plan_on(&mesh, &[("site.hcl", &placed_site())]).await;
-        let (_, plant) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, plant) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let (site, plant) = (site.encode(), plant.encode());
         let kinds = create_kinds();
         let mut first = pin!(file(path(), &site, &mesh, &kinds, keys(0)));
@@ -259,7 +259,7 @@ fn refuses_a_change_of_a_founding_definition_and_proposes_nothing() {
         let (subject, access) = (name("@admin.@subject"), name("@admin.@access"));
         let other =
             Subject::new(vec![PrivateKey([8; 32]).public()]).expect("a subject");
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let cases = [
             (
                 one(
@@ -316,7 +316,7 @@ fn rogue(planned: &config::plan::Plan, kind: &str, node: &str) -> config::plan::
 #[test]
 fn refuses_a_change_of_a_definition_that_is_not_applied() {
     solo(|_, mesh| async move {
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let entry = planned.changes[&name("plc")].new.as_ref().expect("an add");
         let config::Definition::Spec(plc) = entry.definition.clone() else {
             panic!("plc is in the spec");
@@ -341,7 +341,7 @@ fn refuses_a_change_of_a_definition_that_is_not_applied() {
 #[test]
 fn refuses_a_plan_that_plan_refuses_and_proposes_nothing() {
     solo(|_, mesh| async move {
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let cases = [
             (
                 rogue(&planned, "nothing", "edge"),
@@ -389,7 +389,7 @@ fn added(
 #[test]
 fn refuses_a_plan_that_breaks_a_rule_on_names_or_private_keys() {
     solo(|_, mesh| async move {
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let entry = planned.changes[&name("plc")].new.as_ref().expect("an add");
         let config::Definition::Spec(plc) = entry.definition.clone() else {
             panic!("plc is in the spec");
@@ -610,7 +610,7 @@ fn refuses_each_plan_that_check_refuses_and_proposes_nothing() {
 #[test]
 fn refuses_a_config_that_its_kind_refuses_at_the_apply() {
     solo(|_, mesh| async move {
-        let (_, plant) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, plant) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let refusing = Table::new().with("influx", Reader).with("opcua", Refuser);
         let refused = problem("test.refused", "refused", "Fix it");
         refuses(
@@ -677,7 +677,7 @@ fn refuses_bytes_that_are_not_a_plan_and_proposes_nothing() {
              reads only version 1; plan again with this build\nfix: Make a plan with \
              `foundation plan`, and apply it with no edits\n"
         );
-        let (_, planned) = plan_on(&mesh, &[("plant.hcl", PLANT)]).await;
+        let (_, planned) = plan_on(&mesh, &[("plant.hcl", plant())]).await;
         let mut bytes = planned.encode();
         bytes.truncate(2);
         let malformed = config::plan::Error::Malformed { at: 1 };
@@ -1053,7 +1053,7 @@ fn refuses_a_plan_on_a_node_that_uses_an_old_spec_as_behind() {
         let first = mesh.pointer();
         let site = placed_site();
         let (_, both) =
-            plan_on(&mesh, &[("site.hcl", &site), ("plant.hcl", PLANT)]).await;
+            plan_on(&mesh, &[("site.hcl", &site), ("plant.hcl", plant())]).await;
         node.fail_file(Path::new("spec"), env::files::Operation::SyncDir);
         file(path(), &both.encode(), &mesh, &create_kinds(), keys(10))
             .await

@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    NODE, PLANT, create_kinds, create_node, create_node_reading, fail_sync, front_ends,
-    placed_site, solo,
+    NODE, create_kinds, create_node, create_node_reading, fail_sync, front_ends,
+    placed_site, plant, solo,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -47,7 +47,7 @@ fn site() -> Vec<(PathBuf, String)> {
 fn applies_with_each_connector_kind_of_the_node() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
-        let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
+        let files = vec![(PathBuf::from("plant.hcl"), plant().to_owned())];
         let (plan, _) = node.plan(files).await.expect("a plan");
         let applied = node.apply(Path::new("plant.plan"), &plan).await;
         let expected = Applied {
@@ -105,7 +105,7 @@ fn plans_and_applies_in_the_json_of_the_cli() {
 fn plans_with_each_connector_kind_of_the_node() {
     solo(|_, mesh| async move {
         let node = create_node(mesh.clone());
-        let files = vec![(PathBuf::from("plant.hcl"), PLANT.to_owned())];
+        let files = vec![(PathBuf::from("plant.hcl"), plant().to_owned())];
         let expected = planned(&mesh, files.clone()).await;
         let (_, output) = node.plan(files).await.expect("a plan");
         assert_eq!(output, expected);

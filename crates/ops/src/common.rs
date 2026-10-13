@@ -31,10 +31,21 @@ use types::time::Span;
 use crate::Node;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
-pub(crate) const PLANT: &str =
-    include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
+
+/// The config of the quickstart page, its one `hcl` block.
+pub(crate) fn plant() -> &'static str {
+    let page = include_str!("../../../docs/quickstart.md");
+    let blocks = page.split("```").skip(1).step_by(2);
+    let [hcl] = blocks
+        .filter_map(|block| block.strip_prefix("hcl\n"))
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("the quickstart page has not one `hcl` block");
+    };
+    hcl
+}
 
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
 /// each attribute, so it stands in for each kind of the fixtures.
