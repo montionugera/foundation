@@ -729,10 +729,20 @@ fn a_connect_to_a_listener_that_never_answers_times_out() {
     assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
 }
 
+/// The first close of the listener ends the connect, so the client dials once.
 #[test]
-fn a_connect_to_a_listener_that_closes_each_stream_times_out() {
-    let (out, _) = run(0, async |node| connect_to_listener(&node, drop).await);
-    assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
+fn a_connect_to_a_listener_that_closes_each_stream_ends_after_one_dial() {
+    let (out, _) = run(0, async |node| {
+        let mut accepts = 0;
+        let out = connect_to_listener(&node, |stream| {
+            accepts += 1;
+            drop(stream);
+        })
+        .await;
+        (out, accepts)
+    });
+    let ended = (Status::BAD_CONNECTION_CLOSED, Span::from_nanos(1_000_000));
+    assert_eq!(out, (ended, 1));
 }
 
 /// A close waits for the answer of the server, which a server that stops never gives,
@@ -1250,15 +1260,14 @@ const RELAY: u16 = 4841;
 /// The binary encoding of a Read response, a `NodeId` of 4 bytes.
 const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
 
-/// Runs `body` while a relay on `node` moves the bytes of the first stream to
-/// [`RELAY`] to the test server and back, and gives each message of the server to
-/// `rewrite` before the client gets it.
+/// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
 async fn relayed<T>(
     node: &node::Node,
+    control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
     body: impl Future<Output = T>,
 ) -> T {
-    let mut relay = pin!(relay(node, rewrite));
+    let mut relay = pin!(relay(node, control, rewrite));
     let mut body = pin!(body);
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
@@ -1267,33 +1276,163 @@ async fn relayed<T>(
     .await
 }
 
-async fn relay(node: &node::Node, mut rewrite: impl FnMut(&mut Vec<u8>)) {
+/// What a test reads and sets of a [`relay`].
+#[derive(Default)]
+struct Relay {
+    /// The streams that it accepted.
+    accepts: Cell<usize>,
+    /// It closes its listener at the first accept, so each later dial is refused.
+    once: bool,
+    /// When set, it drops both streams of the relay that runs at its next poll, and
+    /// clears it.
+    cut: Cell<bool>,
+}
+
+/// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
+/// back, and gives each message of the server to `rewrite` before the client gets it.
+/// A relay ends when the client ends its side or `control` cuts it.
+async fn relay(
+    node: &node::Node,
+    control: &Relay,
+    mut rewrite: impl FnMut(&mut Vec<u8>),
+) {
     let address = node.addresses()[0];
     let listen = tcp::Listen {
         local: SocketAddr::new(address, RELAY),
         backlog: 4,
         options: options(),
     };
-    let mut listener = node.net().listen(&listen).expect("the port is free");
-    let mut client = poll_fn(|cx| listener.poll_accept(cx))
+    let mut listener = Some(node.net().listen(&listen).expect("the port is free"));
+    while let Some(open) = &mut listener {
+        let mut client = poll_fn(|cx| open.poll_accept(cx))
+            .await
+            .expect("the accept works");
+        control.accepts.set(control.accepts.get() + 1);
+        if control.once {
+            listener = None;
+        }
+        let config = tcp::Config {
+            remote: SocketAddr::new(address, PORT),
+            options: options(),
+        };
+        let mut server = node
+            .net()
+            .connect(&config)
+            .await
+            .expect("the server listens");
+        let (mut up, mut down) = (Pipe::default(), Pipe::default());
+        poll_fn(|cx| {
+            if control.cut.take() {
+                return Poll::Ready(());
+            }
+            let ended = up.pump(cx, &mut client, &mut server, |_| {});
+            down.pump(cx, &mut server, &mut client, &mut rewrite);
+            if ended {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    poll_fn(|_| Poll::<()>::Pending).await;
+}
+
+/// The URL of [`RELAY`] on `node`.
+fn relay_url(node: &node::Node) -> String {
+    format!("opc.tcp://{}:{RELAY}", node.addresses()[0])
+}
+
+/// A rewrite that puts the URL of the test server in place of each copy of the URL of
+/// [`RELAY`], as a server behind a NAT or in a container gives a URL that its client
+/// did not dial.
+fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) {
+    let from = relay_url(node).into_bytes();
+    let to = format!("opc.tcp://{}:{PORT}", node.addresses()[0]).into_bytes();
+    assert_eq!(from.len(), to.len(), "the message keeps its length");
+    move |message| {
+        let mut at = 0;
+        while let Some(found) =
+            message[at..].windows(from.len()).position(|w| *w == from)
+        {
+            at += found;
+            message[at..at + from.len()].copy_from_slice(&to);
+            at += from.len();
+        }
+    }
+}
+
+/// A server that gives another URL than the one that the client dialed has the client
+/// close its channel and dial again with that URL, and the connect works.
+#[test]
+fn a_connect_through_a_switch_of_the_url_reads() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let read = relayed(&node, &control, to_server(&node), async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
         .await
-        .expect("the accept works");
-    let config = tcp::Config {
-        remote: SocketAddr::new(address, PORT),
-        options: options(),
-    };
-    let mut server = node
-        .net()
-        .connect(&config)
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// A failed dial after the switch of the URL takes the fallback to the given URL. Each
+/// dial goes to the address of the given URL, so the fallback fails too, with its own
+/// status.
+#[test]
+fn a_connect_whose_dial_after_a_switch_fails_takes_the_fallback() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay {
+                once: true,
+                ..Relay::default()
+            };
+            let url = relay_url(&node);
+            let connect =
+                relayed(&node, &control, to_server(&node), peer.connect(&url));
+            (connect.await.err(), control.accepts.get())
+        })
         .await
-        .expect("the server listens");
-    let (mut up, mut down) = (Pipe::default(), Pipe::default());
-    poll_fn(|cx| {
-        up.pump(cx, &mut client, &mut server, |_| {});
-        down.pump(cx, &mut server, &mut client, &mut rewrite);
-        Poll::<()>::Pending
-    })
-    .await;
+    });
+    assert_eq!(out, (Some(Status::BAD_CONNECTION_REJECTED), 1));
+}
+
+/// A reset of the streams of an active session ends it: each later read fails, and
+/// the client does not dial again.
+#[test]
+fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let reads = relayed(&node, &control, |_| {}, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                control.cut.set(true);
+                let reads =
+                    (client.read_one(&VALUE).await, client.read_one(&VALUE).await);
+                // open62541 would dial again at once, within this wait.
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                reads
+            })
+            .await;
+            (reads, control.accepts.get())
+        })
+        .await
+    });
+    let reads = (
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        Err(Status::BAD_SERVER_NOT_CONNECTED),
+    );
+    assert_eq!(out, (reads, 1));
 }
 
 /// One direction of a relay.
@@ -1306,19 +1445,21 @@ struct Pipe {
 }
 
 impl Pipe {
-    /// Moves the bytes that `from` has to `to`, and gives each whole message to
-    /// `rewrite` first.
+    /// Moves the bytes that `from` has to `to`, gives each whole message to `rewrite`
+    /// first, and gives whether `from` ended its side.
     fn pump(
         &mut self,
         cx: &mut Context<'_>,
         from: &mut Tcp,
         to: &mut Tcp,
         mut rewrite: impl FnMut(&mut Vec<u8>),
-    ) {
+    ) -> bool {
+        let mut ended = false;
         let mut buffer = [0; 1 << 12];
         while let Poll::Ready(read) = from.poll_read(cx, &mut buffer) {
             let read = read.expect("the read works");
             if read == 0 {
+                ended = true;
                 break;
             }
             self.read.extend_from_slice(&buffer[..read]);
@@ -1340,6 +1481,7 @@ impl Pipe {
             };
             self.write.drain(..written.expect("the write works"));
         }
+        ended
     }
 }
 
@@ -1386,7 +1528,7 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
                     handles.push(handle);
                 }
             };
-            let (reads, copied) = relayed(&node, rewrite, async {
+            let (reads, copied) = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);

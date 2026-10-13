@@ -2169,6 +2169,10 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         if(oldState == UA_SECURECHANNELSTATE_CONNECTING &&
            client->connectStatus == UA_STATUSCODE_GOOD)
             setConnectStatus(client, fallbackEndpointUrl(client));
+        /* The peer closed an open connection (a close of the client is CLOSING).
+         * Do not dial again: the caller paces the next connect. */
+        else if(oldState != UA_SECURECHANNELSTATE_CLOSING)
+            setConnectStatus(client, UA_STATUSCODE_BADCONNECTIONCLOSED);
 
         /* Try to reconnect. Duplicate the code instead of continue_connect to
          * pacify compiler warnings. */
