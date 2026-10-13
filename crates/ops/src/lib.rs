@@ -70,7 +70,7 @@ pub async fn cli<C>(
     mut output: impl Write,
     errors: impl Write,
     paths: &Paths,
-    mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    reach: impl AsyncFnOnce(&Path) -> Result<C, Failure>,
 ) -> Run
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
