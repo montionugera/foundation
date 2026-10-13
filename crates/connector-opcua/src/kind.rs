@@ -117,6 +117,7 @@ async fn read(
         .nodes(&nodes)
         .map_err(|large| large_read(reads.len(), large))?;
     let mut missed = Total::new(ctx.count("missed"));
+    let mut copy = Vec::with_capacity(reads.len());
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
         missed.add(tick.missed);
@@ -126,14 +127,18 @@ async fn read(
             break;
         };
         let values = read.map_err(|status| device(Failure::Read(status)))?;
-        let values = Values::new(values).map_err(|(at, status)| {
-            device(Failure::Value {
-                channel: reads[at].channel.clone(),
-                node: reads[at].node.clone(),
-                status,
-            })
-        })?;
-        frames.write(values, stamp)?;
+        copy.clear();
+        for (of, value) in reads.iter().zip(values) {
+            let value = value.map_err(|status| {
+                device(Failure::Value {
+                    channel: of.channel.clone(),
+                    node: of.node.clone(),
+                    status,
+                })
+            })?;
+            copy.push(value);
+        }
+        frames.write(Values(&copy), stamp)?;
     }
     Ok(())
 }
@@ -160,13 +165,23 @@ pub async fn writes(
     let mut frames = Frames::open(ctx).await?;
     let values = vec![Ok(1.0); ctx.config().reads.len()];
     let mut measures = Vec::with_capacity(count);
+    let mut copy = Vec::with_capacity(values.len());
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
         let ((), stamp) = frames.request(future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
-            let values = Values::new(&values).expect("each value is good");
-            written = frames.write(values, stamp);
+            copy.clear();
+            for value in &values {
+                match value {
+                    Ok(value) => copy.push(*value),
+                    Err(status) => {
+                        written = Err(device(Failure::Read(*status)));
+                        return;
+                    }
+                }
+            }
+            written = frames.write(Values(&copy), stamp);
         }));
         written?;
     }
@@ -332,23 +347,30 @@ impl Out {
         backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
         let Layout { fills, samples, .. } = layout;
+        let _ = groups;
+        let groups = || {
+            let indexes = series.iter().map(|&(entry, _)| &fills[entry]);
+            indexes
+                .filter(|fill| fill.read.is_none())
+                .map(|fill| fill.group)
+        };
         let mut draft = match self.writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
             Err(frame::Error::Pool(
                 block::Error::Exhausted { .. } | block::Error::Refused { .. },
             )) => {
-                let lost = groups.iter().map(|&group| samples[to_usize(group)]).sum();
+                let lost = groups().map(|group| samples[to_usize(group)]).sum();
                 self.lost.add(lost);
                 return Ok(None);
             }
             Err(error) => return Err(error.into()),
         };
-        fill(&mut draft, fills, values, stamp, groups);
+        fill(&mut draft, fills, values, stamp, groups());
         let outcomes = self.writer.write(Label::Path(Path::Live), draft)?;
         backwards.clear();
         let mut latest = None;
         let (mut wrote, mut gone) = (0, 0);
-        for (&group, outcome) in groups.iter().zip(outcomes) {
+        for (group, outcome) in groups().zip(outcomes) {
             let n = samples[to_usize(group)];
             match outcome {
                 Outcome::Applied { .. } => wrote += n,
@@ -394,7 +416,7 @@ fn fill(
     fills: &[Fill],
     values: Values<'_>,
     stamp: Stamp,
-    groups: &[u32],
+    groups: impl Iterator<Item = u32>,
 ) {
     for (entry, bytes) in draft.iter_mut() {
         let sample = match fills[entry].read {
@@ -403,35 +425,19 @@ fn fill(
         };
         bytes.copy_from_slice(&sample);
     }
-    for &group in groups {
+    for group in groups {
         draft.set_count(group, 1);
     }
 }
 
 /// The values of one read, each a good Double.
 #[derive(Clone, Copy)]
-struct Values<'a>(&'a [Result<f64, Status>]);
+struct Values<'a>(&'a [f64]);
 
-impl<'a> Values<'a> {
-    /// Gives `values`, or the position and the status of the first bad one.
-    fn new(values: &'a [Result<f64, Status>]) -> Result<Self, (usize, Status)> {
-        match values
-            .iter()
-            .enumerate()
-            .find_map(|(at, value)| Some((at, *value.as_ref().err()?)))
-        {
-            Some(bad) => Err(bad),
-            None => Ok(Self(values)),
-        }
-    }
-
+impl Values<'_> {
     /// The value of the read at `at`.
     fn get(self, at: usize) -> f64 {
-        let value = self.0[at];
-        let Ok(value) = value else {
-            panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
-        };
-        value
+        self.0[at]
     }
 }
 
