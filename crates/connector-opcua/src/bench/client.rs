@@ -175,7 +175,7 @@ impl Client {
         for value in values {
             match value {
                 Ok(value) => {
-                    assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}")
+                    assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}");
                 }
                 Err(status) => panic!("a read failed: {status:?}"),
             }

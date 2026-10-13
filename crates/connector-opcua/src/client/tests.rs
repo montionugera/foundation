@@ -909,7 +909,7 @@ fn a_request_takes_the_chunks_of_one_message() {
     assert_eq!(sent, Err(Status::BAD_RESPONSE_TOO_LARGE));
 }
 
-/// A server with a MaxMessageSize of 8192 bytes takes a request of 8192 bytes, and
+/// A server with a `MaxMessageSize` of 8192 bytes takes a request of 8192 bytes, and
 /// refuses 1 byte more. A good answer of 239 Doubles takes at most 36 bytes and 34 per
 /// node, 8162 bytes, and of 240 nodes, 8196 bytes.
 #[test]
@@ -945,7 +945,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
 }
 
-/// A server with buffers of 8192 bytes and a MaxChunkCount of 4 gives a message of 4
+/// A server with buffers of 8192 bytes and a `MaxChunkCount` of 4 gives a message of 4
 /// chunks of 8168 bytes: 959 nodes, and not 960.
 #[test]
 fn a_read_takes_the_buffers_and_chunks_of_the_server() {
@@ -957,9 +957,9 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
                 ..Limits::default()
             });
             let mut client = peer.connected().await;
-            let most = client.nodes(&[VALUE; 959]).expect("959 nodes fit");
+            let most = client.nodes(&vec![VALUE; 959]).expect("959 nodes fit");
             let values = client.read(&most).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[VALUE; 960]).map(drop);
+            let past = client.nodes(&vec![VALUE; 960]).map(drop);
             client.close().await;
             (values, past, peer.value)
         })

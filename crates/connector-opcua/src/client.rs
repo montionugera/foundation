@@ -162,8 +162,8 @@ impl Client {
     ///
     /// [`Large`] when the request, or a good answer with each field of a Double for
     /// each node, needs more bytes than one message of the session: its chunk size
-    /// times the smaller of [`CHUNKS`] and the MaxChunkCount of the server, or the
-    /// MaxMessageSize of the server when that is smaller. The request comes first.
+    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, or the
+    /// `MaxMessageSize` of the server when that is smaller. The request comes first.
     ///
     /// # Panics
     ///
@@ -316,8 +316,8 @@ pub(crate) struct Large {
 }
 
 /// Gives the most bytes of the body of one message in chunks of `buffer` bytes, with
-/// the MaxMessageSize `message` and the MaxChunkCount `chunks` of the server, each 0
-/// for none.
+/// the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the server, each
+/// 0 for none.
 fn most(buffer: usize, message: usize, chunks: usize) -> usize {
     let local = usize::try_from(CHUNKS).expect("a usize holds the chunks");
     let chunks = if chunks == 0 {

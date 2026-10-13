@@ -160,8 +160,8 @@ impl Server {
 pub(crate) struct Limits {
     /// The send and receive buffer size.
     pub(crate) buffer: u32,
-    /// The MaxMessageSize.
+    /// The `MaxMessageSize`.
     pub(crate) message: u32,
-    /// The MaxChunkCount.
+    /// The `MaxChunkCount`.
     pub(crate) chunks: u32,
 }
