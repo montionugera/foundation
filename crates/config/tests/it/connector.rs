@@ -86,13 +86,16 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
     assert_eq!(connector.node(), &name("cloud"));
     let config = connector.config().document();
     let expected = read(
-        "address = \"http://influx:8086\"\nselect = \"edge.*\"\n\
+        "address = \"http://influx:8086\"\ndatabase = \"edge\"\n\
+         measurement = \"telemetry\"\nselect = \"edge.*\"\n\
          reader {\n  mode = \"complete\"\n  hold = \"2h\"\n}\n",
     );
     assert_eq!(config, &expected);
     let parsed = connector_influx::Kind::default().parse(config);
     let parsed = parsed.expect("a config");
     assert_eq!(parsed.address, "http://influx:8086");
+    assert_eq!(parsed.database, "edge");
+    assert_eq!(parsed.measurement, "telemetry");
     let select = Selector::new(["edge.*"]).expect("a selector");
     assert_eq!(parsed.reader.select, select);
     // The crate map does not let `config` take `hub`, the home of `reader::Mode`.
@@ -165,14 +168,30 @@ fn refuses_a_connector_with_no_kind_or_no_node() {
         "the connector has no `select`",
         "Add a `select` attribute with the channels it reads, such as \"site_a.**\"",
     );
-    expected.extend([select, kind]);
+    let database = problem(
+        text,
+        "document.missing-attribute",
+        "\"influx\"",
+        "the connector has no `database`",
+        "Add a `database` attribute with the InfluxDB database, such as \"plant\"",
+    );
+    let measurement = problem(
+        text,
+        "document.missing-attribute",
+        "\"influx\"",
+        "the connector has no `measurement`",
+        "Add a `measurement` attribute with the name of each line, such as \
+         \"telemetry\"",
+    );
+    expected.extend([select, kind, database, measurement]);
     assert_eq!(problems(text), expected);
 }
 
 #[test]
 fn places_the_problems_of_the_kind_in_source_order() {
     let text = "connector \"influx\" {\n  kind = \"influx\"\n  node = 3\n  \
-                address = \"https://influx\"\n  select = \"edge.*\"\n  port = 1\n}\n";
+                address = \"https://influx\"\n  database = \"edge\"\n  \
+                measurement = \"telemetry\"\n  select = \"edge.*\"\n  port = 1\n}\n";
     assert_eq!(
         problems(text),
         [
@@ -195,7 +214,7 @@ fn places_the_problems_of_the_kind_in_source_order() {
                 "document.unknown-attribute",
                 "port",
                 "`port` is not an attribute of the connector",
-                "Use `select` or `address`, or remove it",
+                "Use `select`, `address`, `database`, or `measurement`, or remove it",
             ),
         ]
     );
@@ -205,7 +224,8 @@ fn places_the_problems_of_the_kind_in_source_order() {
 fn refuses_a_connector_and_a_channel_of_one_name_in_either_order() {
     let channel = "channel \"edge.time\" {\n  kind = \"index\"\n}\n";
     let connector = "connector \"Edge.Time\" {\n  kind = \"influx\"\n  node = \"cloud\"\n  \
-                     address = \"http://influx:8086\"\n  select = \"edge.*\"\n}\n";
+                     address = \"http://influx:8086\"\n  database = \"edge\"\n  \
+                     measurement = \"telemetry\"\n  select = \"edge.*\"\n}\n";
     for (text, first, second, earlier, repeat) in [
         (
             format!("{channel}{connector}"),
