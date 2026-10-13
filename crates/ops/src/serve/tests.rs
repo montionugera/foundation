@@ -1125,8 +1125,12 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
     solo(|_, mesh| async move {
         let node = create_node(mesh);
         let bound = usize::try_from(BODY_BYTES_MAX).expect("the bound fits");
-        // Each of the 18 changes of `plant()` holds the long path.
-        let long = bound / 18 - 1_000;
+        let reply = serve(&node, &admin(), &plan_body(&[("plant.hcl", plant())])).await;
+        let changes = split(&reply).0["output"]["added"]
+            .as_u64()
+            .expect("a count");
+        // Each change of `plant()` holds the long path.
+        let long = bound / usize::try_from(changes).expect("the count fits") - 1_000;
         let reply = serve(&node, &admin(), &wide_body(long, 4)).await;
         assert!(split(&reply).0.get("output").is_some());
         let short = 4 + bound - reply.len();
