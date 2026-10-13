@@ -120,49 +120,59 @@ async fn read(
     let nodes = client
         .nodes(&nodes)
         .map_err(|large| large_read(reads.len(), large))?;
-    let mut values = Vec::with_capacity(reads.len());
+    let mut missed = Total::new(ctx.count("missed"));
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
-        frames.missed.add(tick.missed);
-        let request = frames.stamps.request(&frames.writer, client.read(&nodes));
-        let Some((read, stamp)) = ctx.cancel().race(request).await else {
+        missed.add(tick.missed);
+        let Some((read, stamp)) =
+            ctx.cancel().race(frames.request(client.read(&nodes))).await
+        else {
             break;
         };
-        let read = read.map_err(|status| device(Failure::Read(status)))?;
-        values.clear();
-        for (of, value) in reads.iter().zip(read) {
-            let value = value.map_err(|status| {
-                device(Failure::Value {
-                    channel: of.channel.clone(),
-                    node: of.node.clone(),
-                    status,
-                })
-            })?;
-            values.push(value);
+        let values = read.map_err(|status| device(Failure::Read(status)))?;
+        let bad = reads.iter().zip(values).find_map(|(of, value)| {
+            let status = *value.as_ref().err()?;
+            Some(Failure::Value {
+                channel: of.channel.clone(),
+                node: of.node.clone(),
+                status,
+            })
+        });
+        if let Some(bad) = bad {
+            return Err(device(bad));
         }
-        frames.write(&values, stamp)?;
+        frames.write(values, stamp)?;
     }
     Ok(())
 }
 
-/// The frame of each tick of a run: one sample in each series of the key set of its
+/// The frames of the ticks of a run: one sample in each series of the key set of its
 /// writer, the stamp in each index and a value in each other.
 struct Frames {
-    writer: Writer,
+    layout: Layout,
+    out: Out,
     stamps: Stamps,
+    /// The series of the groups that a frame writes again.
+    again: Vec<(usize, usize)>,
+    /// The groups that the home refused as `Backwards`, in order.
+    backwards: Vec<u32>,
+}
+
+/// The series of the frame of each tick, and what fills each.
+struct Layout {
     /// Each entry of the key set and the bytes of its series, 8 for each.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
     fills: Vec<Fill>,
     /// The count of data samples of each group in one frame, by its number.
     samples: Vec<u64>,
-    /// The series of the groups that a frame wrote again.
-    again: Vec<(usize, usize)>,
-    /// The groups that the home refused as `Backwards`, in order.
-    backwards: Vec<u32>,
+}
+
+/// The writer of the frames, and the counts of their samples.
+struct Out {
+    writer: Writer,
     applied: Total,
     lost: Total,
-    missed: Total,
 }
 
 impl Frames {
@@ -198,19 +208,26 @@ impl Frames {
             })
             .collect();
         let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
-        let total = |name| Total::new(ctx.count(name));
         Ok(Self {
             again: Vec::with_capacity(series.len()),
             backwards: Vec::with_capacity(samples.len()),
-            series,
-            fills,
-            samples,
-            applied: total("in"),
-            lost: total("lost"),
-            missed: total("missed"),
-            writer,
+            layout: Layout {
+                series,
+                fills,
+                samples,
+            },
+            out: Out {
+                applied: Total::new(ctx.count("in")),
+                lost: Total::new(ctx.count("lost")),
+                writer,
+            },
             stamps: Stamps::default(),
         })
+    }
+
+    /// Runs `request`, and gives its output with the stamp of its frame.
+    async fn request<T>(&mut self, request: impl Future<Output = T>) -> (T, Stamp) {
+        self.stamps.request(&self.out.writer, request).await
     }
 
     /// Writes one frame of `values`, in the order of the reads, at `stamp`. A group
@@ -219,22 +236,34 @@ impl Frames {
     ///
     /// # Errors
     ///
-    /// As [`Frames::send`].
+    /// As [`Out::send`].
     ///
     /// # Panics
     ///
-    /// When the home refuses a group as `Backwards` again.
-    fn write(&mut self, values: &[f64], stamp: Stamp) -> Result<(), Error> {
-        let Some(before) = self.send(Series::All, values, stamp)? else {
+    /// When a value is a bad status, or the home refuses a group as `Backwards` again.
+    fn write(
+        &mut self,
+        values: &[Result<f64, Status>],
+        stamp: Stamp,
+    ) -> Result<(), Error> {
+        let Self {
+            layout,
+            out,
+            stamps,
+            again,
+            backwards,
+        } = self;
+        let all = &layout.series;
+        let Some(before) = out.send(layout, all, values, stamp, backwards)? else {
             return Ok(());
         };
-        let stamp = self.stamps.after(before);
-        let (fills, backwards) = (&self.fills, &self.backwards);
-        let refused =
-            |&&(entry, _): &&(usize, usize)| backwards.contains(&fills[entry].group);
-        self.again.clear();
-        self.again.extend(self.series.iter().filter(refused));
-        if let Some(again) = self.send(Series::Again, values, stamp)? {
+        let stamp = stamps.after(before);
+        let refused = |&&(entry, _): &&(usize, usize)| {
+            backwards.contains(&layout.fills[entry].group)
+        };
+        again.clear();
+        again.extend(all.iter().filter(refused));
+        if let Some(again) = out.send(layout, again, values, stamp, backwards)? {
             panic!(
                 "invariant: a frame stamped after {before}, the last stamp of its \
                  index, is not backwards, but the home gives {again} as last"
@@ -242,9 +271,11 @@ impl Frames {
         }
         Ok(())
     }
+}
 
-    /// Writes one frame of `series` of `values` at `stamp`, and counts its samples.
-    /// A frame for which the pool has no block now loses its samples.
+impl Out {
+    /// Writes one frame of `series` of `layout` with `values` at `stamp`, and counts
+    /// its samples. A frame for which the pool has no block now loses its samples.
     ///
     /// Returns the latest stamp that the home gives for a group that it refuses as
     /// `Backwards`, and puts those groups in `backwards`.
@@ -256,48 +287,36 @@ impl Frames {
     ///
     /// # Panics
     ///
-    /// When the home refuses a group as `Expired` or `Codec`, which a writer with no
-    /// lease and a raw frame never gets.
+    /// When a value is a bad status, or the home refuses a group as `Expired` or
+    /// `Codec`, which a writer with no lease and a raw frame never gets.
     fn send(
         &mut self,
-        series: Series,
-        values: &[f64],
+        layout: &Layout,
+        series: &[(usize, usize)],
+        values: &[Result<f64, Status>],
         stamp: Stamp,
+        backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
-        let Self {
-            writer,
-            series: all,
-            again,
-            fills,
-            samples,
-            backwards,
-            applied,
-            lost,
-            ..
-        } = self;
-        let series = match series {
-            Series::All => &*all,
-            Series::Again => &*again,
-        };
-        let fills = &*fills;
+        let Layout { fills, samples, .. } = layout;
         let groups = || {
             let indexes = series.iter().map(|&(entry, _)| &fills[entry]);
             indexes
                 .filter(|fill| fill.read.is_none())
                 .map(|fill| fill.group)
         };
-        let mut draft = match writer.draft(Form::Raw, series) {
+        let mut draft = match self.writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
             Err(frame::Error::Pool(
                 block::Error::Exhausted { .. } | block::Error::Refused { .. },
             )) => {
-                lost.add(groups().map(|group| samples[to_usize(group)]).sum());
+                let lost = groups().map(|group| samples[to_usize(group)]).sum();
+                self.lost.add(lost);
                 return Ok(None);
             }
             Err(error) => return Err(error.into()),
         };
         fill(&mut draft, fills, values, stamp, groups());
-        let outcomes = writer.write(Label::Path(Path::Live), draft)?;
+        let outcomes = self.writer.write(Label::Path(Path::Live), draft)?;
         backwards.clear();
         let mut latest = None;
         let (mut wrote, mut gone) = (0, 0);
@@ -326,8 +345,8 @@ impl Frames {
                 ),
             }
         }
-        applied.add(wrote);
-        lost.add(gone);
+        self.applied.add(wrote);
+        self.lost.add(gone);
         Ok(latest)
     }
 }
@@ -342,32 +361,32 @@ struct Fill {
 
 /// Fills each series of `draft` with one sample: `stamp` in each index of `groups`, and
 /// the value of its read in each other.
+///
+/// # Panics
+///
+/// When the value of a read is a bad status.
 fn fill(
     draft: &mut Draft,
     fills: &[Fill],
-    values: &[f64],
+    values: &[Result<f64, Status>],
     stamp: Stamp,
     groups: impl Iterator<Item = u32>,
 ) {
     for (entry, bytes) in draft.iter_mut() {
         let sample = match fills[entry].read {
             None => stamp.nanos().to_le_bytes(),
-            Some(read) => values[read].to_le_bytes(),
+            Some(read) => {
+                let Ok(value) = values[read] else {
+                    panic!("invariant: the run writes only good values")
+                };
+                value.to_le_bytes()
+            }
         };
         bytes.copy_from_slice(&sample);
     }
     for group in groups {
         draft.set_count(group, 1);
     }
-}
-
-/// Which series [`Frames::send`] writes.
-#[derive(Clone, Copy)]
-enum Series {
-    /// Each series of the key set.
-    All,
-    /// The series of the groups that the home refused as `Backwards`.
-    Again,
 }
 
 /// A count of the status and its total in the run.
