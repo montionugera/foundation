@@ -124,7 +124,7 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each writer open and close.
+    /// The gate task, woken at each new carry and each writer open and close.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -545,10 +545,13 @@ impl State {
         })
     }
 
-    /// Carries `index` at the home. A later carry does nothing.
+    /// Carries `index` at the home. Wakes the gate task when the carry is new: only
+    /// then can it make the home's deadline earlier.
     fn carry(&mut self, index: types::channel::Key) {
         let slot = self.interner.slots().index(index);
-        self.home.carry(slot);
+        if self.home.carry(slot, index) {
+            self.gate.wake();
+        }
     }
 
     /// Carries `index` at the home, and gives the slot of each of `keys` in its role:

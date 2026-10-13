@@ -3051,3 +3051,192 @@ fn a_free_does_not_wait_for_a_remove_through_a_handle_whose_future_lives() {
         "{runs:?}"
     );
 }
+
+/// The names that a list gives while a remove of `a` is in flight, whose future drops
+/// after the list starts, and whether `a` is there a millisecond later.
+fn list_with_remove_dropped_in_flight(value: u64) -> (Vec<PathBuf>, bool) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        drop(create(&node, "a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let mut list = Box::pin(files.list(Path::new("")));
+        pend(list.as_mut()).await;
+        drop(remove);
+        let names = list.await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        let there = files.open(Path::new("a"), Mode::Read).await.is_ok();
+        (names, there)
+    })
+}
+
+#[test]
+fn a_list_does_not_wait_for_a_remove_that_drops_while_the_list_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(list_with_remove_dropped_in_flight).collect();
+    assert!(runs.contains(&(vec!["a".into()], false)), "{runs:?}");
+}
+
+/// The bytes free before a create of `a` of 64 KiB, and while it is in flight, whose
+/// future drops after the `free` starts.
+fn free_with_create_dropped_in_flight(value: u64) -> (u64, u64) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let before = files.free().await.unwrap();
+        let len = 64 * KIB;
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        let mut free = Box::pin(files.free());
+        pend(free.as_mut()).await;
+        drop(made);
+        let after = free.await.unwrap();
+        node.clock().sleep(Span::MILLISECOND).await;
+        (before, after)
+    })
+}
+
+#[test]
+fn a_free_does_not_wait_for_a_create_that_drops_while_the_free_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(free_with_create_dropped_in_flight).collect();
+    assert!(
+        runs.iter().any(|(before, after)| after == before),
+        "{runs:?}"
+    );
+}
+
+/// Whether a create of `a` opens while a remove of `a` is in flight, whose future drops
+/// after the create starts, and the names in the data directory a millisecond later.
+fn create_with_remove_dropped_in_flight(value: u64) -> (bool, Vec<PathBuf>) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let len = KIB;
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        drop(remove);
+        let made = made.await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let made = made.map(drop).is_ok();
+        (made, files.list(Path::new("")).await.unwrap())
+    })
+}
+
+#[test]
+fn a_create_does_not_wait_for_a_remove_that_drops_while_the_create_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(create_with_remove_dropped_in_flight).collect();
+    assert!(runs.contains(&(true, vec![])), "{runs:?}");
+}
+
+/// Whether a write open of `a` opens while a remove of `a` is in flight, whose future
+/// drops after the open starts, and the names in the data directory a millisecond
+/// later.
+fn write_open_with_remove_dropped_in_flight(value: u64) -> (bool, Vec<PathBuf>) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        drop(create(&node, "a", KIB).await);
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        let mut opened = Box::pin(files.open(Path::new("a"), Mode::Write));
+        pend(opened.as_mut()).await;
+        drop(remove);
+        let opened = opened.await;
+        node.clock().sleep(Span::MILLISECOND).await;
+        let opened = opened.map(drop).is_ok();
+        (opened, files.list(Path::new("")).await.unwrap())
+    })
+}
+
+#[test]
+fn a_write_open_does_not_wait_for_a_remove_that_drops_while_the_open_is_in_flight() {
+    let runs: Vec<_> = (0..32)
+        .map(write_open_with_remove_dropped_in_flight)
+        .collect();
+    assert!(runs.contains(&(true, vec![])), "{runs:?}");
+}
+
+/// Whether a remove of `a` succeeds while a create of `a` is in flight, whose future
+/// drops after the remove starts, and the names in the data directory a millisecond
+/// later.
+fn remove_with_create_dropped_in_flight(value: u64) -> (bool, Vec<PathBuf>) {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let len = KIB;
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        let mut remove = Box::pin(files.remove(Path::new("a")));
+        pend(remove.as_mut()).await;
+        drop(made);
+        let removed = remove.await.is_ok();
+        node.clock().sleep(Span::MILLISECOND).await;
+        (removed, files.list(Path::new("")).await.unwrap())
+    })
+}
+
+#[test]
+fn a_remove_does_not_wait_for_a_create_that_drops_while_the_remove_is_in_flight() {
+    let runs: Vec<_> = (0..32).map(remove_with_create_dropped_in_flight).collect();
+    assert!(runs.contains(&(true, vec!["a".into()])), "{runs:?}");
+}
+
+/// Whether a rename of `a` to `b` succeeds while a create of `b` is in flight, whose
+/// future drops after the driver rename starts.
+fn rename_with_create_dropped_after_driver_rename(value: u64) -> bool {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let mut file = create(&node, "a", KIB).await;
+        let mut rename = Box::pin(file.rename(Path::new("b")));
+        pend(rename.as_mut()).await;
+        // The sync of the rename ends, so its next poll starts the driver rename.
+        node.clock().sleep(Span::MILLISECOND).await;
+        let len = KIB;
+        let mut made = Box::pin(files.open(Path::new("b"), Mode::Create { len }));
+        pend(made.as_mut()).await;
+        pend(rename.as_mut()).await;
+        drop(made);
+        let renamed = rename.await.is_ok();
+        node.clock().sleep(Span::MILLISECOND).await;
+        renamed
+    })
+}
+
+#[test]
+fn a_driver_rename_does_not_wait_for_a_create_that_drops_after_it_starts() {
+    let runs: Vec<_> = (0..32)
+        .map(rename_with_create_dropped_after_driver_rename)
+        .collect();
+    assert!(runs.contains(&true), "{runs:?}");
+}
+
+/// The result of a create of `a` that first gives `Full`, while a create of `a` of
+/// another length is in flight, whose future drops after the second open starts.
+fn create_with_create_dropped_after_second_open(value: u64) -> Result<u64, Error> {
+    run(value, MIB, |node, _| async move {
+        let files = node.files();
+        let len = 600 * KIB;
+        drop(create(&node, "big", len).await);
+        files.remove(Path::new("big")).await.unwrap();
+        let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        // The first open gives `Full`, then the sync of the directory ends, so each
+        // next poll starts the next driver call.
+        for _ in 0..2 {
+            pend(made.as_mut()).await;
+            node.clock().sleep(Span::MILLISECOND).await;
+        }
+        let len = KIB;
+        let mut small = Box::pin(files.open(Path::new("a"), Mode::Create { len }));
+        pend(small.as_mut()).await;
+        pend(made.as_mut()).await;
+        drop(small);
+        let made = made.await.map(|file| file.len());
+        node.clock().sleep(Span::MILLISECOND).await;
+        made
+    })
+}
+
+#[test]
+fn a_second_open_does_not_wait_for_a_create_that_drops_after_it_starts() {
+    let runs: Vec<_> = (0..32)
+        .map(create_with_create_dropped_after_second_open)
+        .collect();
+    assert!(runs.contains(&Ok(600 * KIB)), "{runs:?}");
+}

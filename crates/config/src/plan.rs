@@ -100,10 +100,12 @@ pub fn plan(
 /// 1. `config.private-key` for each string of a definition that holds a private key.
 /// 2. The diagnostics of `kinds` for each connector whose kind or config it refuses,
 ///    and `config.long-name` for each with a status name that is too long, then
-///    `config.implied-channel` for each connector whose kind writes a status channel,
 ///    `config.duplicate-name`, whose earlier name is the first in name order, and
 ///    `config.subject-is-connector`.
-/// 3. Each problem of the rules of [`plan`] from `config.unplaced` to
+/// 3. `config.implied-channel` for each status channel that the kind of a connector
+///    writes, then for each status channel of a connector that `definitions` lack or
+///    hold as another channel.
+/// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
     definitions: &BTreeMap<Name, definition::Definition>,
@@ -135,13 +137,24 @@ fn problems(
     }
     let mut diagnostics = Vec::new();
     let writes = writes(definitions, kinds, &mut diagnostics);
-    diagnostics.extend(connector::implied_writes(&writes));
     diagnostics.extend(duplicate::in_definitions(definitions));
     diagnostics.extend(subject::not_connectors(definitions));
     if !diagnostics.is_empty() {
         return diagnostics;
     }
-    let model = Model::definitions(definitions, &writes);
+    let names: BTreeMap<Key, &Name> = definitions
+        .iter()
+        .filter_map(|(name, definition)| match definition {
+            definition::Definition::Channel(channel) => Some((channel.key, name)),
+            _ => None,
+        })
+        .collect();
+    diagnostics.extend(connector::implied_writes(&writes));
+    diagnostics.extend(connector::implied_definitions(definitions, &names, &writes));
+    if !diagnostics.is_empty() {
+        return diagnostics;
+    }
+    let model = Model::definitions(definitions, &names, &writes);
     rules(&model, members, &mut diagnostics);
     diagnostics
 }
@@ -349,25 +362,19 @@ impl<'a> Model<'a> {
         model
     }
 
-    /// The model of `definitions`, with what each connector writes by tree key in
-    /// `writes`, and with no span. A data channel whose index is no channel has no
-    /// index.
+    /// The model of `definitions`, with the name of each channel by key in `names`,
+    /// what each connector writes by tree key in `writes`, and no span. A data
+    /// channel whose index is no channel has no index.
     fn definitions(
         definitions: &'a BTreeMap<Name, definition::Definition>,
+        names: &BTreeMap<Key, &'a Name>,
         writes: &'a BTreeMap<Name, connector::Writes>,
     ) -> Self {
-        let keys: BTreeMap<Key, &Name> = definitions
-            .iter()
-            .filter_map(|(name, definition)| match definition {
-                definition::Definition::Channel(channel) => Some((channel.key, name)),
-                _ => None,
-            })
-            .collect();
         let mut model = Self::new();
         for (name, definition) in definitions {
             match definition {
                 definition::Definition::Channel(channel) => {
-                    model.channel(name, &channel.kind, |key| keys.get(key).copied());
+                    model.channel(name, &channel.kind, |key| names.get(key).copied());
                 }
                 definition => model.add(name, definition, writes, None),
             }
@@ -549,12 +556,7 @@ fn indexes<'f>(
     let implied: BTreeMap<_, _> = model
         .connectors
         .iter()
-        .flat_map(|connector| {
-            connector
-                .writes
-                .indexes()
-                .map(move |index| (index, connector))
-        })
+        .map(|connector| (connector.writes.index(), connector))
         .collect();
     let mut indexes = BTreeMap::new();
     for &name in &model.indexes {

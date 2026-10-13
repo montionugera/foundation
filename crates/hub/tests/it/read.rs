@@ -322,6 +322,8 @@ fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
                 streams.push(stream);
             }
             drop((held, streams));
+            // So each reset reaches the home before the finish ends the session.
+            agent.sleep(QUIET).await;
             finish(&mut agent).await;
         },
     );
@@ -553,6 +555,27 @@ fn ends_a_read_at_a_finish_that_comes_with_its_open() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A read that is still open when the session finishes ends as closed.
+#[test]
+fn ends_a_read_that_is_open_at_the_finish_of_its_session_as_closed() {
+    let home = read_session(
+        320,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            finish(&mut agent).await;
+            drop(stream);
+        },
+    );
+    let closed = serve::Error::Stream(transport::Error::Closed {
+        code: transport::Code(0),
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Err(closed)]);
+}
+
 /// The channels of a read are removed while its run of places waits for room in the
 /// program's window.
 #[test]
@@ -748,6 +771,7 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
                 streams.push(stream);
             }
             drop((held, streams));
+            // So each reset reaches the home before the finish ends the session.
             agent.sleep(QUIET).await;
             finish(&mut agent).await;
         },

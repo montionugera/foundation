@@ -168,6 +168,8 @@ struct Shard {
 const BODY_MAX: usize = 1 << 20;
 /// The longest an entry waits for its group commit to start.
 const COMMIT: Span = Span::from_nanos(2_000_000);
+/// The interval of each shard's purge timer.
+const PURGE: Span = Span::from_nanos(10_000_000_000);
 /// The stamps each home accepts, a patch until they are settings (#1285).
 const LIMITS: home::order::Limits = home::order::Limits {
     earliest: Stamp::from_nanos(946_684_800_000_000_000),
@@ -178,37 +180,40 @@ impl Node {
     /// Starts one shard per core, named `shard-<i>`. Each shard is pinned to core `i`
     /// when the host can pin ([`env::shards::Shards::pinnable`]); else the OS places
     /// it. Each shard owns a `block::Pool` with an even part of the budget, and a ring
-    /// with an even part of the disk budget; shard 0 also takes each remainder. Unless
-    /// the node stops first, shard 0 locks the data directory with the file `lock`,
-    /// which it holds until each shard has closed its ring, each task of the mesh has
-    /// ended, and the transport has freed the port, then records the shard count and
-    /// [`Config::name`] in the data directory, or checks the ones there, then binds the
-    /// node's port at [`Config::listen`], and each shard opens its buffer in directory
-    /// `shard-<i>` of its files, and makes it there when it is not there. The shards
-    /// open their buffers one after another, in order of core. Once each buffer has
-    /// opened, shard 0 reads the node's key, private key, and seal key from the file
-    /// `node.key` in the data directory, and makes the file at the first start once it
-    /// has mesh time, unless `create_key` made it, then opens the mesh of
-    /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
-    /// founds the root region and reads or makes `admin.key`), then writes the file
-    /// `address` in the data directory, with the node's key, the public key of its
-    /// transport, and the bound address, then serves the port until its transport or
-    /// the mesh's group stops, which stops the node. It writes `address` empty when it
-    /// stops serving, before the lock drops. An address in the file is no proof that a
-    /// node runs: a crash or a failed empty write leaves it. It admits each member of
-    /// the region, and gives other peers at most [`Settings::places_max`] places at
-    /// once: one for each session of a program, and one for the key of a node. At the
-    /// bound, the oldest place frees for a new peer, and its session closes unless its
-    /// peer is now a member, so a peer outside the region keeps its session until that
-    /// many later peers took a place. Returns once each shard runs or one has failed to
-    /// start. No shard starts when the disk budget holds no ring on each shard
-    /// ([`Error::Disk`]), when a shard's part of the pool budget gives a reservation of
-    /// more than `usize::MAX` bytes ([`Error::Pool`]), when [`Config::listen`] has a
-    /// multicast IP or the IPv4 broadcast IP ([`Error::Listen`]), or when
-    /// [`Config::name`] has a reserved segment ([`Error::Reserved`]). A port that does
-    /// not bind stops the node after shard 0 claimed the data directory, and no buffer
-    /// opens ([`Error::Port`]). Any failure stops the node, and [`Node::join`] gives
-    /// the first one (its `# Errors`).
+    /// with an even part of the disk budget; shard 0 also takes each remainder. A shard
+    /// gives the pages of a block size of its pool back to the system 10 to 20 s after
+    /// the last block of that size returned, or later when the shard's timer wakes
+    /// late. A size with no block in use gives its pages back sooner when an `alloc` of
+    /// another size needs its budget. Unless the node stops first, shard 0 locks the
+    /// data directory with the file `lock`, which it holds until each shard has closed
+    /// its ring, each task of the mesh has ended, and the transport has freed the port,
+    /// then records the shard count and [`Config::name`] in the data directory, or
+    /// checks the ones there, then binds the node's port at [`Config::listen`], and
+    /// each shard opens its buffer in directory `shard-<i>` of its files, and makes it
+    /// there when it is not there. The shards open their buffers one after another, in
+    /// order of core. Once each buffer has opened, shard 0 reads the node's key,
+    /// private key, and seal key from the file `node.key` in the data directory, and
+    /// makes the file at the first start once it has mesh time, unless `create_key`
+    /// made it, then opens the mesh of [`Config::region`] when it has one (a
+    /// [`Region::Stored`] with no founding first founds the root region and reads or
+    /// makes `admin.key`), then writes the file `address` in the data directory, with
+    /// the node's key, the public key of its transport, and the bound address, then
+    /// serves the port until its transport or the mesh's group stops, which stops the
+    /// node. It writes `address` empty when it stops serving, before the lock drops. An
+    /// address in the file is no proof that a node runs: a crash or a failed empty
+    /// write leaves it. It admits each member of the region, and gives other peers at
+    /// most [`Settings::places_max`] places at once: one for each session of a program,
+    /// and one for the key of a node. At the bound, the oldest place frees for a new
+    /// peer, and its session closes unless its peer is now a member, so a peer outside
+    /// the region keeps its session until that many later peers took a place. Returns
+    /// once each shard runs or one has failed to start. No shard starts when the disk
+    /// budget holds no ring on each shard ([`Error::Disk`]), when a shard's part of the
+    /// pool budget gives a reservation of more than `usize::MAX` bytes
+    /// ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
+    /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
+    /// segment ([`Error::Reserved`]). A port that does not bind stops the node after
+    /// shard 0 claimed the data directory, and no buffer opens ([`Error::Port`]). Any
+    /// failure stops the node, and [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -673,9 +678,10 @@ impl Open {
         }
     }
 
-    /// Opens the shard's buffer and gives its home and `guard` to `hold`, which drops
-    /// the home once `guard` completes, then returns once its ring has closed. A
-    /// failed open drops `guard`, which stops the node.
+    /// Starts the pool's purge timer, which ends with the shard, then opens the shard's
+    /// buffer and gives its home and `guard` to `hold`, which drops the home once
+    /// `guard` completes, then returns once its ring has closed. A failed open drops
+    /// `guard`, which stops the node.
     async fn keep(
         self,
         files: env::files::Files,
@@ -684,6 +690,13 @@ impl Open {
         guard: Guard,
         hold: impl AsyncFnOnce(home::Shard, Guard),
     ) {
+        let (clock, own) = (self.monotonic.clone(), Rc::clone(&pool));
+        tasks.spawn(async move {
+            loop {
+                clock.sleep(PURGE).await;
+                own.purge();
+            }
+        });
         let Some(home) = self.run(files, pool, tasks.clone()).await else {
             // Stops the node, so each other shard ends.
             drop(guard);

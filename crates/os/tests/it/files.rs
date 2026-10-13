@@ -640,78 +640,6 @@ fn a_sync_after_a_write_succeeds() {
     });
 }
 
-/// A RAM disk of 64 MiB with an HFS+ volume, which no other process writes. It
-/// detaches when it drops, except while the thread panics.
-#[cfg(target_os = "macos")]
-struct Ram {
-    device: String,
-    mount: PathBuf,
-}
-
-#[cfg(target_os = "macos")]
-impl Ram {
-    fn new() -> Self {
-        // The size is in sectors of 512 bytes.
-        let attach = ["attach", "-nomount", "ram://131072"];
-        let device = stdout(std::process::Command::new("hdiutil").args(attach));
-        let device = device.trim().to_owned();
-        // The device is unique while it is attached, so tests that run at the same
-        // time get their own volumes.
-        let disk = device.trim_start_matches("/dev/");
-        let name = format!("foundation-os-{}-{disk}", std::process::id());
-        let erase = ["erasevolume", "HFS+", &name, &device];
-        stdout(std::process::Command::new("diskutil").args(erase));
-        let mount = Path::new("/Volumes").join(name);
-        Self { device, mount }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for Ram {
-    fn drop(&mut self) {
-        // While the thread panics, a second panic aborts the test binary.
-        if !std::thread::panicking() {
-            let detach = ["detach", self.device.as_str()];
-            stdout(std::process::Command::new("hdiutil").args(detach));
-        }
-    }
-}
-
-/// Runs `command`, and gives its output. Panics with its error output when it fails.
-#[cfg(target_os = "macos")]
-fn stdout(command: &mut std::process::Command) -> String {
-    let output = command.output().unwrap();
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{command:?}: {error}");
-    String::from_utf8(output.stdout).unwrap()
-}
-
-/// The root tests check this on Linux, on a filesystem of their own.
-#[cfg(target_os = "macos")]
-#[test]
-fn free_drops_by_the_bytes_of_a_created_file() {
-    check_free_on_ram(crate::free::Create::Held);
-}
-
-/// The root tests check this on Linux, on a filesystem of their own.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_free_waits_for_a_dropped_create() {
-    check_free_on_ram(crate::free::Create::Dropped);
-}
-
-/// Runs `free::check` on a `Ram` of its own.
-#[cfg(target_os = "macos")]
-fn check_free_on_ram(create: crate::free::Create) {
-    let ram = Ram::new();
-    let (files, thread) = files(&ram.mount, "files");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    runtime.block_on(async move { crate::free::check(&files, create).await });
-    thread.join().unwrap();
-}
-
 /// The error of `os::files` on `dir`.
 #[test]
 fn a_disk_shows_as_disk() {
@@ -780,7 +708,7 @@ fn files_syncs_the_holders_of_dir_and_its_data_at_each_call() {
         let holders = [root.clone(), dir.clone()];
         assert_eq!(*synced.lock().unwrap(), [holders.clone(), holders].concat());
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 /// A `dir` that the call made under a holder that it cannot sync is still not
@@ -834,7 +762,7 @@ fn files_whose_holder_sync_fails_gives_dir() {
         );
         assert!(matches!(found, os::Error::Dir(_)));
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 #[test]
@@ -911,6 +839,151 @@ fn hold_while_another_create_fails(mode: Mode) {
     writer_thread.join().unwrap();
 }
 
+/// The `ftruncate` that frees the blocks of a failed create also fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_create_whose_free_fails_leaves_no_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("freed", move || async move {
+        crate::seccomp::answer_calls(
+            &[libc::SYS_fallocate, libc::SYS_ftruncate],
+            |data, k| match i64::from(data.nr) {
+                libc::SYS_fallocate => Some(libc::ENOSPC),
+                libc::SYS_ftruncate if k == 1 => Some(libc::EIO),
+                _ => None,
+            },
+        );
+        let (files, thread) = files(&dir, "files");
+        let mode = Mode::Create { len: 4 * KIB };
+        let created = files.open(Path::new("a"), mode).await.map(|_| ());
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(created, Err(io("a", Operation::Open, libc::EIO)));
+        assert_eq!(reopened, Err(Error::NotFound { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
+/// Makes each unlock by `flock` of this thread, or of a thread that it starts later,
+/// give `errno`.
+#[cfg(target_os = "linux")]
+fn unlock_gives(errno: i32) {
+    crate::seccomp::answer_calls(&[libc::SYS_flock], move |data, _| {
+        (data.args[1] == libc::LOCK_UN as u64).then_some(errno)
+    });
+}
+
+/// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_fails_closes_the_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EIO);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        file.close().await;
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(reopened, Ok(()));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
+/// An unlock that gives `EBADF` is a broken invariant: the close panics the I/O thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// An unlock that gives `EINVAL` is a broken invariant too: the close panics the I/O
+/// thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_einval_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EINVAL);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// A write open that another disk holds the lock of gives `Busy`, holds no lock, and so
+/// sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_busy_write_open_sends_no_unlock() {
+    let scratch = Scratch::new();
+    let (holder, holder_thread) = files(&scratch.0, "holder");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let held = runtime.block_on(create(&holder, "a", KIB));
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let opened = files.open(Path::new("a"), Mode::Write).await.map(drop);
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(opened, Err(Error::Busy { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+    runtime.block_on(held.close());
+    drop(holder);
+    holder_thread.join().unwrap();
+}
+
+/// A read handle holds no lock, so its close sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_close_of_a_read_handle_sends_no_unlock() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.0.join("data")).unwrap();
+    std::fs::write(scratch.0.join("data/a"), b"").unwrap();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let read = files.open(Path::new("a"), Mode::Read).await.unwrap();
+        read.close().await;
+        drop(files);
+        thread.join().unwrap();
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
 /// A remove that drops while it waits for room in the full queue of the I/O thread
 /// never runs.
 #[test]
@@ -961,8 +1034,7 @@ async fn stalled<T>(
     started
 }
 
-/// Makes a FIFO at `path`. A child process, such as `mkfifo`, would hold the files of
-/// the tests on other threads open until it starts, and so keep their locks.
+/// Makes a FIFO at `path`.
 pub(crate) fn mkfifo(path: &Path) {
     #[cfg(target_os = "linux")]
     {
