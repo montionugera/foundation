@@ -23,6 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
  * open62541` needs encryption off. */
@@ -353,7 +356,14 @@ static void log_message(void *context, UA_LogLevel level, UA_LogCategory categor
         length = LOG_BYTES - 1;
     line[length] = '\n';
     /* A failed write of a log line has nowhere to go. */
+#ifdef _WIN32
+    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
+    DWORD written;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    WriteFile(err, line, (DWORD)(length + 1), &written, NULL);
+#else
     ssize_t written = write(STDERR_FILENO, line, length + 1);
+#endif
     (void)written;
 }
 
