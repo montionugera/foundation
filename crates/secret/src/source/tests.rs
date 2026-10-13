@@ -156,7 +156,7 @@ fn refuses_a_bad_variable_name() {
 }
 
 #[test]
-fn refuses_a_relative_path_or_one_with_a_parent_segment() {
+fn refuses_a_relative_path_or_one_with_a_parent_segment_or_nul() {
     for path in [
         "",
         "token",
@@ -168,10 +168,11 @@ fn refuses_a_relative_path_or_one_with_a_parent_segment() {
         "x",
         "/a\\..\\b",
         "\\a\\b",
+        "/run/a\0b",
     ] {
         refused(
             &call("file", vec![string(path)]),
-            "the argument of `file` is not an absolute path with no `..`",
+            "the argument of `file` is not an absolute path with no `..` and no NUL",
             "Write the whole path from the root, such as \
              `file(\"/run/secrets/influx_token\")`",
         );
@@ -183,11 +184,8 @@ fn refuses_a_bad_secret_name() {
     refused(
         &call("secret", vec![string("plant..token")]),
         "the argument of `secret` is not a valid name",
-        types::name::Error::Segment {
-            input: String::new(),
-            segment: String::new(),
-        }
-        .fix(),
+        "Write segments of ASCII letters, digits, `_`, and `-`, each after an optional \
+         leading `@`, joined by `.`, such as `secret(\"plant.influx_token\")`",
     );
     refused(
         &call("secret", vec![string("")]),

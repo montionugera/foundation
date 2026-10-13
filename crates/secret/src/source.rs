@@ -18,8 +18,8 @@ pub enum Source {
     /// `env("NAME")`: the variable `NAME` of the environment of the node process, as
     /// it was when the node started.
     Env(String),
-    /// `file("/path")`: the file at a path that starts with `/` and has no `..`
-    /// segment between `/` or `\`, on every host.
+    /// `file("/path")`: the file at a path that starts with `/`, has no NUL, and has
+    /// no `..` segment between `/` or `\`, on every host.
     File(PathBuf),
     /// `secret("full.name")`: the value of the secret of that full name in the
     /// node's store.
@@ -82,7 +82,8 @@ impl Source {
             )),
             "env" => Ok(Self::Env(text.to_string())),
             "file" if !absolute(text) => Err(refuse(
-                "the argument of `file` is not an absolute path with no `..`".into(),
+                "the argument of `file` is not an absolute path with no `..` and no NUL"
+                    .into(),
                 "Write the whole path from the root, such as \
                  `file(\"/run/secrets/influx_token\")`",
             )),
@@ -91,10 +92,15 @@ impl Source {
                 .parse()
                 .map(Self::Secret)
                 .map_err(|error: types::name::Error| {
-                    refuse(
-                        "the argument of `secret` is not a valid name".into(),
-                        error.fix(),
-                    )
+                    let fix = match error {
+                        types::name::Error::Segment { .. } => {
+                            "Write segments of ASCII letters, digits, `_`, and `-`, \
+                             each after an optional leading `@`, joined by `.`, \
+                             such as `secret(\"plant.influx_token\")`"
+                        }
+                        error => error.fix(),
+                    };
+                    refuse("the argument of `secret` is not a valid name".into(), fix)
                 }),
         }
     }
@@ -104,10 +110,12 @@ impl Source {
 const FIX: &str =
     "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or `secret(\"name\")`";
 
-/// Whether `text` starts with `/` and has no `..` segment, split on `/` and `\`. The
-/// same text rule holds on every host.
+/// Whether `text` starts with `/`, has no NUL, and has no `..` segment, split on `/`
+/// and `\`. The same text rule holds on every host.
 fn absolute(text: &str) -> bool {
-    text.starts_with('/') && !text.split(['/', '\\']).any(|segment| segment == "..")
+    text.starts_with('/')
+        && !text.contains('\0')
+        && !text.split(['/', '\\']).any(|segment| segment == "..")
 }
 
 impl fmt::Display for Source {
