@@ -4647,6 +4647,8 @@ mod port {
                 let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
+                let kinds = Arc::new(crate::kinds());
+                let ops = crate::operations(&mesh, &time, &entropy, kinds);
                 let hub = ::hub::Hub::new(::hub::Config {
                     home,
                     interner,
@@ -4662,8 +4664,10 @@ mod port {
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
-                    Some(mesh.clone()),
-                    crate::task::Handles { hub, ops: None },
+                    crate::task::Handles {
+                        hub,
+                        ops: Some(ops),
+                    },
                     clock,
                     tasks,
                     settings.header_wait,
@@ -6281,6 +6285,8 @@ mod port {
                 let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
+                let kinds = Arc::new(crate::kinds());
+                let ops = crate::operations(&mesh, &time, &entropy, kinds);
                 let hub = ::hub::Hub::new(::hub::Config {
                     home,
                     interner,
@@ -6296,10 +6302,9 @@ mod port {
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
-                    Some(mesh.clone()),
                     crate::task::Handles {
                         hub: hub.clone(),
-                        ops: None,
+                        ops: Some(ops),
                     },
                     clock,
                     tasks,

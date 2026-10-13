@@ -9,7 +9,6 @@ use std::rc::{Rc, Weak};
 use std::task::Poll;
 
 use hub::{Link, Served};
-use mesh::Mesh;
 use transport::stream::Incoming;
 use transport::{Code, Error, Peer, Session, Transport};
 use types::time::Span;
@@ -19,14 +18,13 @@ use crate::scope::Scope;
 use crate::task::Handles;
 
 /// Serves each session of `transport` in its own future on `tasks`, until the transport
-/// stops, and gives the error that stopped it. Admits each session of a member of
-/// `mesh`'s region. Gives each session of another peer a place, of at most
-/// `places_max`; at the bound, the oldest place frees for it ([`Places::take`]).
-/// `route` decides each stream with `handles`, and rejects one whose header takes
-/// longer than `header_wait`.
+/// stops, and gives the error that stopped it. Admits each session of a member of the
+/// region of the mesh of `handles.ops`. Gives each session of another peer a place, of
+/// at most `places_max`; at the bound, the oldest place frees for it
+/// ([`Places::take`]). `route` decides each stream with `handles`, and rejects one
+/// whose header takes longer than `header_wait`.
 pub(crate) async fn accept(
     transport: Rc<Transport>,
-    mesh: Option<Mesh>,
     handles: Handles,
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
@@ -40,11 +38,11 @@ pub(crate) async fn accept(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let held = places.take(&session, |peer| member(peer, mesh.as_ref()));
+        let ops = handles.ops.as_deref();
+        let held = places.take(&session, |peer| member(peer, ops));
         let link = handles.hub.link(session.clone());
         let serve = serve(
             session,
-            mesh.clone(),
             link,
             handles.ops.clone(),
             clock.clone(),
@@ -145,7 +143,6 @@ impl Places {
 /// ends.
 async fn serve(
     session: Session,
-    mesh: Option<Mesh>,
     link: Link,
     ops: Option<Rc<ops::Node>>,
     clock: env::clock::Clock,
@@ -159,7 +156,6 @@ async fn serve(
         let route = route(
             incoming,
             peer,
-            mesh.clone(),
             link,
             ops.clone(),
             clock.clone(),
@@ -170,14 +166,13 @@ async fn serve(
 }
 
 /// Reads the header of `incoming`, its first message, and routes the stream that `peer`
-/// opened by its protocol. A `Mesh` stream of a node goes to `mesh`, a `Hub` stream of
-/// a member of the region to `link`, and a `Hub` stream of a program to `link`, with
-/// its request answered by `ops`. Each other stream, and one whose header does not
-/// arrive within `header_wait` on `clock`, is rejected.
+/// opened by its protocol. With `ops`, a `Mesh` stream of a node goes to the mesh of
+/// `ops`, a `Hub` stream of a member of its region to `link`, and a `Hub` stream of a
+/// program to `link`, with its request answered by `ops`. Each other stream, and one
+/// whose header does not arrive within `header_wait` on `clock`, is rejected.
 async fn route(
     mut incoming: Incoming,
     peer: Peer,
-    mesh: Option<Mesh>,
     link: Link,
     ops: Option<Rc<ops::Node>>,
     clock: env::clock::Clock,
@@ -201,14 +196,14 @@ async fn route(
         return reject(incoming);
     };
     match protocol {
-        Protocol::Mesh => match (peer, mesh) {
-            (Peer::Node(key), Some(mesh)) => {
+        Protocol::Mesh => match (peer, ops) {
+            (Peer::Node(key), Some(ops)) => {
                 // `serve` stops the stream with the code of its error.
-                drop(mesh.serve(key, incoming).await);
+                drop(ops.mesh().serve(key, incoming).await);
             }
             (Peer::Client, _) | (_, None) => reject(incoming),
         },
-        Protocol::Hub if member(peer, mesh.as_ref()) => {
+        Protocol::Hub if member(peer, ops.as_deref()) => {
             // `serve` stops the stream with the code of its error.
             drop(link.serve(incoming).await);
         }
@@ -235,10 +230,10 @@ async fn answer(link: &Link, incoming: Incoming, ops: &ops::Node) {
 }
 
 /// Whether `peer` is a member of the region: a node whose key a member holds in the
-/// view of `mesh`.
-fn member(peer: Peer, mesh: Option<&Mesh>) -> bool {
-    match (peer, mesh) {
-        (Peer::Node(key), Some(mesh)) => mesh.holder(key).is_some(),
+/// view of the mesh of `ops`.
+fn member(peer: Peer, ops: Option<&ops::Node>) -> bool {
+    match (peer, ops) {
+        (Peer::Node(key), Some(ops)) => ops.mesh().holder(key).is_some(),
         (Peer::Node(_), None) | (Peer::Client, _) => false,
     }
 }

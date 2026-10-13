@@ -17,7 +17,7 @@ use hub::Hub;
 
 use crate::scope::Scope;
 
-/// What shard 0 gives each task. Clones share the hub and the operations.
+/// What shard 0 gives each task and its port. Clones share the hub and the operations.
 #[derive(Clone)]
 pub(crate) struct Handles {
     pub(crate) hub: Hub,
