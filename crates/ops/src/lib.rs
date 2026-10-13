@@ -8,7 +8,7 @@ use std::path::Path;
 use env::paths::Paths;
 
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 mod apply;
 #[cfg(test)]
@@ -161,12 +161,19 @@ impl From<Error> for Stop {
     }
 }
 
-/// `value` as one line of JSON when `json`, else `text()`.
-fn render(json: bool, value: &impl Serialize, text: impl FnOnce() -> String) -> String {
+/// `output` as JSON.
+pub(crate) fn value(output: &impl Serialize) -> Value {
+    serde_json::to_value(output).expect("invariant: an output is plain JSON data")
+}
+
+/// `output` as one line of JSON when `json`, else `text()`.
+fn render(
+    json: bool,
+    output: &impl Serialize,
+    text: impl FnOnce() -> String,
+) -> String {
     if json {
-        let value = serde_json::to_value(value)
-            .expect("invariant: an output is plain JSON data");
-        format!("{value}\n")
+        format!("{}\n", value(output))
     } else {
         text()
     }

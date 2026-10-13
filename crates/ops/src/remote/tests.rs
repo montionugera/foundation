@@ -158,7 +158,7 @@ fn plans_writes_the_plan_file_and_applies_it() {
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
         let planned = planned.expect("a plan");
-        assert_eq!(planned.json(), output);
+        assert_eq!(crate::value(&planned), output);
         assert_eq!(paths.read(out, most()), Ok(Found::File(expected)));
         assert_eq!(remote.calls(), (1, 1));
 
