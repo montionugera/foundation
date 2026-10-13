@@ -117,6 +117,42 @@ fn a_first_commit_after_a_build_on_an_unborn_branch_rebuilds() {
 }
 
 #[test]
+fn a_commit_on_a_branch_rebuilds() {
+    let root = create_probe("branch", &[]);
+    let first = commit(&root);
+    assert_eq!(built(&root), first);
+    let second = commit(&root);
+    assert_eq!(built(&root), second);
+}
+
+/// Git before 2.31, as Debian 11 ships it, prints `--path-format=absolute` back as it
+/// is, in place of a path.
+#[cfg(unix)]
+#[test]
+fn a_git_before_the_path_format_gives_the_commit() {
+    let root = create_probe("old", &[]);
+    let head = commit(&root);
+    let real = run(&root, "sh", &["-c", "command -v git"], &[]);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nfor a; do shift\n  if [ \"$a\" = --path-format=absolute ]; then \
+             echo \"$a\"; else set -- \"$@\" \"$a\"; fi\ndone\nexec {real} \"$@\"\n"
+        ),
+    )
+    .expect("write");
+    let mut permissions = std::fs::metadata(&shim).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&shim, permissions).expect("chmod");
+    let toolchain = Path::new(env!("CARGO")).parent().expect("bin");
+    let path = format!("{}:{}:/usr/bin:/bin", bin.display(), toolchain.display());
+    assert_eq!(built_with(&root, &[("PATH", &path)]), head);
+}
+
+#[test]
 fn a_commit_on_an_orphan_branch_rebuilds() {
     let root = create_probe("orphan", &[]);
     commit(&root);

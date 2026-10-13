@@ -57,10 +57,12 @@ fn git(args: &[&str]) -> Option<String> {
     output.status.success().then(|| text.trim().to_owned())
 }
 
-/// The absolute path of `name` in the git folder.
+/// The absolute path of `name` in the git folder. Git gives it relative to the folder of
+/// the package, where cargo runs the script.
 fn git_path(name: &str) -> PathBuf {
-    let path = git(&["rev-parse", "--path-format=absolute", "--git-path", name]);
-    PathBuf::from(path.unwrap_or_else(|| panic!("git gives no path of `{name}`")))
+    let path = git(&["rev-parse", "--git-path", name]);
+    let path = path.unwrap_or_else(|| panic!("git gives no path of `{name}`"));
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 /// Watches the nearest folder above `path` that is there, where git makes the file of a
