@@ -1,14 +1,11 @@
-use std::future::poll_fn;
 use std::net::SocketAddr;
-use std::panic::{self, AssertUnwindSafe};
-use std::pin::pin;
-use std::task::Poll;
 
 use ::sim::{Sim, node};
 
 use super::Server;
 use crate::connection::Manager;
 use crate::node::Node;
+use crate::unwind::caught;
 
 #[test]
 fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
@@ -21,15 +18,9 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
             .expect("the port is free");
         let zero: Node = "ns=1;i=0".parse().expect("a node");
         let add = |server: &mut Server| server.add_double(&zero, 1.0);
-        let mut serve = pin!(Server::serve(manager, 1, add, async {}));
-        let panic = poll_fn(|cx| {
-            match panic::catch_unwind(AssertUnwindSafe(|| serve.as_mut().poll(cx))) {
-                Ok(Poll::Pending) => Poll::Pending,
-                Ok(Poll::Ready(())) => panic!("the serve ends with no panic"),
-                Err(panic) => Poll::Ready(panic),
-            }
-        })
-        .await;
+        let panic = caught(Server::serve(manager, 1, add, async {}))
+            .await
+            .expect_err("the serve panics");
         assert_eq!(
             panic.downcast_ref::<String>().map(String::as_str),
             Some("ns=1;i=0: open62541 adds a node of the number 0 at a free number")
