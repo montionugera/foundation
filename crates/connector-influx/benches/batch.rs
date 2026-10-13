@@ -2,12 +2,14 @@
 //! of a sim node. Run with `cargo bench -p connector-influx --bench batch`.
 //!
 //! For each shape, a writer writes frames of an index and `channels` `f64` channels,
-//! with `samples` sample times each, and a complete reader reads them. Each round adds
-//! `FRAMES` frames to one batch with `Batch::add`, then takes its body with
-//! `Batch::take`, as the send loop does for one request. Only these two calls are
-//! timed. The figures are per frame: the ns of each round, at percentiles over the
-//! rounds, the ns for each sample of a channel at p50, and the allocations. It checks
-//! that `Batch::add` makes no allocation after the warm-up rounds.
+//! with `samples` sample times each, and a complete reader reads them. In an
+//! alternating shape, each frame holds only the even or only the odd channels, in
+//! turn. Each round adds `FRAMES` frames to one batch with `Batch::add`, then takes
+//! its body with `Batch::take`, as the send loop does for one request. Only these two
+//! calls are timed. The figures are per frame: the ns of each round, at percentiles
+//! over the rounds, the ns for each sample of a channel in the frame at p50, and the
+//! allocations. It checks that `Batch::add` makes no allocation after the warm-up
+//! rounds.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -37,17 +39,26 @@ const WARMUP: usize = 2;
 /// Few enough that each frame of each shape fits the ring of the sim hub, which no ack
 /// frees.
 const ROUNDS: usize = 20;
-/// Each `(channels, samples)`.
-const SHAPES: [(usize, usize); 6] =
-    [(1, 1), (8, 1), (64, 1), (1, 100), (8, 100), (64, 10)];
+/// Each `(channels, samples, alternating)`.
+const SHAPES: [(usize, usize, bool); 8] = [
+    (1, 1, false),
+    (8, 1, false),
+    (64, 1, false),
+    (1, 100, false),
+    (8, 100, false),
+    (64, 10, false),
+    (8, 1, true),
+    (64, 10, true),
+];
 
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn main() {
     println!("ns and allocations per frame over {ROUNDS} rounds of {FRAMES} frames");
     println!(
-        "{:>8} {:>7} {:>9} {:>9} {:>9} {:>11} {:>12} {:>11}",
+        "{:>8} {:>7} {:>5} {:>9} {:>9} {:>9} {:>11} {:>12} {:>11}",
         "channels",
         "samples",
+        "alt",
         "p10",
         "p50",
         "p90",
@@ -55,21 +66,23 @@ fn main() {
         "allocs/frame",
         "body bytes"
     );
-    for (channels, samples) in SHAPES {
+    for (channels, samples, alternating) in SHAPES {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
-        let run = move |node, tasks| bench(node, tasks, channels, samples);
+        let run = move |node, tasks| bench(node, tasks, channels, samples, alternating);
         let (mut nanos, allocations, body) =
             sim.run_on(&node, run).expect("the run ends");
         nanos.sort_unstable();
         let at = |percent: usize| nanos[nanos.len() * percent / 100];
         let frames = ROUNDS * FRAMES;
+        let present = if alternating { channels / 2 } else { channels };
         println!(
-            "{channels:>8} {samples:>7} {:>9} {:>9} {:>9} {:>11.2} {:>12.2} {body:>11}",
+            "{channels:>8} {samples:>7} {alternating:>5} {:>9} {:>9} {:>9} {:>11.2} \
+             {:>12.2} {body:>11}",
             at(10),
             at(50),
             at(90),
-            per(at(50)) / per(channels * samples),
+            per(at(50)) / per(present * samples),
             per(allocations) / per(frames),
         );
     }
@@ -82,6 +95,7 @@ async fn bench(
     tasks: env::tasks::Tasks,
     channels: usize,
     samples: usize,
+    alternating: bool,
 ) -> (Vec<u64>, u64, usize) {
     let env = hub::testing::Env {
         files: node.files(),
@@ -113,8 +127,9 @@ async fn bench(
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let mut stamp = writer.now().nanos();
     for round in 0..WARMUP + ROUNDS {
-        for _ in 0..FRAMES {
-            write(&mut writer, stamp, samples);
+        for frame in 0..FRAMES {
+            let half = alternating.then_some(frame % 2);
+            write(&mut writer, stamp, samples, half);
             stamp += i64::try_from(samples).expect("few");
         }
         node.clock().sleep(Span::SECOND).await;
@@ -175,17 +190,21 @@ fn define(hub: &hub::Hub, channels: usize) -> Vec<Name> {
 }
 
 /// Writes one frame of each channel of `writer`, with `samples` sample times from
-/// `first`, each nanosecond after the one before it.
-fn write(writer: &mut Writer, first: i64, samples: usize) {
+/// `first`, each nanosecond after the one before it. With a `half`, it writes only the
+/// data channels whose entry is `half` modulo 2.
+fn write(writer: &mut Writer, first: i64, samples: usize, half: Option<usize>) {
     let entries = writer.set().entries();
     let index = entries
         .iter()
         .position(|entry| entry.key == channel::Key::from_u128(1))
         .expect("the index");
     let group = entries[index].group;
-    let series: Vec<_> = (0..entries.len()).map(|at| (at, samples * 8)).collect();
+    let series: Vec<_> = (0..entries.len())
+        .filter(|&at| at == index || half.is_none_or(|half| at % 2 == half))
+        .map(|at| (at, samples * 8))
+        .collect();
     let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
-    for at in 0..entries.len() {
+    for &(at, _) in &series {
         let series = draft.series_mut(at).expect("a series");
         let bytes = (0..samples).flat_map(|sample| {
             let sample = i64::try_from(sample).expect("few");

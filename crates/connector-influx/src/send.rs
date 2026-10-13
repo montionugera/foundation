@@ -20,7 +20,7 @@ use crate::batch::Batch;
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
 const BODY_MAX: usize = 1 << 16;
-/// The waits between the attempts of one batch, as the supervisor's restarts.
+/// The waits between the attempts of one batch.
 const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,
@@ -28,8 +28,8 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took, or `None` at a cancel.
-    Sent(Option<Position>),
+    /// The position after the batch that InfluxDB took.
+    Sent(Position),
     Frame(Result<Received<'a>, Ended>),
 }
 
@@ -84,8 +84,8 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             .await
         };
         match event {
-            Event::Cancelled | Event::Sent(None) => return Ok(()),
-            Event::Sent(Some(position)) => {
+            Event::Cancelled => return Ok(()),
+            Event::Sent(position) => {
                 flight.set(None);
                 reader.ack(position);
             }
@@ -96,15 +96,15 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Sends `body` until InfluxDB answers 204, and gives `position`. Shows each other
-/// answer as the run's error and waits a backoff before the next attempt. Gives
-/// `None` at the cancel of the run.
+/// answer as the run's error and waits a backoff before the next attempt. Never
+/// ends after the cancel of the run, which the caller sees first.
 async fn send(
     client: &Client,
     ctx: &Context<Config>,
     uri: &Uri,
     body: Bytes,
     position: Position,
-) -> Option<Position> {
+) -> Position {
     let mut backoff = None;
     loop {
         let request = Request::post(uri.clone()).body(body.clone());
@@ -112,7 +112,7 @@ async fn send(
         match client.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
-                return Some(position);
+                return position;
             }
             Ok(answer) => ctx.error(&format_args!(
                 "InfluxDB answered {}: {}",
@@ -126,7 +126,7 @@ async fn send(
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
         if !backoff.wait(ctx.cancel()).await {
-            return None;
+            future::pending::<()>().await;
         }
     }
 }

@@ -35,14 +35,23 @@ struct Body {
     values: Vec<Option<Value>>,
 }
 
-/// The measurement of one key set and set of present channels, and how each field
-/// reads its samples.
+/// The measurement of the data channels seen in the frames of one key set, and how
+/// each field reads its samples.
 #[derive(Debug)]
 struct Layout {
     set: key_set::Key,
-    entries: Vec<usize>,
-    conversions: Vec<(usize, Convert)>,
+    /// In entry order.
+    fields: Vec<Field>,
     measurement: Measurement,
+}
+
+/// One data channel of a [`Layout`].
+#[derive(Debug)]
+struct Field {
+    entry: usize,
+    name: String,
+    width: usize,
+    convert: Convert,
 }
 
 /// The value of one raw sample, or `None` when InfluxDB cannot store it.
@@ -81,12 +90,22 @@ impl Batch {
         let Some(first) = data().next() else {
             return Ok(());
         };
-        let fits = self.layout.as_ref().is_some_and(|layout| {
-            layout.set == set.key() && data().eq(layout.entries.iter().copied())
-        });
+        let fits = (self.layout.as_ref())
+            .is_some_and(|layout| layout.set == set.key() && layout.holds(data()));
         let layout = match &mut self.layout {
             Some(layout) if fits => layout,
-            slot => slot.insert(layout(&self.name, received, data().collect())?),
+            slot => {
+                let mut fields = match slot.take() {
+                    Some(layout) if layout.set == set.key() => layout.fields,
+                    _ => Vec::new(),
+                };
+                for at in data() {
+                    if let Err(place) = fields.binary_search_by_key(&at, |f| f.entry) {
+                        fields.insert(place, field(received, at)?);
+                    }
+                }
+                slot.insert(layout(&self.name, set.key(), fields)?)
+            }
         };
         self.body.write(layout, received, first);
         Ok(())
@@ -117,34 +136,34 @@ impl Body {
     /// the `layout` of its channels.
     fn write(&mut self, layout: &Layout, received: &Received<'_>, first: usize) {
         let (view, set) = (received.view(), received.set());
-        let Some(range) = view.range(entry(set, first).group) else {
-            return;
-        };
+        let group = entry(set, first).group;
+        let range = view
+            .range(group)
+            .expect("invariant: a view holds its index");
         let count = usize::try_from(range.count).expect("invariant: u32 fits usize");
         let index = set.index(first);
-        if let Some((_, bytes)) = view.iter().find(|&(entry, _)| entry == index) {
-            let data_type = entry(set, index).data_type;
-            codec::decode(data_type, count, bytes, &mut self.times)
-                .expect("invariant: the hub gives valid series");
-        }
-        let fields = layout.entries.len();
+        let (_, bytes) = (view.iter().find(|&(entry, _)| entry == index))
+            .expect("invariant: a view holds its index");
+        codec::decode(entry(set, index).data_type, count, bytes, &mut self.times)
+            .expect("invariant: the hub gives valid series");
+        let fields = layout.fields.len();
         self.values.clear();
         let cells = count
             .checked_mul(fields)
             .expect("invariant: a frame fits memory");
         self.values.resize(cells, None);
         let series = view.iter().filter(|&(entry, _)| entry != index);
-        for (field, ((at, bytes), &(width, convert))) in
-            series.zip(&layout.conversions).enumerate()
-        {
-            let data_type = entry(set, at).data_type;
-            codec::decode(data_type, count, bytes, &mut self.raw)
+        let mut places = layout.fields.iter().enumerate();
+        for (at, bytes) in series {
+            let (place, field) = (places.find(|(_, field)| field.entry == at))
+                .expect("invariant: the layout holds each data channel of the frame");
+            codec::decode(entry(set, at).data_type, count, bytes, &mut self.raw)
                 .expect("invariant: the hub gives valid series");
-            let samples = self.raw.chunks_exact(width);
+            let samples = self.raw.chunks_exact(field.width);
             for (row, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
-                if let Some(value) = row.get_mut(field) {
-                    *value = convert(sample);
-                }
+                let value =
+                    row.get_mut(place).expect("invariant: a row has each field");
+                *value = (field.convert)(sample);
             }
         }
         let rows = self.values.chunks_exact(fields);
@@ -161,32 +180,40 @@ impl Body {
     }
 }
 
-/// The layout of the data channels at `entries` of `received`.
-fn layout(
-    name: &str,
-    received: &Received<'_>,
-    entries: Vec<usize>,
-) -> Result<Layout, Error> {
-    let set = received.set();
-    let mut keys = Vec::with_capacity(entries.len());
-    let mut conversions = Vec::with_capacity(entries.len());
-    for &at in &entries {
-        let channel = received.name(at);
-        let data_type = entry(set, at).data_type;
-        let Some(conversion) = conversion(data_type) else {
-            return Err(Error::Config(vec![Diagnostic::new(
-                SAMPLE_TYPE,
-                None,
-                format!(
-                    "the channel {channel:?} holds {data_type} samples, which the \
-                     influx kind does not write"
-                ),
-                "Select only f64 channels".into(),
-            )]));
-        };
-        keys.push(channel);
-        conversions.push(conversion);
+impl Layout {
+    /// Whether the layout has a field for each of `entries`, in entry order.
+    fn holds(&self, mut entries: impl Iterator<Item = usize>) -> bool {
+        let mut fields = self.fields.iter();
+        entries.all(|at| fields.any(|field| field.entry == at))
     }
+}
+
+/// The field of the data channel at `at` of `received`.
+fn field(received: &Received<'_>, at: usize) -> Result<Field, Error> {
+    let name = received.name(at);
+    let data_type = entry(received.set(), at).data_type;
+    let Some((width, convert)) = conversion(data_type) else {
+        return Err(Error::Config(vec![Diagnostic::new(
+            SAMPLE_TYPE,
+            None,
+            format!(
+                "the channel {name:?} holds {data_type} samples, which the influx \
+                 kind does not write"
+            ),
+            "Select only f64 channels".into(),
+        )]));
+    };
+    Ok(Field {
+        entry: at,
+        name: name.to_owned(),
+        width,
+        convert,
+    })
+}
+
+/// The layout of `fields` of the key set `set`.
+fn layout(name: &str, set: key_set::Key, fields: Vec<Field>) -> Result<Layout, Error> {
+    let keys: Vec<_> = fields.iter().map(|field| field.name.as_str()).collect();
     let measurement = Measurement::new(name, &[], &keys).map_err(|error| {
         Error::Config(vec![Diagnostic::new(
             BAD_CHANNEL,
@@ -196,9 +223,8 @@ fn layout(
         )])
     })?;
     Ok(Layout {
-        set: set.key(),
-        entries,
-        conversions,
+        set,
+        fields,
         measurement,
     })
 }
