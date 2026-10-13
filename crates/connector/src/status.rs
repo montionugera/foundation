@@ -1021,27 +1021,6 @@ mod tests {
     }
 
     #[test]
-    fn adds_to_the_value_that_a_set_gave_and_stages_it() {
-        let status = Status::new(vec![name("samples"), name("errors")]);
-        let (samples, errors) = (status.count("samples"), status.count("errors"));
-        samples.set(3);
-        status.0.staged.set(false);
-        samples.add(4);
-        errors.add(1);
-        let values: Vec<_> = (status.0.counts.iter()).map(|(_, n)| n.get()).collect();
-        assert_eq!((values, status.0.staged.get()), (vec![7, 1], true));
-    }
-
-    #[test]
-    fn saturates_an_add_at_the_largest_count() {
-        let status = Status::new(vec![name("samples")]);
-        let samples = status.count("samples");
-        samples.set(u64::MAX - 1);
-        samples.add(2);
-        assert_eq!(status.0.counts[0].1.get(), u64::MAX);
-    }
-
-    #[test]
     fn refuses_the_first_status_name_longer_than_a_name() {
         let long = |bytes| Err(types::name::Error::Long { bytes });
         // The index, `<connector>.status.time`, comes first.

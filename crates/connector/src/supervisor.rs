@@ -2580,6 +2580,28 @@ mod tests {
         assert_eq!(last, Some((1, 5)), "one restart, then 2 + 3: {statuses:?}");
     }
 
+    #[test]
+    fn adds_to_the_value_that_a_set_gave() {
+        let statuses = tally(counted(|ctx: Context<()>| async move {
+            ctx.count("samples").set(3);
+            ctx.count("samples").add(4);
+            Ok(())
+        }));
+        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        assert_eq!(last, Some(7), "{statuses:?}");
+    }
+
+    #[test]
+    fn saturates_an_add_at_the_largest_count() {
+        let statuses = tally(counted(|ctx: Context<()>| async move {
+            ctx.count("samples").set(u64::MAX - 1);
+            ctx.count("samples").add(2);
+            Ok(())
+        }));
+        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        assert_eq!(last, Some(-1), "u64::MAX, read as i64: {statuses:?}");
+    }
+
     /// A kind with the count `samples`. Its run spawns a task that sets the count to
     /// each of 1 to `n`, `gap` apart, and returns `Ok` once that task ended.
     fn relay(n: u64, gap: Span) -> impl Kind<Config = ()> {
