@@ -1480,6 +1480,45 @@ fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
     assert_eq!((read, accepts), (Ok(value), 2));
 }
 
+/// An endpoint of mode Sign with the policy None has the client close its channel to
+/// switch the security mode, and the client refuses that mode before it dials.
+#[test]
+fn a_switch_of_the_security_mode_ends_with_its_status() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
+            from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
+            let rewrite = |message: &mut Vec<u8>| {
+                let endpoints = message.starts_with(b"MSG")
+                    && message[24..28] == ENDPOINTS_RESPONSE;
+                if endpoints && control.accepts.get() == 1 {
+                    let mut at = 0;
+                    while let Some(found) = message[at..]
+                        .windows(from.len())
+                        .position(|w| *w == from[..])
+                    {
+                        at += found;
+                        message[at] = 2;
+                        at += from.len();
+                    }
+                }
+            };
+            let status = relayed(&node, &control, rewrite, async {
+                let status = peer.connect(&url).await.err();
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                status
+            })
+            .await;
+            (status, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!(out, (Some(Status::BAD_SECURITY_MODE_REJECTED), 1));
+}
+
 /// A message on an open channel that the client cannot process ends the session, and
 /// the client does not dial again, also after a switch of the URL.
 #[test]
