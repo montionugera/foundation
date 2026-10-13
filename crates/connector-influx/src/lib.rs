@@ -37,6 +37,9 @@ const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
 const BAD_ORG: Code = Code::new("influx.bad-org");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
+/// The longest name of a database, bucket, or org, in bytes. Two names, each byte
+/// percent-encoded, fit in the query of a write URI.
+const NAME_MAX: usize = 4_096;
 /// The keys of the config, other than the reader settings.
 const KEYS: [&str; 5] = ["address", "database", "bucket", "org", "measurement"];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
@@ -64,7 +67,7 @@ pub struct Config {
     pub reader: reader::Settings,
 }
 
-/// Where a connector writes. Not empty strings.
+/// Where a connector writes. Each name has 1 to 4,096 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Target {
@@ -196,7 +199,7 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
         )]),
         (Some(database), None, None) => {
             let database =
-                text(&database.value, BAD_DATABASE, "database", "a database");
+                name(&database.value, BAD_DATABASE, "database", "a database");
             database.map(Target::Database).map_err(|error| vec![error])
         }
         (None, None, _) => Err(vec![read::missing(
@@ -207,30 +210,31 @@ fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
              `database` attribute for InfluxDB 1"
                 .into(),
         )]),
-        (None, Some(bucket), org) => {
-            let name = text(&bucket.value, BAD_BUCKET, "bucket", "a bucket");
-            let org = match org {
-                Some(org) => text(&org.value, BAD_ORG, "org", "an org"),
-                None => Err(read::missing(
-                    kind::NOUN,
-                    None,
-                    &["org"],
-                    "Add an `org` attribute with the InfluxDB organization, such as \
-                     \"plant\". InfluxDB 3 takes any name"
-                        .into(),
-                )),
-            };
-            match (name, org) {
+        (None, Some(bucket), _) => {
+            let bucket = name(&bucket.value, BAD_BUCKET, "bucket", "a bucket");
+            let org = read::required(
+                config,
+                kind::NOUN,
+                None,
+                "org",
+                |value| name(value, BAD_ORG, "org", "an org"),
+                "Add an `org` attribute with the InfluxDB organization, such as \
+                 \"plant\". InfluxDB 3 takes any name"
+                    .into(),
+            );
+            match (bucket, org) {
                 (Ok(name), Ok(org)) => Ok(Target::Bucket { name, org }),
-                (name, org) => Err(name.err().into_iter().chain(org.err()).collect()),
+                (bucket, org) => {
+                    Err(bucket.err().into_iter().chain(org.err()).collect())
+                }
             }
         }
     }
 }
 
-/// Reads a string that is not empty, the name of an InfluxDB `noun`, such as a
-/// database. `a_noun` is the noun with its article.
-fn text(
+/// Reads the name of an InfluxDB `noun`, such as a database: a string of 1 to
+/// [`NAME_MAX`] bytes. `a_noun` is the noun with its article.
+fn name(
     value: &Value,
     code: Code,
     noun: &str,
@@ -241,13 +245,20 @@ fn text(
             code,
             value.span,
             message,
-            format!("Write the name of an InfluxDB {noun}, such as \"plant\""),
+            format!(
+                "Write the name of an InfluxDB {noun} of at most {NAME_MAX} bytes, \
+                 such as \"plant\""
+            ),
         )
     };
     match &value.kind {
         value::Kind::String(text) if text.is_empty() => {
             Err(bad(format!("the {noun} name is empty")))
         }
+        value::Kind::String(text) if text.len() > NAME_MAX => Err(bad(format!(
+            "the {noun} name has {} bytes, over {NAME_MAX}",
+            text.len()
+        ))),
         value::Kind::String(text) => Ok(text.to_string()),
         kind => Err(bad(format!("{a_noun} is a string, not {}", kind.noun()))),
     }

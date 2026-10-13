@@ -17,11 +17,14 @@
   https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931
   (2026-10-08 05:03 UTC).
   The kind also reads one target (`Target`): `database` for InfluxDB 1, or `bucket`
-  and `org` for InfluxDB 2 and 3. Each is a string that is not empty
-  (`influx.bad-database`, `influx.bad-bucket`, `influx.bad-org`). A `database` with a
-  `bucket` is `influx.two-targets`, and with an `org` `influx.org-with-database`. No
-  target, or a `bucket` with no `org`, is `document.missing-attribute`. A `database`
-  is written with `POST /write?db=<database>&precision=ns`, and a `bucket` with
+  and `org` for InfluxDB 2 and 3. This supersedes "InfluxDB 1 only" of section 4 of
+  ONE NODE (the goal of https://github.com/synnaxlabs/foundation/issues/2583). Each
+  is a string of 1 to 4,096 bytes (`influx.bad-database`, `influx.bad-bucket`,
+  `influx.bad-org`), so the query of the write URI holds both names when each byte is
+  encoded. A `database` with a `bucket` is `influx.two-targets`, and with an `org`
+  `influx.org-with-database`. No target, or a `bucket` with no `org`, is
+  `document.missing-attribute`. A `database` is written with
+  `POST /write?db=<database>&precision=ns`, and a `bucket` with
   `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
   InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in
   the query. Until the token of #2583, a request has no `Authorization`. Approved by
