@@ -557,11 +557,12 @@
   2026-10-10 03:05 UTC). Lost for the listener: the open of the listen binds it from its
   parameters. `address` is a host name and `Net::listen` takes a socket address, so the
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
-  lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
-  options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
-  until a listen open takes it, and `Server::start` makes the URL of its server from
-  that port. Decided by `laptop.architect-2`
+  lost, for a server other than that of `sim::serve`: the owner binds the listener and
+  gives it to `Manager::listening`, so the stream options hold only when the owner binds
+  with the options of the manager. An owner that binds port 0 reads its port from
+  `Manager::port`, which gives the port of the listener until a listen open takes it,
+  and `Server::start` makes the URL of its server from that port. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
   2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
@@ -571,7 +572,8 @@
   21:10 UTC), and one with an enum argument, a new type that holds one value. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286,
-  2026-10-09 20:26 UTC). The two constructors: decided by `laptop.architect-2`
+  2026-10-09 20:26 UTC). The two constructors `new` and `listening`: decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505,
   2026-10-09 21:12 UTC), after the ruling of `laptop.director`. Supersedes the one
   constructor of
@@ -580,8 +582,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
   2026-10-10 03:15 UTC). Supersedes "the listener that its owner gives" of
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286 and
-  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The
-  parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The third
+  constructor, `Manager::accepting`, takes the listener that the caller of `sim::serve`
+  binds, with the options of that bind. The streams of the test server need not have the
+  options of the client, so the cost of a second copy of the options is accepted for
+  `sim::serve`. Supersedes the bind in `Manager::listening` of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582 for
+  `sim::serve`: approval owed. The parameters of the first callbacks: approved by
+  `laptop.architect-2` at `feb6c21a4`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
   2026-10-09 21:25 UTC).
   A server on the loop of a manager is `STOPPED` when its last connection closes after
