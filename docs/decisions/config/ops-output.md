@@ -223,7 +223,9 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913, the fix
   of `node.not-running`, the message of `node.socket`, the hub error in
   `node.unanswered`, and the example `read of admin.key` of `node.unreadable`, which the
-  error of `env::files` gives as `read_at of admin.key failed with OS error 13`. The
+  error of `env::files` gives as `read_at of admin.key failed with OS error 13`
+  (`laptop.architect-2`, 2026-10-13T03:48:32Z, item 4 of
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971). The
   four `ops` codes are decisions 2, 4, 5, and 8 of plan revision 5,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641, with
   `ops.large-request` by item 2 of the approval of `laptop.architect-2`
