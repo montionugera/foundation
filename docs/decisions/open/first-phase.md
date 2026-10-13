@@ -64,12 +64,12 @@ gives in a batch of the production path of #1737 moves to the ONE NODE milestone
 #160 did (the person, 2026-10-13T21:15:26Z:
 https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6155351878).
 `laptop.monitor` decided this, and tells the person each such move
-(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178). Each
-issue that stays on this milestone waits, also protocol 4 of #1232.
-The ONE NODE amendment of 2026-10-13 gives
-the work that takes its place, the person's words, and the orders of `laptop.monitor`
-with their links. Supersedes, until the new sessions start, "It runs beside FIRST SLICE"
-of this entry (the person's decision of 2026-10-06, which has no link).
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178). Each issue
+that stays on this milestone waits, also protocol 4 of #1232. The ONE NODE amendment of
+2026-10-13 gives the work that takes its place, the person's words, and the orders of
+`laptop.monitor` with their links. Supersedes, until the new sessions start, "It runs
+beside FIRST SLICE" of this entry (the person's decision of 2026-10-06, which has no
+link).
 
 **ONE NODE (2026-10-08)** A milestone beside FIRST SLICE, which keeps priority: one real
 node moves OPC UA samples to InfluxDB. The `foundation` binary starts a node from a
