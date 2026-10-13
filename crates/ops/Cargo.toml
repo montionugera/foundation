@@ -11,6 +11,7 @@ clap = { workspace = true }
 config = { path = "../config" }
 connector = { path = "../connector" }
 document = { path = "../document" }
+env = { path = "../env" }
 mesh = { path = "../mesh" }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
@@ -27,7 +28,6 @@ blob = { path = "../blob" }
 block = { path = "../block", features = ["sim"] }
 config-hcl = { path = "../config-hcl" }
 counting = { path = "../counting" }
-env = { path = "../env" }
 sim = { path = "../sim" }
 transport = { path = "../transport" }
 

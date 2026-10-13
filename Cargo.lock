@@ -1163,6 +1163,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",
@@ -1172,6 +1173,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-opcua",
  "counting",
  "crc32c",
  "divan",
