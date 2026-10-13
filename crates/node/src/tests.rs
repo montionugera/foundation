@@ -3121,8 +3121,8 @@ mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
-    /// The node stops a hub stream of a program, and resets its reply half, with the
-    /// code of a rejected header.
+    /// A node with no region stops a hub stream of a program, and resets its reply
+    /// half, with the code of a rejected header.
     #[test]
     fn rejects_a_hub_stream_of_a_program() {
         let header = wire::header::encode(wire::Protocol::Hub);
