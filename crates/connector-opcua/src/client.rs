@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
+use std::rc::Rc;
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -61,6 +62,8 @@ pub(crate) struct Client {
     takes: usize,
     /// The encoded bytes of the session token.
     token: usize,
+    /// Tells the [`Nodes`] that this client checked from those of another.
+    key: Rc<()>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -138,6 +141,7 @@ impl Client {
             sends: 0,
             takes: 0,
             token: 0,
+            key: Rc::default(),
             connections,
         };
         let deadline = this.clock.now() + this.timeout;
@@ -180,7 +184,8 @@ impl Client {
         }
     }
 
-    /// Builds one Read request of the Value of each node of `nodes`, in order.
+    /// Builds one Read request of the Value of each node of `nodes`, in order, for
+    /// this client alone.
     ///
     /// # Errors
     ///
@@ -194,7 +199,7 @@ impl Client {
     ///
     /// If open62541 cannot allocate the request.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
-        let request = Nodes::new(nodes);
+        let request = Nodes::new(nodes, Rc::clone(&self.key));
         // SAFETY: the request lives.
         let ask = unsafe { ffi::shim_read_ask(request.raw(), self.token) };
         // SAFETY: it reads nothing.
@@ -222,10 +227,18 @@ impl Client {
     /// after that timeout, its wait included, the status of open62541 when it refuses
     /// the request, the status of the answer, or `BadUnexpectedError` when the answer
     /// has a value for more or fewer nodes than `nodes`.
+    ///
+    /// # Panics
+    ///
+    /// If another client built `nodes`.
     pub(crate) async fn read(
         &mut self,
         nodes: &Nodes,
     ) -> Result<&[Result<f64, Status>], Status> {
+        assert!(
+            Rc::ptr_eq(&nodes.client, &self.key),
+            "invariant: a client reads only the nodes that it checked"
+        );
         if nodes.count == 0 {
             return Ok(&[]);
         }
@@ -379,22 +392,24 @@ impl Drop for Client {
 pub(crate) struct Nodes {
     raw: NonNull<ffi::ReadRequest>,
     count: usize,
+    /// The [`Client::key`] of the client that checked it.
+    client: Rc<()>,
 }
 
 impl Nodes {
     /// As [`Nodes::new`], for a bench.
     #[cfg(feature = "sim")]
     pub(crate) fn unchecked(nodes: &[Node]) -> Self {
-        Self::new(nodes)
+        Self::new(nodes, Rc::default())
     }
 
-    /// Builds one Read request of the Value of each node of `nodes`, in order, with no
-    /// check of its size: [`Client::nodes`] checks it.
+    /// Builds one Read request of the Value of each node of `nodes`, in order, for the
+    /// client of `client`, with no check of its size: [`Client::nodes`] checks it.
     ///
     /// # Panics
     ///
     /// If open62541 cannot allocate the request.
-    fn new(nodes: &[Node]) -> Self {
+    fn new(nodes: &[Node], client: Rc<()>) -> Self {
         let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
         // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
         let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
@@ -402,6 +417,7 @@ impl Nodes {
             raw: NonNull::new(request)
                 .expect("open62541: out of memory for a Read request"),
             count: nodes.len(),
+            client,
         }
     }
 

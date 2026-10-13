@@ -55,8 +55,15 @@ const TIME: Node = Node {
 impl Client {
     /// Reads the Value of `node` alone.
     async fn read_one(&mut self, node: &Node) -> Result<f64, Status> {
-        let nodes = Nodes::new(std::slice::from_ref(node));
+        let nodes = self
+            .nodes(std::slice::from_ref(node))
+            .expect("one node fits");
         self.read(&nodes).await.and_then(|values| values[0])
+    }
+
+    /// Builds the Read request of `nodes` for this client with no check of its size.
+    fn unchecked(&self, nodes: &[Node]) -> Nodes {
+        Nodes::new(nodes, Rc::clone(&self.key))
     }
 }
 
@@ -258,7 +265,7 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
                 key: Key::Number(1001),
                 ..VALUE
             };
-            let nodes = Nodes::new(&[TIME, VALUE, unknown, VALUE]);
+            let nodes = client.nodes(&[TIME, VALUE, unknown, VALUE]).expect("4 fit");
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (values, peer.value)
@@ -285,10 +292,11 @@ fn read_after_late_answer(
             let mut client = peer.connected().await;
             peer.paused.set(true);
             drop_reads(&mut client, dropped).await;
-            let late = Nodes::new(&[TIME, VALUE]);
+            let late = client.nodes(&[TIME, VALUE]).expect("2 nodes fit");
             assert_eq!(client.read(&late).await, Err(Status::BAD_TIMEOUT));
             peer.paused.set(false);
-            let values = client.read(&Nodes::new(&[VALUE])).await.map(<[_]>::to_vec);
+            let nodes = client.nodes(&[VALUE]).expect("one node fits");
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (values, peer.value)
         })
@@ -594,7 +602,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
             let outside = Reads::default();
-            let nodes = Nodes::new(&[VALUE]);
+            let nodes = Nodes::new(&[VALUE], Rc::default());
             let mut request = 0;
             // SAFETY: the client and `nodes` live, and `outside` outlives the client.
             let status = Status(unsafe {
@@ -928,9 +936,9 @@ fn a_request_takes_the_chunks_of_one_message() {
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
             let after = client.read_one(&VALUE).await;
-            let unchecked = Nodes::new(&[long(length + 49)]);
+            let unchecked = client.unchecked(&[long(length + 49)]);
             let full = client.read(&unchecked).await.map(<[_]>::to_vec);
-            let unchecked = Nodes::new(&[long(length + 50)]);
+            let unchecked = client.unchecked(&[long(length + 50)]);
             let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
             client.close().await;
             (read, past, after, full, sent, peer.value)
@@ -970,7 +978,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             let most = client.nodes(&[VALUE; 239]).expect("239 nodes fit");
             let values = client.read(&most).await.map(<[_]>::to_vec);
             let answer_past = client.nodes(&[VALUE; 240]).map(drop);
-            let unchecked = Nodes::new(&[long(length + 1)]);
+            let unchecked = client.unchecked(&[long(length + 1)]);
             let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
             client.close().await;
             (read, past, values, answer_past, sent, peer.value)
@@ -1141,6 +1149,22 @@ fn a_read_of_no_nodes_gives_no_values() {
     let (read, after, value) = reads;
     assert_eq!(read, Ok(vec![]));
     assert_eq!(after, Ok(value));
+}
+
+/// A client reads only a list that it checked, as the limits of another session can
+/// be smaller.
+#[test]
+#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
+fn a_read_of_the_nodes_of_another_client_panics() {
+    run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let first = peer.connected().await;
+            let mut second = peer.connected().await;
+            let nodes = first.nodes(&[VALUE]).expect("one node fits");
+            let _ = second.read(&nodes).await;
+        })
+        .await;
+    });
 }
 
 /// Each read of one request has a new request handle.
