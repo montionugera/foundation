@@ -1081,6 +1081,12 @@ mod tests {
         let text = "the frame is too large for one write: split it. Give the connector \
                     fewer channels";
         assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
+        let want = unplaced(
+            "connector.large-frame",
+            "the frame is too large for one write: split it",
+            "Give the connector fewer channels",
+        );
+        assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
     }
 
     #[test]
