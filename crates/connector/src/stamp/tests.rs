@@ -92,6 +92,22 @@ fn a_request_near_the_end_of_time_is_stamped_at_its_midpoint() {
 }
 
 #[test]
+fn a_request_before_the_epoch_is_stamped_at_its_midpoint_rounded_down() {
+    let config = sim::node::Config {
+        wall: Stamp::from_nanos(-100 * Span::SECOND.nanos()),
+        ..Default::default()
+    };
+    let (sent, stamp) = with_writer(config, async |writer, clock| {
+        let mut stamps = Stamps::default();
+        let sent = writer.now();
+        let request = clock.sleep(Span::from_nanos(2 * Span::SECOND.nanos() + 1));
+        (sent, stamps.request(&writer, request).await.1)
+    });
+    assert!(sent.nanos() < 0, "{sent:?}");
+    assert_eq!(stamp, sent + Span::SECOND);
+}
+
+#[test]
 #[should_panic(expected = "stamp overflow: 9223372036854775807 ns + 1 ns")]
 fn a_stamp_after_the_last_instant_panics() {
     let mut stamps = Stamps::default();

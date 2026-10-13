@@ -30,7 +30,10 @@ impl Stamps {
         let sent = writer.now();
         let output = request.await;
         let answered = writer.now();
-        let midpoint = Stamp::from_nanos(sent.nanos().midpoint(answered.nanos()));
+        let (sent, answered) = (sent.nanos(), answered.nanos());
+        // The floor of the mean, with no overflow: `i64::midpoint` rounds toward zero.
+        let midpoint =
+            Stamp::from_nanos((sent >> 1) + (answered >> 1) + (sent & answered & 1));
         (output, self.next(midpoint))
     }
 
