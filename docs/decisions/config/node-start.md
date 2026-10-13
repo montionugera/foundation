@@ -179,6 +179,43 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
   2026-10-11T10:50:50Z, this text,
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
+  `node::client::reach` gives a program on the host of a node a hub client of the node
+  that runs on a data directory, as `@admin` (`spec::founding::admin`). It reads
+  `address`, then `admin.key`, through `env::files` with the readers of `node`, so a
+  simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
+  opens `dir/data` of a directory that is there and makes nothing. A file `address`
+  with no address of a node is `Error::NotRunning`, which also covers a node that
+  still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an
+  unspecified IP in `address`, it dials the loopback IP of its family. A dial that
+  gives no session is `Error::Unanswered` with the address it dialed and the error of
+  the transport; a broken socket of the program is `Error::Transport`, as a failed
+  start of its transport is; a session or hello that fails after the dial is
+  `Error::Session` with the address and the error of `hub`; a refused hello is
+  `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
+  `ops::Unreached`, worded in `ops`, which would name the files that only `node` reads
+  and take `hub` for the error of a dial. Lost: `Error::Session` for a broken socket of
+  the program, since the caller then cannot tell its own host from the node. Decided
+  by `laptop.architect-2` (2026-10-11T07:10:55Z, plan revision 4, decision 8 and the
+  2d surface,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913; the
+  dialed address in `Unanswered` and this text, 2026-10-13T01:32:49Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136132942; the
+  split into `Unanswered` and `Session`, and the fixed pool, 2026-10-13T01:44:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936; the
+  budget of the pool, 2026-10-13T01:54:59Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136370531; a broken
+  socket of the program, 2026-10-13T02:03:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136518581); the
+  `hub` use and `Refused`, `laptop.architect`, 2026-10-11T08:10:05Z, item 3:
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274; the
+  map of `hub::client::Error`, 2026-10-13T01:54:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136368545, and its
+  `Network` arm, 2026-10-13T02:20:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136786579.
+  Supersedes `ops::Unreached` and "`node`: no new public item" of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053197935, and
+  the map of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274.
   A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
   choice of its parent, does not reach it (ENV SEAMS): a node that
   `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
