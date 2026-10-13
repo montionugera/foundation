@@ -410,7 +410,7 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #2510"]
+#[ignore = "waits on #435, #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
