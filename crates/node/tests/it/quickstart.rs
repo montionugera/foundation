@@ -9,7 +9,6 @@ use page::blocks;
 pub(crate) use page::{plant, shown};
 
 #[test]
-#[ignore = "waits on #337, #435, #1734, #1744"]
 fn the_binary_plans_and_applies_the_config_of_the_page_as_the_page_shows() {
     let mut rig = Rig::new();
     rig.config(plant());

@@ -38,12 +38,12 @@ pub(crate) struct Reader {
     counts: &'static [&'static str],
 }
 
-/// The stand-in of the `opcua` kind, with its counts.
+/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
 pub(crate) const OPCUA: Reader = Reader {
     counts: &["in", "lost", "missed"],
 };
 
-/// The stand-in of the `influx` kind, with its count.
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
 pub(crate) const INFLUX: Reader = Reader {
     counts: &["confirmed"],
 };
