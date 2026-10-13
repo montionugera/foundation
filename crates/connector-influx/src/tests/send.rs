@@ -335,26 +335,28 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
         plant.answers.borrow_mut().extend([
             (StatusCode::INTERNAL_SERVER_ERROR, " the disk is full \n"),
             (StatusCode::NOT_FOUND, "database not found: \"plant\""),
+            (StatusCode::OK, "ok"),
         ]);
         let run = plant.start(plant.config());
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+        plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
         let got = (plant.got().into_iter())
             .map(|(uri, body)| (uri, body == line("1e0", "2e0", first)))
             .collect::<Vec<_>>();
         (got, plant.errors.borrow().clone())
     });
-    assert_eq!(got, vec![(WRITE.to_owned(), true); 3]);
+    assert_eq!(got, vec![(WRITE.to_owned(), true); 4]);
     assert_eq!(
         errors,
         [
             "",
             "InfluxDB answered 500 Internal Server Error: the disk is full",
             "InfluxDB answered 404 Not Found: database not found: \"plant\"",
+            "InfluxDB answered 200 OK: ok",
             "",
         ]
     );
@@ -363,8 +365,12 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
 /// The bodies that the InfluxDB of a plant gets in two runs, one after the other, and
 /// the errors that the second run shows. InfluxDB answers each request of the first
 /// run with 500, or with 204 when `accepted`, and each of the second with 204. Each
-/// run writes one frame.
-fn two_runs(accepted: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
+/// run writes one frame of one sample time, at which each channel holds its value of
+/// `values`.
+fn two_runs(
+    accepted: bool,
+    values: [f64; 2],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         if !accepted {
@@ -373,7 +379,7 @@ fn two_runs(accepted: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
         }
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         let mut bodies = Vec::new();
-        for value in [1.0, 2.0] {
+        for value in values {
             plant.errors.borrow_mut().clear();
             let run = plant.start(plant.config());
             plant.clock.sleep(Span::SECOND).await;
@@ -393,7 +399,7 @@ fn two_runs(accepted: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
 
 #[test]
 fn acks_no_batch_before_a_204() {
-    let (first, second, errors) = two_runs(false);
+    let (first, second, errors) = two_runs(false, [1.0, 2.0]);
     assert!(first.len() > 1, "{first:?}");
     let sent = first.first().expect("a request");
     assert!(first.iter().all(|body| body == sent), "{first:?}");
@@ -401,6 +407,8 @@ fn acks_no_batch_before_a_204() {
         sent.starts_with("telemetry edge.a=1e0,edge.b=1e0 "),
         "{sent}"
     );
+    // Known bug #2553: each open after a lost batch ends `Behind`, so the second run
+    // sends nothing.
     assert_eq!(second, Vec::<String>::new());
     let missed = "the reader missed a frame and gets no later one: open a new reader";
     assert!(errors.iter().any(|error| error == missed), "{errors:?}");
@@ -408,9 +416,18 @@ fn acks_no_batch_before_a_204() {
 
 #[test]
 fn acks_a_batch_after_its_204() {
-    let (first, second, errors) = two_runs(true);
+    let (first, second, errors) = two_runs(true, [1.0, 2.0]);
     assert_eq!(first.len(), 1, "{first:?}");
     assert!(first[0].starts_with("telemetry edge.a=1e0,edge.b=1e0 "));
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].starts_with("telemetry edge.a=2e0,edge.b=2e0 "));
+    assert_eq!(errors, [""]);
+}
+
+#[test]
+fn acks_a_batch_of_no_line_with_no_request() {
+    let (first, second, errors) = two_runs(true, [f64::NAN, 2.0]);
+    assert_eq!(first, Vec::<String>::new());
     assert_eq!(second.len(), 1, "{second:?}");
     assert!(second[0].starts_with("telemetry edge.a=2e0,edge.b=2e0 "));
     assert_eq!(errors, [""]);
