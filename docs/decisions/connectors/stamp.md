@@ -1,15 +1,19 @@
 - **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one index of a
   kind that reads by request. The stamp of a frame is the midpoint of the mesh times
   before and after the request that read its samples, or 1 ns after the stamp before
-  it when that is later, so the home never refuses it as backwards in one run. After
-  a refusal as backwards, the frame is written again 1 ns after the stamp that the
-  refusal gives. `now` is a closure, so a test needs no hub. The status writer of
-  the supervisor stamps its frames with `Stamps::now`, the time of the hub or the
-  nanosecond after the stamp before it, so one module holds the stamp rule
-  (`laptop.architect-2`, 2026-10-13:
+  it when that is later, so no stamp is at or before the stamp before it. The first
+  stamp of a run has no stamp before it, so the home can refuse the first frame of a
+  run as backwards when the run before it wrote a stamp at or after it on the same
+  index. Each stamp given counts as the stamp before the next, written or not. After a
+  refusal as backwards, the frame is written again 1 ns after the stamp that the
+  refusal gives (`laptop.architect-2`, 2026-10-13T01:08:55Z, item 7:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6135871024). The
+  status writer of the supervisor stamps its frames with `Stamps::next` of its one
+  read of mesh time, so one module holds the stamp rule (`laptop.architect-2`,
+  2026-10-13T01:08:55Z:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6135871024). The
   person put the module in `connector` for each kind that reads by request (ONE NODE
-  record, section 3,
+  record, section 3, 2026-10-13T00:50:41Z,
   https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217). Lost:
   the stamp at the answer (it is late by the whole answer time); the module in
   `connector-opcua` (each later kind that reads by request copies it); a method on
