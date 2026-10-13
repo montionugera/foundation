@@ -4658,7 +4658,6 @@ mod port {
                         transport: Rc::clone(&transport),
                     }),
                 });
-                hub.set_definitions(&region(&members).definitions);
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
@@ -6263,7 +6262,6 @@ mod port {
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let definitions = founding.definitions.clone();
                 let (opening, clock) = (Opening::Given(founding), own.clock());
                 let (entropy, settings) = (own.entropy(), crate::Settings::default());
                 let endpoint =
@@ -6293,7 +6291,6 @@ mod port {
                         transport: Rc::clone(&transport),
                     }),
                 });
-                hub.set_definitions(&definitions);
                 let clock = own.clock();
                 let port = route::accept(
                     transport,
@@ -6810,6 +6807,59 @@ mod port {
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
             assert_eq!(read.lock().unwrap().take(), Some((vec![WALL], vec![7])));
+        }
+
+        /// A task that a caller of `Mesh::spec` tells of a spec in use opens a reader on
+        /// a channel of that spec, in each order of the tasks that the seed picks.
+        #[test]
+        fn a_task_told_of_a_spec_in_use_opens_a_reader_on_its_channel() {
+            let mut failed = Vec::new();
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+                let told = Arc::new(Mutex::new((false, None::<std::task::Waker>)));
+                let opened = Arc::new(Mutex::new(None));
+                let (wait, out) = (Arc::clone(&told), Arc::clone(&opened));
+                node.spawn(move |hub| async move {
+                    poll_fn(|cx| {
+                        let mut told = wait.lock().unwrap();
+                        if told.0 {
+                            return Poll::Ready(());
+                        }
+                        told.1 = Some(cx.waker().clone());
+                        Poll::Pending
+                    })
+                    .await;
+                    let mode = ::hub::reader::Mode::Complete;
+                    let reader = hub.reader(unnamed("plant.value", mode)).await;
+                    *out.lock().unwrap() = Some(reader.err().map(|e| format!("{e:?}")));
+                });
+                let tell = Arc::clone(&told);
+                node.operate(move |ops| async move {
+                    apply(&ops, text("time", &["value"])).await;
+                    let waker = {
+                        let mut told = tell.lock().unwrap();
+                        told.0 = true;
+                        told.1.take()
+                    };
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                });
+                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let opened = opened.lock().unwrap().take();
+                if opened != Some(None) {
+                    failed.push((seed, opened));
+                }
+            }
+            assert_eq!(failed, []);
         }
 
         /// An apply that removes a channel ends each reader on it.

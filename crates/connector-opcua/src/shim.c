@@ -15,6 +15,8 @@
 #include "timer.h"
 #pragma GCC diagnostic pop
 
+#include "shim.h"
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,6 +78,8 @@ _Static_assert(sizeof(UA_DataType) == 96, "UA_DataType changed");
 _Static_assert(sizeof(UA_DecodeBinaryOptions) == 40, "UA_DecodeBinaryOptions changed");
 _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
                "decodedLength moved");
+_Static_assert(sizeof(shim_node) == 24, "shim_node changed");
+_Static_assert(offsetof(shim_node, name) == 8, "shim_node.name moved");
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
@@ -663,24 +667,11 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Gives the node of `namespace` with the name of `length` bytes at `name`, which it
- * borrows, or with the number `number` when `name` is NULL. */
-UA_NodeId shim_node(UA_UInt16 namespace, UA_UInt32 number, const UA_Byte *name,
-                    size_t length) {
-    if(name == NULL)
-        return UA_NODEID_NUMERIC(namespace, number);
-    UA_NodeId node = {namespace, UA_NODEIDTYPE_STRING, {.string = {0}}};
-    node.identifier.string.length = length;
-    node.identifier.string.data = (UA_Byte *)(uintptr_t)name;
-    return node;
-}
-
-/* Asks `client` for the Value of the node of `shim_node`, and has `callback` called
+/* Asks `client` for the Value of `node`, and has `callback` called
  * with `data` and the answer. Writes the id of the request to `request` when it is not
  * NULL. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
  * ends at its answer or at the close of the channel. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 number,
-                               const UA_Byte *name, size_t length,
+UA_StatusCode shim_client_read(UA_Client *client, shim_node node,
                                UA_ClientAsyncReadValueAttributeCallback callback,
                                void *data, UA_UInt32 *request) {
     /* open62541 takes the timeout hint of a request from the config, and makes 0
@@ -690,7 +681,7 @@ UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
     UA_StatusCode status = UA_Client_readValueAttribute_async(
-        client, shim_node(namespace, number, name, length), callback, data, request);
+        client, shim_node_id(node), callback, data, request);
     config->timeout = timeout;
     return status;
 }

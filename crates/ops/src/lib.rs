@@ -15,6 +15,7 @@ mod mcp;
 mod node;
 mod operation;
 mod plan;
+mod serve;
 mod start;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ use error::Error;
 pub use front_end::{FrontEnd, FrontEnds};
 pub use node::Node;
 use operation::Parsed;
+pub use serve::serve;
 pub use start::{Failure, Start};
 
 /// What the process does once [`cli`] returns.

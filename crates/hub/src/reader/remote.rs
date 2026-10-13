@@ -594,10 +594,11 @@ async fn dial(
 ) -> Result<transport::Session, Error> {
     let (transport, card) = {
         let state = state.borrow();
-        let region = state
+        let region = &state
             .region
             .as_ref()
-            .expect("invariant: only a node in a region has a remote home");
+            .expect("invariant: only a node in a region has a remote home")
+            .region;
         let member = region
             .mesh
             .member(home)

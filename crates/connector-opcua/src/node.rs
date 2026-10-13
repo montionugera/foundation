@@ -20,8 +20,30 @@ pub(crate) struct Node {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     Number(u32),
-    /// Not empty.
-    Name(String),
+    Name(Name),
+}
+
+/// The name of a node: 1 to [`Name::BYTES`] bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Name(String);
+
+impl Name {
+    /// The most bytes in a name: an interim bound, derived from no limit, until the
+    /// client checks the size of a whole request. A request past the chunks of one
+    /// message closes its channel.
+    pub(crate) const BYTES: usize = 4096;
+
+    /// Gives `text` as a name, or `None` when it is empty or has more than
+    /// [`Self::BYTES`] bytes.
+    pub(crate) fn new(text: &str) -> Option<Self> {
+        (1..=Self::BYTES)
+            .contains(&text.len())
+            .then(|| Self(text.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Why a text is not a [`Node`].
@@ -31,25 +53,27 @@ pub(crate) enum Error {
     Uri,
     /// Its key is a GUID (`g=`) or opaque (`b=`).
     Form,
-    /// Another text, or an index or a number out of range.
+    /// Another text, or an index, a number, or a name out of range.
     Syntax,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Uri => {
-                "a namespace by URI (nsu=) is not supported: give its index (ns=)"
-            }
-            Self::Form => {
+        match self {
+            Self::Uri => f.write_str(
+                "a namespace by URI (nsu=) is not supported: give its index (ns=)",
+            ),
+            Self::Form => f.write_str(
                 "a GUID (g=) or opaque (b=) key is not supported: give a number (i=) \
-                 or a name (s=)"
-            }
-            Self::Syntax => {
+                 or a name (s=)",
+            ),
+            Self::Syntax => write!(
+                f,
                 "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an \
-                 index to 65535 and a number to 4294967295"
-            }
-        })
+                 index to 65535, a number to 4294967295, and a name of 1 to {} bytes",
+                Name::BYTES
+            ),
+        }
     }
 }
 
@@ -73,10 +97,8 @@ impl FromStr for Node {
         };
         let key = if let Some(number) = rest.strip_prefix("i=") {
             Key::Number(digits(number)?)
-        } else if let Some(name) = rest.strip_prefix("s=")
-            && !name.is_empty()
-        {
-            Key::Name(name.to_owned())
+        } else if let Some(name) = rest.strip_prefix("s=") {
+            Key::Name(Name::new(name).ok_or(Error::Syntax)?)
         } else if rest.starts_with("g=") || rest.starts_with("b=") {
             return Err(Error::Form);
         } else {
@@ -88,7 +110,7 @@ impl FromStr for Node {
 
 /// Reads `text` as decimal digits only, so with no sign.
 fn digits<T: FromStr>(text: &str) -> Result<T, Error> {
-    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Error::Syntax);
     }
     text.parse().map_err(|_out_of_range| Error::Syntax)
@@ -101,7 +123,7 @@ impl fmt::Display for Node {
         }
         match &self.key {
             Key::Number(number) => write!(f, "i={number}"),
-            Key::Name(name) => write!(f, "s={name}"),
+            Key::Name(name) => write!(f, "s={}", name.as_str()),
         }
     }
 }

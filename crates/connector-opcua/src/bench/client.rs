@@ -10,20 +10,31 @@ use env::rng::Rng;
 
 use super::PORT;
 use crate::connection;
-use crate::node::{Key, Node};
+use crate::node::{Key, Name, Node};
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {
     namespace: 1,
     key: Key::Number(1000),
 };
-/// The value of [`VALUE`].
+/// The name of the Double variable of a [`Server`] that has a name key.
+const NAME: &str = "SpikeData";
+/// The value of each variable.
 const DOUBLE: f64 = 1.5;
 /// The sessions of a [`Server`].
 const SESSIONS: u16 = 4;
 
+/// A variable of a [`Server`].
+#[derive(Clone, Copy, Debug)]
+pub enum Variable {
+    /// `ns=1;i=1000`.
+    Number,
+    /// `ns=1;s=SpikeData`.
+    Name,
+}
+
 /// A test server of open62541 on its own connection manager over `env::net`, with a
-/// Double variable, for the clients of [`Server::connect`].
+/// Double variable of each [`Variable`], for the clients of [`Server::connect`].
 pub struct Server {
     clock: Clock,
     net: Net,
@@ -64,8 +75,10 @@ impl Server {
             url: format!("opc.tcp://{local}"),
             rng: RefCell::new(rng),
         };
-        let add =
-            |server: &mut crate::server::Server| server.add_double(&VALUE, DOUBLE);
+        let add = |server: &mut crate::server::Server| {
+            server.add_double(&VALUE, DOUBLE);
+            server.add_double(&named(), DOUBLE);
+        };
         crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
 
@@ -78,7 +91,10 @@ impl Server {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
         match crate::client::Client::connect(clock, net, rng, &self.url).await {
-            Ok(client) => Client(client),
+            Ok(client) => Client {
+                client,
+                name: named(),
+            },
             Err(status) => panic!("a connect failed: {status:?}"),
         }
     }
@@ -92,17 +108,32 @@ impl std::fmt::Debug for Server {
     }
 }
 
+/// The node of [`Variable::Name`].
+fn named() -> Node {
+    Node {
+        namespace: 1,
+        key: Key::Name(Name::new(NAME).expect("SpikeData is a name")),
+    }
+}
+
 /// A client of a [`Server`].
-pub struct Client(crate::client::Client);
+pub struct Client {
+    client: crate::client::Client,
+    name: Node,
+}
 
 impl Client {
-    /// Reads the Double of the server.
+    /// Reads the Double of `variable`.
     ///
     /// # Panics
     ///
     /// If the read fails, with its status, or gives another value.
-    pub async fn read(&mut self) {
-        match self.0.read(&VALUE).await {
+    pub async fn read(&mut self, variable: Variable) {
+        let node = match variable {
+            Variable::Number => &VALUE,
+            Variable::Name => &self.name,
+        };
+        match self.client.read(node).await {
             Ok(value) => assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}"),
             Err(status) => panic!("a read failed: {status:?}"),
         }
@@ -111,7 +142,7 @@ impl Client {
     /// Closes the session and the connection of the client. A client that drops with no
     /// close holds one of the 4 sessions of its server until the session times out.
     pub async fn close(self) {
-        self.0.close().await;
+        self.client.close().await;
     }
 }
 
@@ -128,18 +159,19 @@ mod tests {
     use env::rng::Rng;
     use sim::{Sim, node};
 
-    use super::{PORT, Server};
+    use super::{PORT, Server, Variable};
     use crate::peer::session;
 
     #[test]
-    fn a_client_reads_the_double_of_its_server() {
+    fn a_client_reads_each_double_of_its_server() {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node::Config::default());
         sim.run_on(&node, move |node, _| async move {
             let address = node.addresses()[0];
             let body = async |server: &Server| {
                 let mut client = server.connect().await;
-                client.read().await;
+                client.read(Variable::Number).await;
+                client.read(Variable::Name).await;
                 let debug = format!("{server:?} {client:?}");
                 client.close().await;
                 debug

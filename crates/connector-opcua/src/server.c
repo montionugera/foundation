@@ -11,6 +11,8 @@
 
 #include <string.h>
 
+#include "shim.h"
+
 /* Gives a server on `el` with the minimal config, the one server URL
  * `opc.tcp://{host}:{port}`, room for `sessions` sessions and secure channels, and at
  * most `chunks` chunks in a message, or NULL on a failure. */
@@ -49,31 +51,25 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* In `shim.c`. */
-UA_NodeId shim_node(UA_UInt16 namespace, UA_UInt32 number, const UA_Byte *name,
-                    size_t length);
-
-/* Adds to `server` the variable of `shim_node`, which holds the Double `value`, under
- * the Objects folder. */
-UA_StatusCode shim_server_add_double(UA_Server *server, UA_UInt16 namespace,
-                                     UA_UInt32 number, const UA_Byte *name,
-                                     size_t length, UA_Double value) {
+/* Adds to `server` the variable `node`, which holds the Double `value`, under the
+ * Objects folder. */
+UA_StatusCode shim_server_add_double(UA_Server *server, shim_node node,
+                                     UA_Double value) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
     UA_Variant_setScalar(&attributes.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
     attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     return UA_Server_addVariableNode(
-        server, shim_node(namespace, number, name, length),
+        server, shim_node_id(node),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "value"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "value"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
 }
 
-/* Adds to `server` the variable of `shim_node`, which holds a ByteString of `size`
- * zero bytes, under the Objects folder. */
-UA_StatusCode shim_server_add_bytes(UA_Server *server, UA_UInt16 namespace,
-                                    UA_UInt32 number, const UA_Byte *name,
-                                    size_t length, size_t size) {
+/* Adds to `server` the variable `node`, which holds a ByteString of `size` zero
+ * bytes, under the Objects folder. */
+UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t size) {
     UA_ByteString bytes;
     UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, size);
     if(status != UA_STATUSCODE_GOOD)
@@ -84,9 +80,10 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, UA_UInt16 namespace,
     attributes.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     status = UA_Server_addVariableNode(
-        server, shim_node(namespace, number, name, length),
+        server, shim_node_id(node),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "bytes"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "bytes"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
     UA_ByteString_clear(&bytes);
     return status;
@@ -128,20 +125,20 @@ static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessio
     return status;
 }
 
-/* Adds to `server` the Double variable of `shim_node` under the Objects folder, whose
- * reads `source` answers. `source` lives until the server is deleted. */
-UA_StatusCode shim_server_add_source(UA_Server *server, UA_UInt16 namespace,
-                                     UA_UInt32 number, const UA_Byte *name,
-                                     size_t length, shim_source *source) {
+/* Adds to `server` the Double variable `node` under the Objects folder, whose reads
+ * `source` answers. `source` lives until the server is deleted. */
+UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
+                                     shim_source *source) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
     attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
     attributes.valueRank = UA_VALUERANK_SCALAR;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
     return UA_Server_addCallbackValueSourceVariableNode(
-        server, shim_node(namespace, number, name, length),
+        server, shim_node_id(node),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(namespace, "source"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "source"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, callbacks,
         source, NULL);
 }

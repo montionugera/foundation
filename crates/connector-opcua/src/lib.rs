@@ -346,7 +346,12 @@ mod tests {
             let shim = args(&tool(shim.clone(), path));
             assert_eq!(
                 includes(&shim),
-                [dirs[0], dirs[1], "/copy/arch/common"],
+                [
+                    dirs[0],
+                    dirs[1],
+                    "/copy/arch/common",
+                    concat!(env!("CARGO_MANIFEST_DIR"), "/src")
+                ],
                 "{path}: {shim:?}"
             );
             for arg in ["-Wall", "-Wextra", "-Werror", "-std=c99", &header] {
