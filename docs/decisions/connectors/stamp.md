@@ -20,9 +20,9 @@
   last stamp never gives one. One `connector` writer that writes a refused frame again
   inside is deferred to #2527. The status writer of the supervisor stamps its frames
   with `Stamps::next` of its one read of mesh time, so one module holds the stamp rule
-  (`laptop.architect-2`,
-  item 2 of https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136191164,
-  approved in item 3 of
+  (`laptop.architect-2`, 2026-10-13T01:38:13Z, item 2:
+  https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136191164, approved
+  2026-10-13T02:04:57Z, item 3:
   https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136552780). The
   person put the module in `connector` for each kind that reads by request (ONE NODE
   record, section 3, 2026-10-13T00:50:41Z,
