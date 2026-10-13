@@ -18,12 +18,15 @@
   connector and the subject reads none, it gives `ops.denied` with `On::Nothing`. A
   spec with no connector on the node gives an empty list. When #1028 checks each open
   of the hub, this check moves there. Deferred: the time of the next restart, `--json`,
-  and MCP. Lost: the CLI reads the status channels through a client reader (#1749),
-  deferred by the ONE NODE record; `serve` replies with the text, so that `--json` and
+  and MCP. The CLI and MCP send this one form to a node, and the client reader of
+  #1749 does not replace it. Lost: `serve` replies with the text, so that `--json` and
   MCP each need a second reply; `status` asks the supervisors, a second source of
   status with its own access check. Decided by `laptop.architect-2`
   (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the
-  text and the JSON, 2026-10-08T06:29:21Z, that comment).
+  text and the JSON, 2026-10-08T06:29:21Z, that comment). The one form, `read` on each
+  channel that `status` reads, and no `next` until the deferred time of the next
+  restart: `laptop.architect-2` (2026-10-13T01:00:07Z,
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072).
