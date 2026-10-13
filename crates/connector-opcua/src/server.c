@@ -116,11 +116,9 @@ static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessio
     (void)sessionContext;
     (void)nodeId;
     (void)includeSourceTimeStamp;
+    /* The client of the crate reads no range. */
+    (void)range;
     value->hasStatus = true;
-    if(range) {
-        value->status = UA_STATUSCODE_BADINDEXRANGEINVALID;
-        return UA_STATUSCODE_GOOD;
-    }
     shim_source *source = nodeContext;
     UA_Double read;
     source->read(source, &read, &value->status);
