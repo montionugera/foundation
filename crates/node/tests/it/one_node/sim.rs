@@ -63,6 +63,12 @@ impl Default for Opcua {
     }
 }
 
+/// The wall time of the server at `at`, where `zero` is its wall time at
+/// `Monotonic(0)`.
+fn wall(zero: Stamp, at: Monotonic) -> Stamp {
+    zero + (at - Monotonic(0))
+}
+
 /// The simulated InfluxDB, with the database `plant`. Drop stops it.
 #[derive(Debug, Default)]
 pub(super) struct Influx {
@@ -101,12 +107,18 @@ impl Opcua {
     pub(super) fn serve(&mut self) -> SocketAddr {
         let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
         let address = listener.local();
-        let (variables, clock) =
-            (Variables::clone(&self.variables), self.clock.clone());
+        let (variables, clock, zero) = (
+            Variables::clone(&self.variables),
+            self.clock.clone(),
+            self.zero,
+        );
         let server = Server::start("OPC UA server", move |_, token| async move {
             let mut rng = os::entropy().rng();
             let net = os::net();
-            serve(clock, net, listener, &mut rng, &variables, token.wait()).await;
+            let read = clock.clone();
+            let now = move || wall(zero, read.now());
+            let until = token.wait();
+            serve(clock, now, net, listener, &mut rng, &variables, until).await;
         });
         self.server = Some(server);
         address
@@ -127,7 +139,7 @@ impl Opcua {
     /// of the answer, at the time of the answer.
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
         let sample = |served: &Served| Sample {
-            time: self.zero + (served.time - Monotonic(0)),
+            time: wall(self.zero, served.time),
             value: served.value,
             quality: Some(served.quality),
         };

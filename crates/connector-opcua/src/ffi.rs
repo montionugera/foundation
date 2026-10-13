@@ -403,7 +403,7 @@ pub(crate) type Read = unsafe extern "C" fn(
 );
 
 /// The `shim_now` of `shim.c`.
-pub(crate) type Now = unsafe extern "C" fn(clock: *mut c_void) -> i64;
+pub(crate) type Now = unsafe extern "C" fn(time: *mut c_void) -> i64;
 
 unsafe extern "C" {
     static UA_TYPES: [DataType; TYPES];
@@ -436,7 +436,11 @@ unsafe extern "C" {
     ) -> u32;
     pub(crate) fn UA_random_seed_deterministic(value: u64);
 
-    pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
+    pub(crate) fn shim_loop_new(
+        now: Now,
+        wall: Now,
+        time: *mut c_void,
+    ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;
