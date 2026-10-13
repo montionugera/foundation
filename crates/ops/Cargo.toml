@@ -30,6 +30,7 @@ block = { path = "../block", features = ["sim"] }
 config-hcl = { path = "../config-hcl" }
 counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
+secret = { path = "../secret" }
 sim = { path = "../sim" }
 transport = { path = "../transport" }
 
