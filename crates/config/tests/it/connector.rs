@@ -75,6 +75,7 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
         "influx",
         "influx.status.backoff",
         "influx.status.class",
+        "influx.status.confirmed",
         "influx.status.error",
         "influx.status.restarts",
         "influx.status.state",

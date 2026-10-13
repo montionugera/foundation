@@ -379,7 +379,7 @@ fn checks_the_influx_fuzz_inputs_with_a_database_and_a_measurement() {
         "../../../../../oracles/fuzz/config_check/influx_database_measurement"
     );
     let found = config::check(&documents(&[text]), &kinds()).expect("no problems");
-    assert_eq!(found.len(), 7);
+    assert_eq!(found.len(), 8);
     let text = include_str!(
         "../../../../../oracles/fuzz/config_check/influx_status_name_database"
     );
