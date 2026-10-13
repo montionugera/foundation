@@ -122,7 +122,8 @@ pub struct Served {
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
 /// then closes the server. It adds each namespace from 2 to the highest of
 /// `variables`. Each stream of the server has the options of `listener`. Call it on a
-/// thread that `env` started.
+/// thread that `env` started. A drop of the future before `until` completes leaks the
+/// server, and the port of `listener` stays bound.
 ///
 /// # Panics
 ///

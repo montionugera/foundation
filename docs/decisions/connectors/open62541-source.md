@@ -517,7 +517,9 @@
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
   listen connection after an accept.
   A server listens on the listener that `Manager::listening` binds on the socket address
-  that its owner gives, with the options of each stream of the manager. Each accepted
+  that its owner gives, with the options of each stream of the manager. The server of
+  `sim::serve` listens on the listener that the caller of `sim::serve` binds, with the
+  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Each accepted
   stream is a new connection that gets `ESTABLISHED`, with the context of the listen
   connection at the accept. A drive accepts at most one stream between two runs of the
   loop, as the POSIX manager accepts one for each run

@@ -24,4 +24,11 @@
   0 by `laptop.architect-2` (2026-10-13T02:02:19Z:
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136492404), and the
   options of `listener` by `laptop.architect-2` (2026-10-13T02:07:45Z:
-  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136612131).
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136612131). The one
+  `serve` supersedes the `Server` with `listen`, `local`, and `serve`, and its
+  `#[must_use]`, of
+  https://github.com/synnaxlabs/foundation/issues/2515#issuecomment-6136027630. The
+  `listener` that the caller binds, which `Manager::accepting` takes, supersedes for
+  `sim::serve` the bind in `Manager::listening` of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Both:
+  approval owed.
