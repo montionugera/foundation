@@ -243,17 +243,24 @@
   default `foundation-data`, as `start` does (#2526). This supersedes "run on the node
   of `foundation-data`" above and in the doc of `cli` of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In the
-  fixes below, `{dir}` is the data directory that the command gives. The fix of
-  `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>` on
-  its first start, or give `--data` the data directory of a node that runs``, which
-  supersedes "with no `--data`" above, decision 7 of
+  fixes below, `{dir}` is the data directory that the command gives, as one word of a
+  POSIX shell: in single quotes, with each `'` as `'\''`, when it holds a character
+  other than `[A-Za-z0-9_./:@%+=,-]`. The fix of `node.not-running` is ``Run `foundation
+  start --data {dir}`, with `--name <name>` on its first start, or give `--data` the
+  data directory of a node that runs``, which supersedes "with no `--data`" above,
+  decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
   `{dir}` that is a file is also `node.not-running`, with the message `no node runs in
-  {dir}, which is not a directory` and the fix ``Give `--data` the data directory of a
-  node that runs``. The fix of `node.unanswered` is ``Start the node again with
-  `foundation start --data {dir}` ``. The fix of `node.session` is `Fix the cause in the
-  message, then run the command again`, because the node writes no log, which
-  supersedes the fix of `node.session` of item 1 of
+  {dir}, which is not a directory`, and so is a directory `{dir}` whose `{dir}/data` is
+  a file, with the message `no node runs in {dir}, because {dir}/data is not a
+  directory`. Both have the fix ``Give `--data` the data directory of a node that
+  runs``, which supersedes `node.unreadable` for them, "a directory that does not open"
+  of decision 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913. The fix
+  of `node.unanswered` is ``Start the node again with `foundation start --data {dir}`
+  ``, which supersedes its fix of that decision 3. The fix of `node.session` is `Fix the
+  cause in the message, then run the command again`, because the node writes no log,
+  which supersedes the fix of `node.session` of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936; the PR of
   #2606 that writes the log points this fix to it. The fix of `ops.unknown-operation`
   with no close name names the list of its carrier: ``Use a name from `foundation
