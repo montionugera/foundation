@@ -263,24 +263,15 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
     }
 }
 
-/// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round must end at `head`, or at a commit on its
-/// first-parent chain after which each merge is a clean merge of the base. Below round
-/// [`ROUNDS`], no round comment with the number of the last round may have findings,
-/// the range to `head` must change no code, and a commit that is not a merge after the
-/// last round needs a `Text fixes:` line. From round [`ROUNDS`], a change to a decision
-/// after the last round needs an item on its `Public surface:` line. A round comment
-/// must have a number that [`misnumbered`] allows. `place` gives where a commit (a SHA
-/// or its prefix) is from `head` (`History::place`). A round comment after the first
-/// may skip `breaker` when the range of the last round changes no code; an earlier
-/// round's skip is taken as written. `code_change` gives the first code change in a
-/// range, with a merge of the base read by its resolution, as a phrase, or `None`
-/// (`History::code_change`). A round comment after the first, or a first one numbered
-/// above 1, posted at or after `DECISION_CUTOFF`, must name `architecture` when
-/// `decision_change` gives a phrase for its range (`History::decision_change`). The
-/// last round, when posted at or after `LINK_CUTOFF`, must link the OK of each deferral
-/// of a PR that changes a risk crate, and an approval of its public surface
-/// ([`unlinked`]).
+/// The problems with the review in `record` at `head`. Each round comment must have a
+/// number that [`misnumbered`] allows and name the reviewers that [`unnamed`] requires.
+/// The last round is each round comment with the number of the last one. Below
+/// [`ROUNDS`], it may have no findings. Its last comment must end as [`unended`] says,
+/// and its links are read by [`unlinked`]. A red-team PR labeled `oracle` needs the
+/// director's approval at `head`. `place` gives where a commit (a SHA or its prefix) is
+/// from `head` (`History::place`). `code_change` and `decision_change` give the first
+/// change to code or to a decision in a range, as a phrase, or `None`
+/// (`History::code_change`, `History::decision_change`).
 fn problems(
     record: &Record,
     head: &str,
