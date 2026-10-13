@@ -463,6 +463,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
 | `types_stamp` | `Stamp` | Printed text reads back to the same value |
 | `types_span` | `Span` | Printed text reads back to the same value |
+| `types_rate` | `time::Rate` text | An `Ok` rate is reduced, has a period of 1 ns or more, and has a denominator that divides 10^9 |
 | `types_range` | `Range` | Printed text reads back to the same value |
 | `types_byte_size` | `byte::Size` | Printed text reads back to the same value |
 | `types_channel` | `channel::Key` | Printed text reads back to the same key |
