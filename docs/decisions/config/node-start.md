@@ -191,19 +191,18 @@
   reaches a node can wait on its reply. A failure to start that shard and each failure
   of the node go through `ops::fail` with the arguments, which writes JSON when `--json`
   comes after the program name and before any `--`, as `cli` reads it. A panic of that
-  shard goes on as a panic.
-  The fix of `node.failed` is "Fix the cause that the message states, then run the
-  command again", since the command that failed can be a command other than `start`.
-  Lost: `Start::fail`, which a failure before `cli` gives a `Start` cannot reach.
-  Supersedes `Start::fail` in item 3 of
-  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545. The
-  shard of `cli` makes no blocking call while a request to the node waits. Lost: an `os`
-  thread for `cli` and a shard for the client, about 90 lines and one more thread.
-  Trigger: a command that blocks while a request or a stream of the node waits, such as
-  a watch of samples to `output`; then `env::paths` becomes async and runs each call on
-  a thread, as `env::files` does. Decided by `laptop.architect-2` (2026-10-13T02:14:36Z,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489).
+  shard goes on as a panic. The fix of `node.failed` is "Fix the cause that the message
+  states, then run the command again", since the command that failed can be a command
+  other than `start`. Lost: `Start::fail`, which a failure before `cli` gives a `Start`
+  cannot reach. Supersedes `Start::fail` in item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545.
   Decided by `laptop.architect-2` (2026-10-13T02:10:54Z, the shard,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419;
   2026-10-13T02:43:10Z, `ops::fail` and the fix,
   https://github.com/synnaxlabs/foundation/pull/2529#issuecomment-6137040498).
+  The shard of `cli` makes no blocking call while a request to the node waits. Lost: an
+  `os` thread for `cli` and a shard for the client, about 90 lines and one more thread.
+  Trigger: a command that blocks while a request or a stream of the node waits, such as
+  a watch of samples to `output`; then `env::paths` becomes async and runs each call on
+  a thread, as `env::files` does. Decided by `laptop.architect-2` (2026-10-13T02:14:36Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489).
