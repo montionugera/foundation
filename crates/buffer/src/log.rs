@@ -439,7 +439,10 @@ impl Logs {
 
     /// The oldest record that holds the durable tail of a path, which no trim may
     /// pass. `None` when no path has a synced entry.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
     pub(crate) fn kept(&mut self) -> Option<u64> {
         let mut items = numbered(&self.records, &self.items, self.base, self.stale);
         let holding =
@@ -453,7 +456,10 @@ impl Logs {
     /// The next call goes on at the first path that this call left out. Call it in
     /// the borrow that takes the groups of a commit, so that a path with an appended
     /// entry has it in that commit.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
     pub(crate) fn idle(
         &mut self,
         reach: u64,
