@@ -57,3 +57,22 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
         .envs(envs.iter().copied());
     child.output().unwrap()
 }
+
+/// Asserts that the process of `output` wrote `line` to stderr and aborted. On Windows
+/// the C runtime can write its own message after `line`.
+pub(crate) fn assert_aborted(output: &Output, line: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        assert_eq!(output.status.signal(), Some(SIGABRT), "{stderr}");
+        assert_eq!(stderr, line);
+    }
+    #[cfg(windows)]
+    {
+        // The exit code of `abort` in the C runtime of MinGW.
+        assert_eq!(output.status.code(), Some(3), "{stderr}");
+        assert!(stderr.starts_with(line), "{stderr:?}");
+    }
+}

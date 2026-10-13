@@ -814,17 +814,11 @@ fn drop_65_passes() {
 }
 
 #[test]
-#[cfg(unix)]
 fn the_drop_aborts_after_64_passes() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
     let output = child::output("event::tests::drop_65_passes", &[]);
-    assert_eq!(output.status.signal(), Some(SIGABRT));
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-         free\n"
-    );
+    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
+                free\n";
+    child::assert_aborted(&output, line);
 }
 
 #[test]
