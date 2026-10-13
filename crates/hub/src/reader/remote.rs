@@ -19,7 +19,7 @@ use types::sample::Type;
 use wire::Protocol;
 use wire::hub::{Credit, FromHome, Head, Open, Refusal, keys};
 
-use super::{Ended, Error, Lens, Mode, Streak, WINDOW};
+use super::{Ended, Error, Lens, Matched, Mode, Streak, WINDOW};
 use crate::State;
 
 /// The most opens of one [`connect`]. The home's node dials only when it has no open
@@ -117,19 +117,24 @@ struct Inbound {
 }
 
 impl Remote {
-    /// Opens a session of `mode` on the channels of `data`, each with its sample type,
-    /// and their index `index` at `home`, another node. `data` does not hold `index`.
-    /// Spawns the task of the session, which dials the home, opens the session, and
-    /// then takes its frames, and waits until the home opened it. A removal of a
-    /// channel during the open ends the session at its first take. Returns the session
-    /// and the slot of its index.
+    /// Opens a session of `mode` on the channels of `matched`, each with its sample
+    /// type, at `home`, another node, the home of their index. Spawns the task of the
+    /// session, which dials the home, opens the session, and then takes its frames,
+    /// and waits until the home opened it. A removal of a channel during the open ends
+    /// the session at its first take. Returns the session and the slot of its index.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
-        data: Vec<(channel::Key, Type)>,
-        index: channel::Key,
+        matched: Matched<(channel::Key, Type)>,
         mode: Mode,
     ) -> Result<(Self, channel::Slot), Error> {
+        let (index, _) = matched.items[matched.index];
+        let data: Vec<_> = matched
+            .items
+            .iter()
+            .copied()
+            .filter(|&(key, _)| key != index)
+            .collect();
         let keys = data.iter().map(|&(key, _)| key).chain([index]).collect();
         let queue = Rc::new(RefCell::new(Queue::default()));
         state.borrow_mut().remotes.add(keys, &queue);
@@ -144,8 +149,19 @@ impl Remote {
         );
         state.borrow().tasks.spawn(task);
         let slot = set.entries()[set.groups()[0]].slot;
-        let slots = set.entries().iter().map(|entry| entry.slot);
-        let lens = Lens::new(&set, slots, slot);
+        let slots: Vec<_> = {
+            let mut state = state.borrow_mut();
+            let assigned = state.interner.slots();
+            let slot_of = |&(key, sample)| {
+                if key == index {
+                    slot
+                } else {
+                    assigned.data(key, sample)
+                }
+            };
+            matched.items.iter().map(slot_of).collect()
+        };
+        let lens = Lens::new(&set, &slots, slot);
         let remote = Self {
             queue,
             credit: (mode == Mode::Complete).then_some(0),

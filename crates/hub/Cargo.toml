@@ -41,6 +41,11 @@ name = "memory"
 harness = false
 
 [[bench]]
+name = "open"
+harness = false
+test = true
+
+[[bench]]
 name = "reader"
 harness = false
 test = true

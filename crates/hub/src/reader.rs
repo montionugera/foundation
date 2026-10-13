@@ -99,12 +99,13 @@ impl<'a> Received<'a> {
     /// If `entry` is not an entry that [`Self::view`] gives.
     #[must_use]
     pub fn name(&self, entry: usize) -> &'a str {
-        let key = self.lens.set.entries()[entry].key;
-        self.names
-            .and_then(|names| names.get(key))
-            .unwrap_or_else(|| {
-                panic!("the entry {entry} is not a channel of the reader")
-            })
+        let names = self
+            .names
+            .expect("invariant: the hub calls no `name` on a reader of a client read");
+        let place = self.lens.place(entry).unwrap_or_else(|| {
+            panic!("the entry {entry} is not a channel of the reader")
+        });
+        names.get(place)
     }
 
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
@@ -132,11 +133,16 @@ pub struct Position {
 pub(crate) struct Lens {
     pub(crate) set: Arc<KeySet>,
     pub(crate) mask: Mask,
+    /// The place in the reader's channels of each entry of `set`, or [`Lens::NONE`].
+    places: Box<[u32]>,
     index: channel::Slot,
     group: u32,
 }
 
 impl Lens {
+    /// The place of an entry that is not a channel of the reader.
+    const NONE: u32 = u32::MAX;
+
     /// The lens of `set` for a reader of `slots` on the index at `index`.
     ///
     /// # Panics
@@ -144,18 +150,32 @@ impl Lens {
     /// If `set` does not hold `index`.
     pub(crate) fn new(
         set: &Arc<KeySet>,
-        slots: impl IntoIterator<Item = channel::Slot>,
+        slots: &[channel::Slot],
         index: channel::Slot,
     ) -> Self {
         let entry = set
             .find(index)
             .expect("invariant: the key set of a frame on an index holds the index");
+        let mut places = vec![Self::NONE; set.entries().len()].into_boxed_slice();
+        for (place, &slot) in slots.iter().enumerate() {
+            if let Some(entry) = set.find(slot) {
+                places[entry] = u32::try_from(place)
+                    .expect("invariant: a key set holds fewer than u32::MAX entries");
+            }
+        }
         Self {
             set: Arc::clone(set),
-            mask: Mask::new(set, slots),
+            mask: Mask::new(set, slots.iter().copied()),
+            places,
             index,
             group: set.entries()[entry].group,
         }
+    }
+
+    /// The place in the reader's channels of `entry`, or `None` when it is not one.
+    fn place(&self, entry: usize) -> Option<usize> {
+        let place = *self.places.get(entry)?;
+        (place != Self::NONE).then(|| usize::try_from(place).expect("u32 fits usize"))
     }
 
     /// The position of the reader after `frame`, a frame of this lens's key set. The
@@ -441,35 +461,30 @@ impl Reader {
             "a hold of {hold} for a reader that is unnamed or latest"
         );
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
-        let item = |channel: &Channel| (channel.key(), channel.sample());
-        let (matched, home) =
-            find(state, || &select, |_, channel| item(channel)).await?;
-        // With no wait since `find`, so each key is defined.
-        let keys = matched.items.iter().map(|&(key, _)| key);
-        let by_key = Box::new(Names::new(&state.borrow(), keys));
-        let home = match home {
-            Home::Here(channels) => {
-                return Self::local(state, channels, mode, named, hold, Some(by_key));
-            }
-            Home::Away(home) => home,
+        let mut listed = None;
+        let items = |found: &[(&Name, &Channel)]| {
+            listed = Some(Box::new(Names::new(found)));
+            let item =
+                |&(_, channel): &(&Name, &Channel)| (channel.key(), channel.sample());
+            found.iter().map(item).collect()
         };
-        if named.is_some() {
-            return Err(Error::Remote { home });
-        }
-        let (index, _) = matched.items[matched.index];
-        let data = matched
-            .items
-            .into_iter()
-            .filter(|&(key, _)| key != index)
-            .collect();
-        let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
-        Ok(Self {
-            index: slot,
-            names: Some(by_key),
-            source: Source::Remote(Box::new(remote)),
-            given: Cell::new(None),
-            frame: None,
-        })
+        let (matched, home) = find(state, || &select, items).await?;
+        let mut reader = match home {
+            Home::Here(channels) => Self::local(state, channels, mode, named, hold)?,
+            Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
+            Home::Away(home) => {
+                let (remote, slot) = Remote::open(state, home, matched, mode).await?;
+                Self {
+                    index: slot,
+                    names: None,
+                    source: Source::Remote(Box::new(remote)),
+                    given: Cell::new(None),
+                    frame: None,
+                }
+            }
+        };
+        reader.names = listed;
+        Ok(reader)
     }
 
     /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
@@ -480,7 +495,7 @@ impl Reader {
         channels: Channels,
         mode: Mode,
     ) -> Result<Self, Error> {
-        Self::local(state, channels, mode, None, Span::ZERO, None)
+        Self::local(state, channels, mode, None, Span::ZERO)
     }
 
     /// Opens a reader on `channels` at this node, the home of their index.
@@ -490,14 +505,13 @@ impl Reader {
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
-        by_key: Option<Box<Names>>,
     ) -> Result<Self, Error> {
         let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
         Ok(Self {
             source: Source::Local(local),
             index: slot,
-            names: by_key,
+            names: None,
             given: Cell::new(None),
             frame: None,
         })
@@ -618,43 +632,25 @@ impl From<Stop> for Ended {
     }
 }
 
-/// The name of each channel of a reader, in one text, so an open makes no allocation
-/// for each name.
+/// The name of each channel of a reader, in the order of its channels, in one text,
+/// so an open makes no allocation for each name.
 #[derive(Debug)]
 struct Names {
-    /// The key of each channel, sorted, with the end of its name in `text`.
-    ends: Box<[(channel::Key, usize)]>,
+    /// The end in `text` of the name of each channel.
+    ends: Box<[usize]>,
     text: Box<str>,
 }
 
 impl Names {
-    /// The names in `state` of `keys`.
-    ///
-    /// # Panics
-    ///
-    /// If `state` does not define each of `keys`.
-    fn new(state: &State, keys: impl Iterator<Item = channel::Key>) -> Self {
-        fn name(found: Option<&Name>) -> &str {
-            found
-                .expect("invariant: each channel of a reader is defined at its open")
-                .as_str()
-        }
-        let mut found: Vec<(channel::Key, Option<&Name>)> =
-            keys.map(|key| (key, None)).collect();
-        found.sort_unstable_by_key(|&(key, _)| key);
-        for (name, channel) in state.channels.iter() {
-            if let Ok(at) = found.binary_search_by_key(&channel.key(), |&(key, _)| key)
-            {
-                found[at].1 = Some(name);
-            }
-        }
-        let len = found.iter().map(|&(_, found)| name(found).len()).sum();
+    /// The names of `found`, in their order.
+    fn new(found: &[(&Name, &Channel)]) -> Self {
+        let len = found.iter().map(|(name, _)| name.as_str().len()).sum();
         let mut text = String::with_capacity(len);
         let ends = found
-            .into_iter()
-            .map(|(key, found)| {
-                text.push_str(name(found));
-                (key, text.len())
+            .iter()
+            .map(|(name, _)| {
+                text.push_str(name.as_str());
+                text.len()
             })
             .collect();
         Self {
@@ -663,11 +659,10 @@ impl Names {
         }
     }
 
-    /// The name of `key`, or `None` when it is not a channel of the reader.
-    fn get(&self, key: channel::Key) -> Option<&str> {
-        let at = self.ends.binary_search_by_key(&key, |&(key, _)| key).ok()?;
-        let start = at.checked_sub(1).map_or(0, |before| self.ends[before].1);
-        Some(&self.text[start..self.ends[at].1])
+    /// The name of the channel at `place`.
+    fn get(&self, place: usize) -> &str {
+        let start = place.checked_sub(1).map_or(0, |before| self.ends[before]);
+        &self.text[start..self.ends[place]]
     }
 }
 
@@ -693,13 +688,14 @@ pub(crate) enum Home {
 }
 
 /// What the selector that `select` gives matches once the home of its index is known,
-/// with an item that `item` makes for each channel, and that home. It calls `select`
-/// before and after each wait for the home, and keeps no selector or item across a
-/// wait.
+/// with the items that `items` makes, one for each channel in the order of the
+/// channels it gets, and that home. It calls `select` before and after each wait for
+/// the home, and keeps no selector across a wait. It calls `items` once, after the
+/// last wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
-    mut item: impl FnMut(&Name, &Channel) -> T,
+    mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
 ) -> Result<(Matched<T>, Home), Error> {
     loop {
         let index = defined(&state.borrow(), select().borrow())?[0].1.index();
@@ -709,10 +705,11 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
             Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
         };
         // A call of `set_definitions` while the open waits can change a channel.
-        let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
-        if keys[found.index] != index {
+        let Some((keys, found)) =
+            matched(&state.borrow(), select().borrow(), index, &mut items)?
+        else {
             continue;
-        }
+        };
         let home = if let Some(home) = away {
             Home::Away(home)
         } else {
@@ -750,34 +747,39 @@ fn defined<'a>(
     Ok(found)
 }
 
+/// The keys of what a selector matched, and what it matched.
+type Found<T> = (Box<[channel::Key]>, Matched<T>);
+
 /// The key of each channel that `select` matches, in name order, then of their one
-/// index when `select` does not match it, and what `select` matched, with the item
-/// that `item` makes for each.
+/// index when `select` does not match it, and what `select` matched, with the items
+/// that `items` makes. `None`, with no call of `items`, when their index is not
+/// `index`.
 fn matched<T>(
     state: &State,
     select: &Selector,
-    mut item: impl FnMut(&Name, &Channel) -> T,
-) -> Result<(Box<[channel::Key]>, Matched<T>), Error> {
-    let found = defined(state, select)?;
-    let index = found[0].1.index();
-    let mut keys: Vec<_> = found.iter().map(|(_, channel)| channel.key()).collect();
-    let mut items: Vec<_> = found
-        .iter()
-        .map(|&(name, channel)| item(name, channel))
-        .collect();
-    let at = if let Some(at) = keys.iter().position(|&key| key == index) {
+    index: channel::Key,
+    mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
+) -> Result<Option<Found<T>>, Error> {
+    let mut found = defined(state, select)?;
+    if found[0].1.index() != index {
+        return Ok(None);
+    }
+    let at = if let Some(at) =
+        found.iter().position(|(_, channel)| channel.key() == index)
+    {
         at
     } else {
-        let (name, channel) = state
+        let named = state
             .channels
             .iter()
             .find(|(_, channel)| channel.key() == index)
             .expect("invariant: the index of a defined channel is defined");
-        keys.push(index);
-        items.push(item(name, channel));
-        keys.len() - 1
+        found.push(named);
+        found.len() - 1
     };
-    Ok((keys.into(), Matched { items, index: at }))
+    let keys = found.iter().map(|(_, channel)| channel.key()).collect();
+    let items = items(&found);
+    Ok(Some((keys, Matched { items, index: at })))
 }
 
 /// A session at the shard's home, through a mask of the reader's channels: the frames
@@ -894,7 +896,7 @@ impl Session {
                 let set = snapshot
                     .get(key)
                     .expect("invariant: a frame's key set is known");
-                let lens = Lens::new(set, self.slots.iter().copied(), self.index);
+                let lens = Lens::new(set, &self.slots, self.index);
                 self.lens.insert(lens)
             }
         };
