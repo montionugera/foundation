@@ -216,7 +216,6 @@ fn help(name: Option<&str>) -> Result<Parsed, Error> {
     root.build();
     let command = match name {
         None => &mut root,
-        Some("help") => return Err(unknown("help", Among::Commands)),
         Some(name) => root
             .find_subcommand_mut(name)
             .ok_or_else(|| unknown(name, Among::Commands))?,
