@@ -239,3 +239,15 @@
   supersedes the bound on each file of that plan. `laptop.architect-2` approved the
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
+  `version` and `foundation --version` give one output: the text
+  `<version> (<commit>)`, with the first 12 hex digits of the commit or `unknown`, and
+  the JSON `{"commit": <40 hex digits, or null>, "version": <version>}`, so a program
+  tests `null`, not a word. The commit is that of `HEAD` when the `build.rs` of `ops`
+  runs, also in a tree with changes, with no mark of them, and is none when `git` fails.
+  The script watches the paths of `HEAD`, its ref, and `packed-refs` that
+  `git rev-parse --git-path` gives, so that a commit, a checkout, and a branch switch
+  in a worktree rebuild `ops`, and a build with no change does not. MCP `serverInfo`
+  keeps the version alone (`laptop.architect-2`, 2026-10-13T21:55:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2616#issuecomment-6156028343). Lost:
+  `vergen`, a new dependency for about 30 lines; and a variable that the release sets,
+  as each local build must say what it is.
