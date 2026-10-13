@@ -65,8 +65,8 @@
   which supersedes item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
   two cases). `unknown` also for a hub that holds a channel of another spec under a
-  status name, found by the key and the sample type of each channel of the frame and
-  by `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
+  status name, found by the key and the sample type of each channel of the frame and by
+  `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
   extends item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102).
