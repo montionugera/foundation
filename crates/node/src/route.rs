@@ -38,8 +38,8 @@ pub(crate) async fn accept(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let ops = handles.ops.as_deref();
-        let held = places.take(&session, |peer| member(peer, ops));
+        let mesh = handles.ops.as_deref().map(ops::Node::mesh);
+        let held = places.take(&session, |peer| member(peer, mesh));
         let link = handles.hub.link(session.clone());
         let serve = serve(
             session,
@@ -203,7 +203,7 @@ async fn route(
             }
             (Peer::Client, _) | (_, None) => reject(incoming),
         },
-        Protocol::Hub if member(peer, ops.as_deref()) => {
+        Protocol::Hub if member(peer, ops.as_deref().map(ops::Node::mesh)) => {
             // `serve` stops the stream with the code of its error.
             drop(link.serve(incoming).await);
         }
@@ -230,10 +230,10 @@ async fn answer(link: &Link, incoming: Incoming, ops: &ops::Node) {
 }
 
 /// Whether `peer` is a member of the region: a node whose key a member holds in the
-/// view of the mesh of `ops`.
-fn member(peer: Peer, ops: Option<&ops::Node>) -> bool {
-    match (peer, ops) {
-        (Peer::Node(key), Some(ops)) => ops.mesh().holder(key).is_some(),
+/// view of `mesh`.
+fn member(peer: Peer, mesh: Option<&mesh::Mesh>) -> bool {
+    match (peer, mesh) {
+        (Peer::Node(key), Some(mesh)) => mesh.holder(key).is_some(),
         (Peer::Node(_), None) | (Peer::Client, _) => false,
     }
 }
