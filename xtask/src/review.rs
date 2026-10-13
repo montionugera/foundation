@@ -268,17 +268,17 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// first-parent chain after which each merge is a clean merge of the base. Below round
 /// [`ROUNDS`], no round comment with the number of the last round may have findings,
 /// the range to `head` must change no code, and a commit that is not a merge after the
-/// last round needs a `Text fixes:` line. A round comment posted at or after `NUMBER_CUTOFF` must have
-/// a number that [`misnumbered`] allows. `place` gives where a commit (a SHA or its
-/// prefix) is from `head` (`History::place`). A round comment after the first may skip
-/// `breaker` when the range of the last round changes no code; an earlier round's skip
-/// is taken as written. `code_change` gives the first code change in a range, with a
-/// merge of the base read by its resolution, as a phrase, or `None`
-/// (`History::code_change`). A round comment after the first, or a first one numbered
-/// above 1, posted at or after `DECISION_CUTOFF`, must name `architecture` when
-/// `decision_change` gives a phrase for its range (`History::decision_change`). The
-/// last round, when posted at or after `LINK_CUTOFF`, must link the OK of each deferral
-/// of a PR that changes a risk crate, and an approval of its public surface
+/// last round needs a `Text fixes:` line. A round comment posted at or after
+/// `NUMBER_CUTOFF` must have a number that [`misnumbered`] allows. `place` gives where
+/// a commit (a SHA or its prefix) is from `head` (`History::place`). A round comment
+/// after the first may skip `breaker` when the range of the last round changes no code;
+/// an earlier round's skip is taken as written. `code_change` gives the first code
+/// change in a range, with a merge of the base read by its resolution, as a phrase, or
+/// `None` (`History::code_change`). A round comment after the first, or a first one
+/// numbered above 1, posted at or after `DECISION_CUTOFF`, must name `architecture`
+/// when `decision_change` gives a phrase for its range (`History::decision_change`).
+/// The last round, when posted at or after `LINK_CUTOFF`, must link the OK of each
+/// deferral of a PR that changes a risk crate, and an approval of its public surface
 /// ([`unlinked`]).
 fn problems(
     record: &Record,
