@@ -2958,6 +2958,23 @@ fn a_later_round_posted_before_the_decision_cutoff_keeps_its_reviewers() {
 }
 
 #[test]
+fn a_first_round_comment_numbered_2_of_a_text_pr_needs_architecture_for_a_decision() {
+    let check = |number| {
+        let mut record = record(vec![bound(&clean(number, "reviewer", "a..b"))]);
+        record.files = vec!["docs/decisions/x.md".to_string()];
+        problems(
+            &record,
+            HEAD,
+            &|_| Ok(Place::Head),
+            &|_, _| Ok(None),
+            &|_, _| Ok(Some(CHANGE.to_string())),
+        )
+    };
+    assert_eq!(check(2), Ok(vec![DECISION.to_string()]));
+    assert_eq!(check(1), Ok(Vec::new()));
+}
+
+#[test]
 fn a_second_round_comment_numbered_1_of_a_code_pr_gets_one_problem() {
     let (repo, start) = Repo::with_pr("review-decision-renumbered-code");
     let end = repo.commit("docs/decisions/x.md", "a rule\n");
@@ -3721,6 +3738,41 @@ fn a_last_round_3_passes_with_findings_and_a_code_commit_after_it() {
     );
 }
 
+/// What the check gives for `round`, the last round, when the range from its end to
+/// the head changes a decision ([`CHANGE`]).
+fn decided(round: &str) -> Vec<String> {
+    problems(
+        &reviewed(vec![bot(round)]),
+        HEAD,
+        &|_| Ok(Place::Before),
+        &|_, _| Ok(None),
+        &|from, end| {
+            assert_eq!([from, end], [CODE, HEAD]);
+            Ok(Some(CHANGE.to_string()))
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_last_round_3_fails_when_a_decision_changes_after_it_with_no_public_surface() {
+    assert_eq!(
+        decided(&capped()),
+        vec![format!(
+            "review round 3 ends at `{CODE}`, and the range from it to the head \
+             `{HEAD}` {CHANGE}. Add the change to the `Public \
+             surface:` line of the round, with its approval (REVIEW ROUNDS in \
+             `docs/decisions/operations/review-rounds.md`)."
+        )]
+    );
+}
+
+#[test]
+fn a_last_round_3_passes_a_decision_change_after_it_with_a_public_surface_item() {
+    let named = capped().replace("Public surface: none", "Public surface: `x.md`");
+    assert_eq!(decided(&named), Vec::<String>::new());
+}
+
 #[test]
 fn a_last_round_2_with_findings_and_a_code_commit_after_it_fails() {
     let second = capped().replace("## Review round 3", "## Review round 2");
@@ -3816,6 +3868,37 @@ fn fails_a_round_comment_numbered_more_than_1_above_the_one_before_it() {
              late report or only checks a merge that is not clean."
         ]
     );
+}
+
+#[test]
+fn fails_a_round_comment_numbered_above_3_and_above_the_one_before_it() {
+    let fourth = ROUND.replace("## Review round 3", "## Review round 4");
+    assert_eq!(
+        check(&reviewed(vec![numbered(ROUND), numbered(&fourth)])),
+        vec![
+            "review round 4 follows review round 3. After round 3, number each round \
+             comment the same as the round comment before it."
+        ]
+    );
+    assert_eq!(
+        check(&reviewed(vec![numbered(ROUND), numbered(ROUND)])),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn fails_a_first_round_comment_numbered_above_3() {
+    let fourth = later("reviewer, architecture, breaker")
+        .replace("## Review round 3", "## Review round 4");
+    assert_eq!(
+        check(&record(vec![numbered(&fourth)])),
+        vec![
+            "review round 4 is the first round comment on the PR. Number it 3 or less: \
+             only a PR that replaces another before round 3 continues its count."
+        ]
+    );
+    let third = later("reviewer, architecture, breaker");
+    assert_eq!(check(&record(vec![numbered(&third)])), Vec::<String>::new());
 }
 
 #[test]

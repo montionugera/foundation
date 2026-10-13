@@ -105,7 +105,7 @@ const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
 /// A round comment posted before this UTC time may have any number, so that the rule
 /// does not fail the rounds that came before it.
-const NUMBER_CUTOFF: &str = "2026-10-13T17:00:00Z";
+const NUMBER_CUTOFF: &str = "2026-10-14T00:00:00Z";
 
 /// The most review rounds that a PR gets. A last round of this number or above may
 /// have findings and may end before a commit that changes code, since no round follows
@@ -267,9 +267,10 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 /// reviewers it requires, and the last round must end at `head`, or at a commit on its
 /// first-parent chain after which each merge is a clean merge of the base. Below round
 /// [`ROUNDS`], the last round must also find nothing, the range to `head` must change
-/// no code, and a commit that is not a merge after it needs a `Text fixes:` line. A
-/// round comment after the first, posted at or after `NUMBER_CUTOFF`, must be numbered
-/// at most 1 above the one before it. `place` gives where a commit (a SHA or its
+/// no code, and a commit that is not a merge after it needs a `Text fixes:` line. From
+/// round [`ROUNDS`], a change to a decision after the last round needs an item on its
+/// `Public surface:` line. A round comment posted at or after `NUMBER_CUTOFF` must have
+/// a number that [`misnumbered`] allows. `place` gives where a commit (a SHA or its
 /// prefix) is from `head` (`History::place`). A round comment after the first may skip
 /// `breaker` when the range of the last round changes no code; an earlier round's skip
 /// is taken as written. `code_change` gives the first code change in a range, with a
@@ -306,16 +307,8 @@ fn problems(
         match &parsed.round {
             Ok(round) => {
                 let number = round.number;
-                if let Some(before) = before
-                    && number > before.saturating_add(1)
-                    && round.posted.as_str() >= NUMBER_CUTOFF
-                {
-                    problems.push(format!(
-                        "review round {number} follows review round {before}. Number \
-                         each round comment 1 above the round comment before it, or the \
-                         same for a comment that only holds a late report or only checks \
-                         a merge that is not clean."
-                    ));
+                if round.posted.as_str() >= NUMBER_CUTOFF {
+                    problems.extend(misnumbered(number, before));
                 }
                 before = Some(number);
                 let later = i > 0 || number > 1;
@@ -348,7 +341,13 @@ fn problems(
                 round.number, round.findings
             ));
         }
-        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
+        problems.extend(unended(
+            round,
+            head,
+            place(&round.end)?,
+            code_change,
+            decision_change,
+        )?);
         problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")
@@ -359,14 +358,46 @@ fn problems(
     Ok(problems)
 }
 
+/// The problem when a round comment numbered `number` follows one numbered `before`,
+/// or is the first on its PR when `before` is `None`, or `None`. It may be 1 above
+/// `before` or the same, above [`ROUNDS`] only the same, and the first at most
+/// [`ROUNDS`].
+fn misnumbered(number: u32, before: Option<u32>) -> Option<String> {
+    let Some(before) = before else {
+        return (number > ROUNDS).then(|| {
+            format!(
+                "review round {number} is the first round comment on the PR. Number it \
+                 {ROUNDS} or less: only a PR that replaces another before round \
+                 {ROUNDS} continues its count."
+            )
+        });
+    };
+    if number > before.saturating_add(1) {
+        return Some(format!(
+            "review round {number} follows review round {before}. Number each round \
+             comment 1 above the round comment before it, or the same for a comment \
+             that only holds a late report or only checks a merge that is not clean."
+        ));
+    }
+    (number > ROUNDS && number > before).then(|| {
+        format!(
+            "review round {number} follows review round {before}. After round \
+             {ROUNDS}, number each round comment the same as the round comment before \
+             it."
+        )
+    })
+}
+
 /// The problem with the end of the last round, `round`, at `head`, where `place` is
-/// where its end is from `head`, or `None`. From round [`ROUNDS`], only a
-/// [`Place::Off`] end is a problem.
+/// where its end is from `head`, or `None`. From round [`ROUNDS`], a [`Place::Off`] end
+/// is a problem, and so is a change to a decision after the end (`decision_change`)
+/// when the `Public surface:` line of the round names no item.
 fn unended(
     round: &Round,
     head: &str,
     place: Place,
     code_change: Change<'_>,
+    decision_change: Change<'_>,
 ) -> Result<Option<String>, String> {
     let (number, end) = (round.number, &round.end);
     if place == Place::Off {
@@ -378,7 +409,17 @@ fn unended(
         )));
     }
     if number >= ROUNDS {
-        return Ok(None);
+        if round.ends.as_ref().is_some_and(|e| stated(&e.surface)) {
+            return Ok(None);
+        }
+        return Ok(decision_change(end, head)?.map(|change| {
+            format!(
+                "review round {number} ends at `{end}`, and the range from it to the \
+                 head `{head}` {change}. Add the change to the `Public surface:` line \
+                 of the round, with its approval (REVIEW ROUNDS in \
+                 `docs/decisions/operations/review-rounds.md`)."
+            )
+        }));
     }
     if let Some(change) = code_change(end, head)? {
         return Ok(Some(format!(
