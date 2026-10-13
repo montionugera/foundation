@@ -656,24 +656,24 @@ fn shows_a_write_that_fails_until_the_run_ends() {
 
 #[test]
 fn holds_each_sample_once_in_time_order_after_writes_that_fail() {
-    stores_each_sample_once_after_writes_that_fail(true);
+    stores_each_sample_once_after_writes_that_fail(false);
 }
 
 #[test]
 fn holds_each_sample_after_writes_that_fail_with_no_reader_block() {
-    stores_each_sample_once_after_writes_that_fail(false);
+    stores_each_sample_once_after_writes_that_fail(true);
 }
 
 /// Checks that InfluxDB stores each sample once, in time order, when it refuses each
-/// connection for 6 s, then answers 500 once. The config has the `reader` block of
-/// [`config`] when `reader`, else none.
-fn stores_each_sample_once_after_writes_that_fail(reader: bool) {
+/// connection for 6 s, then answers 500 once. The config has no `reader` block when
+/// `blockless`, else that of [`config`].
+fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
     let (points, accepted, errors, first) = run(move |node, tasks| async move {
         let plant = Plant::unserved(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "the disk is full");
         plant.answers.borrow_mut().push_back(failed);
         let mut config = plant.config();
-        if !reader {
+        if blockless {
             config.blocks.clear();
         }
         let run = plant.start(config);
