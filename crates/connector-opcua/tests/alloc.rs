@@ -139,15 +139,15 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
     }
 }
 
-/// The allocations in the polls of reads 2 to 100 of `variable` by one client. The
-/// server runs on its own manager, outside the polls.
-fn client_reads(variable: client::Variable) -> Vec<u64> {
+/// The allocations in the polls of reads 2 to 100 of `count` copies of `variable` by
+/// one client. The server runs on its own manager, outside the polls.
+fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
         let body = async |server: &client::Server| {
-            let mut client = server.connect().await;
+            let mut client = server.connect(count).await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
                 let mut read = pin!(client.read(variable));
@@ -173,14 +173,23 @@ fn client_reads(variable: client::Variable) -> Vec<u64> {
 /// As through the manager, the ask allocates 3 and the read of the answer 2. Each read
 /// is a new drive, whose sleep until the next timer of the loop allocates 1 more. The
 /// client swaps two buffers of values, and read 2 is the first to fill the second.
+/// The decode of the answer allocates one more for the Double of each node. The sim
+/// net allocates one more for each segment of 1460 bytes past the first: the ask of 64
+/// names takes 2.
 fn a_read_of_a_client_allocates_a_fixed_count() {
-    let mut counts = vec![7];
-    counts.extend([6; 98]);
-    for variable in [client::Variable::Number, client::Variable::Name] {
+    let cases = [
+        (client::Variable::Number, 1, 6),
+        (client::Variable::Name, 1, 6),
+        (client::Variable::Number, 64, 69),
+        (client::Variable::Name, 64, 70),
+    ];
+    for (variable, count, each) in cases {
+        let mut counts = vec![each + 1];
+        counts.extend([each; 98]);
         assert_eq!(
-            client_reads(variable),
+            client_reads(variable, count),
             counts,
-            "reads 2 to 100 of {variable:?}"
+            "reads 2 to 100 of {count} of {variable:?}"
         );
     }
 }
