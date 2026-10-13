@@ -175,10 +175,13 @@ fn a_commit_and_a_switch_in_a_worktree_rebuild() {
         let worktree = create_worktree(&create_probe(name, init));
         let first = git(&worktree, &["rev-parse", "HEAD"]);
         assert_eq!(built(&worktree), first, "{name}");
+        assert!(fresh(&worktree), "{name}");
         let second = commit(&worktree);
         assert_eq!(built(&worktree), second, "{name}");
         git(&worktree, &["switch", "-q", "-c", "next", &first]);
         assert_eq!(built(&worktree), first, "{name}");
+        git(&worktree, &["switch", "-q", "other"]);
+        assert_eq!(built(&worktree), second, "{name}");
     }
 }
 
