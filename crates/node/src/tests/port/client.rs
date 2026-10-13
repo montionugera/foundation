@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use wire::hub::client::{REFUSED, Refusal};
 
@@ -176,21 +176,32 @@ fn reach_on_a_running_node_dials_its_bound_address() {
 }
 
 #[test]
-fn reach_dials_the_loopback_ip_for_an_unspecified_ip() {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = keyed(&mut sim, 2);
-    let any = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), PORT);
-    let node = start(&host, any, Region::Stored);
-    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    let reached = reached(&mut sim, &host, 1 << 20);
-    let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), PORT);
-    let error = ::hub::client::Error::Transport(transport::Error::Unreachable {
-        peer: KEY.public(),
-        attempts: vec![(Address::Udp(at), transport::Error::TimedOut)],
-    });
-    assert_eq!(reached, Err(client::Error::Unanswered { at, error }));
-    node.stop();
-    assert_eq!(sim.run(), Ok(()));
+fn reach_dials_the_loopback_ip_of_the_family_for_an_unspecified_ip() {
+    let families = [
+        (
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ),
+        (
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ),
+    ];
+    for (any, loopback) in families {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = start(&host, SocketAddr::new(any, PORT), Region::Stored);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let reached = reached(&mut sim, &host, 1 << 20);
+        let at = SocketAddr::new(loopback, PORT);
+        let error = ::hub::client::Error::Transport(transport::Error::Unreachable {
+            peer: KEY.public(),
+            attempts: vec![(Address::Udp(at), transport::Error::TimedOut)],
+        });
+        assert_eq!(reached, Err(client::Error::Unanswered { at, error }));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+    }
 }
 
 /// A peer at the node's address that closes each session with a refusal.
