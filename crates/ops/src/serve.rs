@@ -352,6 +352,6 @@ async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
     if any && placed.is_empty() {
         return Err(check.denied(Action::Read, On::Nothing));
     }
-    let output = status::read(node, subject, &placed).await;
+    let output = status::read(node, subject, &placed).await?;
     Ok(Reply::line(&Done { output: &output })?)
 }

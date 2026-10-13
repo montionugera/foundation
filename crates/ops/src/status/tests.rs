@@ -375,6 +375,32 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
 }
 
 #[test]
+fn fails_when_the_hub_does_not_define_the_status_channels() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = connector("site.a", "steady", "edge");
+        let files = vec![(PathBuf::from("site.hcl"), text)];
+        let (plan, _) = node.plan(files).await.expect("a plan");
+        node.apply(Path::new("site.plan"), &plan)
+            .await
+            .expect("an apply");
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({
+            "errors": [{
+                "code": "ops.channel-read",
+                "message": "the status channels of the connector `site.a` did not \
+                            read: the selector matches no channel",
+                "fix": "Fix the cause in the message, then ask for the status again",
+                "notes": [],
+            }],
+            "status": 1,
+        });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
 fn refuses_bytes_after_the_line_of_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);

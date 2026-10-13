@@ -8,14 +8,13 @@ use std::task::Poll;
 use hub::reader::{Config, Mode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use spec::channel::{Channel, Kind};
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::name::{Name, Selector};
 use types::time::Span;
 
 use crate::Node;
-use crate::error::escape_controls;
+use crate::error::{Error, escape_controls};
 
 #[cfg(test)]
 mod tests;
@@ -59,8 +58,8 @@ pub(crate) enum State {
     Restarting,
     Stopped,
     Ending,
-    /// No frame of the status came within a second: the supervisor has not started
-    /// the connector.
+    /// No frame of the status came within a second, or the newest frame holds no
+    /// status: the supervisor has not started the connector.
     Unknown,
 }
 
@@ -107,7 +106,10 @@ pub(crate) fn placed<'a>(
                 Some(Placed {
                     name,
                     connector,
-                    channels: channels(definitions, name),
+                    channels: connector::status::defined(definitions, name)
+                        .into_iter()
+                        .map(|(name, _)| name.clone())
+                        .collect(),
                 })
             }
             _ => None,
@@ -115,50 +117,40 @@ pub(crate) fn placed<'a>(
         .collect()
 }
 
-/// The status channels of the connector `name`: its status index, then each channel
-/// on it. Empty when `definitions` has no status index for it. `config` refuses a
-/// channel that points at a channel that a connector implies, so each channel on the
-/// index is one that the connector implies.
-fn channels(definitions: &BTreeMap<Name, Definition>, name: &Name) -> Vec<Name> {
-    let Ok((index, _)) = connector::status::channels(name, &[]) else {
-        return Vec::new();
-    };
-    let Some(Definition::Channel(found)) = definitions.get(&index) else {
-        return Vec::new();
-    };
-    let on = definitions
-        .iter()
-        .filter_map(|(channel, definition)| match definition {
-            Definition::Channel(Channel {
-                kind: Kind::Data(data),
-                ..
-            }) if *data.index() == found.key => Some(channel.clone()),
-            _ => None,
-        });
-    [index].into_iter().chain(on).collect()
-}
-
 /// The status of each of `placed`, read through the hub of `node` as `subject`. All
 /// reads run at once, and the call waits at most [`WAIT`].
-pub(crate) async fn read(node: &Node, subject: &Name, placed: &[Placed<'_>]) -> Output {
+///
+/// # Errors
+///
+/// [`Error::ChannelRead`] for the first of `placed` whose reader does not open or
+/// ends.
+pub(crate) async fn read(
+    node: &Node,
+    subject: &Name,
+    placed: &[Placed<'_>],
+) -> Result<Output, Error> {
     let reads = placed.iter().map(|placed| newest(node, subject, placed));
     let readings = before(reads, node.clock.sleep(WAIT)).await;
     let connectors = placed
         .iter()
         .zip(readings)
-        .map(|(placed, reading)| status(placed, reading.flatten()))
-        .collect();
-    Output { connectors }
+        .map(|(placed, reading)| Ok(status(placed, reading.transpose()?.flatten())))
+        .collect::<Result<_, Error>>()?;
+    Ok(Output { connectors })
 }
 
-/// The newest status of `placed`, or `None` when its reader does not open, the
-/// reader ends, or the frame holds no status.
+/// The newest status of `placed`, or `None` when the frame holds no status.
+///
+/// # Errors
+///
+/// [`Error::ChannelRead`] when the reader does not open or ends.
 async fn newest(
     node: &Node,
     subject: &Name,
     placed: &Placed<'_>,
-) -> Option<connector::status::Reading> {
-    let select = Selector::new(placed.channels.iter().map(Name::as_str)).ok()?;
+) -> Result<Option<connector::status::Reading>, Error> {
+    let select = Selector::new(placed.channels.iter().map(Name::as_str));
+    let select = select.expect("invariant: the names of channels select them");
     let config = Config {
         select,
         mode: Mode::Latest,
@@ -166,9 +158,15 @@ async fn newest(
         name: None,
         hold: Span::ZERO,
     };
-    let mut reader = node.hub.reader(config).await.ok()?;
-    let received = reader.next().await.ok()?;
-    connector::status::Reading::of(&received)
+    let failed = |message: String| Error::ChannelRead {
+        connector: placed.name.clone(),
+        message,
+    };
+    let opened = node.hub.reader(config).await;
+    let mut reader = opened.map_err(|error| failed(error.to_string()))?;
+    let received = reader.next().await;
+    let received = received.map_err(|ended| failed(ended.to_string()))?;
+    Ok(connector::status::Reading::of(&received))
 }
 
 /// The output of each of `futures`, which run at once, or `None` for each that has

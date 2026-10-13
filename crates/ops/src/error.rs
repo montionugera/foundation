@@ -26,6 +26,7 @@ const STOPPED: Code = Code::new("ops.stopped");
 const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const CHANNEL_READ: Code = Code::new("ops.channel-read");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -71,6 +72,9 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
+    /// A reader of the status channels of `connector` did not open or ended, with the
+    /// text of the hub.
+    ChannelRead { connector: Name, message: String },
 }
 
 /// An action that an operation on a node needs: the action of its name, and `Admin`
@@ -156,7 +160,8 @@ impl Error {
             | Self::Stopped(_)
             | Self::Request { .. }
             | Self::Denied { .. }
-            | Self::LargeReply => 1,
+            | Self::LargeReply
+            | Self::ChannelRead { .. } => 1,
         }
     }
 
@@ -209,6 +214,11 @@ impl Error {
             Self::LargeReply => (
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
+            ),
+            Self::ChannelRead { .. } => (
+                CHANNEL_READ,
+                "Fix the cause in the message, then ask for the status again"
+                    .to_owned(),
             ),
         };
         Cow::Owned(vec![Problem {
@@ -427,6 +437,11 @@ impl fmt::Display for Error {
                 f,
                 "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
                  holds"
+            ),
+            Self::ChannelRead { connector, message } => write!(
+                f,
+                "the status channels of the connector `{connector}` did not read: \
+                 {message}"
             ),
         }
     }
