@@ -38,7 +38,11 @@
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
   of the write check, 2026-10-12T22:33:22Z,
   https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580).
-  In the same stage, `check` refuses each other channel with an edge to a status
-  channel of a connector, with `config.implied-channel`, since `plan` gives
-  `config.unknown-channel` for such an edge in files, and a second writer on the
-  status index can hold its control gate (#2468, round 7).
+  In the same stage, `check` refuses each channel that no connector implies and that
+  has an edge to a status channel of a connector, with `config.implied-channel`, once
+  for each status channel that it points at. Only the connector writes its status, and
+  a second writer on the status index can hold its control gate (#2468, round 7).
+  `plan` refuses such an edge in files with `config.unknown-channel`, and #2513 gives
+  it `config.implied-channel`. Lost: a new code, since the rule is that of
+  `config.implied-channel`; and the rule in the stage of the rules of `plan`, which
+  count the writers of an index, a count that a second writer already makes false.

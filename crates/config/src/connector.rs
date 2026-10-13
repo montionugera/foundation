@@ -231,67 +231,69 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
 /// The `config.implied-channel` diagnostic of each channel that a connector of
 /// `writes` implies and that `definitions`, the definitions of a spec with the name
 /// of each channel by key in `names`, lack or hold as another channel, then of each
-/// other channel with an edge to such a channel.
+/// channel that no connector implies and that has an edge to a channel that a
+/// connector implies, once for each channel that it points at.
 pub(crate) fn implied_definitions(
     definitions: &BTreeMap<Name, definition::Definition>,
     names: &BTreeMap<types::channel::Key, &Name>,
     writes: &BTreeMap<Name, Writes>,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    for (connector, writes) in writes {
-        for (channel, kind) in writes.implied() {
-            let held = match definitions.get(channel) {
-                Some(definition::Definition::Channel(stored)) => {
-                    // An edge to a key that is no channel is `None`, so it differs.
-                    let edges = stored
-                        .kind
-                        .clone()
-                        .map(|key| names.get(&key).copied().cloned());
-                    edges == kind.map(Some)
-                }
-                _ => false,
-            };
-            if !held {
-                let implied = Implied {
-                    connector,
-                    channel,
-                    label: writes.label,
-                };
-                diagnostics.push(implied.refuse(
-                    None,
-                    "the spec must hold it as the connector gives it",
-                    "Make the plan file with `plan`".into(),
-                ));
-            }
-        }
-    }
-    let implied: BTreeMap<&Name, Implied<'_>> = writes
+    let implied: Vec<(Implied<'_>, Kind<Name>)> = writes
         .iter()
         .flat_map(|(connector, writes)| {
-            writes.implied().map(move |(channel, _)| {
+            writes.implied().map(move |(channel, kind)| {
                 let implied = Implied {
                     connector,
                     channel,
                     label: writes.label,
                 };
-                (channel, implied)
+                (implied, kind)
             })
         })
+        .collect();
+    let mut diagnostics = Vec::new();
+    for (implied, kind) in &implied {
+        let held = match definitions.get(implied.channel) {
+            Some(definition::Definition::Channel(stored)) => {
+                // An edge to a key that is no channel is `None`, so it differs.
+                let edges = stored
+                    .kind
+                    .clone()
+                    .map(|key| names.get(&key).copied().cloned());
+                edges == kind.clone().map(Some)
+            }
+            _ => false,
+        };
+        if !held {
+            diagnostics.push(implied.refuse(
+                None,
+                "the spec must hold it as the connector gives it",
+                "Make the plan file with `plan`".into(),
+            ));
+        }
+    }
+    let by_name: BTreeMap<&Name, &Implied<'_>> = implied
+        .iter()
+        .map(|(implied, _)| (implied.channel, implied))
         .collect();
     for (from, definition) in definitions {
         let definition::Definition::Channel(channel) = definition else {
             continue;
         };
-        if implied.contains_key(from) {
+        if by_name.contains_key(from) {
             continue;
         }
-        let pointed = channel.kind.edges().filter_map(|(_, key)| names.get(key));
-        for implied in pointed.filter_map(|to| implied.get(*to)) {
-            diagnostics.push(implied.refuse(
-                None,
-                &format!("the channel `{from}` cannot point at it"),
-                "Make the plan file with `plan`".into(),
-            ));
+        let mut refused = BTreeSet::new();
+        for (_, key) in channel.kind.edges() {
+            if let Some(implied) = names.get(key).and_then(|to| by_name.get(*to))
+                && refused.insert(implied.channel)
+            {
+                diagnostics.push(implied.refuse(
+                    None,
+                    &format!("the channel `{from}` cannot point at it"),
+                    "Make the plan file with `plan`".into(),
+                ));
+            }
         }
     }
     diagnostics
