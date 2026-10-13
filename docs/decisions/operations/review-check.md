@@ -327,7 +327,7 @@
   each form in which comrak and GitHub link a bare URL in different ways at
   2026-10-12T22:18:56Z
   (https://github.com/synnaxlabs/foundation/pull/2437#issuecomment-6133655869).
-  From the cutoff `LATER_CUTOFF` in `xtask/src/review.rs` (2026-10-13T12:00:00Z), a
+  From the cutoff `LATER_CUTOFF` in `xtask/src/review.rs` (2026-10-14T00:00:00Z), a
   round comment ends with four lines, in order: `Deferred:`, `Later steps:`,
   `Public surface:`, and `Hot path:`. A round posted before it ends with the three other
   lines, and the problem names the lines that the round needs. In the last round posted

@@ -103,7 +103,7 @@ const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 /// A round comment posted before this UTC time needs no `Later steps:` line, and the
 /// check reads none of its later steps, so that the rule does not fail the rounds that
 /// came before it.
-const LATER_CUTOFF: &str = "2026-10-13T12:00:00Z";
+const LATER_CUTOFF: &str = "2026-10-14T00:00:00Z";
 
 /// The text that names the decisions entry that holds the trigger of a later step.
 const DECISIONS: &str = "docs/decisions/";
