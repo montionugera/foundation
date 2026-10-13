@@ -23,10 +23,13 @@
   (https://github.com/synnaxlabs/foundation/issues/1098#issuecomment-6050501586).
   A value is text that InfluxDB 1, 2, and 3 each store, so the writer writes no `u`
   integer. Until #2555, the kind writes only `f64` channels and refuses each other type
-  with `influx.sample-type`. Then a `u8`, `u16`, or `u32` sample is an `i` integer, and
-  the kind refuses a `u64` channel with `Error::Config` and `influx.unsigned` where the
-  run first learns the type, before it writes a line of that frame: InfluxDB 1 OSS
-  refuses `u`, and an `i64` holds no value above `i64::MAX`. When
+  with `influx.sample-type`, as the ONE NODE record, section 4, decided on
+  2026-10-13T00:50:41Z
+  (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217). Then a
+  `u8`, `u16`, or `u32` sample is an `i` integer, and the kind refuses a `u64` channel
+  with `Error::Config` and `influx.unsigned` where the run first learns the type, before
+  it writes a line of that frame: InfluxDB 1 OSS refuses `u`, and an `i64` holds no
+  value above `i64::MAX`. When
   `connector::Kind::check` gets the types of the channels that a reader selects, the
   refusal moves to plan. Lost: each unsigned value as `i`, with an error at a sample
   above `i64::MAX`, as one value then stops the ack until a person acts, also on

@@ -31,13 +31,14 @@
   request, keeps the batch, shows its text with `Context::error`, and sends the batch
   again after a `retry::Backoff` of 1 s to 1 min. A 204 clears the error. A batch whose
   request takes longer than the timeout of 10 s is sent again with no end, until #2558,
-  as `laptop.architect-2` decided
+  as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139570127). A
   restart does not send the batch in flight again (#274). With no `hold`, the next run
   reads from the live frames, so those lines are lost. With a `hold`, each open after
-  the loss ends `Ended::Behind` until #2553, as `laptop.architect-2` decided
+  the loss ends `Ended::Behind` until #2553, as `laptop.architect-2` decided on
+  2026-10-13T06:16:46Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139522602). Decided
-  by the ONE NODE record, section 4
+  by the ONE NODE record, section 4, on 2026-10-13T00:50:41Z
   (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217), and
   the plan that `laptop.architect-2` approved on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432).
