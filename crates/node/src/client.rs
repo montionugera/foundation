@@ -138,7 +138,9 @@ mod tests {
 
     use super::*;
 
+    // A heap pool under loom needs a loom model.
     #[test]
+    #[cfg(not(loom))]
     fn the_pool_holds_a_datagram() {
         let pool = block::Pool::heap(POOL);
         assert!(pool.largest() >= 1472, "{}", pool.largest());
