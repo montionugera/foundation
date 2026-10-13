@@ -300,6 +300,31 @@ fn waits_one_second_in_all_for_connectors_that_no_supervisor_started() {
 }
 
 #[test]
+fn replies_once_each_connector_gave_its_frame() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            connector("site.a", "steady", "edge"),
+            connector("site.b", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        supervise(&fixture, &node, &["site.a", "site.b"]).await;
+        let clock = fixture.sim.clock();
+        let start = clock.now();
+        let (head, _) = status(&node, "@admin").await;
+        let waited = clock.now() - start;
+        assert!(waited < Span::MILLISECOND, "waited {waited:?}");
+        let states = head["output"]["connectors"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|status| status["state"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(states, [json!("running"), json!("running")]);
+    });
+}
+
+#[test]
 fn leaves_out_each_connector_on_another_node() {
     let definitions = spec::founding::create(crate::common::ADMIN.public());
     founded(&["edge", "far"], definitions, |fixture, mesh| async move {
@@ -371,6 +396,36 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
         });
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn refuses_a_subject_that_may_read_only_some_status_channels() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            format!(
+                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
+                 subjects = \"sam\"\n  select = \"site.a.status.state\"\n  allow = \
+                 [read]\n}}\n"
+            ),
+            connector("site.a", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        let (head, _) = status(&node, "sam").await;
+        let message = "no access policy gives `sam` the action `read` on a request \
+                       that names no definition";
+        let expected = json!({
+            "errors": [{
+                "code": "ops.denied",
+                "message": message,
+                "fix": "Ask an admin of the region for an access policy that allows it",
+                "notes": [],
+            }],
+            "status": 1,
+        });
+        assert_eq!(head, expected);
     });
 }
 
