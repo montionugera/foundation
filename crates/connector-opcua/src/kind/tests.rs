@@ -659,6 +659,18 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
     assert_eq!(outcome.frames.len(), 11);
 }
 
+/// The error names the read of the first bad status, also past the first read.
+#[test]
+fn names_the_read_of_a_bad_status_past_the_first() {
+    let mut setup = Setup::three();
+    setup.reads[1].1 = "ns=3;s=Missing".into();
+    let outcome = run(setup, |scene| async move { scene.supervise(ms(350)).await });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let bad = "the node ns=3;s=Missing of `plant.b` gives BadNodeIdUnknown";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
+    assert_eq!(outcome.frames.len(), 0);
+}
+
 #[test]
 fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let lead = ms(500);
