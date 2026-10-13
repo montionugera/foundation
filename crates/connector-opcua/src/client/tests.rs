@@ -15,7 +15,7 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Client, Large, Nodes, Reads, answer, most};
+use super::{Client, Large, Nodes, Reads, SPLIT, answer, most};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
@@ -1099,6 +1099,23 @@ fn a_limit_of_0_from_a_server_is_no_limit() {
     assert_eq!(most(8192, 0, 9), 8 * 8168 - 7 * 7);
     assert_eq!(most(8192, 0, 7), 7 * 8168 - 6 * 7);
     assert_eq!(most(8192, 50_000, 0), 50_000);
+}
+
+/// No form of a key leaves more than [`SPLIT`] bytes empty at a chunk end. A new form
+/// does not build here until it gives the largest part of it that open62541 moves
+/// whole.
+#[test]
+fn no_form_of_a_key_leaves_more_than_split() {
+    let whole = |key: &Key| match key {
+        // The mask, the namespace, and the number of a NodeId by number.
+        Key::Number(_) => 7,
+        // The mask and the namespace: the string splits.
+        Key::Name(_) => 3,
+    };
+    let name = Name::new("a").expect("a name of 1 byte");
+    for key in [Key::Number(u32::MAX), Key::Name(name)] {
+        assert!(whole(&key) - 1 <= SPLIT, "{key:?}");
+    }
 }
 
 /// The most nodes that one request takes are read, also when open62541 leaves the end

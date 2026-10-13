@@ -29,8 +29,9 @@ const READS: u16 = 16;
 const HEADER: usize = 24;
 
 /// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
-/// last: 1 less than the largest value that it moves whole to the next chunk, a Double
-/// (8 bytes). A string splits, and a GUID key (19 bytes) would need 18.
+/// last. It moves a value of a fixed size whole to the next chunk and splits a string,
+/// so this is 1 less than the largest value of a fixed size in a Read today, a Double
+/// (8 bytes). A GUID key (19 bytes) would need 18.
 const SPLIT: usize = 7;
 
 const _: () = assert!(
