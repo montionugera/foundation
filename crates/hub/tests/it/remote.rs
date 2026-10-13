@@ -25,8 +25,8 @@ use wire::hub::{Credit, Head, Refusal, Reply, ends};
 
 use super::region::OTHER;
 use super::{
-    AREA, BODY_MAX, I64, NODE, POOL, TIME, TIME_B, Test, VALUE, fill, samples, unnamed,
-    without, write, write_series, write_wide,
+    AREA, BODY_MAX, I64, NODE, POOL, TIME, TIME_B, Test, VALUE, fill, names, samples,
+    unnamed, without, write, write_series, write_wide,
 };
 use crate::net::{HOME, PEER, PORT, own_pool, public_key, transport_sized};
 
@@ -208,6 +208,7 @@ async fn read_three(test: Test, steps: Arc<Steps>) {
     let mut got = Vec::new();
     for _ in 0..3 {
         let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
         got.push((samples(&received, 1), samples(&received, 2)));
     }
     let expected = vec![

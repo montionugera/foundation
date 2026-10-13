@@ -4,7 +4,8 @@
 //! The commit task is not counted. The home's `woken` after a commit, which that task
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
-//! a depth it reached before. An open of a reader of many channels copies no name.
+//! a depth it reached before. An open of a reader of many channels makes no
+//! allocation for each channel.
 //! This binary has no test harness: the count covers each thread, and a harness
 //! allocates on its own thread at any time.
 
@@ -163,7 +164,8 @@ async fn open(
 }
 
 /// An open of a reader of many channels makes fewer allocations than it has channels,
-/// once the first open grew the state of its channels: it copies no name.
+/// once the first open grew the state of its channels: it makes no allocation for each
+/// name.
 fn open_of_a_reader_of_many_channels() {
     const MANY: u64 = 1000;
     let mut sim = sim::Sim::new(sim::Config::default());
