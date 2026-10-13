@@ -199,24 +199,40 @@ fn an_update_of_the_ref_of_a_worktree_from_another_rebuilds() {
     }
 }
 
+/// The error output of a build of the probe at `root`. Panics when the build passes.
+fn refused(root: &Path) -> String {
+    let output = Command::new(env!("CARGO"))
+        .args(["build", "--offline", "--target-dir"])
+        .arg(root.join("target"))
+        .current_dir(root)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("spawn");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!output.status.success(), "{stderr}");
+    stderr
+}
+
 #[test]
 fn a_broken_ref_stops_the_build() {
     let root = create_probe("broken", &[]);
     commit(&root);
     std::fs::write(root.join(".git/refs/heads/main"), "broken\n").expect("write");
-    let output = Command::new(env!("CARGO"))
-        .args(["build", "--offline", "--target-dir"])
-        .arg(root.join("target"))
-        .current_dir(&root)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("spawn");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stderr}");
+    let stderr = refused(&root);
     assert!(
         stderr.contains("`git rev-parse HEAD` fails on a branch that has a commit"),
         "{stderr}"
     );
+}
+
+#[test]
+fn a_commit_that_is_not_40_hex_digits_stops_the_build() {
+    let root = create_probe("sha256", &["--object-format=sha256"]);
+    let head = commit(&root);
+    let stderr = refused(&root);
+    let expected =
+        format!("`git rev-parse HEAD` gives `{head}`, not 40 lowercase hex digits");
+    assert!(stderr.contains(&expected), "{stderr}");
 }
 
 #[test]
