@@ -69,8 +69,11 @@ exists only for tests and benchmarks and that a benchmark runs in its timed loop
 as a counting `GlobalAlloc`. A change to a bench file alone is not one.
 
 A PR gets at most 3 review rounds, so report every finding that you can show in this one
-report, never a few at a time. Put first each flaw that costs the most to change after
-merge: a wrong boundary, owner of state, or public surface.
+report, never a few at a time. In the run after round 3 (`review` skill, "Round cap"),
+your two lines cover the whole range after round 3 and also name each decision or public
+doc that states what a crate does and that the range changes. Mark each finding `defect`
+or `design flaw` as that section defines them. Put first each flaw that costs the most
+to change after merge: a wrong boundary, owner of state, or public surface.
 
 For each finding: file and line, the rule, why it matters here, and the fix. Most
 severe first. Report nothing you cannot point to in the code.

@@ -62,7 +62,7 @@ or a line range.
    each merge of `main` that the PR needs, then ask for the next round. After round 3,
    fix only each defect, with a test that fails without the fix, link each approval, OK,
    and link that "Done" asks for, and defer the rest. A design flaw is deferred only
-   with the OK of the crate's architect (`/review`, "Round cap").
+   with the OK of its design approver (`/review`, "Round cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.
