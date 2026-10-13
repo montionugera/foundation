@@ -16,7 +16,7 @@ use super::{Client, Reads, answer};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
-use crate::node::{Key, NAME, Node};
+use crate::node::{Key, NAME, Name, Node};
 use crate::server::Server;
 
 /// The port of the test server.
@@ -176,14 +176,15 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
-/// past ASCII, and a node whose name is its prefix holds another value.
+/// past ASCII, and a node whose name is its prefix holds another value. The name in
+/// namespace 0 holds no value.
 #[test]
 fn a_read_of_a_name_node_gives_its_value() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let named = |name: &str| Node {
                 namespace: 1,
-                key: Key::Name(name.to_owned()),
+                key: Key::Name(Name::new(name).expect("a name of 1 to 4096 bytes")),
             };
             peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
             peer.server.add_double(&named("plant.spike"), 3.5);
@@ -195,13 +196,20 @@ fn a_read_of_a_name_node_gives_its_value() {
                 client.read(&named("plant.spike")).await,
                 client.read(&named("plant.dip")).await,
                 client.read(&longest).await,
+                client
+                    .read(&Node {
+                        namespace: 0,
+                        ..named("plant.spike")
+                    })
+                    .await,
             );
             client.close().await;
             reads
         })
         .await
     });
-    let expected = (Ok(2.5), Ok(3.5), Err(Status::BAD_NODE_ID_UNKNOWN), Ok(4.5));
+    let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
+    let expected = (Ok(2.5), Ok(3.5), unknown, Ok(4.5), unknown);
     assert_eq!(reads, expected);
 }
 

@@ -16,7 +16,7 @@ use env::rng::Rng;
 
 use super::PORT;
 use crate::connection;
-use crate::node::{Key, Node};
+use crate::node::{Key, Name, Node};
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {
@@ -135,7 +135,7 @@ impl std::fmt::Debug for Server {
 fn named() -> Node {
     Node {
         namespace: 1,
-        key: Key::Name(NAME.to_owned()),
+        key: Key::Name(Name::new(NAME).expect("SpikeData is a name")),
     }
 }
 

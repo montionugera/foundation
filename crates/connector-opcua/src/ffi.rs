@@ -24,7 +24,9 @@ impl<'a> From<&'a crate::node::Node> for Node<'a> {
     fn from(node: &'a crate::node::Node) -> Self {
         let (number, name, length) = match &node.key {
             crate::node::Key::Number(number) => (*number, ptr::null(), 0),
-            crate::node::Key::Name(name) => (0, name.as_ptr(), name.len()),
+            crate::node::Key::Name(name) => {
+                (0, name.as_str().as_ptr(), name.as_str().len())
+            }
         };
         Self {
             namespace: node.namespace,

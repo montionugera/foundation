@@ -20,13 +20,30 @@ pub(crate) struct Node {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     Number(u32),
-    /// Of 1 to [`NAME`] bytes.
-    Name(String),
+    Name(Name),
 }
+
+/// The name of a node: 1 to [`NAME`] bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Name(String);
 
 /// The most bytes in the name of a node. A request with a name past the chunks of one
 /// message closes its channel.
 pub(crate) const NAME: usize = 4096;
+
+impl Name {
+    /// Gives `text` as a name, or `None` when it is empty or has more than [`NAME`]
+    /// bytes.
+    pub(crate) fn new(text: &str) -> Option<Self> {
+        (1..=NAME)
+            .contains(&text.len())
+            .then(|| Self(text.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Why a text is not a [`Node`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,10 +94,8 @@ impl FromStr for Node {
         };
         let key = if let Some(number) = rest.strip_prefix("i=") {
             Key::Number(digits(number)?)
-        } else if let Some(name) = rest.strip_prefix("s=")
-            && (1..=NAME).contains(&name.len())
-        {
-            Key::Name(name.to_owned())
+        } else if let Some(name) = rest.strip_prefix("s=") {
+            Key::Name(Name::new(name).ok_or(Error::Syntax)?)
         } else if rest.starts_with("g=") || rest.starts_with("b=") {
             return Err(Error::Form);
         } else {
@@ -92,7 +107,7 @@ impl FromStr for Node {
 
 /// Reads `text` as decimal digits only, so with no sign.
 fn digits<T: FromStr>(text: &str) -> Result<T, Error> {
-    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Error::Syntax);
     }
     text.parse().map_err(|_out_of_range| Error::Syntax)
@@ -105,7 +120,7 @@ impl fmt::Display for Node {
         }
         match &self.key {
             Key::Number(number) => write!(f, "i={number}"),
-            Key::Name(name) => write!(f, "s={name}"),
+            Key::Name(name) => write!(f, "s={}", name.as_str()),
         }
     }
 }
