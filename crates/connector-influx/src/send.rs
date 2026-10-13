@@ -13,8 +13,8 @@ use http::{Request, StatusCode, Uri};
 use hub::reader::{Ended, Position, Received};
 use types::time::Span;
 
-use crate::Config;
-use crate::batch::Batch;
+use crate::batch::{Batch, Taken};
+use crate::{CONFIRMED, Config};
 
 /// The longest a write request may take.
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
@@ -35,7 +35,7 @@ enum Event<'a> {
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch only after InfluxDB answers 204.
+/// lines, and acks a batch and counts its samples only after InfluxDB answers 204.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -48,16 +48,23 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         body_max: BODY_MAX,
     });
     let uri = write_uri(&config.address, &config.database);
+    let confirmed = ctx.count(CONFIRMED);
+    let mut sending = 0;
     let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
-            && let Some((body, position)) = batch.take()
+            && let Some(Taken {
+                body,
+                position,
+                samples,
+            }) = batch.take()
         {
             if body.is_empty() {
                 reader.ack(position);
             } else {
+                sending = samples;
                 flight.set(Some(send(&client, ctx, &uri, body.into(), position)));
             }
         }
@@ -88,6 +95,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             Event::Sent(position) => {
                 flight.set(None);
                 reader.ack(position);
+                confirmed.add(sending);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
