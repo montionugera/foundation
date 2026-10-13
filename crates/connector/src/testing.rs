@@ -51,8 +51,8 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
     Box::new(secret::store::File::new(files, Path::new(SECRETS)))
 }
 
-/// Writes `value` as the secret `name` in the store of [`create_config`] on
-/// `files`, in place of a value that it had.
+/// Writes `value` as the secret `name` in the store that [`create_secret_store`]
+/// makes on `files`, in place of a value that it had.
 ///
 /// # Panics
 ///

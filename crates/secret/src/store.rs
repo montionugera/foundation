@@ -64,7 +64,7 @@ impl fmt::Display for Error {
         match self {
             Self::Missing { detail } => write!(f, "the store has no value: {detail}"),
             Self::BadName { detail } => {
-                write!(f, "the store cannot hold the name: {detail}")
+                write!(f, "the store cannot hold the name. {detail}")
             }
             Self::Denied { detail } => write!(
                 f,
@@ -172,7 +172,7 @@ mod tests {
                 Error::BadName {
                     detail: "Rename the secret in lowercase letters".into(),
                 },
-                "the store cannot hold the name: Rename the secret in lowercase letters",
+                "the store cannot hold the name. Rename the secret in lowercase letters",
             ),
             (
                 Error::Denied {
