@@ -6,6 +6,7 @@
    build. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <open62541/client.h>
 #include <open62541/server_config_default.h>
 #pragma GCC diagnostic pop
 
@@ -97,4 +98,9 @@ void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
     config->tcpBufSize = buffer;
     config->tcpMaxMsgSize = message;
     config->tcpMaxChunks = chunks;
+}
+
+/* Sets the receive buffer size that `client` gives in its next HEL. */
+void shim_client_receive(UA_Client *client, UA_UInt32 size) {
+    UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
 }

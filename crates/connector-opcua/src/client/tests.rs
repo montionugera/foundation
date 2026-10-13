@@ -1,8 +1,10 @@
 use std::cell::Cell;
+use std::ffi::CString;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::task::Poll;
 
@@ -82,6 +84,22 @@ impl Peer<'_> {
     async fn connected(&mut self) -> Client {
         let url = self.url.clone();
         self.connect(&url).await.expect("the client connects")
+    }
+
+    /// Connects a client whose receive buffer is `receive` bytes.
+    async fn receiving(&mut self, receive: u32) -> Client {
+        let clock = Clock::clone(&self.clock);
+        let connections =
+            Manager::new(Clock::clone(&clock), self.net.clone(), &mut self.rng);
+        // SAFETY: the loop outlives the client, which the drop of the client deletes
+        // first.
+        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
+        let raw = NonNull::new(raw).expect("open62541 refused the client");
+        // SAFETY: the client lives and has not connected.
+        unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
+        let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+        let client = Client::start(clock, connections, raw, &url).await;
+        client.expect("the client connects")
     }
 }
 
@@ -972,6 +990,70 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
         most: 4 * 8168,
     };
     assert_eq!(past, Err(large));
+}
+
+/// A client with a receive buffer of 8192 bytes sends chunks of 65536 bytes and takes
+/// chunks of 8192 bytes: a request takes 8 chunks of 65512 bytes, and a good answer 8
+/// chunks of 8168 bytes, 1920 Doubles and not 1921.
+#[test]
+fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.receiving(8192).await;
+            let length = fitting(&client, 1 << 20);
+            let request = client.nodes(&[long(length + 1)]).map(drop);
+            let most = client.nodes(&vec![VALUE; 1920]).expect("1920 nodes fit");
+            let values = client.read(&most).await.map(<[_]>::to_vec);
+            let answer = client.nodes(&vec![VALUE; 1921]).map(drop);
+            client.close().await;
+            (request, values, answer, peer.value)
+        })
+        .await
+    });
+    let (request, values, answer, value) = reads;
+    let most = 8 * (65_536 - 24);
+    let large = Large {
+        bytes: most + 1,
+        most,
+    };
+    assert_eq!(request, Err(large));
+    assert_eq!(values, Ok(vec![Ok(value); 1920]));
+    let large = Large {
+        bytes: 36 + 1921 * 34,
+        most: 8 * 8168,
+    };
+    assert_eq!(answer, Err(large));
+}
+
+/// The limits of the channel live only in the copy that the key gives.
+#[test]
+fn the_key_of_the_limits_gives_no_value_without_a_copy() {
+    let (status, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let client = peer.connected().await;
+            let mut value = vec![0_u64; ffi::types()[ffi::VARIANT].size().div_ceil(8)];
+            let key = ffi::test::QualifiedName {
+                namespace: 0,
+                name: ffi::Bytes {
+                    length: 13,
+                    data: b"messageLimits".as_ptr().cast_mut(),
+                },
+            };
+            // SAFETY: the client lives, `value` has room for a `UA_Variant`, and the
+            // key outlives the call.
+            let status = Status(unsafe {
+                ffi::test::UA_Client_getConnectionAttribute(
+                    client.raw.as_ptr(),
+                    key,
+                    value.as_mut_ptr().cast(),
+                )
+            });
+            client.close().await;
+            status
+        })
+        .await
+    });
+    assert_eq!(status, Status::BAD_NOT_SUPPORTED);
 }
 
 #[test]

@@ -192,6 +192,12 @@ unsafe extern "C" {
         message: u32,
         chunks: u32,
     );
+    pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
+    pub(crate) fn UA_Client_getConnectionAttribute(
+        client: *mut super::Client,
+        key: QualifiedName,
+        value: *mut c_void,
+    ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;

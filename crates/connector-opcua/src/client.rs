@@ -3,7 +3,7 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::task::Poll;
@@ -102,6 +102,17 @@ impl Client {
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
+        Self::start(clock, connections, raw, &url).await
+    }
+
+    /// Connects `raw`, a client of the loop of `connections` that has not connected, as
+    /// [`Client::connect`] does.
+    async fn start(
+        clock: Clock,
+        connections: Manager,
+        raw: NonNull<ffi::Client>,
+        url: &CStr,
+    ) -> Result<Self, Status> {
         // SAFETY: the client lives.
         let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
         let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
