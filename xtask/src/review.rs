@@ -430,6 +430,13 @@ fn unended(
     decision_change: Change<'_>,
 ) -> Result<Option<String>, String> {
     let (number, end) = (round.number, &round.end);
+    if place == Place::Off && number >= ROUNDS {
+        return Ok(Some(format!(
+            "review round {number} ends at {end}, not at the head {head}. Post a round \
+             comment numbered {number} that checks the merge of the base that is not \
+             clean, and ends at the head."
+        )));
+    }
     if place == Place::Off {
         return Ok(Some(format!(
             "review round {number} ends at {end}, not at the head {head}. A commit \

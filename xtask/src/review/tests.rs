@@ -1026,13 +1026,26 @@ fn passes_a_range_that_ends_before_only_clean_merges_without_text_fixes() {
 
 #[test]
 fn fails_a_range_that_ends_off_the_first_parent_chain() {
+    let round = second().replace("..c77c67d7", "..0badc0de");
+    assert_eq!(
+        check(&reviewed(vec![bot(&round)])),
+        vec![format!(
+            "review round 2 ends at 0badc0de, not at the head {HEAD}. A commit after \
+             the round needs a new round; only a clean merge of the base, or a commit \
+             that changes no code after a round with a `Text fixes:` line, does not."
+        )]
+    );
+}
+
+#[test]
+fn a_round_3_that_ends_off_the_first_parent_chain_asks_for_a_merge_check() {
     let round = ROUND.replace("..c77c67d7", "..0badc0de");
     assert_eq!(
         check(&reviewed(vec![bot(&round)])),
         vec![format!(
-            "review round 3 ends at 0badc0de, not at the head {HEAD}. A commit after \
-             the round needs a new round; only a clean merge of the base, or a commit \
-             that changes no code after a round with a `Text fixes:` line, does not."
+            "review round 3 ends at 0badc0de, not at the head {HEAD}. Post a round \
+             comment numbered 3 that checks the merge of the base that is not clean, \
+             and ends at the head."
         )]
     );
 }
