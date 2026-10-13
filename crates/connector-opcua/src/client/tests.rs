@@ -1103,18 +1103,19 @@ fn a_limit_of_0_from_a_server_is_no_limit() {
 
 /// No form of a key leaves more than [`SPLIT`] bytes empty at a chunk end. A new form
 /// does not build here until it gives the largest part of it that open62541 moves
-/// whole.
+/// whole, and that part does not build past `SPLIT + 1`.
 #[test]
 fn no_form_of_a_key_leaves_more_than_split() {
-    let whole = |key: &Key| match key {
+    // Each `const` runs when the test builds, also with no key of its form.
+    let check = |key: &Key| match key {
         // The mask, the namespace, and the number of a NodeId by number.
-        Key::Number(_) => 7,
-        // The mask and the namespace: the string splits.
-        Key::Name(_) => 3,
+        Key::Number(_) => const { assert!(7 - 1 <= SPLIT) },
+        // The length of the string of a NodeId by name: its bytes split.
+        Key::Name(_) => const { assert!(4 - 1 <= SPLIT) },
     };
     let name = Name::new("a").expect("a name of 1 byte");
     for key in [Key::Number(u32::MAX), Key::Name(name)] {
-        assert!(whole(&key) - 1 <= SPLIT, "{key:?}");
+        check(&key);
     }
 }
 
@@ -1330,8 +1331,8 @@ type Read = Result<Vec<Result<f64, Status>>, Status>;
 
 /// Gives two reads of [`VALUE`] by one client through a relay that gives the first
 /// Read response `recount` empty results when it is set, the request handle of each
-/// Read response, the value of [`VALUE`], and the capacity of the values of the client
-/// after the first read.
+/// Read response, the value of [`VALUE`], and the count of values that the first
+/// answer copies into the client.
 fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
@@ -1345,19 +1346,19 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
                     handles.push(handle);
                 }
             };
-            let (reads, room) = relayed(&node, rewrite, async {
+            let (reads, copied) = relayed(&node, rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);
                 let values = client.reads.values.take();
-                let room = values.capacity();
+                let copied = values.len();
                 client.reads.values.set(values);
                 let second = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
-                ([first, second], room)
+                ([first, second], copied)
             })
             .await;
-            (reads, handles, peer.value, room)
+            (reads, handles, peer.value, copied)
         })
         .await
     })
@@ -1377,13 +1378,13 @@ fn each_read_of_one_request_has_its_own_handle() {
 
 /// An answer with a value for more or fewer nodes than its read fails, copies none of
 /// them, and the next read gives the value of each node. The test reads the buffer of
-/// the client, as no call gives its size.
+/// the client, as no call shows a copy into it.
 #[test]
 fn an_answer_of_another_count_of_values_fails() {
     for count in [0, 2] {
-        let (reads, _, value, room) = read_twice(Some(count));
+        let (reads, _, value, copied) = read_twice(Some(count));
         assert_eq!(
-            (reads, room),
+            (reads, copied),
             ([Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])], 0),
             "{count} results"
         );
