@@ -2560,6 +2560,26 @@ mod tests {
         assert_eq!(got, want);
     }
 
+    #[test]
+    fn keeps_a_count_across_the_runs_of_one_call() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let statuses = tally(counted(move |ctx: Context<()>| {
+            let first = runs.fetch_add(1, Ordering::Relaxed) == 0;
+            async move {
+                if first {
+                    ctx.count("samples").add(2);
+                    return Err(Error::Retry("busy".into()));
+                }
+                ctx.count("samples").add(3);
+                Ok(())
+            }
+        }));
+        let last = statuses
+            .last()
+            .map(|(_, samples, _)| (samples[2], samples[4]));
+        assert_eq!(last, Some((1, 5)), "one restart, then 2 + 3: {statuses:?}");
+    }
+
     /// A kind with the count `samples`. Its run spawns a task that sets the count to
     /// each of 1 to `n`, `gap` apart, and returns `Ok` once that task ended.
     fn relay(n: u64, gap: Span) -> impl Kind<Config = ()> {

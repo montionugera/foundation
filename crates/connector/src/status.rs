@@ -194,6 +194,14 @@ impl Count {
         self.values.counts[self.at].1.set(value);
         self.values.stage();
     }
+
+    /// Adds `value` to the count, which holds across the runs of the connector until
+    /// the supervisor stops. Saturates at `u64::MAX`. The status gives it as
+    /// [`Count::set`] does. Never blocks.
+    pub fn add(&self, value: u64) {
+        let count = &self.values.counts[self.at].1;
+        self.set(count.get().saturating_add(value));
+    }
 }
 
 /// What a connector's run does, as its `state` channel gives it.
@@ -1011,6 +1019,27 @@ mod tests {
                     [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, staged: \
                     true, .. })";
         assert_eq!(format!("{status:?}"), want);
+    }
+
+    #[test]
+    fn adds_to_the_value_that_a_set_gave_and_stages_it() {
+        let status = Status::new(vec![name("samples"), name("errors")]);
+        let (samples, errors) = (status.count("samples"), status.count("errors"));
+        samples.set(3);
+        status.0.staged.set(false);
+        samples.add(4);
+        errors.add(1);
+        let values: Vec<_> = (status.0.counts.iter()).map(|(_, n)| n.get()).collect();
+        assert_eq!((values, status.0.staged.get()), (vec![7, 1], true));
+    }
+
+    #[test]
+    fn saturates_an_add_at_the_largest_count() {
+        let status = Status::new(vec![name("samples")]);
+        let samples = status.count("samples");
+        samples.set(u64::MAX - 1);
+        samples.add(2);
+        assert_eq!(status.0.counts[0].1.get(), u64::MAX);
     }
 
     #[test]
