@@ -21,8 +21,12 @@
   `Response`" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; approved
   by `laptop.architect`, 2026-10-13T08:48:14Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141847854). `--json`
-  and the MCP tool later give the `Output` of the reply as it is, with no change to the
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141847854).
+  `foundation status --json` writes the `Output` of the reply as one line of JSON, as
+  `plan --json` does (the person, 2026-10-13T13:35Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6146776054, by item 3
+  of https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141554758). The
+  MCP tool later gives the `Output` of the reply as it is, with no change to the
   operation, the type, or the reply. The connectors are each connector of the spec in
   use whose `node` is this node, in name order. For each, `serve` opens a `Latest`
   reader of its status index and each channel on it through the node's hub, with the
@@ -53,8 +57,7 @@
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
   #1028 checks each open of the hub, this check moves there. Deferred to
-  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
-  `--json` (https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141794585),
+  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
   and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a
   second reply; `status` asks the supervisors, a second source of status with its own
   access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
