@@ -273,10 +273,9 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
     });
 }
 
-/// `b.hcl` is not UTF-8, so a read of it gives [`Unread::NotUtf8`] and a read that
-/// stops at the bytes left gives [`Error::LargeRequest`].
+/// `b.hcl` is not UTF-8, so [`Unread::NotUtf8`] shows that `plan` checked its text.
 #[test]
-fn plan_reads_each_file_up_to_the_bytes_that_the_files_before_it_leave() {
+fn plan_gives_large_request_once_the_files_that_it_read_pass_the_most() {
     solo(|host, mesh| async move {
         let paths = host.paths();
         let half = most() / 2 + 1;
@@ -305,6 +304,31 @@ fn plan_reads_each_file_up_to_the_bytes_that_the_files_before_it_leave() {
             "within it"
         );
         assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
+/// `config` take.
+#[test]
+fn plan_of_a_directory_after_a_large_file_gives_read() {
+    solo(|host, mesh| async move {
+        let paths = host.paths();
+        for n in 0..10 {
+            let path = PathBuf::from(format!("config/f{n}.hcl"));
+            paths.write(&path, b"").expect("a write");
+        }
+        let a = "#".repeat(most() - 100);
+        paths
+            .write(Path::new("a.hcl"), a.as_bytes())
+            .expect("a write");
+        let remote = Remote::with(create_node(mesh), Mode::Unsent);
+        let alone = remote.plan(&paths, &[PathBuf::from("a.hcl")], None).await;
+        assert_eq!(alone.err(), Some(Error::Node(lost())), "a.hcl fits");
+        let files = [PathBuf::from("a.hcl"), PathBuf::from("config")];
+        let planned = remote.plan(&paths, &files, None).await;
+        let path = PathBuf::from("config");
+        let cause = Unread::Directory;
+        assert_eq!(planned.err(), Some(Error::Read { path, cause }));
     });
 }
 

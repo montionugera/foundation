@@ -71,11 +71,14 @@ where
     if !not_utf8.is_empty() {
         return Err(Error::config(not_utf8, &error::Paths::default()));
     }
-    let mut left = most();
+    let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
     for path in files {
-        let bytes = file(paths, path, left)?;
-        left -= bytes.len();
+        let bytes = file(paths, path)?;
+        total += bytes.len();
+        if total > most() {
+            return Err(Error::LargeRequest);
+        }
         let text = String::from_utf8(bytes).map_err(|_not_utf8| Error::Read {
             path: path.clone(),
             cause: Unread::NotUtf8,
@@ -119,7 +122,7 @@ where
         let not_utf8 = vec![front_end::not_utf8(plan)];
         return Err(Error::config(not_utf8, &error::Paths::default()));
     };
-    let bytes = file(paths, plan, most())?;
+    let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes), reach).await?;
     let (effect, rest) = serve::answer::<Effect>(&reply)?;
     if !rest.is_empty() {
@@ -139,13 +142,13 @@ fn most() -> usize {
         .expect("invariant: the bound of a body fits a usize")
 }
 
-/// The bytes of the file at `path`, of at most `most` bytes.
-fn file(paths: &Paths, path: &Path, most: usize) -> Result<Vec<u8>, Error> {
+/// The bytes of the file at `path`, of at most the bytes of one request.
+fn file(paths: &Paths, path: &Path) -> Result<Vec<u8>, Error> {
     let unread = |cause| Error::Read {
         path: path.to_owned(),
         cause,
     };
-    match paths.read(path, most) {
+    match paths.read(path, most()) {
         Ok(Found::File(bytes)) => Ok(bytes),
         Ok(Found::Large) => Err(Error::LargeRequest),
         Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
