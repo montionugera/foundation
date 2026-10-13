@@ -38,13 +38,13 @@
   2026-10-13T16:27:23Z): "Cap reviews at 3 rounds. Make sure that agents are deeply
   aware that they only get 3 review rounds, so they need to bacth findings." and "We
   need to spent less time nitpicking bullshit, and more time focused on finding deep
-  architectural flaws and problems." The person set the cap and the design approver
-  of a PR that `laptop.director` wrote, relayed by `laptop.monitor`
-  (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6155838835):
-  "Isn't it my job to check the directors rule change?" (2026-10-13T21:43:43Z), then
-  "I think it should be your job to do it" (2026-10-13T21:43:50Z). The person still
-  approves the merge of a rule PR (`docs/factory.md`, "Merge path"). The director
-  decided these parts:
+  architectural flaws and problems." The person set the cap and the design approver of a
+  PR that `laptop.director` wrote, relayed by `laptop.monitor`
+  (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6155838835): "Isn't
+  it my job to check the directors rule change?" (2026-10-13T21:43:43Z), then "I think
+  it should be your job to do it" (2026-10-13T21:43:50Z). The person still approves the
+  merge of a rule PR (`docs/factory.md`, "Merge path"). The director decided these
+  parts:
   - the rest
     (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6150355931,
     2026-10-13T16:35:25Z);
