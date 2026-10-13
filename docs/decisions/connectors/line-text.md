@@ -2,8 +2,8 @@
   `Measurement::field` for a field key, accept only text that InfluxDB 1, 2, and 3 each
   store as written, in each part (measurement name, tag key, tag value, field key).
   They refuse the rest at construction, so the error reaches the config diagnostic in
-  place of a partial write that InfluxDB answers with 204 or drops. The architect moved
-  the field key to `Measurement::field` on 2026-10-13T07:36:47Z
+  place of a partial write that InfluxDB answers with 204 or drops. `laptop.architect-2`
+  moved the field key to `Measurement::field` on 2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). One
   set of refused characters holds for every part: a backslash, a
   newline, a carriage return, a tab, NUL, U+FFFD, and each character outside the
