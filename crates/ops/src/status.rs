@@ -5,13 +5,13 @@ use std::future::poll_fn;
 use std::pin::pin;
 use std::task::Poll;
 
-use hub::reader::{Config, Mode};
+use hub::reader::{self, Config, Mode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::name::{Name, Selector};
-use types::time::Span;
+use types::time::{Monotonic, Span};
 
 use crate::Node;
 use crate::error::{Error, escape_controls};
@@ -58,8 +58,9 @@ pub(crate) enum State {
     Restarting,
     Stopped,
     Ending,
-    /// No frame of the status came within a second, or the newest frame holds no
-    /// status: the supervisor has not started the connector.
+    /// No frame of the status came within a second, the newest frame holds no
+    /// status, the hub does not define the status channels yet, or an apply removed
+    /// them: the supervisor has not started the connector, or it ended.
     Unknown,
 }
 
@@ -118,19 +119,20 @@ pub(crate) fn placed<'a>(
 }
 
 /// The status of each of `placed`, read through the hub of `node` as `subject`. All
-/// reads run at once, and the call waits at most [`WAIT`].
+/// reads run at once, and the call waits until [`WAIT`] after `asked`.
 ///
 /// # Errors
 ///
 /// [`Error::ChannelRead`] for the first of `placed` whose reader does not open or
-/// ends.
+/// ends, other than as [`newest`] gives `None`.
 pub(crate) async fn read(
     node: &Node,
     subject: &Name,
     placed: &[Placed<'_>],
+    asked: Monotonic,
 ) -> Result<Output, Error> {
     let reads = placed.iter().map(|placed| newest(node, subject, placed));
-    let readings = before(reads, node.clock.sleep(WAIT)).await;
+    let readings = before(reads, node.clock.sleep_until(asked + WAIT)).await;
     let connectors = placed
         .iter()
         .zip(readings)
@@ -139,11 +141,12 @@ pub(crate) async fn read(
     Ok(Output { connectors })
 }
 
-/// The newest status of `placed`, or `None` when the frame holds no status.
+/// The newest status of `placed`, or `None` when the frame holds no status, the hub
+/// does not define the channels yet, or an apply removed one.
 ///
 /// # Errors
 ///
-/// [`Error::ChannelRead`] when the reader does not open or ends.
+/// [`Error::ChannelRead`] when the reader does not open or ends for another cause.
 async fn newest(
     node: &Node,
     subject: &Name,
@@ -162,11 +165,16 @@ async fn newest(
         connector: placed.name.clone(),
         message,
     };
-    let opened = node.hub.reader(config).await;
-    let mut reader = opened.map_err(|error| failed(error.to_string()))?;
-    let received = reader.next().await;
-    let received = received.map_err(|ended| failed(ended.to_string()))?;
-    Ok(connector::status::Reading::of(&received))
+    let mut reader = match node.hub.reader(config).await {
+        Ok(reader) => reader,
+        Err(reader::Error::Empty) => return Ok(None),
+        Err(error) => return Err(failed(error.to_string())),
+    };
+    match reader.next().await {
+        Ok(received) => Ok(connector::status::Reading::of(&received)),
+        Err(reader::Ended::Removed(_)) => Ok(None),
+        Err(ended) => Err(failed(ended.to_string())),
+    }
 }
 
 /// The output of each of `futures`, which run at once, or `None` for each that has

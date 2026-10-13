@@ -179,6 +179,15 @@ async fn applied(fixture: &Fixture, node: &Node, text: &str) {
     fixture.hub.set_definitions(spec.definitions.iter());
 }
 
+/// Applies `text` on `node`, with no change to the hub of the node.
+async fn applied_alone(node: &Node, text: &str) {
+    let files = vec![(PathBuf::from("site.hcl"), text.to_owned())];
+    let (plan, _) = node.plan(files).await.expect("a plan");
+    node.apply(Path::new("site.plan"), &plan)
+        .await
+        .expect("an apply");
+}
+
 /// Runs a supervisor of each connector `names` of the spec of `node`, as the node
 /// does, until the run ends.
 async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
@@ -440,28 +449,65 @@ fn refuses_a_subject_that_may_read_only_some_status_channels() {
 }
 
 #[test]
-fn fails_when_the_hub_does_not_define_the_status_channels() {
+fn gives_unknown_when_the_hub_does_not_define_the_status_channels_yet() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = connector("site.a", "steady", "edge");
-        let files = vec![(PathBuf::from("site.hcl"), text)];
-        let (plan, _) = node.plan(files).await.expect("a plan");
-        node.apply(Path::new("site.plan"), &plan)
-            .await
-            .expect("an apply");
+        applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected = json!({
-            "errors": [{
-                "code": "ops.channel-read",
-                "message": "the status channels of the connector `site.a` did not \
-                            read: the selector matches no channel",
-                "fix": "Fix the cause in the message, then ask for the status again",
-                "notes": [],
-            }],
-            "status": 1,
-        });
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_unknown_for_a_connector_whose_channels_go_during_the_read() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            connector("site.a", "steady", "edge"),
+            connector("site.b", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let spec = node.mesh().spec().await.expect("a spec");
+        let kept: BTreeMap<_, _> = spec
+            .definitions
+            .iter()
+            .filter(|(name, _)| !name.as_str().starts_with("site.b"))
+            .map(|(name, definition)| (name.clone(), definition.clone()))
+            .collect();
+        let (clock, hub) = (fixture.sim.clock(), fixture.hub.clone());
+        fixture.tasks.spawn(async move {
+            clock
+                .sleep(Span::from_nanos(Span::SECOND.nanos() / 10))
+                .await;
+            hub.set_definitions(&kept);
+        });
+        let (head, _) = status(&node, "@admin").await;
+        let connectors = [unknown("site.a", "steady"), unknown("site.b", "steady")];
+        assert_eq!(head, json!({ "output": { "connectors": connectors } }));
+    });
+}
+
+#[test]
+fn waits_one_second_from_the_request_also_while_the_node_reads_a_new_spec() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let a = connector("site.a", "steady", "edge");
+        applied(&fixture, &node, &a).await;
+        let extra = (0..500).map(|n| {
+            format!("channel \"site.a.extra{n}.time\" {{ kind = \"index\" }}\n")
+        });
+        let text: Vec<_> = std::iter::once(a).chain(extra).collect();
+        applied_alone(&node, &text.concat()).await;
+        let clock = fixture.sim.clock();
+        let start = clock.now();
+        let (head, _) = status(&node, "@admin").await;
+        assert_eq!(clock.now() - start, Span::SECOND);
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
     });
 }
 

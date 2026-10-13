@@ -34,8 +34,10 @@ mod tests;
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
 /// each connector on whose status channels `subject` has `read`, and gives
 /// `ops.denied` when it shows none, also when the node places no connector. It waits at
-/// most 1 s for the status channels, and gives `ops.channel-read` when the reader of a
-/// connector does not open or ends.
+/// most 1 s from the request for the status channels. A connector whose status
+/// channels the hub does not define yet, or that an apply removes, is `unknown`.
+/// `status` gives `ops.channel-read` when the reader of a connector does not open or
+/// ends for another cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -339,6 +341,7 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
 /// The reply of `status`: its output. It leaves out each connector on whose status
 /// channels `subject` has no `read`.
 async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
+    let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
     let mut placed = status::placed(spec.definitions(), &node.name);
@@ -351,6 +354,6 @@ async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
     if placed.is_empty() {
         return Err(check.denied(Action::Read, On::Nothing));
     }
-    let output = status::read(node, subject, &placed).await?;
+    let output = status::read(node, subject, &placed, asked).await?;
     Ok(Reply::line(&Done { output: &output })?)
 }
