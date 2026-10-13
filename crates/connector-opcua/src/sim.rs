@@ -2,11 +2,8 @@
 //! with no security, that serves Double variables and records each read that it
 //! answers.
 
-#![expect(unsafe_code, reason = "open62541 is a C library")]
-
 use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use env::clock::Clock;
@@ -17,6 +14,7 @@ use types::time::Monotonic;
 
 use crate::connection::Manager;
 use crate::node::Node;
+use crate::server::Server;
 
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;
@@ -122,8 +120,9 @@ pub struct Served {
 }
 
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
-/// then closes the server. Each namespace from 2 to the highest of `variables` has the
-/// URI `urn:foundation:sim:{index}`. Call it on a thread that `env` started.
+/// then closes the server. It adds each namespace from 2 to the highest of
+/// `variables`. Each stream of the server has the options of `listener`. Call it on a
+/// thread that `env` started.
 ///
 /// # Panics
 ///
@@ -137,30 +136,28 @@ pub async fn serve(
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let manager =
-        ManuallyDrop::new(Manager::accepting(Clock::clone(&clock), net, listener, rng));
-    // SAFETY: the serve below deletes the server before the manager drops, and a
-    // panic leaks both.
-    let mut server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
+    let manager = Manager::accepting(Clock::clone(&clock), net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();
-    let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
-    for namespace in 2..=top {
-        let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
-            .expect("invariant: a URI with no NUL");
-        let added = server.add_namespace(&uri);
-        assert_eq!(added, namespace, "open62541 refused a namespace");
-    }
-    for (index, node) in nodes.iter().enumerate() {
-        let (variables, clock) = (Variables::clone(variables), Clock::clone(&clock));
-        server.add_source(node, move || {
-            let read = variables.read(index, clock.now());
-            (read.value, read.quality)
-        });
-    }
-    server.serve(&manager, until).await;
-    drop(ManuallyDrop::into_inner(manager));
+    let add = |server: &mut Server| {
+        let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
+        for namespace in 2..=top {
+            let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
+                .expect("invariant: a URI with no NUL");
+            let added = server.add_namespace(&uri);
+            assert_eq!(added, namespace, "open62541 refused a namespace");
+        }
+        for (index, node) in nodes.iter().enumerate() {
+            let (variables, clock) =
+                (Variables::clone(variables), Clock::clone(&clock));
+            server.add_source(node, move || {
+                let read = variables.read(index, clock.now());
+                (read.value, read.quality)
+            });
+        }
+    };
+    Server::serve(manager, SESSIONS, add, until).await;
 }
 
 #[cfg(test)]

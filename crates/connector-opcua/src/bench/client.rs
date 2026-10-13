@@ -1,10 +1,7 @@
 //! Runs a test server of open62541 with clients that each have their own connection
 //! manager, as the kind of OPC UA uses them.
 
-#![expect(unsafe_code, reason = "open62541 is a C library")]
-
 use std::cell::RefCell;
-use std::mem::ManuallyDrop;
 use std::net::{IpAddr, SocketAddr};
 
 use env::clock::Clock;
@@ -53,29 +50,23 @@ impl Server {
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
         let local = SocketAddr::new(address, PORT);
-        let manager = ManuallyDrop::new(
-            connection::Manager::listening(
-                Clock::clone(&clock),
-                Net::clone(&net),
-                local,
-                u32::from(SESSIONS),
-                &mut rng,
-            )
-            .expect("the port is free"),
-        );
-        // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks the manager.
-        let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(&VALUE, DOUBLE);
+        let manager = connection::Manager::listening(
+            Clock::clone(&clock),
+            Net::clone(&net),
+            local,
+            u32::from(SESSIONS),
+            &mut rng,
+        )
+        .expect("the port is free");
         let this = Self {
             clock,
             net,
             url: format!("opc.tcp://{local}"),
             rng: RefCell::new(rng),
         };
-        let value = server.serve(&manager, body(&this)).await;
-        drop(ManuallyDrop::into_inner(manager));
-        value
+        let add =
+            |server: &mut crate::server::Server| server.add_double(&VALUE, DOUBLE);
+        crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
 
     /// Connects a client to the server, on its own connection manager.
