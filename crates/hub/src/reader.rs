@@ -628,8 +628,8 @@ struct Names {
     /// The end in `text` of the name of each channel.
     ends: Box<[usize]>,
     text: Box<str>,
-    /// Made on the first name of each key set, so a reader that gives no name does no
-    /// work for them.
+    /// Made again on the first name after each change of key set, so a reader that
+    /// gives no name does no work for them.
     places: RefCell<Places>,
 }
 
