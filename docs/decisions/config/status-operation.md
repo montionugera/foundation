@@ -85,7 +85,7 @@
   supersedes the name of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). When
   `foundation rename` (A4) keeps the key of a renamed channel, the PR that builds it
-  checks this again. That check finds another key, sample type, or index under a status
+  checks this again. The check of the key and the sample type finds another key, sample type, or index under a status
   name, but not a channel that `config` carries over with its key and definition (the
   gap above): `laptop.architect-2` (2026-10-13T03:32:04Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137583351, which
@@ -94,11 +94,9 @@
   of the channels is inside item 1 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437:
   `laptop.architect-2` (2026-10-13T03:45:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137750716). A frame
-  of a run of an earlier spec with fewer counts is `unknown` by that count too, until
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137750716). A frame of a run of an earlier spec that lacks a count of the spec in use is `unknown` by that count too, until
   the run of the spec in use writes its start frame: `laptop.architect-2`
-  (2026-10-13T04:05:46Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480). A frame
+  (2026-10-13T04:05:46Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137996480, and 2026-10-13T04:47:16Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6138447379, which extends it to each missing count). A frame
   of a run of an earlier spec whose counts are each count of the spec in use and more
   holds each status channel of the spec in use, so it gives its state until the run of
   the spec in use writes its start frame. That state can be `running`, because the
