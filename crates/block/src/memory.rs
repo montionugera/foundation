@@ -58,16 +58,12 @@ pub unsafe trait Memory: Send {
 pub struct Refused;
 
 /// Memory from the heap, usable in full from the start. It never gives pages back.
-/// It serves tests and simulation, where no OS mapping exists, and memory whose
-/// blocks hold a secret (`Heap::erased`).
+/// It serves tests and simulation, where no OS mapping exists.
 pub struct Heap {
     /// What the allocator gave. `base` rounds it up to [`ALIGN`].
     allocation: NonNull<u8>,
     layout: Layout,
     base: NonNull<u8>,
-    /// For `Heap::erased`, the first [`ALIGN`] bytes and the ranges that `commit` got,
-    /// which the drop writes zero over.
-    committed: Option<RefCell<Vec<Range<usize>>>>,
 }
 
 impl Heap {
@@ -103,24 +99,7 @@ impl Heap {
             allocation,
             layout,
             base,
-            committed: None,
         }
-    }
-
-    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does. At
-    /// the drop, it writes zero over the first [`ALIGN`] bytes and over each range
-    /// that [`Memory::commit`] got, with writes that the compiler keeps. For memory
-    /// whose blocks hold a secret.
-    ///
-    /// # Panics
-    ///
-    /// If `len` is 0 or too large to allocate.
-    #[must_use]
-    pub fn erased(len: usize) -> Self {
-        let mut heap = Self::new(len);
-        let first = iter::once(0..ALIGN.min(len));
-        heap.committed = Some(RefCell::new(first.collect()));
-        heap
     }
 }
 
@@ -138,22 +117,7 @@ unsafe impl Memory for Heap {
         self.layout.size() - ALIGN
     }
 
-    fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
-        let Some(committed) = &self.committed else {
-            return Ok(());
-        };
-        let end = offset.checked_add(len).filter(|&end| end <= self.len());
-        let end = end.expect("a commit lies in the memory");
-        let mut committed = committed.borrow_mut();
-        // A pool commits each class from the start of its span up, so a new range
-        // touches the one before it, and the record stays at one range per class.
-        let touched = committed
-            .iter_mut()
-            .find(|range| range.start <= end && offset <= range.end);
-        match touched {
-            Some(range) => *range = range.start.min(offset)..range.end.max(end),
-            None => committed.push(offset..end),
-        }
+    fn commit(&self, _offset: usize, _len: usize) -> Result<(), Refused> {
         Ok(())
     }
 
@@ -168,19 +132,82 @@ impl fmt::Debug for Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        if let Some(committed) = self.committed.take() {
-            for range in committed.into_inner() {
-                // SAFETY: each range lies in the `len` bytes at `base`, which are in
-                // the allocation.
-                let start = unsafe { self.base.add(range.start) };
-                // SAFETY: the bytes are initialized, since `new` zeroed them, and
-                // nothing else holds them at the drop.
-                let bytes =
-                    unsafe { slice::from_raw_parts_mut(start.as_ptr(), range.len()) };
-                bytes.zeroize();
-            }
-        }
         // SAFETY: `new` got `allocation` from the allocator with this layout.
         unsafe { dealloc(self.allocation.as_ptr(), self.layout) };
+    }
+}
+
+/// Heap memory, as [`Heap`] gives it, for blocks that hold a secret. At the drop, it
+/// writes zero over the first [`ALIGN`] bytes and over each range that
+/// [`Memory::commit`] got, with writes that the compiler keeps, before it frees them.
+pub struct Erased {
+    heap: Heap,
+    /// The first [`ALIGN`] bytes and the ranges that `commit` got.
+    committed: RefCell<Vec<Range<usize>>>,
+}
+
+impl Erased {
+    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is 0 or too large to allocate.
+    #[must_use]
+    pub fn new(len: usize) -> Self {
+        Self {
+            heap: Heap::new(len),
+            committed: RefCell::new(iter::once(0..ALIGN.min(len)).collect()),
+        }
+    }
+}
+
+// SAFETY: each method but `commit` is the one of `Heap`, and `commit` changes no byte.
+unsafe impl Memory for Erased {
+    fn base(&self) -> NonNull<u8> {
+        self.heap.base()
+    }
+
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
+        let end = offset.checked_add(len).filter(|&end| end <= self.len());
+        let end = end.expect("a commit lies in the memory");
+        let mut committed = self.committed.borrow_mut();
+        // A pool commits each class from the start of its span up, so a new range
+        // touches the one before it, and the record stays at one range per class.
+        let touched = committed
+            .iter_mut()
+            .find(|range| range.start <= end && offset <= range.end);
+        match touched {
+            Some(range) => *range = range.start.min(offset)..range.end.max(end),
+            None => committed.push(offset..end),
+        }
+        Ok(())
+    }
+
+    fn purge(&self, offset: usize, len: usize) {
+        self.heap.purge(offset, len);
+    }
+}
+
+impl fmt::Debug for Erased {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Erased").field("len", &self.len()).finish()
+    }
+}
+
+impl Drop for Erased {
+    fn drop(&mut self) {
+        for range in self.committed.get_mut().drain(..) {
+            // SAFETY: each range lies in the `len` bytes at `base`.
+            let start = unsafe { self.heap.base().add(range.start) };
+            // SAFETY: the bytes are initialized, since `Heap::new` zeroed them, and
+            // nothing else holds them at the drop.
+            let bytes =
+                unsafe { slice::from_raw_parts_mut(start.as_ptr(), range.len()) };
+            bytes.zeroize();
+        }
     }
 }

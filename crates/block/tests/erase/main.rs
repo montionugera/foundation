@@ -1,4 +1,4 @@
-//! A pool on `Heap::erased` leaves the bytes of its blocks in no freed allocation. The
+//! A pool on `Erased` leaves the bytes of its blocks in no freed allocation. The
 //! scan covers every thread, so this binary has no test harness.
 
 #![expect(unsafe_code, reason = "a scanning allocator implements `GlobalAlloc`")]
@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-use block::{ALIGN, Config, Heap, Memory, Pool};
+use block::{ALIGN, Config, Erased, Heap, Memory, Pool};
 
 const PLAIN: [u8; 32] = [0x5a; 32];
 
@@ -54,20 +54,17 @@ fn main() {
             held, 1,
             "a dropped `Heap::new` frees the bytes ({len}, {at})"
         );
-        let held = freed(Heap::erased, len, at);
-        assert_eq!(
-            held, 0,
-            "a dropped `Heap::erased` erases them ({len}, {at})"
-        );
+        let held = freed(Erased::new, len, at);
+        assert_eq!(held, 0, "a dropped `Erased` erases them ({len}, {at})");
     }
 }
 
-/// Drops a pool on the memory of `heap` while it lends two blocks of different size
-/// classes, one of 32 bytes and one of `len` bytes, then the blocks. Block `at` holds
-/// `PLAIN` at its end. Gives the count of freed allocations that hold `PLAIN`.
-fn freed(heap: fn(usize) -> Heap, len: usize, at: usize) -> u64 {
+/// Drops a pool on the memory that `memory` gives while it lends a block of 32 bytes
+/// and one of `len` bytes, then the blocks. Block `at` holds `PLAIN` at its end. Gives
+/// the count of freed allocations that hold `PLAIN`.
+fn freed<M: Memory + 'static>(memory: fn(usize) -> M, len: usize, at: usize) -> u64 {
     let config = Config::new(1 << 14).expect("the budget fits");
-    let memory = heap(config.reservation());
+    let memory = memory(config.reservation());
     ALLOCATOR.size.store(memory.len() + ALIGN, Relaxed);
     let before = ALLOCATOR.held.load(Relaxed);
     let pool = Pool::new(config, memory);

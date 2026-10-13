@@ -24,7 +24,7 @@
   file (`laptop.architect-2`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6150793141), so a
   value added heals the run at its next restart. Each get reads into a pool on
-  `block::Heap::erased`, which writes zero at the drop over each range that the pool
+  `block::Erased`, which writes zero at the drop over each range that the pool
   committed, also after a failed or dropped read (`laptop.architect`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798 and
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377). The
