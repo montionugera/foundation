@@ -1,8 +1,9 @@
 //! One run of the open62541 event loop with due timers allocates nothing, in C or in
 //! Rust, and the fuzz round trip makes a fixed count of allocations, and none after a
 //! decode that fails. A read through the connection manager makes a fixed count of
-//! allocations, and a drive with nothing ready makes none. The count covers each
-//! thread, so this binary has no test harness.
+//! allocations, and a drive with nothing ready makes none. A tick of the `opcua` kind
+//! allocates only what its read allocates. The count covers each thread, so this
+//! binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -10,6 +11,8 @@ use std::future::{Future as _, poll_fn};
 use std::pin::pin;
 
 use connector_opcua::bench::{Client, Manager, client};
+#[path = "common/kind.rs"]
+mod kind;
 use env::rng::Rng;
 use sim::Sim;
 use types::time::Span;
@@ -25,6 +28,7 @@ fn main() {
     a_failed_decode_stops_the_round_trip();
     a_read_through_the_manager_allocates_a_fixed_count();
     a_read_of_a_client_allocates_a_fixed_count();
+    a_tick_of_the_kind_allocates_what_its_read_allocates();
 }
 
 fn sim() -> (Sim, env::clock::Clock, Rng) {
@@ -191,5 +195,15 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
             counts,
             "reads 2 to 100 of {count} of {variable:?}"
         );
+    }
+}
+
+/// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
+/// allocates for its count of nodes, and nothing more: the frame and its write
+/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
+    for (nodes, read) in [(1, 6), (64, 69)] {
+        let ticks = kind::ticks(nodes, 100, |poll| ALLOCATOR.count(poll).1);
+        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
     }
 }

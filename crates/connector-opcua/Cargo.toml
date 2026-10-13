@@ -66,5 +66,10 @@ name = "client"
 harness = false
 test = true
 
+[[bench]]
+name = "kind"
+harness = false
+test = true
+
 [lints]
 workspace = true
