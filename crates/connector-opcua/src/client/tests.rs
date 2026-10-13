@@ -234,6 +234,62 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
 }
 
 #[test]
+fn a_read_of_nodes_gives_the_value_of_each_in_order() {
+    let ((values, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let unknown = Node {
+                key: Key::Number(1001),
+                ..VALUE
+            };
+            let nodes = Nodes::new(&[TIME, VALUE, unknown, VALUE]);
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
+            client.close().await;
+            (values, peer.value)
+        })
+        .await
+    });
+    let expected = [
+        Err(Status::BAD_TYPE_MISMATCH),
+        Ok(value),
+        Err(Status::BAD_NODE_ID_UNKNOWN),
+        Ok(value),
+    ];
+    assert_eq!(values, Ok(expected.to_vec()));
+}
+
+/// The late answer of a read of two nodes that timed out, after `dropped` dropped
+/// reads. It lands while the next read waits for its own answer, or, at the bound of
+/// reads in flight, while that read waits to send.
+fn read_after_late_answer(
+    dropped: u16,
+) -> (Result<Vec<Result<f64, Status>>, Status>, f64) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.paused.set(true);
+            drop_reads(&mut client, dropped).await;
+            let late = Nodes::new(&[TIME, VALUE]);
+            assert_eq!(client.read(&late).await, Err(Status::BAD_TIMEOUT));
+            peer.paused.set(false);
+            let values = client.read(&Nodes::new(&[VALUE])).await.map(<[_]>::to_vec);
+            client.close().await;
+            (values, peer.value)
+        })
+        .await
+    });
+    out
+}
+
+#[test]
+fn the_late_answer_of_a_read_does_not_change_the_next_read() {
+    for dropped in [0, 15] {
+        let (values, value) = read_after_late_answer(dropped);
+        assert_eq!(values, Ok(vec![Ok(value)]), "{dropped} dropped");
+    }
+}
+
+#[test]
 fn a_connect_with_no_listener_fails_with_its_status() {
     let (status, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
