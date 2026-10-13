@@ -249,7 +249,7 @@
   40 lowercase hex digits. The script watches the paths that `git rev-parse --git-path`
   gives for `HEAD` and its ref, and, only while that ref has no file of its own,
   `packed-refs` and the nearest folder above the ref, since git reads a ref file first.
-  In a reftable repository, it watches the `reftable` folder in their place. So a
+  In a reftable repository, it watches in their place the `reftable` folder of the worktree, which holds its `HEAD`, and that of the repository, which holds each branch. So a
   commit, a checkout, and a branch switch in a worktree rebuild `ops`, and a build with
   no change does not. MCP `serverInfo` keeps the version alone (`laptop.architect-2`,
   2026-10-13T21:55:47Z,
