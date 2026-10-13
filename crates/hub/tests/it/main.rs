@@ -709,6 +709,19 @@ fn panics_on_the_name_of_an_entry_outside_the_view() {
 }
 
 #[test]
+#[should_panic(expected = "the entry 3 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_past_the_set() {
+    run(47, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(received.set().entries().len());
+    });
+}
+
+#[test]
 fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
     run(45, |test| async move {
         let config = reader::Config {
