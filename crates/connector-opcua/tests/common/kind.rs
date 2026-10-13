@@ -36,10 +36,21 @@ const PERIOD: Span = Span::from_nanos(100_000_000);
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
 
-/// The `opcua` kind, with `measure` around each poll of its run.
+/// What a run of [`Measured`] measures, and where it puts what the measure gives.
+enum Of {
+    /// Each poll of the run of the `opcua` kind.
+    Polls(Polls),
+    /// Each of `count` writes of a frame of its reads, with no server.
+    Writes {
+        count: usize,
+        measures: Arc<Mutex<Vec<u64>>>,
+    },
+}
+
+/// The `opcua` kind, with `measure` around each poll of its run or each write.
 struct Measured<M> {
     measure: M,
-    polls: Polls,
+    of: Of,
 }
 
 impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
@@ -63,16 +74,27 @@ impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
     }
 
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
-        let (kind, clock) = (connector_opcua::Kind::default(), ctx.clock().clone());
-        let mut run = pin!(kind.run(ctx));
-        poll_fn(|cx| {
-            let mut poll = Poll::Pending;
-            let value = (self.measure)(&mut || poll = run.as_mut().poll(cx));
-            let mut polls = self.polls.lock().expect("no panic under the lock");
-            polls.push((clock.now(), value));
-            poll
-        })
-        .await
+        match &self.of {
+            Of::Polls(polls) => {
+                let kind = connector_opcua::Kind::default();
+                let clock = ctx.clock().clone();
+                let mut run = pin!(kind.run(ctx));
+                poll_fn(|cx| {
+                    let mut poll = Poll::Pending;
+                    let value = (self.measure)(&mut || poll = run.as_mut().poll(cx));
+                    let mut polls = polls.lock().expect("no panic under the lock");
+                    polls.push((clock.now(), value));
+                    poll
+                })
+                .await
+            }
+            Of::Writes { count, measures } => {
+                let writes = connector_opcua::bench::kind::writes;
+                let written = writes(&ctx, *count, &self.measure).await?;
+                *measures.lock().expect("no panic under the lock") = written;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -97,7 +119,7 @@ pub(crate) fn run(
     let polls = Polls::default();
     let kind = Measured {
         measure,
-        polls: Arc::clone(&polls),
+        of: Of::Polls(Arc::clone(&polls)),
     };
     let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -139,40 +161,6 @@ pub(crate) fn run(
     )
 }
 
-/// The `opcua` kind, with a run that writes `count` frames of its reads with no
-/// server and keeps what `measure` gives for each.
-struct Writes<M> {
-    count: usize,
-    measure: M,
-    measures: Arc<Mutex<Vec<u64>>>,
-}
-
-impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind for Writes<M> {
-    type Config = Config;
-
-    fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
-        connector_opcua::Kind::default().parse(config)
-    }
-
-    fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
-        connector_opcua::Kind::default().check(config)
-    }
-
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
-    async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
-        let writes = connector_opcua::bench::kind::writes;
-        let measures = writes(&ctx, self.count, &self.measure).await?;
-        *self.measures.lock().expect("no panic under the lock") = measures;
-        Ok(())
-    }
-}
-
 /// Writes `count` frames of a connector that reads `nodes` Double variables, with no
 /// server, and gives what `measure` gives for the check of the values and the write
 /// of each frame. `measure` calls the work that it gets once.
@@ -186,10 +174,12 @@ pub(crate) fn writes(
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
 ) -> Vec<u64> {
     let measures = Arc::<Mutex<Vec<u64>>>::default();
-    let kind = Writes {
-        count,
+    let kind = Measured {
         measure,
-        measures: Arc::clone(&measures),
+        of: Of::Writes {
+            count,
+            measures: Arc::clone(&measures),
+        },
     };
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
