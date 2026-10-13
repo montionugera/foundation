@@ -48,7 +48,11 @@ pub enum Run {
 /// at most one line on `output`, flushed, until `input` ends. A line longer than 1 MiB
 /// gets an Invalid Request error. A closed `output` ends the run with no error,
 /// because its reader has left.
-pub fn cli(
+#[expect(
+    clippy::unused_async,
+    reason = "`plan` and `apply` wait on a node in #1744 PR 2e-2"
+)]
+pub async fn cli(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,
     mut output: impl Write,

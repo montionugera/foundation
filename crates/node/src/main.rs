@@ -30,13 +30,13 @@ const BUDGET: Code = Code::new("node.budget");
 const PORT: Code = Code::new("node.port");
 const FAILED: Code = Code::new("node.failed");
 
+/// Runs the command line on a shard that ends before a node starts, then the node of
+/// `foundation start`.
 fn main() -> ExitCode {
-    let run = ops::cli(
-        std::env::args_os(),
-        io::stdin().lock(),
-        io::stdout().lock(),
-        io::stderr().lock(),
-    );
+    let run = match command_line() {
+        Ok(run) => run,
+        Err(exit) => return exit,
+    };
     ExitCode::from(match run {
         Run::Exit(status) => status,
         Run::Start(start) => match node(&start) {
@@ -44,6 +44,48 @@ fn main() -> ExitCode {
             Err(failure) => start.fail(&failure, io::stderr().lock()),
         },
     })
+}
+
+/// Runs the command line on a shard of its own. The shard ends before this returns, so
+/// a node that `foundation start` runs gets every shard, and its first thread takes
+/// the signals. When the shard does not start, or panics in a debug build, this writes
+/// why to standard error as text, since no command parsed `--json`, and gives exit
+/// status 1.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "a shard that ends with no panic has sent its run"
+)]
+fn command_line() -> Result<Run, ExitCode> {
+    let shards = os::shards().map_err(unrun)?;
+    let (ran, run) = mpsc::channel();
+    let config = env::shards::Config {
+        name: "cli".into(),
+        core: None,
+    };
+    let shard = shards.start(config, move |_| async move {
+        let run = ops::cli(
+            std::env::args_os(),
+            io::stdin().lock(),
+            io::stdout().lock(),
+            io::stderr().lock(),
+        )
+        .await;
+        ran.send(run).expect("invariant: `main` keeps the receiver");
+    });
+    shard.map_err(unrun)?.join().map_err(unrun)?;
+    Ok(run
+        .try_recv()
+        .expect("invariant: the shard sends its run before it ends"))
+}
+
+/// Writes `error`, why the command line did not run, to standard error, and gives exit
+/// status 1.
+fn unrun(error: impl std::fmt::Display) -> ExitCode {
+    // A failed write leaves the status as the only report.
+    io::stderr()
+        .write_all(format!("foundation: {error}\n").as_bytes())
+        .unwrap_or(());
+    ExitCode::FAILURE
 }
 
 /// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
