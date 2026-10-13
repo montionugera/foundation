@@ -33,7 +33,7 @@ const VARIABLES: [(&str, &str); 3] = [
 const TICKS: usize = 50;
 
 /// The fewest reads of each variable that the server answers in the [`TICKS`] changes,
-/// so that a node that reads too few fails the test: half the ticks of `rate = 10`.
+/// so that a node that reads too few fails the test: half the ticks of `rate = "10Hz"`.
 const READS: usize = TICKS / 2;
 
 /// The MVP target of the time error bound.
@@ -69,7 +69,7 @@ fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
 }
 
 /// The reads that the server answered of one variable, from the first to the last
-/// change, and the samples that InfluxDB holds of them.
+/// read before the last change, and the samples that InfluxDB holds of them.
 #[derive(Debug)]
 struct Trace {
     served: Vec<Sample>,
@@ -148,11 +148,11 @@ fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
 }
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
-/// `served` (by variable) from the first to the end of the changes. Each sample stored
-/// is the read nearest to it in time, with its value, within [`BOUND`], so a lost read
-/// fails even when the next read has its value. `served` is taken after `stored`, so it
-/// holds the read of each sample stored. Else `Err` with the first sample that is not
-/// its read.
+/// `served` (by variable) to the first read of the last value. Sample `k` stored has
+/// the value of read `k`, at a time within [`BOUND`] of it. The value steps at each
+/// change, so a lost or extra sample puts a later sample on a read of another value.
+/// `served` is taken after `stored`. Else `Err` with the first sample that is not its
+/// read.
 fn caught_up(
     reads: &[Reads],
     mut served: BTreeMap<String, Vec<Sample>>,
@@ -162,13 +162,16 @@ fn caught_up(
         .iter()
         .map(|reads| {
             let channel = reads.channel;
-            let changed = reads.changed;
             let served = served.remove(reads.variable).unwrap_or_default();
             let stored = stored.remove(channel).unwrap_or_default();
-            for (k, sample) in stored.iter().take(changed).enumerate() {
-                let read = &served[k];
-                if nearest(&served, sample.time) != k
-                    || sample.value.to_bits() != read.value.to_bits()
+            let last = served[reads.changed - 1].value.to_bits();
+            let end = (served.iter())
+                .position(|read| read.value.to_bits() == last)
+                .expect("the last read has a value");
+            for (k, (sample, read)) in
+                stored.iter().zip(&served).take(end + 1).enumerate()
+            {
+                if sample.value.to_bits() != read.value.to_bits()
                     || (sample.time - read.time).nanos().abs() > BOUND.nanos()
                 {
                     return Err(format!(
@@ -177,33 +180,20 @@ fn caught_up(
                     ));
                 }
             }
-            if stored.len() < changed {
+            if stored.len() <= end {
                 return Err(format!(
-                    "{channel}: InfluxDB holds {} of the {changed} reads",
-                    stored.len()
+                    "{channel}: InfluxDB holds {} of the {} reads",
+                    stored.len(),
+                    end + 1
                 ));
             }
             Ok(Trace {
-                served: served[..changed].to_vec(),
-                stored: stored[..changed].to_vec(),
+                served: served[..end].to_vec(),
+                stored: stored[..end].to_vec(),
                 unchanged: reads.unchanged,
             })
         })
         .collect()
-}
-
-/// The index of the read of `served`, in order of time, nearest to `time`, the
-/// earlier of two at the same distance.
-fn nearest(served: &[Sample], time: Stamp) -> usize {
-    let after = served.partition_point(|read| read.time < time);
-    let distance = |i: usize| (served[i].time - time).nanos().abs();
-    match after {
-        0 => 0,
-        after if after == served.len() || distance(after - 1) <= distance(after) => {
-            after - 1
-        }
-        after => after,
-    }
 }
 
 /// The count `key` of the connector `name` in `status`.
@@ -226,21 +216,21 @@ fn counts_above(rig: &Rig, floor: (u64, u64)) -> Result<(u64, u64), String> {
 }
 
 /// Three reads of `plant.spike` before the changes, three in them, and one after the
-/// last change, 3 s apart.
+/// last change, at 10 Hz.
 fn create_served() -> Vec<Sample> {
     let values = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0];
     (10..)
         .zip(values)
         .map(|(at, value)| Sample {
-            time: Stamp::from_nanos(at * 3 * Span::SECOND.nanos()),
+            time: Stamp::from_nanos(at * 100 * Span::MILLISECOND.nanos()),
             value,
             quality: None,
         })
         .collect()
 }
 
-/// [`caught_up`] of `stored` against [`create_served`].
-fn check(stored: &[Sample]) -> Result<Vec<Trace>, String> {
+/// [`caught_up`] of `stored` against `served`.
+fn check(served: &[Sample], stored: &[Sample]) -> Result<Vec<Trace>, String> {
     let reads = [Reads {
         variable: "ns=3;s=SpikeData",
         channel: "plant.spike",
@@ -249,26 +239,47 @@ fn check(stored: &[Sample]) -> Result<Vec<Trace>, String> {
     }];
     caught_up(
         &reads,
-        BTreeMap::from([("ns=3;s=SpikeData".into(), create_served())]),
+        BTreeMap::from([("ns=3;s=SpikeData".into(), served.to_vec())]),
         BTreeMap::from([("plant.spike".into(), stored.to_vec())]),
     )
 }
 
+/// `samples`, each `by` later.
+fn later(samples: &[Sample], by: Span) -> Vec<Sample> {
+    let later = |sample: &Sample| Sample {
+        time: sample.time + by,
+        ..*sample
+    };
+    samples.iter().map(later).collect()
+}
+
 #[test]
-fn a_trace_holds_each_read_from_the_first_to_the_last_change() {
+fn a_trace_holds_each_read_to_the_last_change_within_the_bound() {
     let served = create_served();
-    let mut bound = served.clone();
-    bound[0].time = bound[0].time + BOUND;
-    for stored in [&served, &bound] {
-        let traces = check(stored).expect("caught up");
+    let mut tick = served.clone();
+    tick[3].time = tick[3].time + Span::from_nanos(90 * Span::MILLISECOND.nanos());
+    let cases = [
+        (served.clone(), served.clone()),
+        (served.clone(), later(&served, BOUND)),
+        (
+            served.clone(),
+            later(&served, Span::from_nanos(-BOUND.nanos())),
+        ),
+        (
+            tick.clone(),
+            later(&tick, Span::from_nanos(6 * Span::MILLISECOND.nanos())),
+        ),
+    ];
+    for (served, stored) in cases {
+        let traces = check(&served, &stored).expect("caught up");
         let pairs = (traces.iter())
             .map(|trace| (&trace.served[..], &trace.stored[..], trace.unchanged));
-        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..6], &stored[..6], 3)]);
+        assert_eq!(pairs.collect::<Vec<_>>(), [(&served[..5], &stored[..5], 3)]);
     }
 }
 
 #[test]
-fn a_lost_or_late_read_fails_the_trace() {
+fn a_lost_extra_or_late_sample_fails_the_trace() {
     let served = create_served();
     let not_read = |k, stored: &Sample| {
         format!(
@@ -282,24 +293,29 @@ fn a_lost_or_late_read_fails_the_trace() {
     let cases = [
         (
             served[1..].to_vec(),
-            not_read(0, &served[1]),
+            not_read(2, &served[3]),
             "the first read lost",
         ),
         (
             [&served[..1], &served[2..]].concat(),
-            not_read(1, &served[2]),
+            not_read(2, &served[3]),
             "a read before the changes lost",
         ),
         (
-            [&served[..5], &served[6..]].concat(),
-            not_read(5, &served[6]),
-            "the last read lost",
+            [&served[..4], &served[5..]].concat(),
+            not_read(4, &served[5]),
+            "the last read before the last change lost",
+        ),
+        (
+            [&served[..2], &served[1..]].concat(),
+            not_read(3, &served[2]),
+            "an extra sample",
         ),
         (late.clone(), not_read(0, &late[0]), "a late time"),
         (early.clone(), not_read(0, &early[0]), "an early time"),
         (
-            served[..4].to_vec(),
-            "plant.spike: InfluxDB holds 4 of the 6 reads".into(),
+            served[..5].to_vec(),
+            "plant.spike: InfluxDB holds 5 of the 6 reads".into(),
             "not caught up",
         ),
         (
@@ -309,7 +325,7 @@ fn a_lost_or_late_read_fails_the_trace() {
         ),
     ];
     for (stored, error, case) in cases {
-        assert_eq!(check(&stored).unwrap_err(), error, "{case}");
+        assert_eq!(check(&served, &stored).unwrap_err(), error, "{case}");
     }
 }
 
