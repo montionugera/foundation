@@ -1173,6 +1173,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-opcua",
  "counting",
  "crc32c",
  "divan",
