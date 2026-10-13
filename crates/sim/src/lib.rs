@@ -399,16 +399,20 @@ impl Sim {
         Err(Error::Stuck { threads, seed })
     }
 
-    /// Polls one ready task, picked at random. A panic in the poll, or in a drop of
-    /// the futures that end with the task, ends the task's thread and the run.
+    /// Polls one ready task, picked at random, with the log of its thread as the
+    /// default dispatch. A panic in the poll, or in a drop of the futures that end
+    /// with the task, ends the task's thread and the run.
     fn step(&mut self) -> Result<(), Error> {
         let (task, thread, start) = lock(&self.shared).pick(&mut self.scheduler);
+        let log = lock(&self.shared).log(thread);
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
-            if self.poll(task, thread, start).is_pending() {
-                return Vec::new();
-            }
-            let done = lock(&self.shared).finish(task, thread);
-            self.drop_ended(done)
+            tracing::dispatcher::with_default(&log, || {
+                if self.poll(task, thread, start).is_pending() {
+                    return Vec::new();
+                }
+                let done = lock(&self.shared).finish(task, thread);
+                self.drop_ended(done)
+            })
         }));
         lock(&self.shared).release();
         if matches!(&run, Ok(panics) if panics.is_empty()) {

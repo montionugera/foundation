@@ -46,6 +46,13 @@ Rules:
    https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6030590185). Lost:
    `buffer` in the `hub` row (hub code could call the ring), the hub tests in `node`,
    and a builder that takes a `sim::node::Node`, which adds an edge on `sim`.
+9. Layer 2 and 3 crates may take `tracing` and write events. `env` takes it only for
+   the type `tracing::Dispatch` of `Shards::logged` and `Threads::logged`, and writes no
+   event. No other layer 1 crate takes it. Only `node` builds the dispatch of the log;
+   a test may build its own (`laptop.architect`, #2606,
+   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155167343;
+   `laptop.architect-2`, #2606,
+   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582).
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;

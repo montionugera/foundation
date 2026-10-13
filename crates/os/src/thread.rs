@@ -5,11 +5,13 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread;
 
 use env::thread::{Error, Handle, Panicked};
+use tracing::Dispatch;
 
 /// Starts OS thread `name`, whose OS name is the part of `name` before the first NUL.
 /// On it, `build` makes the runtime of the thread and `serve` runs it, returning
 /// whether the thread panicked. Blocks until `build` returns, and gives its error.
 /// The join of the handle gives [`Panicked`] when `serve` returns `true` or panics.
+/// `log` is the default dispatch of the thread for its whole life.
 #[expect(
     clippy::disallowed_methods,
     reason = "os starts threads, and a start blocks until its thread runs"
@@ -18,6 +20,7 @@ pub(crate) fn start<R>(
     name: String,
     build: impl FnOnce(&str) -> Result<R, Error> + Send + 'static,
     serve: impl FnOnce(R) -> bool + Send + 'static,
+    log: Dispatch,
 ) -> Result<Handle, Error> {
     let (report, started) = mpsc::sync_channel(1);
     let own = name.clone();
@@ -26,7 +29,10 @@ pub(crate) fn start<R>(
         .map_or(name.as_str(), |(head, _)| head);
     let thread = thread::Builder::new()
         .name(os_name.to_owned())
-        .spawn(move || run(&own, build, serve, &report))
+        .spawn(move || {
+            let _log = tracing::dispatcher::set_default(&log);
+            run(&own, build, serve, &report)
+        })
         .map_err(|e| Error::Start {
             name: name.clone(),
             reason: e.to_string(),

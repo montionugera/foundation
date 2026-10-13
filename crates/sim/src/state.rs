@@ -13,6 +13,7 @@ use env::shards::Main;
 use env::tasks::Task;
 use env::thread::Panicked;
 use env::threads::Body;
+use tracing::Dispatch;
 use types::time::{Monotonic, Span, Stamp};
 
 use crate::files::{Files, Held};
@@ -98,6 +99,8 @@ struct Thread {
     node: usize,
     main: u64,
     outcome: Option<Outcome>,
+    /// The default dispatch of each poll of a task of the thread.
+    log: Dispatch,
 }
 
 /// How a thread ended.
@@ -384,6 +387,7 @@ impl State {
         node: usize,
         name: String,
         start: Start,
+        log: Dispatch,
     ) -> (u64, Option<Start>) {
         let thread = self.key();
         let main = self.key();
@@ -396,6 +400,7 @@ impl State {
                 node,
                 main,
                 outcome,
+                log,
             },
         );
         if crashing {
@@ -409,6 +414,10 @@ impl State {
 
     pub(crate) fn name(&self, thread: u64) -> String {
         self.threads[&thread].name.clone()
+    }
+
+    pub(crate) fn log(&self, thread: u64) -> Dispatch {
+        self.threads[&thread].log.clone()
     }
 
     /// How `thread` ended, or `None` while it runs.

@@ -3,6 +3,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use tracing::Dispatch;
+
 use crate::tasks::Task;
 use crate::thread::{Error, Handle};
 
@@ -25,7 +27,10 @@ pub type Body = Box<dyn FnOnce() -> Task + Send>;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Threads(Arc<dyn Driver>);
+pub struct Threads {
+    driver: Arc<dyn Driver>,
+    log: Dispatch,
+}
 
 impl Threads {
     /// Wraps a driver from `os` or `sim`.
@@ -36,7 +41,27 @@ impl Threads {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Arc::new(driver))
+        Self {
+            driver: Arc::new(driver),
+            log: Dispatch::none(),
+        }
+    }
+
+    /// A clone that starts each thread with `log` as its dispatch, so each `tracing`
+    /// event of the thread goes to `log`. A value from [`Threads::new`] drops each
+    /// event.
+    ///
+    /// ```
+    /// fn logged(threads: &env::threads::Threads) -> env::threads::Threads {
+    ///     threads.logged(tracing::Dispatch::none())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn logged(&self, log: Dispatch) -> Self {
+        Self {
+            driver: Arc::clone(&self.driver),
+            log,
+        }
     }
 
     /// Starts a thread named `name`. `body` runs on the new thread, and the thread
@@ -69,7 +94,8 @@ impl Threads {
     where
         F: Future<Output = ()> + 'static,
     {
-        self.0.start(name, Box::new(|| Box::pin(body())))
+        let body: Body = Box::new(|| Box::pin(body()));
+        self.driver.start(name, body, self.log.clone())
     }
 }
 
@@ -89,10 +115,12 @@ impl fmt::Debug for Threads {
 pub trait Driver: Send + Sync {
     /// Starts a thread with an executor for one future, and runs `body()` on it to
     /// completion, with the rules of [`Threads::start`]. `name` may hold any
-    /// character; `os` gives the OS the part before the first NUL byte.
+    /// character; `os` gives the OS the part before the first NUL byte. The call of
+    /// `body` and each poll of its future run with `log` as the default dispatch of
+    /// the thread.
     ///
     /// # Errors
     ///
     /// As [`Threads::start`].
-    fn start(&self, name: &str, body: Body) -> Result<Handle, Error>;
+    fn start(&self, name: &str, body: Body, log: Dispatch) -> Result<Handle, Error>;
 }
