@@ -60,9 +60,10 @@ pub(crate) enum State {
     Restarting,
     Stopped,
     Ending,
-    /// No frame of the status came within a second, the newest frame holds no
-    /// status, the hub does not hold the status channels of the spec yet, or an apply
-    /// removed them: the supervisor has not started the connector, or it ended.
+    /// No frame of the status came within a second, the newest frame holds no status or
+    /// lacks a status channel of the spec, the hub does not hold the status channels of
+    /// the spec yet, or an apply removed them: the supervisor has not started the
+    /// connector, or it ended.
     Unknown,
 }
 
@@ -170,8 +171,9 @@ pub(crate) async fn read(
     Ok(Output { connectors })
 }
 
-/// The newest status of `placed`, or `None` when the frame holds no status, the hub
-/// does not hold the channels of the spec yet, or an apply removed one.
+/// The newest status of `placed`, or `None` when the frame holds no status or lacks a
+/// status channel of the spec, the hub does not hold the channels of the spec yet, or
+/// an apply removed one.
 ///
 /// # Errors
 ///
