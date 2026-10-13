@@ -294,8 +294,7 @@ impl Frames {
                 lost.add(groups().map(|group| samples[to_usize(group)]).sum());
                 return Ok(None);
             }
-            Err(frame::Error::Pool(error)) => return Err(error.into()),
-            Err(error) => panic!("invariant: the series follow the key set: {error}"),
+            Err(error) => return Err(error.into()),
         };
         fill(&mut draft, fills, values, stamp, groups());
         let outcomes = writer.write(Label::Path(Path::Live), draft)?;
