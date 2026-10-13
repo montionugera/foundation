@@ -134,7 +134,11 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, rest) = status(&node, "@admin").await;
-        assert!(clock.now() - start < Span::SECOND, "the frame came");
+        let waited = clock.now() - start;
+        assert!(
+            waited < Span::SECOND,
+            "the reply waited {waited} for the frame, not under 1 s"
+        );
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
         assert_eq!(head, expected);
@@ -166,7 +170,11 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, rest) = status(&node, "@admin").await;
-        assert!(clock.now() - start < Span::SECOND, "the frame came");
+        let waited = clock.now() - start;
+        assert!(
+            waited < Span::SECOND,
+            "the reply waited {waited} for the frame, not under 1 s"
+        );
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "shifted")] } });
         assert_eq!(head, expected);
@@ -479,7 +487,11 @@ fn gives_unknown_for_a_frame_with_no_status() {
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, _) = status(&node, "@admin").await;
-        assert!(clock.now() - start < Span::SECOND, "the frame came");
+        let waited = clock.now() - start;
+        assert!(
+            waited < Span::SECOND,
+            "the reply waited {waited} for the frame, not under 1 s"
+        );
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
         assert_eq!(head, expected);
