@@ -1,12 +1,13 @@
 use std::cell::Cell;
 use std::ffi::CString;
-use std::future::{Future as _, poll_fn};
+use std::future::poll_fn;
+use std::io::IoSlice;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 use env::clock::Clock;
 use env::net::{Net, Tcp, tcp};
@@ -651,12 +652,7 @@ async fn connect_to_listener(
     let listen = tcp::Listen {
         local,
         backlog: 4,
-        options: tcp::Options {
-            send_buffer_bytes: 1 << 16,
-            recv_buffer_bytes: 1 << 16,
-            unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
-            delayed: false,
-        },
+        options: options(),
     };
     let mut listener = node.net().listen(&listen).expect("the port is free");
     let clock = node.clock();
@@ -672,6 +668,16 @@ async fn connect_to_listener(
     })
     .await;
     (status.expect("the connect fails"), clock.now() - start)
+}
+
+/// The options of a stream of a test.
+fn options() -> tcp::Options {
+    tcp::Options {
+        send_buffer_bytes: 1 << 16,
+        recv_buffer_bytes: 1 << 16,
+        unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
+        delayed: false,
+    }
 }
 
 #[test]
@@ -1161,96 +1167,191 @@ fn a_read_of_the_nodes_of_another_client_panics() {
             let first = peer.connected().await;
             let mut second = peer.connected().await;
             let nodes = first.nodes(&[VALUE]).expect("one node fits");
-            let _ = second.read(&nodes).await;
+            let read = second.read(&nodes).await;
+            unreachable!("the read gives {read:?}");
         })
         .await;
     });
 }
 
-/// Each read of one request has a new request handle.
-#[test]
-fn each_read_of_one_request_has_its_own_handle() {
-    let (reads, _) = run(0, async |node| {
-        serve(&node, 4, async |mut peer| {
-            let mut client = peer.connected().await;
-            let nodes = client.nodes(&[VALUE]).expect("it fits");
-            let mut reads = Vec::new();
-            for _ in 0..2 {
-                let read = client.read(&nodes).await.map(<[_]>::len);
-                // SAFETY: the request lives.
-                reads.push((read, unsafe { ffi::test::shim_read_handle(nodes.raw()) }));
+/// The port of the relay of [`relayed`].
+const RELAY: u16 = 4841;
+
+/// The binary encoding of a Read response, a `NodeId` of 4 bytes.
+const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
+
+/// Runs `body` while a relay on `node` moves the bytes of the first stream to
+/// [`RELAY`] to the test server and back, and gives each message of the server to
+/// `rewrite` before the client gets it.
+async fn relayed<T>(
+    node: &node::Node,
+    rewrite: impl FnMut(&mut Vec<u8>),
+    body: impl Future<Output = T>,
+) -> T {
+    let mut relay = pin!(relay(node, rewrite));
+    let mut body = pin!(body);
+    poll_fn(|cx| {
+        assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
+        body.as_mut().poll(cx)
+    })
+    .await
+}
+
+async fn relay(node: &node::Node, mut rewrite: impl FnMut(&mut Vec<u8>)) {
+    let address = node.addresses()[0];
+    let listen = tcp::Listen {
+        local: SocketAddr::new(address, RELAY),
+        backlog: 4,
+        options: options(),
+    };
+    let mut listener = node.net().listen(&listen).expect("the port is free");
+    let mut client = poll_fn(|cx| listener.poll_accept(cx))
+        .await
+        .expect("the accept works");
+    let config = tcp::Config {
+        remote: SocketAddr::new(address, PORT),
+        options: options(),
+    };
+    let mut server = node
+        .net()
+        .connect(&config)
+        .await
+        .expect("the server listens");
+    let (mut up, mut down) = (Pipe::default(), Pipe::default());
+    poll_fn(|cx| {
+        up.pump(cx, &mut client, &mut server, |_| {});
+        down.pump(cx, &mut server, &mut client, &mut rewrite);
+        Poll::<()>::Pending
+    })
+    .await;
+}
+
+/// One direction of a relay.
+#[derive(Default)]
+struct Pipe {
+    /// The bytes read after the last whole message.
+    read: Vec<u8>,
+    /// The bytes not yet written.
+    write: Vec<u8>,
+}
+
+impl Pipe {
+    /// Moves the bytes that `from` has to `to`, and gives each whole message to
+    /// `rewrite` first.
+    fn pump(
+        &mut self,
+        cx: &mut Context<'_>,
+        from: &mut Tcp,
+        to: &mut Tcp,
+        mut rewrite: impl FnMut(&mut Vec<u8>),
+    ) {
+        let mut buffer = [0; 1 << 12];
+        while let Poll::Ready(read) = from.poll_read(cx, &mut buffer) {
+            let read = read.expect("the read works");
+            if read == 0 {
+                break;
             }
-            client.close().await;
-            reads
+            self.read.extend_from_slice(&buffer[..read]);
+        }
+        while let Some(size) = self.read.get(4..8) {
+            let size = u32::from_le_bytes(size.try_into().expect("4 bytes"));
+            let size = usize::try_from(size).expect("a usize holds a u32");
+            if self.read.len() < size {
+                break;
+            }
+            let mut message = self.read.drain(..size).collect();
+            rewrite(&mut message);
+            self.write.extend(message);
+        }
+        while !self.write.is_empty() {
+            let Poll::Ready(written) = to.poll_write(cx, &[IoSlice::new(&self.write)])
+            else {
+                break;
+            };
+            self.write.drain(..written.expect("the write works"));
+        }
+    }
+}
+
+/// Gives the request handle of `message` when it is a Read response.
+fn handle(message: &[u8]) -> Option<u32> {
+    let read = message.starts_with(b"MSG") && message[24..28] == READ_RESPONSE;
+    read.then(|| u32::from_le_bytes(message[36..40].try_into().expect("4 bytes")))
+}
+
+/// Makes the Read response `message`, with no diagnostics, string table, or header
+/// extension, give `count` empty results.
+fn recount_of(message: &mut Vec<u8>, count: i32) {
+    assert_eq!(message[44..52], [0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0]);
+    let diagnostics = message.len() - 4;
+    assert_eq!(message[diagnostics..], [0xFF; 4]);
+    let results =
+        count.to_le_bytes().into_iter().chain(vec![
+            0;
+            usize::try_from(count)
+                .expect("a count of 0 or more")
+        ]);
+    message.splice(52..diagnostics, results);
+    let size = u32::try_from(message.len()).expect("a message of a u32 of bytes");
+    message[4..8].copy_from_slice(&size.to_le_bytes());
+}
+
+/// The values of a read, or its error.
+type Read = Result<Vec<Result<f64, Status>>, Status>;
+
+/// Gives two reads of [`VALUE`] by one client through a relay that gives the first
+/// Read response `recount` empty results when it is set, the request handle of each
+/// Read response, and the value of [`VALUE`].
+fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64) {
+    run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let mut handles = Vec::new();
+            let rewrite = |message: &mut Vec<u8>| {
+                if let Some(handle) = handle(message) {
+                    if let (true, Some(count)) = (handles.is_empty(), recount) {
+                        recount_of(message, count);
+                    }
+                    handles.push(handle);
+                }
+            };
+            let reads = relayed(&node, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let nodes = client.nodes(&[VALUE]).expect("one node fits");
+                let first = client.read(&nodes).await.map(<[_]>::to_vec);
+                let second = client.read(&nodes).await.map(<[_]>::to_vec);
+                client.close().await;
+                [first, second]
+            })
+            .await;
+            (reads, handles, peer.value)
         })
         .await
-    });
-    let [(first, one), (second, two)] = reads[..] else {
-        panic!("two reads, not {}", reads.len());
-    };
-    assert_eq!((first, second), (Ok(1), Ok(1)));
-    assert_eq!(two, one + 1);
+    })
+    .0
 }
 
-/// Gives the answer of a read of 1 node that gets a Read response with `count` empty
-/// results, and the capacity of the values of the read.
-fn answer_of(count: i32) -> (Option<Status>, usize) {
-    // The response header: no timestamp, no handle, Good, no diagnostics, no string
-    // table, and no extension.
-    let mut bytes = vec![0; 17];
-    bytes.extend((-1_i32).to_le_bytes());
-    bytes.extend([0; 3]);
-    bytes.extend(count.to_le_bytes());
-    bytes.extend(vec![
-        0;
-        usize::try_from(count).expect("a count of 0 or more")
-    ]);
-    bytes.extend((-1_i32).to_le_bytes());
-    let data_type = ffi::types()
-        .iter()
-        .find(|data_type| data_type.name() == "ReadResponse")
-        .expect("open62541 has a Read response");
-    let mut response = vec![0_u64; data_type.size().div_ceil(8)];
-    let input = ffi::Bytes {
-        length: bytes.len(),
-        data: bytes.as_mut_ptr(),
+/// Each read of one request has its own request handle on the wire.
+#[test]
+fn each_read_of_one_request_has_its_own_handle() {
+    let (reads, handles, value) = read_twice(None);
+    assert_eq!(reads, [Ok(vec![Ok(value)]), Ok(vec![Ok(value)])]);
+    let [one, two] = handles[..] else {
+        panic!("two Read responses, not {}", handles.len());
     };
-    let mut options = ffi::DecodeOptions::default();
-    // SAFETY: `response` has room for a Read response with 8-byte alignment, and the
-    // decoder only reads the input.
-    let decoded = Status(unsafe {
-        ffi::UA_decodeBinary(
-            &raw const input,
-            response.as_mut_ptr().cast(),
-            data_type,
-            &raw mut options,
-        )
-    });
-    assert_eq!(decoded, Status::GOOD);
-    let reads = Reads::default();
-    reads.request.set(Some(1));
-    reads.count.set(1);
-    reads.pending.set(1);
-    // SAFETY: `reads` lives, and `response` holds a decoded Read response.
-    unsafe {
-        answer(
-            ptr::null_mut(),
-            ptr::from_ref(&reads).cast_mut().cast(),
-            1,
-            response.as_mut_ptr().cast(),
+    assert_ne!(one, two);
+}
+
+/// An answer with a value for more or fewer nodes than its read fails, and the next
+/// read gives the value of each node.
+#[test]
+fn an_answer_of_another_count_of_values_fails() {
+    for count in [0, 2] {
+        let (reads, _, value) = read_twice(Some(count));
+        assert_eq!(
+            reads,
+            [Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])],
+            "{count} results"
         );
     }
-    // SAFETY: `response` holds a decoded Read response, not used again.
-    unsafe { ffi::UA_clear(response.as_mut_ptr().cast(), data_type) };
-    (reads.answer.get(), reads.values.take().capacity())
-}
-
-/// An answer with a value for more or fewer nodes than its read fails, and copies no
-/// value.
-#[test]
-fn an_answer_of_another_count_of_values_fails_and_copies_none() {
-    for count in [0, 3] {
-        assert_eq!(answer_of(count), (Some(Status::BAD_UNEXPECTED_ERROR), 0));
-    }
-    assert_eq!(answer_of(1).0, Some(Status::GOOD));
 }
