@@ -150,8 +150,8 @@ pub struct Served {
 /// # Aborts
 ///
 /// When open62541 cannot allocate the loop or the connection manager: the process
-/// stops as the Rust allocator does when it has no memory. When `wall` panics, since
-/// it runs inside each call of the server, which cannot unwind.
+/// stops as the Rust allocator does when it has no memory. When `wall` panics:
+/// open62541 calls it, and a panic cannot unwind through C.
 pub async fn serve(
     clock: Clock,
     wall: impl Fn() -> Stamp + 'static,
