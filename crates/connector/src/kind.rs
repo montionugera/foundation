@@ -483,17 +483,34 @@ impl From<hub::writer::Failure> for Error {
     }
 }
 
-/// The class of a pool that has no block for a frame of a run, for a kind that returns
-/// it with `?`: `Config` (`connector.large-frame`) for `TooLarge`, since only fewer
-/// channels fix it, and `Retry` for `Exhausted` and `Refused`.
-impl From<block::Error> for Error {
-    fn from(error: block::Error) -> Self {
+/// The class of a failed draft of a frame of a run, for a kind that returns it with
+/// `?`: `Config` (`connector.large-frame`) for a pool `TooLarge`, because only a spec
+/// change or a kind that splits its frames fixes it, and `Retry` for a pool
+/// `Exhausted` and `Refused`.
+///
+/// # Panics
+///
+/// For an error that only series that do not follow the key set give, because a kind
+/// gives its series from its own code.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "each panic is series that do not follow the key set"
+)]
+impl From<types::frame::Error> for Error {
+    fn from(error: types::frame::Error) -> Self {
+        use types::frame::Error as Frame;
         match error {
-            block::Error::Exhausted { .. } | block::Error::Refused { .. } => {
-                Self::Retry(Box::new(error))
-            }
-            block::Error::TooLarge { .. } => {
+            Frame::Pool(
+                block::Error::Exhausted { .. } | block::Error::Refused { .. },
+            ) => Self::Retry(Box::new(error)),
+            Frame::Pool(block::Error::TooLarge { .. }) => {
                 config_error(LARGE_FRAME, &error, FEWER_CHANNELS)
+            }
+            Frame::OutOfRange { .. }
+            | Frame::Unordered { .. }
+            | Frame::IndexAbsent { .. }
+            | Frame::End(_) => {
+                panic!("invariant: the series follow the key set: {error}")
             }
         }
     }

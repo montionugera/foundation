@@ -445,8 +445,8 @@ mod tests {
         Ended(hub::reader::Ended),
         /// Returns a failed write with `?`.
         Failed(hub::writer::Failure),
-        /// Returns a pool with no block for a frame with `?`.
-        Pool(block::Error),
+        /// Returns a failed draft of a frame with `?`.
+        Draft(frame::Error),
     }
 
     /// When each run started and ended.
@@ -528,7 +528,7 @@ mod tests {
                 }
                 Some(Step::Ended(ended)) => returned(ended),
                 Some(Step::Failed(failure)) => returned(failure),
-                Some(Step::Pool(error)) => returned(error),
+                Some(Step::Draft(error)) => returned(error),
                 None => {
                     ctx.cancel().wait().await;
                     Ok(())
@@ -1055,7 +1055,10 @@ mod tests {
         };
         let ended = |ended: Ended| (ended.to_string(), Step::Ended(ended));
         let failed = |failure: Failure| (failure.to_string(), Step::Failed(failure));
-        let pool = |error: block::Error| (error.to_string(), Step::Pool(error));
+        let pool = |error: block::Error| {
+            let error = frame::Error::Pool(error);
+            (error.to_string(), Step::Draft(error))
+        };
         let retries = [
             ended(Ended::Behind),
             ended(Ended::Removed(key)),
@@ -1102,15 +1105,29 @@ mod tests {
         });
         let out = supervise("script", vec![large], config(), Cancel::Never);
         assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
-        let text = "block of 16 bytes is above the largest block of 8 bytes. Give the \
-                    connector fewer channels";
+        let text = "no block for the frame: block of 16 bytes is above the largest \
+                    block of 8 bytes. Give the connector fewer channels";
         assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text));
         let want = unplaced(
             "connector.large-frame",
-            "block of 16 bytes is above the largest block of 8 bytes",
+            "no block for the frame: block of 16 bytes is above the largest block of 8 \
+             bytes",
             "Give the connector fewer channels",
         );
         assert_eq!(out.result.map_err(diagnostics), Err(Ok(want)));
+    }
+
+    /// A draft of series that do not follow the key set is a defect of the kind.
+    #[test]
+    #[should_panic(
+        expected = "invariant: the series follow the key set: entry 3 is out of range"
+    )]
+    fn panics_when_a_kind_returns_series_that_do_not_follow_the_key_set() {
+        let error = frame::Error::OutOfRange {
+            entry: 3,
+            entries: 2,
+        };
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
     }
 
     #[test]
