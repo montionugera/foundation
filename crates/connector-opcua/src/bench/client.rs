@@ -98,8 +98,9 @@ impl Server {
     ///
     /// # Aborts
     ///
-    /// When open62541 cannot allocate the loop, the connection manager, the client, or a
-    /// Read request: the process stops as the Rust allocator does when it has no memory.
+    /// When open62541 cannot allocate the loop, the connection manager, the client, or
+    /// a Read request: the process stops as the Rust allocator does when it has no
+    /// memory.
     pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
