@@ -4,6 +4,7 @@ use hub::writer::Writer;
 use types::time::{Span, Stamp};
 
 #[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 /// The stamps of the frames of one index. Each is the midpoint of the request that
