@@ -166,6 +166,12 @@ state on `main`.
 - Mesh to agent, to attack when `ops` gets real operations: text from a spec file
   or a peer that reaches a tool description or a tool result, as an instruction to
   the agent.
+- A change of each definition other than a channel needs `admin` on its key, because
+  a policy governs its whole region, a subject's keys decide who acts as it, a region
+  record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).
+  So grant `admin` only to a subject that may change access, policy, and connectors
+  for the whole region. A changed channel also needs `apply` on the channel at each
+  of its edges.
 
 ### Node to node
 
@@ -480,6 +486,7 @@ answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the file `name` of the data directory
 (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of
-`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the newest
-handoff record of each index in the ring (`home::handoff::read`, #2278), and the chunk
-processing of open62541 (`ua_securechannel.c`, #1990).
+`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the request
+of a remote program (`ops::serve`, #1744), the newest handoff record of each index in
+the ring (`home::handoff::read`, #2278), and the chunk processing of open62541
+(`ua_securechannel.c`, #1990).

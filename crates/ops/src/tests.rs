@@ -6,7 +6,7 @@ use std::path::Path;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::Error;
+use crate::error::{Action, Error, On};
 use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
@@ -438,13 +438,13 @@ fn a_call_with_no_arguments_runs() {
     );
 }
 
-#[test]
-fn error_codes_and_fixes_match_the_golden_file() {
+/// One error of each variant but `Config` and `Start`.
+fn every() -> Vec<Error> {
     let pointer = spec::Pointer {
         version: 0,
         root: spec::tree::empty(),
     };
-    let every = [
+    vec![
         Error::Argument {
             message: String::new(),
         },
@@ -469,7 +469,21 @@ fn error_codes_and_fixes_match_the_golden_file() {
         },
         Error::Apply(mesh::Error::NoVote),
         Error::Stopped(mesh::Stopped::Dropped),
-    ];
+        Error::Request {
+            message: String::new(),
+        },
+        Error::Denied {
+            subject: "bob".parse().expect("a name"),
+            action: Action::Plan,
+            on: On::Spec,
+        },
+        Error::LargeReply,
+    ]
+}
+
+#[test]
+fn error_codes_and_fixes_match_the_golden_file() {
+    let every = every();
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
         // `Config` holds the codes of the front ends, of `config`, and the one below.
@@ -484,6 +498,9 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Stale { .. }
             | Error::Apply(_)
             | Error::Stopped(_)
+            | Error::Request { .. }
+            | Error::Denied { .. }
+            | Error::LargeReply
             | Error::Config(_)
             | Error::Start(_) => {}
         }
@@ -1208,4 +1225,22 @@ mod serve {
             "{help}"
         );
     }
+}
+
+#[test]
+fn the_places_of_one_file_share_its_path() {
+    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\nnope \"b\" {}\n")]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(Error::Config(problems)) = read else {
+        panic!("two problems, not {read:?}");
+    };
+    let [a, b] = &problems[..] else {
+        panic!("two problems, not {problems:?}");
+    };
+    let (Some(a), Some(b)) = (&a.place, &b.place) else {
+        panic!("two places, not {problems:?}");
+    };
+    assert_eq!(&*a.file, "site.hcl");
+    assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }
