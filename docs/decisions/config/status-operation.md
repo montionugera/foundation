@@ -83,7 +83,7 @@
   so the key also fixes the name: `laptop.architect-2` (2026-10-13T04:33:01Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6138289687, which
   supersedes the name of item 1 of
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). That
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437). When `foundation rename` (A4) keeps the key of a renamed channel, the PR that builds it checks this again. That
   check finds another key, sample type, or index under a status name, but not a channel
   that `config` carries over with its key and definition (the gap above):
   `laptop.architect-2` (2026-10-13T03:32:04Z,
