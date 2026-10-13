@@ -19,7 +19,7 @@ use crate::error::{Error, escape_controls};
 #[cfg(test)]
 mod tests;
 
-/// The longest that `status` waits for the frames, from the open of its readers.
+/// The longest that `status` waits for the frames, from the request.
 const WAIT: Span = Span::SECOND;
 
 /// The status of each connector on the node, as `status` gives it.
