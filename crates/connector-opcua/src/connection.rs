@@ -102,7 +102,21 @@ impl Manager {
             backlog,
             options: OPTIONS,
         })?;
-        Ok(Self::make(clock, net, Some(listener), rng))
+        Ok(Self::accepting(clock, net, listener, rng))
+    }
+
+    /// As [`Manager::listening`], on the bound `listener`.
+    ///
+    /// # Panics
+    ///
+    /// When a C allocation fails.
+    pub(crate) fn accepting(
+        clock: Clock,
+        net: Net,
+        listener: Listener,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(clock, net, Some(listener), rng)
     }
 
     fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
@@ -155,8 +169,8 @@ impl Manager {
         &self.events
     }
 
-    /// Gives the port of the listener of [`Manager::listening`], until a listen open
-    /// takes it.
+    /// Gives the port of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], until a listen open takes it.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn port(&self) -> Option<u16> {
         let listener = self.state().listener.take();

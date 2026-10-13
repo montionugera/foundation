@@ -127,7 +127,8 @@ pub(crate) fn command() -> clap::Command {
     })
 }
 
-pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
+/// Parses `args`. `json` is whether they ask for JSON, as `cli` read it.
+pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
     let matches = match command().try_get_matches_from(args) {
         Ok(matches) => matches,
         Err(e) if e.kind() == ErrorKind::DisplayHelp => {
@@ -140,7 +141,7 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
         Command::Run(request) => Ok(Parsed::Run(request)),
         Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
             data,
-            json: cli.json,
+            json,
             name,
             listen,
         })),

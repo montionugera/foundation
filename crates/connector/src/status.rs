@@ -30,6 +30,7 @@ use loom::sync::Mutex;
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, Ordering};
 
+use crate::stamp::Stamps;
 use crate::{cancel, kind};
 
 /// The name of the index of the status channels.
@@ -339,7 +340,7 @@ impl Writer {
             entries,
             series,
             group,
-            last: None,
+            stamps: Stamps::default(),
             wrote: Monotonic::default(),
             state: State::Running,
             class: Class::None,
@@ -511,7 +512,7 @@ struct Session {
     /// Each series of a frame, by entry, with its length.
     series: Box<[(usize, usize)]>,
     group: u32,
-    last: Option<Stamp>,
+    stamps: Stamps,
     /// When the last write was, by the node's clock.
     wrote: Monotonic,
     state: State,
@@ -580,19 +581,20 @@ impl Session {
         }
         self.wrote = now;
         let mesh = self.hub.now();
-        let stamp = self.last.map_or(mesh, |last| mesh.max(after(last)));
+        let stamp = self.stamps.next(mesh);
         // The hub's clock can step while the node's clock does not.
         let next = match self.state {
             State::Waiting(next) => Some(mesh + (next - now)),
             State::Running | State::Stopped | State::Ending => None,
         };
-        if let Err(before) = self.send(values, stamp, next)
-            && let Err(again) = self.send(values, after(before), next)
-        {
-            panic!(
-                "invariant: a status frame stamped after {before}, the last stamp of \
-                 its index, is not backwards, but the home gives {again} as last"
-            )
+        if let Err(before) = self.send(values, stamp, next) {
+            let stamp = self.stamps.after(before);
+            if let Err(again) = self.send(values, stamp, next) {
+                panic!(
+                    "invariant: a status frame stamped after {before}, the last stamp \
+                     of its index, is not backwards, but the home gives {again} as last"
+                )
+            }
         }
         if !values.staged.get() {
             self.unapplied = false;
@@ -626,7 +628,6 @@ impl Session {
             Err(error) => panic!("invariant: the series follow the key set: {error}"),
         };
         self.fill(&mut draft, values, stamp, next);
-        self.last = Some(stamp);
         match self.hub.write(Label::Path(Path::Live), draft) {
             Ok([Outcome::Applied { .. }]) => {}
             Err(Failure::Removed(_) | Failure::Home(home::Error::Disk(_))) => {
@@ -714,11 +715,6 @@ impl Session {
 /// boundary, in a string with no spare capacity.
 fn cut(text: &str) -> String {
     text[..text.floor_char_boundary(ERROR_MAX)].to_owned()
-}
-
-/// The stamp 1 ns after `stamp`.
-fn after(stamp: Stamp) -> Stamp {
-    Stamp::from_nanos(stamp.nanos().strict_add(1))
 }
 
 /// Polls `run` to its end, and `side` after it while `run` is pending, so `side` sees
