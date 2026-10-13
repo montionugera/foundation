@@ -745,9 +745,9 @@ fn gives_each_other_error_of_the_mesh_as_an_apply_error() {
 
 #[test]
 fn gives_a_stop_of_the_group_as_stopped() {
-    solo(|node, mesh| async move {
+    solo(|fixture, mesh| async move {
         let (_, site) = plan_on(&mesh, &[("site.hcl", &placed_site())]).await;
-        let stopped = fail_sync(&node);
+        let stopped = fail_sync(&fixture.sim);
         let expected = Error::Stopped(stopped.clone());
         let error = refuses(&mesh, &site.encode(), &create_kinds(), expected).await;
         let text = format!(
@@ -1045,7 +1045,7 @@ fn applies_a_plan_with_no_home_and_then_a_plan_with_only_a_home() {
 
 #[test]
 fn refuses_a_plan_on_a_node_that_uses_an_old_spec_as_behind() {
-    solo(|node, mesh| async move {
+    solo(|fixture, mesh| async move {
         let (_, site) = plan_on(&mesh, &[("site.hcl", &placed_site())]).await;
         file(path(), &site.encode(), &mesh, &create_kinds(), keys(0))
             .await
@@ -1054,7 +1054,9 @@ fn refuses_a_plan_on_a_node_that_uses_an_old_spec_as_behind() {
         let site = placed_site();
         let (_, both) =
             plan_on(&mesh, &[("site.hcl", &site), ("plant.hcl", PLANT)]).await;
-        node.fail_file(Path::new("spec"), env::files::Operation::SyncDir);
+        fixture
+            .sim
+            .fail_file(Path::new("spec"), env::files::Operation::SyncDir);
         file(path(), &both.encode(), &mesh, &create_kinds(), keys(10))
             .await
             .expect("a second apply");

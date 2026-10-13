@@ -1113,7 +1113,15 @@ impl Serve {
                 });
                 let parts = mesh.as_ref().map(|mesh| {
                     let kinds = Arc::new(kinds());
-                    let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
+                    let ops = operations(
+                        mesh,
+                        key,
+                        hub.clone(),
+                        clock.clone(),
+                        &time,
+                        &entropy,
+                        Arc::clone(&kinds),
+                    );
                     let config = connector::supervisor::Config {
                         kinds,
                         clock: clock.clone(),
@@ -1185,23 +1193,30 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh` with the connector kinds `kinds`, whose keys
-/// [`channel_key`] makes.
+/// The operations on `mesh`, as the node `key` of it with `hub` and `clock`, with the
+/// connector kinds `kinds`, whose keys [`channel_key`] makes.
 fn operations(
     mesh: &mesh::Mesh,
+    key: types::node::Key,
+    hub: hub::Hub,
+    clock: env::clock::Clock,
     time: &clock::Reader,
     entropy: &env::entropy::Entropy,
     kinds: Arc<connector::kind::Table>,
 ) -> Rc<ops::Node> {
     let (time, entropy) = (time.clone(), entropy.clone());
-    let key = move || channel_key(&time, &entropy);
+    let channel = move || channel_key(&time, &entropy);
     let front_ends = ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
     );
-    Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
+    let member = mesh.member(key);
+    let member = member.expect("invariant: a mesh opens only on a member");
+    let name = member.card.card().name.clone();
+    let node = ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
+    Rc::new(node)
 }
 
 /// The runs of the connectors that the spec in use places on the node `key` of

@@ -77,6 +77,7 @@ pub(crate) enum Error {
 /// on a changed key of a definition other than a channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
+    Read,
     Plan,
     Apply,
     Admin,
@@ -109,6 +110,7 @@ impl Action {
     /// The word of the action in a config file.
     const fn word(self) -> &'static str {
         match self {
+            Self::Read => "read",
             Self::Plan => "plan",
             Self::Apply => "apply",
             Self::Admin => "admin",
@@ -119,6 +121,7 @@ impl Action {
 impl From<Action> for spec::access::Action {
     fn from(action: Action) -> Self {
         match action {
+            Action::Read => Self::Read,
             Action::Plan => Self::Plan,
             Action::Apply => Self::Apply,
             Action::Admin => Self::Admin,

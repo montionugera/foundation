@@ -14,7 +14,7 @@ use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
 use crate::plan::Documents;
-use crate::{Node, apply, used};
+use crate::{Node, apply, status, used};
 
 #[cfg(test)]
 mod tests;
@@ -25,13 +25,16 @@ mod tests;
 ///
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
-/// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
-/// for an action that no access policy gives `subject` and for a request that names
-/// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// also needs `apply` on the channel at each edge of each channel that the plan adds
-/// or changes, and `admin` on the key of each definition other than a channel that the
-/// plan adds, changes, or removes. It gives a home only to an index on which `subject`
-/// has `apply`, and drops each other home with no error.
+/// `ops.bad-request` for a body that is no request of `plan`, `apply`, or `status`,
+/// `ops.denied` for an action that no access policy gives `subject` and for a request
+/// that names no definition, and `ops.large-reply` in place of a reply over the bound.
+/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
+/// adds or changes, and `admin` on the key of each definition other than a channel that
+/// the plan adds, changes, or removes. It gives a home only to an index on which
+/// `subject` has `apply`, and drops each other home with no error. `status` shows only
+/// each connector on whose status channels `subject` has `read`, and gives
+/// `ops.denied` when the node places a connector and `subject` reads none. It waits at
+/// most 1 s for the status channels.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -103,6 +106,7 @@ impl Write for Reply {
 enum Request {
     Plan(Plan),
     Apply,
+    Status,
     /// An operation of another name.
     Other(String),
 }
@@ -137,6 +141,10 @@ impl<'de> Deserialize<'de> for Request {
                     "apply" => {
                         let Empty {} = map.next_value()?;
                         Request::Apply
+                    }
+                    "status" => {
+                        let Empty {} = map.next_value()?;
+                        Request::Status
                     }
                     _ => {
                         let IgnoredAny = map.next_value()?;
@@ -202,6 +210,10 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
         }
         Request::Plan(Plan { files }) => plan(node, subject, &files).await,
         Request::Apply => apply(node, subject, rest).await,
+        Request::Status if !rest.is_empty() => {
+            Err(bad("bytes follow the first line of `status`"))
+        }
+        Request::Status => status(node, subject).await,
         Request::Other(name) => Err(bad(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -321,4 +333,25 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Reply, Error
     }
     let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
     Ok(Reply::line(&Done { output: &effect })?)
+}
+
+/// The reply of `status`: its output. It leaves out each connector on whose status
+/// channels `subject` has no `read`.
+async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
+    let spec = used::spec(&node.mesh).await?;
+    let check = Check::new(&spec, subject);
+    let mut placed = status::placed(spec.definitions(), &node.name);
+    let any = !placed.is_empty();
+    placed.retain(|placed| {
+        placed
+            .channels()
+            .iter()
+            .all(|name| check.allows(Action::Read, name))
+    });
+    // Else a subject with no grant learns that the node places a connector.
+    if any && placed.is_empty() {
+        return Err(check.denied(Action::Read, On::Nothing));
+    }
+    let output = status::read(node, subject, &placed).await;
+    Ok(Reply::line(&Done { output: &output })?)
 }
