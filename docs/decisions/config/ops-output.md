@@ -245,10 +245,10 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In the
   fixes below, `{dir}` is the data directory that the command gives, as one word of a
   POSIX shell: in single quotes, with each `'` as `'\''`, when it holds a character
-  other than `[A-Za-z0-9_./:@%+=,-]`. The fix of `node.not-running` is ``Run `foundation
-  start --data {dir}`, with `--name <name>` on its first start, or give `--data` the
-  data directory of a node that runs``, which supersedes "with no `--data`" above,
-  decision 7 of
+  other than `[A-Za-z0-9_./:@%+=,-]`. Each message keeps the plain path. The fix of
+  `node.not-running` is ``Run `foundation start --data {dir}`, with `--name <name>` on
+  its first start, or give `--data` the data directory of a node that runs``, which
+  supersedes "with no `--data`" above, decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. A
   `{dir}` that is a file, or whose `{dir}/data` is a file, is also `node.not-running`,
   with the message `no node runs in {dir}, which is not a data directory` and the fix
