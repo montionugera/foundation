@@ -1546,3 +1546,39 @@ fn stored_reads_the_files_that_files_wrote() {
     drop(files);
     thread.join().unwrap();
 }
+
+#[test]
+fn shown_joins_to_the_data_directory() {
+    run(|files, data| async move {
+        assert_eq!(
+            files.shown(Path::new("secrets/a.b")),
+            data.join("secrets/a.b")
+        );
+    });
+}
+
+#[test]
+fn shown_of_a_relative_directory_is_absolute() {
+    let scratch = Scratch::new();
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    let dir = Path::new(&up).join(scratch.0.strip_prefix("/").unwrap());
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::files(&dir, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), cwd.join(&dir).join("data/a"));
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn shown_of_a_stored_directory_joins_to_its_data_directory() {
+    let scratch = Scratch::new();
+    std::fs::create_dir(scratch.0.join("data")).unwrap();
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::stored(&scratch.0, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), scratch.0.join("data/a"));
+    drop(files);
+    thread.join().unwrap();
+}
