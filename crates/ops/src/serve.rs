@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use access::Rules;
 use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
@@ -218,8 +218,11 @@ pub(crate) fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Err
     let Some((head, rest)) = first_line(body) else {
         return Err(bad("no newline ends the first line"));
     };
-    match serde_json::from_slice(head) {
-        Ok(Answer::Done { output }) => Ok((output, rest)),
+    match serde_json::from_slice::<Answer<'_, Value>>(head) {
+        Ok(Answer::Done { output }) => match T::deserialize(output) {
+            Ok(output) => Ok((output, rest)),
+            Err(error) => Err(bad(&error.to_string())),
+        },
         Ok(Answer::Failed { errors, status }) if status == 0 || errors.is_empty() => {
             Err(bad("an error has the exit status 0, or no problem"))
         }

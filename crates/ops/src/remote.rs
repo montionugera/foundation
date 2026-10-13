@@ -50,7 +50,8 @@ impl Shown {
 /// - [`Error::Read`] for the first file that does not read as UTF-8 text.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::answer`].
+/// - Each error of [`serve::answer`], and [`Error::Reply`] when no plan follows the
+///   output.
 /// - [`Error::Write`] when the write of `out` fails.
 pub(crate) async fn plan<C>(
     files: &[PathBuf],
@@ -88,6 +89,11 @@ where
     }
     let reply = request(&serve::plan_request(&read), reach).await?;
     let (output, plan) = serve::answer::<Output>(&reply)?;
+    if plan.is_empty() {
+        return Err(Error::Reply {
+            message: "no plan follows the first line of the reply of `plan`".to_owned(),
+        });
+    }
     if let Some(out) = out {
         paths.write(out, plan).map_err(|error| Error::Write {
             path: out.to_owned(),

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
@@ -37,12 +38,17 @@ fn offline(
     let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
         panic!("a command sent a request")
     };
-    let reach = async |_: &Path| Ok(request);
+    let reached = Cell::new(0);
+    let reach = async |_: &Path| {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    };
     let cli = crate::cli(args, input, output, errors, &paths, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
     };
+    assert_eq!(reached.get(), 0, "a command reached its node");
     run
 }
 

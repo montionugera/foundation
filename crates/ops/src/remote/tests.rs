@@ -394,7 +394,7 @@ fn a_reply_that_is_no_reply_gives_bad_reply() {
         let node = create_node(mesh);
         let paths = with_site(&host);
         let files = [PathBuf::from("site.hcl")];
-        let cases: [(&[u8], &str); 4] = [
+        let cases: [(&[u8], &str); 5] = [
             (b"{\"output\":{}}", "no newline ends the first line"),
             (
                 b"{\"errors\":[],\"status\":1}\n",
@@ -409,6 +409,7 @@ fn a_reply_that_is_no_reply_gives_bad_reply() {
                 b"{}\n",
                 "data did not match any variant of untagged enum Answer",
             ),
+            (b"{\"output\":{}}\n", "missing field `base`"),
         ];
         let mut remote = Remote::new(node);
         for (reply, cause) in cases {
@@ -420,6 +421,25 @@ fn a_reply_that_is_no_reply_gives_bad_reply() {
             let message = format!("the reply of the node is no reply: {cause}");
             assert_eq!(shown(&error), read("ops.bad-reply", &message, 1));
         }
+    });
+}
+
+#[test]
+fn plan_whose_reply_holds_no_plan_gives_bad_reply_and_writes_no_file() {
+    solo(|host, mesh| async move {
+        let paths = with_site(&host);
+        let node = create_node(mesh);
+        let files = vec![(PathBuf::from("site.hcl"), placed_site())];
+        let (_, output) = node.plan(files).await.expect("a plan");
+        let reply = format!("{}\n", json!({ "output": output }));
+        let remote = Remote::with(node, Mode::Reply(reply.into_bytes()));
+        let out = Path::new("site.plan");
+        let files = [PathBuf::from("site.hcl")];
+        let planned = remote.plan(&paths, &files, Some(out)).await;
+        let message =
+            "no plan follows the first line of the reply of `plan`".to_owned();
+        assert_eq!(planned.err(), Some(Error::Reply { message }));
+        assert_eq!(paths.read(out, most()), Err(paths::Error::NotFound));
     });
 }
 
@@ -481,7 +501,7 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
 
         let problem = Problem {
             code: "ops.stopped".to_owned(),
-            message: "a\u{1b}b".to_owned(),
+            message: "a\u{1b}b\\c".to_owned(),
             fix: "c".to_owned(),
             place: None,
             notes: Vec::new(),
@@ -497,14 +517,15 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
         };
         assert_eq!(error.status(), 7);
         assert_eq!(*error.problems(), [problem.clone(), problem.clone()]);
-        assert!(error.text().contains("a\\u{1b}b"), "{}", error.text());
+        let shown = "error[ops.stopped]: a\\u{1b}b\\c\nfix: c\n";
+        assert_eq!(error.text(), format!("{shown}\n{shown}"));
         assert_eq!(error.to_string(), "the node gave 2 problems");
 
         let reply = format!("{}\n", json!({ "errors": [problem], "status": 7 }));
         let remote = Remote::with(remote.node, Mode::Reply(reply.into_bytes()));
         let planned = remote.plan(&paths, &files, None).await;
         let shown = planned.err().map(|error| error.to_string());
-        assert_eq!(shown.as_deref(), Some("a\u{1b}b"), "one problem");
+        assert_eq!(shown.as_deref(), Some("a\u{1b}b\\c"), "one problem");
     });
 }
 
