@@ -469,6 +469,10 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
+)]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
