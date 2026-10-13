@@ -87,8 +87,8 @@ pub enum Error {
     Files(env::files::Error),
     /// The transport of the program did not start.
     Transport(transport::Error),
-    /// No node answers at `at`, where the file `address` says the node is: the dial,
-    /// the session, or the hello failed with `error`.
+    /// The program has no session with a node at `at`, where the file `address` says
+    /// the node is: the dial, the session, or the hello failed with `error`.
     Unanswered {
         /// The address that the program dialed.
         at: SocketAddr,

@@ -192,7 +192,9 @@
   the files that only `node` reads and take `hub` for the error of a dial. Decided by
   `laptop.architect-2` (2026-10-11T07:10:55Z, plan revision 4, decision 8 and the 2d
   surface,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913; the
+  `hub` use and `Refused`, `laptop.architect`, 2026-10-11T08:10:05Z, item 3:
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274).
   A SIGINT or SIGTERM that the process blocks or ignores at its start, which is the
   choice of its parent, does not reach it (ENV SEAMS): a node that
   `sh -c "foundation start ... &"` starts does not stop at `kill -INT`. Decided by
