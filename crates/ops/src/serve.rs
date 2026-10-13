@@ -195,7 +195,7 @@ fn failed(error: &Error) -> Body {
 ///
 /// # Panics
 ///
-/// When the path of a file is not UTF-8.
+/// When the path of a file is not UTF-8 and the body before that path fits the bound.
 pub(crate) fn plan_request(files: &[File]) -> Result<Vec<u8>, Error> {
     let plan = BTreeMap::from([("files", files)]);
     let body = Body::line(&BTreeMap::from([("plan", plan)]));
