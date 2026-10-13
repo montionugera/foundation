@@ -18,6 +18,7 @@
 #include "shim.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -638,6 +639,21 @@ UA_UInt32 shim_client_timeout(UA_Client *client) {
     return UA_Client_getConfig(client)->timeout;
 }
 
+/* Writes to `limits` the send and receive buffer sizes of the channel of `client`, the
+ * MaxMessageSize and the MaxChunkCount of its server (0 for none), and the encoded size
+ * of the session token of `client`. */
+UA_StatusCode shim_client_limits(UA_Client *client, size_t limits[5]) {
+    UA_Variant value;
+    UA_StatusCode status = UA_Client_getConnectionAttributeCopy(
+        client, UA_QUALIFIEDNAME(0, "messageLimits"), &value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    for(size_t i = 0; i < 5; i++)
+        limits[i] = ((const UA_UInt32 *)value.data)[i];
+    UA_Variant_clear(&value);
+    return UA_STATUSCODE_GOOD;
+}
+
 /* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
  * `client`. The loop must hold no other client or server. A later run of the loop
  * fails. The delete sends no CloseSession, so an active session stays on the server
@@ -712,6 +728,43 @@ UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
         UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
     config->timeout = timeout;
     return status;
+}
+
+/* Gives the bytes of the body of the message of `request` sent with a session token of
+ * `token` encoded bytes. */
+size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(request, type, NULL) -
+           UA_calcSizeBinary(&request->requestHeader.authenticationToken,
+                             &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           token;
+}
+
+/* Gives the most bytes of the body of the message of a good answer of a read of `count`
+ * nodes that each hold a Double, with each field of each value, or `SIZE_MAX` past
+ * it. */
+size_t shim_read_answer(size_t count) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
+    UA_ReadResponse response;
+    UA_ReadResponse_init(&response);
+    UA_Double value = 0;
+    UA_DataValue result;
+    UA_DataValue_init(&result);
+    UA_Variant_setScalar(&result.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    result.hasValue = true;
+    result.hasStatus = true;
+    result.hasSourceTimestamp = true;
+    result.hasServerTimestamp = true;
+    result.hasSourcePicoseconds = true;
+    result.hasServerPicoseconds = true;
+    size_t fixed =
+        UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+        UA_calcSizeBinary(&response, type, NULL);
+    size_t each = UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+    if(count > (SIZE_MAX - fixed) / each)
+        return SIZE_MAX;
+    return fixed + count * each;
 }
 
 /* Gives the count of results of `response`, a Read response. */

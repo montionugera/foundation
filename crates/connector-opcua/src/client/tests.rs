@@ -12,12 +12,12 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Client, Nodes, Reads, answer};
+use super::{Client, Large, Nodes, Reads, answer, most};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
-use crate::server::Server;
+use crate::server::{Limits, Server};
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -192,18 +192,15 @@ fn a_read_of_a_name_node_gives_its_value() {
         serve(&node, 4, async |mut peer| {
             let named = |name: &str| Node {
                 namespace: 1,
-                key: Key::Name(Name::new(name).expect("a name of 1 to 4096 bytes")),
+                key: Key::Name(Name::new(name).expect("a name that is not empty")),
             };
             peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
             peer.server.add_double(&named("plant.spike"), 3.5);
-            let longest = named(&"x".repeat(Name::BYTES));
-            peer.server.add_double(&longest, 4.5);
             let mut client = peer.connected().await;
             let reads = (
                 client.read_one(&named("plant.spike;x=ü")).await,
                 client.read_one(&named("plant.spike")).await,
                 client.read_one(&named("plant.dip")).await,
-                client.read_one(&longest).await,
                 client
                     .read_one(&Node {
                         namespace: 0,
@@ -217,7 +214,7 @@ fn a_read_of_a_name_node_gives_its_value() {
         .await
     });
     let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
-    let expected = (Ok(2.5), Ok(3.5), unknown, Ok(4.5), unknown);
+    let expected = (Ok(2.5), Ok(3.5), unknown, unknown);
     assert_eq!(reads, expected);
 }
 
@@ -540,7 +537,10 @@ fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
             peer.server.add_bytes(&PAST, 8 * CHUNK);
-            peer.server.set_chunks(chunks);
+            peer.server.set_limits(Limits {
+                chunks,
+                ..Limits::default()
+            });
             let mut client = peer.connected().await;
             let reads = (client.read_one(&FITS).await, client.read_one(&PAST).await);
             client.close().await;
@@ -857,4 +857,127 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
         .await
     });
     assert_eq!(reads, (Ok(value), 2, Ok(2.5), Ok(2.5)));
+}
+
+/// A node in namespace 1 named by `length` bytes.
+fn long(length: usize) -> Node {
+    let name = Name::new(&"x".repeat(length)).expect("a name that is not empty");
+    Node {
+        namespace: 1,
+        key: Key::Name(name),
+    }
+}
+
+/// Gives the length of the name of a [`long`] node whose request on `client` is the
+/// most bytes of one message, from a name of `probe` bytes, whose request is past it.
+fn fitting(client: &Client, probe: usize) -> usize {
+    match client.nodes(&[long(probe)]) {
+        Err(Large { bytes, most }) => probe - (bytes - most),
+        Ok(_) => panic!("a name of {probe} bytes fits"),
+    }
+}
+
+/// The request of a session takes 8 chunks, [`CHUNKS`], of 65536 bytes less the
+/// 24 bytes of their headers. The client refuses to send 1 byte more.
+#[test]
+fn a_request_takes_the_chunks_of_one_message() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let length = fitting(&client, 1 << 20);
+            peer.server.add_double(&long(length), 2.5);
+            let fits = client.nodes(&[long(length)]).expect("it fits");
+            let read = client.read(&fits).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[long(length + 1)]).map(drop);
+            let after = client.read_one(&VALUE).await;
+            let unchecked = Nodes::new(&[long(length + 1)]);
+            let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
+            client.close().await;
+            (read, past, after, sent, peer.value)
+        })
+        .await
+    });
+    let (read, past, after, sent, value) = reads;
+    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    let most = 8 * (65_536 - 24);
+    let large = Large {
+        bytes: most + 1,
+        most,
+    };
+    assert_eq!(past, Err(large));
+    assert_eq!(after, Ok(value));
+    assert_eq!(sent, Err(Status::BAD_RESPONSE_TOO_LARGE));
+}
+
+/// A server with a MaxMessageSize of 8192 bytes takes a request of 8192 bytes, and
+/// refuses 1 byte more. A good answer of 239 Doubles takes at most 36 bytes and 34 per
+/// node, 8162 bytes, and of 240 nodes, 8196 bytes.
+#[test]
+fn a_read_takes_the_max_message_size_of_the_server() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            let mut client = peer.connected().await;
+            let length = fitting(&client, 9000);
+            peer.server.add_double(&long(length), 2.5);
+            let fits = client.nodes(&[long(length)]).expect("it fits");
+            let read = client.read(&fits).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[long(length + 1)]).map(drop);
+            let most = client.nodes(&[VALUE; 239]).expect("239 nodes fit");
+            let values = client.read(&most).await.map(<[_]>::to_vec);
+            let answer_past = client.nodes(&[VALUE; 240]).map(drop);
+            let unchecked = Nodes::new(&[long(length + 1)]);
+            let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
+            client.close().await;
+            (read, past, values, answer_past, sent, peer.value)
+        })
+        .await
+    });
+    let (read, past, values, answer_past, sent, value) = reads;
+    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    let large = |bytes| Large { bytes, most: 8192 };
+    assert_eq!(past, Err(large(8193)));
+    assert_eq!(values, Ok(vec![Ok(value); 239]));
+    assert_eq!(answer_past, Err(large(8196)));
+    assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
+}
+
+/// A server with buffers of 8192 bytes and a MaxChunkCount of 4 gives a message of 4
+/// chunks of 8168 bytes: 959 nodes, and not 960.
+#[test]
+fn a_read_takes_the_buffers_and_chunks_of_the_server() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_limits(Limits {
+                buffer: 8192,
+                chunks: 4,
+                ..Limits::default()
+            });
+            let mut client = peer.connected().await;
+            let most = client.nodes(&[VALUE; 959]).expect("959 nodes fit");
+            let values = client.read(&most).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[VALUE; 960]).map(drop);
+            client.close().await;
+            (values, past, peer.value)
+        })
+        .await
+    });
+    let (values, past, value) = reads;
+    assert_eq!(values, Ok(vec![Ok(value); 959]));
+    let large = Large {
+        bytes: 36 + 960 * 34,
+        most: 4 * 8168,
+    };
+    assert_eq!(past, Err(large));
+}
+
+#[test]
+fn a_limit_of_0_from_a_server_is_no_limit() {
+    assert_eq!(most(8192, 0, 0), 8 * 8168);
+    assert_eq!(most(8192, 0, 9), 8 * 8168);
+    assert_eq!(most(8192, 0, 7), 7 * 8168);
+    assert_eq!(most(8192, 50_000, 0), 50_000);
 }

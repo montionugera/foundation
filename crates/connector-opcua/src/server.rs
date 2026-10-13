@@ -84,12 +84,18 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Sets the most chunks in a message of each later channel of the server, with 0 as
-    /// the default of open62541, 16384.
+    /// Sets the limits of each later channel of the server.
     #[cfg(test)]
-    pub(crate) fn set_chunks(&self, chunks: u32) {
+    pub(crate) fn set_limits(&self, limits: Limits) {
         // SAFETY: the server lives.
-        unsafe { ffi::test::shim_server_chunks(self.raw(), chunks) };
+        unsafe {
+            ffi::test::shim_server_limits(
+                self.raw(),
+                limits.buffer,
+                limits.message,
+                limits.chunks,
+            );
+        };
     }
 
     /// Gives the server, for a call that reads or changes it.
@@ -145,4 +151,17 @@ impl Server {
         let status = Status(unsafe { ffi::test::UA_Server_delete(self.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the server delete");
     }
+}
+
+/// The limits of the channels of a [`Server`], each 0 for the default of open62541:
+/// 65536 bytes, 512 MiB, and 16384 chunks.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Limits {
+    /// The send and receive buffer size.
+    pub(crate) buffer: u32,
+    /// The MaxMessageSize.
+    pub(crate) message: u32,
+    /// The MaxChunkCount.
+    pub(crate) chunks: u32,
 }

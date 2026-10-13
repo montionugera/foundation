@@ -23,6 +23,10 @@ mod tests;
 /// The most reads of a client in flight. A read past it waits until one ends.
 const READS: u16 = 16;
 
+/// The bytes of the headers of a chunk with the security mode None: the message header
+/// (8), the channel (4), the token (4), and the sequence header (8).
+const HEADER: usize = 24;
+
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
     "the other half of the sends of a connection is for the requests of open62541"
@@ -45,6 +49,12 @@ pub(crate) struct Client {
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
+    /// The most bytes of the body of a message that the client sends.
+    sends: usize,
+    /// The most bytes of the body of a message that the client takes.
+    takes: usize,
+    /// The encoded bytes of the session token.
+    token: usize,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -95,12 +105,15 @@ impl Client {
         // SAFETY: the client lives.
         let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
         let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
-        let this = Self {
+        let mut this = Self {
             raw,
             reads: Box::default(),
             values: Vec::new(),
             clock,
             timeout,
+            sends: 0,
+            takes: 0,
+            token: 0,
             connections,
         };
         let deadline = this.clock.now() + this.timeout;
@@ -123,12 +136,50 @@ impl Client {
             .await
             .unwrap_or(Err(Status::BAD_TIMEOUT));
         match connected {
-            Ok(()) => Ok(this),
+            Ok(()) => {
+                let mut limits = [0; 5];
+                // SAFETY: the client lives.
+                let status = Status(unsafe {
+                    ffi::shim_client_limits(this.raw.as_ptr(), &raw mut limits)
+                });
+                assert_eq!(status, Status::GOOD, "open62541 gives the limits");
+                let [send, receive, message, chunks, token] = limits;
+                (this.sends, this.takes) =
+                    (most(send, message, chunks), most(receive, message, chunks));
+                this.token = token;
+                Ok(this)
+            }
             Err(status) => {
                 this.close().await;
                 Err(status)
             }
         }
+    }
+
+    /// Builds one Read request of the Value of each node of `nodes`, in order.
+    ///
+    /// # Errors
+    ///
+    /// [`Large`] when the request, or a good answer with each field of a Double for
+    /// each node, needs more bytes than one message of the session: its chunk size
+    /// times the smaller of [`CHUNKS`] and the MaxChunkCount of the server, or the
+    /// MaxMessageSize of the server when that is smaller. The request comes first.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 cannot allocate the request.
+    pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
+        let request = Nodes::new(nodes);
+        // SAFETY: the request lives.
+        let ask = unsafe { ffi::shim_read_ask(request.raw(), self.token) };
+        // SAFETY: it reads nothing.
+        let answer = unsafe { ffi::shim_read_answer(nodes.len()) };
+        for (bytes, most) in [(ask, self.sends), (answer, self.takes)] {
+            if bytes > most {
+                return Err(Large { bytes, most });
+            }
+        }
+        Ok(request)
     }
 
     /// Reads the Value of each node of `nodes` in one request, and gives the value of
@@ -255,6 +306,33 @@ impl Client {
     }
 }
 
+/// A Read request past one message of a session.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Large {
+    /// The bytes of the body of its message.
+    pub(crate) bytes: usize,
+    /// The most bytes of the body of one message.
+    pub(crate) most: usize,
+}
+
+/// Gives the most bytes of the body of one message in chunks of `buffer` bytes, with
+/// the MaxMessageSize `message` and the MaxChunkCount `chunks` of the server, each 0
+/// for none.
+fn most(buffer: usize, message: usize, chunks: usize) -> usize {
+    let local = usize::try_from(CHUNKS).expect("a usize holds the chunks");
+    let chunks = if chunks == 0 {
+        local
+    } else {
+        chunks.min(local)
+    };
+    let most = chunks * (buffer - HEADER);
+    if message == 0 {
+        most
+    } else {
+        most.min(message)
+    }
+}
+
 /// The state of a client.
 struct State {
     channel: ffi::Channel,
@@ -277,7 +355,8 @@ pub(crate) struct Nodes {
 }
 
 impl Nodes {
-    /// Builds one Read request of the Value of each node of `nodes`, in order.
+    /// Builds one Read request of the Value of each node of `nodes`, in order, with no
+    /// check of its size: [`Client::nodes`] checks it.
     ///
     /// # Panics
     ///

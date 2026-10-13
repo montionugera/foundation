@@ -186,7 +186,12 @@ unsafe extern "C" {
         node: Node<'_>,
         size: usize,
     ) -> u32;
-    pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
+    pub(crate) fn shim_server_limits(
+        server: *mut Server,
+        buffer: u32,
+        message: u32,
+        chunks: u32,
+    );
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;

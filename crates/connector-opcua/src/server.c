@@ -89,7 +89,12 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t si
     return status;
 }
 
-/* Sets the most chunks in a message of each later channel of `server`. */
-void shim_server_chunks(UA_Server *server, UA_UInt32 chunks) {
-    UA_Server_getConfig(server)->tcpMaxChunks = chunks;
+/* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
+ * of `server`, each 0 for the default of open62541. */
+void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
+                        UA_UInt32 chunks) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->tcpBufSize = buffer;
+    config->tcpMaxMsgSize = message;
+    config->tcpMaxChunks = chunks;
 }

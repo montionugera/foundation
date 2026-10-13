@@ -65,6 +65,8 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
     #[cfg(test)]
+    pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);
+    #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
     #[cfg(test)]
     pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);
@@ -440,6 +442,10 @@ unsafe extern "C" {
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);
     pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
+    pub(crate) fn shim_client_limits(
+        client: *mut Client,
+        limits: *mut [usize; 5],
+    ) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
@@ -456,6 +462,8 @@ unsafe extern "C" {
         count: usize,
     ) -> *mut ReadRequest;
     pub(crate) fn shim_read_free(request: *mut ReadRequest);
+    pub(crate) fn shim_read_ask(request: *const ReadRequest, token: usize) -> usize;
+    pub(crate) fn shim_read_answer(count: usize) -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,
         request: *mut ReadRequest,
