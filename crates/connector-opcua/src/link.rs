@@ -245,6 +245,11 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
         "int in_the_body(int unused) { return 0; }",
     );
     assert!(body.contains("unused parameter 'unused'"), "{body}");
+    let own = check_shim(
+        "#include \"shim.h\"",
+        "int in_our_header(int unused) { return 0; }",
+    );
+    assert!(own.contains("unused parameter 'unused'"), "{own}");
 }
 
 #[test]
@@ -716,7 +721,7 @@ fn the_scan_names_only_the_files_outside_tests() {
         named_in(&src().join("ffi.rs"), client),
     ]
     .concat();
-    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
     assert_eq!(named, found);
 }
 

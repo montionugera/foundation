@@ -9,6 +9,7 @@ mod admin;
 pub mod bench;
 mod budget;
 mod cause;
+pub mod client;
 mod connectors;
 mod directory;
 #[cfg(feature = "sim")]
@@ -45,6 +46,7 @@ use std::task::Poll;
 
 use env::thread::Handle;
 use types::frame::key_set::Interner;
+use types::name::Prefix;
 use types::time::{Span, Stamp};
 
 pub use crate::budget::{Budget, budget};
@@ -117,7 +119,8 @@ impl<M> fmt::Debug for Config<M> {
     }
 }
 
-/// The region whose mesh a node opens.
+/// The region whose mesh a node opens. The hub of each task knows each channel of the
+/// region's spec in use, at the open and after each spec change that takes effect.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Region {
@@ -137,11 +140,9 @@ pub enum Region {
     /// `acceptance` lab, which writes the file first with `create_key`, give it. A
     /// start whose mesh log holds no record keeps the region in the data directory. A
     /// start whose log holds a record and that gives another region stops the node, and
-    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. The hub of
-    /// each task knows each channel of the region's spec in use, at the open and after
-    /// each spec change that takes effect. At a start whose log holds no record, that
-    /// is the founding's `definitions`, or no channel when `spec::region::check` gives
-    /// them problems.
+    /// [`Node::join`] gives [`Error::Mesh`] with [`mesh::Error::Founding`]. At a start
+    /// whose log holds no record, the spec in use is the founding's `definitions`, or
+    /// no channel when `spec::region::check` gives them problems.
     #[cfg(feature = "sim")]
     Given(mesh::region::Founding),
 }
@@ -169,6 +170,8 @@ struct Shard {
 const BODY_MAX: usize = 1 << 20;
 /// The longest an entry waits for its group commit to start.
 const COMMIT: Span = Span::from_nanos(2_000_000);
+/// The interval of each shard's purge timer.
+const PURGE: Span = Span::from_nanos(10_000_000_000);
 /// The stamps each home accepts, a patch until they are settings (#1285).
 const LIMITS: home::order::Limits = home::order::Limits {
     earliest: Stamp::from_nanos(946_684_800_000_000_000),
@@ -179,37 +182,41 @@ impl Node {
     /// Starts one shard per core, named `shard-<i>`. Each shard is pinned to core `i`
     /// when the host can pin ([`env::shards::Shards::pinnable`]); else the OS places
     /// it. Each shard owns a `block::Pool` with an even part of the budget, and a ring
-    /// with an even part of the disk budget; shard 0 also takes each remainder. Unless
-    /// the node stops first, shard 0 locks the data directory with the file `lock`,
-    /// which it holds until each shard has closed its ring, each task of the mesh has
-    /// ended, and the transport has freed the port, then records the shard count and
-    /// [`Config::name`] in the data directory, or checks the ones there, then binds the
-    /// node's port at [`Config::listen`], and each shard opens its buffer in directory
-    /// `shard-<i>` of its files, and makes it there when it is not there. The shards
-    /// open their buffers one after another, in order of core. Once each buffer has
-    /// opened, shard 0 reads the node's key, private key, and seal key from the file
-    /// `node.key` in the data directory, and makes the file at the first start once it
-    /// has mesh time, unless `create_key` made it, then opens the mesh of
-    /// [`Config::region`] when it has one (a [`Region::Stored`] with no founding first
-    /// founds the root region and reads or makes `admin.key`), then writes the file
-    /// `address` in the data directory, with the node's key, the public key of its
-    /// transport, and the bound address, then serves the port until its transport or
-    /// the mesh's group stops, which stops the node. It writes `address` empty when it
-    /// stops serving, before the lock drops. An address in the file is no proof that a
-    /// node runs: a crash or a failed empty write leaves it. It admits each member of
-    /// the region, and gives other peers at most [`Settings::places_max`] places at
-    /// once: one for each session of a program, and one for the key of a node. At the
-    /// bound, the oldest place frees for a new peer, and its session closes unless its
-    /// peer is now a member, so a peer outside the region keeps its session until that
-    /// many later peers took a place. Returns once each shard runs or one has failed to
-    /// start. No shard starts when the disk budget holds no ring on each shard
-    /// ([`Error::Disk`]), when a shard's part of the pool budget gives a reservation of
-    /// more than `usize::MAX` bytes ([`Error::Pool`]), when [`Config::listen`] has a
-    /// multicast IP or the IPv4 broadcast IP ([`Error::Listen`]), or when
-    /// [`Config::name`] has a reserved segment ([`Error::Reserved`]) or more than 191
-    /// bytes ([`Error::Long`]). A port that does not bind stops the node after shard 0
-    /// claimed the data directory, and no buffer opens ([`Error::Port`]). Any failure
-    /// stops the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// with an even part of the disk budget; shard 0 also takes each remainder. A shard
+    /// gives the pages of a block size of its pool back to the system 10 to 20 s after
+    /// the last block of that size returned, or later when the shard's timer wakes
+    /// late. A size with no block in use gives its pages back sooner when an `alloc` of
+    /// another size needs its budget. Unless the node stops first, shard 0 locks the
+    /// data directory with the file `lock`, which it holds until each shard has closed
+    /// its ring, each task of the mesh has ended, and the transport has freed the port,
+    /// then records the shard count and [`Config::name`] in the data directory, or
+    /// checks the ones there, then binds the node's port at [`Config::listen`], and
+    /// each shard opens its buffer in directory `shard-<i>` of its files, and makes it
+    /// there when it is not there. The shards open their buffers one after another, in
+    /// order of core. Once each buffer has opened, shard 0 reads the node's key,
+    /// private key, and seal key from the file `node.key` in the data directory, and
+    /// makes the file at the first start once it has mesh time, unless `create_key`
+    /// made it, then opens the mesh of [`Config::region`] when it has one (a
+    /// [`Region::Stored`] with no founding first founds the root region and reads or
+    /// makes `admin.key`), then writes the file `address` in the data directory, with
+    /// the node's key, the public key of its transport, and the bound address, then
+    /// serves the port until its transport or the mesh's group stops, which stops the
+    /// node. It writes `address` empty when it stops serving, before the lock drops. An
+    /// address in the file is no proof that a node runs: a crash or a failed empty
+    /// write leaves it. It admits each member of the region, and gives other peers at
+    /// most [`Settings::places_max`] places at once: one for each session of a program,
+    /// and one for the key of a node. At the bound, the oldest place frees for a new
+    /// peer, and its session closes unless its peer is now a member, so a peer outside
+    /// the region keeps its session until that many later peers took a place. Returns
+    /// once each shard runs or one has failed to start. No shard starts when the disk
+    /// budget holds no ring on each shard ([`Error::Disk`]), when a shard's part of the
+    /// pool budget gives a reservation of more than `usize::MAX` bytes
+    /// ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
+    /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
+    /// segment ([`Error::Reserved`]) or more than 191 bytes ([`Error::Long`]). A port
+    /// that does not bind stops the node after shard 0 claimed the data directory, and
+    /// no buffer opens ([`Error::Port`]). Any failure stops the node, and
+    /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -679,9 +686,10 @@ impl Open {
         }
     }
 
-    /// Opens the shard's buffer and gives its home and `guard` to `hold`, which drops
-    /// the home once `guard` completes, then returns once its ring has closed. A
-    /// failed open drops `guard`, which stops the node.
+    /// Starts the pool's purge timer, which ends with the shard, then opens the shard's
+    /// buffer and gives its home and `guard` to `hold`, which drops the home once
+    /// `guard` completes, then returns once its ring has closed. A failed open drops
+    /// `guard`, which stops the node.
     async fn keep(
         self,
         files: env::files::Files,
@@ -690,6 +698,13 @@ impl Open {
         guard: Guard,
         hold: impl AsyncFnOnce(home::Shard, Guard),
     ) {
+        let (clock, own) = (self.monotonic.clone(), Rc::clone(&pool));
+        tasks.spawn(async move {
+            loop {
+                clock.sleep(PURGE).await;
+                own.purge();
+            }
+        });
         let Some(home) = self.run(files, pool, tasks.clone()).await else {
             // Stops the node, so each other shard ends.
             drop(guard);
@@ -1025,26 +1040,26 @@ impl Endpoint {
 
 impl Serve {
     /// Keeps the budgets ([`budget::keep`]), loads the node's identity
-    /// ([`identity::load`]), and opens `endpoint`, then runs each task given with a
-    /// hub over `home` that knows each channel of the spec that the mesh uses, and of
-    /// each spec that takes effect later, runs each connector that the spec in use
-    /// places on this node ([`connectors::Runs`]), and serves the node's port, until
-    /// `guard` completes, the transport stops, or the mesh's group stops, by the rank
-    /// of [`end`], with the address in the file `address` of `files` while it serves
-    /// ([`address::hold`]). A transport or a group that ends it goes into `failed`
-    /// before it drops the tasks given that still run. An `address` that was not
-    /// written goes into `failed` before the tasks given drop uncalled. An `address`
-    /// that was not written empty goes into `failed` after the tasks drop, unless an
-    /// error is there. Before it returns, it drops the tasks, the hub, `home`, `guard`,
-    /// the runs of the connectors, each session and stream future, the operations on
-    /// the mesh, the mesh, and the transport, and waits for each task of the mesh to
-    /// end, with a mesh, and for the transport to free the port. Unless the socket
-    /// broke, the port is freed only after the hub lets go of the region, as
-    /// [`hub::Hub::new`] states, and after each task that a connector's run spawned has
-    /// ended. Runs no task or connector and takes no session when a shard did not
-    /// open, or when the budgets were not kept, the identity did not load, the
-    /// transport refused the settings, the mesh did not open, or `address` was not
-    /// written, which goes into `failed`.
+    /// ([`identity::load`]), and opens `endpoint`, then runs each task given with a hub
+    /// over `home` that takes its definitions from the region's mesh
+    /// ([`hub::Config::region`]) and its access rules from each spec in use
+    /// ([`follow`]), runs each connector that the spec in use places on this node
+    /// ([`connectors::Runs`]), and serves the node's port, until `guard` completes, the
+    /// transport stops, or the mesh's group stops, by the rank of [`end`], with the
+    /// address in the file `address` of `files` while it serves ([`address::hold`]). A
+    /// transport or a group that ends it goes into `failed` before it drops the tasks
+    /// given that still run. An `address` that was not written goes into `failed`
+    /// before the tasks given drop uncalled. An `address` that was not written empty
+    /// goes into `failed` after the tasks drop, unless an error is there. Before it
+    /// returns, it drops the tasks, the hub, `home`, `guard`, the runs of the
+    /// connectors, each session and stream future, the operations on the mesh, the
+    /// mesh, and the transport, and waits for each task of the mesh to end, with a
+    /// mesh, and for the transport to free the port. Unless the socket broke, the port
+    /// is freed only after the hub lets go of the region, as [`hub::Hub::new`] states,
+    /// and after each task that a connector's run spawned has ended. Runs no task or
+    /// connector and takes no session when a shard did not open, or when the budgets
+    /// were not kept, the identity did not load, the transport refused the settings,
+    /// the mesh did not open, or `address` was not written, which goes into `failed`.
     #[expect(
         clippy::too_many_arguments,
         reason = "shard 0's parts, which its claim and its open give in turn"
@@ -1112,32 +1127,46 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let parts = mesh.as_ref().map(|mesh| {
-                    let kinds = Arc::new(kinds());
-                    let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
-                    let config = connector::supervisor::Config {
-                        kinds,
-                        clock: clock.clone(),
-                        entropy,
-                        net,
-                        tasks: tasks.clone(),
-                        hub: hub.clone(),
-                    };
-                    (ops, (mesh, runs(mesh, key, config)))
-                });
-                let (ops, runs) = parts.unzip();
-                let group = follow(runs, hub.clone()).await;
+                let (ops, followed) = match mesh.as_ref() {
+                    Some(mesh) => {
+                        let member = mesh.member(key);
+                        let member =
+                            member.expect("invariant: a mesh opens only on a member");
+                        let name = member.card.card().name.clone();
+                        let kinds = Arc::new(kinds());
+                        let ops = operations(
+                            mesh,
+                            name.clone(),
+                            hub.clone(),
+                            clock.clone(),
+                            &time,
+                            &entropy,
+                            Arc::clone(&kinds),
+                        );
+                        let config = connector::supervisor::Config {
+                            kinds,
+                            clock: clock.clone(),
+                            entropy,
+                            net,
+                            tasks: tasks.clone(),
+                            hub: hub.clone(),
+                        };
+                        let runs = connectors::Runs::new(config, name);
+                        (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                    }
+                    None => (None, None),
+                };
+                let handles = task::Handles { hub, ops };
                 let port = route::accept(
                     transport,
-                    mesh,
-                    hub.clone(),
+                    handles.clone(),
                     clock,
                     tasks.clone(),
                     settings.header_wait,
                     settings.places_max,
                 );
-                let stop = until(guard, port, group, fail);
-                inbox.serve(task::Handles { hub, ops }, tasks, stop).await;
+                let stop = until(guard, port, followed, fail);
+                inbox.serve(handles, tasks, stop).await;
             });
             // `hold` leaves `serve` to drop here: after a failed write it still holds
             // the tasks given, and `join` must rank that error above a panic in a
@@ -1186,92 +1215,83 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh` with the connector kinds `kinds`, whose keys
-/// [`channel_key`] makes.
+/// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
+/// connector kinds `kinds`, whose keys [`channel_key`] makes.
 fn operations(
     mesh: &mesh::Mesh,
+    name: types::name::Name,
+    hub: hub::Hub,
+    clock: env::clock::Clock,
     time: &clock::Reader,
     entropy: &env::entropy::Entropy,
     kinds: Arc<connector::kind::Table>,
 ) -> Rc<ops::Node> {
     let (time, entropy) = (time.clone(), entropy.clone());
-    let key = move || channel_key(&time, &entropy);
+    let channel = move || channel_key(&time, &entropy);
     let front_ends = ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
     );
-    Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
+    let node =
+        ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
+    Rc::new(node)
 }
 
-/// The runs of the connectors that the spec in use places on the node `key` of
-/// `mesh`, on a supervisor made from `config`.
-fn runs(
-    mesh: &mesh::Mesh,
-    key: types::node::Key,
-    config: connector::supervisor::Config,
-) -> connectors::Runs {
-    let member = mesh.member(key);
-    let member = member.expect("invariant: a mesh opens only on a member");
-    connectors::Runs::new(config, member.card.card().name.clone())
-}
-
-/// The connector kinds of this binary.
-fn kinds() -> connector::kind::Table {
-    connector::kind::Table::new().with("influx", connector_influx::Kind::default())
-}
-
-/// Gives `hub` what the spec that `mesh` uses defines and makes `runs` match it, then
-/// returns a future that does so for each later spec in use and resolves with the
-/// stop of the group, or never resolves when the node has no mesh.
-/// The hub knows each spec before the runs do, so a run finds its status channels.
-/// The future holds the runs.
+/// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match
+/// that spec ([`connectors::Runs::apply`]), with no wait: the watch gives the spec in
+/// use at once ([`mesh::used::Watch::next`]). Then gives the future that does the same
+/// for each later spec, and that ends with the stop of the group.
 async fn follow(
-    mesh: Option<(&mesh::Mesh, connectors::Runs)>,
+    mesh: &mesh::Mesh,
     hub: hub::Hub,
+    mut runs: connectors::Runs,
 ) -> impl Future<Output = mesh::Stopped> + use<> {
-    let define = move |spec: mesh::used::Spec, runs: &mut connectors::Runs| {
-        hub.set_definitions(&*spec.definitions);
+    let mut watch = mesh.watch_spec();
+    let mut used = move |spec: mesh::used::Spec| {
+        let tree = spec.definitions.iter();
+        hub.set_rules(access::Rules::new([(Prefix::ROOT, tree)]));
         runs.apply(&spec.definitions);
     };
-    let mut followed = mesh.map(|(mesh, runs)| (mesh.watch_spec(), runs));
-    let first = match &mut followed {
-        Some((watch, runs)) => watch.next().await.map(|spec| define(spec, runs)),
-        None => Ok(()),
-    };
+    let first = watch.next().await.map(&mut used);
     async move {
-        let Some((mut watch, mut runs)) = followed else {
-            return std::future::pending().await;
-        };
         if let Err(stopped) = first {
             return stopped;
         }
         loop {
-            let next = watch.next().await;
-            if let Err(stopped) = next.map(|spec| define(spec, &mut runs)) {
-                return stopped;
+            match watch.next().await {
+                Ok(spec) => used(spec),
+                Err(stopped) => return stopped,
             }
         }
     }
 }
 
-/// Ready when the node stops (`guard`), the transport stops (`port`), or the mesh's
-/// group stops, by the rank of [`end`]. A transport or a group that ends it goes into
-/// `fail` first.
+/// The connector kinds of this binary.
+fn kinds() -> connector::kind::Table {
+    connector::kind::Table::new()
+        .with("influx", connector_influx::Kind::default())
+        .with("opcua", connector_opcua::Kind::default())
+}
+
+/// Drives `runs`, with a mesh, which ends when the mesh's group stops. Ready when the
+/// node stops (`guard`), the transport stops (`port`), or `runs` ends, by the rank of
+/// [`end`]. A transport or a group that ends it goes into `fail` first.
 async fn until(
     guard: Guard,
     port: impl Future<Output = transport::Error>,
-    group: impl Future<Output = mesh::Stopped>,
+    runs: Option<impl Future<Output = mesh::Stopped>>,
     fail: impl Fn(Error),
 ) {
-    let (mut guard, mut port, mut group) = (pin!(guard), pin!(port), pin!(group));
+    let (mut guard, mut port) = (pin!(guard), pin!(port));
+    let mut runs = pin!(runs);
     poll_fn(|cx| {
-        let ended = end(
-            guard.as_mut().poll(cx),
-            port.as_mut().poll(cx),
-            group.as_mut().poll(cx),
-        );
+        let group = match runs.as_mut().as_pin_mut() {
+            Some(runs) => runs.poll(cx),
+            None => Poll::Pending,
+        };
+        let ended = end(guard.as_mut().poll(cx), port.as_mut().poll(cx), group);
         // Set before the tasks drop, so that `join` ranks it above a panic in a
         // task's drop.
         ended.map(|error| error.map_or((), &fail))

@@ -7,38 +7,45 @@ mod alloc;
 #[doc(hidden)]
 pub mod bench;
 #[cfg(feature = "open62541")]
-#[cfg_attr(
-    not(any(test, feature = "sim")),
-    expect(dead_code, reason = "only `bench` uses it until the kind of #435")
-)]
 mod client;
 #[cfg(feature = "open62541")]
-#[cfg_attr(not(test), expect(dead_code, reason = "the kind of #435 uses it"))]
+mod config;
+#[cfg(feature = "open62541")]
 mod connection;
 #[cfg(feature = "open62541")]
-#[cfg_attr(
-    not(feature = "sim"),
-    expect(dead_code, reason = "only `bench` uses it until the session of #435")
-)]
 mod event;
 #[cfg(feature = "open62541")]
 #[cfg_attr(
     not(feature = "sim"),
     expect(
         dead_code,
-        reason = "only `bench` and `fuzz` use it until the session of #435"
+        reason = "only `bench` and `fuzz` use the codec of open62541"
     )
 )]
 mod ffi;
 #[cfg(feature = "sim")]
 #[doc(hidden)]
 pub mod fuzz;
+#[cfg(feature = "open62541")]
+mod kind;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod link;
 #[cfg(feature = "open62541")]
+mod node;
+#[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod server;
+#[cfg(feature = "sim")]
+pub mod sim;
+#[cfg(feature = "open62541")]
+#[cfg(any(test, feature = "sim"))]
+mod unwind;
+
+#[cfg(feature = "open62541")]
+pub use config::Config;
+#[cfg(feature = "open62541")]
+pub use kind::Kind;
 
 #[cfg(test)]
 mod child;
@@ -336,7 +343,12 @@ mod tests {
             let shim = args(&tool(shim.clone(), path));
             assert_eq!(
                 includes(&shim),
-                [dirs[0], dirs[1], "/copy/arch/common"],
+                [
+                    dirs[0],
+                    dirs[1],
+                    "/copy/arch/common",
+                    concat!(env!("CARGO_MANIFEST_DIR"), "/src")
+                ],
                 "{path}: {shim:?}"
             );
             for arg in ["-Wall", "-Wextra", "-Werror", "-std=c99", &header] {

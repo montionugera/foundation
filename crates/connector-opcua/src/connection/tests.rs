@@ -29,6 +29,7 @@ use crate::ffi::test::{
 use crate::ffi::{self, Bytes, ConnectionState, KeyValueMap, Status};
 use crate::peer::{hel, write};
 use crate::server::Server;
+use crate::unwind::caught;
 
 const PORT: u16 = 4840;
 
@@ -2850,19 +2851,9 @@ fn a_close_panics_after_64_runs_while_a_busy_timer_queues_delayed_callbacks() {
         .run_on(&network.local.clone(), |node, _| async move {
             let hopping = Hopping::start(&node, usize::MAX).await;
             let server = hopping.server.raw();
-            let panic = {
-                let mut close = pin!(hopping.server.close(&hopping.side.manager));
-                poll_fn(|cx| {
-                    match panic::catch_unwind(AssertUnwindSafe(|| {
-                        close.as_mut().poll(cx)
-                    })) {
-                        Ok(poll) => poll.map(|()| None),
-                        Err(panic) => Poll::Ready(Some(panic)),
-                    }
-                })
+            let panic = caught(hopping.server.close(&hopping.side.manager))
                 .await
-                .expect("the close panics")
-            };
+                .expect_err("the close panics");
             // SAFETY: the server lives, as the panic came before the delete, and the
             // delayed callbacks that wait are of `hops` and do not read it.
             let status = Status(unsafe { ffi::test::UA_Server_delete(server) });
@@ -2908,16 +2899,9 @@ fn a_close_through_another_manager_panics_before_the_stop() {
             // SAFETY: the server is deleted before `side` drops.
             let server = unsafe { Server::start(&side.manager, c"", 1) };
             let raw = server.raw();
-            let mut close = pin!(server.close(&other.manager));
-            let panic = poll_fn(|cx| {
-                match panic::catch_unwind(AssertUnwindSafe(|| close.as_mut().poll(cx)))
-                {
-                    Ok(poll) => poll.map(|()| None),
-                    Err(panic) => Poll::Ready(Some(panic)),
-                }
-            })
-            .await
-            .expect("the close panics");
+            let panic = caught(server.close(&other.manager))
+                .await
+                .expect_err("the close panics");
             // SAFETY: the server lives, as the panic came before the stop.
             let state = unsafe { ffi::test::UA_Server_getLifecycleState(raw) };
             assert_eq!(state, ffi::test::Lifecycle::STARTED);
@@ -3036,7 +3020,7 @@ unsafe extern "C" fn created(
     response: *mut c_void,
 ) {
     // SAFETY: open62541 gives a response.
-    let result = unsafe { ffi::test::shim_response_result(response) };
+    let result = unsafe { ffi::shim_response_result(response) };
     // SAFETY: the test gives a live cell.
     unsafe { (*data.cast::<Cell<u32>>()).set(result) };
 }

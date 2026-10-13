@@ -89,7 +89,7 @@ pub struct Config {
     pub clock: Clock,
     /// Gives each election timeout its random part.
     pub entropy: Entropy,
-    /// Runs the group's task and the tasks that send.
+    /// Runs each task that the mesh spawns.
     pub tasks: Tasks,
     /// Gives the blocks of the log's reads and writes, of each message that the group
     /// sends, and of each answer to a forwarded proposal. A write that finds the pool
@@ -136,7 +136,7 @@ impl fmt::Debug for Mesh {
 
 impl Mesh {
     /// Reads the log from `config.dir`, starts the group as a follower, and spawns
-    /// its task on `config.tasks`. It puts each chunk of the founding tree in
+    /// its tasks on `config.tasks`. It puts each chunk of the founding tree in
     /// `config.store`. It reads the spec of the newest pointer that a file in
     /// `<config.dir>/spec` names, or the founding spec when there is no file, and
     /// removes the file of each older pointer. A spec that does not read or has
@@ -259,10 +259,9 @@ impl Mesh {
         })
     }
 
-    /// Gives a future that resolves once each task of the mesh has ended: the group's
-    /// task and each task that sends. The future holds no clone, so it does not keep
-    /// the group running. Once it resolves, the mesh holds no file, and a new open of
-    /// its directory can take the log.
+    /// Gives a future that resolves once each task that the mesh spawned has ended. The
+    /// future holds no clone, so it does not keep the group running. Once it resolves,
+    /// the mesh holds no file, and a new open of its directory can take the log.
     #[must_use]
     pub fn ended(&self) -> tasks::Ended {
         self.tasks.ended()

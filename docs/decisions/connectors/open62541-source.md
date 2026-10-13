@@ -360,6 +360,13 @@
   The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
   2026-10-11 00:41 UTC).
+  A NULL from a constructor of `shim.c` stops the process through `alloc::exhausted`,
+  which calls `std::alloc::handle_alloc_error` as the Rust allocator does on out of
+  memory. Its message gives the size of a header alone, because a constructor does
+  not give the size of the block that failed. A NULL inside the copy keeps the C
+  contract. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6140602800,
+  2026-10-13 07:30 UTC).
   `build.rs` gives both builds the sanitizers of the Rust build. With
   `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
   -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
@@ -413,16 +420,21 @@
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
   `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
   `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
-  until #1992 gives it the wall time of the node through `hub`, in the PR of the first
-  connection with a security policy other than `None`. No connection that checks a
-  certificate runs before. Its drop runs the queued delayed callbacks in at most 64
-  passes, then aborts: a callback that queues itself at each pass is a defect. The
-  hidden module `bench`, behind the feature `sim`, gives the benchmark and the
-  allocation test a client on the loop. Decided by `laptop.architect-2`
+  until #1992 gives it the wall time of the node through `hub`, when exit test 1 of
+  #1737 passes, or in the PR of the first connection with a security policy other than
+  `None`, whichever comes first. Until then, each connect and each token renewal logs
+  that the token time does not match the clock, and each request header carries a time
+  near 1970. No connection that checks a certificate runs before. Its drop runs the
+  queued delayed callbacks in at most 64 passes, then aborts: a callback that queues
+  itself at each pass is a defect. The hidden module `bench`, behind the feature `sim`,
+  gives the benchmark and the allocation test a client on the loop. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC). `bench` also gives a connection manager with the test server
+  2026-10-08 20:22 UTC); the trigger of #1992
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
+  2026-10-13 07:03 UTC). `bench` also gives a connection manager with the test server
   and its clients on the loop of the manager. Approved by `laptop.architect-2` at
   `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
@@ -517,10 +529,14 @@
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
   listen connection after an accept.
   A server listens on the listener that `Manager::listening` binds on the socket address
-  that its owner gives, with the options of each stream of the manager. Each accepted
-  stream is a new connection that gets `ESTABLISHED`, with the context of the listen
-  connection at the accept. A drive accepts at most one stream between two runs of the
-  loop, as the POSIX manager accepts one for each run
+  that its owner gives, with the options of each stream of the manager. The server of
+  `sim::serve` listens on the listener that the caller of `sim::serve` binds, with the
+  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Approved by
+  `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257). Each
+  accepted stream is a new connection that gets `ESTABLISHED`, with the context of the
+  listen connection at the accept. A drive accepts at most one stream between two runs
+  of the loop, as the POSIX manager accepts one for each run
   (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541 needs that run: at
   the limit, `purgeFirstChannelWithoutSession`
   (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
@@ -553,11 +569,12 @@
   2026-10-10 03:05 UTC). Lost for the listener: the open of the listen binds it from its
   parameters. `address` is a host name and `Net::listen` takes a socket address, so the
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
-  lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
-  options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
-  until a listen open takes it, and `Server::start` makes the URL of its server from
-  that port. Decided by `laptop.architect-2`
+  lost, for a server other than that of `sim::serve`: the owner binds the listener and
+  gives it to `Manager::listening`, so the stream options hold only when the owner binds
+  with the options of the manager. An owner that binds port 0 reads its port from
+  `Manager::port`, which gives the port of the listener until a listen open takes it,
+  and `Server::start` makes the URL of its server from that port. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
   2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
@@ -567,7 +584,8 @@
   21:10 UTC), and one with an enum argument, a new type that holds one value. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286,
-  2026-10-09 20:26 UTC). The two constructors: decided by `laptop.architect-2`
+  2026-10-09 20:26 UTC). The two constructors `new` and `listening`: decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505,
   2026-10-09 21:12 UTC), after the ruling of `laptop.director`. Supersedes the one
   constructor of
@@ -576,7 +594,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
   2026-10-10 03:15 UTC). Supersedes "the listener that its owner gives" of
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286 and
-  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The third
+  constructor, `Manager::accepting`, takes the listener that the caller of `sim::serve`
+  binds, with the options of that bind. The streams of the test server need not have the
+  options of the client, so the cost of a second copy of the options is accepted for
+  `sim::serve`. Supersedes the bind in `Manager::listening` of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582 for
+  `sim::serve`: approved by `laptop.architect-2` (2026-10-13T02:23:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136822544). The
   parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
   2026-10-09 21:25 UTC).

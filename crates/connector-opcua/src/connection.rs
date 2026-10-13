@@ -22,6 +22,7 @@ use env::net::{self, Listener, Net, Tcp, tcp};
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
+use crate::alloc;
 use crate::event::Loop;
 use crate::ffi::{self, Bytes, Status};
 
@@ -73,9 +74,9 @@ impl Manager {
     /// connects through `net`, linked first into the event sources of the loop, where a
     /// client finds it.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When a C allocation fails.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub(crate) fn new(clock: Clock, net: Net, rng: &mut Rng) -> Self {
         Self::make(clock, net, None, rng)
     }
@@ -87,9 +88,13 @@ impl Manager {
     ///
     /// As [`Net::listen`].
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When a C allocation fails.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn listening(
         clock: Clock,
         net: Net,
@@ -102,7 +107,25 @@ impl Manager {
             backlog,
             options: OPTIONS,
         })?;
-        Ok(Self::make(clock, net, Some(listener), rng))
+        Ok(Self::accepting(clock, net, listener, rng))
+    }
+
+    /// As [`Manager::listening`], on the bound `listener`.
+    ///
+    /// # Aborts
+    ///
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
+    pub(crate) fn accepting(
+        clock: Clock,
+        net: Net,
+        listener: Listener,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(clock, net, Some(listener), rng)
     }
 
     fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
@@ -142,10 +165,9 @@ impl Manager {
         let raw = unsafe {
             ffi::shim_cm_new(events.raw(), &raw const HOOKS, state.as_ptr().cast())
         };
-        assert!(
-            !raw.is_null(),
-            "open62541: out of memory for a connection manager"
-        );
+        if raw.is_null() {
+            alloc::exhausted();
+        }
         this.raw.set(raw);
         Self { state, events }
     }
@@ -155,8 +177,8 @@ impl Manager {
         &self.events
     }
 
-    /// Gives the port of the listener of [`Manager::listening`], until a listen open
-    /// takes it.
+    /// Gives the port of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], until a listen open takes it.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn port(&self) -> Option<u16> {
         let listener = self.state().listener.take();

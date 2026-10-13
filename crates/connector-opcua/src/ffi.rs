@@ -5,7 +5,38 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::marker::PhantomData;
 use std::mem::offset_of;
+use std::ptr;
+
+/// `shim_node`: a node that borrows its name from a [`crate::node::Node`].
+#[repr(C)]
+pub(crate) struct Node<'a> {
+    namespace: u16,
+    number: u32,
+    /// NULL for a node by number.
+    name: *const u8,
+    length: usize,
+    borrowed: PhantomData<&'a str>,
+}
+
+impl<'a> From<&'a crate::node::Node> for Node<'a> {
+    fn from(node: &'a crate::node::Node) -> Self {
+        let (number, name, length) = match &node.key {
+            crate::node::Key::Number(number) => (*number, ptr::null(), 0),
+            crate::node::Key::Name(name) => {
+                (0, name.as_str().as_ptr(), name.as_str().len())
+            }
+        };
+        Self {
+            namespace: node.namespace,
+            number,
+            name,
+            length,
+            borrowed: PhantomData,
+        }
+    }
+}
 
 /// An open62541 status code.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -17,13 +48,17 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_INVALID_ARGUMENT: Self = Self(0x80AB_0000);
     pub(crate) const BAD_CONNECTION_CLOSED: Self = Self(0x80AE_0000);
+    #[cfg(test)]
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
     pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
+    pub(crate) const BAD_UNEXPECTED_ERROR: Self = Self(0x8001_0000);
     #[cfg(test)]
     pub(crate) const BAD_INTERNAL_ERROR: Self = Self(0x8002_0000);
     #[cfg(test)]
     pub(crate) const BAD_OUT_OF_RANGE: Self = Self(0x803C_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
     #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
     #[cfg(test)]
@@ -32,6 +67,8 @@ impl Status {
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);
     #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
     #[cfg(test)]
@@ -125,6 +162,8 @@ const _: () = {
         offset_of!(DecodeOptions, decoded) == 32,
         "decodedLength moved"
     );
+    assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
+    assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
 };
 
 /// Gives `UA_TYPES`, the table of built-in types.
@@ -321,6 +360,18 @@ pub(crate) struct Hooks {
 #[repr(C)]
 pub(crate) struct Client([u8; 0]);
 
+/// `UA_ReadRequest`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct ReadRequest([u8; 0]);
+
+/// `UA_ReadResponse`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct ReadResponse([u8; 0]);
+
+/// `UA_DataValue`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct DataValue([u8; 0]);
+
 /// `UA_SecureChannelState` of a client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -343,13 +394,12 @@ impl Session {
     pub(crate) const ACTIVATED: Self = Self(4);
 }
 
-/// `UA_ClientAsyncReadValueAttributeCallback`.
+/// `UA_ClientAsyncReadCallback`.
 pub(crate) type Read = unsafe extern "C" fn(
     client: *mut Client,
     data: *mut c_void,
     request: u32,
-    status: u32,
-    value: *mut c_void,
+    response: *mut ReadResponse,
 );
 
 /// The `shim_now` of `shim.c`.
@@ -378,6 +428,12 @@ unsafe extern "C" {
     pub(crate) fn UA_clear(value: *mut c_void, data_type: *const DataType);
 
     pub(crate) fn UA_StatusCode_name(code: u32) -> *const c_char;
+    pub(crate) fn UA_parseEndpointUrl(
+        url: *const Bytes,
+        host: *mut Bytes,
+        port: *mut u16,
+        path: *mut Bytes,
+    ) -> u32;
     pub(crate) fn UA_random_seed_deterministic(value: u64);
 
     pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
@@ -395,6 +451,10 @@ unsafe extern "C" {
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);
     pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
+    pub(crate) fn shim_client_limits(
+        client: *mut Client,
+        limits: *mut [usize; 5],
+    ) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
@@ -406,15 +466,27 @@ unsafe extern "C" {
         session: *mut Session,
         status: *mut u32,
     );
+    pub(crate) fn shim_read_new(
+        nodes: *const Node<'_>,
+        count: usize,
+    ) -> *mut ReadRequest;
+    pub(crate) fn shim_read_free(request: *mut ReadRequest);
+    pub(crate) fn shim_read_ask(request: *const ReadRequest, token: usize) -> usize;
+    pub(crate) fn shim_read_answer(count: usize) -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,
-        namespace: u16,
-        node: u32,
+        request: *mut ReadRequest,
         callback: Read,
         data: *mut c_void,
-        request: *mut u32,
+        id: *mut u32,
     ) -> u32;
-    pub(crate) fn shim_value_double(value: *const c_void, out: *mut f64) -> u32;
+    pub(crate) fn shim_response_result(response: *const c_void) -> u32;
+    pub(crate) fn shim_read_count(response: *const ReadResponse) -> usize;
+    pub(crate) fn shim_read_result(
+        response: *const ReadResponse,
+        index: usize,
+    ) -> *const DataValue;
+    pub(crate) fn shim_value_double(value: *const DataValue, out: *mut f64) -> u32;
 
     pub(crate) fn shim_cm_new(
         el: *mut EventLoop,

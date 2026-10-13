@@ -211,8 +211,10 @@ impl Sender {
 
     /// Sends one message: for each of `parts`, in order, the bytes of its range of
     /// `block`, then its zeros. The stream holds `block` until the carrier takes the
-    /// message, and copies no byte of it before then. It never sends a byte of
-    /// `block` outside the ranges. Waits, returns, and resets on drop as
+    /// message, and copies no byte of it before then. The carrier then holds `block`
+    /// while it holds a run of over 1452 bytes of it
+    /// ([`Config::window_bytes`](crate::Config::window_bytes)). It never sends a byte
+    /// of `block` outside the ranges. Waits, returns, and resets on drop as
     /// [`send`](Self::send).
     ///
     /// # Errors
@@ -360,7 +362,7 @@ impl Future for Sending<'_> {
 impl Drop for Sending<'_> {
     fn drop(&mut self) {
         if !self.done {
-            self.session.abandon(self.stream, self.message.is_none());
+            self.session.abandon(self.stream);
         }
     }
 }
@@ -1209,6 +1211,382 @@ mod tests {
     }
 
     #[test]
+    fn a_send_cut_and_dropped_resets_the_stream_and_keeps_no_waker() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                // The peer accepts the stream only once a byte of it arrives.
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let mut cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                let count = Arc::new(Count(AtomicU32::new(0)));
+                let waker = Waker::from(Arc::clone(&count));
+                let polled = cut.as_mut().poll(&mut Context::from_waker(&waker));
+                assert!(polled.is_pending(), "the send waits");
+                drop(cut);
+                assert_eq!(sender.send(side.block(b"a")).await, Err(CANCELLED));
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+                // The close wakes each write that waits.
+                assert_eq!(count.0.load(Ordering::Relaxed), 0, "no waker");
+            },
+            |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 100)).await;
+                assert_eq!(until_error(&mut incoming.receiver).await, CANCELLED);
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
+    fn a_send_dropped_behind_a_leaked_send_leaves_its_message_whole() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                {
+                    let mut next = Box::pin(sender.send(side.block(b"b")));
+                    let polled = poll_once(next.as_mut()).await;
+                    assert!(polled.is_none(), "it waits behind the cut message");
+                }
+                assert_eq!(sender.send(side.block(b"c")).await, Ok(()));
+                sender.finish().expect("finished");
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+            |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let receiver = &mut incoming.receiver;
+                let mut lengths = Vec::new();
+                while let Some(message) = receiver.recv().await.expect("read") {
+                    lengths.push(message.len());
+                }
+                let (first, rest) = lengths.split_first().expect("a message");
+                let (last, bodies) = rest.split_last().expect("two messages");
+                assert_eq!((*first, *last), (1, 1));
+                assert!(bodies.iter().all(|&len| len == 60_000), "{bodies:?}");
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
+    fn a_try_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
+        let bodies = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::clone(&bodies);
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            move |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let mut count = 0;
+                let cut = loop {
+                    count += 1;
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                sent.store(count, Ordering::SeqCst);
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                let tried = sender.try_send(side.block(b"b")).expect("open");
+                assert!(tried.is_some(), "it waits behind the cut message");
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+                drop(sender);
+            },
+            move |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let receiver = &mut incoming.receiver;
+                let mut got = 0;
+                loop {
+                    let message = receiver.recv().await.expect("read");
+                    let message = message.expect("a message");
+                    if message.len() == 60_000 {
+                        got += 1;
+                    }
+                    if got > 0 && got == bodies.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    /// The call of a `Sender` that a test gives a message to.
+    enum Call {
+        Send,
+        TrySend,
+    }
+
+    /// Leaks a `send` of a message that the window cuts, waits `wait`, then gives a
+    /// too large message to `call`. The peer reads each cut message whole.
+    fn too_large_behind_a_leaked_send(
+        call: Call,
+        wait: Span,
+    ) -> Result<(), sim::Error> {
+        let bodies = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::clone(&bodies);
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            move |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 10)).await;
+                let body = vec![7; 60_000];
+                let mut count = 0;
+                let cut = loop {
+                    count += 1;
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                sent.store(count, Ordering::SeqCst);
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                if wait > Span::ZERO {
+                    side.node.clock().sleep(wait).await;
+                }
+                let over = side.block(&vec![1; MESSAGE_BYTES_MAX + 1]);
+                let large = Error::TooLarge {
+                    bytes: MESSAGE_BYTES_MAX + 1,
+                    bytes_max: MESSAGE_BYTES_MAX,
+                };
+                match call {
+                    Call::TrySend => {
+                        assert_eq!(bytes(sender.try_send(over)), Err(large));
+                    }
+                    Call::Send => assert_eq!(sender.send(over).await, Err(large)),
+                }
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+                drop(sender);
+            },
+            move |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let receiver = &mut incoming.receiver;
+                let mut got = 0;
+                loop {
+                    let message = receiver.recv().await.expect("read");
+                    let message = message.expect("a message");
+                    if message.len() == 60_000 {
+                        got += 1;
+                    }
+                    if got > 0 && got == bodies.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                side.session.close(Code(4));
+            },
+        );
+        sim.run()
+    }
+
+    #[test]
+    fn a_too_large_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
+        assert_eq!(
+            too_large_behind_a_leaked_send(Call::Send, Span::ZERO),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_too_large_try_send_behind_a_leaked_send_lets_the_stream_write_its_rest() {
+        assert_eq!(
+            too_large_behind_a_leaked_send(Call::TrySend, Span::ZERO),
+            Ok(())
+        );
+    }
+
+    /// The stream got the `Writable` of the leaked send, so `pump` does not write the
+    /// rest: the refused write does.
+    #[test]
+    fn a_too_large_send_after_the_writable_of_a_leaked_send_writes_its_rest() {
+        let wait = spans(Span::MILLISECOND, 200);
+        assert_eq!(too_large_behind_a_leaked_send(Call::Send, wait), Ok(()));
+    }
+
+    /// What a test gives to `send` between a leak and a range panic.
+    #[cfg(panic = "unwind")]
+    enum Between {
+        Nothing,
+        TooLarge,
+    }
+
+    /// Leaks a `send` of a message that the window cuts, gives `between` to `send`,
+    /// then panics on a range in `send_parts` and sends `c`. Gives the result of
+    /// `c`, the messages that the peer read before `c` or an error, with `c`, and
+    /// that error.
+    #[cfg(panic = "unwind")]
+    fn range_panic_behind_a_leaked_send(
+        between: Between,
+    ) -> (Result<(), Error>, Vec<Vec<u8>>, Option<Error>) {
+        let result = Arc::new(Mutex::new(None));
+        let read = Arc::new(Mutex::new(None));
+        let (sent, got) = (Arc::clone(&result), Arc::clone(&read));
+        let (mut sim, ..) = testing::sessions(
+            0,
+            small,
+            move |side| async move {
+                let opened = side.session.open(Class::Complete).await;
+                let (mut sender, mut receiver) = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                assert_eq!(bytes(receiver.recv().await), Ok(Some(b"b".to_vec())));
+                let body = vec![7; 1473];
+                let cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body[1..])));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                #[expect(clippy::mem_forget, reason = "safe code can leak a send")]
+                std::mem::forget(cut);
+                if let Between::TooLarge = between {
+                    let large = Err(Error::TooLarge {
+                        bytes: 1473,
+                        bytes_max: 1472,
+                    });
+                    assert_eq!(sender.send(side.block(&body)).await, large);
+                }
+                let bad = [Part {
+                    range: 0..9,
+                    zeros: 0,
+                }];
+                let block = side.block(b"abcd");
+                let panicked =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut sending = pin!(sender.send_parts(block, &bad));
+                        let mut cx = Context::from_waker(Waker::noop());
+                        drop(sending.as_mut().poll(&mut cx));
+                    }));
+                assert!(panicked.is_err(), "the range panics");
+                *sent.lock().expect("not poisoned") =
+                    Some(sender.send(side.block(b"c")).await);
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+            move |side| async move {
+                let mut incoming = side.session.accept().await.expect("a stream");
+                let reply = incoming.sender.as_mut().expect("a reply half");
+                reply.send(side.block(b"b")).await.expect("sent");
+                let mut messages = Vec::new();
+                let error = loop {
+                    match incoming.receiver.recv().await {
+                        Ok(Some(message)) if &message[..] == b"c" => {
+                            messages.push(message.to_vec());
+                            break None;
+                        }
+                        Ok(Some(message)) => messages.push(message.to_vec()),
+                        Ok(None) => panic!("the stream finished"),
+                        Err(error) => break Some(error),
+                    }
+                };
+                *got.lock().expect("not poisoned") = Some((messages, error));
+                side.session.close(Code(4));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+        let sent = result.lock().expect("not poisoned").take().expect("sent");
+        let (messages, error) =
+            read.lock().expect("not poisoned").take().expect("read");
+        (sent, messages, error)
+    }
+
+    #[test]
+    #[cfg(panic = "unwind")]
+    fn a_range_panic_as_the_first_use_after_a_leak_cancels_the_leaked_message() {
+        let (sent, messages, error) =
+            range_panic_behind_a_leaked_send(Between::Nothing);
+        assert_eq!(sent, Err(CANCELLED));
+        assert_eq!(messages.first().map(Vec::as_slice), Some(&b"a"[..]));
+        assert_eq!(error, Some(CANCELLED));
+    }
+
+    #[test]
+    #[cfg(panic = "unwind")]
+    fn a_range_panic_after_a_too_large_send_leaves_the_leaked_message_whole() {
+        let (sent, messages, error) =
+            range_panic_behind_a_leaked_send(Between::TooLarge);
+        assert_eq!(sent, Ok(()));
+        assert_eq!(error, None);
+        let (first, rest) = messages.split_first().expect("a message");
+        let (last, bodies) = rest.split_last().expect("two messages");
+        assert_eq!((&first[..], &last[..]), (&b"a"[..], &b"c"[..]));
+        assert!(!bodies.is_empty(), "the leaked message arrives");
+        assert!(bodies.iter().all(|body| *body == [7; 1472]), "{bodies:?}");
+    }
+
+    #[test]
+    fn a_cut_send_dropped_after_the_close_does_nothing() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                let body = vec![7; 60_000];
+                let cut = loop {
+                    let mut sending = Box::pin(sender.send(side.block(&body)));
+                    match poll_once(sending.as_mut()).await {
+                        Some(done) => done.expect("sent"),
+                        None => break sending,
+                    }
+                };
+                side.session.close(Code(4));
+                drop(cut);
+                let closed = Error::Closed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+            |side| async move {
+                let closed = Error::PeerClosed { code: Code(4) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
     fn a_send_cut_by_the_window_and_dropped_gives_back_its_block() {
         let (mut sim, ..) = testing::sessions(
             0,
@@ -1736,7 +2114,8 @@ mod tests {
                 let opened = side.session.open_sender(Class::Complete).await;
                 let mut sender = opened.expect("a stream");
                 // A message of at most 1452 bytes is copied, so the stream drops its
-                // block at once. A longer one is a slice of its block until the ACK.
+                // block at once. A longer one is a slice of its block until the peer
+                // acknowledges it and each byte before it, or the stream resets.
                 for (len, held) in [(100, false), (1452, false), (1453, true)] {
                     let block = side.block(&vec![7; len]);
                     let at = block.as_ptr();
@@ -2415,6 +2794,38 @@ mod tests {
                 let stopped = Err(Error::Stopped { code: Code(3) });
                 assert_eq!(sender.finish(), stopped);
                 assert_eq!(sender.finish(), stopped);
+                side.session.close(Code(5));
+            },
+            |side| async move {
+                let incoming = side.session.accept().await.expect("a stream");
+                incoming.receiver.stop(Code(3));
+                let closed = Error::PeerClosed { code: Code(5) };
+                assert_eq!(side.session.closed().await, closed);
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
+    fn a_message_over_the_peers_largest_is_too_large_after_the_peer_stopped() {
+        let (mut sim, ..) = testing::sessions(
+            0,
+            same,
+            |side| async move {
+                let opened = side.session.open_sender(Class::Complete).await;
+                let mut sender = opened.expect("a stream");
+                sender.send(side.block(b"a")).await.expect("sent");
+                side.node.clock().sleep(spans(Span::MILLISECOND, 100)).await;
+                let over = vec![1; MESSAGE_BYTES_MAX + 1];
+                let large = Err(Error::TooLarge {
+                    bytes: MESSAGE_BYTES_MAX + 1,
+                    bytes_max: MESSAGE_BYTES_MAX,
+                });
+                assert_eq!(sender.send(side.block(&over)).await, large);
+                let tried = sender.try_send(side.block(&over)).map(|_| ());
+                assert_eq!(tried, large);
+                let stopped = Err(Error::Stopped { code: Code(3) });
+                assert_eq!(sender.send(side.block(b"b")).await, stopped);
                 side.session.close(Code(5));
             },
             |side| async move {
@@ -3282,5 +3693,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod held;
 #[cfg(test)]
 mod stress;

@@ -91,7 +91,6 @@ fn main() {
             drop(block);
             drop(clone);
             drop(pool.alloc(len).expect("the budget has room"));
-            pool.reclaim();
         }
     });
     assert_eq!(allocations, 0, "the hot path allocated");

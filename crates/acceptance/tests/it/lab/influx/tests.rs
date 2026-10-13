@@ -476,7 +476,8 @@ mod connector {
     /// Runs `ops` into a store, and gives the store and, for each written sample,
     /// whether a request held it.
     fn run(ops: &[Op]) -> (Store, Vec<bool>) {
-        let data = Measurement::new("edge.value", &[], &["value"]).unwrap();
+        let data = Measurement::new("edge.value", &[]).unwrap();
+        let field = data.field("value").unwrap();
         let end = FIRST + WRITTEN;
         let (mut floor, mut position, mut acked) = (FIRST, FIRST, FIRST);
         let mut flight = VecDeque::new();
@@ -514,7 +515,7 @@ mod connector {
                         #[expect(clippy::cast_precision_loss, reason = "below 2^53")]
                         let value = Float::new((seq - FIRST) as f64).unwrap();
                         let time = Stamp::from_nanos(stamp(seq));
-                        data.line(&mut body, &[Some(Value::Float(value))], time);
+                        data.line(&mut body, [(&field, Value::Float(value))], time);
                         held[usize::try_from(seq - FIRST).unwrap()] = true;
                     }
                     store.write(&body).unwrap();
