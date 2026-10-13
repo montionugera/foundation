@@ -528,8 +528,11 @@
   Amended (2026-10-11, #1744): `env::paths` gives the files of the host by the paths
   that a user gave, as on a command line: a read of a file or of a directory's entries,
   up to a bound, and a write of a whole file. Each call blocks its thread. A
-  `Paths` goes only to `ops::cli`, never to a shard or to `ops::serve`, so a path that a
-  remote program names never reaches the disk of the node. `os` writes a file beside the
+  `Paths` goes only to `ops::cli`, never to a shard of a node or to `ops::serve`, so a
+  path that a remote program names never reaches the disk of the node. "Of a node" is
+  by `laptop.architect-2` (2026-10-13T02:14:36Z, item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489), since
+  `cli` runs on a shard of the command line. `os` writes a file beside the
   path and renames it over the path. `sim` keeps one tree in memory for each node, apart
   from its disk, where a directory is there while a file is under it, and
   `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes `env::files` for
