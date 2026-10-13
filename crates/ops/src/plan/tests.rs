@@ -17,7 +17,9 @@ use types::name::Name;
 use types::sample;
 
 use super::{Output, plan};
-use crate::common::{ADMIN, Reader, SITE, files, front_ends, name, placed_site, plant};
+use crate::common::{
+    ADMIN, Reader, SITE, files, front_ends, name, placed_site, plant, shown,
+};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
@@ -159,18 +161,7 @@ fn gives_the_json_of_the_site_plan() {
 #[test]
 fn gives_each_problem_with_its_place_and_fix() {
     let wrong = plant().replacen("data_type", "datatype", 1);
-    assert_eq!(
-        problems(&[("plant.hcl", &wrong)]).text(),
-        "\
-error[document.missing-attribute]: the `channel` block has no `data_type`
-  --> plant.hcl:5:1
-fix: Add a `data_type` attribute such as \"f64\"
-
-error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
-  --> plant.hcl:6:3
-fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
-"
-    );
+    assert_eq!(problems(&[("plant.hcl", &wrong)]).text(), shown("error["));
 }
 
 #[test]

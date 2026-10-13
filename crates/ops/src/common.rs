@@ -27,17 +27,33 @@ pub(crate) use founding::{ADMIN, NODE, create_mesh};
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
+const PAGE: &str = include_str!("../../../docs/quickstart.md");
+
+/// The text of each fenced block of the quickstart page whose language is `language`,
+/// as `blocks` of `crates/node/tests/it/quickstart.rs` gives it.
+fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
+    PAGE.split("```")
+        .skip(1)
+        .step_by(2)
+        .filter_map(move |block| block.strip_prefix(language)?.strip_prefix('\n'))
+}
+
 /// The config of the quickstart page, its one `hcl` block.
 pub(crate) fn plant() -> &'static str {
-    let page = include_str!("../../../docs/quickstart.md");
-    let blocks = page.split("```").skip(1).step_by(2);
-    let [hcl] = blocks
-        .filter_map(|block| block.strip_prefix("hcl\n"))
-        .collect::<Vec<_>>()[..]
-    else {
-        panic!("the quickstart page has not one `hcl` block");
+    let [hcl] = blocks("hcl").collect::<Vec<_>>()[..] else {
+        panic!("the page has not one `hcl` block");
     };
     hcl
+}
+
+/// The output that the quickstart page shows, its one `text` block that starts with
+/// `start`.
+pub(crate) fn shown(start: &str) -> &'static str {
+    let shown = blocks("text").filter(|block| block.starts_with(start));
+    let [text] = shown.collect::<Vec<_>>()[..] else {
+        panic!("the page has not one `text` block that starts with {start:?}");
+    };
+    text
 }
 
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes

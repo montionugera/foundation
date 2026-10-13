@@ -4,7 +4,8 @@ use crate::{Rig, text};
 
 const PAGE: &str = include_str!("../../../../docs/quickstart.md");
 
-/// The text of each fenced block on the page whose language is `language`.
+/// The text of each fenced block on the page whose language is `language`, as `blocks`
+/// of `crates/ops/src/common.rs` gives it.
 fn blocks(language: &str) -> impl Iterator<Item = &'static str> + '_ {
     PAGE.split("```")
         .skip(1)
