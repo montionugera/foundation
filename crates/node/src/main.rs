@@ -146,7 +146,10 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
             not_running(dir)
         }
         os::Error::Dir(error) => unreadable(dir, error),
-        error => failed(error),
+        error @ (os::Error::Thread(_)
+        | os::Error::Cores(_)
+        | os::Error::Memory(_)
+        | os::Error::Wall(_)) => failed(error),
     }
 }
 

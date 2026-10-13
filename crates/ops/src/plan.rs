@@ -9,7 +9,7 @@ use serde_json::Value;
 use spec::definition::Definition;
 use types::name::Name;
 
-use crate::error::{Error, Paths, Place};
+use crate::error::{Error, Place, Sources};
 use crate::front_end::{self, File, FrontEnds};
 
 #[cfg(test)]
@@ -38,7 +38,7 @@ pub(crate) fn plan(
 
 /// The config files of one plan, each read into its Document.
 pub(crate) struct Documents {
-    paths: Paths,
+    sources: Sources,
     documents: Vec<Document>,
 }
 
@@ -53,10 +53,10 @@ impl Documents {
     ///
     /// As [`front_end::read`] panics.
     pub(crate) fn read(files: &[File], front_ends: &FrontEnds) -> Result<Self, Error> {
-        let paths = Paths::of(files);
+        let sources = Sources::of(files);
         match front_end::read(files, front_ends) {
-            Ok(documents) => Ok(Self { paths, documents }),
-            Err(diagnostics) => Err(Error::config(diagnostics, &paths)),
+            Ok(documents) => Ok(Self { sources, documents }),
+            Err(diagnostics) => Err(Error::config(diagnostics, &sources)),
         }
     }
 
@@ -71,7 +71,7 @@ impl Documents {
     ) -> Result<Vec<Name>, Error> {
         match config::check(&self.documents, kinds) {
             Ok(entries) => Ok(entries.into_keys().collect()),
-            Err(diagnostics) => Err(Error::config(diagnostics, &self.paths)),
+            Err(diagnostics) => Err(Error::config(diagnostics, &self.sources)),
         }
     }
 
@@ -88,11 +88,11 @@ impl Documents {
         members: &BTreeSet<Name>,
         kinds: &connector::kind::Table,
     ) -> Result<(Output, config::plan::Plan), Error> {
-        let paths = &self.paths;
+        let sources = &self.sources;
         let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, paths))?;
+            .map_err(|diagnostics| Error::config(diagnostics, sources))?;
         let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
-            .map(|(name, line)| Change::of(name, line, paths))
+            .map(|(name, line)| Change::of(name, line, sources))
             .collect();
         changes.sort_by(|(a, _), (b, _)| a.cmp(b));
         let changes: Vec<Change> =
@@ -338,7 +338,7 @@ fn lines<'a>(
 
 impl Change {
     /// The output of `line` at the tree key `name`.
-    fn of(name: &Name, line: Line<'_>, paths: &Paths) -> (Order, Self) {
+    fn of(name: &Name, line: Line<'_>, sources: &Sources) -> (Order, Self) {
         let (kind, span, definition) = match line {
             Line::Add(entry) | Line::Change(entry) => {
                 let definition =
@@ -367,7 +367,7 @@ impl Change {
             action: line.action(),
             kind: kind.as_str().to_owned(),
             name: label.to_string(),
-            place: span.map(|span| paths.place(span)),
+            place: span.map(|span| sources.place(span)),
             fingerprints,
         };
         (order, change)

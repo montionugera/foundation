@@ -89,12 +89,14 @@ where
         }
         Ok(Parsed::Plan { files, out }) => {
             match remote::plan(&files, out.as_deref(), paths, reach).await {
-                Ok(shown) => write(&mut output, &render(shown.json(), shown.text())),
+                Ok(planned) => {
+                    write(&mut output, &render(planned.json(), planned.text()))
+                }
                 Err(error) => Err(Stop::Failed(error)),
             }
         }
         Ok(Parsed::Apply { plan }) => match remote::apply(&plan, paths, reach).await {
-            Ok(shown) => write(&mut output, &render(shown.json(), shown.text())),
+            Ok(applied) => write(&mut output, &render(applied.json(), applied.text())),
             Err(error) => Err(Stop::Failed(error)),
         },
         Ok(Parsed::Mcp) => mcp::serve(input, &mut output),

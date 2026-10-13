@@ -5,11 +5,13 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::json;
 
-use super::{Shown, apply, most, plan};
+use super::{apply, most, plan};
+use crate::apply::Applied;
 use crate::common::{create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
 use crate::front_end::File;
 use crate::operation::DATA;
+use crate::plan::Output;
 use crate::{Failure, Node, Run, serve};
 
 /// A failure of `reach`, or of a request.
@@ -88,7 +90,7 @@ impl Remote {
         paths: &Paths,
         files: &[PathBuf],
         out: Option<&Path>,
-    ) -> Result<Shown, Error> {
+    ) -> Result<Output, Error> {
         let reach = async |data: &Path| {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
@@ -96,7 +98,7 @@ impl Remote {
         plan(files, out, paths, reach).await
     }
 
-    async fn apply(&self, paths: &Paths, file: &Path) -> Result<Shown, Error> {
+    async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
         let reach = async |data: &Path| {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
@@ -152,17 +154,12 @@ fn plans_writes_the_plan_file_and_applies_it() {
         let out = Path::new("plans/site.plan");
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
-        let Ok(Shown::Plan(planned)) = planned else {
-            panic!("a plan");
-        };
+        let planned = planned.expect("a plan");
         assert_eq!(planned.json(), output);
         assert_eq!(paths.read(out, most()), Ok(Found::File(expected)));
         assert_eq!(remote.calls(), (1, 1));
 
-        let applied = remote.apply(&paths, out).await;
-        let Ok(Shown::Apply(applied)) = applied else {
-            panic!("an apply");
-        };
+        let applied = remote.apply(&paths, out).await.expect("an apply");
         assert_eq!(applied.file, "plans/site.plan");
         assert_eq!(applied.effect.counts.added, 3);
         assert_eq!(mesh.pointer().version, 1);
@@ -179,8 +176,7 @@ fn plan_with_no_out_writes_no_file() {
         let remote = Remote::new(create_node(mesh));
         let before = paths.read(Path::new("/"), most());
         let files = [PathBuf::from("site.hcl")];
-        let planned = remote.plan(&paths, &files, None).await;
-        assert!(matches!(planned, Ok(Shown::Plan(_))));
+        remote.plan(&paths, &files, None).await.expect("a plan");
         assert_eq!(paths.read(Path::new("/"), most()), before);
         assert_eq!(remote.calls(), (1, 1));
     });
@@ -241,7 +237,7 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
             path: PathBuf::from("big.hcl"),
             text: String::new(),
         }];
-        let around = serve::plan_request(&empty).len();
+        let around = serve::plan_request(&empty).expect("a request").len();
         let text = "#".repeat(most() - around + 1);
         paths
             .write(Path::new("big.hcl"), text.as_bytes())
@@ -478,7 +474,7 @@ fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
 fn apply_of_a_plan_file_that_does_not_fit_a_request_reaches_no_node() {
     solo(|host, mesh| async move {
         let paths = host.paths();
-        let around = serve::apply_request(b"").len();
+        let around = serve::apply_request(b"").expect("a request").len();
         let plan = vec![b'x'; most() - around + 1];
         paths.write(Path::new("big.plan"), &plan).expect("a write");
         let remote = Remote::new(create_node(mesh));
@@ -507,7 +503,8 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
         let body = serve::plan_request(&[File {
             path: PathBuf::from("bad.hcl"),
             text: "{".to_owned(),
-        }]);
+        }])
+        .expect("a request");
         let reply = serve::serve(&remote.node, &name("@admin"), &body).await;
         let expected = serve::plan_reply(&reply).map(drop);
         let Err(Error::Remote { problems, status }) = expected.clone() else {
