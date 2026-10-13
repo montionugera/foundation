@@ -684,7 +684,7 @@ fn gives_no_connector_to_an_admin_on_a_node_that_places_none() {
 fn refuses_a_subject_that_may_not_read_the_node_when_it_places_no_connector() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        applied(&fixture, &node, &reader()).await;
+        applied(&fixture, &node, &reader("site.a.**")).await;
         let (head, rest) = status(&node, "sam").await;
         assert_eq!((head, rest), (refused("sam"), Vec::new()));
     });
@@ -694,10 +694,7 @@ fn refuses_a_subject_that_may_not_read_the_node_when_it_places_no_connector() {
 fn gives_no_connector_to_a_subject_that_may_read_the_node() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = format!(
-            "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  subjects = \
-             \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
-        );
+        let text = reader("edge");
         applied(&fixture, &node, &text).await;
         let (head, _) = status(&node, "sam").await;
         assert_eq!(head, json!({ "output": { "connectors": [] } }));
@@ -708,13 +705,7 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node() {
 fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = [
-            format!(
-                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
-                 subjects = \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
-            ),
-            connector("site.a", "steady", "edge"),
-        ];
+        let text = [reader("edge"), connector("site.a", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
         let expected = json!({ "output": { "connectors": [] } });
@@ -730,13 +721,7 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its
 {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = [
-            format!(
-                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
-                 subjects = \"sam\"\n  select = \"edge\"\n  allow = [read]\n}}\n"
-            ),
-            connector("edge", "steady", "edge"),
-        ];
+        let text = [reader("edge"), connector("edge", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
         let expected = json!({ "output": { "connectors": [] } });
@@ -751,10 +736,7 @@ fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
         spec::founding::create(crate::common::ADMIN.public()),
         |fixture, mesh| async move {
             let node = create_node(&fixture, mesh);
-            let text = format!(
-                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
-                 subjects = \"sam\"\n  select = \"site.**\"\n  allow = [read]\n}}\n"
-            );
+            let text = reader("site.**");
             applied(&fixture, &node, &text).await;
             let (head, rest) = status(&node, "sam").await;
             let expected = json!({ "output": { "connectors": [] } });
@@ -778,11 +760,11 @@ fn refuses_an_admin_on_a_node_that_uses_no_spec() {
     });
 }
 
-/// `sam` may read the names under `site.a`.
-fn reader() -> String {
+/// `sam` may read the names that `select` holds.
+fn reader(select: &str) -> String {
     format!(
         "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  subjects = \
-         \"sam\"\n  select = \"site.a.**\"\n  allow = [read]\n}}\n"
+         \"sam\"\n  select = \"{select}\"\n  allow = [read]\n}}\n"
     )
 }
 
@@ -791,7 +773,7 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
-            reader(),
+            reader("site.a.**"),
             connector("site.a", "steady", "edge"),
             connector("site.b", "steady", "edge"),
         ];
@@ -807,7 +789,7 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
 fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = [reader(), connector("site.b", "steady", "edge")];
+        let text = [reader("site.a.**"), connector("site.b", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
         assert_eq!(head, refused("sam"));
@@ -820,11 +802,7 @@ fn refuses_a_subject_that_may_read_only_some_status_channels() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
-            format!(
-                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
-                 subjects = \"sam\"\n  select = \"site.a.status.state\"\n  allow = \
-                 [read]\n}}\n"
-            ),
+            reader("site.a.status.state"),
             connector("site.a", "steady", "edge"),
         ];
         applied(&fixture, &node, &text.concat()).await;
