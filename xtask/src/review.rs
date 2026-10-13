@@ -46,6 +46,15 @@ enum Cause {
 }
 
 impl Cause {
+    /// Whether the check cannot read the text, so that the cause fails also an old
+    /// round, which is otherwise taken as written.
+    fn unreadable(self) -> bool {
+        match self {
+            Cause::Raw | Cause::Bracket => false,
+            Cause::Misplaced | Cause::Nested => true,
+        }
+    }
+
     /// The problem of round `number` with this cause in `line`.
     fn problem(self, number: u32, line: &str) -> String {
         let (cause, remedy) = self.text(line);
@@ -476,11 +485,10 @@ fn round(comment: &Comment) -> Option<Parsed> {
     let rated = comment.created.as_str() >= RATING_CUTOFF;
     let body = normalized(&comment.body);
     let shown = Shown::read(&body, old);
-    // An old round is taken as written, except where the check cannot read it.
     let hiding = shown
         .hiding
         .iter()
-        .find(|(_, cause)| !old || matches!(cause, Cause::Misplaced | Cause::Nested));
+        .find(|(_, cause)| !old || cause.unreadable());
     let number = &quoted(shown.number.as_deref()?);
     let text = &shown.text;
     let fields: Vec<String> = shown.fields().iter().map(|l| quoted(l)).collect();
