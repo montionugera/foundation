@@ -55,7 +55,8 @@ fn main() {
     );
     check_ticks();
     check_stamps();
-    status::check();
+    status::check(status::Shows::Nothing);
+    status::check(status::Shows::Error);
 }
 
 /// Checks that 64 ticks after two warm-up ticks allocate nothing in their polls. The
@@ -185,11 +186,22 @@ mod status {
     /// A kind that sets its count `samples` 64 times each 2.1 s, so each first set
     /// finds the status write due, and counts the allocations of the sets from the
     /// third time on. It holds `steady` from the third time on until it ends its last
-    /// sleep, and counts in `slept` what its sleeps allocate meanwhile.
+    /// sleep, and counts in `slept` what its sleeps allocate meanwhile. With
+    /// `Shows::Error`, it shows an error before its first set, so each status write
+    /// after the start of the run and before its end holds that error.
     struct Sets {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
         slept: Arc<AtomicU64>,
+        shows: Shows,
+    }
+
+    /// What a run of [`Sets`] shows before it sets its count.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) enum Shows {
+        Nothing,
+        /// An error, so the status write compares its text at each write.
+        Error,
     }
 
     impl Kind for Sets {
@@ -216,6 +228,9 @@ mod status {
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
+            if let Shows::Error = self.shows {
+                ctx.error(&"refused");
+            }
             let allocations = Cell::new(0);
             // The first wakes of the flush grow the simulator's lists.
             for round in 0..6_u64 {
@@ -257,8 +272,10 @@ mod status {
 
     /// Checks that a set of a status count allocates nothing, also the set that wakes
     /// the status writer, and that so does each poll of the supervisor while the kind
-    /// sets its count, with the write of the status, but for the kind's sleeps.
-    pub(super) fn check() {
+    /// sets its count, with the write of the status, but for the kind's sleeps. With
+    /// `Shows::Error`, the run shows an error, so a clone of its text at each write
+    /// fails the check.
+    pub(super) fn check(shows: Shows) {
         let allocations = Arc::new(AtomicU64::new(1));
         let steady = Arc::new(AtomicBool::new(false));
         let slept = Arc::new(AtomicU64::new(0));
@@ -266,6 +283,7 @@ mod status {
             allocations: Arc::clone(&allocations),
             steady: Arc::clone(&steady),
             slept: Arc::clone(&slept),
+            shows,
         };
         let polled = Arc::new(AtomicU64::new(0));
         let (counted, into) = (Arc::clone(&steady), Arc::clone(&polled));
@@ -318,7 +336,8 @@ mod status {
         assert_eq!(
             polled.load(Relaxed),
             slept.load(Relaxed),
-            "a poll of the supervisor allocates only in the kind's sleeps"
+            "a poll of the supervisor allocates only in the kind's sleeps, shows: \
+             {shows:?}"
         );
     }
 }
