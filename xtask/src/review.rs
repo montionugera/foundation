@@ -801,10 +801,10 @@ fn issues(value: &str, breaks: &[usize]) -> impl Iterator<Item = Range<usize>> {
 }
 
 /// The first step of `later`, the value of a `Later steps:` line with the places
-/// `breaks` ([`Ends::breaks`]), that has no link: no issue ([`issue`]) starts in it, and
-/// it does not hold [`DECISIONS`]. The steps are the parts of `later` between the `;`
-/// characters outside parentheses, trimmed. An empty part and the value
-/// `none` ([`stated`]) hold no step.
+/// `breaks` ([`Ends::breaks`]), that has no link: no issue ([`issue`]) starts in it,
+/// and it does not hold [`DECISIONS`]. The steps are the parts of `later` between the
+/// `;` characters outside parentheses, trimmed. An empty part and the value `none`
+/// ([`stated`]) hold no step.
 fn untracked<'v>(later: &'v str, breaks: &[usize]) -> Option<&'v str> {
     if !stated(later) {
         return None;

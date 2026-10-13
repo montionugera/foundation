@@ -3565,8 +3565,9 @@ fn a_later_steps_line_keeps_the_order_of_the_end_lines() {
 fn unstepped(name: &str) -> Vec<String> {
     vec![format!(
         "review round 3 does not end with a `{name}:` line. End each round with its \
-         `Deferred:`, `Later steps:`, `Public surface:`, and `Hot path:` lines, in that \
-         order, in the format of .claude/skills/review/SKILL.md, \"Round comment\"."
+         `Deferred:`, `Later steps:`, `Public surface:`, and `Hot path:` lines, in \
+         that order, in the format of .claude/skills/review/SKILL.md, \"Round \
+         comment\"."
     )]
 }
 
