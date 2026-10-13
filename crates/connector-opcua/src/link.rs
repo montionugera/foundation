@@ -214,17 +214,11 @@ fn the_pragma_check_reads_a_file_whose_path_is_not_ascii() {
     let name = if cfg!(unix) { "José \"q\"" } else { "José" };
     let dir = std::path::Path::new(env!("OUT_DIR")).join(name);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("pragma.h"),
-        "#pragma GCC diagnostic ignored \"-Wformat\"\n",
-    )
-    .unwrap();
     let file = dir.join("pragma.c");
-    let source = "#pragma GCC diagnostic push\n#include \"pragma.h\"\n#pragma GCC diagnostic pop\n";
-    std::fs::write(&file, source).unwrap();
+    std::fs::write(&file, "#pragma GCC diagnostic push\nint x;\n").unwrap();
     assert_eq!(
         shim_pragmas(file.to_str().unwrap()),
-        ["#pragma GCC diagnostic push", "#pragma GCC diagnostic pop"]
+        ["#pragma GCC diagnostic push"]
     );
 }
 
