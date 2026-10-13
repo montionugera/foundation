@@ -43,8 +43,8 @@ const KEY_REFUSED: Code = Code::new("node.refused");
 const NO_REPLY: Code = Code::new("node.no-reply");
 
 /// Runs the command line on a shard that ends before a node starts, then the node of
-/// `foundation start`. A failure of either goes to standard error through
-/// [`ops::fail`].
+/// `foundation start`. A failure to start the shard, or a failure of the node, goes to
+/// standard error through [`ops::fail`].
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let status = match run(&args) {
@@ -97,7 +97,7 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     shard
         .map_err(failed)?
         .join()
-        .expect("the shard of the command line does not panic");
+        .expect("invariant: the shard of the command line does not panic");
     Ok(run
         .try_recv()
         .expect("invariant: the shard sends its run before it ends"))
