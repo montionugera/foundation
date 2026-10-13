@@ -58,18 +58,18 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
     child.output().unwrap()
 }
 
-/// Runs the test `name` as `output` does, asserts that it aborts, and gives its
-/// output.
-#[cfg(unix)]
+/// Runs the test `name` as `output` does, asserts that it fails, and on Unix that it
+/// aborts, and gives its output.
 pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
     let output = output(name, envs);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        output.status.signal(),
-        Some(SIGABRT),
-        "{name} {envs:?}: {stderr}"
-    );
+    assert!(!output.status.success(), "{name} {envs:?} ends: {stderr}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        let signal = output.status.signal();
+        assert_eq!(signal, Some(SIGABRT), "{name} {envs:?}: {stderr}");
+    }
     output
 }
