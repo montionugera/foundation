@@ -213,7 +213,7 @@ impl Manager {
             clients,
             server,
             answers: Box::default(),
-            time: Nodes::new(&[Node {
+            time: Nodes::unchecked(&[Node {
                 namespace: 0,
                 key: Key::Number(ffi::test::TIME),
             }]),
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn a_read_of_an_unknown_node_fails_with_its_status() {
         check(0, async |manager, clock| {
-            let unknown = Nodes::new(&[Node {
+            let unknown = Nodes::unchecked(&[Node {
                 namespace: 0,
                 key: Key::Number(999_999),
             }]);

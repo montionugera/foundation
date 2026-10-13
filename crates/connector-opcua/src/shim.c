@@ -641,13 +641,18 @@ UA_UInt32 shim_client_timeout(UA_Client *client) {
 
 /* Writes to `limits` the send and receive buffer sizes of the channel of `client`, the
  * MaxMessageSize and the MaxChunkCount of its server (0 for none), and the encoded size
- * of the session token of `client`. */
+ * of the session token of `client`. Gives `BadInternalError` when the copy gives
+ * another value than 5 `UInt32` values. */
 UA_StatusCode shim_client_limits(UA_Client *client, size_t limits[5]) {
     UA_Variant value;
     UA_StatusCode status = UA_Client_getConnectionAttributeCopy(
         client, UA_QUALIFIEDNAME(0, "messageLimits"), &value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
+    if(value.type != &UA_TYPES[UA_TYPES_UINT32] || value.arrayLength != 5) {
+        UA_Variant_clear(&value);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
     for(size_t i = 0; i < 5; i++)
         limits[i] = ((const UA_UInt32 *)value.data)[i];
     UA_Variant_clear(&value);

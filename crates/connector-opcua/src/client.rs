@@ -367,12 +367,23 @@ pub(crate) struct Nodes {
 
 impl Nodes {
     /// Builds one Read request of the Value of each node of `nodes`, in order, with no
+    /// check of its size, for a bench.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 cannot allocate the request.
+    #[cfg(feature = "sim")]
+    pub(crate) fn unchecked(nodes: &[Node]) -> Self {
+        Self::new(nodes)
+    }
+
+    /// Builds one Read request of the Value of each node of `nodes`, in order, with no
     /// check of its size: [`Client::nodes`] checks it.
     ///
     /// # Panics
     ///
     /// If open62541 cannot allocate the request.
-    pub(crate) fn new(nodes: &[Node]) -> Self {
+    fn new(nodes: &[Node]) -> Self {
         let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
         // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
         let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
