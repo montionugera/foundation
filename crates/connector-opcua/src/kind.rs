@@ -382,10 +382,8 @@ impl Total {
     }
 
     fn add(&mut self, samples: u64) {
-        if samples > 0 {
-            self.total += samples;
-            self.count.set(self.total);
-        }
+        self.total += samples;
+        self.count.set(self.total);
     }
 }
 
