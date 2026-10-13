@@ -129,6 +129,11 @@ pub struct Served {
 ///
 /// If open62541 refuses the server, a namespace, a variable, or a step of the close.
 /// If a variable has the number 0, which open62541 would serve at a free number.
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the loop or the connection manager: the process
+/// stops as the Rust allocator does when it has no memory.
 pub async fn serve(
     clock: Clock,
     net: Net,

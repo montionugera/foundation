@@ -3,7 +3,7 @@ use proptest::prelude::*;
 use super::{Error, Key, Name, Node};
 
 fn name(text: &str) -> Key {
-    Key::Name(Name::new(text).expect("a name of 1 to 4096 bytes"))
+    Key::Name(Name::new(text).expect("a name that is not empty"))
 }
 
 fn node() -> impl Strategy<Value = Node> {
@@ -88,24 +88,8 @@ fn another_text_is_refused() {
     assert_eq!(
         Error::Syntax.to_string(),
         "a node ID is ns=<index>;i=<number> or ns=<index>;s=<name>, with an index to \
-         65535, a number to 4294967295, and a name of 1 to 4096 bytes"
+         65535, a number to 4294967295, and a name that is not empty"
     );
-}
-
-#[test]
-fn a_name_is_at_most_4096_bytes() {
-    let longest = "ü".repeat(Name::BYTES / 2);
-    let text = format!("ns=1;s={longest}");
-    assert_eq!(
-        text.parse(),
-        Ok(Node {
-            namespace: 1,
-            key: name(&longest)
-        })
-    );
-    let text = format!("ns=1;s={longest}x");
-    assert_eq!(text.parse::<Node>(), Err(Error::Syntax));
-    assert_eq!(Name::new(&format!("{longest}x")), None);
 }
 
 #[test]
