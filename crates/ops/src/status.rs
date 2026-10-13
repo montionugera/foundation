@@ -80,9 +80,12 @@ pub(crate) struct Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Class {
+    /// The config cannot work. The connector stops until the next spec change.
     Config,
+    /// The device or endpoint is in a bad state. The run restarts with backoff.
     Device,
-    /// A run ended with `kind::Error::Retry`, or the running kind shows the error.
+    /// One attempt failed and the run restarts with backoff, or the running kind shows
+    /// the error.
     Retry,
 }
 
