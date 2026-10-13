@@ -146,6 +146,16 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
         os::Error::Dir(error) if error.kind() == io::ErrorKind::NotFound => {
             not_running(dir)
         }
+        os::Error::Dir(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            Failure {
+                code: NOT_RUNNING,
+                message: format!(
+                    "no node runs in {}, which is not a directory",
+                    dir.display()
+                ),
+                fix: "Give `--data` the data directory of a node that runs".to_owned(),
+            }
+        }
         os::Error::Dir(error) => unreadable(dir, error),
         error @ (os::Error::Thread(_)
         | os::Error::Cores(_)
@@ -157,50 +167,48 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
 /// The failure of a reach of the node of the data directory `dir` that gave `error`.
 fn unreached(dir: &Path, error: node::client::Error) -> Failure {
     let data = dir.display();
-    let (code, message, fix) = match error {
+    let (code, message, fix): (_, _, String) = match error {
         node::client::Error::NotRunning => return not_running(dir),
         node::client::Error::Files(error) => return unreadable(dir, error),
         node::client::Error::Key => (
             ADMIN_KEY,
             format!("{data} holds no admin.key that a node wrote"),
-            "Put back the `admin.key` that the first start wrote",
+            "Put back the `admin.key` that the first start wrote".into(),
         ),
         node::client::Error::Transport(error) => (
             SOCKET,
             format!("the socket of this program failed: {error}"),
-            "Fix the cause in the message, then run the command again",
+            "Fix the cause in the message, then run the command again".into(),
         ),
         node::client::Error::Unanswered { at, error } => (
             UNANSWERED,
             format!("no node answers at {at}, the address in {data}: {error}"),
-            "Start the node again with `foundation start`",
+            format!("Start the node again with `foundation start --data {data}`"),
         ),
         node::client::Error::Session { at, error } => (
             SESSION,
             format!("the session with the node at {at} failed: {error}"),
-            "Fix the cause in the message, then run the command again",
+            "Fix the cause in the message, then run the command again".into(),
         ),
         node::client::Error::Refused(refusal) => (
             REFUSED,
             format!("the node refused the key in {data}/data/admin.key: {refusal}"),
-            "Use the key of a subject in the node's spec",
+            "Use the key of a subject in the node's spec".into(),
         ),
     };
-    Failure {
-        code,
-        message,
-        fix: fix.to_owned(),
-    }
+    Failure { code, message, fix }
 }
 
 /// The failure of a data directory `dir` where no node runs.
 fn not_running(dir: &Path) -> Failure {
+    let dir = dir.display();
     Failure {
         code: NOT_RUNNING,
-        message: format!("no node runs in {}", dir.display()),
-        fix: "Start one with `foundation start --name <name>`, or give the data \
-              directory of a node that runs with `--data`"
-            .to_owned(),
+        message: format!("no node runs in {dir}"),
+        fix: format!(
+            "Run `foundation start --data {dir}`, with `--name <name>` on its first \
+             start, or give `--data` the data directory of a node that runs"
+        ),
     }
 }
 
@@ -1183,24 +1191,35 @@ mod tests {
         }
     }
 
-    const NOT_RUNNING_FIX: &str = "Start one with `foundation start --name <name>`, or \
-                                   give the data directory of a node that runs with \
-                                   `--data`";
+    const NOT_RUNNING_FIX: &str = "Run `foundation start --data plant`, with `--name \
+                                   <name>` on its first start, or give `--data` the \
+                                   data directory of a node that runs";
     const UNREADABLE_FIX: &str = "Run the command as the user that started the node";
 
     #[test]
     fn a_directory_with_no_node_is_not_running() {
-        let not_running = of_reach(
-            NOT_RUNNING,
-            "no node runs in foundation-data",
-            NOT_RUNNING_FIX,
-        );
+        let plant = Path::new("plant");
+        let not_running =
+            of_reach(NOT_RUNNING, "no node runs in plant", NOT_RUNNING_FIX);
         assert_eq!(
-            unreached(dir(), node::client::Error::NotRunning),
+            unreached(plant, node::client::Error::NotRunning),
             not_running
         );
         let missing = io::Error::from(io::ErrorKind::NotFound);
-        assert_eq!(stored(dir(), os::Error::Dir(missing)), not_running);
+        assert_eq!(stored(plant, os::Error::Dir(missing)), not_running);
+    }
+
+    #[test]
+    fn a_file_as_the_data_directory_is_not_running() {
+        let file = io::Error::from(io::ErrorKind::NotADirectory);
+        assert_eq!(
+            stored(Path::new("plant.hcl"), os::Error::Dir(file)),
+            of_reach(
+                NOT_RUNNING,
+                "no node runs in plant.hcl, which is not a directory",
+                "Give `--data` the data directory of a node that runs",
+            )
+        );
     }
 
     #[test]
@@ -1278,12 +1297,12 @@ mod tests {
             error: transport::Error::TimedOut,
         };
         assert_eq!(
-            unreached(dir(), error),
+            unreached(Path::new("plant"), error),
             of_reach(
                 UNANSWERED,
-                "no node answers at 127.0.0.1:54321, the address in foundation-data: \
-                 the peer stopped answering",
-                "Start the node again with `foundation start`",
+                "no node answers at 127.0.0.1:54321, the address in plant: the peer \
+                 stopped answering",
+                "Start the node again with `foundation start --data plant`",
             )
         );
     }

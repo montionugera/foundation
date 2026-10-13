@@ -169,15 +169,40 @@ fn status_reaches_the_node_of_data() {
     let output = rig.run(&["status"], b"");
     assert_eq!(
         (output.status.code(), text(&output.stderr)),
+        (Some(1), not_running("foundation-data").as_str())
+    );
+    rig.stop();
+    let output = rig.run(&["status", "--data", "plant"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
+        (Some(1), not_running("plant").as_str())
+    );
+}
+
+#[test]
+fn status_on_a_file_as_data_is_not_running() {
+    let rig = Rig::new();
+    rig.config("");
+    let output = rig.run(&["status", "--data", "plant.hcl"], b"");
+    assert_eq!(
+        (output.status.code(), text(&output.stderr)),
         (
             Some(1),
             concat!(
-                "error[node.not-running]: no node runs in foundation-data\n",
-                "fix: Start one with `foundation start --name <name>`, or give the ",
-                "data directory of a node that runs with `--data`\n",
+                "error[node.not-running]: no node runs in plant.hcl, which is not a ",
+                "directory\nfix: Give `--data` the data directory of a node that runs\n",
             )
         )
     );
+}
+
+/// The error of `status` on the data directory `dir`, where no node runs.
+fn not_running(dir: &str) -> String {
+    format!(
+        "error[node.not-running]: no node runs in {dir}\nfix: Run `foundation start \
+         --data {dir}`, with `--name <name>` on its first start, or give `--data` the \
+         data directory of a node that runs\n"
+    )
 }
 
 #[test]
