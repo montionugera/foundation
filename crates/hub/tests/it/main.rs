@@ -1339,8 +1339,10 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
             ended,
             mut commit,
             hub,
+            pause,
             ..
         } = test;
+        pause.pause();
         drop((hub, reader, writer));
         assert_eq!((&mut commit).await, Ok(()));
         let open = || async {
@@ -1355,6 +1357,7 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         assert_eq!(open().await, Err(busy), "seed {seed}");
         drop(commit);
         assert_eq!(open().await, Ok(()), "seed {seed}");
+        pause.resume();
         clock.sleep(Span::from_nanos(1)).await;
         assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         first
