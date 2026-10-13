@@ -11,6 +11,8 @@ mod rig;
 mod start;
 mod status;
 
+use std::collections::BTreeMap;
+
 use rig::Rig;
 
 fn text(bytes: &[u8]) -> &str {
@@ -84,6 +86,48 @@ fn plan_and_apply_run_on_the_node() {
             text(&output.stderr)
         ),
         (Some(0), unchanged, "")
+    );
+}
+
+/// `status --json` gives each connector that the node places, with its error.
+#[test]
+fn status_gives_each_connector_as_json() {
+    let mut rig = Rig::new();
+    rig.config(concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+        "connector \"plant.influx\" {\n  kind = \"influx\"\n  node = \"edge\"\n",
+        "  address = \"http://127.0.0.1:1\"\n  select = \"plant.*\"\n",
+        "  reader {\n    mode = \"complete\"\n  }\n}\n",
+    ));
+    rig.start();
+    rig.apply();
+    let stopped = rig.wait("`plant.influx` stops", || {
+        let status = rig.status();
+        (status.get("plant.influx"))
+            .filter(|connector| connector.state == "stopped")
+            .cloned()
+            .ok_or_else(|| format!("{status:#?}"))
+    });
+    assert_eq!(
+        stopped,
+        status::Connector {
+            name: "plant.influx".into(),
+            kind: "influx".into(),
+            state: "stopped".into(),
+            address: Some("http://127.0.0.1:1".into()),
+            restarts: Some(0),
+            counts: Some(BTreeMap::new()),
+            error: Some(status::Error {
+                class: "config".into(),
+                text: concat!(
+                    "this build cannot run the influx kind yet. Remove the connector, ",
+                    "or run it on a build that has the influx writer",
+                )
+                .into(),
+                next: None,
+            }),
+        }
     );
 }
 
