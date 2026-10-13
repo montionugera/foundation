@@ -8,20 +8,22 @@ use types::name::Name;
 
 use crate::Value;
 
+mod file;
 mod sealed;
 
+pub use file::File;
 pub use sealed::Sealed;
 
-/// A place that holds secret values.
-pub trait Store {
+/// A place that holds secret values. `Debug` never shows a value.
+pub trait Store: fmt::Debug {
     /// Reads the value of `name`, the secret's full name in the tree, such as
     /// `site_a.secrets.influx_token`. Each store maps the name to its own key (an
     /// environment variable, a Vault path) by its config.
     ///
     /// # Errors
     ///
-    /// [`Error::Missing`] when the store holds no value at that key,
-    /// [`Error::Denied`] when the store refuses this node's credentials, and
+    /// [`Error::Missing`] when the store holds no value at that key, with where to
+    /// put it, [`Error::Denied`] when the store refuses this node's credentials, and
     /// [`Error::Unavailable`] when the store does not answer or fails before it
     /// decides.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a>;
@@ -34,7 +36,10 @@ pub type Request<'a> = Pin<Box<dyn Future<Output = Result<Value, Error>> + 'a>>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The store has no value for the name.
-    Missing,
+    Missing {
+        /// The store's own text: where to put the value.
+        detail: String,
+    },
     /// The store refused this node.
     Denied {
         /// The store's own text.
@@ -50,10 +55,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing => f.write_str(
-                "the store has no value. Add the value to the store, or point the \
-                 secret store policy at the store that holds it",
-            ),
+            Self::Missing { detail } => write!(f, "the store has no value: {detail}"),
             Self::Denied { detail } => write!(
                 f,
                 "the store refused this node: {detail}. Grant the node access in the \
@@ -83,6 +85,7 @@ mod tests {
 
     /// Holds values in memory and answers after one pending poll, as a store that
     /// waits on I/O does.
+    #[derive(Debug)]
     struct Memory {
         values: BTreeMap<Name, Vec<u8>>,
         /// Not `Send`, as a store on one shard may be.
@@ -101,7 +104,9 @@ mod tests {
                     self.values
                         .get(name)
                         .map(|v| Value::new(v.clone()))
-                        .ok_or(Error::Missing),
+                        .ok_or_else(|| Error::Missing {
+                            detail: "no key".into(),
+                        }),
                 )
             }))
         }
@@ -138,7 +143,9 @@ mod tests {
         store.polls.set(0);
         assert_eq!(
             drive(&store, &name("site.secrets.key")).unwrap_err(),
-            Error::Missing
+            Error::Missing {
+                detail: "no key".into()
+            }
         );
     }
 
@@ -146,9 +153,10 @@ mod tests {
     fn tells_the_caller_what_to_do() {
         let cases = [
             (
-                Error::Missing,
-                "the store has no value. Add the value to the store, or point the \
-                 secret store policy at the store that holds it",
+                Error::Missing {
+                    detail: "write it to the file secrets/a".into(),
+                },
+                "the store has no value: write it to the file secrets/a",
             ),
             (
                 Error::Denied {
