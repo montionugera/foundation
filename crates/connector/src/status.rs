@@ -141,21 +141,24 @@ impl Status {
         }
     }
 
-    /// Shows `error` as the class `Retry` and its text, or clears both with `None`,
-    /// from the next write until the end of the run. The same value again, or a call
-    /// while no run runs, stages nothing.
-    pub(crate) fn show(&self, error: Option<&dyn fmt::Display>) {
-        let text = error.map(|error| cut(&error.to_string()));
+    /// Shows `error` as the class `Retry` and its text, from the next write until the
+    /// end of the run.
+    pub(crate) fn show(&self, error: &dyn fmt::Display) {
+        self.set(Shown::Error(cut(&error.to_string())));
+    }
+
+    /// Clears the class and the text, from the next write until the end of the run.
+    pub(crate) fn clear(&self) {
+        self.set(Shown::Cleared);
+    }
+
+    /// Stages `new`, unless it is the value that the run shows, or no run runs.
+    fn set(&self, new: Shown) {
         let mut shown = self.0.shown.borrow_mut();
-        let same = match (&*shown, &text) {
-            (Shown::Ended, _) | (Shown::Cleared, None) => true,
-            (Shown::Error(last), Some(text)) => *last == *text,
-            _ => false,
-        };
-        if same {
+        if matches!(*shown, Shown::Ended) || *shown == new {
             return;
         }
-        *shown = text.map_or(Shown::Cleared, Shown::Error);
+        *shown = new;
         drop(shown);
         self.0.stage();
     }
@@ -252,7 +255,7 @@ impl Values {
 }
 
 /// The error that the running kind shows.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 enum Shown {
     /// No run runs: an error that a task of the last run shows is not written.
     #[default]

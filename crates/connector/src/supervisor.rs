@@ -548,26 +548,26 @@ mod tests {
             Some(Step::Ended(ended)) => returned(ended),
             Some(Step::Failed(failure)) => returned(failure),
             Some(Step::Show(span)) => {
-                ctx.error(Some(&"refused"));
+                ctx.error(&"refused");
                 clock.sleep(span).await;
-                ctx.error(Some(&"refused"));
+                ctx.error(&"refused");
                 clock.sleep(span).await;
-                ctx.error(None);
-                ctx.error(None);
+                ctx.clear_error();
+                ctx.clear_error();
                 clock.sleep(span).await;
                 Ok(())
             }
             Some(Step::ShowEnd) => {
-                ctx.error(Some(&"refused"));
+                ctx.error(&"refused");
                 Err(Error::Device("no reply".into()))
             }
             Some(Step::ShowWide(span)) => {
-                ctx.error(Some(&"a".repeat(1_100)));
+                ctx.error(&"a".repeat(1_100));
                 clock.sleep(span).await;
                 Ok(())
             }
             Some(Step::Clear(span)) => {
-                ctx.error(None);
+                ctx.clear_error();
                 clock.sleep(span).await;
                 Ok(())
             }
@@ -981,7 +981,7 @@ mod tests {
             let late = Rc::clone(&ctx);
             ctx.tasks().spawn(async move {
                 late.cancel().wait().await;
-                late.error(Some(&"late"));
+                late.error(&"late");
             });
             std::future::ready(if self.device {
                 Err(Error::Device("no reply".into()))

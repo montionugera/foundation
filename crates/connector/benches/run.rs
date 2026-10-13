@@ -132,8 +132,8 @@ impl Kind for Steps {
             for i in 0..STEPS {
                 let set = || match self.step {
                     Step::Poll => {}
-                    Step::Clear => ctx.error(None),
-                    Step::Show => ctx.error(Some(&"refused")),
+                    Step::Clear => ctx.clear_error(),
+                    Step::Show => ctx.error(&"refused"),
                     _ => count.set(std::hint::black_box(i)),
                 };
                 allocations += ALLOCATOR.count(set).1;

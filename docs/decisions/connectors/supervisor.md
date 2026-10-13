@@ -238,8 +238,9 @@
   2026-10-08T06:38:42Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
   to 3). A running kind shows an error with `Context::error`, as an attempt that failed:
-  `class` 3 and the text of the error, cut as above. `None` clears `class` to 0 and the
-  text. A change of it is written within one second, as a change of counts
+  `class` 3 and the text of the error, cut as above. `Context::clear_error` clears `class`
+  to 0 and the text (`laptop.architect-2`, 2026-10-13T04:31:10Z:
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6138269499). A change of it is written within one second, as a change of counts
   (`laptop.architect-2`, 2026-10-13T01:12:06Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432), which
   supersedes "at once" of rule 3 for it. Until the first call of a run, `class` and
