@@ -1,14 +1,8 @@
 //! Runs a test server of open62541 with clients that each have their own connection
 //! manager, as the kind of OPC UA uses them.
 
-#![expect(unsafe_code, reason = "open62541 is a C library")]
-
 use std::cell::RefCell;
-use std::future::{Future as _, poll_fn};
-use std::mem::ManuallyDrop;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::pin;
-use std::task::Poll;
 
 use env::clock::Clock;
 use env::net::Net;
@@ -67,42 +61,25 @@ impl Server {
         body: impl AsyncFnOnce(&Self) -> T,
     ) -> T {
         let local = SocketAddr::new(address, PORT);
-        let manager = ManuallyDrop::new(
-            connection::Manager::listening(
-                Clock::clone(&clock),
-                Net::clone(&net),
-                local,
-                u32::from(SESSIONS),
-                &mut rng,
-            )
-            .expect("the port is free"),
-        );
-        // SAFETY: the close below deletes the server before the manager drops, and a
-        // panic leaks the manager.
-        let server = unsafe { crate::server::Server::start(&manager, c"", SESSIONS) };
-        server.add_double(&VALUE, DOUBLE);
-        server.add_double(&named(), DOUBLE);
+        let manager = connection::Manager::listening(
+            Clock::clone(&clock),
+            Net::clone(&net),
+            local,
+            u32::from(SESSIONS),
+            &mut rng,
+        )
+        .expect("the port is free");
         let this = Self {
             clock,
             net,
             url: format!("opc.tcp://{local}"),
             rng: RefCell::new(rng),
         };
-        let value = {
-            let mut serve = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
-            let mut body = pin!(body(&this));
-            poll_fn(|cx| {
-                assert!(serve.as_mut().poll(cx).is_pending(), "it never ends");
-                body.as_mut().poll(cx)
-            })
-            .await
+        let add = |server: &mut crate::server::Server| {
+            server.add_double(&VALUE, DOUBLE);
+            server.add_double(&named(), DOUBLE);
         };
-        server.close(&manager).await;
-        drop(ManuallyDrop::into_inner(manager));
-        value
+        crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
 
     /// Connects a client to the server, on its own connection manager.
