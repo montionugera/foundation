@@ -1174,21 +1174,33 @@ fn a_read_of_no_nodes_gives_no_values() {
     assert_eq!(after, Ok(value));
 }
 
-/// A client reads only a list that it checked, as the limits of another session can
-/// be smaller.
-#[test]
-#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
-fn a_read_of_the_nodes_of_another_client_panics() {
+/// Reads the list of `nodes` that one client checked on another client.
+fn read_on_another_client(nodes: &'static [Node]) {
     run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let first = peer.connected().await;
             let mut second = peer.connected().await;
-            let nodes = first.nodes(&[VALUE]).expect("one node fits");
+            let nodes = first.nodes(nodes).expect("the nodes fit");
             let read = second.read(&nodes).await;
             unreachable!("the read gives {read:?}");
         })
         .await;
     });
+}
+
+/// A client reads only a list that it checked, as the limits of another session can
+/// be smaller.
+#[test]
+#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
+fn a_read_of_the_nodes_of_another_client_panics() {
+    read_on_another_client(&[VALUE]);
+}
+
+/// A client reads only a list that it checked, also when the list is empty.
+#[test]
+#[should_panic(expected = "invariant: a client reads only the nodes that it checked")]
+fn a_read_of_no_nodes_of_another_client_panics() {
+    read_on_another_client(&[]);
 }
 
 /// The port of the relay of [`relayed`].
@@ -1318,8 +1330,9 @@ type Read = Result<Vec<Result<f64, Status>>, Status>;
 
 /// Gives two reads of [`VALUE`] by one client through a relay that gives the first
 /// Read response `recount` empty results when it is set, the request handle of each
-/// Read response, and the value of [`VALUE`].
-fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64) {
+/// Read response, the value of [`VALUE`], and the capacity of the values of the client
+/// after the first read.
+fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
@@ -1332,16 +1345,19 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64) {
                     handles.push(handle);
                 }
             };
-            let reads = relayed(&node, rewrite, async {
+            let (reads, room) = relayed(&node, rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);
+                let values = client.reads.values.take();
+                let room = values.capacity();
+                client.reads.values.set(values);
                 let second = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
-                [first, second]
+                ([first, second], room)
             })
             .await;
-            (reads, handles, peer.value)
+            (reads, handles, peer.value, room)
         })
         .await
     })
@@ -1351,7 +1367,7 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64) {
 /// Each read of one request has its own request handle on the wire.
 #[test]
 fn each_read_of_one_request_has_its_own_handle() {
-    let (reads, handles, value) = read_twice(None);
+    let (reads, handles, value, _) = read_twice(None);
     assert_eq!(reads, [Ok(vec![Ok(value)]), Ok(vec![Ok(value)])]);
     let [one, two] = handles[..] else {
         panic!("two Read responses, not {}", handles.len());
@@ -1359,15 +1375,16 @@ fn each_read_of_one_request_has_its_own_handle() {
     assert_ne!(one, two);
 }
 
-/// An answer with a value for more or fewer nodes than its read fails, and the next
-/// read gives the value of each node.
+/// An answer with a value for more or fewer nodes than its read fails, copies none of
+/// them, and the next read gives the value of each node. The test reads the buffer of
+/// the client, as no call gives its size.
 #[test]
 fn an_answer_of_another_count_of_values_fails() {
     for count in [0, 2] {
-        let (reads, _, value) = read_twice(Some(count));
+        let (reads, _, value, room) = read_twice(Some(count));
         assert_eq!(
-            reads,
-            [Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])],
+            (reads, room),
+            ([Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])], 0),
             "{count} results"
         );
     }
