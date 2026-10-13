@@ -1,6 +1,7 @@
 //! The names in the data directory: the lock, the record of the shard count, the
-//! directory of each shard's ring, the mesh's directory, and the chunk store's
-//! directory. The node's name is in `name` ([`crate::name`]).
+//! directory of each shard's ring, the mesh's directory, the chunk store's
+//! directory, and the directory of secrets. The node's name is in `name`
+//! ([`crate::name`]).
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,8 @@ const SHARD: &str = "shard-";
 const MESH: &str = "mesh";
 /// The name of the chunk store's directory.
 const BLOB: &str = "blob";
+/// The name of the directory of secrets, one file for each.
+const SECRETS: &str = "secrets";
 
 /// The directory of the mesh of the node's region.
 pub(crate) fn mesh() -> PathBuf {
@@ -27,6 +30,11 @@ pub(crate) fn mesh() -> PathBuf {
 /// The directory of the node's chunk store.
 pub(crate) fn blob() -> PathBuf {
     PathBuf::from(BLOB)
+}
+
+/// The directory of the secrets that connectors read.
+pub(crate) fn secrets() -> PathBuf {
+    PathBuf::from(SECRETS)
 }
 
 /// The directory of the ring of the shard on `core`.

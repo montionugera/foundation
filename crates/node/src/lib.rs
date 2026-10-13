@@ -1098,6 +1098,8 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
+            let secrets =
+                secret::store::File::new(files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1135,6 +1137,7 @@ impl Serve {
                             net,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
+                            secrets: Box::new(secrets),
                         };
                         let runs = connectors::Runs::new(config, name);
                         (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
