@@ -90,6 +90,17 @@ When you make a key choice:
 3. When the person objects, `laptop.monitor` tells you. Reverse the choice, and record
    the person's words in `docs/decisions/` with the UTC time and the link.
 
+## 🚨 Three review rounds 🚨
+
+A PR gets at most 3 review rounds (`/review`, "Round cap"). Reviewers report every
+finding in one round, never a few at a time. The author fixes all findings of a round in
+one batch of commits, then asks for the next round. After round 3, only a defect (wrong
+behavior, data loss, a crash, or an oracle weakening) gets its fix, with a test that
+fails without it. Each other finding goes to an issue, other than a missing approval,
+OK, or link that `/review`, "Done", asks for. A design flaw (`/review`, "Round cap")
+goes to an issue only with the OK of its design approver, or the PR closes for a new
+design. Review hunts deep flaws (a wrong design, wrong behavior, lost data), not style.
+
 ## 🚨 The repo is the memory 🚨
 
 Several Claude sessions work here at once, and any one can compact, crash, or be

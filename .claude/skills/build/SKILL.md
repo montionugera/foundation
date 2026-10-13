@@ -57,7 +57,12 @@ or a line range.
 5. **Local gate** (below). Fix every failure.
 6. Run `/eb-review` on the diff. Put its Complexity and Shape decisions in the PR body.
 7. `gh pr create --draft`, filling the template. Never add a Claude co-author or footer.
-8. `/review <pr>`. It runs the reviewers by tier and the second round.
+8. `/review <pr>`. It runs the reviewers by tier and the later rounds, at most 3
+   (`/review`, "Round cap"). Fix every finding of a round in one batch of commits, with
+   each merge of `main` that the PR needs, then ask for the next round. After round 3,
+   fix only each defect, with a test that fails without the fix, link each approval, OK,
+   and link that "Done" asks for, and defer the rest. A design flaw is deferred only
+   with the OK of its design approver (`/review`, "Round cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.
