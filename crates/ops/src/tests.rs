@@ -733,7 +733,7 @@ mod start {
             fix: "y".to_owned(),
         };
         let mut text = Vec::new();
-        assert_eq!(start.fail(&failure, &mut text), 1);
+        assert_eq!(crate::fail(&[], &failure, &mut text), 1);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             format!(
@@ -777,13 +777,18 @@ mod start {
         }
     }
 
+    fn args(args: &[&str]) -> Vec<OsString> {
+        ["foundation"]
+            .iter()
+            .chain(args)
+            .map(OsString::from)
+            .collect()
+    }
+
     #[test]
     fn fail_writes_the_failure_as_cli_does_and_gives_1() {
-        let Run::Start(mut start) = start(&[]) else {
-            panic!("start runs");
-        };
         let mut text = Vec::new();
-        let status = start.fail(&busy(), &mut text);
+        let status = crate::fail(&args(&["start"]), &busy(), &mut text);
         assert_eq!(
             Exit {
                 stdout: String::new(),
@@ -799,9 +804,9 @@ mod start {
                 status: 1,
             }
         );
-        start.json = true;
         let mut json = Vec::new();
-        assert_eq!(start.fail(&busy(), &mut json), 1);
+        let status = crate::fail(&args(&["start", "--json"]), &busy(), &mut json);
+        assert_eq!(status, 1);
         let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(
             json,
@@ -812,7 +817,21 @@ mod start {
                 "notes": [],
             }] })
         );
-        assert_eq!(start.fail(&busy(), Closed), 1, "a closed output");
+        let status = crate::fail(&args(&["version", "--json"]), &busy(), Closed);
+        assert_eq!(status, 1, "a closed output");
+    }
+
+    #[test]
+    fn fail_after_a_double_dash_json_gives_text() {
+        let mut text = Vec::new();
+        let status =
+            crate::fail(&args(&["version", "--", "--json"]), &busy(), &mut text);
+        assert_eq!(status, 1);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "error[node.busy]: another node runs in foundation-data\n\
+             fix: Stop that node, or give another data directory with `--data`\n"
+        );
     }
 }
 

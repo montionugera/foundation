@@ -1,12 +1,14 @@
 //! The `foundation` binary. It runs the command line, and `foundation start` runs a
 //! node until a SIGINT or SIGTERM that reaches it.
 
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
 use document::diagnostic::Code;
+use env::shards::Shards;
 use env::threads::Threads;
 use node::Budget;
 use ops::{Failure, Run, Start};
@@ -31,32 +33,39 @@ const PORT: Code = Code::new("node.port");
 const FAILED: Code = Code::new("node.failed");
 
 /// Runs the command line on a shard that ends before a node starts, then the node of
-/// `foundation start`.
+/// `foundation start`. A failure of either goes to standard error through
+/// [`ops::fail`].
 fn main() -> ExitCode {
-    let run = match command_line() {
-        Ok(run) => run,
-        Err(exit) => return exit,
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let status = match run(&args) {
+        Ok(status) => status,
+        Err(failure) => ops::fail(&args, &failure, io::stderr().lock()),
     };
-    ExitCode::from(match run {
-        Run::Exit(status) => status,
-        Run::Start(start) => match node(&start) {
-            Ok(()) => 0,
-            Err(failure) => start.fail(&failure, io::stderr().lock()),
-        },
-    })
+    ExitCode::from(status)
 }
 
-/// Runs the command line on a shard of its own. The shard ends before this returns, so
-/// a node that `foundation start` runs gets every shard, and its first thread takes
-/// the signals. When the shard does not start, or panics in a debug build, this writes
-/// why to standard error as text, since no command parsed `--json`, and gives exit
-/// status 1.
+/// The exit status of the command line `args`, and of the node that it starts.
+fn run(args: &[OsString]) -> Result<u8, Failure> {
+    // `shards` starts no thread, so `os::interrupt` in `node` still comes first.
+    let shards = os::shards().map_err(failed)?;
+    match command_line(&shards, args.to_vec())? {
+        Run::Exit(status) => Ok(status),
+        Run::Start(start) => node(&start, shards).map(|()| 0),
+    }
+}
+
+/// Runs the command line `args` on a shard of its own. The shard ends before this
+/// returns, so a node that `foundation start` runs gets every shard, and its first
+/// thread takes the signals.
+///
+/// # Panics
+///
+/// When the shard panics.
 #[expect(
     clippy::unwrap_in_result,
-    reason = "a shard that ends with no panic has sent its run"
+    reason = "a panic of the shard goes on, and a shard that ends has sent its run"
 )]
-fn command_line() -> Result<Run, ExitCode> {
-    let shards = os::shards().map_err(unrun)?;
+fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     let (ran, run) = mpsc::channel();
     let config = env::shards::Config {
         name: "cli".into(),
@@ -64,7 +73,7 @@ fn command_line() -> Result<Run, ExitCode> {
     };
     let shard = shards.start(config, move |_| async move {
         let run = ops::cli(
-            std::env::args_os(),
+            args,
             io::stdin().lock(),
             io::stdout().lock(),
             io::stderr().lock(),
@@ -72,25 +81,18 @@ fn command_line() -> Result<Run, ExitCode> {
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
     });
-    shard.map_err(unrun)?.join().map_err(unrun)?;
+    shard
+        .map_err(failed)?
+        .join()
+        .expect("the shard of the command line does not panic");
     Ok(run
         .try_recv()
         .expect("invariant: the shard sends its run before it ends"))
 }
 
-/// Writes `error`, why the command line did not run, to standard error, and gives exit
-/// status 1.
-fn unrun(error: impl std::fmt::Display) -> ExitCode {
-    // A failed write leaves the status as the only report.
-    io::stderr()
-        .write_all(format!("foundation: {error}\n").as_bytes())
-        .unwrap_or(());
-    ExitCode::FAILURE
-}
-
 /// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
 /// the process stops it.
-fn node(start: &Start) -> Result<(), Failure> {
+fn node(start: &Start, shards: Shards) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;
     let threads = os::threads().map_err(failed)?;
@@ -112,7 +114,6 @@ fn node(start: &Start) -> Result<(), Failure> {
         }
     });
     let show = show.map_err(failed)?;
-    let shards = os::shards().map_err(failed)?;
     let wall = os::wall().map_err(failed)?;
     let (disks, handles) = disks(&start.data, &threads, shards.cores().get())?;
     let mut disks = disks.into_iter();
@@ -499,7 +500,7 @@ fn failed(error: impl std::fmt::Display) -> Failure {
     Failure {
         code: FAILED,
         message: error.to_string(),
-        fix: "Fix the cause that the message states, then start the node again"
+        fix: "Fix the cause that the message states, then run the command again"
             .to_owned(),
     }
 }
@@ -737,7 +738,7 @@ mod tests {
                     message: "the pool budget 1GiB gives one of 16 shards a pool that \
                               needs more address space than this host has"
                         .to_owned(),
-                    fix: "Fix the cause that the message states, then start the node \
+                    fix: "Fix the cause that the message states, then run the command \
                           again"
                         .to_owned(),
                 }
@@ -797,7 +798,7 @@ mod tests {
                 Failure {
                     code: FAILED,
                     message: error.to_string(),
-                    fix: "Fix the cause that the message states, then start the node \
+                    fix: "Fix the cause that the message states, then run the command \
                           again"
                         .to_owned(),
                 }
@@ -975,7 +976,7 @@ mod tests {
         let failed = |message: &str| Failure {
             code: FAILED,
             message: message.to_owned(),
-            fix: "Fix the cause that the message states, then start the node again"
+            fix: "Fix the cause that the message states, then run the command again"
                 .to_owned(),
         };
         let lost = env::files::Error::NotFound {
@@ -1027,10 +1028,5 @@ mod tests {
                  with OS error 28"
             )
         );
-    }
-
-    #[test]
-    fn a_command_line_that_did_not_run_gives_exit_status_1() {
-        assert_eq!(unrun("no shard"), ExitCode::FAILURE);
     }
 }

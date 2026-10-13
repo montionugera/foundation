@@ -60,11 +60,7 @@ pub async fn cli(
 ) -> Run {
     let args: Vec<OsString> = args.into_iter().collect();
     // Read before parsing, so an argument error also honors `--json`.
-    let json = args
-        .iter()
-        .take_while(|arg| *arg != "--")
-        .map(|arg| arg.as_encoded_bytes())
-        .any(|arg| arg == b"--json" || arg.starts_with(b"--json="));
+    let json = json(&args);
     let render = |value: Value, text: String| {
         if json { format!("{value}\n") } else { text }
     };
@@ -84,6 +80,21 @@ pub async fn cli(
         Ok(()) | Err(Stop::Closed) => Run::Exit(0),
         Err(Stop::Failed(error)) => Run::Exit(report(&error, json, errors)),
     }
+}
+
+/// Writes `failure`, why the command line `args` did not run or why its node failed,
+/// to `errors` as [`cli`] writes its own errors: as JSON when `args` has `--json`
+/// before any `--`, else as text. Gives exit status 1.
+pub fn fail(args: &[OsString], failure: &Failure, errors: impl Write) -> u8 {
+    report(&Error::Start(failure.clone()), json(args), errors)
+}
+
+/// Whether `args` asks for JSON: a `--json` flag before any `--`.
+fn json(args: &[OsString]) -> bool {
+    args.iter()
+        .take_while(|arg| *arg != "--")
+        .map(|arg| arg.as_encoded_bytes())
+        .any(|arg| arg == b"--json" || arg.starts_with(b"--json="))
 }
 
 /// Writes `error` to `errors`, as JSON when `json`, and gives its exit status.
