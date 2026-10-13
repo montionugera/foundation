@@ -225,7 +225,6 @@ fn serves_with_a_wall_that_panics() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_panic_in_the_wall_of_a_server_aborts() {
     let output =
         crate::child::aborted("sim::tests::serves_with_a_wall_that_panics", &[]);
