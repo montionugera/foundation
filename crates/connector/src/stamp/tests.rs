@@ -138,7 +138,8 @@ fn call() -> impl Strategy<Value = Call> {
 proptest! {
     /// In any order of calls, each stamp is after the one before it. A stamp is at
     /// its time when that is later, and a refusal gives the nanosecond after its
-    /// stamp before.
+    /// stamp before. It calls `next`, which the status writer calls, so it needs no
+    /// hub.
     #[test]
     fn stamps_strictly_increase_from_their_times(
         calls in prop::collection::vec(call(), 1..50),
