@@ -132,34 +132,45 @@
   changes code, since no round follows it (REVIEW ROUNDS in
   `docs/decisions/operations/review-rounds.md`). Its end must still be on the
   first-parent chain of the head, and each merge after it must be a clean merge of the
-  base. Each other problem of that round stays: the reviewers that it requires, the OK
-  of each deferral in a risk crate, the approvals of its `Public surface:` line, and the
-  director's approval of a red-team PR labeled `oracle`. The check does not check that
-  each finding of that round has its fix commit or its deferral, or that each commit
-  after it that changes code fixes a defect of that round. For the reviewers that a
-  round comment requires and for its `breaker` skip, the first round comment on a PR is
-  round 1 and each round comment after it is a later round, whatever its number. A PR
-  that replaces another reviews its whole diff in its first round, and a round comment
-  that only holds a late report or only checks a merge that is not clean takes the
-  number of the round comment before it. The findings of the last round are the findings
-  of each round comment with its number, because a round comment that only holds a late
-  report or only checks a merge adds its findings to the round whose number it takes. A
-  round comment after the first on a PR fails when its number is more than the number of
-  the round comment before it plus 1, or more than 3 and more than that number. The
-  first may have any number up to 3, because a PR that replaces another before round 3
-  continues its count. A round comment posted before 2026-10-14T00:00:00Z may have any
-  number, so that the rule does not fail the rounds that came before it. Decided by the
-  director at 2026-10-13T16:33:37Z
+  base. When the number of the last round is 3 or more and a commit after its end
+  changes a decision (`decision_change` on its end to the head), the check fails unless
+  the `Public surface:` line of that round names an item, because REVIEW ROUNDS has the
+  author add each such change to that line with its approval. Each other problem of that
+  round stays: the reviewers that it requires, the OK of each deferral in a risk crate,
+  the approvals of its `Public surface:` line, and the director's approval of a red-team
+  PR labeled `oracle`. The check does not check that each finding of that round has its
+  fix commit or its deferral, or that each commit after it that changes code fixes a
+  defect of that round. For the reviewers that a round comment requires and for its
+  `breaker` skip, the first round comment on a PR is round 1 and each round comment
+  after it is a later round, whatever its number. A PR that replaces another reviews its
+  whole diff in its first round, and a round comment that only holds a late report or
+  only checks a merge of the base that is not clean, or a merge and the commits that fix
+  what it broke, takes the number of the round comment before it. The findings of the
+  last round are the findings of each round comment with its number, because a round
+  comment that only holds a late report or only checks a merge adds its findings to the
+  round whose number it takes. A round comment after the first on a PR fails when its
+  number is more than the number of the round comment before it plus 1. The first may
+  have any number, because a PR that replaces another continues its count. A round
+  comment posted before 2026-10-14T00:00:00Z may have any number, so that the rule does
+  not fail the rounds that came before it. A round comment posted at or after <the UTC
+  time at which #2586 merged> also fails when its number is more than 3 and more than
+  the number of the round comment before it, or when it is the first on its PR and its
+  number is more than 3, because no round runs after round 3 (REVIEW ROUNDS). Decided by
+  the director at 2026-10-13T16:33:37Z
   (https://github.com/synnaxlabs/foundation/issues/2585), 16:53:06Z
   (https://github.com/synnaxlabs/foundation/issues/2585#issuecomment-6150677430),
   16:56:57Z
   (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150751781),
+  16:57:52Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150763804),
   17:00:50Z
   (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150817769),
   17:06:00Z
-  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150911446), and
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150911446),
   17:09:10Z
-  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150968081).
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150968081), and
+  17:19:02Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6151148195).
   Supersedes, for that round, the rule above that the last round finds none and that the
   range to the head changes no code
   (https://github.com/synnaxlabs/foundation/issues/2315). A merge of the base is not

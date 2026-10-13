@@ -3786,6 +3786,41 @@ fn a_last_round_2_passes_with_findings_only_in_round_1() {
     );
 }
 
+/// What the check gives for `round`, the last round, when the range from its end to
+/// the head changes a decision ([`CHANGE`]).
+fn decided(round: &str) -> Vec<String> {
+    problems(
+        &reviewed(vec![bot(round)]),
+        HEAD,
+        &|_| Ok(Place::Before),
+        &|_, _| Ok(None),
+        &|from, end| {
+            assert_eq!([from, end], [CODE, HEAD]);
+            Ok(Some(CHANGE.to_string()))
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_last_round_3_fails_when_a_decision_changes_after_it_with_no_public_surface() {
+    assert_eq!(
+        decided(&capped()),
+        vec![format!(
+            "review round 3 ends at `{CODE}`, and the range from it to the head \
+             `{HEAD}` {CHANGE}. Add the change to the `Public \
+             surface:` line of the round, with its approval (REVIEW ROUNDS in \
+             `docs/decisions/operations/review-rounds.md`)."
+        )]
+    );
+}
+
+#[test]
+fn a_last_round_3_passes_a_decision_change_after_it_with_a_public_surface_item() {
+    let named = capped().replace("Public surface: none", "Public surface: `x.md`");
+    assert_eq!(decided(&named), Vec::<String>::new());
+}
+
 #[test]
 fn a_last_round_2_with_findings_and_a_code_commit_after_it_fails() {
     let second = capped().replace("## Review round 3", "## Review round 2");
@@ -3871,6 +3906,14 @@ fn numbered(round: &str) -> Comment {
     }
 }
 
+/// `round` posted at the cutoff of the round cap.
+fn uncapped(round: &str) -> Comment {
+    Comment {
+        created: ROUNDS_CUTOFF.to_string(),
+        ..bot(&rated(round))
+    }
+}
+
 #[test]
 fn fails_a_round_comment_numbered_more_than_1_above_the_one_before_it() {
     assert_eq!(
@@ -3878,7 +3921,8 @@ fn fails_a_round_comment_numbered_more_than_1_above_the_one_before_it() {
         vec![
             "review round 3 follows review round 1. Number each round comment 1 above \
              the round comment before it, or the same for a comment that only holds a \
-             late report or only checks a merge that is not clean."
+             late report or only checks a merge of the base that is not clean, or a \
+             merge and the commits that fix what it broke."
         ]
     );
 }
@@ -3887,14 +3931,14 @@ fn fails_a_round_comment_numbered_more_than_1_above_the_one_before_it() {
 fn fails_a_round_comment_numbered_above_3_and_above_the_one_before_it() {
     let fourth = ROUND.replace("## Review round 3", "## Review round 4");
     assert_eq!(
-        check(&reviewed(vec![numbered(ROUND), numbered(&fourth)])),
+        check(&reviewed(vec![uncapped(ROUND), uncapped(&fourth)])),
         vec![
             "review round 4 follows review round 3. After round 3, number each round \
              comment the same as the round comment before it."
         ]
     );
     assert_eq!(
-        check(&reviewed(vec![numbered(ROUND), numbered(ROUND)])),
+        check(&reviewed(vec![uncapped(ROUND), uncapped(ROUND)])),
         Vec::<String>::new()
     );
 }
@@ -3904,14 +3948,25 @@ fn fails_a_first_round_comment_numbered_above_3() {
     let fourth = later("reviewer, architecture, breaker")
         .replace("## Review round 3", "## Review round 4");
     assert_eq!(
-        check(&record(vec![numbered(&fourth)])),
+        check(&record(vec![uncapped(&fourth)])),
         vec![
             "review round 4 is the first round comment on the PR. Number it 3 or less: \
              only a PR that replaces another before round 3 continues its count."
         ]
     );
     let third = later("reviewer, architecture, breaker");
-    assert_eq!(check(&record(vec![numbered(&third)])), Vec::<String>::new());
+    assert_eq!(check(&record(vec![uncapped(&third)])), Vec::<String>::new());
+}
+
+#[test]
+fn passes_round_comments_above_3_posted_before_the_cutoff_of_the_round_cap() {
+    let fourth = later("reviewer, architecture, breaker")
+        .replace("## Review round 3", "## Review round 4");
+    let fifth = fourth.replace("## Review round 4", "## Review round 5");
+    assert_eq!(
+        check(&record(vec![bot(&fourth), bot(&fifth)])),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

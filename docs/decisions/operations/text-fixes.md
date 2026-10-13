@@ -22,11 +22,12 @@
   merge-tree`), that the commits after it change no code, and, when one that is not a
   merge follows it, that its round comment has a line `Text fixes:` that is not `Text
   fixes: none` (#2315). After a last round of 3 or more (REVIEW ROUNDS), it checks only
-  the merges. It cannot check that a commit applies only those items. Evidence
-  (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a median of 7 rounds per
-  PR, about 44% of the findings in text, and each text fix moved the head and started a
-  round. Late rounds still found defects in code (#2191, #2003), so a code fix keeps its
-  round. The person, at 2026-10-10T15:50:57Z, in the `laptop.monitor` chat
+  the merges and each change to a decision. It cannot check that a commit applies only
+  those items. Evidence (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a
+  median of 7 rounds per PR, about 44% of the findings in text, and each text fix moved
+  the head and started a round. Late rounds still found defects in code (#2191, #2003),
+  so a code fix keeps its round. The person, at 2026-10-10T15:50:57Z, in the
+  `laptop.monitor` chat
   (https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621): "Yes,
   let's do that please". The director decided the items and the code test at
   2026-10-10T23:02:11Z
