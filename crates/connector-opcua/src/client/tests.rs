@@ -12,10 +12,11 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Client, Node, Reads, answer};
+use super::{Client, Reads, answer};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
+use crate::node::{Key, Name, Node};
 use crate::server::Server;
 
 /// The port of the test server.
@@ -24,20 +25,20 @@ const PORT: u16 = 4840;
 /// The Double variable of the test server.
 const VALUE: Node = Node {
     namespace: 1,
-    key: 1000,
+    key: Key::Number(1000),
 };
 
 /// A `ByteString` whose answer needs 8 chunks, [`CHUNKS`], from [`read_large`].
 const FITS: Node = Node {
     namespace: 1,
-    key: 1002,
+    key: Key::Number(1002),
 };
 
 /// A `ByteString` whose answer needs 9 chunks, one past [`CHUNKS`], from
 /// [`read_large`].
 const PAST: Node = Node {
     namespace: 1,
-    key: 1003,
+    key: Key::Number(1003),
 };
 
 /// The size of a chunk, the send buffer size of a channel.
@@ -46,7 +47,7 @@ const CHUNK: usize = 1 << 16;
 /// The current time of the server, a `DateTime`.
 const TIME: Node = Node {
     namespace: 0,
-    key: ffi::test::TIME,
+    key: Key::Number(ffi::test::TIME),
 };
 
 /// The side of a client in a run of [`serve`].
@@ -108,7 +109,7 @@ async fn serve<T>(
     // SAFETY: the close below deletes the server before the manager drops.
     let server = unsafe { Server::start(&manager, c"", sessions) };
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
-    server.add_double(VALUE, value);
+    server.add_double(&VALUE, value);
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -142,7 +143,7 @@ fn spike(seed: u64) -> ((f64, Result<f64, Status>), u64) {
     run(seed, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            (peer.value, client.read(VALUE).await)
+            (peer.value, client.read(&VALUE).await)
         })
         .await
     })
@@ -163,12 +164,53 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
     let (read, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            let unknown = Node { key: 1001, ..VALUE };
-            client.read(unknown).await
+            let unknown = Node {
+                key: Key::Number(1001),
+                ..VALUE
+            };
+            client.read(&unknown).await
         })
         .await
     });
     assert_eq!(read, Err(Status::BAD_NODE_ID_UNKNOWN));
+}
+
+/// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
+/// past ASCII, and a node whose name is its prefix holds another value. The name in
+/// namespace 0 holds no value.
+#[test]
+fn a_read_of_a_name_node_gives_its_value() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let named = |name: &str| Node {
+                namespace: 1,
+                key: Key::Name(Name::new(name).expect("a name of 1 to 4096 bytes")),
+            };
+            peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
+            peer.server.add_double(&named("plant.spike"), 3.5);
+            let longest = named(&"x".repeat(Name::BYTES));
+            peer.server.add_double(&longest, 4.5);
+            let mut client = peer.connected().await;
+            let reads = (
+                client.read(&named("plant.spike;x=ü")).await,
+                client.read(&named("plant.spike")).await,
+                client.read(&named("plant.dip")).await,
+                client.read(&longest).await,
+                client
+                    .read(&Node {
+                        namespace: 0,
+                        ..named("plant.spike")
+                    })
+                    .await,
+            );
+            client.close().await;
+            reads
+        })
+        .await
+    });
+    let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
+    let expected = (Ok(2.5), Ok(3.5), unknown, Ok(4.5), unknown);
+    assert_eq!(reads, expected);
 }
 
 #[test]
@@ -176,7 +218,7 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
     let (read, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            client.read(TIME).await
+            client.read(&TIME).await
         })
         .await
     });
@@ -220,7 +262,7 @@ fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
 fn a_read_after_the_server_closes_fails_and_open62541_refuses_the_next() {
     let (reads, _) = run(0, async |node| {
         let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
-        (client.read(VALUE).await, client.read(VALUE).await)
+        (client.read(&VALUE).await, client.read(&VALUE).await)
     });
     assert_eq!(
         reads,
@@ -239,7 +281,7 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             {
-                let mut dropped = pin!(client.read(VALUE));
+                let mut dropped = pin!(client.read(&VALUE));
                 poll_fn(|cx| {
                     assert!(dropped.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
@@ -248,8 +290,8 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
             }
             peer.clock.sleep(Span::from_nanos(10_000_000)).await;
             (
-                client.read(TIME).await,
-                client.read(VALUE).await,
+                client.read(&TIME).await,
+                client.read(&VALUE).await,
                 peer.value,
             )
         })
@@ -265,7 +307,7 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
 /// Starts `count` reads of `client`, each polled once and then dropped.
 async fn drop_reads(client: &mut Client, count: u16) {
     for _ in 0..count {
-        let mut read = pin!(client.read(VALUE));
+        let mut read = pin!(client.read(&VALUE));
         poll_fn(|cx| {
             assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
             Poll::Ready(())
@@ -282,7 +324,7 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             drop_reads(&mut client, 255).await;
-            let read = client.read(VALUE).await;
+            let read = client.read(&VALUE).await;
             client.close().await;
             (read, peer.value)
         })
@@ -301,7 +343,7 @@ fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
             drop_reads(&mut client, dropped).await;
             peer.clock.sleep(Span::from_nanos(2_000_000_000)).await;
             let start = peer.clock.now();
-            let read = client.read(VALUE).await;
+            let read = client.read(&VALUE).await;
             let took = peer.clock.now() - start;
             peer.paused.set(false);
             client.close().await;
@@ -340,7 +382,7 @@ async fn read_with_pass(
     let start = peer.clock.now();
     let mut pass = pin!(peer.clock.sleep(at));
     let (mut woke, mut passed) = (false, false);
-    let mut read = pin!(client.read(VALUE));
+    let mut read = pin!(client.read(&VALUE));
     let read = poll_fn(|cx| {
         if !woke && pass.as_mut().poll(cx).is_ready() {
             woke = true;
@@ -418,7 +460,7 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
             }
             peer.paused.set(false);
             peer.clock.sleep(Span::from_nanos(10_000_000)).await;
-            let read = client.read(VALUE).await;
+            let read = client.read(&VALUE).await;
             client.close().await;
             (read, peer.value)
         })
@@ -432,11 +474,11 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
 fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            peer.server.add_bytes(FITS, 7 * CHUNK);
-            peer.server.add_bytes(PAST, 8 * CHUNK);
+            peer.server.add_bytes(&FITS, 7 * CHUNK);
+            peer.server.add_bytes(&PAST, 8 * CHUNK);
             peer.server.set_chunks(chunks);
             let mut client = peer.connected().await;
-            let reads = (client.read(FITS).await, client.read(PAST).await);
+            let reads = (client.read(&FITS).await, client.read(&PAST).await);
             client.close().await;
             reads
         })
@@ -474,8 +516,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             let status = Status(unsafe {
                 ffi::shim_client_read(
                     client.raw.as_ptr(),
-                    VALUE.namespace,
-                    VALUE.key,
+                    (&VALUE).into(),
                     answer,
                     std::ptr::from_ref(&outside).cast_mut().cast(),
                     &raw mut request,
@@ -583,7 +624,7 @@ fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeo
     let (took, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            assert_eq!(client.read(VALUE).await, Ok(peer.value));
+            assert_eq!(client.read(&VALUE).await, Ok(peer.value));
             peer.paused.set(true);
             let start = peer.clock.now();
             client.close().await;
@@ -605,7 +646,7 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
             let mut client = peer.connected().await;
             peer.paused.set(true);
             let start = peer.clock.now();
-            let value = client.read(VALUE).await;
+            let value = client.read(&VALUE).await;
             let took = peer.clock.now() - start;
             peer.paused.set(false);
             client.close().await;
@@ -728,7 +769,7 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
     let ((value, reads), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            let first = client.read(VALUE).await;
+            let first = client.read(&VALUE).await;
             // SAFETY: the server lives, and copies the name.
             let namespace = unsafe {
                 ffi::test::UA_Server_addNamespace(
@@ -738,13 +779,13 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
             };
             let added = Node {
                 namespace,
-                key: 1000,
+                key: Key::Number(1000),
             };
-            peer.server.add_double(added, 2.5);
-            let second = client.read(added).await;
+            peer.server.add_double(&added, 2.5);
+            let second = client.read(&added).await;
             client.close().await;
             let mut fresh = peer.connected().await;
-            let third = fresh.read(added).await;
+            let third = fresh.read(&added).await;
             fresh.close().await;
             (peer.value, (first, namespace, second, third))
         })
