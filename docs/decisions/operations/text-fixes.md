@@ -77,11 +77,15 @@
   https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6147048003): a Low
   finding in text only is also a `Text fixes:` item when the `reviewer` gives no exact
   new text, also when it asks the author to find a fact, such as a link. A Low finding
-  is a problem of wording, of a citation, or of the text of a deferral or a later step,
-  whose fix makes no sentence state another thing about what the code, a test, a
-  decision, a ruling, or a contract does. The author fixes it in place, and the PR
-  merges with no further round. A finding in code, and a finding in text that is Medium
-  or higher and has no exact new text, still get a round. `laptop.monitor` asked: "when
+  is a problem of a citation or of the text of a deferral or a later step, whose fix
+  makes no sentence state another thing about what the code, a test, a decision, a
+  ruling, or a contract does. The author fixes it in place, and the PR merges with no
+  further round. A finding in code, and a finding in text that is Medium or higher and
+  has no exact new text, still get a round, up to round 3 (REVIEW ROUNDS). A problem of
+  wording that leaves each statement true is no finding (REVIEW ROUNDS), as the director
+  ruled at 2026-10-13T20:27:17Z
+  (https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6154537932).
+  `laptop.monitor` asked: "when
   a round finds only Low text problems (wording, citations, issue text) and no code
   problem, the author fixes them in place and the PR merges without another round. Code
   findings and any Medium or higher finding still get a new round. Do you want that
@@ -94,7 +98,8 @@
   missing or stale link to an approval, an OK, or a ruling that Round 1, "Findings" step
   3, or "Done" of the `review` skill asks for is no Low finding, because such a link is
   the record of a gate, not a citation. Cost: no round checks a Low item that has no
-  exact new text, so a wrong link or word can reach `main`. `cargo xtask review` does
+  exact new text, also after round 3, so a wrong link or word can reach `main`.
+  `cargo xtask review` does
   not change: a `Text fixes:` line already lets commits that change no code follow the
   last round. Lost: a severity grade in each `reviewer` report, which the check would
   read (a new field, and a grade for each finding of each round). Supersedes, for a Low
