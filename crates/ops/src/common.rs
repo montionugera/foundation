@@ -25,10 +25,12 @@ use crate::{Failure, Node, Run};
 #[path = "../tests/common/founding.rs"]
 mod founding;
 
-pub(crate) use founding::{ADMIN, NODE, create_mesh};
+#[path = "../tests/common/quickstart.rs"]
+mod quickstart;
 
-pub(crate) const PLANT: &str =
-    include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
+pub(crate) use founding::{ADMIN, NODE, create_mesh};
+pub(crate) use quickstart::{plant, shown};
+
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
@@ -51,7 +53,20 @@ pub(crate) const SAM: &str = concat!(
 
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
 /// each attribute, so it stands in for each kind of the fixtures.
-pub(crate) struct Reader;
+pub(crate) struct Reader {
+    /// The counts of the kind.
+    counts: &'static [&'static str],
+}
+
+/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
+pub(crate) const OPCUA: Reader = Reader {
+    counts: &["in", "lost", "missed"],
+};
+
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+pub(crate) const INFLUX: Reader = Reader {
+    counts: &["confirmed"],
+};
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -70,7 +85,7 @@ impl kind::Kind for Reader {
         Ok(Channels {
             reader: None,
             writes: writes.clone(),
-            counts: Vec::new(),
+            counts: self.counts.iter().map(|count| name(count)).collect(),
         })
     }
 
@@ -100,7 +115,7 @@ pub(crate) fn front_ends() -> FrontEnds {
 
 /// The kinds of the connectors of the fixtures.
 pub(crate) fn create_kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
+    Table::new().with("influx", INFLUX).with("opcua", OPCUA)
 }
 
 /// The sim node of a run, and a hub on it.
