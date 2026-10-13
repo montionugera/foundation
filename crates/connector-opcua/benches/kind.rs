@@ -1,35 +1,69 @@
-//! The ns in the polls of the run of the `opcua` kind for one tick, against the sim
-//! server over the sim net: the read of 1 or of 256 nodes, its frame, and the write of
-//! the frame, with no time of the server. Run with `cargo bench -p connector-opcua
-//! --bench kind`.
+//! The ns of the `opcua` kind against the sim server over the sim net: the polls of
+//! its run for one tick (the read of 1 or of 256 nodes, its frame, and the write of
+//! the frame, with no time of the server), the polls of its run start, and its parse.
+//! Run with `cargo bench -p connector-opcua --bench kind`.
 
 #![expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
 
 use std::time::Instant;
 
+use connector::kind::Kind as _;
+
 #[path = "../tests/common/kind.rs"]
 mod kind;
 
-/// The node counts of the reads.
+/// The node counts of the reads of a tick.
 const COUNTS: [usize; 2] = [1, 256];
 /// The ticks before the timed ticks: tick 1 connects.
 const WARMUP: usize = 10;
 const TICKS: usize = 1000;
+/// The node counts of a run start and of a parse. A frame of 1,000 nodes fits the
+/// largest block of the pool of the test hub.
+const STARTS: [usize; 2] = [250, 1_000];
+const RUNS: usize = 5;
+const PARSES: usize = 20;
 
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn main() {
     println!("ns per tick over {TICKS} ticks");
     println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
     for nodes in COUNTS {
-        let mut ticks = kind::ticks(nodes, WARMUP + TICKS, |poll| {
-            let start = Instant::now();
-            poll();
-            let nanos = Instant::now().duration_since(start).as_nanos();
-            u64::try_from(nanos).expect("a poll takes under 2^64 ns")
-        });
-        let mut ticks = ticks.split_off(WARMUP);
+        let (_, ticks) = kind::ticks(nodes, WARMUP + TICKS, time);
+        let mut ticks = ticks[WARMUP..].to_vec();
         ticks.sort_unstable();
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
         println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
     }
+    println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");
+    println!("{:<10} {:>10} {:>10}", "nodes", "start p50", "parse p50");
+    for nodes in STARTS {
+        let starts = (0..RUNS).map(|_| kind::ticks(nodes, 1, time).0);
+        let texts: Vec<_> = (1..=nodes)
+            .map(|n| (format!("plant.v{n}"), format!("ns=2;i={n}")))
+            .collect();
+        let reads = texts.iter().map(|(channel, node)| (&**channel, &**node));
+        let config = kind::config("opc.tcp://plc:4840", reads);
+        let parses = (0..PARSES).map(|_| {
+            let start = Instant::now();
+            let parsed = connector_opcua::Kind::default().parse(&config);
+            let nanos = Instant::now().duration_since(start).as_nanos();
+            assert!(parsed.is_ok(), "the config parses");
+            u64::try_from(nanos).expect("a parse takes under 2^64 ns")
+        });
+        let (start, parse) = (median(starts.collect()), median(parses.collect()));
+        println!("{nodes:<10} {start:>10} {parse:>10}");
+    }
+}
+
+/// The ns of `poll`.
+fn time(poll: &mut dyn FnMut()) -> u64 {
+    let start = Instant::now();
+    poll();
+    let nanos = Instant::now().duration_since(start).as_nanos();
+    u64::try_from(nanos).expect("a poll takes under 2^64 ns")
+}
+
+fn median(mut values: Vec<u64>) -> u64 {
+    values.sort_unstable();
+    values[values.len() / 2]
 }

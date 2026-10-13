@@ -203,7 +203,7 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
 /// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
 fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
     for (nodes, read) in [(1, 6), (64, 69)] {
-        let ticks = kind::ticks(nodes, 100, |poll| ALLOCATOR.count(poll).1);
+        let (_, ticks) = kind::ticks(nodes, 100, |poll| ALLOCATOR.count(poll).1);
         assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
     }
 }

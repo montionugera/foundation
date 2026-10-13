@@ -80,10 +80,11 @@ fn name(text: &str) -> Name {
 }
 
 /// Runs a connector at 10 Hz that reads `nodes` Double variables of the sim server,
-/// for `count` ticks and two more. Gives, for each of the first `count` reads, the sum
-/// of what `measure` gives for the polls of the run within half a period of the
-/// answer of the server.
-/// `measure` calls the poll that it gets once.
+/// for `count` ticks and two more. Gives the sum of what `measure` gives for the polls
+/// of the run before the first answer of the server (the run start: the open of its
+/// writer, its frames, its connect, and its first request), and, for each of the first
+/// `count` reads, the sum for the polls within half a period of the answer of the
+/// server. `measure` calls the poll that it gets once.
 ///
 /// # Panics
 ///
@@ -92,7 +93,7 @@ pub(crate) fn ticks(
     nodes: usize,
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
-) -> Vec<u64> {
+) -> (u64, Vec<u64>) {
     let polls = Polls::default();
     let kind = Measured {
         measure,
@@ -156,12 +157,14 @@ pub(crate) fn ticks(
     let polls = polls.lock().expect("no panic under the lock");
     let half = PERIOD.nanos() / 2;
     let near = |at: Monotonic, read: Monotonic| (at - read).nanos().abs() < half;
-    (served.iter().take(count))
+    let start = polls.iter().take_while(|(at, _)| *at < served[0].time);
+    let ticks = (served.iter().take(count))
         .map(|read| {
             let polls = polls.iter().filter(|(at, _)| near(*at, read.time));
             polls.map(|(_, value)| value).sum()
         })
-        .collect()
+        .collect();
+    (start.map(|(_, value)| value).sum(), ticks)
 }
 
 /// The definition of an index of `key`.
@@ -197,7 +200,7 @@ fn attribute(key: &str, kind: value::Kind) -> Attribute {
 
 /// The config of a connector of `address` at 10 Hz with a `read` block of each
 /// channel and node of `reads`.
-fn config<'a>(
+pub(crate) fn config<'a>(
     address: &str,
     reads: impl Iterator<Item = (&'a str, &'a str)>,
 ) -> Document {
