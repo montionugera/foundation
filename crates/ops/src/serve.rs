@@ -215,9 +215,9 @@ pub(crate) fn apply_request(plan: &[u8]) -> Vec<u8> {
 pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
     let (output, plan) = answer(body)?;
     if plan.is_empty() {
-        return Err(Error::Reply {
-            message: "no plan follows the first line of the reply of `plan`".to_owned(),
-        });
+        return Err(bad_reply(
+            "no plan follows the first line of the reply of `plan`",
+        ));
     }
     Ok((output, plan))
 }
@@ -230,9 +230,9 @@ pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
 pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
     let (effect, rest) = answer(body)?;
     if !rest.is_empty() {
-        return Err(Error::Reply {
-            message: "bytes follow the first line of the reply of `apply`".to_owned(),
-        });
+        return Err(bad_reply(
+            "bytes follow the first line of the reply of `apply`",
+        ));
     }
     Ok(effect)
 }
@@ -244,25 +244,22 @@ pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
 /// - [`Error::Remote`] with the errors of the reply and its exit status.
 /// - [`Error::Reply`] when `body` is no reply, or holds no error with a status of 0.
 fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
-    let bad = |message: &str| Error::Reply {
-        message: message.to_owned(),
-    };
     let Some((head, rest)) = first_line(body) else {
-        return Err(bad("no newline ends the first line"));
+        return Err(bad_reply("no newline ends the first line"));
     };
     match serde_json::from_slice::<Answer<'_, Value>>(head) {
         Ok(Answer::Done { output }) => match T::deserialize(output) {
             Ok(output) => Ok((output, rest)),
-            Err(error) => Err(bad(&error.to_string())),
+            Err(error) => Err(bad_reply(error.to_string())),
         },
         Ok(Answer::Failed { errors, status }) if status == 0 || errors.is_empty() => {
-            Err(bad("an error has the exit status 0, or no problem"))
+            Err(bad_reply("an error has the exit status 0, or no problem"))
         }
         Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
             problems: errors.into_owned(),
             status,
         }),
-        Err(error) => Err(bad(&error.to_string())),
+        Err(error) => Err(bad_reply(error.to_string())),
     }
 }
 
@@ -274,8 +271,15 @@ fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 /// `Request` with `message`.
-fn bad(message: impl Into<String>) -> Error {
+fn bad_request(message: impl Into<String>) -> Error {
     Error::Request {
+        message: message.into(),
+    }
+}
+
+/// `Reply` with `message`.
+fn bad_reply(message: impl Into<String>) -> Error {
+    Error::Reply {
         message: message.into(),
     }
 }
@@ -283,16 +287,17 @@ fn bad(message: impl Into<String>) -> Error {
 /// The reply of the request `body` of `subject`.
 async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Reply, Error> {
     let Some((head, rest)) = first_line(body) else {
-        return Err(bad("no newline ends the first line"));
+        return Err(bad_request("no newline ends the first line"));
     };
-    let request = serde_json::from_slice(head).map_err(|e| bad(e.to_string()))?;
+    let request =
+        serde_json::from_slice(head).map_err(|e| bad_request(e.to_string()))?;
     match request {
         Request::Plan(_) if !rest.is_empty() => {
-            Err(bad("bytes follow the first line of `plan`"))
+            Err(bad_request("bytes follow the first line of `plan`"))
         }
         Request::Plan(Plan { files }) => plan(node, subject, &files).await,
         Request::Apply => apply(node, subject, rest).await,
-        Request::Other(name) => Err(bad(format!(
+        Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
     }
