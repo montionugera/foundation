@@ -124,7 +124,10 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
         let steady = supervise(&fixture, &node, &["site.a"]).await;
         applied(&fixture, &node, &connector("site.a", "wide", "edge")).await;
         steady.cancel();
+        let clock = fixture.sim.clock();
+        let start = clock.now();
         let (head, rest) = status(&node, "@admin").await;
+        assert!(clock.now() - start < Span::SECOND, "the frame came");
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
         assert_eq!(head, expected);
@@ -614,31 +617,36 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
     });
 }
 
-/// The status channels of `site.a` of `steady` but the index, with the sample type of
-/// each.
-fn status_channels() -> Vec<(Name, Type)> {
+/// The name of the `state` channel of `site.a`.
+const STATE: &str = "site.a.status.state";
+
+/// The status channels of `site.a` of `steady` but the index and [`STATE`], with the
+/// sample type of each.
+fn channels() -> Vec<(Name, Type)> {
     let counts = [name("in"), name("confirmed")];
     let channels = connector::status::channels(&name("site.a"), &counts);
-    channels.expect("short status names").1
+    let mut channels = channels.expect("short status names").1;
+    channels.retain(|(channel, _)| channel.as_str() != STATE);
+    channels
 }
 
 /// The text of user channels with the status names of `site.a` of `steady`, each data
-/// channel on the index `index`, and `site.a.status.state` of the type `state`.
+/// channel on the index `index`, and [`STATE`] of the type `state`.
 fn user_status(index: &str, state: &str) -> String {
-    let on = |(channel, sample): (Name, Type)| {
-        let sample = sample.to_string();
-        let data_type = if channel.as_str() == "site.a.status.state" {
-            state
-        } else {
-            &sample
-        };
+    let on = |(channel, data_type): (&str, String)| {
         format!(
             "channel \"{channel}\" {{\n  data_type = \"{data_type}\"\n  \
              index = \"{index}\"\n}}\n"
         )
     };
     let index = format!("channel \"{index}\" {{ kind = \"index\" }}\n");
-    let channels = status_channels().into_iter().map(on);
+    let others = channels();
+    let others = others
+        .iter()
+        .map(|(channel, sample)| (channel.as_str(), sample.to_string()));
+    let channels = std::iter::once((STATE, state.to_owned()))
+        .chain(others)
+        .map(on);
     std::iter::once(index)
         .chain(channels)
         .chain([EDGE.to_owned()])
@@ -646,24 +654,17 @@ fn user_status(index: &str, state: &str) -> String {
 }
 
 /// Writes one frame of `index` and each data channel of [`user_status`], with `state`
-/// as the sample of `site.a.status.state` and zeros for each other.
+/// as the sample of [`STATE`] and zeros for each other.
 async fn write_user(fixture: &Fixture, index: &str, state: &[u8]) {
-    let samples: Vec<_> = status_channels()
-        .into_iter()
-        .map(|(channel, sample)| {
-            let bytes = if channel.as_str() == "site.a.status.state" {
-                state.to_vec()
-            } else {
-                // Four zeros are one empty text.
-                vec![0; sample.width().unwrap_or(4)]
-            };
-            (channel, bytes)
-        })
-        .collect();
-    let samples: Vec<_> = samples
+    let others = channels();
+    // Four zeros are one empty text.
+    let zeros: Vec<_> = others
         .iter()
-        .map(|(channel, bytes)| (channel.as_str(), &bytes[..]))
+        .map(|(_, sample)| vec![0; sample.width().unwrap_or(4)])
         .collect();
+    let others = others.iter().zip(&zeros);
+    let others = others.map(|((channel, _), bytes)| (channel.as_str(), &bytes[..]));
+    let samples: Vec<_> = std::iter::once((STATE, state)).chain(others).collect();
     write(fixture, index, &samples).await;
 }
 
