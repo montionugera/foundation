@@ -399,7 +399,8 @@ impl Nodes {
         // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
         let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
         Self {
-            raw: NonNull::new(request).expect("open62541 allocates the request"),
+            raw: NonNull::new(request)
+                .expect("open62541: out of memory for a Read request"),
             count: nodes.len(),
         }
     }
