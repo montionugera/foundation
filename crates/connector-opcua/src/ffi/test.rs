@@ -198,6 +198,11 @@ unsafe extern "C" {
         key: QualifiedName,
         value: *mut c_void,
     ) -> u32;
+    pub(crate) fn shim_server_add_source(
+        server: *mut Server,
+        node: Node<'_>,
+        source: *mut c_void,
+    ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;

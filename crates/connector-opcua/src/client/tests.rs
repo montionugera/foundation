@@ -55,7 +55,7 @@ const TIME: Node = Node {
 
 impl Client {
     /// Reads the Value of `node` alone.
-    async fn read_one(&mut self, node: &Node) -> Result<f64, Status> {
+    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<f64, Status> {
         let nodes = self
             .nodes(std::slice::from_ref(node))
             .expect("one node fits");
@@ -868,13 +868,7 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let first = client.read_one(&VALUE).await;
-            // SAFETY: the server lives, and copies the name.
-            let namespace = unsafe {
-                ffi::test::UA_Server_addNamespace(
-                    peer.server.raw(),
-                    c"urn:added".as_ptr(),
-                )
-            };
+            let namespace = peer.server.add_namespace(c"urn:added");
             let added = Node {
                 namespace,
                 key: Key::Number(1000),
