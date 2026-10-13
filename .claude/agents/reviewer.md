@@ -154,5 +154,6 @@ Start the report with the rating and the summary of code quality that "Rating" i
 Then report only findings you can show: a concrete input and the wrong result, or a
 failing test you wrote and ran. For each: file and line, the failure, and the fix. Most
 severe first. Give a finding in text only, whose exact new text you can give, under
-`Text fixes:` with that text ("Second round" step 2 of the `review` skill). No praise,
-and no other summary.
+`Text fixes:` with that text, and a Low one with that text or with its place and its
+problem ("Second round" step 2 of the `review` skill). No praise, and no other
+summary.
