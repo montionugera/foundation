@@ -3121,8 +3121,8 @@ mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
-    /// The node stops a hub stream of a program, and resets its reply half, with the
-    /// code of a rejected header.
+    /// A node with no region stops a hub stream of a program, and resets its reply
+    /// half, with the code of a rejected header.
     #[test]
     fn rejects_a_hub_stream_of_a_program() {
         let header = wire::header::encode(wire::Protocol::Hub);
@@ -4609,6 +4609,21 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        fn operations(
+            mesh: &::mesh::Mesh,
+            key: types::node::Key,
+            hub: &::hub::Hub,
+            clock: env::clock::Clock,
+            time: &clock::Reader,
+            entropy: &env::entropy::Entropy,
+        ) -> Rc<ops::Node> {
+            let member = mesh.member(key).expect("the peer is a member");
+            let name = member.card.card().name.clone();
+            let kinds = Arc::new(crate::kinds());
+            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+        }
+
         /// Starts the member [`OTHER`] of `members` on `host` without a `Node`: an
         /// endpoint and a hub with its key, which serve the mesh as a node's do. Runs
         /// `act` with the mesh, then drops the mesh and its port.
@@ -4652,18 +4667,21 @@ mod port {
                     interner,
                     tasks: tasks.clone(),
                     node: key,
-                    time,
-                    entropy,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
                     region: Some(::hub::Region {
                         mesh: mesh.clone(),
                         transport: Rc::clone(&transport),
                     }),
                 });
                 let clock = own.clock();
+                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
                 let port = route::accept(
                     transport,
-                    Some(mesh.clone()),
-                    hub,
+                    crate::task::Handles {
+                        hub,
+                        ops: Some(ops),
+                    },
                     clock,
                     tasks,
                     settings.header_wait,
@@ -4802,14 +4820,15 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
-        /// The node stops a hub stream of a program, and resets its reply half, with
-        /// the code of a rejected header.
+        /// The node gives a hub stream of a program to its hub, which takes it as the
+        /// hello stream and closes the session at its first message, which is no
+        /// hello, with the code of a malformed message.
         #[test]
-        fn rejects_a_hub_stream_of_a_program_of_a_region() {
+        fn a_hub_stream_of_a_program_of_a_region_goes_to_the_hub() {
             let Seen { sent, read, .. } = opened(Dialer::Program);
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(sent, transport::Error::Stopped { code });
-            assert_eq!(read, Err(transport::Error::Reset { code }));
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::PeerClosed { code });
+            assert_eq!(read, Err(transport::Error::PeerClosed { code }));
         }
 
         /// The mesh serves a mesh stream: at the first message that is not a mesh
@@ -6285,18 +6304,21 @@ mod port {
                     interner,
                     tasks: tasks.clone(),
                     node: key,
-                    time,
-                    entropy,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
                     region: Some(::hub::Region {
                         mesh: mesh.clone(),
                         transport: Rc::clone(&transport),
                     }),
                 });
                 let clock = own.clock();
+                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
                 let port = route::accept(
                     transport,
-                    Some(mesh.clone()),
-                    hub.clone(),
+                    crate::task::Handles {
+                        hub: hub.clone(),
+                        ops: Some(ops),
+                    },
                     clock,
                     tasks,
                     settings.header_wait,

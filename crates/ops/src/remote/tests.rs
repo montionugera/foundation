@@ -588,3 +588,23 @@ fn the_command_line_plans_and_applies_on_the_node() {
         assert_eq!(remote.calls(), (2, 2));
     });
 }
+
+/// The line of an apply escapes the name of its plan file as an error does.
+#[test]
+fn the_command_line_escapes_the_name_of_the_plan_file() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let plan = "it's \"b\\c\".plan";
+        let (status, _, errors) = remote
+            .cli(&paths, &["plan", "site.hcl", "--out", plan])
+            .await;
+        assert_eq!((status, errors.as_str()), (Run::Exit(0), ""));
+        let (status, output, errors) = remote.cli(&paths, &["apply", plan]).await;
+        let applied = "Applied it's \"b\\\\c\".plan: 3 added, 1 home listed.\n";
+        assert_eq!(
+            (status, output.as_str(), errors.as_str()),
+            (Run::Exit(0), applied, "")
+        );
+    });
+}

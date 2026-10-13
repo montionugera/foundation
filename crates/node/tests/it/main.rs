@@ -52,6 +52,41 @@ fn an_error_goes_to_standard_error_and_exits_2() {
     );
 }
 
+/// `plan` and `apply` reach the running node through its hub, as its first admin. A
+/// second `plan` of the same files finds no change.
+#[test]
+fn plan_and_apply_run_on_the_node() {
+    let mut rig = Rig::new();
+    rig.config(concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+    ));
+    rig.start();
+    let planned = concat!(
+        "+ channel plant.time\n",
+        "+ placement plant.home\n",
+        "2 to add, 0 to change, 0 to remove.\n",
+        "note: 2 definitions that Foundation made are not in the files: ",
+        "@admin.@access, @admin.@subject\n",
+    );
+    let applied = "Applied plant.plan: 2 added, 1 home listed.\n";
+    assert_eq!(rig.apply(), [planned, applied]);
+    let output = rig.run(&["plan", "plant.hcl"], b"");
+    let unchanged = concat!(
+        "0 to add, 0 to change, 0 to remove.\n",
+        "note: 2 definitions that Foundation made are not in the files: ",
+        "@admin.@access, @admin.@subject\n",
+    );
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), unchanged, "")
+    );
+}
+
 #[test]
 fn mcp_answers_each_request_on_its_own_line_until_input_closes() {
     let input = concat!(
