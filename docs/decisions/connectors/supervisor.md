@@ -372,8 +372,8 @@
   pointer to STATUS PLACEMENT: `laptop.architect`, 2026-10-13T08:08:47Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141195975, and
   `laptop.architect-2`, 2026-10-13T08:08:58Z:
-  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141198877; the
-  words: `laptop.architect`, 2026-10-13T08:10:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141198877; the words:
+  `laptop.architect`, 2026-10-13T08:10:22Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141220969, and
   `laptop.architect-2`, 2026-10-13T08:11:27Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6141238640).
