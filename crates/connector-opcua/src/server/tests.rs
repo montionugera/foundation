@@ -19,7 +19,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         let local = SocketAddr::new(node.addresses()[0], 4840);
         let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
             .expect("the port is free");
-        let zero: Node = "ns=3;i=0".parse().expect("a node");
+        let zero: Node = "ns=1;i=0".parse().expect("a node");
         let add = |server: &mut Server| server.add_double(&zero, 1.0);
         let mut serve = pin!(Server::serve(manager, 1, add, async {}));
         let panic = poll_fn(|cx| {
@@ -32,7 +32,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         .await;
         assert_eq!(
             panic.downcast_ref::<String>().map(String::as_str),
-            Some("ns=3;i=0: open62541 adds a node of the number 0 at a free number")
+            Some("ns=1;i=0: open62541 adds a node of the number 0 at a free number")
         );
         Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
             .expect("the serve frees the port");
