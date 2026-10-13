@@ -9,6 +9,7 @@ use connector::kind::{self, Channels, Context, Table};
 use connector::supervisor::{self, Supervisor};
 use document::Document;
 use document::diagnostic::Diagnostic;
+use env::paths::Paths;
 use serde_json::{Value, json};
 use spec::definition::Definition;
 use types::authority::Authority;
@@ -19,9 +20,9 @@ use types::sample::Type;
 use types::time::Span;
 
 use super::{Class, Failure, Output, State, Status};
-use crate::Node;
 use crate::common::{Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
+use crate::{Failure as Lost, Node, Run};
 
 /// A kind that names the counts `counts`, and whose run sets each to its value, then
 /// waits for its cancel, or ends at once, as `script` says.
@@ -439,6 +440,68 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
         ]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
+    });
+}
+
+/// The run, output, and errors of `foundation <args>` on `node`, which serves each
+/// request as `@admin`.
+async fn cli(node: &Node, paths: &Paths, args: &[&str]) -> (Run, String, String) {
+    let reach = async |_: &Path| {
+        Ok::<_, Lost>(async |body: &[u8]| {
+            Ok::<_, Lost>(serve(node, &name("@admin"), body).await)
+        })
+    };
+    let args = ["foundation"].iter().chain(args).map(Into::into);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let input = std::io::empty();
+    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
+}
+
+#[test]
+fn the_command_line_writes_the_status_of_the_node_as_text_or_json() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            connector("site.a", "steady", "edge"),
+            connector("site.b", "failing", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        supervise(&fixture, &node, &["site.a", "site.b"]).await;
+        let paths = fixture.sim.paths();
+        let table = "\
+CONNECTOR  KIND     STATE       ADDRESS                IN  CONFIRMED
+site.a     steady   running     opc.tcp://site.a:4840  12  10
+site.b     failing  restarting  opc.tcp://site.b:4840  0   0
+
+site.b: device error: no route to the device
+";
+        let shown = cli(&node, &paths, &["status"]).await;
+        assert_eq!(shown, (Run::Exit(0), table.to_owned(), String::new()));
+        let (run, output, errors) = cli(&node, &paths, &["status", "--json"]).await;
+        assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
+        let output: Value = serde_json::from_str(&output).expect("JSON");
+        assert_eq!(output["connectors"][1]["error"]["class"], "device");
+        let (head, _) = status(&node, "@admin").await;
+        assert_eq!(output, head["output"]);
+    });
+}
+
+#[test]
+fn the_command_line_writes_the_refusal_of_status() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, "").await;
+        let (run, output, errors) = cli(&node, &fixture.sim.paths(), &["status"]).await;
+        let refused = "error[ops.denied]: no access policy gives `@admin` the action \
+                       `read` on a request that names no definition\n\
+                       fix: Ask an admin of the region for an access policy that \
+                       allows it\n";
+        assert_eq!(
+            (run, output.as_str(), errors.as_str()),
+            (Run::Exit(1), "", refused)
+        );
     });
 }
 

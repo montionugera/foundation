@@ -8,6 +8,7 @@ use std::task::Poll;
 use hub::reader::{self, Config, Mode, Received};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use spec::channel::{Channel, Kind};
 use spec::connector::Connector;
 use spec::definition::Definition;
@@ -298,10 +299,14 @@ impl From<connector::status::Class> for Class {
 }
 
 impl Output {
+    /// The output as JSON, as `serve` gives it.
+    pub(crate) fn json(&self) -> Value {
+        serde_json::to_value(self).expect("invariant: an output is plain JSON data")
+    }
+
     /// A table of the connectors, then a line `<name>: <class> error: <text>` for
     /// each connector with an error, after a blank line. Each control character of a
     /// value is escaped, so a value stays on its line. Empty with no connector.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the CLI of `status` calls it"))]
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
             return String::new();

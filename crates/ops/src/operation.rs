@@ -66,6 +66,8 @@ enum Command {
     Plan(PlanArgs),
     /// Apply a plan file of `foundation plan --out` on the node in `foundation-data`.
     Apply(ApplyArgs),
+    /// Show the state of each connector on the node in `foundation-data`.
+    Status,
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -147,6 +149,7 @@ pub(crate) enum Parsed {
     Apply {
         plan: PathBuf,
     },
+    Status,
     Help(String),
     Mcp,
 }
@@ -179,6 +182,7 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
         })),
         Command::Plan(PlanArgs { files, out }) => Ok(Parsed::Plan { files, out }),
         Command::Apply(ApplyArgs { plan }) => Ok(Parsed::Apply { plan }),
+        Command::Status => Ok(Parsed::Status),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }

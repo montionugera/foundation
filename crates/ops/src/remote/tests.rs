@@ -5,7 +5,7 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::json;
 
-use super::{apply, most, plan};
+use super::{apply, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
@@ -104,6 +104,14 @@ impl Remote {
             Ok(async |body: &[u8]| self.send(body).await)
         };
         apply(file, paths, reach).await
+    }
+
+    async fn status(&self) -> Result<crate::status::Output, Error> {
+        let reach = async |data: &Path| {
+            self.reached(data)?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        status(reach).await
     }
 
     /// The run, output, and errors of `foundation <args>`.
@@ -468,6 +476,29 @@ fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
         let applied = remote.apply(&paths, Path::new("site.plan")).await;
         let message = "bytes follow the first line of the reply of `apply`".to_owned();
         assert_eq!(applied.err(), Some(Error::Reply { message }));
+    });
+}
+
+#[test]
+fn status_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
+    solo(|fixture, mesh| async move {
+        let reply = b"{\"output\":{\"connectors\":[]}}\nx".to_vec();
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Reply(reply));
+        let message = "bytes follow the first line of the reply of `status`".to_owned();
+        assert_eq!(remote.status().await, Err(Error::Reply { message }));
+        assert_eq!(remote.calls(), (1, 1));
+        assert_eq!(*remote.reached.borrow(), [PathBuf::from(DATA)]);
+    });
+}
+
+#[test]
+fn status_that_reaches_no_node_gives_its_failure() {
+    solo(|fixture, mesh| async move {
+        for (mode, calls) in [(Mode::Unreached, (1, 0)), (Mode::Unsent, (1, 1))] {
+            let remote = Remote::with(create_node(&fixture, mesh.clone()), mode);
+            assert_eq!(remote.status().await, Err(Error::Node(lost())));
+            assert_eq!(remote.calls(), calls);
+        }
     });
 }
 
