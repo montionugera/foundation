@@ -209,10 +209,12 @@
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
   with no `--data`, by decision 7 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641.
-  `node.session` is the later step of #2517 in
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136582798.
-  `node.socket` for a socket of the program that broke is item 4 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419. The
+  `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  `node.socket` covers a socket of the program that broke, with the message `the
+  socket of this program failed: <the transport error>` (`laptop.architect-2`,
+  2026-10-13T02:10:54Z, item 4 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419). The
   transport error in `node.unanswered` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936). The four
   `ops` codes are decisions 2, 4, 5, and 8 of plan revision 5,
@@ -220,4 +222,6 @@
   `ops.large-request` by item 2 of the approval of `laptop.architect-2`
   (2026-10-13T02:10:54Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419), which
-  supersedes the bound on each file of that plan.
+  supersedes the bound on each file of that plan. `laptop.architect-2` approved the
+  messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).

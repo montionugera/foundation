@@ -88,7 +88,7 @@ pub(crate) enum Error {
     LargeRequest,
     /// The reply of a node to a command line is no reply.
     Reply { message: String },
-    /// The errors that a node gave a command line, with the exit status of each.
+    /// The errors that a node gave a command line, and the exit status of the reply.
     Remote { problems: Vec<Problem>, status: u8 },
 }
 
