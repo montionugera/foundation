@@ -151,11 +151,11 @@
   round whose number it takes. A round comment after the first on a PR fails when its
   number is more than the number of the round comment before it plus 1. The first may
   have any number, because a PR that replaces another continues its count. A round
-  comment posted before `2026-10-13T20:12:19Z` may have any number, so
-  that the rule does not fail the rounds that came before it. A round comment posted at
-  or after `2026-10-13T20:12:19Z` also fails when its number is more than
-  3 and more than the number of the round comment before it, or when it is the first on
-  its PR and its number is more than 3, because no round runs after round 3 (REVIEW
+  comment posted before `2026-10-13T20:12:19Z` may have any number, so that the rule
+  does not fail the rounds that came before it. A round comment posted at or after
+  `2026-10-13T20:12:19Z` also fails when its number is more than 3 and more than the
+  number of the round comment before it, or when it is the first on its PR and its
+  number is more than 3, because no round runs after round 3 (REVIEW
   ROUNDS). Decided by the director at 2026-10-13T16:33:37Z
   (https://github.com/synnaxlabs/foundation/issues/2585), 16:53:06Z
   (https://github.com/synnaxlabs/foundation/issues/2585#issuecomment-6150677430),
