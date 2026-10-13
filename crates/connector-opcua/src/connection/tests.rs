@@ -2508,12 +2508,11 @@ fn abort(name: &str) -> String {
     let output = child::output(&format!("connection::tests::{name}"), &[]);
     assert!(!output.status.success(), "{name} ends");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    // The location of a panic has the separator of the OS.
-    let file = ["crates", "connector-opcua", "src", "connection.rs"]
-        .join(std::path::MAIN_SEPARATOR_STR);
     let message = stdout
         .lines()
-        .skip_while(|line| !line.contains(&format!("panicked at {file}")))
+        .skip_while(|line| {
+            !line.contains("panicked at crates/connector-opcua/src/connection.rs")
+        })
         .nth(1);
     message.expect(&stdout).to_owned()
 }
