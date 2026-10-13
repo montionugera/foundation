@@ -322,12 +322,9 @@ impl FromStr for Span {
             Some(body) => (true, body),
             None => (false, s),
         };
-        let quantity::Quantity {
-            whole,
-            fraction,
-            unit,
-        } = quantity::split(body).ok_or(Error::Span)?;
-        let unit = match unit {
+        let number = quantity::split(body).ok_or(Error::Span)?;
+        let fraction = number.fraction;
+        let unit = match number.unit {
             "ns" => 1,
             "us" => Self::MICROSECOND.0,
             "ms" => Self::MILLISECOND.0,
@@ -342,13 +339,7 @@ impl FromStr for Span {
         if fraction.len() > 16 {
             return Err(Error::Fraction);
         }
-        let mantissa = whole
-            .bytes()
-            .chain(fraction.bytes())
-            .try_fold(0_u128, |n, b| {
-                n.checked_mul(10)?.checked_add(u128::from(b - b'0'))
-            })
-            .ok_or(Error::Long)?;
+        let mantissa = number.scaled(fraction.len()).ok_or(Error::Long)?;
         let scale = fraction.bytes().fold(1_u128, |scale, _| scale * 10);
         let scaled = mantissa
             .checked_mul(unit.unsigned_abs().into())
@@ -622,31 +613,20 @@ impl FromStr for Rate {
     /// [`Error::Zero`] for a rate of zero. [`Error::Period`] for a rate over 1 GHz.
     /// [`Error::Rate`] for each other text that is not a rate.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let quantity::Quantity {
-            whole,
-            fraction,
-            unit,
-        } = quantity::split(s).ok_or(Error::Rate)?;
-        // The digits of 1 Hz, 1 kHz, and 1 MHz in nanohertz.
-        let digits: usize = match unit {
+        let number = quantity::split(s).ok_or(Error::Rate)?;
+        // 1 Hz, 1 kHz, and 1 MHz are 10^places nHz.
+        let places = match number.unit {
             "Hz" => 9,
             "kHz" => 12,
             "MHz" => 15,
             _ => return Err(Error::Rate),
         };
-        let kept = fraction.get(..digits).unwrap_or(fraction);
-        let shift = digits - kept.len();
-        let nanohertz = whole
-            .bytes()
-            .chain(kept.bytes())
-            .try_fold(0_u128, |n, b| {
-                n.checked_mul(10)?.checked_add(u128::from(b - b'0'))
-            })
-            .and_then(|n| n.checked_mul(10_u128.pow(u32::try_from(shift).ok()?)))
+        let nanohertz = number
+            .scaled(places)
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(Error::Period)?;
         let per_second = NANOS_PER_SECOND.unsigned_abs();
-        if kept.len() < fraction.len() {
+        if number.fraction.len() > places {
             // The last digit of the fraction is not 0, so the rate is between
             // `nanohertz` and the nanohertz after it.
             return Err(match Self::new(nanohertz.saturating_add(1), per_second) {
