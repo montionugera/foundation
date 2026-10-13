@@ -523,7 +523,8 @@ impl Session {
             return;
         }
         self.wrote = now;
-        let (mesh, stamp) = (self.hub.now(), self.stamps.now(&self.hub));
+        let mesh = self.hub.now();
+        let stamp = self.stamps.next(mesh);
         // The hub's clock can step while the node's clock does not.
         let next = match self.state {
             State::Waiting(next) => Some(mesh + (next - now)),
