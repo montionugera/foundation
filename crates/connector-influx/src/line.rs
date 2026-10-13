@@ -88,9 +88,11 @@ impl Measurement {
     ) -> usize {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
+        let mut separator = b' ';
         let mut fields = 0_usize;
         for (Field(key), value) in values {
-            out.push(if fields == 0 { b' ' } else { b',' });
+            out.push(separator);
+            separator = b',';
             fields = fields.saturating_add(1);
             out.extend_from_slice(key);
             out.push(b'=');
@@ -104,7 +106,7 @@ impl Measurement {
             };
             wrote.expect("invariant: a write to a Vec never fails");
         }
-        if fields == 0 {
+        if separator == b' ' {
             out.truncate(start);
             return 0;
         }
