@@ -190,6 +190,32 @@ pub(crate) enum Found {
     End(Mark),
 }
 
+/// Where a path stands: its tail, and how many entries with no samples are at the
+/// tail's seq.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Position {
+    tail: Tail,
+    given: u64,
+}
+
+impl Position {
+    /// The mark after the newest entry.
+    fn mark(self) -> Mark {
+        Mark {
+            seq: self.tail.seq,
+            given: self.given,
+        }
+    }
+
+    /// Moves past the entry, as [`Tail::advance`], and returns the mark before it.
+    fn advance(&mut self, header: &Header) -> Result<Mark, Invalid> {
+        let start = self.mark();
+        self.tail.advance(header)?;
+        self.given = start.after(header.first, header.len).given;
+        Ok(start)
+    }
+}
+
 /// One path of an index: where it stands with every appended entry, where it
 /// stands on disk, and its runs, oldest first.
 #[derive(Clone, Debug)]
@@ -197,12 +223,8 @@ pub(crate) enum Found {
 struct Log {
     index: channel::Key,
     path: Path,
-    appended: Tail,
-    /// How many appended entries with no samples are at `appended.seq`.
-    appended_empty: u64,
-    durable: Tail,
-    /// How many durable entries with no samples are at `durable.seq`.
-    empty: u64,
+    appended: Position,
+    durable: Position,
     runs: VecDeque<Run>,
     /// The offset of the newest synced record that holds the durable tail: a data
     /// record with an entry of the path, or a carry record with its tail. `None`
@@ -218,50 +240,28 @@ impl Log {
         Self {
             index,
             path,
-            appended: Tail::default(),
-            appended_empty: 0,
-            durable: Tail::default(),
-            empty: 0,
+            appended: Position::default(),
+            durable: Position::default(),
             runs: VecDeque::new(),
             holder: None,
             origin: None,
         }
     }
 
-    /// The mark after the newest durable entry.
-    fn end(&self) -> Mark {
-        Mark {
-            seq: self.durable.seq,
-            given: self.empty,
-        }
-    }
-
-    /// Whether an appended entry is not durable.
+    /// Whether an appended entry is not durable. Marks only rise, so equal
+    /// positions hold the same entries.
     fn queued(&self) -> bool {
-        self.appended.seq != self.durable.seq || self.appended_empty != self.empty
-    }
-
-    /// Moves the appended tail past the entry.
-    fn append(&mut self, header: &Header) -> Result<(), Invalid> {
-        let start = Mark {
-            seq: self.appended.seq,
-            given: self.appended_empty,
-        };
-        self.appended.advance(header)?;
-        self.appended_empty = start.after(header.first, header.len).given;
-        Ok(())
+        self.appended != self.durable
     }
 
     /// Moves the durable tail past the entry. When the record at `offset` is not
     /// the holder, adds it as a run and makes it the holder. Returns whether it
     /// did.
     fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Invalid> {
-        let start = self.end();
-        self.durable.advance(header)?;
+        let start = self.durable.advance(header)?;
         if self.holder.is_none() {
             self.origin = Some(header.first);
         }
-        self.empty = start.after(header.first, header.len).given;
         if let Some(holder) = self.holder {
             assert!(
                 holder <= offset,
@@ -296,50 +296,32 @@ pub(crate) struct Logs {
     tags: hash::Map<(Slot, Path, NonZeroU8), u64>,
     /// No read finds a record before this offset.
     hidden: u64,
-    /// The offset of each record with an item in `items`, and how many it has, in
-    /// ring order.
-    records: VecDeque<(u64, usize)>,
+    /// The offset of each record with an item in `items`, and the number after its
+    /// last item, in ring order.
+    records: VecDeque<(u64, u64)>,
     /// The place in `paths` of the path of each run and each carried tail, in ring
-    /// order. An item is stale once its path has a later holder.
+    /// order. An item is stale once its path has a later holder. Items are numbered
+    /// from 0 in the order that they came, and no number is used twice.
     items: VecDeque<u32>,
-    /// Each item before it is stale.
-    stale: Place,
-    /// An [`idle`](Self::idle) has passed each item before it.
-    scanned: Place,
-}
-
-/// A place in the items of [`Logs`], as positions in its deques.
-#[derive(Clone, Copy, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
-struct Place {
-    /// The record of the item.
-    record: usize,
-    /// The first item of the record.
-    first: usize,
-    item: usize,
-}
-
-impl Place {
-    /// Moves the place back when the front record leaves with its `count` items. A
-    /// place in that record moves to the first item of the next.
-    fn pop(&mut self, count: usize) {
-        self.record = self.record.saturating_sub(1);
-        self.first = self.first.saturating_sub(count);
-        self.item = self.item.saturating_sub(count);
-    }
+    /// The number of the front item.
+    base: u64,
+    /// Each item before this number is stale.
+    stale: u64,
+    /// An [`idle`](Self::idle) has passed each item before this number.
+    scanned: u64,
 }
 
 impl Logs {
     /// Where `path` of the index at `slot` stands with every appended entry:
     /// `Tail::default()` before its first entry.
     pub(crate) fn appended(&self, slot: Slot, path: Path) -> Tail {
-        self.log(slot, path).map_or_default(|log| log.appended)
+        self.log(slot, path).map_or_default(|log| log.appended.tail)
     }
 
     /// Where `path` of the index at `slot` stands on disk: `Tail::default()`
     /// before its first synced entry.
     pub(crate) fn durable(&self, slot: Slot, path: Path) -> Tail {
-        self.log(slot, path).map_or_default(|log| log.durable)
+        self.log(slot, path).map_or_default(|log| log.durable.tail)
     }
 
     /// The records that the log of `path` of the index at `slot` keeps, oldest
@@ -363,7 +345,7 @@ impl Logs {
             .partition_point(|run| run.start <= from)
             .saturating_sub(1);
         let mut runs = log.runs.range(chosen..);
-        let end = log.end();
+        let end = log.durable.mark();
         match runs.next() {
             Some(run) if runs.next().map_or(end, |next| next.start) > from => {
                 Found::Run(log.index, *run)
@@ -413,13 +395,16 @@ impl Logs {
             self.hidden
         );
         self.hidden = tail;
-        while let Some(&(offset, count)) = self.records.front() {
+        while let Some(&(offset, end)) = self.records.front() {
             if offset >= tail {
                 break;
             }
             self.records.pop_front();
-            self.stale.pop(count);
-            self.scanned.pop(count);
+            let count = end
+                .checked_sub(self.base)
+                .and_then(|count| usize::try_from(count).ok())
+                .expect("invariant: a record holds items from the front");
+            self.base = end;
             for at in self.items.drain(..count) {
                 let runs = &mut nth_mut(&mut self.paths, at).runs;
                 if runs.front().is_some_and(|run| run.offset == offset) {
@@ -433,10 +418,10 @@ impl Logs {
     /// pass. `None` when no path has a synced entry.
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn kept(&mut self) -> Option<u64> {
-        let mut items = holders(&self.records, &self.items, self.stale);
+        let mut items = numbered(&self.records, &self.items, self.base, self.stale);
         let holding =
             items.find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
-        self.stale = holding.map_or_else(|| self.end(), |(place, ..)| place);
+        self.stale = holding.map_or_else(|| self.end(), |(number, ..)| number);
         holding.map(|(_, offset, _)| offset)
     }
 
@@ -453,9 +438,10 @@ impl Logs {
         tails: &mut Vec<carry::Tail>,
     ) {
         let mut room = limit;
-        for (place, offset, at) in holders(&self.records, &self.items, self.scanned) {
+        let items = numbered(&self.records, &self.items, self.base, self.scanned);
+        for (number, offset, at) in items {
             if offset >= reach {
-                self.scanned = place;
+                self.scanned = number;
                 return;
             }
             let log = nth(&self.paths, at);
@@ -463,30 +449,24 @@ impl Logs {
                 continue;
             }
             let Some(left) = room.checked_sub(1) else {
-                self.scanned = place;
+                self.scanned = number;
                 return;
             };
             room = left;
             tails.push(carry::Tail {
                 index: log.index,
                 path: log.path,
-                seq: log.durable.seq,
-                given: log.empty,
-                stamp: log.durable.stamp,
+                seq: log.durable.tail.seq,
+                given: log.durable.given,
+                stamp: log.durable.tail.stamp,
             });
         }
         self.scanned = self.end();
     }
 
-    /// The place after the last item, in the last record, so that it also passes no
-    /// later item of that record.
-    fn end(&self) -> Place {
-        let count = self.records.back().map_or(0, |&(_, count)| count);
-        Place {
-            record: self.records.len().saturating_sub(1),
-            first: self.items.len().saturating_sub(count),
-            item: self.items.len(),
-        }
+    /// The number of the next item.
+    fn end(&self) -> u64 {
+        self.records.back().map_or(self.base, |&(_, end)| end)
     }
 
     /// The log of `path` of the index at `slot`.
@@ -505,14 +485,11 @@ impl Logs {
 
     /// Adds an item for the log at `at` in the record at `offset`, which is at or
     /// after the record of each item.
-    fn hold(&mut self, offset: u64, at: u32) {
+    fn list(&mut self, offset: u64, at: u32) {
+        let next = self.end().checked_add(1).expect("invariant: numbers fit");
         match self.records.back_mut() {
-            Some((last, count)) if *last == offset => {
-                *count = count
-                    .checked_add(1)
-                    .expect("invariant: items fit in memory");
-            }
-            _ => self.records.push_back((offset, 1)),
+            Some((last, end)) if *last == offset => *end = next,
+            _ => self.records.push_back((offset, next)),
         }
         self.items.push_back(at);
     }
@@ -547,16 +524,17 @@ impl Logs {
         let key = (slot, carried.path);
         let Some(&at) = self.places.get(&key) else {
             let mut log = Log::new(carried.index, carried.path);
-            log.durable = Tail {
-                seq: carried.seq,
-                stamp: carried.stamp,
+            log.durable = Position {
+                tail: Tail {
+                    seq: carried.seq,
+                    stamp: carried.stamp,
+                },
+                given: carried.given,
             };
             log.appended = log.durable;
-            log.empty = carried.given;
-            log.appended_empty = carried.given;
             log.holder = Some(offset);
             let at = self.add(key, log);
-            self.hold(offset, at);
+            self.list(offset, at);
             return Ok(());
         };
         let log = nth_mut(&mut self.paths, at);
@@ -572,8 +550,8 @@ impl Logs {
             "invariant: a carry comes when every entry of index {} is durable",
             carried.index
         );
-        let end = log.end();
-        let stamp = log.durable.stamp;
+        let end = log.durable.mark();
+        let stamp = log.durable.tail.stamp;
         let passed = carried.given.checked_sub(end.given).filter(|&passed| {
             carried.seq == end.seq
                 && (passed == 0 || log.origin == Some(end.seq))
@@ -601,15 +579,14 @@ impl Logs {
                 };
             }
         }
-        log.empty = carried.given;
-        log.appended_empty = carried.given;
-        log.durable.stamp = carried.stamp;
+        log.durable.given = carried.given;
+        log.durable.tail.stamp = carried.stamp;
         log.appended = log.durable;
         let held = log.holder.replace(offset) == Some(offset);
         log.origin = None;
         // A record that lists the path twice holds it once.
         if !held {
-            self.hold(offset, at);
+            self.list(offset, at);
         }
         Ok(())
     }
@@ -625,8 +602,8 @@ impl Logs {
         slot: Slot,
         header: &Header,
     ) -> Result<(), Invalid> {
-        self.change(slot, header, |log| log.append(header))
-            .map(|((), _)| ())
+        self.change(slot, header, |log| log.appended.advance(header))
+            .map(|_| ())
     }
 
     /// Moves the durable tail of the header's path past the entry, as
@@ -649,7 +626,7 @@ impl Logs {
     ) -> Result<(), Invalid> {
         let (added, at) = self.change(slot, header, |log| log.sync(header, offset))?;
         if added {
-            self.hold(offset, at);
+            self.list(offset, at);
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -701,36 +678,29 @@ fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
     logs.get_mut(at).expect("invariant: a place has its log")
 }
 
-/// Each item of [`Logs`] from `from`, with its place and the offset of its record,
-/// oldest first.
-fn holders<'a>(
-    records: &'a VecDeque<(u64, usize)>,
+/// Each item of [`Logs`] from the number `from`, or from the front item when it
+/// is past, with its number and the offset of its record, oldest first. `base` is
+/// the number of the front item.
+fn numbered<'a>(
+    records: &'a VecDeque<(u64, u64)>,
     items: &'a VecDeque<u32>,
-    from: Place,
-) -> impl Iterator<Item = (Place, u64, u32)> + 'a {
-    let mut next = from.first;
-    let places = (records.range(from.record..).zip(from.record..)).flat_map(
-        move |(&(offset, count), record)| {
-            let first = next;
-            next = first
-                .checked_add(count)
-                .expect("invariant: items fit in memory");
-            (first..next).map(move |item| {
-                (
-                    Place {
-                        record,
-                        first,
-                        item,
-                    },
-                    offset,
-                )
-            })
-        },
-    );
-    let places = places.skip_while(move |(place, _)| place.item < from.item);
-    places
-        .zip(items.range(from.item..))
-        .map(|((place, offset), &at)| (place, offset, at))
+    base: u64,
+    from: u64,
+) -> impl Iterator<Item = (u64, u64, u32)> + 'a {
+    let mut start = from.max(base);
+    let first = records.partition_point(|&(_, end)| end <= start);
+    let skip = start
+        .checked_sub(base)
+        .and_then(|skip| usize::try_from(skip).ok())
+        .expect("invariant: a number from the front fits");
+    let numbers = records.range(first..).flat_map(move |&(offset, end)| {
+        let numbers = start..end;
+        start = end;
+        numbers.map(move |number| (number, offset))
+    });
+    numbers
+        .zip(items.range(skip..))
+        .map(|((number, offset), &at)| (number, offset, at))
 }
 
 #[cfg(test)]
@@ -1449,7 +1419,7 @@ mod tests {
             .expect("a new path takes any tail");
         logs.carry(slot(5), &carried_of(5, 5, 0), 8192)
             .expect("a new path takes any tail");
-        assert_eq!(logs.records, [(4096, 3), (8192, 2)]);
+        assert_eq!(logs.records, [(4096, 3), (8192, 5)]);
         assert_eq!(logs.items.len(), 5);
     }
 
