@@ -1,100 +1,122 @@
-use std::cell::Cell;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
+use std::future;
 
+use hub::writer::{Config, Writer};
 use proptest::prelude::*;
-use types::time::Stamp;
+use types::authority::Authority;
+use types::time::{Span, Stamp};
 
 use super::Stamps;
+use crate::common::{create_status, env, run_on};
 
-/// Gives the output and stamp of a request that `now` sees from `sent` to `answered`.
-fn request(stamps: &mut Stamps, sent: i64, answered: i64) -> (u8, Stamp) {
-    let now = Cell::new(sent);
-    let request = async {
-        now.set(answered);
-        7
-    };
-    let mut stamped = pin!(stamps.request(|| Stamp::from_nanos(now.get()), request));
-    match stamped
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("the request is ready"),
-    }
+/// Runs `main` with a writer on the status index of `plant.stamp` and the clock of
+/// its node.
+fn with_writer<T: Send + 'static>(
+    main: impl AsyncFnOnce(Writer, env::clock::Clock) -> T + Send + 'static,
+) -> T {
+    run_on(|node, tasks| async move {
+        let (hub, _) = hub::testing::open(env(&node, tasks)).await;
+        let status = create_status("plant.stamp");
+        hub.set_definitions(status.iter().map(|(name, def)| (name, def)));
+        let config = Config {
+            subject: "plant.stamp".parse().expect("a valid name"),
+            authority: Authority(1),
+            lease: None,
+            channels: vec!["plant.stamp.status.state".parse().expect("a valid name")],
+        };
+        let writer = hub.writer(config).await.expect("the writer opens");
+        main(writer, node.clock()).await
+    })
 }
 
 #[test]
 fn a_request_is_stamped_at_its_midpoint() {
-    let mut stamps = Stamps::default();
-    assert_eq!(
-        request(&mut stamps, 1_000, 3_000),
-        (7, Stamp::from_nanos(2_000))
-    );
-    assert_eq!(
-        request(&mut stamps, 5_000, 5_000),
-        (7, Stamp::from_nanos(5_000))
-    );
+    let (sent, answered, output, stamp) = with_writer(async |writer, clock| {
+        let mut stamps = Stamps::default();
+        let sent = writer.now();
+        let request = async {
+            clock.sleep(Span::from_nanos(3_000)).await;
+            7
+        };
+        let (output, stamp) = stamps.request(&writer, request).await;
+        (sent, writer.now(), output, stamp)
+    });
+    assert_eq!(answered - sent, Span::from_nanos(3_000));
+    assert_eq!(output, 7);
+    assert_eq!(stamp, sent + Span::from_nanos(1_500));
 }
 
 #[test]
-fn a_request_is_stamped_after_the_one_before() {
-    let mut stamps = Stamps::default();
-    assert_eq!(request(&mut stamps, 0, 10).1, Stamp::from_nanos(5));
-    assert_eq!(request(&mut stamps, 10, 10).1, Stamp::from_nanos(10));
-    assert_eq!(request(&mut stamps, 10, 10).1, Stamp::from_nanos(11));
-    assert_eq!(request(&mut stamps, 10, 14).1, Stamp::from_nanos(12));
+fn a_request_with_no_wait_is_stamped_after_the_one_before() {
+    let (now, stamps) = with_writer(async |writer, _| {
+        let mut stamps = Stamps::default();
+        let mut given = Vec::new();
+        for _ in 0..3 {
+            given.push(stamps.request(&writer, future::ready(())).await.1);
+        }
+        (writer.now(), given)
+    });
+    let after = |n| now + Span::from_nanos(n);
+    assert_eq!(stamps, [now, after(1), after(2)]);
 }
 
 #[test]
 fn a_request_after_a_refusal_is_stamped_after_its_stamp() {
-    let mut stamps = Stamps::default();
-    assert_eq!(request(&mut stamps, 0, 10).1, Stamp::from_nanos(5));
-    assert_eq!(stamps.after(Stamp::from_nanos(20)), Stamp::from_nanos(21));
-    assert_eq!(request(&mut stamps, 10, 12).1, Stamp::from_nanos(22));
+    let (now, refused, stamp) = with_writer(async |writer, _| {
+        let mut stamps = Stamps::default();
+        let now = writer.now();
+        let refused = stamps.after(now + Span::from_nanos(20));
+        let ((), stamp) = stamps.request(&writer, future::ready(())).await;
+        (now, refused, stamp)
+    });
+    assert_eq!(refused, now + Span::from_nanos(21));
+    assert_eq!(stamp, now + Span::from_nanos(22));
 }
 
 #[test]
-fn the_midpoint_of_the_ends_of_time_does_not_overflow() {
+#[should_panic(expected = "stamp overflow: 9223372036854775807 ns + 1 ns")]
+fn a_stamp_after_the_last_instant_panics() {
     let mut stamps = Stamps::default();
-    let (_, stamp) = request(&mut stamps, i64::MAX - 1, i64::MAX);
-    assert_eq!(stamp, Stamp::from_nanos(i64::MAX - 1));
+    stamps.next(Stamp::from_nanos(i64::MAX));
+    stamps.next(Stamp::from_nanos(0));
 }
 
-/// A call of [`Stamps`]: a request that waits and then takes a time, or a refusal
-/// whose stamp before is some time after the last stamp.
+#[test]
+#[should_panic(expected = "stamp overflow: 9223372036854775807 ns + 1 ns")]
+fn a_refusal_at_the_last_instant_panics() {
+    Stamps::default().after(Stamp::from_nanos(i64::MAX));
+}
+
+/// A call of [`Stamps`]: a stamp at some time, or a refusal whose stamp before is
+/// some time after the last stamp.
 #[derive(Clone, Debug)]
 enum Call {
-    Request { wait: i64, took: i64 },
+    Next { time: i64 },
     After { ahead: i64 },
 }
 
 fn call() -> impl Strategy<Value = Call> {
     prop_oneof![
-        3 => (0..1_000i64, 0..1_000i64).prop_map(|(wait, took)| Call::Request { wait, took }),
+        3 => (0..1_000i64).prop_map(|time| Call::Next { time }),
         1 => (0..1_000i64).prop_map(|ahead| Call::After { ahead }),
     ]
 }
 
 proptest! {
-    /// In any order of calls, each stamp is after the one before it. A request is at
-    /// its midpoint when that is later, and a refusal gives the nanosecond after its
+    /// In any order of calls, each stamp is after the one before it. A stamp is at
+    /// its time when that is later, and a refusal gives the nanosecond after its
     /// stamp before.
     #[test]
-    fn stamps_strictly_increase_from_the_midpoints(
+    fn stamps_strictly_increase_from_their_times(
         calls in prop::collection::vec(call(), 1..50),
     ) {
         let mut stamps = Stamps::default();
-        let (mut time, mut last) = (0i64, None::<i64>);
+        let mut last = None::<i64>;
         for call in calls {
             let (stamp, expected) = match call {
-                Call::Request { wait, took } => {
-                    let sent = time + wait;
-                    time = sent + took;
-                    let midpoint = sent + took / 2;
-                    let (_, stamp) = request(&mut stamps, sent, time);
-                    (stamp, last.map_or(midpoint, |last| midpoint.max(last + 1)))
-                }
+                Call::Next { time } => (
+                    stamps.next(Stamp::from_nanos(time)),
+                    last.map_or(time, |last| time.max(last + 1)),
+                ),
                 Call::After { ahead } => {
                     let before = last.unwrap_or(0) + ahead;
                     (stamps.after(Stamp::from_nanos(before)), before + 1)
