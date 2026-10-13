@@ -130,24 +130,28 @@ fn a_commit_on_a_branch_rebuilds() {
 fn a_git_before_the_path_format_gives_the_commit() {
     let root = create_probe("old", &[]);
     let head = commit(&root);
-    let real = run(&root, "sh", &["-c", "command -v git"], &[]);
+    let path = create_shim(
+        &root,
+        "for a; do shift\n  if [ \"$a\" = --path-format=absolute ]; then echo \"$a\"; \
+         else set -- \"$@\" \"$a\"; fi\ndone\nexec \"$real\" \"$@\"\n",
+    );
+    assert_eq!(built_with(&root, &[("PATH", &path)]), head);
+}
+
+/// Makes a `git` in `root` that runs the shell `body` with the real `git` in `$real`,
+/// and gives the `PATH` of a build that runs it.
+#[cfg(unix)]
+fn create_shim(root: &Path, body: &str) -> String {
+    let real = run(root, "sh", &["-c", "command -v git"], &[]);
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir");
     let shim = bin.join("git");
-    std::fs::write(
-        &shim,
-        format!(
-            "#!/bin/sh\nfor a; do shift\n  if [ \"$a\" = --path-format=absolute ]; then \
-             echo \"$a\"; else set -- \"$@\" \"$a\"; fi\ndone\nexec {real} \"$@\"\n"
-        ),
-    )
-    .expect("write");
+    std::fs::write(&shim, format!("#!/bin/sh\nreal={real}\n{body}")).expect("write");
     let mut permissions = std::fs::metadata(&shim).expect("stat").permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
     std::fs::set_permissions(&shim, permissions).expect("chmod");
     let toolchain = Path::new(env!("CARGO")).parent().expect("bin");
-    let path = format!("{}:{}:/usr/bin:/bin", bin.display(), toolchain.display());
-    assert_eq!(built_with(&root, &[("PATH", &path)]), head);
+    format!("{}:{}:/usr/bin:/bin", bin.display(), toolchain.display())
 }
 
 /// Commits the probe at `root`, and adds a worktree of it on a new branch `other`.
@@ -202,13 +206,15 @@ fn an_update_of_the_ref_of_a_worktree_from_another_rebuilds() {
     }
 }
 
-/// The error output of a build of the probe at `root`. Panics when the build passes.
-fn refused(root: &Path) -> String {
+/// The error output of a build of the probe at `root` with `env`. Panics when the build
+/// passes.
+fn refused(root: &Path, env: &[(&str, &str)]) -> String {
     let output = Command::new(env!("CARGO"))
         .args(["build", "--offline", "--target-dir"])
         .arg(root.join("target"))
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
+        .envs(env.iter().copied())
         .output()
         .expect("spawn");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -221,7 +227,7 @@ fn a_broken_ref_stops_the_build() {
     let root = create_probe("broken", &[]);
     commit(&root);
     std::fs::write(root.join(".git/refs/heads/main"), "broken\n").expect("write");
-    let stderr = refused(&root);
+    let stderr = refused(&root, &[]);
     assert!(
         stderr.contains("`git rev-parse HEAD` fails on a branch that has a commit"),
         "{stderr}"
@@ -229,12 +235,29 @@ fn a_broken_ref_stops_the_build() {
 }
 
 #[test]
-fn a_commit_that_is_not_40_hex_digits_stops_the_build() {
+fn a_commit_in_a_sha256_repository_gives_the_commit() {
     let root = create_probe("sha256", &["--object-format=sha256"]);
     let head = commit(&root);
-    let stderr = refused(&root);
-    let expected =
-        format!("`git rev-parse HEAD` gives `{head}`, not 40 lowercase hex digits");
+    assert_eq!((head.len(), built(&root)), (64, head));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_commit_that_is_not_lowercase_hex_stops_the_build() {
+    let root = create_probe("upper", &[]);
+    commit(&root);
+    let upper = "0123456789ABCDEF0123456789ABCDEF01234567";
+    let path = create_shim(
+        &root,
+        &format!(
+            "if [ \"$1 $2\" = \"rev-parse HEAD\" ]; then echo {upper}; exit 0; fi\n\
+             exec \"$real\" \"$@\"\n"
+        ),
+    );
+    let stderr = refused(&root, &[("PATH", &path)]);
+    let expected = format!(
+        "`git rev-parse HEAD` gives `{upper}`, not 40 or 64 lowercase hex digits"
+    );
     assert!(stderr.contains(&expected), "{stderr}");
 }
 

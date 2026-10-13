@@ -19,13 +19,13 @@ fn main() -> Result<(), String> {
             "`git rev-parse HEAD` fails on a branch that has a commit".to_owned()
         );
     }
-    let hex = commit.len() == 40
+    let hex = matches!(commit.len(), 40 | 64)
         && commit
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     if !hex && !commit.is_empty() {
         return Err(format!(
-            "`git rev-parse HEAD` gives `{commit}`, not 40 lowercase hex digits"
+            "`git rev-parse HEAD` gives `{commit}`, not 40 or 64 lowercase hex digits"
         ));
     }
     println!("cargo::rustc-env=FOUNDATION_COMMIT={commit}");
@@ -86,8 +86,8 @@ fn git(args: &[&str]) -> Option<String> {
     output.status.success().then(|| text.trim().to_owned())
 }
 
-/// The absolute path of `name` in the git folder. Git gives it relative to the folder of
-/// the package, where cargo runs the script.
+/// The absolute path of `name` in the git folder. Git gives it relative to the folder
+/// of the package, where cargo runs the script.
 fn git_path(name: &str) -> Result<PathBuf, String> {
     let path = git(&["rev-parse", "--git-path", name]);
     let path = path.ok_or_else(|| format!("git gives no path of `{name}`"))?;

@@ -134,9 +134,9 @@ pub(crate) enum Response {
 pub(crate) struct Version {
     /// The version of Foundation.
     pub(crate) version: String,
-    /// The 40 lowercase hex digits of the commit of `HEAD` in the build, or null with
-    /// no `git`, outside a git repository, and on a branch with no commit. A build of a
-    /// tree with changes gives the commit of `HEAD` too.
+    /// The 40 or 64 lowercase hex digits of the commit of `HEAD` in the build, or null
+    /// with no `git`, outside a git repository, and on a branch with no commit. A build
+    /// of a tree with changes gives the commit of `HEAD` too.
     pub(crate) commit: Option<String>,
 }
 
@@ -355,7 +355,7 @@ impl Response {
                 let commit = output.commit.as_deref().map_or("unknown", |commit| {
                     commit
                         .get(..12)
-                        .expect("invariant: a commit has 40 hex digits")
+                        .expect("invariant: a commit has 40 or 64 hex digits")
                 });
                 format!("{} ({commit})\n", output.version)
             }
