@@ -709,6 +709,38 @@ fn panics_on_the_name_of_an_entry_outside_the_view() {
 }
 
 #[test]
+fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
+    run(45, |test| async move {
+        let config = reader::Config {
+            name: Some(name("named")),
+            ..unnamed(&["value"], Mode::Complete)
+        };
+        let mut reader = test.hub.reader(config).await.expect("opens");
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+fn gives_a_channel_defined_again_at_a_new_key_its_name_at_the_new_open() {
+    run(46, |test| async move {
+        let mut changed = channels();
+        changed.insert(name("value"), definition(9, DataType::Sample(I64), 1));
+        test.hub.set_definitions(&changed);
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (9, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 9]);
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
 fn leaves_a_channel_that_an_exclusion_matches_out_of_the_view() {
     run(42, |test| async move {
         let select = ["**", "!time-b", "!value-b", "!value-c"];
