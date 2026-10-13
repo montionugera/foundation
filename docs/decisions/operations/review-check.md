@@ -130,13 +130,8 @@
   (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A last
   round whose number is 3 or more may have findings and may end before a commit that
   changes code, since no round follows it (REVIEW ROUNDS in
-  `docs/decisions/operations/review-rounds.md`). Its end must still be on the
-  first-parent chain of the head, and each merge after it must be a clean merge of the
-  base. When the number of the last round is 3 or more and a commit after its end
-  changes a decision (`decision_change` on its end to the head), the check fails unless
-  the `Public surface:` line of that round names an item, because REVIEW ROUNDS has the
-  author add each such change to that line with its approval. Each other problem of that
-  round stays: the reviewers that it requires, the OK of each deferral in a risk crate,
+  `docs/decisions/operations/review-rounds.md`). Its end must still be on the first-parent chain of the head, and each merge after it must be a clean merge of the base; else the check asks for a round comment with its number that checks the merge and ends at the head. When the number of the last round is 3 or more and a commit after the end of its first round comment changes a decision (`decision_change` on that end to the head), the check fails unless the `Public surface:` line of its last round comment names an item, since a round comment that only holds a late report or only checks a merge does not move the end of the round (REVIEW ROUNDS), and because REVIEW ROUNDS has the
+  author add each such change to that line with its approval. Each other problem of that round stays: the reviewers that it requires, the OK of each deferral in a risk crate on the `Deferred:` line of each of its round comments,
   the approvals of its `Public surface:` line, and the director's approval of a red-team
   PR labeled `oracle`. The check does not check that each finding of that round has its
   fix commit or its deferral, or that each commit after it that changes code fixes a
@@ -149,8 +144,7 @@
   last round are the findings of each round comment with its number, because a round
   comment that only holds a late report or only checks a merge adds its findings to the
   round whose number it takes. A round comment after the first on a PR fails when its
-  number is more than the number of the round comment before it plus 1. The first may
-  have any number, because a PR that replaces another continues its count. A round
+  number is more than the number of the round comment before it plus 1. The first may have any number up to 3, because a PR that replaces another before round 3 continues its count. A round
   comment posted before `2026-10-13T20:12:19Z` may have any number, so that the rule
   does not fail the rounds that came before it. A round comment posted at or after
   `2026-10-13T20:12:19Z` also fails when its number is more than 3 and more than the
@@ -159,8 +153,7 @@
   ROUNDS). Decided by the director at 2026-10-13T16:33:37Z
   (https://github.com/synnaxlabs/foundation/issues/2585), 16:53:06Z
   (https://github.com/synnaxlabs/foundation/issues/2585#issuecomment-6150677430),
-  16:56:57Z
-  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150751781),
+  16:57:12Z (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150751781),
   16:57:52Z
   (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150763804),
   17:00:50Z
@@ -168,9 +161,7 @@
   17:06:00Z
   (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150911446),
   17:09:10Z
-  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150968081), and
-  17:19:02Z
-  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6151148195).
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150968081), 17:19:02Z (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6151148195), and 19:29:04Z (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6153482774).
   Supersedes, for that round, the rule above that the last round finds none and that the
   range to the head changes no code
   (https://github.com/synnaxlabs/foundation/issues/2315). A merge of the base is not
@@ -273,8 +264,7 @@
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
   (2026-10-07T06:32:32Z). For this rule, a round comment after the first is a later
   round, whatever its number, and so is a first round comment whose number is above 1.
-  Each later round is read, not only the last. The range from the last round to the head
-  is not read for a decision. The check reads it only for code (TEXT FIXES), and the
+  Each later round is read, not only the last. Below round 3, the range from the last round to the head is not read for a decision. The check reads it only for code (TEXT FIXES), and the
   `review` skill gives a text fix in a decision no round. The range is read as that of a
   round with `Breaker: skipped` is read, so a change of the base does not count. A
   decision in which a merge of the base in the range resolves a conflict counts, and so
