@@ -1,12 +1,10 @@
 //! Builds a probe crate with the `build.rs` of `ops` in a fresh repository, and checks
 //! that the commit it prints follows `HEAD` after each git step.
 
-#![cfg(test)]
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const SCRIPT: &str = include_str!("../build.rs");
+const SCRIPT: &str = include_str!("../../build.rs");
 
 /// Runs `program` in `dir` with `env`, and gives its trimmed output. Panics when it
 /// fails.
