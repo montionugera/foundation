@@ -2,7 +2,7 @@
   changes, homes, added, changed, removed }`, with `Change { action, kind, name, place:
   Option<Place> }`. It derives `Serialize`, `Deserialize`, and `JsonSchema`, and `ops`
   resolves each span to a file, line, and column. `text()` gives the terminal text, as
-  `Response` and `Error` do. #1744 makes it a `Response` variant. Each error of `ops`,
+  `Response` and `Error` do. The CLI writes its `text()`, or its JSON with `--json`. Each error of `ops`,
   in the CLI and in MCP, has one JSON shape: `{"errors": [...]}`, each item a typed
   `Problem { code, message, fix, place: Option<Place>, notes }`. An error that is not a
   diagnostic, such as `ops.argument`, is a list of one item with no place. A place is
