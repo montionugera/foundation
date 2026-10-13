@@ -130,8 +130,8 @@
   (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A last
   round whose number is 3 or more may have findings and may end before a commit that
   changes code, since no round follows it (REVIEW ROUNDS in
-  `docs/decisions/operations/review-rounds.md`). Its end, and the end of its
-  first round comment, must still be commits on the first-parent chain of the head, and each merge
+  `docs/decisions/operations/review-rounds.md`). Its end, and the end of its first round
+  comment, must still be commits on the first-parent chain of the head, and each merge
   after them must merge the base; else the check asks the author to correct the range or
   to bring the reviewed commits back onto that chain. Each merge after the end of its
   last round comment must also be a clean merge of the base; else the check asks for a
