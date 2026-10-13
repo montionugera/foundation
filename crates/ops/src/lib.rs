@@ -58,8 +58,8 @@ pub enum Run {
 /// what it gives with the body of one request. A [`Failure`] of either is the error
 /// of the command, with status 1. `start` and the other operations call neither.
 ///
-/// Blocks its thread at each read or write of a path, `input`, or `output`, and makes
-/// none while a request to the node waits.
+/// Blocks its thread at each read or write of a path, each read of `input`, and each
+/// write of `output` or `errors`, and makes none while a request to the node waits.
 pub async fn cli<C>(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,
