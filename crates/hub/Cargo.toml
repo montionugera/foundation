@@ -41,6 +41,11 @@ name = "memory"
 harness = false
 
 [[bench]]
+name = "keyset"
+harness = false
+test = true
+
+[[bench]]
 name = "open"
 harness = false
 test = true
