@@ -17,13 +17,10 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
-  with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest
-  frame holds no status is `unknown` too. So is a connector whose status channels the
+  with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest frame holds no status or lacks a status channel of the spec is `unknown` too. So is a connector whose status channels the
   hub does not hold as the spec defines them yet (no channel, a key, a sample type, or
   an index of another spec), as `follow` defines the hub before the runs, and one whose
-  status channels an apply removes during the read. A frame of a channel that `config`
-  carries over with its key and definition into a status channel is the status until the
-  supervisor writes its first frame
+  status channels an apply removes during the read. A frame that holds each status channel, of channels that `config` carries over with their keys and definitions, is the status until the supervisor writes its first frame
   (https://github.com/synnaxlabs/foundation/issues/2531). When the reader of a connector
   does not open or ends for another cause, `status` fails with `ops.channel-read`, which
   names the connector and gives the text of the hub. `status` needs `read` on each
