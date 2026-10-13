@@ -20,10 +20,16 @@ const LINES_MAX: usize = 5_000;
 #[derive(Debug)]
 pub struct Batch {
     name: String,
-    body: Vec<u8>,
-    lines: usize,
     position: Option<Position>,
     layout: Option<Layout>,
+    body: Body,
+}
+
+/// The lines of a batch, and the buffers that decode a frame into them.
+#[derive(Debug, Default)]
+struct Body {
+    bytes: Vec<u8>,
+    lines: usize,
     times: Vec<u8>,
     raw: Vec<u8>,
     values: Vec<Option<Value>>,
@@ -49,13 +55,9 @@ impl Batch {
     pub fn new(name: String) -> Self {
         Self {
             name,
-            body: Vec::new(),
-            lines: 0,
             position: None,
             layout: None,
-            times: Vec::new(),
-            raw: Vec::new(),
-            values: Vec::new(),
+            body: Body::default(),
         }
     }
 
@@ -82,10 +84,11 @@ impl Batch {
         let fits = self.layout.as_ref().is_some_and(|layout| {
             layout.set == set.key() && data().eq(layout.entries.iter().copied())
         });
-        if !fits {
-            self.layout = Some(layout(&self.name, received, data().collect())?);
-        }
-        self.write(received, first);
+        let layout = match &mut self.layout {
+            Some(layout) if fits => layout,
+            slot => slot.insert(layout(&self.name, received, data().collect())?),
+        };
+        self.body.write(layout, received, first);
         Ok(())
     }
 
@@ -93,28 +96,27 @@ impl Batch {
     /// adds more.
     #[must_use]
     pub const fn full(&self) -> bool {
-        self.lines >= LINES_MAX
+        self.body.lines >= LINES_MAX
     }
 
     /// The body of the lines and the position after the last frame added, or `None`
     /// when no frame was added. Empties the batch.
     pub fn take(&mut self) -> Option<(Vec<u8>, Position)> {
         let position = self.position.take()?;
-        self.lines = 0;
-        let capacity = self.body.len();
+        self.body.lines = 0;
+        let capacity = self.body.bytes.len();
         Some((
-            std::mem::replace(&mut self.body, Vec::with_capacity(capacity)),
+            std::mem::replace(&mut self.body.bytes, Vec::with_capacity(capacity)),
             position,
         ))
     }
+}
 
+impl Body {
     /// Writes the lines of `received`, whose first data channel is at `first`, with
-    /// the layout of its channels.
-    fn write(&mut self, received: &Received<'_>, first: usize) {
+    /// the `layout` of its channels.
+    fn write(&mut self, layout: &Layout, received: &Received<'_>, first: usize) {
         let (view, set) = (received.view(), received.set());
-        let Some(layout) = &self.layout else {
-            unreachable!("add sets the layout first")
-        };
         let Some(range) = view.range(entry(set, first).group) else {
             return;
         };
@@ -148,11 +150,11 @@ impl Batch {
         let rows = self.values.chunks_exact(fields);
         for (values, &time) in rows.zip(self.times.as_chunks::<8>().0) {
             let time = i64::from_le_bytes(time);
-            let start = self.body.len();
+            let start = self.bytes.len();
             layout
                 .measurement
-                .line(&mut self.body, values, Stamp::from_nanos(time));
-            if self.body.len() > start {
+                .line(&mut self.bytes, values, Stamp::from_nanos(time));
+            if self.bytes.len() > start {
                 self.lines = self.lines.saturating_add(1);
             }
         }
