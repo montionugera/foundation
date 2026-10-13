@@ -17,6 +17,8 @@
   rule is the same text rule on every host, since no node runs on Windows and a rule can
   widen later with no break. The trigger to take a drive letter is the first node that
   runs on Windows. Decided by `laptop.architect-2` on 2026-10-13T22:22:37Z
-  (https://github.com/synnaxlabs/foundation/pull/2619#issuecomment-6156477687). The rest
+  (https://github.com/synnaxlabs/foundation/pull/2619#issuecomment-6156477687).
+  `laptop.architect-2` approved the refusal of NUL in a path on 2026-10-13T22:29:57Z
+  (https://github.com/synnaxlabs/foundation/pull/2619#issuecomment-6156590921). The rest
   was decided by `laptop.architect-2` on 2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112).
