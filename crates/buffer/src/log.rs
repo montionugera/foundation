@@ -208,9 +208,8 @@ struct Log {
     /// record with an entry of the path, or a carry record with its tail. `None`
     /// before the first synced entry.
     holder: Option<u64>,
-    /// The seq at which the first synced entry starts. `None` before it, and when a
-    /// carried tail came first: its count is then exact, and no trim passed an
-    /// entry after it.
+    /// The seq at which the first synced entry starts. `None` before it, and after a
+    /// carried tail: its count is exact, and no trim passed an entry after it.
     origin: Option<u64>,
 }
 
@@ -523,16 +522,17 @@ impl Logs {
     /// order. A path that the walk has not met moves to the carried tail and end,
     /// with no run. A path it met keeps its runs, and takes the carried stamp when it
     /// has none: a trim passed the entry with the stamp. When the carried end has
-    /// more entries with no samples at the seq of the path's end, and each walked
-    /// entry of the path is one at that seq, a trim passed the others: each run
-    /// starts past them, and so does the end.
+    /// more entries with no samples at the seq of the path's end, each walked entry
+    /// of the path is one at that seq, and no earlier carried tail gave an exact
+    /// count, a trim passed the others: each run starts past them, and so does the
+    /// end.
     ///
     /// # Errors
     ///
     /// [`Invalid::Carried`] when the walk met the path and the carried end has
     /// another seq than its end, fewer entries with no samples, or more while a
-    /// walked entry is not one at that seq, or the path has a stamp and the carried
-    /// stamp is another. Nothing changes.
+    /// walked entry is not one at that seq or after an earlier carried tail, or the
+    /// path has a stamp and the carried stamp is another. Nothing changes.
     ///
     /// # Panics
     ///
@@ -605,8 +605,12 @@ impl Logs {
         log.appended_empty = carried.given;
         log.durable.stamp = carried.stamp;
         log.appended = log.durable;
-        log.holder = Some(offset);
-        self.hold(offset, at);
+        let held = log.holder.replace(offset) == Some(offset);
+        log.origin = None;
+        // A record that lists the path twice holds it once.
+        if !held {
+            self.hold(offset, at);
+        }
         Ok(())
     }
 
@@ -1619,6 +1623,42 @@ mod tests {
                 stamp: None,
             };
             assert_eq!(invalid, Err(carried_to));
+        }
+
+        /// The carried tail at 8192 gives an exact count, so a later one with more
+        /// entries with no samples than the walk met is a wrong shape.
+        #[test]
+        fn refuses_more_entries_with_no_samples_after_a_carried_tail_of_a_met_path() {
+            let mut logs = Logs::default();
+            let header = header(1, Path::Live, 3, 0, None);
+            logs.append(slot(1), &header).expect("appends");
+            logs.sync(slot(1), &header, 4096).expect("syncs");
+            logs.carry(slot(1), &carried(3, 1, None), 8192)
+                .expect("the walk met the end");
+            logs.append(slot(1), &header).expect("appends");
+            logs.sync(slot(1), &header, 12288).expect("syncs");
+            let before = logs.clone();
+            let tail = carried(3, 3, None);
+            let invalid = logs.carry(slot(1), &tail, 16384);
+            let carried_to = Invalid::Carried {
+                carried: tail,
+                end: mark(3, 2),
+                stamp: None,
+            };
+            assert_eq!(invalid, Err(carried_to));
+            assert_eq!(logs, before);
+        }
+
+        #[test]
+        fn gives_a_path_once_after_a_carry_record_lists_it_twice() {
+            let mut logs = Logs::default();
+            let tail = carried(5, 0, None);
+            logs.carry(slot(1), &tail, 8192).expect("a new path");
+            logs.carry(slot(1), &tail, 8192).expect("the same tail");
+            let mut tails = Vec::new();
+            logs.idle(u64::MAX, 8, &mut tails);
+            assert_eq!(tails, [tail]);
+            assert_eq!(logs.records, [(8192, 1)]);
         }
 
         /// The walk met an entry with no samples at seq 3, then one at seq 5.

@@ -3799,6 +3799,41 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
     }
 }
 
+/// Data records at 0, 1, and 2 blocks and at 4 blocks each hold an entry with no
+/// samples at seq 3. The carry record at 3 blocks takes one more, which a trim
+/// passed. It gives an exact count, so the one at 5 blocks takes no more.
+#[test]
+fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
+    for (given, taken) in [(5, true), (6, false)] {
+        run(189, move |shard| async move {
+            let ring = layout(AREA, BODY_MAX);
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            for _ in 0..4 {
+                let empty = entry(1, a, Path::Live, 3, 0, None, Parts::default());
+                buffer.append([empty]).expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+            drop(buffer);
+            shard
+                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 4, None)]))
+                .await;
+            shard.seal(4 * BLOCK).await;
+            shard
+                .put_carry(5 * BLOCK, &carry_body(&[carried(1, 3, given, None)]))
+                .await;
+            if !taken {
+                return shard.open_invalid(ring, 5 * BLOCK).await;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            assert_eq!(buffer.durable(a, Path::Live), tail(3, None));
+        });
+    }
+}
+
 #[test]
 fn an_open_that_finds_an_unaligned_tail_leaves_the_ring_as_read() {
     run(108, |shard| async move {
