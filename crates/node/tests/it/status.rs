@@ -58,10 +58,25 @@ pub(crate) fn connectors(json: &[u8]) -> BTreeMap<String, Connector> {
         .collect()
 }
 
-/// `ops` writes each key of a connector, so a connector with no `address`, `restarts`,
-/// `counts`, or `error` key has another shape.
+/// `ops` writes each key of a connector, so a connector that lacks one of `address`,
+/// `restarts`, `counts`, or `error` has another shape.
 #[test]
-#[should_panic(expected = "the status JSON")]
-fn a_connector_with_no_optional_key_panics() {
-    connectors(br#"{"connectors":[{"name":"a","kind":"influx","state":"unknown"}]}"#);
+fn a_connector_with_no_optional_key_is_refused() {
+    let keys = ["address", "restarts", "counts", "error"];
+    for missing in keys {
+        let present = keys.iter().filter(|key| **key != missing);
+        let fields: Vec<_> = present.map(|key| format!(r#""{key}":null"#)).collect();
+        let json = format!(
+            r#"{{"connectors":[{{"name":"a","kind":"influx","state":"unknown",{}}}]}}"#,
+            fields.join(","),
+        );
+        let error = serde_json::from_str::<Output>(&json)
+            .err()
+            .expect("a refusal");
+        let column = json.len() - 2;
+        assert_eq!(
+            error.to_string(),
+            format!("missing field `{missing}` at line 1 column {column}"),
+        );
+    }
 }
