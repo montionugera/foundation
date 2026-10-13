@@ -15,6 +15,22 @@ typedef struct {
     size_t length;
 } shim_node;
 
+/* A scalar of the type `UA_TYPES[0]` (Boolean) to `UA_TYPES[10]` (Double), as
+ * `ffi::Scalar` gives it. */
+typedef union {
+    UA_Boolean boolean;
+    UA_SByte sbyte;
+    UA_Byte byte;
+    UA_Int16 int16;
+    UA_UInt16 uint16;
+    UA_Int32 int32;
+    UA_UInt32 uint32;
+    UA_Int64 int64;
+    UA_UInt64 uint64;
+    UA_Float float_;
+    UA_Double double_;
+} shim_scalar;
+
 /* Gives the id of `node`, which borrows its name. */
 static inline UA_NodeId shim_node_id(shim_node node) {
     if(node.name == NULL)

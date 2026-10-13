@@ -7,6 +7,7 @@ use crate::connection::Manager;
 use crate::event;
 use crate::node::Node;
 use crate::unwind::caught;
+use crate::value::Value;
 
 #[test]
 fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
@@ -24,7 +25,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         )
         .expect("the port is free");
         let zero: Node = "ns=1;i=0".parse().expect("a node");
-        let add = |server: &mut Server| server.add_double(&zero, 1.0);
+        let add = |server: &mut Server| server.add_scalar(&zero, Value::F64(1.0));
         let panic = caught(Server::serve(manager, 1, add, async {}))
             .await
             .expect_err("the serve panics");

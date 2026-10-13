@@ -37,3 +37,6 @@
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138961019, and the
   rule of `SPLIT` and the test of each form of a key at 2026-10-13T05:45:02Z,
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6139125974.
+  The client reads Boolean and each numeric scalar type (OPCUA KIND). None is larger
+  than a Double, so `shim_read_answer` still sizes each value as a Double and `SPLIT`
+  stays 7.

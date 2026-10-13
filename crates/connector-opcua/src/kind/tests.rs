@@ -945,10 +945,23 @@ fn stamps_each_frame_within_its_read() {
 /// that gives a value for a bad read in place of the panic.
 #[test]
 #[should_panic(
-    expected = "invariant: read 2 is BadNotFound, which `Values::new` refuses"
+    expected = "invariant: read 2 is Err(BadNotFound), which `Values::new` refuses"
 )]
 fn panics_with_the_read_whose_value_is_bad() {
+    use crate::value::Value;
     let bad = Err(Status::BAD_NOT_FOUND);
-    let values = [Ok(1.0), bad, bad];
+    let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
+}
+
+#[test]
+fn refuses_a_value_that_is_not_a_double_as_a_type_mismatch() {
+    use crate::value::Value;
+    let values = [
+        Ok(Value::F64(1.0)),
+        Ok(Value::F32(1.0)),
+        Err(Status::BAD_NOT_FOUND),
+    ];
+    let refused = Values::new(&values).map(|_| ());
+    assert_eq!(refused, Err((1, Status::BAD_TYPE_MISMATCH)));
 }

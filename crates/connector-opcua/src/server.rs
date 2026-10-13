@@ -13,6 +13,7 @@ use std::task::Poll;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
+use crate::value::Value;
 
 /// A started test server of open62541 on the loop of a connection manager.
 /// [`Server::close`] deletes it, and a drop leaks it.
@@ -30,29 +31,37 @@ pub(crate) struct Server {
 #[cfg(feature = "sim")]
 #[repr(C)]
 struct Source {
-    read: unsafe extern "C" fn(*mut Source, *mut f64, *mut u32),
-    answer: Box<dyn FnMut() -> (f64, types::quality::Quality)>,
+    read: unsafe extern "C" fn(*mut Source, *mut ffi::Scalar, *mut u16, *mut u32),
+    answer: Box<dyn FnMut() -> (Value, types::quality::Quality)>,
     /// False while the add reads the variable to check its type.
     added: bool,
 }
 
-/// Answers a read of the variable of `source` into `value` and `status`.
+/// Answers a read of the variable of `source` into `value`, `kind`, and `status`.
 ///
 /// # Safety
 ///
-/// `source` is live, nothing else holds it, and `value` and `status` are places to
-/// write.
+/// `source` is live, nothing else holds it, and `value`, `kind`, and `status` are
+/// places to write.
 #[cfg(feature = "sim")]
-unsafe extern "C" fn read(source: *mut Source, value: *mut f64, status: *mut u32) {
+unsafe extern "C" fn read(
+    source: *mut Source,
+    value: *mut ffi::Scalar,
+    kind: *mut u16,
+    status: *mut u32,
+) {
     // SAFETY: as the caller ensures.
     let source = unsafe { &mut *source };
-    let (double, quality) = if source.added {
+    let (answer, quality) = if source.added {
         (source.answer)()
     } else {
-        (0.0, types::quality::Quality::GOOD)
+        (Value::F64(0.0), types::quality::Quality::GOOD)
     };
+    let (scalar, index) = answer.raw();
     // SAFETY: as the caller ensures.
-    unsafe { value.write(double) };
+    unsafe { value.write(scalar) };
+    // SAFETY: as the caller ensures.
+    unsafe { kind.write(index) };
     // SAFETY: as the caller ensures.
     unsafe { status.write(quality.0) };
 }
@@ -108,20 +117,40 @@ impl Server {
         unsafe { ffi::test::UA_Server_addNamespace(self.raw(), uri.as_ptr()) }
     }
 
-    /// Adds the variable `node` with the Double `value`.
+    /// Adds the variable `node` with `value`.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
-    pub(crate) fn add_double(&self, node: &Node, value: f64) {
-        // SAFETY: the server lives, and it copies the name of `node`.
+    pub(crate) fn add_scalar(&self, node: &Node, value: Value) {
+        let (scalar, kind) = value.raw();
+        // SAFETY: the server lives, and it copies the name of `node` and `scalar`.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_double(self.raw(), added(node), value)
+            ffi::test::shim_server_add_scalar(
+                self.raw(),
+                added(node),
+                &raw const scalar,
+                kind,
+            )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the Double variable `node`, and answers each read of a client with the
+    /// Adds the variable `node` with an array of two Doubles.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_doubles(&self, node: &Node) {
+        // SAFETY: the server lives, and it copies the name of `node`.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_doubles(self.raw(), added(node))
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the scalar variable `node`, and answers each read of a client with the
     /// value and the status that `answer` gives, on the thread that drives the server.
     ///
     /// # Panics
@@ -131,7 +160,7 @@ impl Server {
     pub(crate) fn add_source(
         &mut self,
         node: &Node,
-        answer: impl FnMut() -> (f64, types::quality::Quality) + 'static,
+        answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
     ) {
         let source = NonNull::from(Box::leak(Box::new(Source {
             read,

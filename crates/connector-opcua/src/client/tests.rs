@@ -23,6 +23,7 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
+use crate::value::Value;
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -57,7 +58,7 @@ const TIME: Node = Node {
 
 impl Client {
     /// Reads the Value of `node` alone.
-    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<f64, Status> {
+    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Status> {
         let nodes = self
             .nodes(std::slice::from_ref(node))
             .expect("one node fits");
@@ -80,7 +81,7 @@ struct Peer<'s> {
     /// The endpoint of the test server.
     url: String,
     /// The value of [`VALUE`].
-    value: f64,
+    value: Value,
     /// The server does not run while it is set.
     paused: Rc<Cell<bool>>,
 }
@@ -152,8 +153,8 @@ async fn serve<T>(
     .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
     let server = unsafe { Server::start(&manager, c"", sessions) };
-    let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
-    server.add_double(&VALUE, value);
+    let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
+    server.add_scalar(&VALUE, value);
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -183,7 +184,7 @@ async fn serve<T>(
 }
 
 /// The value of [`VALUE`] and the answer of a read of it, in a run of `seed`.
-fn spike(seed: u64) -> ((f64, Result<f64, Status>), u64) {
+fn spike(seed: u64) -> ((Value, Result<Value, Status>), u64) {
     run(seed, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -200,7 +201,7 @@ fn a_client_reads_a_double_and_a_run_replays() {
     assert_eq!(spike(7), ((value, Ok(value)), digest));
     let ((other, read), _) = spike(8);
     assert_eq!(read, Ok(other));
-    assert_ne!(other.to_bits(), value.to_bits());
+    assert_ne!(other, value);
 }
 
 #[test]
@@ -230,8 +231,10 @@ fn a_read_of_a_name_node_gives_its_value() {
                 namespace: 1,
                 key: Key::Name(Name::new(name).expect("a name that is not empty")),
             };
-            peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
-            peer.server.add_double(&named("plant.spike"), 3.5);
+            peer.server
+                .add_scalar(&named("plant.spike;x=ü"), Value::F64(2.5));
+            peer.server
+                .add_scalar(&named("plant.spike"), Value::F64(3.5));
             let mut client = peer.connected().await;
             let reads = (
                 client.read_one(&named("plant.spike;x=ü")).await,
@@ -250,7 +253,7 @@ fn a_read_of_a_name_node_gives_its_value() {
         .await
     });
     let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
-    let expected = (Ok(2.5), Ok(3.5), unknown, unknown);
+    let expected = (Ok(Value::F64(2.5)), Ok(Value::F64(3.5)), unknown, unknown);
     assert_eq!(reads, expected);
 }
 
@@ -260,6 +263,83 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             client.read_one(&TIME).await
+        })
+        .await
+    });
+    assert_eq!(read, Err(Status::BAD_TYPE_MISMATCH));
+}
+
+/// A scalar of each type at its bounds, and each special value of a float.
+const SCALARS: [Value; 28] = [
+    Value::Bool(false),
+    Value::Bool(true),
+    Value::I8(i8::MIN),
+    Value::I8(i8::MAX),
+    Value::U8(u8::MIN),
+    Value::U8(u8::MAX),
+    Value::I16(i16::MIN),
+    Value::I16(i16::MAX),
+    Value::U16(u16::MIN),
+    Value::U16(u16::MAX),
+    Value::I32(i32::MIN),
+    Value::I32(i32::MAX),
+    Value::U32(u32::MIN),
+    Value::U32(u32::MAX),
+    Value::I64(i64::MIN),
+    Value::I64(i64::MAX),
+    Value::U64(u64::MIN),
+    Value::U64(u64::MAX),
+    Value::F32(f32::MIN),
+    Value::F32(f32::MAX),
+    Value::F32(-0.0),
+    Value::F32(f32::NEG_INFINITY),
+    Value::F32(f32::NAN),
+    Value::F64(f64::MIN),
+    Value::F64(f64::MAX),
+    Value::F64(-0.0),
+    Value::F64(f64::INFINITY),
+    Value::F64(f64::NAN),
+];
+
+#[test]
+fn a_read_gives_each_scalar_type_at_its_bounds() {
+    let (values, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let nodes: Vec<Node> = (2000..)
+                .zip(SCALARS)
+                .map(|(number, value)| {
+                    let node = Node {
+                        namespace: 1,
+                        key: Key::Number(number),
+                    };
+                    peer.server.add_scalar(&node, value);
+                    node
+                })
+                .collect();
+            let mut client = peer.connected().await;
+            let nodes = client.nodes(&nodes).expect("28 nodes fit");
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
+            client.close().await;
+            values
+        })
+        .await
+    });
+    // Debug tells NaN and -0.0 apart, where `==` does not.
+    let expected: Result<_, Status> = Ok(SCALARS.map(Ok::<_, Status>).to_vec());
+    assert_eq!(format!("{values:?}"), format!("{expected:?}"));
+}
+
+#[test]
+fn a_read_of_an_array_fails_with_a_type_mismatch() {
+    let (read, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let array = Node {
+                namespace: 1,
+                key: Key::Number(1001),
+            };
+            peer.server.add_doubles(&array);
+            let mut client = peer.connected().await;
+            client.read_one(&array).await
         })
         .await
     });
@@ -296,7 +376,7 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
 /// reads in flight, while that read waits to send.
 fn read_after_late_answer(
     dropped: u16,
-) -> (Result<Vec<Result<f64, Status>>, Status>, f64) {
+) -> (Result<Vec<Result<Value, Status>>, Status>, Value) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -471,7 +551,7 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
 /// Gives its answer and the time it took.
-fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
+fn read_after(dropped: u16) -> (Result<Value, Status>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -514,7 +594,7 @@ async fn read_with_pass(
     client: &mut Client,
     peer: &Peer<'_>,
     at: Span,
-) -> (Result<f64, Status>, Span) {
+) -> (Result<Value, Status>, Span) {
     let start = peer.clock.now();
     let mut pass = pin!(peer.clock.sleep(at));
     let (mut woke, mut passed) = (false, false);
@@ -607,7 +687,7 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
 
 /// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
 /// a message.
-fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
+fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
@@ -926,7 +1006,7 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
                 namespace,
                 key: Key::Number(1000),
             };
-            peer.server.add_double(&added, 2.5);
+            peer.server.add_scalar(&added, Value::F64(2.5));
             let second = client.read_one(&added).await;
             client.close().await;
             let mut fresh = peer.connected().await;
@@ -936,7 +1016,10 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
         })
         .await
     });
-    assert_eq!(reads, (Ok(value), 2, Ok(2.5), Ok(2.5)));
+    assert_eq!(
+        reads,
+        (Ok(value), 2, Ok(Value::F64(2.5)), Ok(Value::F64(2.5)))
+    );
 }
 
 /// A node in namespace 1 named by `length` bytes.
@@ -984,7 +1067,7 @@ fn a_request_takes_the_chunks_of_one_message() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 1 << 20);
-            peer.server.add_double(&long(length), 2.5);
+            peer.server.add_scalar(&long(length), Value::F64(2.5));
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
@@ -999,7 +1082,7 @@ fn a_request_takes_the_chunks_of_one_message() {
         .await
     });
     let (read, past, after, full, sent, value) = reads;
-    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
@@ -1024,7 +1107,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             });
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 9000);
-            peer.server.add_double(&long(length), 2.5);
+            peer.server.add_scalar(&long(length), Value::F64(2.5));
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
@@ -1039,7 +1122,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
         .await
     });
     let (read, past, values, answer_past, sent, value) = reads;
-    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     let large = |bytes| Large { bytes, most: 8192 };
     assert_eq!(past, Err(large(8193)));
     assert_eq!(values, Ok(vec![Ok(value); 239]));
@@ -1379,13 +1462,13 @@ fn recount_of(message: &mut Vec<u8>, count: i32) {
 }
 
 /// The values of a read, or its error.
-type Read = Result<Vec<Result<f64, Status>>, Status>;
+type Read = Result<Vec<Result<Value, Status>>, Status>;
 
 /// Gives two reads of [`VALUE`] by one client through a relay that gives the first
 /// Read response `recount` empty results when it is set, the request handle of each
 /// Read response, the value of [`VALUE`], and the count of values that the first
 /// answer copies into the client.
-fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
+fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, usize) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);

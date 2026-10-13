@@ -11,6 +11,7 @@ use crate::client::Client;
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
+use crate::value::Value;
 
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
@@ -73,7 +74,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             until,
         )
         .await;
-        assert_eq!(reads, [Ok(1.0), Err(Status(BAD.0))]);
+        assert_eq!(reads, [Ok(Value::F64(1.0)), Err(Status(BAD.0))]);
         let record = variables.served();
         assert_eq!(record[DIP], []);
         let spike = &record[SPIKE];
@@ -151,7 +152,7 @@ fn a_server_has_room_for_4_sessions() {
             until,
         )
         .await;
-        assert_eq!(reads, [Ok(0.0); 4]);
+        assert_eq!(reads, [Ok(Value::F64(0.0)); 4]);
         assert_eq!(fifth, Some(Status::BAD_TIMEOUT));
         assert_eq!(variables.served()[SPIKE].len(), 4);
     })
