@@ -28,6 +28,7 @@ fn a_text_gives_its_node() {
         ("ns=1;i=1000", 1, Key::Number(1000)),
         ("i=2258", 0, Key::Number(2258)),
         ("s=a;b=c", 0, name("a;b=c")),
+        ("s=x", 0, name("x")),
         ("ns=65535;i=4294967295", u16::MAX, Key::Number(u32::MAX)),
         ("ns=007;i=08", 7, Key::Number(8)),
     ];
