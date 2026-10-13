@@ -22,4 +22,7 @@
   for namespace 0, and the name is the rest of the text, of 1 to 4096 bytes, so that
   a read fits in the chunks of one message. The kind refuses a GUID
   (`g=`) and an opaque key (`b=`) with an exact error. Trigger for them: a user whose
-  server has a variable with no number or name key.
+  server has a variable with no number or name key. The form with no `ns=<index>;` for
+  namespace 0 and the error for `g=` and `b=`: approved by `laptop.architect-2`
+  (2026-10-13T01:08:55Z:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6135871024).
