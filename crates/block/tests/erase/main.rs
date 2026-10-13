@@ -48,25 +48,46 @@ static ALLOCATOR: Scanning = Scanning {
 };
 
 fn main() {
-    assert_eq!(freed(Heap::new), 1, "a dropped `Heap::new` frees the bytes");
-    assert_eq!(
-        freed(Heap::erased),
-        0,
-        "a dropped `Heap::erased` erases them"
-    );
+    for (len, at) in [(32, 0), (3000, 1), (3000, 0)] {
+        let held = freed(Heap::new, len, at);
+        assert_eq!(
+            held, 1,
+            "a dropped `Heap::new` frees the bytes ({len}, {at})"
+        );
+        let held = freed(Heap::erased, len, at);
+        assert_eq!(
+            held, 0,
+            "a dropped `Heap::erased` erases them ({len}, {at})"
+        );
+    }
 }
 
-/// Drops a pool on the memory of `heap` while a block that holds `PLAIN` is lent,
-/// then the block. Gives the count of freed allocations that hold `PLAIN`.
-fn freed(heap: fn(usize) -> Heap) -> u64 {
-    let config = Config::new(4096).expect("the budget fits");
+/// Drops a pool on the memory of `heap` while it lends two blocks of different size
+/// classes, one of 32 bytes and one of `len` bytes, then the blocks. Block `at` holds
+/// `PLAIN` at its end. Gives the count of freed allocations that hold `PLAIN`.
+fn freed(heap: fn(usize) -> Heap, len: usize, at: usize) -> u64 {
+    let config = Config::new(1 << 14).expect("the budget fits");
     let memory = heap(config.reservation());
     ALLOCATOR.size.store(memory.len() + ALIGN, Relaxed);
     let before = ALLOCATOR.held.load(Relaxed);
     let pool = Pool::new(config, memory);
-    let block = pool.copy(&PLAIN).expect("the budget has room");
+    let blocks: Vec<_> = [32, len]
+        .into_iter()
+        .enumerate()
+        .map(|(index, len)| {
+            let mut block = pool.alloc(len).expect("the budget has room");
+            block.fill(0x11);
+            if index == at {
+                block[len - PLAIN.len()..].copy_from_slice(&PLAIN);
+            }
+            block.freeze()
+        })
+        .collect();
     drop(pool);
-    assert_eq!(*block, PLAIN, "a lent block outlives its pool");
-    drop(block);
+    assert!(
+        blocks.iter().any(|block| block.ends_with(&PLAIN)),
+        "a lent block outlives its pool"
+    );
+    drop(blocks);
     ALLOCATOR.held.load(Relaxed) - before
 }

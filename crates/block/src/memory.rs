@@ -1,7 +1,10 @@
 //! The address space a pool cuts its blocks from.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::cell::RefCell;
 use std::fmt;
+use std::iter;
+use std::ops::Range;
 use std::ptr::NonNull;
 use std::slice;
 
@@ -62,8 +65,9 @@ pub struct Heap {
     allocation: NonNull<u8>,
     layout: Layout,
     base: NonNull<u8>,
-    /// The drop writes zero over the bytes from `base`.
-    erased: bool,
+    /// For `Heap::erased`, the first [`ALIGN`] bytes and the ranges that `commit` got,
+    /// which the drop writes zero over.
+    committed: Option<RefCell<Vec<Range<usize>>>>,
 }
 
 impl Heap {
@@ -99,13 +103,14 @@ impl Heap {
             allocation,
             layout,
             base,
-            erased: false,
+            committed: None,
         }
     }
 
-    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does, and
-    /// writes zero over each of them at the drop, with writes that the compiler
-    /// keeps. For memory whose blocks hold a secret.
+    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does. At
+    /// the drop, it writes zero over the first [`ALIGN`] bytes and over each range
+    /// that [`Memory::commit`] got, with writes that the compiler keeps. For memory
+    /// whose blocks hold a secret.
     ///
     /// # Panics
     ///
@@ -113,7 +118,8 @@ impl Heap {
     #[must_use]
     pub fn erased(len: usize) -> Self {
         let mut heap = Self::new(len);
-        heap.erased = true;
+        let first = iter::once(0..ALIGN.min(len));
+        heap.committed = Some(RefCell::new(first.collect()));
         heap
     }
 }
@@ -132,7 +138,22 @@ unsafe impl Memory for Heap {
         self.layout.size() - ALIGN
     }
 
-    fn commit(&self, _offset: usize, _len: usize) -> Result<(), Refused> {
+    fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
+        let Some(committed) = &self.committed else {
+            return Ok(());
+        };
+        let end = offset.checked_add(len).filter(|&end| end <= self.len());
+        let end = end.expect("a commit lies in the memory");
+        let mut committed = committed.borrow_mut();
+        // A pool commits each class from the start of its span up, so a new range
+        // touches the one before it, and the record stays at one range per class.
+        let touched = committed
+            .iter_mut()
+            .find(|range| range.start <= end && offset <= range.end);
+        match touched {
+            Some(range) => *range = range.start.min(offset)..range.end.max(end),
+            None => committed.push(offset..end),
+        }
         Ok(())
     }
 
@@ -147,12 +168,17 @@ impl fmt::Debug for Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        if self.erased {
-            // SAFETY: the `len` bytes at `base` lie in the allocation, are initialized
-            // since `new` zeroed them, and nothing else holds them at the drop.
-            let bytes =
-                unsafe { slice::from_raw_parts_mut(self.base.as_ptr(), self.len()) };
-            bytes.zeroize();
+        if let Some(committed) = self.committed.take() {
+            for range in committed.into_inner() {
+                // SAFETY: each range lies in the `len` bytes at `base`, which are in
+                // the allocation.
+                let start = unsafe { self.base.add(range.start) };
+                // SAFETY: the bytes are initialized, since `new` zeroed them, and
+                // nothing else holds them at the drop.
+                let bytes =
+                    unsafe { slice::from_raw_parts_mut(start.as_ptr(), range.len()) };
+                bytes.zeroize();
+            }
         }
         // SAFETY: `new` got `allocation` from the allocator with this layout.
         unsafe { dealloc(self.allocation.as_ptr(), self.layout) };
