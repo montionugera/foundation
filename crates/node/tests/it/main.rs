@@ -52,7 +52,8 @@ fn an_error_goes_to_standard_error_and_exits_2() {
     );
 }
 
-/// `plan` and `apply` reach the running node through its hub, as its first admin.
+/// `plan` and `apply` reach the running node through its hub, as its first admin. A
+/// second `plan` of the same files finds no change.
 #[test]
 fn plan_and_apply_run_on_the_node() {
     let mut rig = Rig::new();
@@ -70,6 +71,20 @@ fn plan_and_apply_run_on_the_node() {
     );
     let applied = "Applied plant.plan: 2 added, 1 home listed.\n";
     assert_eq!(rig.apply(), [planned, applied]);
+    let output = rig.run(&["plan", "plant.hcl"], b"");
+    let unchanged = concat!(
+        "0 to add, 0 to change, 0 to remove.\n",
+        "note: 2 definitions that Foundation made are not in the files: ",
+        "@admin.@access, @admin.@subject\n",
+    );
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), unchanged, "")
+    );
 }
 
 #[test]
