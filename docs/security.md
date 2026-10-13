@@ -143,10 +143,10 @@ state on `main`.
   bound, the oldest place frees for the new peer, and its sessions close unless its peer
   is now a member. So a peer outside the region keeps its session until that many later
   peers took a place. A flood that takes that many places in the time that a peer needs
-  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of #1157)
-  closes that peer's session; only a limit on handshakes before admission bounds that
-  rate (#563). It rejects a stream whose header has not arrived within 10 s by default
-  (`node::Settings::header_wait`).
+  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of
+  #1157) closes that peer's session; only a limit on handshakes before admission bounds
+  that rate (#563). It rejects a stream whose header has not arrived within 10 s by
+  default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
