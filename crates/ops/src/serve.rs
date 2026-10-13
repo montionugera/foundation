@@ -34,7 +34,8 @@ mod tests;
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
 /// each connector on whose status channels `subject` has `read`, and gives
 /// `ops.denied` when the node places a connector and `subject` reads none. It waits at
-/// most 1 s for the status channels.
+/// most 1 s for the status channels, and gives `ops.channel-read` when the reader of a
+/// connector does not open or ends.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
