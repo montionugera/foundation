@@ -347,7 +347,6 @@ async fn status(node: &Node, subject: &Name) -> Result<Reply, Error> {
     placed.retain(|placed| {
         placed
             .channels()
-            .iter()
             .all(|name| check.allows(Action::Read, name))
     });
     if placed.is_empty() {

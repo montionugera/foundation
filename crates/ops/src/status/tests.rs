@@ -227,30 +227,25 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
         .await;
 }
 
-/// Writes one frame of the status index of `connector` and its count `in` at 5 as a
-/// program, with no sample of a channel that the supervisor writes.
-async fn write_count(fixture: &Fixture, connector: &str) {
-    let channels =
-        ["time", "in"].map(|last| name(&format!("{connector}.status.{last}")));
+/// Writes one frame of the status index of `connector` and of each channel `last` on
+/// it with the sample `bytes`, as a program.
+async fn write(fixture: &Fixture, connector: &str, samples: &[(&str, &[u8])]) {
+    let lasts = std::iter::once("time").chain(samples.iter().map(|(last, _)| *last));
+    let channels = lasts.map(|last| name(&format!("{connector}.status.{last}")));
     let config = hub::writer::Config {
         subject: name("program"),
         authority: Authority(1),
         lease: None,
-        channels: channels.into(),
+        channels: channels.collect(),
     };
     let mut program = fixture.hub.writer(config).await.expect("the program opens");
     let entries = program.entries().to_vec();
     let set = Arc::clone(program.set());
     let stamp = u64::try_from(program.now().nanos()).expect("a stamp after 1970");
-    let bytes: Vec<(usize, Vec<u8>)> = entries
-        .iter()
-        .zip([stamp, 5])
-        .map(|(&entry, value)| {
-            let width = set.entries()[entry].data_type.width();
-            let width = width.expect("a fixed width");
-            (entry, value.to_le_bytes()[..width].to_vec())
-        })
-        .collect();
+    let stamp = stamp.to_le_bytes();
+    let values =
+        std::iter::once(&stamp[..]).chain(samples.iter().map(|(_, bytes)| *bytes));
+    let bytes: Vec<(usize, &[u8])> = entries.iter().copied().zip(values).collect();
     let mut series: Vec<_> = bytes
         .iter()
         .map(|(entry, bytes)| (*entry, bytes.len()))
@@ -380,7 +375,7 @@ fn gives_unknown_for_a_frame_with_no_status() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
-        write_count(&fixture, "site.a").await;
+        write(&fixture, "site.a", &[("in", &5_u64.to_le_bytes())]).await;
         let clock = fixture.sim.clock();
         let start = clock.now();
         let (head, _) = status(&node, "@admin").await;
@@ -565,6 +560,104 @@ fn waits_one_second_from_the_request_also_while_the_node_reads_a_new_spec() {
         assert_eq!(clock.now() - start, Span::SECOND);
         let expected =
             json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+    });
+}
+
+/// The text of a placement that homes each channel on the node `edge`.
+const EDGE: &str = "placement \"p\" {\n  select = \"**\"\n  home = \"edge\"\n}\n";
+
+#[test]
+fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let old = "channel \"x.time\" { kind = \"index\" }\n\
+                   channel \"site.a.status.time\" { kind = \"index\" }\n\
+                   channel \"site.a.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"x.time\"\n}\n";
+        applied(&fixture, &node, &[old, EDGE].concat()).await;
+        applied_alone(&node, &connector("site.a", "steady", "edge")).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let old = "channel \"site.a.status.time\" { kind = \"index\" }\n\
+                   channel \"site.a.status.state\" {\n  data_type = \"uuid\"\n  \
+                   index = \"site.a.status.time\"\n}\n";
+        applied(&fixture, &node, &[old, EDGE].concat()).await;
+        write(&fixture, "site.a", &[("state", &[7; 16])]).await;
+        applied_alone(&node, &connector("site.a", "steady", "edge")).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let old = "channel \"site.a.status.time\" { kind = \"index\" }\n\
+                   channel \"site.a.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"site.a.status.time\"\n}\n\
+                   channel \"site.a.status.class\" {\n  data_type = \"u8\"\n  \
+                   index = \"site.a.status.time\"\n}\n\
+                   channel \"site.a.status.restarts\" {\n  data_type = \"u64\"\n  \
+                   index = \"site.a.status.time\"\n}\n";
+        applied(&fixture, &node, &[old, EDGE].concat()).await;
+        let samples: [(&str, &[u8]); 3] =
+            [("state", &[0]), ("class", &[0]), ("restarts", &[0; 8])];
+        write(&fixture, "site.a", &samples).await;
+        applied_alone(
+            &node,
+            &["channel \"x.time\" { kind = \"index\" }\n", EDGE].concat(),
+        )
+        .await;
+        applied_alone(&node, &connector("site.a", "steady", "edge")).await;
+        let (head, rest) = status(&node, "@admin").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
+    });
+}
+
+#[test]
+fn fails_when_the_buffer_fails_before_a_frame_of_the_status() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            connector("site.a", "steady", "edge"),
+            connector("site.b", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        fixture.sim.fail_file(
+            std::path::Path::new("shard-0/ring"),
+            env::files::Operation::Sync,
+        );
+        write(&fixture, "site.b", &[("in", &5_u64.to_le_bytes())]).await;
+        let (head, _) = status(&node, "@admin").await;
+        let expected = json!({
+            "errors": [{
+                "code": "ops.channel-read",
+                "message": "the status channels of the connector `site.a` did not \
+                            read: the buffer of the shard failed: sync of \
+                            shard-0/ring failed with OS error 5",
+                "fix": "Fix the cause in the message, then ask for the status again",
+                "notes": [],
+            }],
+            "status": 1,
+        });
         assert_eq!(head, expected);
     });
 }

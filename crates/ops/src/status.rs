@@ -5,12 +5,14 @@ use std::future::poll_fn;
 use std::pin::pin;
 use std::task::Poll;
 
-use hub::reader::{self, Config, Mode};
+use hub::reader::{self, Config, Mode, Received};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use spec::channel::{Channel, Kind};
 use spec::connector::Connector;
 use spec::definition::Definition;
 use types::name::{Name, Selector};
+use types::sample::{Scalar, Type};
 use types::time::{Monotonic, Span};
 
 use crate::Node;
@@ -59,8 +61,8 @@ pub(crate) enum State {
     Stopped,
     Ending,
     /// No frame of the status came within a second, the newest frame holds no
-    /// status, the hub does not define the status channels yet, or an apply removed
-    /// them: the supervisor has not started the connector, or it ended.
+    /// status, the hub does not hold the status channels of the spec yet, or an apply
+    /// removed them: the supervisor has not started the connector, or it ended.
     Unknown,
 }
 
@@ -81,17 +83,41 @@ pub(crate) enum Class {
     Retry,
 }
 
-/// A connector on the node, and the names of its status channels.
+/// A connector on the node, and its status channels as the spec defines them.
 pub(crate) struct Placed<'a> {
     name: &'a Name,
     connector: &'a Connector,
-    channels: Vec<Name>,
+    channels: Vec<(&'a Name, &'a Channel)>,
 }
 
 impl Placed<'_> {
     /// The names of the status channels, the index too.
-    pub(crate) fn channels(&self) -> &[Name] {
-        &self.channels
+    pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
+        self.channels.iter().map(|(name, _)| *name)
+    }
+
+    /// Whether each channel of `received` has the key and the sample type that the
+    /// spec gives its name. The frame holds its index, so this checks the index too.
+    fn holds(&self, received: &Received<'_>) -> bool {
+        let set = received.set();
+        received.view().iter().all(|(entry, _)| {
+            let found = &set.entries()[entry];
+            let name = received.name(entry);
+            let mut defined = self.channels.iter();
+            defined
+                .find(|(defined, _)| defined.as_str() == name)
+                .is_some_and(|(_, channel)| {
+                    channel.key == found.key && sample(channel) == found.data_type
+                })
+        })
+    }
+}
+
+/// The type of the samples of `channel`.
+fn sample(channel: &Channel) -> Type {
+    match &channel.kind {
+        Kind::Index { .. } => Type::Scalar(Scalar::Stamp),
+        Kind::Data(data) => data.data_type().sample(),
     }
 }
 
@@ -107,10 +133,7 @@ pub(crate) fn placed<'a>(
                 Some(Placed {
                     name,
                     connector,
-                    channels: connector::status::defined(definitions, name)
-                        .into_iter()
-                        .map(|(name, _)| name.clone())
-                        .collect(),
+                    channels: connector::status::defined(definitions, name),
                 })
             }
             _ => None,
@@ -124,8 +147,8 @@ pub(crate) fn placed<'a>(
 /// # Errors
 ///
 /// [`Error::ChannelRead`] for the first of `placed` whose reader does not open or
-/// ends, other than for status channels that the hub does not define or that an apply
-/// removes.
+/// ends, other than for status channels that the hub does not hold as the spec defines
+/// them or that an apply removes.
 pub(crate) async fn read(
     node: &Node,
     subject: &Name,
@@ -143,7 +166,7 @@ pub(crate) async fn read(
 }
 
 /// The newest status of `placed`, or `None` when the frame holds no status, the hub
-/// does not define the channels yet, or an apply removed one.
+/// does not hold the channels of the spec yet, or an apply removed one.
 ///
 /// # Errors
 ///
@@ -153,7 +176,7 @@ async fn newest(
     subject: &Name,
     placed: &Placed<'_>,
 ) -> Result<Option<connector::status::Reading>, Error> {
-    let select = Selector::new(placed.channels.iter().map(Name::as_str));
+    let select = Selector::new(placed.channels().map(Name::as_str));
     let select = select.expect("invariant: the names of channels select them");
     let config = Config {
         select,
@@ -168,12 +191,16 @@ async fn newest(
     };
     let mut reader = match node.hub.reader(config).await {
         Ok(reader) => reader,
-        Err(reader::Error::Empty) => return Ok(None),
+        Err(reader::Error::Empty | reader::Error::ManyIndexes { .. }) => {
+            return Ok(None);
+        }
         Err(error) => return Err(failed(error.to_string())),
     };
     match reader.next().await {
-        Ok(received) => Ok(connector::status::Reading::of(&received)),
-        Err(reader::Ended::Removed(_)) => Ok(None),
+        Ok(received) if placed.holds(&received) => {
+            Ok(connector::status::Reading::of(&received))
+        }
+        Ok(_) | Err(reader::Ended::Removed(_)) => Ok(None),
         Err(ended) => Err(failed(ended.to_string())),
     }
 }
