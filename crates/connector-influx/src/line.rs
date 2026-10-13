@@ -76,8 +76,8 @@ impl Measurement {
 
     /// Appends one line at `time` to `out`, with each field of `values` and its
     /// value, in order. Each field comes from [`Measurement::field`] of this
-    /// measurement. With no value, nothing is written. A field that comes twice is
-    /// written twice.
+    /// measurement: a field of another one can repeat a tag key of this one. With no
+    /// value, nothing is written. A field that comes twice is written twice.
     #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
     pub fn line<'a>(
         &self,
