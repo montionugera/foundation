@@ -47,8 +47,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let mut reads = Vec::new();
         let until = async {
             let mut client = (Client::connect(
-                node.clock(),
-                event::monotonic(node.clock()),
+                event::Time::monotonic(node.clock()),
                 node.net(),
                 &mut rng,
                 &url,
@@ -118,8 +117,7 @@ fn a_server_has_room_for_4_sessions() {
             let mut clients = Vec::new();
             for _ in 0..4 {
                 let connect = Client::connect(
-                    node.clock(),
-                    event::monotonic(node.clock()),
+                    event::Time::monotonic(node.clock()),
                     node.net(),
                     &mut rng,
                     &url,
@@ -130,8 +128,7 @@ fn a_server_has_room_for_4_sessions() {
                 reads.push(client.read_one(&spike).await);
             }
             let connect = Client::connect(
-                node.clock(),
-                event::monotonic(node.clock()),
+                event::Time::monotonic(node.clock()),
                 node.net(),
                 &mut rng,
                 &url,

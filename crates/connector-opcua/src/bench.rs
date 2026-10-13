@@ -54,7 +54,7 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(Clock::clone(&clock), event::monotonic(clock), rng);
+        let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
@@ -200,8 +200,7 @@ impl Manager {
         let local = SocketAddr::new(address, PORT);
         let manager = ManuallyDrop::new(
             connection::Manager::listening(
-                Clock::clone(&clock),
-                event::monotonic(clock),
+                event::Time::monotonic(clock),
                 net,
                 local,
                 u32::from(sessions),

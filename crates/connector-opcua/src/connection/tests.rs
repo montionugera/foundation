@@ -154,8 +154,7 @@ impl Side {
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
         let manager = Manager::new(
-            Clock::clone(&clock),
-            event::monotonic(node.clock()),
+            event::Time::monotonic(node.clock()),
             node.net(),
             &mut node.entropy().rng(),
         );
@@ -167,8 +166,7 @@ impl Side {
         let clock = node.clock();
         let rng = &mut node.entropy().rng();
         let manager = Manager::listening(
-            Clock::clone(&clock),
-            event::monotonic(node.clock()),
+            event::Time::monotonic(node.clock()),
             node.net(),
             local,
             512,
@@ -2696,8 +2694,7 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
     });
     let rng = &mut node.entropy().rng();
     let manager = Manager::listening(
-        Clock::clone(&clock),
-        event::monotonic(node.clock()),
+        event::Time::monotonic(Clock::clone(&clock)),
         node.net(),
         local(node),
         4,
@@ -3108,8 +3105,7 @@ fn a_manager_that_listens_at_a_taken_address_fails() {
             let _side = Side::listening(&node, local);
             let rng = &mut node.entropy().rng();
             let second = Manager::listening(
-                node.clock(),
-                event::monotonic(node.clock()),
+                event::Time::monotonic(node.clock()),
                 node.net(),
                 local,
                 4,

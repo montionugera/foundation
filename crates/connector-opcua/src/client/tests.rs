@@ -88,9 +88,8 @@ struct Peer<'s> {
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let url = CString::new(url).expect("the URL holds no NUL");
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        let wall = event::monotonic(Clock::clone(&clock));
-        Client::connect(clock, wall, net, &mut self.rng, &url).await
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -101,9 +100,8 @@ impl Peer<'_> {
     /// Connects a client whose receive buffer is `receive` bytes.
     async fn receiving(&mut self, receive: u32) -> Client {
         let clock = Clock::clone(&self.clock);
-        let wall = event::monotonic(Clock::clone(&clock));
-        let connections =
-            Manager::new(Clock::clone(&clock), wall, self.net.clone(), &mut self.rng);
+        let time = event::Time::monotonic(Clock::clone(&clock));
+        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
@@ -145,8 +143,7 @@ async fn serve<T>(
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
     let manager = Manager::listening(
-        node.clock(),
-        event::monotonic(node.clock()),
+        event::Time::monotonic(node.clock()),
         node.net(),
         local,
         4,
@@ -710,8 +707,7 @@ async fn connect_to_listener(
     let mut rng = node.entropy().rng();
     let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
     let mut connect = pin!(Client::connect(
-        node.clock(),
-        event::monotonic(node.clock()),
+        event::Time::monotonic(node.clock()),
         node.net(),
         &mut rng,
         &url
@@ -876,12 +872,11 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
             let raw = CString::new(url.as_str()).expect("no NUL");
-            let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
-            let wall = event::monotonic(Clock::clone(&clock));
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
             let start = peer.clock.now();
             let first = {
-                let mut connect =
-                    pin!(Client::connect(clock, wall, net, &mut peer.rng, &raw));
+                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
                 let mut flips: Vec<_> = flips
                     .iter()
                     .map(|at| Box::pin(peer.clock.sleep(*at)))

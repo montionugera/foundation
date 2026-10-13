@@ -7,7 +7,7 @@ use env::rng::Rng;
 use sim::Sim;
 use types::time::{Monotonic, Span, Stamp};
 
-use super::Loop;
+use super::{Loop, Time};
 use crate::child;
 use crate::ffi::{self, DelayedCallback, EventLoop, Status};
 
@@ -50,11 +50,11 @@ impl Fixture {
         let clock = node.clock();
         let wall = Rc::new(Cell::new(Stamp::EPOCH));
         let read = Rc::clone(&wall);
-        let events = Loop::new(
-            env::clock::Clock::clone(&clock),
-            Box::new(move || read.get()),
-            &mut Rng::from_seed(0),
-        );
+        let time = Time {
+            clock: env::clock::Clock::clone(&clock),
+            wall: Box::new(move || read.get()),
+        };
+        let events = Loop::new(time, &mut Rng::from_seed(0));
         let probe = Box::new(Probe {
             ran: RefCell::new(Vec::new()),
             raw: events.raw(),
@@ -291,11 +291,7 @@ fn the_loop_reads_its_clock_and_its_wall() {
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let _events = Loop::new(
-        clock.clone(),
-        super::monotonic(clock),
-        &mut Rng::from_seed(seed),
-    );
+    let _events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(seed));
     // SAFETY: it draws from the generator of this thread.
     std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }

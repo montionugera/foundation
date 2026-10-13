@@ -157,8 +157,8 @@ pub async fn serve(
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let wall = event::monotonic(Clock::clone(&clock));
-    let manager = Manager::accepting(Clock::clone(&clock), wall, net, listener, rng);
+    let time = event::Time::monotonic(Clock::clone(&clock));
+    let manager = Manager::accepting(time, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();

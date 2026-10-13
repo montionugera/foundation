@@ -20,6 +20,7 @@ use types::time::Stamp;
 
 use crate::client::{Client, Large};
 use crate::config::{self, Config, Read};
+use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
 
@@ -92,11 +93,14 @@ impl kind::Kind for Kind {
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
     let config = ctx.config();
-    let (clock, net) = (ctx.clock().clone(), ctx.net().clone());
-    let time = frames.out.writer.time();
-    let wall = Box::new(move || time.now());
+    let mesh = frames.out.writer.time();
+    let time = event::Time {
+        clock: ctx.clock().clone(),
+        wall: Box::new(move || mesh.now()),
+    };
     let rng = &mut ctx.rng();
-    let connect = Client::connect(clock, wall, net, rng, &config.address).await;
+    let net = ctx.net().clone();
+    let connect = Client::connect(time, net, rng, &config.address).await;
     let mut client = connect.map_err(|status| {
         device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),

@@ -16,8 +16,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         let mut rng = node.entropy().rng();
         let local = SocketAddr::new(node.addresses()[0], 4840);
         let manager = Manager::listening(
-            node.clock(),
-            event::monotonic(node.clock()),
+            event::Time::monotonic(node.clock()),
             node.net(),
             local,
             4,
@@ -34,8 +33,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
             Some("ns=1;i=0: open62541 adds a node of the number 0 at a free number")
         );
         Manager::listening(
-            node.clock(),
-            event::monotonic(node.clock()),
+            event::Time::monotonic(node.clock()),
             node.net(),
             local,
             4,

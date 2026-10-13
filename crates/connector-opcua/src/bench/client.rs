@@ -70,8 +70,7 @@ impl Server {
     ) -> T {
         let local = SocketAddr::new(address, PORT);
         let manager = connection::Manager::listening(
-            Clock::clone(&clock),
-            event::monotonic(Clock::clone(&clock)),
+            event::Time::monotonic(Clock::clone(&clock)),
             Net::clone(&net),
             local,
             u32::from(SESSIONS),
@@ -106,9 +105,9 @@ impl Server {
     /// memory.
     pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        let wall = event::monotonic(Clock::clone(&clock));
-        let connect = crate::client::Client::connect(clock, wall, net, rng, &self.url);
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        let net = Net::clone(&self.net);
+        let connect = crate::client::Client::connect(time, net, rng, &self.url);
         let session = match connect.await {
             Ok(session) => session,
             Err(status) => panic!("a connect failed: {status:?}"),

@@ -19,20 +19,26 @@ use crate::ffi;
 /// aborts the process.
 pub(crate) type Wall = Box<dyn Fn() -> Stamp>;
 
-/// Gives the monotonic time of `clock` as the wall time, from the Unix epoch, for a
-/// loop of a test or a benchmark, which has no wall time of a node.
-#[cfg(any(test, feature = "sim"))]
-pub(crate) fn monotonic(clock: Clock) -> Wall {
-    Box::new(move || {
-        let nanos = i64::try_from(clock.now().0).expect("a clock under 292 years");
-        Stamp::from_nanos(nanos)
-    })
+/// The times that a loop reads.
+pub(crate) struct Time {
+    /// The monotonic time of the timers.
+    pub(crate) clock: Clock,
+    /// The wall time.
+    pub(crate) wall: Wall,
 }
 
-/// What the C loop reads.
-struct Time {
-    clock: Clock,
-    wall: Wall,
+impl Time {
+    /// Gives the monotonic time of `clock` also as the wall time, from the Unix epoch,
+    /// for a loop of a test or a benchmark, which has no wall time of a node.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn monotonic(clock: Clock) -> Self {
+        let read = Clock::clone(&clock);
+        let wall = Box::new(move || {
+            let nanos = i64::try_from(read.now().0).expect("a clock under 292 years");
+            Stamp::from_nanos(nanos)
+        });
+        Self { clock, wall }
+    }
 }
 
 /// An open62541 event loop, on the thread that made it.
@@ -43,18 +49,18 @@ pub(crate) struct Loop {
 }
 
 impl Loop {
-    /// Makes a loop whose monotonic time is `clock` and whose wall time is `wall`. It
-    /// sets the random values of open62541 on this thread from `rng`, so a run on a
-    /// simulated clock replays. Each loop on this thread then uses them, so give each
-    /// loop on a thread an `rng` whose next value differs.
+    /// Makes a loop that reads `time`. It sets the random values of open62541 on this
+    /// thread from `rng`, so a run on a simulated clock replays. Each loop on this
+    /// thread then uses them, so give each loop on a thread an `rng` whose next value
+    /// differs.
     ///
     /// # Aborts
     ///
     /// When the C allocation of the loop fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(clock: Clock, wall: Wall, rng: &mut Rng) -> Self {
+    pub(crate) fn new(time: Time, rng: &mut Rng) -> Self {
         // SAFETY: it writes only the generator of this thread.
         unsafe { ffi::UA_random_seed_deterministic(rng.next_u64()) };
-        let time = NonNull::from(Box::leak(Box::new(Time { clock, wall })));
+        let time = NonNull::from(Box::leak(Box::new(time)));
         // SAFETY: `now` and `wall_now` read the `Time` at `time`, which lives until
         // `drop`.
         let raw = unsafe { ffi::shim_loop_new(now, wall_now, time.as_ptr().cast()) };
