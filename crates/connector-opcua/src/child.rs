@@ -59,7 +59,7 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
 }
 
 /// Runs the test `name` as `output` does, asserts that it aborts, and gives its
-/// output. On Windows only an abort of Rust passes: a C `abort` has another status.
+/// output. On Windows it asserts only the status of a Rust abort.
 pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     let output = output(name, envs);
     let stderr = String::from_utf8_lossy(&output.stderr);
