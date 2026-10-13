@@ -35,8 +35,9 @@ sets the order of the ready tasks, so to find a reorder of two tasks that one ev
 wakes, run the test over 32 values or more. Write it as a test in the PR's crate, in
 your worktree, and run it. Never switch to a branch.
 
-- The test fails against the PR: report it. Give the test code, the failure output,
-  and one line on what the code does wrong.
+- A test fails against the PR: report it. Give the test code, the failure output, and
+  one line on what the code does wrong. Then look for the next one: a PR gets at most 3
+  review rounds, so report each failing test that you find in this one report.
 - You cannot make a test fail: report "No failing test", and list the cases you tried
   in one line each.
 

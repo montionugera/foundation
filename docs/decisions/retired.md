@@ -76,3 +76,4 @@
 | "It is never less than the PTO base." of 6060065670 | PROBE GAP (6066780738): a probe of data in flight never comes before the PTO base; the client's probe in a dial with no data in flight keeps the release's rule |
 | "A stalled request holds its reservation until its stream or session ends; only an admitted subject can do this" of #1946 6069496483 | HUB LINK (#2121 6081223893): the share of a subject |
 | "`read` gives a list of `Error`" and "Nesting past the depth limit is `Error::TooDeep` from `read`" of HCL ERRORS (#330, 6007697466) | HCL DIAGNOSTICS (#2079, 6093002544): `read` gives `Vec<Diagnostic>` |
+| TEXT FIXES, after round 3: a code fix keeps its round; REVIEW TIERS, after round 3: a second round on the fix commits | REVIEW ROUNDS (6150355931) |
