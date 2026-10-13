@@ -134,8 +134,8 @@ fn refuses_a_bad_address() {
     }
 }
 
-/// Each address that open62541 refuses at the connect is a config error, never a
-/// failed connect that the supervisor retries.
+/// Each address that open62541 refuses at the connect, or that has no host, is a config
+/// error, never a failed connect that the supervisor retries.
 #[test]
 fn refuses_an_address_that_open62541_refuses() {
     let fix = "Write an address such as \"opc.tcp://plc:4840\"";
