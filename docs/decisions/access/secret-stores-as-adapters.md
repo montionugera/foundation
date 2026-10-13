@@ -17,6 +17,8 @@
   store error as `Error::Retry`, with a text that names the secret and says where to
   put the value, so a value added heals the run at its next restart. The store does
   not check the owner or mode of the file. Deferred; trigger: `env::files` gives the
-  mode of a file. The person has not yet answered the questions on capitals, on the
-  bytes of a file, and on the mode check:
-  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150300870.
+  mode of a file. The person has not yet answered this question:
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190. The
+  refusal of capitals and what a file holds are architect calls
+  (`laptop.architect-2`, 2026-10-13T16:54:37Z:
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009).
