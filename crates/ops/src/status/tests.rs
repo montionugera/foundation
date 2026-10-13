@@ -654,20 +654,8 @@ fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
 fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let old = "channel \"site.a.status.time\" { kind = \"index\" }\n\
-                   channel \"site.a.status.state\" {\n  data_type = \"u8\"\n  \
-                   index = \"site.a.status.time\"\n}\n\
-                   channel \"site.a.status.class\" {\n  data_type = \"u8\"\n  \
-                   index = \"site.a.status.time\"\n}\n\
-                   channel \"site.a.status.restarts\" {\n  data_type = \"u64\"\n  \
-                   index = \"site.a.status.time\"\n}\n";
-        applied(&fixture, &node, &[old, EDGE].concat()).await;
-        let samples: [(&str, &[u8]); 3] = [
-            ("site.a.status.state", &[0]),
-            ("site.a.status.class", &[0]),
-            ("site.a.status.restarts", &[0; 8]),
-        ];
-        write(&fixture, "site.a.status.time", &samples).await;
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
         applied_alone(
             &node,
             &["channel \"x.time\" { kind = \"index\" }\n", EDGE].concat(),
