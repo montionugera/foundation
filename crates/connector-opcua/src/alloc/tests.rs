@@ -227,8 +227,8 @@ fn exhausts() {
 
 /// No test reaches a caller of `exhausted`: a constructor of `shim.c` gives NULL only
 /// when the global allocator fails, and an allocator that fails on demand is a mutable
-/// global. #2566 lists each caller and the two NULL checks of `shim_client_new`, and
-/// holds a test of those that `Client::connect` reaches.
+/// global. #2566 lists each caller, and holds a fix of `shim_client_new` and a test of
+/// what `Client::connect` reaches.
 #[test]
 #[cfg(unix)]
 fn exhausted_aborts_with_the_size_of_a_header() {
