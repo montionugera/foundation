@@ -427,10 +427,13 @@
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
   2026-10-08 20:22 UTC). `dateTime_now` gives a wall time that `event::Loop::new`
-  takes. The loop of the kind gives the wall time of the node through `hub`, and a test
-  server gives the wall time that `sim::serve` takes. Decided by `laptop.architect-2`
+  takes. The loop of the kind gives the wall time of the node through `hub`.
+  `sim::serve` gives the wall time that its caller gives; the benches and the unit
+  tests give the monotonic time from the Unix epoch. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147646436,
-  2026-10-13 14:18 UTC). The trigger moved to ONE NODE by `laptop.architect-2`
+  2026-10-13 14:18 UTC;
+  https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
+  2026-10-13 14:19 UTC). The trigger moved to ONE NODE by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
   2026-10-13 07:03 UTC), and added to ONE NODE by the person, relayed by
   `laptop.monitor`
