@@ -439,7 +439,8 @@
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211, the
   monotonic time from the Unix epoch.
   `sim::serve` gives the wall time that its caller gives; the benches and the unit
-  tests give the monotonic time from the Unix epoch (`event::Time::monotonic`). Approved by `laptop.architect-2`
+  tests give the monotonic time from the Unix epoch (`event::Time::monotonic`).
+  Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
   2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
   1 of #1737 passes"
