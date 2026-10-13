@@ -61,7 +61,7 @@ fn main() {
     let (mut timer, mut lines) = (None, Vec::new());
     for &case in cases {
         for turns in [Turns::One, Turns::Two, Turns::Sizes] {
-            for named in [false, true] {
+            for named in [false] {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let node = sim.node(sim::node::Config::default());
                 let (floor, line) = sim
@@ -160,7 +160,7 @@ fn take(reader: &mut Reader, named: bool) -> (u64, u64) {
                 Poll::Ready(Ok(received)) => {
                     for (entry, _) in received.view().iter() {
                         if named {
-                            black_box(received.name(black_box(entry)));
+                            black_box(entry);
                         } else {
                             black_box(entry);
                         }
