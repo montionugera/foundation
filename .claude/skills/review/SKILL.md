@@ -159,7 +159,8 @@ Findings: <count, or none>
 <the findings, most severe first>
 
 Text fixes:
-<each item and its exact new text; leave out this line and its items when none>
+<each item and its exact new text, or a Low item's place and problem; leave out this
+line and its items when none>
 
 Deferred: <none, or each issue>
 Later steps: <none, or each step and its issue>
@@ -220,20 +221,22 @@ nothing checked again. So when round 1 led to fix commits:
    citation (a link, a SHA, a time, an issue number, a name), or of that text of a
    deferral or a later step, and its fix makes no sentence state another thing about
    what the code, a test, a decision, a ruling, or a contract does. Each other finding
-   is Medium or higher. That text of a deferral or a later step is the body of the issue
-   that the author files for it, or the author's comment on an existing issue, never
-   text that another session wrote. A test in it is the code of the test, and each
-   sentence that states what the test asserts or what must pass. A finding in that body
-   or comment is no `Text fixes:` item when the body or comment states a deferral in a
-   risk crate, also when it states a later step or another deferral. An item that is not
-   Low and that gives only facts and links, or that asks the author to find a fact or
-   give a reason, is a finding. The author applies each item as given, and a Low item
-   with no new text as it states, by a commit that changes no code (Round comment), in
-   the PR title or body, in that text of a deferral or a later step, or by an edit of
-   the round comment that holds the line and in the same line of the `Text fixes:`
-   round. That needs no further round, and the `reviewer` of the next round, when one
-   runs, checks it where the author applied it. An item still needs each approval that
-   its file needs (Round 1, `docs/factory.md`).
+   is Medium or higher. A missing or stale link to an approval, an OK, or a ruling that
+   Round 1, "Findings" step 3, or "Done" asks for is no Low finding. That text of a
+   deferral or a later step is the body of the issue that the author files for it, or
+   the author's comment on an existing issue, never text that another session wrote. A
+   test in it is the code of the test, and each sentence that states what the test
+   asserts or what must pass. A finding in that body or comment is no `Text fixes:` item
+   when the body or comment states a deferral in a risk crate, also when it states a
+   later step or another deferral. An item that is not Low and that gives only facts and
+   links or asks the author to find a fact, and an item that asks the author to give a
+   reason, is a finding. The author applies each item as given, and a Low item with no
+   new text as it states, by a commit that changes no code (Round comment), in the PR
+   title or body, in that text of a deferral or a later step, or by an edit of the round
+   comment that holds the line and in the same line of the `Text fixes:` round. That
+   needs no further round, and the `reviewer` of the next round, when one runs, checks
+   it where the author applied it. An item still needs each approval that its file needs
+   (Round 1, `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its

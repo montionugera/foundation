@@ -28,8 +28,9 @@ number, or claim of the PR title or body that is false at the PR head is a findi
 title becomes the message of the merge commit. In a second round you get the earlier
 findings and a commit range: review only that range, and check that each fix closes its
 finding and adds no new defect, that each `Text fixes:` item of the round before says
-what the item gives where the author applied it (the range, the PR title or body, a
-round comment, or the text of a deferral or a later step), that the range, a merge
+what the item gives, and that each Low item with no new text no longer has its problem,
+where the author applied it (the range, the PR title or body, a round comment, or the
+text of a deferral or a later step), that the range, a merge
 resolution included, undoes no fix that an earlier round comment names, and that each
 answer with no code change holds against the code and against "Findings" step 3 of
 `.claude/skills/review/SKILL.md` on `main`. Name each answer or fix that defers work or
