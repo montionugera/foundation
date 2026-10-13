@@ -18,7 +18,7 @@ use env::net::tcp::{Listen, Options};
 use env::thread::Handle;
 use http::Request;
 use types::quality::Quality;
-use types::time::{Span, Stamp};
+use types::time::{Monotonic, Span, Stamp};
 
 /// The options of each stream that a simulated server accepts.
 const OPTIONS: Options = Options {
@@ -113,16 +113,13 @@ impl Opcua {
     /// Changes each variable `ticks` times at 10 Hz, each change with the status
     /// `quality`, and returns after the last change.
     pub(super) fn change(&self, ticks: usize, quality: Quality) {
-        let clock = &self.clock;
-        let mut at = clock.now();
-        for _ in 0..ticks {
-            at = at + TICK;
-            let wait = (at - clock.now()).nanos().max(0);
+        let start = self.clock.now();
+        for tick in 1..=ticks {
             #[expect(
                 clippy::disallowed_methods,
                 reason = "the test thread is not a thread that env started"
             )]
-            std::thread::sleep(std::time::Duration::from_nanos(wait.cast_unsigned()));
+            std::thread::sleep(wait(start, tick, self.clock.now()));
             self.variables.change(quality);
         }
     }
@@ -221,6 +218,14 @@ impl Drop for Serving {
     fn drop(&mut self) {
         self.join("serves");
     }
+}
+
+/// The time from `now` to change `tick` of [`Opcua::change`], which is due `tick`
+/// ticks after `start`: 0 when it is late.
+fn wait(start: Monotonic, tick: usize, now: Monotonic) -> std::time::Duration {
+    let ticks = u64::try_from(tick).expect("a count of ticks fits a u64");
+    let due = start.0 + ticks * TICK.nanos().cast_unsigned();
+    std::time::Duration::from_nanos(due.saturating_sub(now.0))
 }
 
 /// Listens on `local`, with the options of each simulated server.
@@ -358,6 +363,16 @@ fn opcua_changes_at_10_hz_and_records_no_read_that_no_client_made() {
     assert!(took.nanos() >= 3 * TICK.nanos(), "{took:?}");
     let empty = super::VARIABLES.map(|(node, _)| (node.to_owned(), Vec::new()));
     assert_eq!(opcua.served(), BTreeMap::from(empty));
+}
+
+#[test]
+fn each_change_is_due_its_ticks_after_the_start_whatever_the_wakes() {
+    let ms = |n: u64| Monotonic(n * 1_000_000);
+    let wait = |tick, now| wait(ms(1000), tick, now).as_millis();
+    assert_eq!(wait(1, ms(1000)), 100);
+    assert_eq!(wait(3, ms(1150)), 150);
+    assert_eq!(wait(5, ms(1500)), 0);
+    assert_eq!(wait(2, ms(1500)), 0);
 }
 
 #[test]
