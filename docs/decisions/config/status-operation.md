@@ -20,9 +20,7 @@
   which supersedes "read-only in the operation table" of item 1 and "is a variant of
   `Response`" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; approved
-  by `laptop.architect`, 2026-10-13T08:46:14Z,
-  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141814158). `--json`
-  and the MCP tool later give the same value, with no change to the operation, the type,
+  by `laptop.architect`, 2026-10-13T08:48:14Z, https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141847854). `--json` and the MCP tool later give the `Output` of the reply as it is, with no change to the operation, the type,
   or the reply. The connectors are each connector of the spec in use whose `node` is
   this node, in name order. For each, `serve` opens a `Latest` reader of its status
   index and each channel on it through the node's hub, with the request's subject. All
@@ -55,8 +53,7 @@
   #1028 checks each open of the hub, this check moves there. Deferred to
   https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart,
   `--json` (https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6141794585),
-  and MCP. The CLI and MCP send this one form to a node, and the client reader of #1749
-  does not replace it. Lost: `serve` replies with the text, so that `--json` and MCP
+  and MCP. The client reader of #1749 does not replace this form. Lost: `serve` replies with the text, so that `--json` and MCP
   each need a second reply; `status` asks the supervisors, a second source of status
   with its own access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
