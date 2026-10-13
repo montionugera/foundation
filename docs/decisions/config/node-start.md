@@ -190,7 +190,8 @@
   `main` runs `ops::cli` on a shard that ends before `start` runs, so a command that
   reaches a node can wait on its reply. A failure to start that shard and each failure
   of the node go through `ops::fail` with the arguments, which writes JSON when `--json`
-  comes before any `--`, as `cli` reads it. A panic of that shard goes on as a panic.
+  comes after the program name and before any `--`, as `cli` reads it. A panic of that
+  shard goes on as a panic.
   The fix of `node.failed` is "Fix the cause that the message states, then run the
   command again", since the command that failed can be a command other than `start`.
   Lost: `Start::fail`, which a failure before `cli` gives a `Start` cannot reach.
