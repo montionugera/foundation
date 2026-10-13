@@ -1,12 +1,15 @@
 //! Builds a probe crate with the `build.rs` of `ops` in a fresh repository, and checks
 //! that the commit it prints follows `HEAD` after each git step.
 
+#![cfg(test)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SCRIPT: &str = include_str!("../build.rs");
 
-/// Runs `program` in `dir` with `env`, and gives its trimmed output. Panics when it fails.
+/// Runs `program` in `dir` with `env`, and gives its trimmed output. Panics when it
+/// fails.
 fn run(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> String {
     let output = Command::new(program)
         .args(args)
@@ -37,11 +40,17 @@ fn create_probe(name: &str, init: &[&str]) -> PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("commit")
         .join(name);
-    let _ = std::fs::remove_dir_all(&root);
+    match std::fs::remove_dir_all(&root) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            panic!("remove {}: {error}", root.display())
+        }
+        _ => {}
+    }
     std::fs::create_dir_all(root.join("src")).expect("mkdir");
     std::fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n",
+        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+         [workspace]\n",
     )
     .expect("write");
     std::fs::write(root.join("build.rs"), SCRIPT).expect("write");
@@ -68,12 +77,11 @@ fn built(root: &Path) -> String {
 
 /// Builds and runs the probe at `root` with `env`, and gives the commit it prints.
 fn built_with(root: &Path, env: &[(&str, &str)]) -> String {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let target = root.join("target");
     let target = target.to_str().expect("utf8");
     run(
         root,
-        &cargo,
+        env!("CARGO"),
         &["run", "-q", "--offline", "--target-dir", target],
         env,
     )
