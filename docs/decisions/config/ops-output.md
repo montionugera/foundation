@@ -193,8 +193,9 @@
   status 2, and `the read of <path> failed with OS error <code>`, status 1, each with
   the fix `Fix the cause in the message, then run the command again`.
   `ops.large-request`: `the request has more than <n> bytes, the most that a request
-  holds`, for a file over that bound at its read or for the encoded request, status 2,
-  fix `Make the config files smaller`; the check comes before the reach. `ops.write`:
+  holds`, for config files whose bytes together pass that bound at their read, or for
+  the encoded request, status 2, fix `Make the config files smaller`; the check comes
+  before the reach. `ops.write`:
   `the directory of the plan file <path> is not there` or `the write of the plan file
   <path> failed with OS error <code>`, status 1, fix ``Give `--out` a path in a
   directory that can be written``. `ops.bad-reply`: `the reply of the node is no reply:
