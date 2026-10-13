@@ -11,6 +11,8 @@ use bytes::Bytes;
 use connector::cancel::Token;
 use connector::http::Client;
 use connector_influx::sim::Store;
+use connector_opcua::sim::{Served, Variables, serve};
+use env::clock::Clock;
 use env::net::tcp::{Listen, Options};
 use env::thread::Handle;
 use http::Request;
@@ -25,9 +27,35 @@ const OPTIONS: Options = Options {
     delayed: false,
 };
 
-/// The simulated OPC UA server, with no security.
-#[derive(Debug, Default)]
-pub(super) struct Opcua {}
+/// The variables of [`Opcua`].
+const NODES: [&str; 3] = [
+    "ns=3;s=SpikeData",
+    "ns=3;s=DipData",
+    "ns=3;s=PositiveTrendData",
+];
+
+/// The time between two changes of [`Opcua::change`]: 10 Hz.
+const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
+
+/// The simulated OPC UA server, with no security. Drop stops it.
+#[derive(Debug)]
+pub(super) struct Opcua {
+    variables: Variables,
+    /// The clock of the server, and the wall time at its `Monotonic(0)`.
+    clock: Option<(Clock, Stamp)>,
+    /// The token that stops the shard that serves, and that shard.
+    serving: Option<(Token, Handle)>,
+}
+
+impl Default for Opcua {
+    fn default() -> Self {
+        Self {
+            variables: Variables::new(&NODES),
+            clock: None,
+            serving: None,
+        }
+    }
+}
 
 /// The simulated InfluxDB, with the database `plant`. Drop stops it.
 #[derive(Debug, Default)]
@@ -56,22 +84,79 @@ impl Opcua {
     /// Serves on a free loopback port, and gives the address: `ns=3;s=SpikeData`,
     /// `ns=3;s=DipData`, and `ns=3;s=PositiveTrendData`, each at a first value until
     /// [`Opcua::change`].
-    #[expect(clippy::todo, reason = "waits on #435")]
     pub(super) fn serve(&mut self) -> SocketAddr {
-        todo!("waits on #435")
+        let clock = os::clock();
+        let wall = os::wall().expect("read the wall clock");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test maps the times of the server to wall time"
+        )]
+        let time = wall.now().time;
+        let zero = time - Span::from_nanos(clock.now().0.cast_signed());
+        self.clock = Some((Clock::clone(&clock), zero));
+        let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let listen = Listen {
+            local,
+            backlog: 128,
+            options: OPTIONS,
+        };
+        let listener = (os::net().listen(&listen))
+            .unwrap_or_else(|error| panic!("listen on {local}: {error}"));
+        let address = listener.local();
+        let (stop, variables) = (Token::new(), Variables::clone(&self.variables));
+        let stopped = stop.clone();
+        let shard = start("opcua", move |_| async move {
+            let mut rng = os::entropy().rng();
+            let net = os::net();
+            serve(clock, net, listener, &mut rng, &variables, stopped.wait()).await;
+        });
+        self.serving = Some((stop, shard));
+        address
     }
 
     /// Changes each variable `ticks` times at 10 Hz, each change with the status
     /// `quality`, and returns after the last change.
-    #[expect(clippy::todo, reason = "waits on #435")]
-    pub(super) fn change(&self, _ticks: usize, _quality: Quality) {
-        todo!("waits on #435")
+    pub(super) fn change(&self, ticks: usize, quality: Quality) {
+        let (clock, _) = self.clock.as_ref().expect("it serves");
+        let mut at = clock.now();
+        for _ in 0..ticks {
+            at = at + TICK;
+            let wait = (at - clock.now()).nanos().max(0);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the test thread is not a thread that env started"
+            )]
+            std::thread::sleep(std::time::Duration::from_nanos(wait.cast_unsigned()));
+            self.variables.change(quality);
+        }
     }
 
     /// Each sample served, by node id, in order: the first value, then each change.
-    #[expect(clippy::todo, reason = "waits on #435")]
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
-        todo!("waits on #435")
+        let (_, zero) = self.clock.as_ref().expect("it serves");
+        let sample = |served: &Served| Sample {
+            time: *zero + Span::from_nanos(served.time.0.cast_signed()),
+            value: served.value,
+            quality: Some(served.quality),
+        };
+        (self.variables.served().into_iter())
+            .map(|(node, served)| (node, served.iter().map(sample).collect()))
+            .collect()
+    }
+}
+
+impl Drop for Opcua {
+    fn drop(&mut self) {
+        // While the thread panics, a join can block and a second panic aborts the
+        // test binary.
+        if let Some((stop, shard)) = self.serving.take() {
+            stop.cancel();
+            if !std::thread::panicking() {
+                shard
+                    .join()
+                    .expect("the simulated OPC UA server serves with no panic");
+            }
+        }
     }
 }
 
