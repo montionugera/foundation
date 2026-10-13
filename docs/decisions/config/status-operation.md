@@ -19,7 +19,8 @@
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
   with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest
   frame holds no status is `unknown` too. So is a connector whose status channels the
-  hub does not define yet, as `follow` defines the hub before the runs, and one whose
+  hub does not hold as the spec defines them yet (no channel, a key, a sample type, or
+  an index of another spec), as `follow` defines the hub before the runs, and one whose
   status channels an apply removes during the read. When the reader of a connector does
   not open or ends for another cause, `status` fails with `ops.channel-read`, which
   names the connector and gives the text of the hub. `status` needs `read` on each
@@ -63,4 +64,9 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102, item 1,
   which supersedes item 2 of
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108 for those
-  two cases).
+  two cases). `unknown` also for a hub that holds a channel of another spec under a
+  status name, found by the key and the sample type of each channel of the frame and
+  by `ManyIndexes`: `laptop.architect-2` (2026-10-13T03:18:41Z,
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137433437, which
+  extends item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137241102).
