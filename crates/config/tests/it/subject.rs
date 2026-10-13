@@ -48,6 +48,7 @@ fn checks_the_connector_and_the_subject_alone() {
         "plc",
         "plc.status.backoff",
         "plc.status.class",
+        "plc.status.confirmed",
         "plc.status.error",
         "plc.status.restarts",
         "plc.status.state",

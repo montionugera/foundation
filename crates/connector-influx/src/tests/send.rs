@@ -54,6 +54,7 @@ struct Plant {
     answers: Rc<RefCell<VecDeque<(StatusCode, &'static str)>>>,
     store: Rc<RefCell<crate::sim::Store>>,
     errors: Rc<RefCell<Vec<String>>>,
+    confirmed: Rc<RefCell<Vec<u64>>>,
 }
 
 impl Plant {
@@ -78,6 +79,7 @@ impl Plant {
         let inputs = testing::create_config(env, node.net(), kinds).await;
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
+        let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         Self {
             hub: inputs.hub.clone(),
             supervisor: Supervisor::new(inputs),
@@ -89,6 +91,7 @@ impl Plant {
             answers: Rc::default(),
             store: Rc::default(),
             errors,
+            confirmed,
         }
     }
 
@@ -185,8 +188,11 @@ fn define(inputs: &supervisor::Config) {
         error: None,
         control: None,
     };
-    let mut definitions =
-        testing::create_status(&name("influx"), &[], channel::Key::from_u128(STATUS));
+    let mut definitions = testing::create_status(
+        &name("influx"),
+        &[name(CONFIRMED)],
+        channel::Key::from_u128(STATUS),
+    );
     definitions.extend([
         (
             name("edge.time"),
@@ -205,44 +211,69 @@ fn define(inputs: &supervisor::Config) {
         .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
 }
 
-/// Reads each text of `influx.status.error`, in a task on `tasks`, into the vector
-/// it gives, with no text equal to the one before it.
-async fn read_errors(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<String>>> {
+/// Reads each sample of the status channel `influx.status.<channel>`, in a task on
+/// `tasks`, into the vector it gives, with no sample equal to the one before it.
+/// `read` gives the value of the bytes of one sample.
+async fn read_status<T: PartialEq + 'static>(
+    hub: &hub::Hub,
+    tasks: &Tasks,
+    channel: &str,
+    read: fn(&[u8]) -> T,
+) -> Rc<RefCell<Vec<T>>> {
+    let channel = name(&format!("influx.status.{channel}"));
     let open = hub::reader::Config {
-        select: Selector::new(["influx.status.error"]).expect("a selector"),
+        select: Selector::new([channel.as_str()]).expect("a selector"),
         mode: Mode::Complete,
         subject: name("test"),
         name: None,
         hold: Span::ZERO,
     };
     let mut reader = hub.reader(open).await.expect("the reader opens");
-    let errors = Rc::new(RefCell::new(Vec::new()));
-    let into = Rc::clone(&errors);
+    let values = Rc::new(RefCell::new(Vec::new()));
+    let into = Rc::clone(&values);
     tasks.spawn(async move {
-        let text = codec::Variable::of(Type::String).expect("a variable type");
         let mut raw = Vec::new();
         while let Ok(received) = reader.next().await {
             let (view, set) = (received.view(), received.set());
-            for (entry, bytes) in view.iter() {
-                let entry = &set.entries()[entry];
-                if entry.data_type != Type::String {
+            for (at, bytes) in view.iter() {
+                if received.name(at) != channel.as_str() {
                     continue;
                 }
+                let entry = &set.entries()[at];
                 let range = view.range(entry.group).expect("a range");
                 let count = usize::try_from(range.count).expect("fits");
                 codec::decode(entry.data_type, count, bytes, &mut raw)
                     .expect("decodes");
+                let samples: Vec<&[u8]> = match codec::Variable::of(entry.data_type) {
+                    Some(text) => text.samples(count, &raw).collect(),
+                    None => raw.chunks_exact(raw.len() / count).collect(),
+                };
                 let mut into = into.borrow_mut();
-                for sample in text.samples(count, &raw) {
-                    let sample = std::str::from_utf8(sample).expect("UTF-8");
-                    if into.last().is_none_or(|last: &String| last != sample) {
-                        into.push(sample.to_owned());
+                for sample in samples.into_iter().map(read) {
+                    if into.last() != Some(&sample) {
+                        into.push(sample);
                     }
                 }
             }
         }
     });
-    errors
+    values
+}
+
+/// Reads each text of `influx.status.error`, as [`read_status`] does.
+async fn read_errors(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<String>>> {
+    read_status(hub, tasks, "error", |sample| {
+        std::str::from_utf8(sample).expect("UTF-8").to_owned()
+    })
+    .await
+}
+
+/// Reads each value of `influx.status.confirmed`, as [`read_status`] does.
+async fn read_confirmed(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<u64>>> {
+    read_status(hub, tasks, "confirmed", |sample| {
+        u64::from_le_bytes(sample.try_into().expect("8 bytes"))
+    })
+    .await
 }
 
 /// Writes one frame of `edge.a` and `edge.b` through `writer`, one sample time for
@@ -360,6 +391,80 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             "",
         ]
     );
+}
+
+#[test]
+fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
+    let confirmed = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        let samples = [(1.0, 2.0), (f64::NAN, 3.0), (f64::NAN, f64::INFINITY)];
+        write(&mut writer, first, &samples);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        write(&mut writer, first + 3, &[(4.0, 5.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.confirmed.borrow().clone()
+    });
+    assert_eq!(confirmed, [0, 3, 5]);
+}
+
+#[test]
+fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
+    let confirmed = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let open = hub::reader::Config {
+            select: Selector::new(["edge.a"]).expect("a selector"),
+            mode: Mode::Complete,
+            subject: name("influx"),
+            name: Some(name("influx")),
+            hold: Span::ZERO,
+        };
+        let replaced = plant.hub.reader(open).await.expect("the reader opens");
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        drop(replaced);
+        write(&mut writer, first + 1, &[(3.0, 4.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.confirmed.borrow().clone()
+    });
+    assert_eq!(confirmed, [0, 2, 4]);
+}
+
+#[test]
+fn confirms_no_sample_of_a_batch_until_its_204() {
+    let (failing, confirmed) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+        plant.answers.borrow_mut().extend([failed; 100]);
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
+        let failing = (plant.confirmed.borrow().clone(), plant.got().len());
+        plant.answers.borrow_mut().clear();
+        plant.clock.sleep(Span::from_nanos(70_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        (failing, plant.confirmed.borrow().clone())
+    });
+    let (values, requests) = failing;
+    assert_eq!(values, [0]);
+    assert!(
+        requests > 1,
+        "InfluxDB got {requests} requests while it failed"
+    );
+    assert_eq!(confirmed, [0, 2]);
 }
 
 /// The bodies that the InfluxDB of a plant gets in two runs, one after the other, and

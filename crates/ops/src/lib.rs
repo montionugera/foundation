@@ -21,6 +21,7 @@ mod plan;
 mod remote;
 mod serve;
 mod start;
+mod status;
 #[cfg(test)]
 mod tests;
 mod used;

@@ -11,26 +11,9 @@ use wire::hub::client::BODY_BYTES_MAX;
 use super::{Body, Large, serve};
 use crate::Node;
 use crate::common::{
-    NODE, PLANT, SITE, create_node, fail_sync, name, placed_site, solo,
+    BOB, EVE, NODE, PLANT, SAM, SITE, create_node, fail_sync, name, placed_site, solo,
 };
 use crate::plan;
-
-/// Lines that `ssh-keygen -t ed25519` wrote.
-const BOB: &str = concat!(
-    "ssh-ed25519 ",
-    "AAAAC3NzaC1lZDI1NTE5AAAAIP0QMDFGOHfS9XR71aVyCvs+QnNQ4BXrHs9dGDDz7KY6",
-    " bob@site",
-);
-const EVE: &str = concat!(
-    "ssh-ed25519 ",
-    "AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg",
-    " eve@laptop",
-);
-const SAM: &str = concat!(
-    "ssh-ed25519 ",
-    "AAAAC3NzaC1lZDI1NTE5AAAAIBwW/hh0ZkgH9jcODHef/ulXUH2Hx66uLYTxi9hWfS+o",
-    " sam@site",
-);
 
 const DENIED_FIX: &str =
     "Ask an admin of the region for an access policy that allows it";
@@ -160,8 +143,8 @@ async fn applied(node: &Node, files: &[(&str, &str)]) {
 
 #[test]
 fn plans_applies_and_plans_no_change() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let site = placed_site();
         let files = vec![(PathBuf::from("site.hcl"), site.clone())];
         let (plan, output) = node.plan(files.clone()).await.expect("a plan");
@@ -198,8 +181,8 @@ fn plans_applies_and_plans_no_change() {
 
 #[test]
 fn gives_the_reply_of_an_error_as_one_line() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let reply = serve(&node, &admin(), b"{\"version\":{}}\n").await;
         let expected = "{\"errors\":[{\"code\":\"ops.bad-request\",\"message\":\"the \
                         body is no request: the operation `version` does not run on \
@@ -211,10 +194,10 @@ fn gives_the_reply_of_an_error_as_one_line() {
 
 #[test]
 fn refuses_each_body_that_is_no_request() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let after = [&plan_body(&[("site.hcl", &site())])[..], b"x"].concat();
-        let cases: [(&[u8], &str); 14] = [
+        let cases: [(&[u8], &str); 18] = [
             (b"", "no newline ends the first line"),
             (b"{\"apply\":{}}", "no newline ends the first line"),
             (b"\n", "EOF while parsing a value at line 1 column 0"),
@@ -250,6 +233,22 @@ fn refuses_each_body_that_is_no_request() {
                 b"{\"apply\":{\"file\":\"site.plan\"}}\n",
                 "unknown field `file`, there are no fields at line 1 column 16",
             ),
+            (
+                b"{\"apply\":[]}\n",
+                "invalid type: sequence, expected an object at line 1 column 9",
+            ),
+            (
+                b"{\"plan\":[[]]}\n",
+                "invalid type: sequence, expected an object at line 1 column 8",
+            ),
+            (
+                b"{\"plan\":{\"files\":[[\"a.hcl\",\"\"]]}}\n",
+                "invalid type: sequence, expected an object at line 1 column 18",
+            ),
+            (
+                b"{\"status\":[]}\n",
+                "invalid type: sequence, expected an object at line 1 column 10",
+            ),
             (&after, "bytes follow the first line of `plan`"),
             (
                 b"{\"docs\":{}}\n",
@@ -267,8 +266,8 @@ fn refuses_each_body_that_is_no_request() {
 
 #[test]
 fn refuses_an_operation_that_the_table_does_not_hold() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let reply = serve(&node, &admin(), b"{\"export\":{\"to\":1}}\n").await;
         let expected = bad("the operation `export` does not run on a node");
         assert_eq!(split(&reply), (expected, &b""[..]));
@@ -277,8 +276,8 @@ fn refuses_an_operation_that_the_table_does_not_hold() {
 
 #[test]
 fn gives_each_error_of_plan_and_apply_with_its_status() {
-    solo(|sim, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let reply = serve(&node, &admin(), &apply_body(b"plan")).await;
         let expected = refusal(
             "ops.bad-plan",
@@ -311,7 +310,7 @@ fn gives_each_error_of_plan_and_apply_with_its_status() {
         assert_eq!(split(&reply), (expected, &b""[..]));
 
         let plan = planned(&node, &[("plant.hcl", PLANT)]).await;
-        let stopped = fail_sync(&sim);
+        let stopped = fail_sync(&fixture.sim);
         let expected = refusal(
             "ops.stopped",
             1,
@@ -328,8 +327,8 @@ fn gives_each_error_of_plan_and_apply_with_its_status() {
 
 #[test]
 fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_files() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         applied(&node, &[("people.hcl", &people())]).await;
         let site = plan_body(&[("site.hcl", &placed_site())]);
 
@@ -349,8 +348,8 @@ fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_files() {
 
 #[test]
 fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_spec() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         // The files of `sam` hold only names under `site`. The spec in use also
@@ -375,8 +374,8 @@ fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_spec() {
 
 #[test]
 fn plans_for_a_subject_with_no_grant_on_a_founding_definition() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let policy = "access \"site.surveyor\" {\n  subjects = \"sam\"\n  select = \
                       \"site.**\"\n  allow = [plan]\n}\n";
         applied(&node, &[("people.hcl", policy)]).await;
@@ -390,8 +389,8 @@ fn plans_for_a_subject_with_no_grant_on_a_founding_definition() {
 
 #[test]
 fn refuses_an_apply_of_a_subject_with_no_grant_on_a_changed_name() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let version = mesh.pointer().version;
@@ -418,8 +417,8 @@ fn refuses_an_apply_of_a_subject_with_no_grant_on_a_changed_name() {
 
 #[test]
 fn applies_for_a_subject_with_a_grant_on_each_changed_name_and_each_home() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let placement = site().replace(SITE, "");
         applied(&node, &[("people.hcl", &people), ("p.hcl", &placement)]).await;
@@ -490,8 +489,8 @@ async fn applied_with_no_home(
 
 #[test]
 fn an_apply_gives_no_home_to_an_index_on_which_the_subject_has_no_grant() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let placed = placed_site();
@@ -523,8 +522,8 @@ fn an_apply_gives_no_home_to_an_index_on_which_the_subject_has_no_grant() {
 
 #[test]
 fn an_apply_gives_a_home_only_to_the_index_of_the_grant_of_the_subject() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let site = site();
@@ -562,8 +561,8 @@ fn an_apply_gives_a_home_only_to_the_index_of_the_grant_of_the_subject() {
 
 #[test]
 fn refuses_a_subject_with_no_grant_before_it_compares_the_base_of_a_plan() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let base = mesh.pointer();
         let plan = planned(&node, &[("site.hcl", &site())]).await;
         applied(&node, &[("people.hcl", &people())]).await;
@@ -579,14 +578,16 @@ fn refuses_a_subject_with_no_grant_before_it_compares_the_base_of_a_plan() {
 
 #[test]
 fn refuses_a_plan_and_an_apply_on_a_node_that_uses_an_old_spec_as_behind() {
-    solo(|sim, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let site = placed_site();
         applied(&node, &[("site.hcl", &site)]).await;
         let first = mesh.pointer();
         let both = [("site.hcl", &*site), ("plant.hcl", PLANT)];
         let plan = planned(&node, &both).await;
-        sim.fail_file(Path::new("spec"), env::files::Operation::SyncDir);
+        fixture
+            .sim
+            .fail_file(Path::new("spec"), env::files::Operation::SyncDir);
         let reply = serve(&node, &admin(), &apply_body(&plan)).await;
         assert!(split(&reply).0.get("output").is_some());
         let spec = mesh.spec().await.expect("a spec");
@@ -616,8 +617,8 @@ fn refuses_a_plan_and_an_apply_on_a_node_that_uses_an_old_spec_as_behind() {
 
 #[test]
 fn applies_a_plan_that_removes_the_policy_of_the_subject() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let policy = "access \"site.surveyor\" {\n  subjects = \"sam\"\n  select = \
                       \"site.**\"\n  allow = [plan, apply, admin]\n}\n";
         applied(&node, &[("people.hcl", policy)]).await;
@@ -635,8 +636,8 @@ fn applies_a_plan_that_removes_the_policy_of_the_subject() {
 
 #[test]
 fn refuses_a_change_of_access_of_a_subject_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let version = mesh.pointer().version;
@@ -674,8 +675,8 @@ fn refuses_a_change_of_access_of_a_subject_with_no_admin_on_its_key() {
 
 #[test]
 fn refuses_a_policy_of_a_subject_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let yard = "channel \"yard.time\" { kind = \"index\" }\nplacement \
                     \"yard.home\" {\n  select = \"yard.*\"\n  home = \"edge\"\n}\n";
@@ -731,8 +732,8 @@ const YARD: &str = "channel \"yard.time\" { kind = \"index\" }\nchannel \"yard.t
 
 #[test]
 fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people), ("yard.hcl", YARD)]).await;
         let version = mesh.pointer().version;
@@ -762,8 +763,8 @@ fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
 
 #[test]
 fn refuses_a_channel_over_a_connector_of_a_subject_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let plc = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
                    read \"yard.temp\" { node_id = \"x\" }\n}\n";
@@ -786,8 +787,8 @@ fn refuses_a_channel_over_a_connector_of_a_subject_with_no_admin_on_its_key() {
 
 #[test]
 fn refuses_a_connector_over_a_channel_of_a_subject_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let channel = "channel \"site.plc\" { kind = \"index\" }\n";
         let files = [
@@ -868,8 +869,8 @@ fn unheld(last: &[&str]) -> Value {
 
 #[test]
 fn refuses_an_apply_that_removes_the_status_channels_of_a_connector() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
         applied(&node, &files).await;
@@ -888,8 +889,8 @@ fn refuses_an_apply_that_removes_the_status_channels_of_a_connector() {
 
 #[test]
 fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
         applied(&node, &files).await;
@@ -909,8 +910,8 @@ fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
 /// new channel on the status index of a connector.
 #[test]
 fn refuses_an_apply_that_puts_a_channel_on_the_status_index_of_a_connector() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let files = [("people.hcl", &*people), ("yard.hcl", YARD), ("p.hcl", PLC)];
         applied(&node, &files).await;
@@ -951,8 +952,8 @@ fn refuses_an_apply_that_puts_a_channel_on_the_status_index_of_a_connector() {
 /// refuses it before `Plan::definitions` reads the spec.
 #[test]
 fn refuses_a_removal_of_a_name_that_the_spec_does_not_hold_with_no_admin() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let site = site();
         applied(&node, &[("people.hcl", &*people), ("site.hcl", &*site)]).await;
@@ -972,8 +973,8 @@ fn refuses_a_removal_of_a_name_that_the_spec_does_not_hold_with_no_admin() {
 
 #[test]
 fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         applied(&node, &[("people.hcl", &people), ("yard.hcl", YARD)]).await;
         let version = mesh.pointer().version;
@@ -1029,8 +1030,8 @@ fn refuses_a_channel_with_an_edge_to_a_channel_with_no_grant() {
 
 #[test]
 fn refuses_a_change_or_removal_of_access_with_no_admin_on_its_key() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let people = people();
         let crew = "access \"site.crew\" {\n  subjects = \"bob\"\n  select = \
                     \"site.*\"\n  allow = [plan]\n}\n";
@@ -1062,8 +1063,8 @@ fn refuses_a_change_or_removal_of_access_with_no_admin_on_its_key() {
 
 #[test]
 fn refuses_a_request_that_names_no_definition_for_each_subject() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh.clone());
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         // `plan` compares no founding definition, so the spec has no name to check.
         for subject in ["@admin", "mallory"] {
             let reply = serve(&node, &name(subject), &plan_body(&[])).await;
@@ -1093,8 +1094,8 @@ fn refuses_each_remote_subject_on_a_node_that_uses_no_spec() {
     let policy = founding[&name("@admin.@access")].clone();
     // An access policy at a key that is no tree key of its kind: a problem.
     founding.insert(name("x"), policy);
-    crate::common::founded(&["edge"], founding, |_, mesh| async move {
-        let node = create_node(mesh.clone());
+    crate::common::founded(&["edge"], founding, |fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
         let spec = mesh.spec().await.expect("a spec");
         assert_eq!(spec.pointer, None, "{spec:?}");
         assert!(spec.behind.is_some(), "{spec:?}");
@@ -1122,8 +1123,8 @@ fn wide_body(long: usize, short: usize) -> Vec<u8> {
 
 #[test]
 fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let bound = usize::try_from(BODY_BYTES_MAX).expect("the bound fits");
         // Each of the 18 changes of `PLANT` holds the long path.
         let long = bound / 18 - 1_000;
@@ -1145,8 +1146,8 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
 
 #[test]
 fn refuses_the_reply_of_many_problems_at_a_long_path() {
-    solo(|_, mesh| async move {
-        let node = create_node(mesh);
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let path = format!("{}.hcl", "x".repeat((64 << 10) - 4));
         let text = "nope \"a\" {}\n".repeat(2_000);
         let reply = serve(&node, &admin(), &plan_body(&[(&path, &text)])).await;

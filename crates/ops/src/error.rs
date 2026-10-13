@@ -27,6 +27,7 @@ const STOPPED: Code = Code::new("ops.stopped");
 const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
 const WRITE: Code = Code::new("ops.write");
 const LARGE_REQUEST: Code = Code::new("ops.large-request");
@@ -77,6 +78,9 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
+    /// A reader of the status channels of `connector` did not open or ended, with the
+    /// text of the hub.
+    ChannelRead { connector: Name, message: String },
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
     /// A command line did not write the plan file at `path`.
@@ -105,6 +109,7 @@ pub(crate) enum Unread {
 /// on a changed key of a definition other than a channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
+    Read,
     Plan,
     Apply,
     Admin,
@@ -137,6 +142,7 @@ impl Action {
     /// The word of the action in a config file.
     const fn word(self) -> &'static str {
         match self {
+            Self::Read => "read",
             Self::Plan => "plan",
             Self::Apply => "apply",
             Self::Admin => "admin",
@@ -147,6 +153,7 @@ impl Action {
 impl From<Action> for spec::access::Action {
     fn from(action: Action) -> Self {
         match action {
+            Action::Read => Self::Read,
             Action::Plan => Self::Plan,
             Action::Apply => Self::Apply,
             Action::Admin => Self::Admin,
@@ -183,6 +190,7 @@ impl Error {
             | Self::Request { .. }
             | Self::Denied { .. }
             | Self::LargeReply
+            | Self::ChannelRead { .. }
             | Self::Write { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
@@ -246,6 +254,11 @@ impl Error {
             Self::LargeReply => (
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
+            ),
+            Self::ChannelRead { .. } => (
+                CHANNEL_READ,
+                "Fix the cause in the message, then ask for the status again"
+                    .to_owned(),
             ),
             Self::Read { .. } => (
                 READ,
@@ -492,6 +505,11 @@ impl fmt::Display for Error {
                 f,
                 "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
                  holds"
+            ),
+            Self::ChannelRead { connector, message } => write!(
+                f,
+                "the status channels of the connector `{connector}` did not read: \
+                 {message}"
             ),
             Self::Read { path, cause } => {
                 let path = path.display();

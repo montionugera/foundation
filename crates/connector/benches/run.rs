@@ -7,6 +7,7 @@
 //! - `poll`: a step with no work.
 //! - `poll + set`: a step that sets a status count.
 //! - `set`: a set of a status count, with no poll.
+//! - `add`: an add to a status count, with no poll.
 //! - `poll + set (closed)`: as `poll + set`, after a status channel was removed, so
 //!   the status writer writes no more.
 //! - `clear`: a clear of the shown error, with no poll, after a clear.
@@ -54,6 +55,7 @@ fn main() {
         Step::Poll,
         Step::PollSet,
         Step::Set,
+        Step::Add,
         Step::Closed,
         Step::Clear,
         Step::Show,
@@ -68,6 +70,7 @@ enum Step {
     Poll,
     PollSet,
     Set,
+    Add,
     Closed,
     Clear,
     Show,
@@ -79,6 +82,7 @@ impl Step {
             Self::Poll => "poll",
             Self::PollSet => "poll + set",
             Self::Set => "set",
+            Self::Add => "add",
             Self::Closed => "poll + set (closed)",
             Self::Clear => "clear",
             Self::Show => "show",
@@ -134,10 +138,14 @@ impl Kind for Steps {
                     Step::Poll => {}
                     Step::Clear => ctx.clear_error(),
                     Step::Show => ctx.error(&"refused"),
+                    Step::Add => count.add(std::hint::black_box(1)),
                     _ => count.set(std::hint::black_box(i)),
                 };
                 allocations += ALLOCATOR.count(set).1;
-                if !matches!(self.step, Step::Set | Step::Clear | Step::Show) {
+                if !matches!(
+                    self.step,
+                    Step::Set | Step::Add | Step::Clear | Step::Show
+                ) {
                     Yield(false).await;
                 }
             }

@@ -548,7 +548,8 @@ proptest! {
             fields.iter().map(|&(key, _)| line.field(key).unwrap()).collect();
         let values = keys.iter().zip(&fields).map(|(key, &(_, value))| (key, value));
         let mut out = Vec::new();
-        line.line(&mut out, values, Stamp::from_nanos(time));
+        let wrote = line.line(&mut out, values, Stamp::from_nanos(time));
+        prop_assert_eq!(wrote, fields.len());
         let mut store = Store::default();
         store.write(&out).unwrap();
         let fields: Vec<(&str, Field)> =

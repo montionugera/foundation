@@ -33,6 +33,9 @@ use http::Uri;
 const BAD_ADDRESS: Code = Code::new("influx.bad-address");
 const BAD_DATABASE: Code = Code::new("influx.bad-database");
 const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
+/// The count of the samples that InfluxDB confirmed with a 204, across the runs of
+/// one supervisor call.
+const CONFIRMED: &str = "confirmed";
 
 /// The `influx` kind: writes a reader's samples to InfluxDB.
 #[derive(Debug, Default)]
@@ -108,10 +111,13 @@ impl kind::Kind for Kind {
         }
     }
 
-    /// Reads the channels of its reader settings, and writes none.
+    /// Reads the channels of its reader settings, writes none, and names the count
+    /// `confirmed`: the samples that InfluxDB took with a 204.
+    #[expect(clippy::unwrap_in_result, reason = "`CONFIRMED` is a valid name")]
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
             reader: Some(config.reader.clone()),
+            counts: vec![CONFIRMED.parse().expect("invariant: `CONFIRMED` is a name")],
             ..Channels::default()
         })
     }
@@ -126,8 +132,9 @@ impl kind::Kind for Kind {
 
     /// Writes the samples of its reader to InfluxDB 1, one line for each sample time
     /// with a field for each channel, keyed by the channel's name. It keeps one
-    /// request in flight, and acks a batch only after InfluxDB answers 204. It shows
-    /// each other answer as its error and sends the batch again after a backoff.
+    /// request in flight, and acks a batch only after InfluxDB answers 204, when it
+    /// adds the batch's fields to the count `confirmed`. It shows each other answer as
+    /// its error and sends the batch again after a backoff.
     ///
     /// # Errors
     ///

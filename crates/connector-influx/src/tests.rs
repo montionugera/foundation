@@ -104,7 +104,7 @@ fn reads_the_address_and_the_reader() {
 }
 
 #[test]
-fn checks_to_its_reader_and_no_device_channel() {
+fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
     let config = config(string("http://influx:8086"));
     let reader = reader::read(&config, &["address", "database", "measurement"], &[]);
     let table = Table::new().with("influx", Kind);
@@ -112,7 +112,8 @@ fn checks_to_its_reader_and_no_device_channel() {
         table.check("influx", None, &config),
         Ok(Channels {
             reader: Some(reader.expect("the reader settings")),
-            ..Channels::default()
+            writes: Vec::new(),
+            counts: vec!["confirmed".parse().expect("a name")],
         })
     );
 }
