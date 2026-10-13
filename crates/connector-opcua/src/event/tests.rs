@@ -287,6 +287,21 @@ fn the_loop_reads_its_clock_and_its_wall() {
     );
 }
 
+#[test]
+fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(u64::MAX - 1000),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(0));
+    // SAFETY: the member takes its own loop.
+    let now = unsafe { (events.members().now)(events.raw()) };
+    assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
+}
+
 /// Four values of open62541's generator after a loop with `rng` of `seed`.
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());

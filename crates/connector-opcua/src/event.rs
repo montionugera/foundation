@@ -29,13 +29,13 @@ pub(crate) struct Time {
 
 impl Time {
     /// Gives the monotonic time of `clock` also as the wall time, from the Unix epoch,
-    /// for a loop of a test or a benchmark, which has no wall time of a node.
+    /// for a loop of a test or a benchmark, which has no wall time of a node. Past the
+    /// last stamp, the wall time stays at the last stamp.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn monotonic(clock: Clock) -> Self {
         let read = Clock::clone(&clock);
         let wall = Box::new(move || {
-            let nanos = i64::try_from(read.now().0).expect("a clock under 292 years");
-            Stamp::from_nanos(nanos)
+            Stamp::from_nanos(i64::try_from(read.now().0).unwrap_or(i64::MAX))
         });
         Self { clock, wall }
     }
