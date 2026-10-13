@@ -397,7 +397,7 @@ pub(crate) struct Nodes {
 }
 
 impl Nodes {
-    /// As [`Nodes::new`], for a bench.
+    /// As [`Nodes::new`], for a bench: [`Client::read`] panics on it.
     #[cfg(feature = "sim")]
     pub(crate) fn unchecked(nodes: &[Node]) -> Self {
         Self::new(nodes, Rc::default())
