@@ -89,6 +89,50 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
 }
 
 #[test]
+fn a_server_has_room_for_4_sessions() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url = format!("opc.tcp://{}", listener.local());
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE]);
+        let spike = SPIKE.parse::<Node>().expect("a node");
+        let mut reads = Vec::new();
+        let mut fifth = None;
+        let until = async {
+            let mut clients = Vec::new();
+            for _ in 0..4 {
+                let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
+                clients.push(connect.await.expect("connect"));
+            }
+            for client in &mut clients {
+                reads.push(client.read(&spike).await);
+            }
+            let connect = Client::connect(node.clock(), node.net(), &mut rng, &url);
+            fifth = connect.await.err();
+            for client in clients {
+                client.close().await;
+            }
+        };
+        let mut served = node.entropy().rng();
+        serve(
+            node.clock(),
+            node.net(),
+            listener,
+            &mut served,
+            &variables,
+            until,
+        )
+        .await;
+        assert_eq!(reads, [Ok(0.0); 4]);
+        assert_eq!(fifth, Some(Status::BAD_TIMEOUT));
+        assert_eq!(variables.served()[SPIKE].len(), 4);
+    })
+    .expect("the run ends");
+}
+
+#[test]
 fn a_server_panics_on_a_variable_of_the_number_0() {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());

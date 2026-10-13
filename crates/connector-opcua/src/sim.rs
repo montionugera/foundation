@@ -122,8 +122,8 @@ pub struct Served {
 }
 
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
-/// then closes the server. Each namespace from 2 to the highest of `variables` has the
-/// URI `urn:foundation:sim:{index}`. Call it on a thread that `env` started.
+/// then closes the server. It adds each namespace from 2 to the highest of
+/// `variables`. Call it on a thread that `env` started.
 ///
 /// # Panics
 ///
