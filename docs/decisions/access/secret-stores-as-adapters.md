@@ -26,8 +26,9 @@
   value added heals the run at its next restart. Each get reads into a pool on
   `block::Erased`, which writes zero at the drop over each range that the pool
   committed, also after a failed or dropped read (`laptop.architect`:
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798 and
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377). The
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798,
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377, and
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153570364). The
   erase is at most 132 KiB and 64 bytes, for a file of 64 KiB. The allocation is the
   reservation of the pool, 5.2 MiB for that file. A get holds at most 5.4 MiB of heap
   at once, by the counting allocator, until it returns, or until the read of a dropped
