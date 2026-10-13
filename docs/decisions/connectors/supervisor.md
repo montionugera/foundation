@@ -238,66 +238,63 @@
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
   to 3). When a run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
-  when the call returns
-  (`laptop.architect-2`, 2026-10-08T19:07:43Z:
+  when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903). A run
   whose last task ends T after its start gives at most 1 + ⌊T / 1 s⌋ + 2 frames: the
   start, at most one frame of counts in each second, then `state` 3 and the next state.
   So a kind that counts 10,000 samples over 10 s gives at most 13. When the run itself
   sets its last count and ends at the flush at 10 s, that flush writes no frame, and it
-  gives 12. T runs to the end of the last task, because a task that outlives the run
-  can set counts between `state` 3 and the next state (`laptop.architect-2`,
+  gives 12. T runs to the end of the last task, because a task that outlives the run can
+  set counts between `state` 3 and the next state (`laptop.architect-2`,
   2026-10-09T21:16:18Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535.
-  `state` 3 and the next state stay two frames also when no task is left, because
-  `state` 3 marks the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535. `state`
+  3 and the next state stay two frames also when no task is left, because `state` 3
+  marks the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535).
-  `status::Writer` holds the rules of each channel but the counts, and the
-  supervisor calls its `start`, `end`, `wait`, and `stop` (same ruling, for `class`
-  and `restarts`; for `backoff` and `error`, the #1735 ruling and the plan on #420
-  above). A frame that
+  `status::Writer` holds the rules of each channel but the counts, and the supervisor
+  calls its `start`, `end`, `wait`, and `stop` (same ruling, for `class` and `restarts`;
+  for `backoff` and `error`, the #1735 ruling and the plan on #420 above). A frame that
   the home does not apply (`Waiting`, `Reserved`, `Order`, or `Lost`), or for which the
   shard's pool has no block now (`block::Error::Exhausted` or `Refused` in
   `frame::Error::Pool`), leaves the status staged, so it is written again one second
   later, also the last frame of a call: the call returns once the home applied it, or
-  once `cancel` is cancelled. The pool case is load, not a defect
-  (`laptop.architect-2`, 2026-10-09T21:32:53Z:
+  once `cancel` is cancelled. The pool case is load, not a defect (`laptop.architect-2`,
+  2026-10-09T21:32:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089614613). A
-  status frame larger than the largest block of the pool (`block::Error::TooLarge`) is
-  a defect, and panics (`laptop.architect-2`, 2026-10-09T21:40:46Z:
+  status frame larger than the largest block of the pool (`block::Error::TooLarge`) is a
+  defect, and panics (`laptop.architect-2`, 2026-10-09T21:40:46Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089720287). A
-  change of state waits until the home applied the state before it, or until `cancel`
-  is cancelled, so no state replaces a state that the home did not apply. A start
-  whose wait a cancel ends writes nothing, and no run starts. After
-  `Failure::Removed` or `home::Error::Disk`, no change of state waits
-  (`laptop.architect-2`, 2026-10-09T21:46:07Z:
+  change of state waits until the home applied the state before it, or until `cancel` is
+  cancelled, so no state replaces a state that the home did not apply. A start whose
+  wait a cancel ends writes nothing, and no run starts. After `Failure::Removed` or
+  `home::Error::Disk`, no change of state waits (`laptop.architect-2`,
+  2026-10-09T21:46:07Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089790301).
   Supersedes "at once" in rule 3 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730 and
-  "The frame's time is when the wait started" in
-  https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903: the
-  time of a frame is the time of the hub at its write, or the nanosecond after the
-  last stamp of the writer when that is later (`laptop.architect`,
-  2026-10-09T23:05:03Z:
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730 and "The
+  frame's time is when the wait started" in
+  https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903: the time
+  of a frame is the time of the hub at its write, or the nanosecond after the last stamp
+  of the writer when that is later (`laptop.architect`, 2026-10-09T23:05:03Z:
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6090762715). After
   `Failure::Removed` or `home::Error::Disk` the call writes no more status. Each other
   refusal is a defect of `connector`, and panics (`laptop.architect-2`,
   2026-10-09T19:41:05Z:
-  https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6087998186). While
-  the shard's pool gives no frame, a change of state waits also after its status
-  channels were removed or its disk failed, until the pool frees or `cancel` is
-  cancelled (`laptop.architect-2`, 2026-10-09T23:16:59Z and 2026-10-09T23:33:09Z:
+  https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6087998186). While the
+  shard's pool gives no frame, a change of state waits also after its status channels
+  were removed or its disk failed, until the pool frees or `cancel` is cancelled
+  (`laptop.architect-2`, 2026-10-09T23:16:59Z and 2026-10-09T23:33:09Z:
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6090887547 and
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6091053596). A frame
-  that the home refuses as `Backwards` is stamped again after the stamp that the
-  refusal gives, and written again at once, one time. A writer starts with no last
-  stamp, so its first frame can be at or before the last frame of the writer before it
-  on the same index (`laptop.architect-2`, 2026-10-09T20:20:46Z:
+  that the home refuses as `Backwards` is stamped again after the stamp that the refusal
+  gives, and written again at once, one time. A writer starts with no last stamp, so its
+  first frame can be at or before the last frame of the writer before it on the same
+  index (`laptop.architect-2`, 2026-10-09T20:20:46Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088599351). Each
-  other refusal of the frame written again follows the rules above. A second
-  `Backwards` is a defect, and panics (`laptop.architect-2`, 2026-10-09T20:24:02Z:
+  other refusal of the frame written again follows the rules above. A second `Backwards`
+  is a defect, and panics (`laptop.architect-2`, 2026-10-09T20:24:02Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088648651). The
   status channels open once the node has mesh time, and no run starts before. A cancel
   while they wait to open gives `Ok` at once (`laptop.architect-2`,
@@ -352,3 +349,9 @@
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136466855;
   `laptop.architect`, 2026-10-13T01:57:10Z:
   https://github.com/synnaxlabs/foundation/pull/2514#issuecomment-6136397268).
+  `status::defined(definitions, name)` gives the status channels that the definitions
+  define for the connector `name`, the index first, and panics with no index, which
+  `config` refuses. `node` and `ops` each take the status channels from it, and
+  `connector` takes `spec` as a normal dependency (`laptop.architect-2`,
+  2026-10-13T02:30:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6136904108, item 1).
