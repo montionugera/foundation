@@ -565,11 +565,15 @@ impl Session {
             Shown::Ended | Shown::Nothing => {}
             Shown::Cleared => {
                 self.class = Class::None;
-                self.error.set(&mut self.series, String::new());
+                if !self.error.value.is_empty() {
+                    self.error.set(&mut self.series, String::new());
+                }
             }
             Shown::Error(text) => {
                 self.class = Class::Retry;
-                self.error.set(&mut self.series, text.clone());
+                if self.error.value != *text {
+                    self.error.set(&mut self.series, text.clone());
+                }
             }
         }
         if self.closed {
