@@ -49,6 +49,12 @@ pub fn create(admin: PublicKey) -> BTreeMap<Name, Definition> {
     ])
 }
 
+/// The name of the subject that holds the key in `admin.key`: `@admin`.
+#[must_use]
+pub fn admin() -> Name {
+    ADMIN.parse().expect("invariant: `@admin` is a name")
+}
+
 /// Whether a founding definition of kind `kind` has the label `label`: a key that
 /// [`create`] makes, or that an earlier build made.
 pub(crate) fn holds(kind: Kind, label: &Name) -> bool {
@@ -98,6 +104,18 @@ mod tests {
             assert!(policy.allow().contains(action), "{action:?}");
         }
         assert_eq!(policy.authority(), Some(Authority(0)));
+    }
+
+    #[test]
+    fn the_admin_is_the_subject_that_holds_the_first_key() {
+        assert_eq!(super::admin(), name("@admin"));
+        let founding = create(admin());
+        let Some(Definition::Subject(subject)) =
+            founding.get(&Kind::Subject.join(super::admin()))
+        else {
+            panic!("no subject `@admin`: {founding:?}");
+        };
+        assert_eq!(subject.keys(), [admin()]);
     }
 
     #[test]
