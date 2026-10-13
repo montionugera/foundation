@@ -233,7 +233,7 @@ struct Log {
     appended: Position,
     durable: Position,
     runs: VecDeque<Run>,
-    /// The offset of the oldest record from which a walk rebuilds the durable
+    /// The offset of the newest record from which a walk rebuilds the durable
     /// position: a data record whose entry alone gives it, or a carry record with
     /// its tail. `None` before the first synced entry.
     holder: Option<u64>,
