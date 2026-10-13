@@ -160,14 +160,15 @@ impl Body {
             codec::decode(entry(set, at).data_type, count, bytes, &mut self.raw)
                 .expect("invariant: the hub gives valid series");
             let samples = self.raw.chunks_exact(field.width);
-            for (row, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
-                let value =
-                    row.get_mut(place).expect("invariant: a row has each field");
+            for (line, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
+                let value = line
+                    .get_mut(place)
+                    .expect("invariant: a line has each field");
                 *value = (field.convert)(sample);
             }
         }
-        let rows = self.values.chunks_exact(fields);
-        for (values, &time) in rows.zip(self.times.as_chunks::<8>().0) {
+        let lines = self.values.chunks_exact(fields);
+        for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
             let time = i64::from_le_bytes(time);
             let start = self.bytes.len();
             layout

@@ -417,17 +417,17 @@ fn acks_a_batch_after_its_204() {
 }
 
 /// The count of lines in each body that InfluxDB gets, when it answers the first
-/// request with 500 and a frame of one sample time goes before frames of `rows` sample
-/// times each, written while that request is in flight.
-fn lines_of_each_request(rows: &[usize]) -> Vec<usize> {
-    let rows: Vec<_> = rows.iter().map(|&count| (count, 1.0)).collect();
-    lines_of_each_request_of(&rows)
+/// request with 500 and a frame of one sample time goes before frames of `times`
+/// sample times each, written while that request is in flight.
+fn lines_of_each_request(times: &[usize]) -> Vec<usize> {
+    let times: Vec<_> = times.iter().map(|&count| (count, 1.0)).collect();
+    lines_of_each_request_of(&times)
 }
 
-/// As [`lines_of_each_request`], with each `(count, value)` of `rows` a frame of
+/// As [`lines_of_each_request`], with each `(count, value)` of `times` a frame of
 /// `count` sample times at which each channel holds `value`.
-fn lines_of_each_request_of(rows: &[(usize, f64)]) -> Vec<usize> {
-    let rows = rows.to_vec();
+fn lines_of_each_request_of(times: &[(usize, f64)]) -> Vec<usize> {
+    let times = times.to_vec();
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
@@ -443,7 +443,7 @@ fn lines_of_each_request_of(rows: &[(usize, f64)]) -> Vec<usize> {
             1,
             "the first request is in flight"
         );
-        for (count, value) in rows {
+        for (count, value) in times {
             first += 10_000;
             write(&mut writer, first, &vec![(value, value); count]);
         }

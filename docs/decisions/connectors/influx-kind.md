@@ -25,12 +25,16 @@
   value is left out, and so is a line with no other value. Until #2555, only `f64`
   channels are written: another type ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
-  `influx.bad-channel`. The run writes no gap line until #341. One request
-  is in flight at a time. While it is, the run reads the next batch, up to 5,000
-  lines, and a frame goes in whole. It acks a batch only after a 204. Each other
-  answer, and each failed request, keeps the batch, shows its text with
-  `Context::error`, and sends the batch again after a `retry::Backoff` of 1 s to
-  1 min. A 204 clears the error. Decided by the ONE NODE record, section 4
+  `influx.bad-channel`. The run writes no gap line until #341. One request is in flight
+  at a time. While it is, the run reads the next batch, up to 5,000 lines, and a frame
+  goes in whole. It acks a batch only after a 204. Each other answer, and each failed
+  request, keeps the batch, shows its text with `Context::error`, and sends the batch
+  again after a `retry::Backoff` of 1 s to 1 min. A 204 clears the error. A restart does
+  not send the batch in flight again (#274). With no `hold`, the next run reads from the
+  live frames, so those lines are lost. With a `hold`, each open after the loss ends
+  `Ended::Behind` until #2553, as `laptop.architect-2` decided
+  (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139522602). Decided
+  by the ONE NODE record, section 4
   (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217), and
   the plan that `laptop.architect-2` approved on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432).
