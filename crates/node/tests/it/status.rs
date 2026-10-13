@@ -11,7 +11,8 @@ struct Output {
     connectors: Vec<Connector>,
 }
 
-/// One connector in `foundation status --json`.
+/// One connector in `foundation status --json`. Each key must be present, also with a
+/// null value.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Connector {
@@ -20,14 +21,18 @@ pub(crate) struct Connector {
     /// `running`, `restarting`, `stopped`, or `unknown`.
     pub(crate) state: String,
     /// The `address` attribute of the config, or `None` when it has none.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) address: Option<String>,
     /// `None` while the state is `unknown`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) restarts: Option<u64>,
     /// Each count that the kind names, such as `in` and `confirmed`. `None` while the
     /// state is `unknown`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) counts: Option<BTreeMap<String, u64>>,
     /// The last error. `None` when the connector has none, or while the state is
     /// `unknown`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) error: Option<Error>,
 }
 
@@ -38,7 +43,9 @@ pub(crate) struct Error {
     /// `config`, `device`, or `retry`.
     pub(crate) class: String,
     pub(crate) text: String,
-    /// The time of the next try. `None` unless the state is `restarting`.
+    /// The time of the next try. `None` unless the state is `restarting`. A missing key
+    /// reads as `None`, because `status` gives no `next` until #2530.
+    #[serde(default)]
     pub(crate) next: Option<String>,
 }
 
