@@ -90,6 +90,10 @@ impl Manager {
     /// # Panics
     ///
     /// When a C allocation fails.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn listening(
         clock: Clock,
         net: Net,
@@ -110,6 +114,10 @@ impl Manager {
     /// # Panics
     ///
     /// When a C allocation fails.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn accepting(
         clock: Clock,
         net: Net,

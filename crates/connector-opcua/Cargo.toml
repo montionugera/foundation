@@ -13,7 +13,11 @@ open62541 = ["dep:cc"]
 sim = ["open62541"]
 
 [dependencies]
+block = { path = "../block" }
+connector = { path = "../connector" }
+document = { path = "../document" }
 env = { path = "../env" }
+hub = { path = "../hub" }
 types = { path = "../types" }
 
 [build-dependencies]
@@ -21,10 +25,12 @@ cc = { workspace = true, optional = true }
 
 [dev-dependencies]
 cc = { workspace = true }
+connector = { path = "../connector", features = ["sim"] }
 # Turns on `sim`, since the bench host runs no features.
 connector-opcua = { path = ".", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
+hub = { path = "../hub", features = ["sim"] }
 proptest = { workspace = true }
 sim = { path = "../sim" }
 

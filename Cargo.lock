@@ -465,11 +465,15 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "block",
  "cc",
+ "connector",
  "connector-opcua",
  "counting",
  "divan",
+ "document",
  "env",
+ "hub",
  "proptest",
  "sim",
  "types",
