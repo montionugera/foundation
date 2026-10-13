@@ -10,7 +10,9 @@ use document::Document;
 use document::diagnostic::Diagnostic;
 use serde_json::{Value, json};
 use spec::definition::Definition;
+use types::authority::Authority;
 use types::channel::Key;
+use types::frame::{Form, Label, Path as Stream};
 use types::time::Span;
 
 use super::{Class, Failure, Output, State, Status};
@@ -225,6 +227,46 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) {
         .await;
 }
 
+/// Writes one frame of the status index of `connector` and its count `in` at 5 as a
+/// program, with no sample of a channel that the supervisor writes.
+async fn write_count(fixture: &Fixture, connector: &str) {
+    let channels =
+        ["time", "in"].map(|last| name(&format!("{connector}.status.{last}")));
+    let config = hub::writer::Config {
+        subject: name("program"),
+        authority: Authority(1),
+        lease: None,
+        channels: channels.into(),
+    };
+    let mut program = fixture.hub.writer(config).await.expect("the program opens");
+    let entries = program.entries().to_vec();
+    let set = Arc::clone(program.set());
+    let stamp = u64::try_from(program.now().nanos()).expect("a stamp after 1970");
+    let bytes: Vec<(usize, Vec<u8>)> = entries
+        .iter()
+        .zip([stamp, 5])
+        .map(|(&entry, value)| {
+            let width = set.entries()[entry].data_type.width();
+            let width = width.expect("a fixed width");
+            (entry, value.to_le_bytes()[..width].to_vec())
+        })
+        .collect();
+    let mut series: Vec<_> = bytes
+        .iter()
+        .map(|(entry, bytes)| (*entry, bytes.len()))
+        .collect();
+    series.sort_unstable();
+    let mut draft = program.draft(Form::Raw, &series).expect("a draft");
+    for (entry, bytes) in &bytes {
+        let series = draft.series_mut(*entry).expect("a series of the draft");
+        series.copy_from_slice(bytes);
+    }
+    draft.set_count(set.entries()[entries[0]].group, 1);
+    program
+        .write(Label::Path(Stream::Live), draft)
+        .expect("the write goes");
+}
+
 /// The first line of the reply of `status` on `node` as `subject`, and the bytes
 /// after it.
 async fn status(node: &Node, subject: &str) -> (Value, Vec<u8>) {
@@ -330,6 +372,22 @@ fn replies_once_each_connector_gave_its_frame() {
             .map(|status| status["state"].clone())
             .collect::<Vec<_>>();
         assert_eq!(states, [json!("running"), json!("running")]);
+    });
+}
+
+#[test]
+fn gives_unknown_for_a_frame_with_no_status() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        write_count(&fixture, "site.a").await;
+        let clock = fixture.sim.clock();
+        let start = clock.now();
+        let (head, _) = status(&node, "@admin").await;
+        assert!(clock.now() - start < Span::SECOND, "the frame came");
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
     });
 }
 
@@ -551,6 +609,27 @@ fn line(
         }),
         error,
     }
+}
+
+#[test]
+fn escapes_a_newline_in_each_value_of_the_table() {
+    let error = Failure {
+        class: Class::Device,
+        text: "t".to_owned(),
+    };
+    let output = Output {
+        connectors: vec![Status {
+            name: "a\nb".to_owned(),
+            kind: "k\nk".to_owned(),
+            address: Some("x\ny".to_owned()),
+            ..line("plant.plc", State::Running, None, Some(error))
+        }],
+    };
+    let text = "CONNECTOR  KIND  STATE    ADDRESS  IN  CONFIRMED\n\
+                a\\nb       k\\nk  running  x\\ny     -   -\n\
+                \n\
+                a\\nb: device error: t\n";
+    assert_eq!(output.text(), text);
 }
 
 #[test]
