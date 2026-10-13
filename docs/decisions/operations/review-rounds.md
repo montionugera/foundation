@@ -10,7 +10,8 @@
   of round 1. A design flaw is a finding whose fix changes a public surface, a crate
   boundary, a decision, or the owner of state. The design approver of an item is the
   crate's architect, `laptop.architect` for a contract between the two lists, or
-  `laptop.director` for any other item. When the crate's architect wrote the PR, it is
+  `laptop.director` for any other item. When the crate's architect, or
+  `laptop.architect` for a contract between the two lists, wrote the PR, it is
   the other architect. When `laptop.director` wrote the PR, `laptop.architect` is the
   design approver in place of `laptop.director`. After round 3, no other round runs, and
   no PR replaces it, other than a new design that its design approver approves, which
@@ -58,7 +59,11 @@
     (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154549130,
     2026-10-13T20:27:57Z), so that no PR waits for the person beyond its approval to
     merge, after the person's words of 2026-10-13T19:52:40Z
-    (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
+    (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476);
+  - the design approver of a contract on a PR that `laptop.architect` wrote, at the
+    ask of `laptop.monitor`
+    (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154720280,
+    2026-10-13T20:37:53Z).
 
   Cost: a fix after round 3 gets no `reviewer` or `breaker`, only its test, CI, an
   `architecture` run, and the approvals and `performance` runs that stay. In 4 of the 5
