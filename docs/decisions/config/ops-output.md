@@ -205,7 +205,10 @@
   `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`, with the
   message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
   2026-10-11T07:10:55Z,
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913).
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
+  fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
+  with no `--data`, by decision 7 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641.
   `node.session` is the later step of #2517 in
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136582798.
   `node.socket` for a socket of the program that broke is item 4 of
