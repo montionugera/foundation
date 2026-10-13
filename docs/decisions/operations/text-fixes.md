@@ -21,7 +21,8 @@
   review` checks that each merge after the last round is a clean merge of the base (`git
   merge-tree`), that the commits after it change no code, and, when one that is not a
   merge follows it, that its round comment has a line `Text fixes:` that is not `Text
-  fixes: none` (#2315). It cannot check that a commit applies only those items. Evidence
+  fixes: none` (#2315). After a last round of 3 or more (REVIEW ROUNDS), it checks only
+  the merges. It cannot check that a commit applies only those items. Evidence
   (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a median of 7 rounds per
   PR, about 44% of the findings in text, and each text fix moved the head and started a
   round. Late rounds still found defects in code (#2191, #2003), so a code fix keeps its

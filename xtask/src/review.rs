@@ -105,7 +105,7 @@ const LINK_CUTOFF: &str = "2026-10-12T12:00:00Z";
 
 /// The most review rounds that a PR gets. A last round of this number or above may
 /// have findings and may end before a commit that changes code, since no round follows
-/// it.
+/// it. It must match REVIEW ROUNDS in `docs/decisions/operations/review-rounds.md`.
 const ROUNDS: u32 = 3;
 
 /// The crates in which a deferral needs the OK of the architect. It must match the
@@ -213,11 +213,11 @@ struct Parsed {
 }
 
 /// Checks that the review of PR `pr` is done at commit `head`: its last round comment
-/// ends at `head` or at a commit on its first-parent chain after which each merge is
-/// a clean merge of the base and the range to `head` changes no code, finds nothing,
-/// and names each required reviewer, and, for a red-team PR, the director approved
-/// `head`. Reads the PR with `api` and the history of the repository at `root` with
-/// `git`, and prints each problem.
+/// names each required reviewer and ends at `head` or at a commit on its first-parent
+/// chain after which each merge is a clean merge of the base, below round [`ROUNDS`]
+/// it finds nothing and the range to `head` changes no code, and, for a red-team PR,
+/// the director approved `head`. Reads the PR with `api` and the history of the
+/// repository at `root` with `git`, and prints each problem.
 ///
 /// Exits 0 when the review is done, 1 when it is not, and 2 when `api` or `git` fails
 /// or the PR record lacks a field.
@@ -260,21 +260,21 @@ pub(crate) fn exit(found: Result<Vec<String>, String>) -> ExitCode {
 }
 
 /// The problems with the review in `record` at `head`: each round must name the
-/// reviewers it requires, and the last round, below round [`ROUNDS`], must find nothing
-/// and end at `head`, or at a commit on its first-parent chain after which each merge
-/// is a clean merge of the base and the range to `head` changes no code, with a
-/// `Text fixes:` line when a commit that is not a merge follows it. `place` gives
-/// where a commit (a SHA or its prefix) is from `head` (`History::place`). A later
-/// round may skip `breaker` when the range of the last round changes no code; an
-/// earlier round's skip is taken as written. `code_change` gives the first code change
-/// in a range, with a merge of the base read by its resolution, as a phrase, or `None`
-/// (`History::code_change`). A later round posted at or after `DECISION_CUTOFF` must
-/// name `architecture` when `decision_change` gives a phrase for its range
-/// (`History::decision_change`). For that rule, a round comment after the first is a
-/// later round, whatever its number, and so is a first round comment whose number is
-/// above 1. The last round, when posted at or after `LINK_CUTOFF`, must link the OK of
-/// each deferral of a PR that changes a risk crate, and an approval of its public
-/// surface ([`unlinked`]).
+/// reviewers it requires, and the last round must end at `head`, or at a commit on its
+/// first-parent chain after which each merge is a clean merge of the base. Below round
+/// [`ROUNDS`], the last round must also find nothing, the range to `head` must change
+/// no code, and a commit that is not a merge after it needs a `Text fixes:` line.
+/// `place` gives where a commit (a SHA or its prefix) is from `head`
+/// (`History::place`). A later round may skip `breaker` when the range of the last
+/// round changes no code; an earlier round's skip is taken as written. `code_change`
+/// gives the first code change in a range, with a merge of the base read by its
+/// resolution, as a phrase, or `None` (`History::code_change`). A later round posted at
+/// or after `DECISION_CUTOFF` must name `architecture` when `decision_change` gives a
+/// phrase for its range (`History::decision_change`). For that rule, a round comment
+/// after the first is a later round, whatever its number, and so is a first round
+/// comment whose number is above 1. The last round, when posted at or after
+/// `LINK_CUTOFF`, must link the OK of each deferral of a PR that changes a risk crate,
+/// and an approval of its public surface ([`unlinked`]).
 fn problems(
     record: &Record,
     head: &str,
@@ -321,16 +321,14 @@ fn problems(
         round: Ok(round), ..
     }) = rounds.last()
     {
-        if round.number < ROUNDS {
-            if round.findings > 0 {
-                problems.push(format!(
-                    "review round {} has findings ({}). Fix or answer them, then run \
-                     another round.",
-                    round.number, round.findings
-                ));
-            }
-            problems.extend(unended(round, head, place(&round.end)?, code_change)?);
+        if round.findings > 0 && round.number < ROUNDS {
+            problems.push(format!(
+                "review round {} has findings ({}). Fix or answer them, then run \
+                 another round.",
+                round.number, round.findings
+            ));
         }
+        problems.extend(unended(round, head, place(&round.end)?, code_change)?);
         problems.extend(unlinked(round, &record.files));
     }
     if record.branch.starts_with("red-team/")
@@ -342,7 +340,8 @@ fn problems(
 }
 
 /// The problem with the end of the last round, `round`, at `head`, where `place` is
-/// where its end is from `head`, or `None`.
+/// where its end is from `head`, or `None`. From round [`ROUNDS`], only a
+/// [`Place::Off`] end is a problem.
 fn unended(
     round: &Round,
     head: &str,
@@ -357,6 +356,9 @@ fn unended(
              commit that changes no code after a round with a `Text fixes:` line, \
              does not."
         )));
+    }
+    if number >= ROUNDS {
+        return Ok(None);
     }
     if let Some(change) = code_change(end, head)? {
         return Ok(Some(format!(

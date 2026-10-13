@@ -993,11 +993,11 @@ fn passes_a_range_that_ends_before_only_clean_merges_without_text_fixes() {
 
 #[test]
 fn fails_a_range_that_ends_off_the_first_parent_chain() {
-    let round = second().replace("..c77c67d7", "..0badc0de");
+    let round = ROUND.replace("..c77c67d7", "..0badc0de");
     assert_eq!(
         check(&record(vec![bot(&round)])),
         vec![format!(
-            "review round 2 ends at 0badc0de, not at the head {HEAD}. A commit after \
+            "review round 3 ends at 0badc0de, not at the head {HEAD}. A commit after \
              the round needs a new round; only a clean merge of the base, or a commit \
              that changes no code after a round with a `Text fixes:` line, does not."
         )]
