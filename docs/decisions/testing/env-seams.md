@@ -534,7 +534,9 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489;
   approved by `laptop.architect`, 2026-10-13T03:51:37Z,
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137828742), because
-  `cli` runs on a shard of the command line. `os` writes a file beside the
+  `cli` runs on a shard of the command line. Supersedes "never to a shard" of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274. `os`
+  writes a file beside the
   path and renames it over the path. `sim` keeps one tree in memory for each node, apart
   from its disk, where a directory is there while a file is under it, and
   `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes `env::files` for

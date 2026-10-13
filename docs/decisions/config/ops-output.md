@@ -207,8 +207,10 @@
   2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
-  with no `--data`, by decision 7 of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641.
+  with no `--data`, by decision 7 of plan revision 5
+  (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641),
+  approved by `laptop.architect-2` (2026-10-13T02:10:54Z,
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419).
   `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
   `node.socket` covers a socket of the program that broke, with the message `the
@@ -216,7 +218,12 @@
   2026-10-13T02:10:54Z, item 4 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419). The
   transport error in `node.unanswered` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
-  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936). The four
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  Supersedes, in decision 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913, the fix
+  of `node.not-running`, the message of `node.socket`, the hub error in
+  `node.unanswered`, and the example `read of admin.key` of `node.unreadable`, which the
+  error of `env::files` gives as `read_at of admin.key failed with OS error 13`. The four
   `ops` codes are decisions 2, 4, 5, and 8 of plan revision 5,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641, with
   `ops.large-request` by item 2 of the approval of `laptop.architect-2`
