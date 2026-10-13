@@ -806,6 +806,9 @@ fn issues(value: &str, breaks: &[usize]) -> impl Iterator<Item = Range<usize>> {
 /// characters outside parentheses, trimmed. An empty part and the value
 /// `none` ([`stated`]) hold no step.
 fn untracked<'v>(later: &'v str, breaks: &[usize]) -> Option<&'v str> {
+    if !stated(later) {
+        return None;
+    }
     let mut steps = Vec::new();
     let (mut start, mut depth) = (0, 0_usize);
     for (at, c) in later.char_indices() {
@@ -825,10 +828,9 @@ fn untracked<'v>(later: &'v str, breaks: &[usize]) -> Option<&'v str> {
         let mut starts = text.char_indices().map(|(at, _)| step.start + at);
         text.contains(DECISIONS) || starts.any(|at| issue(later, breaks, at).is_some())
     };
-    let step = steps
+    steps
         .into_iter()
-        .find(|step| !later[step.clone()].trim().is_empty() && !linked(step));
-    step.filter(|_| stated(later))
+        .find(|step| !later[step.clone()].trim().is_empty() && !linked(step))
         .map(|step| later[step].trim())
 }
 
