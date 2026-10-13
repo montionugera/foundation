@@ -839,6 +839,23 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
 }
 
 #[test]
+fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
+    run(5, |test| async move {
+        let writer = test.writer("a", &["value"]).await;
+        let time = writer.time();
+        test.clock.sleep(Span::SECOND).await;
+        let last = writer.now();
+        assert_eq!(time.now(), last);
+        assert_eq!(last.nanos(), test.now());
+        drop(writer);
+        test.clock.sleep(Span::SECOND).await;
+        let after = time.clone().now();
+        assert!(after >= last, "{after} is before {last}");
+        assert_eq!(after.nanos(), test.now());
+    });
+}
+
+#[test]
 fn opens_no_writer_with_a_lease_of_zero() {
     run(9, |test| async move {
         let config = writer::Config {
@@ -1322,8 +1339,10 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
             ended,
             mut commit,
             hub,
+            pause,
             ..
         } = test;
+        pause.pause();
         drop((hub, reader, writer));
         assert_eq!((&mut commit).await, Ok(()));
         let open = || async {
@@ -1338,6 +1357,7 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         assert_eq!(open().await, Err(busy), "seed {seed}");
         drop(commit);
         assert_eq!(open().await, Ok(()), "seed {seed}");
+        pause.resume();
         clock.sleep(Span::from_nanos(1)).await;
         assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         first

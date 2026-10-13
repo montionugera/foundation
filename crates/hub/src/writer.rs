@@ -250,13 +250,14 @@ impl Writer {
     /// after the one before it
     /// ([`order::Error::Backwards`](crate::home::order::Error::Backwards)).
     #[must_use]
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "a writer opens only after mesh time, which stays"
-    )]
     pub fn now(&self) -> Stamp {
-        let now = self.state.borrow().home.now();
-        now.expect("invariant: mesh time stays once known")
+        now(&self.state)
+    }
+
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
+    #[must_use]
+    pub fn time(&self) -> Time {
+        Time(Rc::clone(&self.state))
     }
 
     /// A frame of the writer's key set to fill, from the shard's pool, as
@@ -317,4 +318,22 @@ impl Drop for Writer {
     fn drop(&mut self) {
         self.state.borrow_mut().close_writer(self.key);
     }
+}
+
+/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
+/// It reads what [`Writer::now`] reads, also after the writer drops.
+#[derive(Clone, Debug)]
+pub struct Time(Rc<RefCell<State>>);
+
+impl Time {
+    /// As [`Writer::now`].
+    #[must_use]
+    pub fn now(&self) -> Stamp {
+        now(&self.0)
+    }
+}
+
+fn now(state: &RefCell<State>) -> Stamp {
+    let now = state.borrow().home.now();
+    now.expect("invariant: mesh time stays once known")
 }
