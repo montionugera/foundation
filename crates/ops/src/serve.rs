@@ -12,10 +12,11 @@ use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
+use crate::apply::Effect;
 use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
-use crate::plan::Documents;
+use crate::plan::{Documents, Output};
 use crate::{Node, apply, used};
 
 #[cfg(test)]
@@ -205,13 +206,44 @@ pub(crate) fn apply_request(plan: &[u8]) -> Vec<u8> {
     [b"{\"apply\":{}}\n", plan].concat()
 }
 
+/// The output of the reply `body` of [`serve`] to a request of `plan`, and the plan
+/// file after its first line.
+///
+/// # Errors
+///
+/// Each error of [`answer`], and [`Error::Reply`] when no plan follows the output.
+pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
+    let (output, plan) = answer(body)?;
+    if plan.is_empty() {
+        return Err(Error::Reply {
+            message: "no plan follows the first line of the reply of `plan`".to_owned(),
+        });
+    }
+    Ok((output, plan))
+}
+
+/// The output of the reply `body` of [`serve`] to a request of `apply`.
+///
+/// # Errors
+///
+/// Each error of [`answer`], and [`Error::Reply`] when bytes follow the output.
+pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
+    let (effect, rest) = answer(body)?;
+    if !rest.is_empty() {
+        return Err(Error::Reply {
+            message: "bytes follow the first line of the reply of `apply`".to_owned(),
+        });
+    }
+    Ok(effect)
+}
+
 /// The output of the reply `body` of [`serve`], and the bytes after its first line.
 ///
 /// # Errors
 ///
 /// - [`Error::Remote`] with the errors of the reply and its exit status.
 /// - [`Error::Reply`] when `body` is no reply, or holds no error with a status of 0.
-pub(crate) fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
+fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
     let bad = |message: &str| Error::Reply {
         message: message.to_owned(),
     };

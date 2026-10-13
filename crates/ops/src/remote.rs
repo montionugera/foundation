@@ -7,7 +7,7 @@ use serde_json::Value;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
-use crate::apply::{Applied, Effect};
+use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
 use crate::operation::DATA;
@@ -50,8 +50,7 @@ impl Shown {
 /// - [`Error::Read`] for the first file that does not read as UTF-8 text.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::answer`], and [`Error::Reply`] when no plan follows the
-///   output.
+/// - Each error of [`serve::plan_reply`].
 /// - [`Error::Write`] when the write of `out` fails.
 pub(crate) async fn plan<C>(
     files: &[PathBuf],
@@ -88,12 +87,7 @@ where
         });
     }
     let reply = request(&serve::plan_request(&read), reach).await?;
-    let (output, plan) = serve::answer::<Output>(&reply)?;
-    if plan.is_empty() {
-        return Err(Error::Reply {
-            message: "no plan follows the first line of the reply of `plan`".to_owned(),
-        });
-    }
+    let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
         paths.write(out, plan).map_err(|error| Error::Write {
             path: out.to_owned(),
@@ -112,8 +106,7 @@ where
 /// - [`Error::Read`] when the plan file does not read.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of `reach` or of the request.
-/// - Each error of [`serve::answer`], and [`Error::Reply`] when bytes follow the
-///   output.
+/// - Each error of [`serve::apply_reply`].
 pub(crate) async fn apply<C>(
     plan: &Path,
     paths: &Paths,
@@ -128,12 +121,7 @@ where
     };
     let bytes = file(paths, plan)?;
     let reply = request(&serve::apply_request(&bytes), reach).await?;
-    let (effect, rest) = serve::answer::<Effect>(&reply)?;
-    if !rest.is_empty() {
-        return Err(Error::Reply {
-            message: "bytes follow the first line of the reply of `apply`".to_owned(),
-        });
-    }
+    let effect = serve::apply_reply(&reply)?;
     Ok(Shown::Apply(Applied {
         file: name.to_owned(),
         effect,

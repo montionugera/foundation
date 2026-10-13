@@ -492,7 +492,7 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
             text: "{".to_owned(),
         }]);
         let reply = serve::serve(&remote.node, &name("@admin"), &body).await;
-        let expected = serve::answer::<serde_json::Value>(&reply).map(drop);
+        let expected = serve::plan_reply(&reply).map(drop);
         let Err(Error::Remote { problems, status }) = expected.clone() else {
             panic!("the node refuses the file: {expected:?}");
         };
