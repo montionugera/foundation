@@ -46,6 +46,9 @@ pub(crate) enum Call {
     Unlink {
         handle: Handle,
     },
+    /// A call on a file of the host, which takes the time of a call and changes no
+    /// disk.
+    Host(Operation),
 }
 
 impl Call {
@@ -61,6 +64,7 @@ impl Call {
             Self::Read { .. } => Operation::ReadAt,
             Self::Sync { .. } => Operation::Sync,
             Self::Rename { .. } => Operation::Rename,
+            Self::Host(operation) => *operation,
         }
     }
 
@@ -414,6 +418,7 @@ impl Files {
             Call::Unlink { handle } => {
                 disk.unlink(handle.inode, &path).map(|()| Done::Unit)
             }
+            Call::Host(_) => Ok(Done::Unit),
         };
         if let Some(handle) = call.handle() {
             disk.release(handle);

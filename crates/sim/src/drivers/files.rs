@@ -68,25 +68,34 @@ impl env::files::Driver for Node {
         &'a self,
         path: &'a Path,
     ) -> Request<'a, Box<dyn env::files::Descriptor>> {
-        let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
-        let io = |code| Error::Io {
-            path: path.to_path_buf(),
-            operation: Operation::Open,
-            code,
-        };
-        let opened = match found {
-            Ok(Found::File(bytes)) => {
-                let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host(bytes));
-                Ok(descriptor)
-            }
-            Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
-            Ok(Found::Large) => unreachable!("invariant: no file is over usize::MAX"),
-            Err(env::paths::Error::NotFound) => Err(Error::NotFound {
+        let wait = self.submit(path.to_path_buf(), Call::Host(Operation::Open), None);
+        Box::pin(async move {
+            wait.await.result?;
+            let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
+            let io = |code| Error::Io {
                 path: path.to_path_buf(),
-            }),
-            Err(env::paths::Error::Io { code }) => Err(io(code)),
-        };
-        Box::pin(future::ready(opened))
+                operation: Operation::Open,
+                code,
+            };
+            match found {
+                Ok(Found::File(bytes)) => {
+                    let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host {
+                        node: self.clone(),
+                        path: path.to_path_buf(),
+                        bytes,
+                    });
+                    Ok(descriptor)
+                }
+                Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
+                Ok(Found::Large) => {
+                    unreachable!("invariant: no file is over usize::MAX")
+                }
+                Err(env::paths::Error::NotFound) => Err(Error::NotFound {
+                    path: path.to_path_buf(),
+                }),
+                Err(env::paths::Error::Io { code }) => Err(io(code)),
+            }
+        })
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -250,22 +259,36 @@ impl Drop for Descriptor {
 
 /// A file of the host, read whole at its open. `File` opens it to read only, so it
 /// never writes, renames, or removes it.
-struct Host(Vec<u8>);
+struct Host {
+    node: Node,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
 
 impl env::files::Descriptor for Host {
     fn len(&self) -> u64 {
-        u64::try_from(self.0.len()).expect("invariant: usize fits u64")
+        u64::try_from(self.bytes.len()).expect("invariant: usize fits u64")
     }
 
     fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
         unreachable!("invariant: a host file is open to read")
     }
 
-    fn read_at(&self, offset: u64, mut into: Unique) -> Request<'_, Unique> {
-        let start = usize::try_from(offset).expect("invariant: File checked it");
-        let bytes = self.0.get(start..start + into.len());
-        into.copy_from_slice(bytes.expect("invariant: File checked the range"));
-        Box::pin(future::ready(Ok(into)))
+    fn read_at(&self, offset: u64, into: Unique) -> Request<'_, Unique> {
+        let call = Call::Host(Operation::ReadAt);
+        let held = Some(Held::Into(into));
+        let wait = self.node.submit(self.path.clone(), call, held);
+        Box::pin(async move {
+            let Ended { result, held } = wait.await;
+            result?;
+            let Some(Held::Into(mut into)) = held else {
+                unreachable!("invariant: a read keeps its block")
+            };
+            let start = usize::try_from(offset).expect("invariant: File checked it");
+            let bytes = self.bytes.get(start..start + into.len());
+            into.copy_from_slice(bytes.expect("invariant: File checked the range"));
+            Ok(into)
+        })
     }
 
     fn sync(&self) -> Request<'_, ()> {

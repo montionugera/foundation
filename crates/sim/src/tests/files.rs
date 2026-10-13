@@ -125,9 +125,56 @@ fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
         file.close().await;
         (bytes, span, later)
     });
+    assert_eq!((bytes, later), (b"abc".to_vec(), b"bc".to_vec()));
+    assert!(
+        span <= Span::from_nanos(100 * Span::MICROSECOND.nanos()),
+        "{span:?}"
+    );
+}
+
+#[test]
+fn open_absolute_and_its_reads_take_the_time_of_a_call_and_take_faults() {
+    let (spans, found) = run(0, MIB, |node, _| async move {
+        let (files, clock, pool) = (node.files(), node.clock(), pool());
+        let path = Path::new("/run/secrets/a");
+        node.paths().write(path, b"abc").unwrap();
+        let mut spans = Vec::new();
+        for _ in 0..16 {
+            let start = clock.now();
+            let file = files.open_absolute(path).await.unwrap();
+            spans.push(clock.now() - start);
+            let start = clock.now();
+            read(&file, &pool, 0, 3).await;
+            spans.push(clock.now() - start);
+        }
+        node.fail_file(path, Operation::Open);
+        let opened = files.open_absolute(path).await.map(drop).unwrap_err();
+        let file = files.open_absolute(path).await.unwrap();
+        node.fail_file(path, Operation::ReadAt);
+        let read = file.read_at(0, pool.alloc(3).unwrap()).await.map(drop);
+        (spans, [opened, read.unwrap_err()])
+    });
+    let range = Span::ZERO..=Span::from_nanos(100 * Span::MICROSECOND.nanos());
+    assert!(spans.iter().all(|span| range.contains(span)), "{spans:?}");
+    assert!(spans.iter().any(|&span| span > Span::ZERO), "{spans:?}");
+    let path = "/run/secrets/a";
     assert_eq!(
-        (bytes, span, later),
-        (b"abc".to_vec(), Span::ZERO, b"bc".to_vec())
+        found,
+        [io(path, Operation::Open, 5), io(path, Operation::ReadAt, 5)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "a file call needs a thread that the sim started")]
+fn open_absolute_outside_the_sim_panics() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let files = node.files();
+    let mut opened = pin!(files.open_absolute(Path::new("/a")));
+    drop(
+        opened
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
     );
 }
 
