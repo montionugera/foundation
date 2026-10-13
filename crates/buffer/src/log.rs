@@ -287,7 +287,9 @@ impl Log {
 pub(crate) struct Logs {
     /// The place of the log of each path in `paths`.
     places: hash::Map<(Slot, Path), u32>,
-    /// The log of each path, in the order that each first came. No log leaves.
+    /// The log of each path, in the order that each first came. No log leaves, so a
+    /// place in `places` and `items` stays valid. A change that drops a log updates
+    /// both.
     paths: Vec<Log>,
     /// The offset of the newest record that holds a durable entry with each nonzero
     /// tag, by the log and the tag. Tag 0 marks samples, which no caller looks up. A
