@@ -480,12 +480,12 @@ site.b: device error: no route to the device
 ";
         let shown = cli(&node, &paths, &["status"]).await;
         assert_eq!(shown, (Run::Exit(0), table.to_owned(), String::new()));
-        let (run, output, errors) = cli(&node, &paths, &["status", "--json"]).await;
+        let (run, json, errors) = cli(&node, &paths, &["status", "--json"]).await;
         assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
-        let output: Value = serde_json::from_str(&output).expect("JSON");
+        let output: Value = serde_json::from_str(&json).expect("JSON");
         assert_eq!(output["connectors"][1]["error"]["class"], "device");
         let (head, _) = status(&node, "@admin").await;
-        assert_eq!(output, head["output"]);
+        assert_eq!(json, format!("{}\n", head["output"]));
     });
 }
 
