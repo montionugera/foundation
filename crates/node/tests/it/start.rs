@@ -1,5 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
+use crate::quickstart::shown;
 use crate::rig::{self, Rig};
 use crate::text;
 
@@ -12,13 +13,17 @@ fn ended(output: &std::process::Output) -> (Option<i32>, &str, &str) {
     )
 }
 
-const RUNS: &str = "node edge runs in foundation-data. Stop it with Ctrl-C.\n";
+/// What `foundation start --name edge` prints on a first start: the start block of the
+/// quickstart page.
+fn runs() -> &'static str {
+    shown("node ")
+}
 
 #[test]
 fn a_node_prints_that_it_runs_and_exits_0_at_sigterm() {
     let mut rig = Rig::new();
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -73,7 +78,7 @@ fn a_restart_reads_the_name_from_the_data_directory() {
     rig.start();
     rig.stop();
     rig.start_with(&[]);
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -89,7 +94,7 @@ fn a_second_node_on_a_data_directory_fails_and_the_first_runs_on() {
              fix: Stop that node, or give another data directory with `--data`\n"
         )
     );
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -102,7 +107,7 @@ fn a_first_start_founds_the_region_and_a_restart_needs_no_admin_key() {
     assert_eq!(len, 54);
     std::fs::remove_file(&admin).expect("remove the admin key");
     rig.start_with(&[]);
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
     assert!(!admin.exists(), "a restart made a new admin key");
 }
 
@@ -137,7 +142,7 @@ fn a_first_start_with_a_reserved_name_fails_and_a_start_with_another_name_runs()
         )
     );
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -276,7 +281,7 @@ fn a_first_start_keeps_its_budgets_and_a_restart_leaves_them() {
     assert!((1..=1 << 30).contains(&pool), "pool {pool}");
     assert!((1..=8 << 30).contains(&disk), "disk {disk}");
     rig.start_with(&[]);
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
     assert_eq!(kept(&rig), first);
 }
 
@@ -554,7 +559,7 @@ fn a_key_that_the_user_cannot_write_starts() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
         .expect("make it read-only");
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -750,7 +755,7 @@ fn a_start_at_a_multicast_ip_on_a_running_node_fails_for_the_ip() {
              and that this user can bind\n"
         )
     );
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -812,9 +817,9 @@ fn a_start_with_another_name_after_the_name_file_is_gone_fails() {
         )
     );
     rig.start_with(&[]);
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
 }
 
 #[test]
@@ -830,7 +835,7 @@ fn a_node_holds_the_file_address_while_it_runs_and_writes_it_empty_at_sigterm() 
     assert_eq!(held.len(), 99);
     assert_eq!(held[..20], *b"foundation/address/1");
     assert_eq!(held[95..], crc32c::crc32c(&held[..95]).to_le_bytes());
-    assert_eq!(ended(&rig.stop()), (Some(0), RUNS, ""));
+    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
     let stopped = std::fs::read(&address).expect("read the file address");
     assert_eq!(stopped, [0; 99]);
 }

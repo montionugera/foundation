@@ -75,3 +75,5 @@
   1 in COST TRIALS (the person, 2026-10-08T01:17Z, recorded in
   https://github.com/synnaxlabs/foundation/issues/1703). Amends REVIEW TIERS: a commit
   that only applies `Text fixes:` items gets no second round.
+  Amended (2026-10-13, REVIEW ROUNDS): after round 3, a code fix keeps no round, and
+  gets only its test, CI, and the `architecture` run and approvals of REVIEW ROUNDS.
