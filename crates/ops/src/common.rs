@@ -1,4 +1,4 @@
-//! Fixtures that the tests of `plan`, `apply`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -10,6 +10,7 @@ use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::files::{self, Operation};
+use env::paths::Paths;
 use env::tasks::Tasks;
 use hub::Hub;
 use mesh::Mesh;
@@ -18,8 +19,8 @@ use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
 
-use crate::Node;
 use crate::front_end::{File, FrontEnd, FrontEnds};
+use crate::{Failure, Node, Run};
 
 #[path = "../tests/common/founding.rs"]
 mod founding;
@@ -152,6 +153,24 @@ pub(crate) fn files(files: &[(&str, &str)]) -> Vec<File> {
             text: (*text).to_owned(),
         })
         .collect()
+}
+
+/// The run, output, and errors of `foundation <args>`, whose requests go through
+/// `reach`.
+pub(crate) async fn cli<C>(
+    paths: &Paths,
+    args: &[&str],
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> (Run, String, String)
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let args = ["foundation"].iter().chain(args).map(Into::into);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let input = std::io::empty();
+    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
 }
 
 /// `site.hcl` with a placement that homes its index on `edge`.

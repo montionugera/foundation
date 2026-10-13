@@ -27,8 +27,8 @@ approval; pin the version you build against there.
 | `ssh-key` | `config` (the read of a subject key and its `SHA256:` fingerprint) | The OpenSSH public key format and its fingerprint, for `plan`, `export` (K3), and the Rust SDK (#337). `default-features = false`, feature `alloc`. Adds `ssh-encoding`, `ssh-cipher`, `sha2`, `digest`, `block-buffer`, `signature`, and `pem-rfc7468`. The person, 2026-10-08T16:58Z, through laptop.monitor: "Yes I approve" (https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6064910986) | Apache-2.0 or MIT | 0.6.7 | 2026-10-08 |
 | `clap` | `ops` | The command line, generated from the operation table (C7, r7 area 8) | MIT or Apache-2.0 | 4.6.7 | 2026-10-05 |
 | `schemars` | `ops` | JSON Schemas of operation inputs for MCP tools (C7, r7 area 8) | MIT | 1.2.2 | 2026-10-05 |
-| `serde` | `ops` | Typed operation input and output for `--json` and MCP | MIT or Apache-2.0 | 1.0.229 | 2026-10-05 |
-| `serde_json` | `ops` | JSON for `--json` and MCP | MIT or Apache-2.0 | 1.0.151 | 2026-10-05 |
+| `serde` | `ops`; `node` (dev) | Typed operation input and output for `--json` and MCP | MIT or Apache-2.0 | 1.0.229 | 2026-10-05 |
+| `serde_json` | `ops`; `acceptance` and `node` (dev) | JSON for `--json` and MCP | MIT or Apache-2.0 | 1.0.151 | 2026-10-05 |
 | `unicode-ident` | `config-hcl` | Identifiers outside ASCII, as HCL reads them (HCL IDENTIFIERS, #263) | (MIT or Apache-2.0) and Unicode-3.0 | 1.0.26 | 2026-10-05 |
 | `unicode-properties` | `connector-influx` | The general category of a character, so `line::Measurement::new` and `Measurement::field` refuse each character that InfluxDB 1 and 2 with `validate-keys` drop (LINE TEXT, #1098). Feature `general-category` only. The person, 2026-10-08T01:48:32Z: "I approve unicode-properties 0.1.4 (feature general-category only) as a dependency of connector-influx." (https://github.com/synnaxlabs/foundation/issues/1098#issuecomment-6050501586) | MIT or Apache-2.0 | 0.1.4 | 2026-10-08 |
 | `zeroize` | `secret` | Overwrite a secret value when it drops; a plain write may be optimized away, and a volatile write needs `unsafe` (#230) | Apache-2.0 or MIT | 1.9.0 | 2026-10-05 |

@@ -4,7 +4,6 @@ use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use types::channel;
 
 use crate::error::{self, Error, Sources};
@@ -122,11 +121,6 @@ pub(crate) struct Effect {
 }
 
 impl Applied {
-    /// The output as JSON.
-    pub(crate) fn json(&self) -> Value {
-        serde_json::to_value(self).expect("invariant: an output is plain JSON data")
-    }
-
     /// `Applied <file>: <a> added, <c> changed, <r> removed, <h> homes listed.`, with
     /// each count of 0 left out and `1 home listed` for one home, or `no change` in
     /// place of the counts when each is 0.

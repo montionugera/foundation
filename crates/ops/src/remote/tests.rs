@@ -5,9 +5,9 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::json;
 
-use super::{apply, most, plan};
+use super::{apply, most, plan, status};
 use crate::apply::Applied;
-use crate::common::{create_node, name, placed_site, solo};
+use crate::common::{self, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
 use crate::front_end::File;
 use crate::operation::DATA;
@@ -106,18 +106,21 @@ impl Remote {
         apply(file, paths, reach).await
     }
 
+    async fn status(&self) -> Result<crate::status::Output, Error> {
+        let reach = async |data: &Path| {
+            self.reached(data)?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        status(reach).await
+    }
+
     /// The run, output, and errors of `foundation <args>`.
     async fn cli(&self, paths: &Paths, args: &[&str]) -> (Run, String, String) {
         let reach = async |data: &Path| {
             self.reached(data)?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        let args = ["foundation"].iter().chain(args).map(Into::into);
-        let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let input = std::io::empty();
-        let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
-        let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
-        (run, text(output), text(errors))
+        common::cli(paths, args, reach).await
     }
 
     /// The count of calls of `reach`, and of requests.
@@ -155,7 +158,7 @@ fn plans_writes_the_plan_file_and_applies_it() {
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
         let planned = planned.expect("a plan");
-        assert_eq!(planned.json(), output);
+        assert_eq!(crate::value(&planned), output);
         assert_eq!(paths.read(out, most()), Ok(Found::File(expected)));
         assert_eq!(remote.calls(), (1, 1));
 
@@ -468,6 +471,29 @@ fn apply_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
         let applied = remote.apply(&paths, Path::new("site.plan")).await;
         let message = "bytes follow the first line of the reply of `apply`".to_owned();
         assert_eq!(applied.err(), Some(Error::Reply { message }));
+    });
+}
+
+#[test]
+fn status_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
+    solo(|fixture, mesh| async move {
+        let reply = b"{\"output\":{\"connectors\":[]}}\nx".to_vec();
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Reply(reply));
+        let message = "bytes follow the first line of the reply of `status`".to_owned();
+        assert_eq!(remote.status().await, Err(Error::Reply { message }));
+        assert_eq!(remote.calls(), (1, 1));
+        assert_eq!(*remote.reached.borrow(), [PathBuf::from(DATA)]);
+    });
+}
+
+#[test]
+fn status_that_reaches_no_node_gives_its_failure() {
+    solo(|fixture, mesh| async move {
+        for (mode, calls) in [(Mode::Unreached, (1, 0)), (Mode::Unsent, (1, 1))] {
+            let remote = Remote::with(create_node(&fixture, mesh.clone()), mode);
+            assert_eq!(remote.status().await, Err(Error::Node(lost())));
+            assert_eq!(remote.calls(), calls);
+        }
     });
 }
 
