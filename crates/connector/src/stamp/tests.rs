@@ -87,11 +87,10 @@ fn a_refusal_at_the_last_instant_panics() {
 }
 
 #[test]
-#[should_panic(expected = "refusal under the last stamp: 9 ns < 10 ns")]
-fn a_refusal_under_the_last_stamp_panics() {
+fn a_refusal_under_the_last_stamp_is_stamped_after_the_last_stamp() {
     let mut stamps = Stamps::default();
     stamps.next(Stamp::from_nanos(10));
-    stamps.after(Stamp::from_nanos(9));
+    assert_eq!(stamps.after(Stamp::from_nanos(9)), Stamp::from_nanos(11));
 }
 
 #[test]
@@ -102,7 +101,7 @@ fn a_refusal_at_the_last_stamp_is_stamped_after_it() {
 }
 
 /// A call of [`Stamps`]: a stamp at some time, or a refusal whose stamp before is
-/// some time after the last stamp.
+/// some time before or after the last stamp.
 #[derive(Clone, Debug)]
 enum Call {
     Next { time: i64 },
@@ -112,14 +111,14 @@ enum Call {
 fn call() -> impl Strategy<Value = Call> {
     prop_oneof![
         3 => (0..1_000i64).prop_map(|time| Call::Next { time }),
-        1 => (0..1_000i64).prop_map(|ahead| Call::After { ahead }),
+        1 => (-1_000..1_000i64).prop_map(|ahead| Call::After { ahead }),
     ]
 }
 
 proptest! {
     /// In any order of calls, each stamp is after the one before it. A stamp is at
     /// its time when that is later, and a refusal gives the nanosecond after its
-    /// stamp before.
+    /// stamp before when that is later.
     #[test]
     fn stamps_strictly_increase_from_their_times(
         calls in prop::collection::vec(call(), 1..50),
@@ -134,7 +133,8 @@ proptest! {
                 ),
                 Call::After { ahead } => {
                     let before = last.unwrap_or(0) + ahead;
-                    (stamps.after(Stamp::from_nanos(before)), before + 1)
+                    let expected = last.map_or(before, |last| before.max(last)) + 1;
+                    (stamps.after(Stamp::from_nanos(before)), expected)
                 }
             };
             prop_assert_eq!(stamp, Stamp::from_nanos(expected));

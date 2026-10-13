@@ -35,25 +35,14 @@ impl Stamps {
     }
 
     /// Gives the nanosecond after `before`, for a frame that the home refused as
-    /// `Backwards` with `before` as the stamp before it, and makes each later stamp
-    /// after it.
+    /// `Backwards` with `before` as the stamp before it, or the nanosecond after the
+    /// last stamp when that is later, and makes each later stamp after it.
     ///
     /// # Panics
     ///
-    /// When `before` is under the last stamp, which no refusal gives, or is
-    /// `i64::MAX` ns.
+    /// When `before` or the last stamp is `i64::MAX` ns.
     pub fn after(&mut self, before: Stamp) -> Stamp {
-        if let Some(last) = self.last {
-            assert!(
-                before >= last,
-                "refusal under the last stamp: {} ns < {} ns",
-                before.nanos(),
-                last.nanos()
-            );
-        }
-        let stamp = before + Span::NANOSECOND;
-        self.last = Some(stamp);
-        stamp
+        self.next(before + Span::NANOSECOND)
     }
 
     /// Gives `stamp`, or the nanosecond after the last stamp when that is later.
