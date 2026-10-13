@@ -14,7 +14,7 @@ use connector::kind::{self, Channels, Context, Error, Table};
 use connector::supervisor::Supervisor;
 use connector::testing;
 use connector_opcua::Config;
-use connector_opcua::sim::{Variables, serve};
+use connector_opcua::sim::{Served, Variables, serve};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use document::value::{self, Value};
@@ -154,11 +154,19 @@ pub(crate) fn ticks(
     let (result, served) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
     assert!(served.len() >= count, "{} reads served", served.len());
-    let polls = polls.lock().expect("no panic under the lock");
+    sums(
+        &polls.lock().expect("no panic under the lock"),
+        &served[..count],
+    )
+}
+
+/// The sum of the values of `polls` before the first of `served`, and for each of
+/// `served`, the sum of those within half a period of it.
+fn sums(polls: &[(Monotonic, u64)], served: &[Served]) -> (u64, Vec<u64>) {
     let half = PERIOD.nanos() / 2;
     let near = |at: Monotonic, read: Monotonic| (at - read).nanos().abs() < half;
     let start = polls.iter().take_while(|(at, _)| *at < served[0].time);
-    let ticks = (served.iter().take(count))
+    let ticks = (served.iter())
         .map(|read| {
             let polls = polls.iter().filter(|(at, _)| near(*at, read.time));
             polls.map(|(_, value)| value).sum()
