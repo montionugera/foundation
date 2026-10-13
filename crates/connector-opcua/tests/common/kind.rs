@@ -28,7 +28,7 @@ use spec::definition::Definition;
 use types::channel;
 use types::name::Name;
 use types::sample::{Scalar, Type};
-use types::time::{Monotonic, Span};
+use types::time::{Monotonic, Span, Stamp};
 
 /// The time between two ticks of the connector, at 10 Hz.
 const PERIOD: Span = Span::from_nanos(100_000_000);
@@ -130,12 +130,9 @@ pub(crate) fn run(
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
         let (clock, net, listener) = (node.clock(), node.net(), listen(&node));
-        let wall = node.wall();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a simulated device reads the wall time of its node"
-        )]
-        let wall = move || wall.now().time;
+        let read = node.clock();
+        let wall =
+            move || Stamp::from_nanos(i64::try_from(read.now().0).unwrap_or(i64::MAX));
         let (answers, until) = (variables.clone(), stop.clone());
         let mut rng = node.entropy().rng();
         serving.tasks().spawn(async move {
