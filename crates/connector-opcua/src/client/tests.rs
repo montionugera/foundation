@@ -328,6 +328,44 @@ fn a_connect_with_no_listener_fails_with_its_status() {
     assert_eq!(status, Some(Status::BAD_CONNECTION_REJECTED));
 }
 
+/// A port past `u32::MAX` that wraps to the port of the server fails the connect, and
+/// does not reach the server.
+#[test]
+fn a_connect_to_a_port_that_wraps_to_the_server_fails_with_its_status() {
+    let (status, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let wrapped = u64::from(PORT) + (1 << 32);
+            let url = format!("opc.tcp://{}:{wrapped}", node.addresses()[0]);
+            match peer.connect(&url).await {
+                Ok(client) => {
+                    client.close().await;
+                    None
+                }
+                Err(status) => Some(status),
+            }
+        })
+        .await
+    });
+    assert_eq!(status, Some(Status::BAD_TCP_ENDPOINT_URL_INVALID));
+}
+
+/// `UA_readNumber` stops before a digit that takes the number past `u32::MAX`.
+#[test]
+fn a_number_stops_before_the_digit_that_overflows_u32() {
+    let read = |text: &str| {
+        let mut number = 0;
+        // SAFETY: `text` lives through the call, which reads only its `len` bytes.
+        let progress = unsafe {
+            ffi::test::UA_readNumber(text.as_ptr(), text.len(), &raw mut number)
+        };
+        (progress, number)
+    };
+    assert_eq!(read("4294967295"), (10, u32::MAX));
+    assert_eq!(read("4294967296"), (9, 429_496_729));
+    assert_eq!(read("42949672950"), (10, u32::MAX));
+    assert_eq!(read("4840/path"), (4, 4840));
+}
+
 #[test]
 fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
     let (statuses, _) = run(0, async |node| {

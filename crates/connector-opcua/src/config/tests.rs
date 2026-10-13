@@ -163,6 +163,26 @@ fn refuses_an_address_that_open62541_refuses() {
 }
 
 #[test]
+fn refuses_a_port_past_u32() {
+    let fix = "Write an address such as \"opc.tcp://plc:4840\"";
+    for address in [
+        "opc.tcp://plc:4294967296",
+        "opc.tcp://plc:4294972136",
+        "opc.tcp://plc:8589934592/path",
+    ] {
+        let reads = vec![read(20, "plant.spike", "ns=3;s=SpikeData")];
+        let message = format!(
+            "the address {address:?} has no host, or a port that is not 0 to 65535"
+        );
+        assert_eq!(
+            parse(&config(string(address), reads)),
+            Err(vec![refused("opcua.bad-address", 1, &message, fix)]),
+            "{address:?}"
+        );
+    }
+}
+
+#[test]
 fn reads_an_address_with_no_port_a_path_or_an_ipv6_host() {
     for address in [
         "opc.tcp://plc",

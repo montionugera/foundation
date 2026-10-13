@@ -805,6 +805,56 @@ fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
     assert_eq!(stamp(&other[1], 10), ahead + 1);
 }
 
+/// When the home refuses only the second index as `Backwards`, the run writes only
+/// that group again.
+#[test]
+fn writes_only_the_refused_second_group_again() {
+    let mut setup = Setup::three();
+    setup.channels.push(("plant.other", index(10)));
+    setup.channels[3] = ("plant.c", data(4, 10, F64));
+    let outcome = run(setup, move |scene| async move {
+        let config = hub::writer::Config {
+            subject: name("plant.rival"),
+            authority: Authority::ABSOLUTE,
+            lease: None,
+            channels: ["plant.c"].map(name).into(),
+        };
+        let mut rival = scene.hub.writer(config).await.expect("opens");
+        let set = Arc::clone(rival.set());
+        let entries = set.entries();
+        let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
+        let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
+        let now = rival.now().nanos();
+        for (entry, bytes) in draft.iter_mut() {
+            let sample = match entries[entry].key.as_u128() {
+                10 => (now + ms(600).nanos()).to_le_bytes(),
+                _ => 0.0_f64.to_le_bytes(),
+            };
+            bytes.copy_from_slice(&sample);
+        }
+        for &index in set.groups() {
+            draft.set_count(entries[index].group, 1);
+        }
+        let outcomes = rival.write(Label::Path(Path::Live), draft);
+        assert!(
+            matches!(outcomes, Ok([Outcome::Applied { .. }])),
+            "{outcomes:?}"
+        );
+        drop(rival);
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let (frames, other) = (&outcome.frames, &outcome.indexes[&10]);
+    let ahead = stamp(&other[0], 10);
+    assert_eq!(stamp(&other[1], 10), ahead + 1);
+    let stamps: Vec<_> = other.iter().map(|frame| stamp(frame, 10)).collect();
+    assert!(stamps.is_sorted_by(|a, b| a < b), "{stamps:?}");
+    assert_eq!(frames.len(), other.len() - 1);
+    let samples = u64::try_from(frames.len() * 3).expect("a few");
+    assert_eq!(last(&outcome.statuses, IN), samples);
+    assert_eq!(last(&outcome.statuses, LOST), 0);
+}
+
 #[test]
 fn counts_the_samples_of_a_frame_that_the_home_loses() {
     let outcome = run(Setup::three(), |scene| async move {
