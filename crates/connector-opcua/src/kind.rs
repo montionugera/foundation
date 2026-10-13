@@ -394,8 +394,9 @@ impl<'a> Values<'a> {
 
     /// The value of the read at `at`.
     fn get(self, at: usize) -> f64 {
-        let Ok(value) = self.0[at] else {
-            panic!("invariant: `Values::new` takes only good values")
+        let value = self.0[at];
+        let Ok(value) = value else {
+            panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
         };
         value
     }
