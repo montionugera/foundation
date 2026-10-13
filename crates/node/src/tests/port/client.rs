@@ -377,12 +377,12 @@ fn text(bytes: &[u8]) -> &str {
 /// The key of `plant.operator`, which no founding lists.
 const OPERATOR: PrivateKey = PrivateKey([5; 32]);
 
-/// What a hello of `plant.operator` with [`OPERATOR`] gives on a shard of `host`, at
-/// the node whose address `host` holds, once `sim` has run for a minute.
+/// The reply to [`PLAN`] of `plant.operator` with [`OPERATOR`] on a shard of `host`,
+/// at the node whose address `host` holds, once `sim` has run for a minute.
 fn operator(
     sim: &mut sim::Sim,
     host: &sim::node::Node,
-) -> Result<(), ::hub::client::Error> {
+) -> Result<Vec<u8>, ::hub::client::Error> {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
@@ -401,17 +401,21 @@ fn operator(
             tasks,
             pool,
         };
-        let connected = ::hub::client::Client::connect(&transport, config).await;
-        *slot.lock().expect("no test thread panicked") = Some(connected.map(drop));
+        let client = ::hub::client::Client::connect(&transport, config).await;
+        let reply = match client {
+            Ok(client) => client.request(PLAN).await,
+            Err(error) => Err(error),
+        };
+        *slot.lock().expect("no test thread panicked") = Some(reply);
     });
     assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
-    let connected = out.lock().unwrap_or_else(PoisonError::into_inner).take();
-    connected.expect("the hello ends in a minute")
+    let reply = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+    reply.expect("the request ends in a minute")
 }
 
 /// The hub takes the rules of each later spec in use: a hello of a subject that no
 /// spec lists is refused, and the same hello after a spec adds the subject is
-/// admitted.
+/// admitted. Its request runs as that subject, which no policy grants `plan`.
 #[test]
 fn a_hello_of_a_subject_that_a_later_spec_adds_is_admitted() {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -443,7 +447,15 @@ fn a_hello_of_a_subject_that_a_later_spec_adds_is_admitted() {
         .unwrap_or_else(PoisonError::into_inner)
         .take();
     assert_eq!(applied, Some(Ok(())));
-    assert_eq!(operator(&mut sim, &host), Ok(()));
+    let reply = operator(&mut sim, &host).expect("admitted");
+    let denied = concat!(
+        r#"{"errors":[{"code":"ops.denied","message":"no access policy gives "#,
+        r#"`plant.operator` the action `plan` on `plant.home.@placement`","#,
+        r#""fix":"Ask an admin of the region for an access policy that allows it","#,
+        r#""notes":[]}],"status":1}"#,
+        "\n",
+    );
+    assert_eq!(text(&reply), denied);
     node.stop();
     assert_eq!(sim.run(), Ok(()));
 }
