@@ -16,13 +16,13 @@
   gives each stream of the server the options of `listener`, and panics on a variable
   of the number 0, which open62541 would add at a free number. The caller binds the
   listener, so it knows the address before the serve, as with
-  `connector_influx::sim::serve`. The stop
-  is an input, since a drop of the future would leak the server. The test server of the
-  crate owns the read of each variable: it answers the reads of the type check when
-  open62541 adds the node, and frees each read after the delete. Lost: the values and
-  the record of reads in C, with a C array that Rust copies out, which gives two copies
-  of the state across the FFI, a C allocation per read, and a second clock in C. Decided
-  by `laptop.architect-2` (2026-10-13T01:23:17Z:
+  `connector_influx::sim::serve`. The stop is an input, since a drop of the future would
+  leak the server. The test server of the crate owns the read of each variable: it
+  answers the reads of the type check when open62541 adds the node, and frees each read
+  after the delete. Lost: the values and the record of reads in C, with a C array that
+  Rust copies out, which gives two copies of the state across the FFI, a C allocation
+  per read, and a second clock in C. Decided by `laptop.architect-2`
+  (2026-10-13T01:23:17Z:
   https://github.com/synnaxlabs/foundation/issues/2515#issuecomment-6136027630), and the
   one `serve`, with the loss of a `Server` with `listen`, `local`, and `serve`, since a
   drop between `listen` and `serve` leaks the server, the `listener`, `&Variables`, the
