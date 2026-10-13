@@ -505,7 +505,7 @@ fn the_command_line_writes_the_status_of_a_node_with_no_connector() {
         applied(&fixture, &node, "").await;
         let paths = fixture.sim.paths();
         let shown = cli(&node, &paths, &["status"]).await;
-        let line = "No connector to show.\n";
+        let line = "No connector of this node that you can read.\n";
         assert_eq!(shown, (Run::Exit(0), line.to_owned(), String::new()));
         let shown = cli(&node, &paths, &["status", "--json"]).await;
         let json = "{\"connectors\":[]}\n";
@@ -721,7 +721,10 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel(
         assert_eq!((&head, rest), (&expected, Vec::new()));
         let output: Output =
             serde_json::from_value(head["output"].clone()).expect("output");
-        assert_eq!(output.text(), "No connector to show.\n");
+        assert_eq!(
+            output.text(),
+            "No connector of this node that you can read.\n"
+        );
     });
 }
 
@@ -1148,5 +1151,8 @@ fn writes_a_line_in_place_of_the_table_with_no_connector() {
     let output = Output {
         connectors: Vec::new(),
     };
-    assert_eq!(output.text(), "No connector to show.\n");
+    assert_eq!(
+        output.text(),
+        "No connector of this node that you can read.\n"
+    );
 }
