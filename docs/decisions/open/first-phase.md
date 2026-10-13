@@ -56,9 +56,10 @@ Amendment (2026-10-13): STORE AND FORWARD waits until the new sessions start, an
 session starts new work on it before then. `laptop.monitor` says on #1737 when the new
 sessions have started. Of the PRs in flight on its issues, #2461 and #2477 finish, and
 the drafts #2565 and #2454 wait. The store half of #1232, which item 6 of the path of
-the ONE NODE plan (#1737) holds, is ONE NODE work (`laptop.architect`,
+the ONE NODE plan (#1737) holds, was ONE NODE work (`laptop.architect`,
 2026-10-08T02:17:18Z:
-https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6050814109). Protocol
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6050814109), and is
+on `main` (64446144f, PR 1 of #1741). Protocol
 4 of #1232 waits with the rest of this milestone. The ONE NODE amendment of 2026-10-13
 gives the work that takes its place, the person's words, and the orders of
 `laptop.monitor` with their links. Supersedes, until the new sessions start, "It runs
