@@ -413,6 +413,34 @@ fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
 }
 
 #[test]
+fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
+    let confirmed = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let open = hub::reader::Config {
+            select: Selector::new(["edge.a"]).expect("a selector"),
+            mode: Mode::Complete,
+            subject: name("influx"),
+            name: Some(name("influx")),
+            hold: Span::ZERO,
+        };
+        let replaced = plant.hub.reader(open).await.expect("the reader opens");
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        drop(replaced);
+        write(&mut writer, first + 1, &[(3.0, 4.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.confirmed.borrow().clone()
+    });
+    assert_eq!(confirmed, [0, 2, 4]);
+}
+
+#[test]
 fn confirms_no_sample_of_a_batch_until_its_204() {
     let (failing, confirmed) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
