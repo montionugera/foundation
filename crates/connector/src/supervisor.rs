@@ -1130,6 +1130,15 @@ mod tests {
         supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
     }
 
+    /// No draft gives an end of another node.
+    #[test]
+    #[should_panic(expected = "invariant: a draft gives no end of another node: the \
+                               ends do not fit the series")]
+    fn panics_when_a_kind_returns_an_end_of_another_node() {
+        let error = frame::Error::End(frame::BadEnd::Before { end: 4, start: 8 });
+        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+    }
+
     #[test]
     fn writes_stopped_after_a_config_error_from_run() {
         let out = supervise("script", vec![Step::Config], config(), Cancel::Never);

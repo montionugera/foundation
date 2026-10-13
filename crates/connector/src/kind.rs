@@ -490,11 +490,11 @@ impl From<hub::writer::Failure> for Error {
 ///
 /// # Panics
 ///
-/// For an error that only series that do not follow the key set give, because a kind
-/// gives its series from its own code.
+/// For `OutOfRange`, `Unordered`, and `IndexAbsent`, because a kind gives its series
+/// from its own code, and for `End`, which a draft never gives.
 #[expect(
     clippy::fallible_impl_from,
-    reason = "each panic is series that do not follow the key set"
+    reason = "each panic is a defect of the kind's series or an end that no draft gives"
 )]
 impl From<types::frame::Error> for Error {
     fn from(error: types::frame::Error) -> Self {
@@ -508,9 +508,11 @@ impl From<types::frame::Error> for Error {
             }
             Frame::OutOfRange { .. }
             | Frame::Unordered { .. }
-            | Frame::IndexAbsent { .. }
-            | Frame::End(_) => {
+            | Frame::IndexAbsent { .. } => {
                 panic!("invariant: the series follow the key set: {error}")
+            }
+            Frame::End(_) => {
+                panic!("invariant: a draft gives no end of another node: {error}")
             }
         }
     }
