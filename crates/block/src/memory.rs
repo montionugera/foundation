@@ -214,7 +214,6 @@ impl Drop for Erased {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Config, Pool};
 
     fn committed(memory: &Erased) -> Vec<Range<usize>> {
         memory.committed.borrow().clone()
@@ -251,7 +250,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(loom))]
     fn erased_erases_a_pool_that_drops_before_its_block() {
+        use crate::{Config, Pool};
+
         let config = Config::new(1 << 14).expect("the budget fits");
         let memory = Erased::new(config.reservation());
         let pool = Pool::new(config, memory);
