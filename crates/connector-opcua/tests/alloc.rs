@@ -134,23 +134,23 @@ fn a_read_through_the_manager_allocates_a_fixed_count() {
     for idle in [0, 15] {
         for (at, counts) in reads(idle).into_iter().enumerate() {
             let read = at + 2;
-            assert_eq!(counts, [4, 5, 2, 0], "{idle} idle, read {read}");
+            assert_eq!(counts, [3, 5, 2, 0], "{idle} idle, read {read}");
         }
     }
 }
 
-/// The allocations in the polls of reads 2 to 100 of one client. The server runs on
-/// its own manager, outside the polls.
-fn client_reads() -> Vec<u64> {
+/// The allocations in the polls of reads 2 to 100 of `count` copies of `variable` by
+/// one client. The server runs on its own manager, outside the polls.
+fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = move |node: sim::node::Node, _| async move {
         let address = node.addresses()[0];
         let body = async |server: &client::Server| {
-            let mut client = server.connect().await;
+            let mut client = server.connect(count).await;
             let mut counts = Vec::new();
             for _ in 1..=100 {
-                let mut read = pin!(client.read());
+                let mut read = pin!(client.read(variable));
                 let mut count = 0;
                 poll_fn(|cx| {
                     let (poll, allocations) =
@@ -170,8 +170,26 @@ fn client_reads() -> Vec<u64> {
     sim.run_on(&node, run).expect("the run ends")
 }
 
-/// As through the manager, the ask allocates 4 and the read of the answer 2. Each read
-/// is a new drive, whose sleep until the next timer of the loop allocates 1 more.
+/// As through the manager, the ask allocates 3 and the answer allocates 1 for its
+/// results array and 1 for the value of each node. Each read is a new drive, whose
+/// sleep until the next timer of the loop allocates 1 more. The client swaps two
+/// buffers of values, and read 2 is the first to fill the second. The sim net
+/// allocates one more for each segment of 1460 bytes past the first: the ask of 64
+/// names takes 2.
 fn a_read_of_a_client_allocates_a_fixed_count() {
-    assert_eq!(client_reads(), [7; 99], "reads 2 to 100");
+    let cases = [
+        (client::Variable::Number, 1, 6),
+        (client::Variable::Name, 1, 6),
+        (client::Variable::Number, 64, 69),
+        (client::Variable::Name, 64, 70),
+    ];
+    for (variable, count, each) in cases {
+        let mut counts = vec![each + 1];
+        counts.extend([each; 98]);
+        assert_eq!(
+            client_reads(variable, count),
+            counts,
+            "reads 2 to 100 of {count} of {variable:?}"
+        );
+    }
 }

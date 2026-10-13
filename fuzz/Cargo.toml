@@ -271,6 +271,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "types_rate"
+path = "fuzz_targets/types_rate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "types_span"
 path = "fuzz_targets/types_span.rs"
 test = false

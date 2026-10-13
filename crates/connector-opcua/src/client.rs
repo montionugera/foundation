@@ -3,10 +3,10 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
-use std::future::Future as _;
-use std::pin::pin;
+use std::ffi::{CStr, CString, c_void};
+use std::mem;
 use std::ptr::{self, NonNull};
+use std::rc::Rc;
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -14,18 +14,31 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::Span;
 
-use crate::connection::Manager;
+use crate::alloc;
+use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::ffi::{self, Status};
+use crate::node::Node;
 
 #[cfg(test)]
 mod tests;
 
-/// A numeric node of an OPC UA server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Node {
-    pub(crate) namespace: u16,
-    pub(crate) key: u32,
-}
+/// The most reads of a client in flight. A read past it waits until one ends.
+const READS: u16 = 16;
+
+/// The bytes of the headers of a chunk with the security mode None: the message header
+/// (8), the channel (4), the token (4), and the sequence header (8).
+const HEADER: usize = 24;
+
+/// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
+/// last. It moves a value of a fixed size whole to the next chunk and splits a string,
+/// so this is 1 less than the largest value of a fixed size in a Read today, a Double
+/// (8 bytes). A GUID key (19 bytes) would need 18.
+const SPLIT: usize = 7;
+
+const _: () = assert!(
+    READS as usize * CHUNKS as usize <= SENDS / 2,
+    "the other half of the sends of a connection is for the requests of open62541"
+);
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
@@ -37,18 +50,41 @@ pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
     /// read in flight.
-    answer: Box<Answer>,
+    reads: Box<Reads>,
+    /// The values of the last read, which [`Client::read`] gives. It swaps them with
+    /// [`Reads::values`]. An answer with more values than nodes fails before it is
+    /// copied, so neither grows past the most nodes of a read.
+    values: Vec<Result<f64, Status>>,
+    clock: Clock,
+    /// The request timeout of the client.
+    timeout: Span,
+    /// The most bytes of the body of a message that the client sends.
+    sends: usize,
+    /// The most bytes of the body of a message that the client takes.
+    takes: usize,
+    /// The encoded bytes of the session token.
+    token: usize,
+    /// Tells the [`Nodes`] that this client checked from those of another.
+    key: Rc<()>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
 
-/// The answer of the read in flight.
+/// The reads of a client in flight, shared with the callback.
 #[derive(Default)]
-struct Answer {
-    /// The request of the read in flight. The callback drops the answer of another
-    /// request, which is a read whose future dropped.
+struct Reads {
+    /// The request of the last read that open62541 took. The callback drops the answer
+    /// of another request, and `read` clears the late answer of a last read that timed
+    /// out or whose future dropped.
     request: Cell<Option<u32>>,
-    value: Cell<Option<Result<f64, Status>>>,
+    /// The count of nodes of the last read.
+    count: Cell<usize>,
+    /// The status of the answer of the last read: `Good` when [`Reads::values`]
+    /// holds its values.
+    answer: Cell<Option<Status>>,
+    values: Cell<Vec<Result<f64, Status>>>,
+    /// The reads that open62541 took and has not called back, at most [`READS`].
+    pending: Cell<u16>,
 }
 
 impl Client {
@@ -64,9 +100,10 @@ impl Client {
     /// is not active after the request timeout of the client (5 s), else the status of
     /// open62541 when it refuses `url` or the connect fails.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// If open62541 refuses the client.
+    /// When open62541 cannot allocate the loop, the connection manager, or the
+    /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         clock: Clock,
         net: Net,
@@ -77,38 +114,74 @@ impl Client {
             CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
         let connections = Manager::new(Clock::clone(&clock), net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw()) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
-        let this = Self {
+        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
+        let Some(raw) = NonNull::new(raw) else {
+            alloc::exhausted()
+        };
+        // SAFETY: `raw` is a new client of the loop of `connections`.
+        unsafe { Self::start(clock, connections, raw, &url) }.await
+    }
+
+    /// Connects `raw` as [`Client::connect`] does.
+    ///
+    /// # Safety
+    ///
+    /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
+    /// connected, and nothing else owns it: the client frees it.
+    async unsafe fn start(
+        clock: Clock,
+        connections: Manager,
+        raw: NonNull<ffi::Client>,
+        url: &CStr,
+    ) -> Result<Self, Status> {
+        // SAFETY: the client lives.
+        let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
+        let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
+        let mut this = Self {
             raw,
-            answer: Box::default(),
+            reads: Box::default(),
+            values: Vec::new(),
+            clock,
+            timeout,
+            sends: 0,
+            takes: 0,
+            token: 0,
+            key: Rc::default(),
             connections,
         };
-        // SAFETY: the client lives.
-        let timeout_ms = unsafe { ffi::shim_client_timeout(this.raw.as_ptr()) };
-        let mut deadline =
-            pin!(clock.sleep(Span::from_nanos(i64::from(timeout_ms) * 1_000_000)));
+        let deadline = this.clock.now() + this.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
         unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
         let connected = this
             .connections
-            .drive(|cx| {
+            .drive_until(Some(deadline), |_| {
                 this.connections.events().run();
                 let state = this.state();
                 if state.status != Status::GOOD {
                     Poll::Ready(Err(state.status))
                 } else if state.session == ffi::Session::ACTIVATED {
                     Poll::Ready(Ok(()))
-                } else if deadline.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Err(Status::BAD_TIMEOUT))
                 } else {
                     Poll::Pending
                 }
             })
-            .await;
+            .await
+            .unwrap_or(Err(Status::BAD_TIMEOUT));
         match connected {
-            Ok(()) => Ok(this),
+            Ok(()) => {
+                let mut limits = [0; 5];
+                // SAFETY: the client lives.
+                let status = Status(unsafe {
+                    ffi::shim_client_limits(this.raw.as_ptr(), &raw mut limits)
+                });
+                assert_eq!(status, Status::GOOD, "open62541 gives the limits");
+                let [send, receive, message, chunks, token] = limits;
+                (this.sends, this.takes) =
+                    (most(send, message, chunks), most(receive, message, chunks));
+                this.token = token;
+                Ok(this)
+            }
             Err(status) => {
                 this.close().await;
                 Err(status)
@@ -116,35 +189,113 @@ impl Client {
         }
     }
 
-    /// Reads the Value of `node`, a scalar Double.
+    /// Builds one Read request of the Value of each node of `nodes`, in order, for
+    /// this client alone.
     ///
     /// # Errors
     ///
-    /// The status of open62541 when it refuses the request, the status of the answer
-    /// or of its value, or `BadTypeMismatch` when the value is not a scalar Double.
-    pub(crate) async fn read(&mut self, node: Node) -> Result<f64, Status> {
+    /// [`Large`] when the request, or a good answer with each field of a Double for
+    /// each node, needs more bytes than one message of the session: its chunk size
+    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7
+    /// bytes at the end of each chunk but the last, or the `MaxMessageSize` of the
+    /// server when that is smaller. The request comes first.
+    ///
+    /// # Aborts
+    ///
+    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
+    pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
+        let request = Nodes::new(nodes, Rc::clone(&self.key));
+        // SAFETY: the request lives.
+        let ask = unsafe { ffi::shim_read_ask(request.raw(), self.token) };
+        // SAFETY: it reads nothing.
+        let answer = unsafe { ffi::shim_read_answer(nodes.len()) };
+        for (bytes, most) in [(ask, self.sends), (answer, self.takes)] {
+            if bytes > most {
+                return Err(Large { bytes, most });
+            }
+        }
+        Ok(request)
+    }
+
+    /// Reads the Value of each node of `nodes` in one request, and gives the value of
+    /// each node in order: its scalar Double, the bad status of its value, or
+    /// `BadTypeMismatch` for another value. A read of no nodes gives no values and
+    /// sends nothing. A read that times out or whose future dropped stays in flight
+    /// until the server answers it or the connection closes. While [`READS`] are in
+    /// flight, a read first waits until one ends.
+    ///
+    /// # Errors
+    ///
+    /// `BadTooManyOperations` when no read ends in the request timeout of the client
+    /// (5 s), as the server holds the requests of [`READS`] reads: the client sends no
+    /// more reads until the server answers one. `BadTimeout` when it has no answer
+    /// after that timeout, its wait included, the status of open62541 when it refuses
+    /// the request, the status of the answer, or `BadUnexpectedError` when the answer
+    /// has a value for more or fewer nodes than `nodes`.
+    ///
+    /// # Panics
+    ///
+    /// If another client built `nodes`.
+    pub(crate) async fn read(
+        &mut self,
+        nodes: &Nodes,
+    ) -> Result<&[Result<f64, Status>], Status> {
+        assert!(
+            Rc::ptr_eq(&nodes.client, &self.key),
+            "invariant: a client reads only the nodes that it checked"
+        );
+        if nodes.count == 0 {
+            return Ok(&[]);
+        }
+        let deadline = self.clock.now() + self.timeout;
+        if self.reads.pending.get() == READS {
+            self.connections
+                .drive_until(Some(deadline), |_| {
+                    self.connections.events().run();
+                    if self.reads.pending.get() < READS {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+                .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
+        }
         let mut request = 0;
-        // SAFETY: the client lives, and `answer` outlives it.
+        // SAFETY: the client and `nodes` live, and `reads` outlives the client.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.raw.as_ptr(),
-                node.namespace,
-                node.key,
+                nodes.raw.as_ptr(),
                 answer,
-                ptr::from_ref::<Answer>(&self.answer).cast_mut().cast(),
+                ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                 &raw mut request,
             )
         });
         if status != Status::GOOD {
             return Err(status);
         }
-        self.answer.request.set(Some(request));
-        self.connections
-            .drive(|_| {
+        self.reads.pending.set(self.reads.pending.get() + 1);
+        self.reads.request.set(Some(request));
+        self.reads.count.set(nodes.count);
+        // It can hold the late answer of the last read.
+        self.reads.answer.set(None);
+        let status = self
+            .connections
+            .drive_until(Some(deadline), |_| {
                 self.connections.events().run();
-                self.answer.value.take().map_or(Poll::Pending, Poll::Ready)
+                self.reads.answer.take().map_or(Poll::Pending, Poll::Ready)
             })
             .await
+            .unwrap_or(Status::BAD_TIMEOUT);
+        if status != Status::GOOD {
+            return Err(status);
+        }
+        let values = self.reads.values.take();
+        self.reads
+            .values
+            .set(mem::replace(&mut self.values, values));
+        Ok(&self.values)
     }
 
     /// Closes the session and the connection of the client, and waits until the
@@ -200,6 +351,33 @@ impl Client {
     }
 }
 
+/// A Read request past one message of a session.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Large {
+    /// The bytes of the body of its message.
+    pub(crate) bytes: usize,
+    /// The most bytes of the body of one message.
+    pub(crate) most: usize,
+}
+
+/// Gives the most bytes of the body of one message of a Read in chunks of `buffer`
+/// bytes, with the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the
+/// server, each 0 for none.
+fn most(buffer: usize, message: usize, chunks: usize) -> usize {
+    let local = usize::try_from(CHUNKS).expect("invariant: a usize holds CHUNKS");
+    let chunks = if chunks == 0 {
+        local
+    } else {
+        chunks.min(local)
+    };
+    let most = chunks * (buffer - HEADER) - (chunks - 1) * SPLIT;
+    if message == 0 {
+        most
+    } else {
+        most.min(message)
+    }
+}
+
 /// The state of a client.
 struct State {
     channel: ffi::Channel,
@@ -215,34 +393,96 @@ impl Drop for Client {
     }
 }
 
-/// Puts the answer of `request` in the [`Answer`] at `data` when it is the read in
-/// flight.
+/// The Read request of a list of nodes, built once.
+pub(crate) struct Nodes {
+    raw: NonNull<ffi::ReadRequest>,
+    count: usize,
+    /// The [`Client::key`] of the client that checked it.
+    client: Rc<()>,
+}
+
+impl Nodes {
+    /// As [`Nodes::new`], for a bench: [`Client::read`] panics on it.
+    #[cfg(feature = "sim")]
+    pub(crate) fn unchecked(nodes: &[Node]) -> Self {
+        Self::new(nodes, Rc::default())
+    }
+
+    /// Builds one Read request of the Value of each node of `nodes`, in order, for the
+    /// client of `client`, with no check of its size: [`Client::nodes`] checks it.
+    ///
+    /// # Aborts
+    ///
+    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
+    fn new(nodes: &[Node], client: Rc<()>) -> Self {
+        let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
+        // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
+        let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
+        let Some(raw) = NonNull::new(request) else {
+            alloc::exhausted()
+        };
+        Self {
+            raw,
+            count: nodes.len(),
+            client,
+        }
+    }
+
+    /// Gives the request, which lives while `self` does.
+    pub(crate) fn raw(&self) -> *mut ffi::ReadRequest {
+        self.raw.as_ptr()
+    }
+}
+
+impl Drop for Nodes {
+    fn drop(&mut self) {
+        // SAFETY: the request lives, and nothing else holds it.
+        unsafe { ffi::shim_read_free(self.raw.as_ptr()) };
+    }
+}
+
+/// Ends one read of the [`Reads`] at `data`, and puts the answer of `request` there
+/// when it is the read that waits.
 ///
 /// # Safety
 ///
-/// `data` points at a live [`Answer`], and `value` points at the answer when `status`
-/// is `Good`.
+/// `data` points at live [`Reads`], and `response` at the answer.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
     data: *mut c_void,
     request: u32,
-    status: u32,
-    value: *mut c_void,
+    response: *mut ffi::ReadResponse,
 ) {
-    // SAFETY: the client that holds the answer lives.
-    let answer = unsafe { &*data.cast_const().cast::<Answer>() };
-    if answer.request.get() != Some(request) {
+    // SAFETY: the client that holds the reads lives.
+    let reads = unsafe { &*data.cast_const().cast::<Reads>() };
+    reads.pending.set(reads.pending.get() - 1);
+    if reads.request.get() != Some(request) {
         return;
     }
-    let mut double = 0.0;
-    let mut status = Status(status);
-    if status == Status::GOOD {
-        // SAFETY: open62541 gives the answer with `Good`.
-        status = Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
+    // SAFETY: open62541 gives a live response.
+    let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
+    // SAFETY: open62541 gives a live response.
+    let count = unsafe { ffi::shim_read_count(response) };
+    if status == Status::GOOD && count != reads.count.get() {
+        status = Status::BAD_UNEXPECTED_ERROR;
     }
-    answer.value.set(Some(if status == Status::GOOD {
-        Ok(double)
-    } else {
-        Err(status)
-    }));
+    if status == Status::GOOD {
+        let mut values = reads.values.take();
+        values.clear();
+        values.extend((0..count).map(|index| {
+            let mut double = 0.0;
+            // SAFETY: the response lives and has more results than `index`.
+            let value = unsafe { ffi::shim_read_result(response, index) };
+            // SAFETY: the value lives with the response.
+            let status =
+                Status(unsafe { ffi::shim_value_double(value, &raw mut double) });
+            if status == Status::GOOD {
+                Ok(double)
+            } else {
+                Err(status)
+            }
+        }));
+        reads.values.set(values);
+    }
+    reads.answer.set(Some(status));
 }

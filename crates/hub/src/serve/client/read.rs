@@ -101,12 +101,13 @@ where
     F: Future<Output = Result<(), Error>>,
 {
     let refused = |error| Error::Reader(Box::new(error));
-    let place = |name: &Name, channel: &Channel| Place {
+    let place = |&(name, channel): &(&Name, &Channel)| Place {
         key: channel.key(),
         data_type: channel.sample(),
         name: name.clone(),
     };
-    let found = unless(program, reader::find(state, || open.select(), place)).await;
+    let places = |found: &[(&Name, &Channel)]| found.iter().map(place).collect();
+    let found = unless(program, reader::find(state, || open.select(), places)).await;
     drop(open);
     let Some(found) = found? else {
         return Ok(None);

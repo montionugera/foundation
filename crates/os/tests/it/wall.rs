@@ -48,7 +48,7 @@ fn a_refused_read_fails_at_construction() {
         let result = os::wall().map(drop).map_err(|e| e.to_string());
         assert_eq!(result, Err(refused.to_owned()));
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 /// Makes the OS refuse `adjtimex` and `clock_adjtime` on this thread, as systemd's

@@ -329,6 +329,25 @@ pub(super) fn write_i32(writer: &mut Writer, stamp: i64, value: i32) -> Vec<Outc
         .expect("the home takes it")
 }
 
+/// The series of the old type of a channel defined again at its key is not a channel
+/// of the reader, though its key is.
+#[test]
+#[should_panic(expected = "the entry 1 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_of_the_old_type_outside_the_view() {
+    run(34, |test| async move {
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        assert_eq!(write(&mut writer, &[now], &[10]), [applied(0)]);
+        let mut changed = channels();
+        changed.insert(name("value"), definition(2, DataType::Sample(I32), 1));
+        test.hub.set_definitions(&changed);
+        let mut reader = test.reader(&["value"], Mode::Latest).await;
+        let received = reader.next().await.expect("the newest frame");
+        assert_eq!(keys(&received), [1]);
+        let _name = received.name(entry(received.set(), 2));
+    });
+}
+
 /// A latest reader on a channel whose type changed at its key takes the newest frame
 /// at once, with no series of the old type, and the series of the next frame.
 #[test]

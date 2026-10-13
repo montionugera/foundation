@@ -17,7 +17,7 @@ use types::name::Name;
 use types::sample;
 
 use super::{Output, plan};
-use crate::common::{PLANT, Reader, SITE, files, front_ends, name, placed_site};
+use crate::common::{ADMIN, PLANT, Reader, SITE, files, front_ends, name, placed_site};
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
 
@@ -737,4 +737,45 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 18 to add, 0 to change, 1 to remove.
 "
     );
+}
+
+#[test]
+fn ends_with_a_note_of_each_definition_that_foundation_made() {
+    let applied = spec::founding::create(ADMIN.public());
+    let planned = run(&[], &applied).expect("a plan");
+    assert_eq!(
+        planned.text(),
+        "0 to add, 0 to change, 0 to remove.\nnote: 2 definitions that Foundation \
+         made are not in the files: @admin.@access, @admin.@subject\n"
+    );
+    let reserved = serde_json::json!([
+        { "name": "@admin", "kind": "access", "key": "@admin.@access" },
+        { "name": "@admin", "kind": "subject", "key": "@admin.@subject" },
+    ]);
+    assert_eq!(json(&planned)["reserved"], reserved);
+}
+
+#[test]
+fn notes_one_definition_that_foundation_made_in_the_singular() {
+    let mut applied = spec::founding::create(ADMIN.public());
+    applied.remove(&name("@admin.@access")).expect("the policy");
+    let planned = run(&[("site.hcl", &placed_site())], &applied).expect("a plan");
+    let text = planned.text();
+    let (_, note) = text.split_once(" to remove.\n").expect("the counts");
+    assert_eq!(
+        note,
+        "note: 1 definition that Foundation made is not in the files: @admin.@subject\n"
+    );
+}
+
+#[test]
+fn a_spec_with_no_definition_that_foundation_made_gets_no_note() {
+    let placed = placed_site();
+    let planned = run(&[("site.hcl", &placed)], &BTreeMap::new()).expect("a plan");
+    assert!(
+        planned.text().ends_with(" to remove.\n"),
+        "{}",
+        planned.text()
+    );
+    assert_eq!(json(&planned)["reserved"], serde_json::json!([]));
 }

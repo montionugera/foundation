@@ -64,7 +64,11 @@ fn refuse(refused: usize, error: os::memory::Error) -> Memory {
 
 /// The seams of `host`, with a pool budget of `budget` from `memory`, a disk budget
 /// of [`DISK`], and the port at [`listen`].
-fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block::Heap> {
+fn config<M>(
+    host: &sim::node::Node,
+    budget: Size,
+    memory: Box<dyn FnMut(usize) -> Result<M, os::memory::Error>>,
+) -> Config<M> {
     Config {
         shards: host.shards(),
         clock: host.clock(),
@@ -86,6 +90,7 @@ fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block:
         listen: listen(host),
         region: Region::Absent,
         name: "edge".parse().expect("a name"),
+        settings: crate::Settings::default(),
     }
 }
 
@@ -406,7 +411,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -416,8 +421,10 @@ fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
         format!(
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
-             listen: {listen:?}, region: Absent, name: Name(\"edge\"), .. }}",
+             listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
+             settings: {settings:?}, .. }}",
             listen = config.listen,
+            settings = config.settings,
         )
     );
 }
@@ -799,30 +806,31 @@ mod buffer {
         assert_eq!(node.join(), Ok(()));
     }
 
-    /// A shard's part of the budget must hold the block that its buffer's open
-    /// takes first. A shard that waits for the interner does not open after it.
+    /// A shard's part of the budget must hold the least budget of its buffer. A shard
+    /// that waits for the interner does not open after it.
     #[test]
     fn a_shard_part_too_small_for_the_buffer_stops_the_node() {
         let budget = Size::from_bytes(512 << 10);
         let mut run = start_with(7, 16, &[], budget, Box::new(heap));
         assert_eq!(run.sim.run(), Ok(()));
         let e = run.node.join().unwrap_err();
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         assert_eq!(
             e,
             Error::Buffer {
                 core: 0,
-                error: ::buffer::Error::Pool(pool),
+                error: ::buffer::Error::Budget {
+                    budget: 32_768,
+                    min: 62_272,
+                },
             }
         );
         assert_eq!(
             e.to_string(),
-            "cannot open the buffer of shard-0: the pool has no block: block of 52186 \
-             bytes is above the largest block of 28672 bytes"
+            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry \
+             of 4032 bytes: give it 62272 bytes or more"
         );
+        let made = ["lock", "name", "shards-16"].map(PathBuf::from);
+        assert_eq!(listed(&mut run.sim, &run.host, ""), made);
     }
 
     #[test]
@@ -1780,7 +1788,7 @@ mod home {
                 index,
                 data: &[(values, Type::Scalar(Scalar::I64))],
             }]);
-            home.carry(slot);
+            assert!(home.carry(slot, index));
             let now = mesh_now(&clock, &host.clock()).await;
             let key = home
                 .open_writer(writer::Writer {
@@ -2265,7 +2273,7 @@ mod hub {
     }
 
     /// The position of channel `key` in `set`.
-    fn entry(set: &KeySet, key: u128) -> usize {
+    pub(super) fn entry(set: &KeySet, key: u128) -> usize {
         let key = Key::from_u128(key);
         let entries = set.entries();
         entries.iter().position(|e| e.key == key).expect("an entry")
@@ -2681,6 +2689,172 @@ mod hub {
     }
 }
 
+mod pool {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ::hub::writer::Writer;
+    use block::testing::{Scarce, Switch};
+    use types::frame::{self, Form};
+    use types::time::Monotonic;
+
+    use super::hub::{I64, data, define, entry, index, writer};
+    use super::*;
+
+    const SECOND_NS: i64 = Span::SECOND.nanos();
+
+    /// A shard gives the pages of a block size back to the system 10 to 20 s after
+    /// the last block of that size returned. The last return falls at the open of
+    /// the writer and at each of 1 to 9 s after the start. A return at the open also
+    /// keeps its pages until 20 s after the start, before which the timer cannot
+    /// purge twice.
+    #[test]
+    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
+        for phase in 0..10 {
+            let phase = Span::from_nanos(phase * SECOND_NS);
+            let early = Span::from_nanos(10 * SECOND_NS - 1);
+            let held = kept(phase, Since::Return, early);
+            assert!(held, "the size keeps its pages at {phase:?}");
+            let late = Span::from_nanos(20 * SECOND_NS + 1);
+            let idle = !kept(phase, Since::Return, late);
+            assert!(idle, "the pages went back at {phase:?}");
+        }
+        let early = Span::from_nanos(20 * SECOND_NS - 1);
+        let held = kept(Span::ZERO, Since::Start, early);
+        assert!(held, "the size keeps its pages until 20 s after the start");
+    }
+
+    /// The timer runs from before the open of the buffer, whose reads take blocks of
+    /// 4 KiB. The timer starts less than 1 ms after the start of the node, so that
+    /// size goes back by 20 s and 1 ms after it.
+    #[test]
+    fn a_size_that_the_open_of_the_buffer_used_goes_back_20_s_after_the_start() {
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4056 });
+        let early = probe(4000, Span::ZERO);
+        assert_eq!(early, Ok(()), "the open of the buffer carved the size");
+        let late = probe(4000, Span::from_nanos(20 * SECOND_NS + 1_000_000));
+        assert_eq!(late, Err(refused), "the pages of the size went back");
+    }
+
+    /// The instant from which [`kept`] counts its wait.
+    enum Since {
+        /// The start of the node.
+        Start,
+        /// The return of the last block of the size.
+        Return,
+    }
+
+    /// Whether a block size keeps its pages `wait` after the instant `since`. The last
+    /// block of the size returns at `phase` after the start, or at the open of the
+    /// writer when it comes later. The size keeps its pages when a take of its block
+    /// succeeds while the memory refuses. The memory shows a purge only through its
+    /// next commit: while it refuses, a commit of bytes that the system still holds
+    /// succeeds, and a commit of purged bytes gives `Refused`.
+    fn kept(phase: Span, since: Since, wait: Span) -> bool {
+        let (new, carved, again, later) = on_writer(4096, async move |rig| {
+            let phase = rig.start.checked_add(phase).expect("in range");
+            rig.clock.sleep_until(phase).await;
+            rig.switch.refuse();
+            let new = rig.take();
+            rig.switch.allow();
+            let carved = rig.take();
+            rig.switch.refuse();
+            let again = rig.take();
+            let base = match since {
+                Since::Start => rig.start,
+                Since::Return => rig.clock.now(),
+            };
+            rig.clock
+                .sleep_until(base.checked_add(wait).expect("in range"))
+                .await;
+            let later = rig.take();
+            rig.switch.allow();
+            (new, carved, again, later)
+        });
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
+        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
+        assert_eq!(carved, Ok(()), "the pool carves the block");
+        assert_eq!(again, Ok(()), "a carved size needs no commit");
+        if let Err(error) = &later {
+            assert_eq!(error, &refused, "the memory refused the take");
+        }
+        later.is_ok()
+    }
+
+    /// The take of a block for `bytes` of samples, at `at` after the start of the
+    /// node, while the memory refuses.
+    fn probe(bytes: usize, at: Span) -> Result<(), frame::Error> {
+        on_writer(bytes, async move |rig| {
+            let at = rig.start.checked_add(at).expect("in range");
+            rig.clock.sleep_until(at).await;
+            rig.switch.refuse();
+            let taken = rig.take();
+            rig.switch.allow();
+            taken
+        })
+    }
+
+    /// A writer on a node of one shard whose memory is `Scarce`.
+    struct Rig {
+        writer: Writer,
+        series: [(usize, usize); 2],
+        switch: Switch,
+        clock: env::clock::Clock,
+        start: Monotonic,
+    }
+
+    impl Rig {
+        /// Takes a block for a frame of the rig's samples and drops it at once.
+        fn take(&self) -> Result<(), frame::Error> {
+            self.writer.draft(Form::Raw, &self.series).map(drop)
+        }
+    }
+
+    /// Runs `task` on a writer of 8 bytes of times and `bytes` of values, on a node
+    /// of one shard whose memory is `Scarce`. Returns its output after 40 s of the
+    /// sim, and after the node stops.
+    fn on_writer<T: Send + 'static>(
+        bytes: usize,
+        task: impl AsyncFnOnce(Rig) -> T + Send + 'static,
+    ) -> T {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 1);
+        let switch = Rc::new(RefCell::new(None));
+        let made = Rc::clone(&switch);
+        let memory = Box::new(move |len| {
+            let (memory, switch) = Scarce::new(len);
+            *made.borrow_mut() = Some(switch);
+            Ok(memory)
+        });
+        let start = host.clock().now();
+        let node = Node::start(config(&host, Size::MEBIBYTE, memory));
+        let switch = switch.take().expect("the shard got its memory");
+        let seen = Arc::new(Mutex::new(None));
+        let (out, clock) = (Arc::clone(&seen), host.clock());
+        node.spawn(move |hub| async move {
+            define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
+            let writer = writer(&hub, &["value"]).await;
+            let (time, value) = (entry(writer.set(), 1), entry(writer.set(), 2));
+            let mut series = [(time, 8), (value, bytes)];
+            series.sort_unstable();
+            let rig = Rig {
+                writer,
+                series,
+                switch,
+                clock,
+                start,
+            };
+            *out.lock().unwrap() = Some(task(rig).await);
+        });
+        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND_NS)), Ok(()));
+        let seen = seen.lock().unwrap().take();
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        seen.expect("the task ran to its end")
+    }
+}
+
 mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
@@ -2688,6 +2862,9 @@ mod port {
     use transport::{Address, Class, Code, Peer, Transport};
 
     use super::*;
+
+    mod client;
+    mod settings;
 
     /// The key of the peer that dials the node.
     const CLIENT: PrivateKey = PrivateKey([1; 32]);
@@ -2761,6 +2938,20 @@ mod port {
             pool: Rc::clone(&pool),
         };
         (Transport::new(config, part).expect("a transport"), pool)
+    }
+
+    /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
+    fn shard<F: Future<Output = ()> + 'static>(
+        host: &sim::node::Node,
+        act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
+    ) {
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = host.clone();
+        let started = host.shards().start(shard, move |tasks| act(own, tasks));
+        drop(started.expect("the peer starts"));
     }
 
     /// A program's transport on `host`, at a free port, with its pool.
@@ -2930,8 +3121,8 @@ mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
-    /// The node stops a hub stream of a program, and resets its reply half, with the
-    /// code of a rejected header.
+    /// A node with no region stops a hub stream of a program, and resets its reply
+    /// half, with the code of a rejected header.
     #[test]
     fn rejects_a_hub_stream_of_a_program() {
         let header = wire::header::encode(wire::Protocol::Hub);
@@ -4418,68 +4609,28 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// Starts the member [`OTHER`] of `members` on `host` without a `Node`: an
-        /// endpoint and a hub with its key, which serve the mesh as a node's do. Runs
-        /// `act` with the mesh, then drops the mesh and its port.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        fn operations(
+            mesh: &::mesh::Mesh,
+            key: types::node::Key,
+            hub: &::hub::Hub,
+            clock: env::clock::Clock,
+            time: &clock::Reader,
+            entropy: &env::entropy::Entropy,
+        ) -> Rc<ops::Node> {
+            let member = mesh.member(key).expect("the peer is a member");
+            let name = member.card.card().name.clone();
+            let kinds = Arc::new(crate::kinds());
+            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+        }
+
+        /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
         fn peer<F: Future<Output = ()> + 'static>(
             host: &sim::node::Node,
-            members: Vec<Member>,
+            members: &[Member],
             act: impl FnOnce(::mesh::Mesh, sim::node::Node) -> F + Send + 'static,
         ) {
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = host.clone();
-            let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
-                let identity = Identity {
-                    key: OTHER.0,
-                    private_key: OTHER.1,
-                    opener: Opener::from_bytes(SEAL),
-                };
-                let (opening, clock) = (Opening::Given(region(&members)), own.clock());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time,
-                    entropy,
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
-                hub.set_definitions(&region(&members).definitions);
-                let clock = own.clock();
-                let port =
-                    route::accept(transport, Some(mesh.clone()), hub, clock, tasks);
-                let (mut port, mut act) = (pin!(port), pin!(act(mesh, own)));
-                poll_fn(|cx| {
-                    let stopped = port.as_mut().poll(cx);
-                    assert!(stopped.is_pending(), "the peer's transport stopped");
-                    act.as_mut().poll(cx)
-                })
-                .await;
-            });
-            drop(started.expect("the peer starts"));
+            peer_hub(host, region(members), |_, mesh, own| act(mesh, own));
         }
 
         /// The members of the region of the node [`OWN`] on `hosts[0]` and the peer
@@ -4502,7 +4653,7 @@ mod port {
             let node = start(&hosts[0], region(&members));
             let set = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&set);
-            peer(&hosts[1], members, move |mesh, _| async move {
+            peer(&hosts[1], &members, move |mesh, _| async move {
                 let set = mesh.set_home(INDEX, OTHER.0).await;
                 out.lock().unwrap().push(set);
             });
@@ -4604,14 +4755,15 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
-        /// The node stops a hub stream of a program, and resets its reply half, with
-        /// the code of a rejected header.
+        /// The node gives a hub stream of a program to its hub, which takes it as the
+        /// hello stream and closes the session at its first message, which is no
+        /// hello, with the code of a malformed message.
         #[test]
-        fn rejects_a_hub_stream_of_a_program_of_a_region() {
+        fn a_hub_stream_of_a_program_of_a_region_goes_to_the_hub() {
             let Seen { sent, read, .. } = opened(Dialer::Program);
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(sent, transport::Error::Stopped { code });
-            assert_eq!(read, Err(transport::Error::Reset { code }));
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::PeerClosed { code });
+            assert_eq!(read, Err(transport::Error::PeerClosed { code }));
         }
 
         /// The mesh serves a mesh stream: at the first message that is not a mesh
@@ -4621,6 +4773,28 @@ mod port {
         fn the_mesh_serves_a_mesh_stream() {
             let header = wire::header::encode(wire::Protocol::Mesh);
             let Seen { sent, read, .. } = sent(&header);
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// Under a header setting of zero, a mesh stream whose header arrived when
+        /// the node first reads it still goes to the mesh.
+        #[test]
+        fn a_header_that_arrived_routes_under_a_header_wait_of_zero() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                settings: crate::Settings {
+                    header_wait: Span::ZERO,
+                    ..crate::Settings::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let header = wire::header::encode(wire::Protocol::Mesh);
+            let seen = dial(&mut sim, &host, Dialer::Node(CLIENT), &[&header]);
+            let Seen { sent, read, .. } = watch(sim, node, &seen);
             let code = Code(wire::header::MALFORMED);
             assert_eq!(sent, transport::Error::Stopped { code });
             assert_eq!(read, Err(transport::Error::Reset { code }));
@@ -4643,20 +4817,6 @@ mod port {
             assert_eq!(peer, Peer::Node(KEY.public()));
             assert_eq!(sent, transport::Error::Stopped { code });
             assert_eq!(read, Err(transport::Error::Reset { code }));
-        }
-
-        /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
-        fn shard<F: Future<Output = ()> + 'static>(
-            host: &sim::node::Node,
-            act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
-        ) {
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = host.clone();
-            let started = host.shards().start(shard, move |tasks| act(own, tasks));
-            drop(started.expect("the peer starts"));
         }
 
         /// `count` sessions that `program` dials to the node [`OWN`] at `at`, in order.
@@ -4743,6 +4903,43 @@ mod port {
             let first = vec![(0, refused())];
             let second = vec![(0, refused()), (1, refused())];
             assert_eq!(after, vec![first, second]);
+        }
+
+        /// Under a setting of 3 places, 3 programs hold each place. A new program
+        /// gets a session, and the session of the oldest closes with the code of a
+        /// refused session.
+        #[test]
+        fn the_oldest_place_frees_at_the_setting() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let settings = crate::Settings {
+                places_max: NonZeroUsize::new(3).unwrap(),
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 3).await;
+                let closed = closings(&held, &tasks);
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((held, new, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, closed) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(closed, vec![(0, refused())]);
         }
 
         /// 256 programs fill the bound, then a member dials: it takes no place, so no
@@ -4834,7 +5031,8 @@ mod port {
                 let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
                 let now = Peer::Node(CLIENT.public());
                 let joined = Cell::new(false);
-                let mut places = route::Places::default();
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
                 let (mut sessions, mut holds) = (Vec::new(), Vec::new());
                 for _ in 0..257 {
                     let session = transport.accept().await.expect("a session");
@@ -4880,7 +5078,8 @@ mod port {
             let seen = Arc::clone(&out);
             shard(&hosts[0], move |own, tasks| async move {
                 let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
-                let mut places = route::Places::default();
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
                 let left = transport.accept().await.expect("a session");
                 let hold = places.take(&left, |_| false);
                 let ended = transport.accept().await.expect("a session");
@@ -5471,7 +5670,7 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], two idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], three idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5481,7 +5680,7 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -5678,6 +5877,41 @@ mod port {
             assert_eq!(node.join(), Err(Error::Mesh(error)));
         }
 
+        /// Under a floor setting of 64 GiB, on a disk of 64 GiB, the put of the first
+        /// founding chunk stops the node, and `join` gives the floor of the setting.
+        #[test]
+        fn a_founding_chunk_under_the_floor_setting_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let settings = crate::Settings {
+                floor_bytes: 64 << 30,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region),
+                settings,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 64 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
         /// A node whose chunk store holds each founding chunk starts again after
         /// another writer took the disk under 1 GiB free: the puts of its founding
         /// chunks take no new room.
@@ -5772,7 +6006,7 @@ mod port {
 
         /// Starts the peer [`OTHER`] of `members` on `host`, which sets a home in the
         /// mesh, one after another, until a set waits [`TEN`].
-        fn set_homes(host: &sim::node::Node, members: Vec<Member>) {
+        fn set_homes(host: &sim::node::Node, members: &[Member]) {
             peer(host, members, |mesh, host| async move {
                 let clock = host.clock();
                 for key in 100.. {
@@ -5809,7 +6043,7 @@ mod port {
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
                 let node = start(&hosts[0], region(&members));
-                set_homes(&hosts[1], members);
+                set_homes(&hosts[1], &members);
                 let after = Span::from_nanos(after);
                 assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
                 node.stop();
@@ -5844,7 +6078,7 @@ mod port {
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let members = pair(&hosts);
             let node = start(&hosts[0], region(&members));
-            set_homes(&hosts[1], members);
+            set_homes(&hosts[1], &members);
             assert_eq!(sim.run_for(Span::from_nanos(1_700_000_000)), Ok(()));
             hosts[0].fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             let (waited, port, _, _) = probe(&mut sim, &hosts[0]);
@@ -5919,7 +6153,7 @@ mod port {
                 let node = start(&hosts[0], region(&members));
                 let set = Arc::new(Mutex::new(Vec::new()));
                 let out = Arc::clone(&set);
-                peer(&hosts[1], members.clone(), move |mesh, host| async move {
+                peer(&hosts[1], &members, move |mesh, host| async move {
                     let set = mesh.set_home(INDEX, OTHER.0).await;
                     out.lock().unwrap().push(set);
                     host.clock().sleep(TEN).await;
@@ -5962,7 +6196,9 @@ mod port {
             founding
         }
 
-        /// As [`peer`], with `founding`, and `act` gets the peer's hub and mesh.
+        /// Starts the member [`OTHER`] of the region `founding` on `host` without a
+        /// `Node`: an endpoint and a hub with its key, which serve the mesh as a node's
+        /// do. Runs `act` with the hub and the mesh, then drops the mesh and its port.
         fn peer_hub<F: Future<Output = ()> + 'static>(
             host: &sim::node::Node,
             founding: Founding,
@@ -5983,10 +6219,10 @@ mod port {
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let definitions = founding.definitions.clone();
                 let (opening, clock) = (Opening::Given(founding), own.clock());
+                let (entropy, settings) = (own.entropy(), crate::Settings::default());
                 let endpoint =
-                    Endpoint::new(bound, opening, clock, own.entropy(), own.net());
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, next, time) =
@@ -5997,7 +6233,7 @@ mod port {
                 let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
                 let opened = endpoint.open(identity, own.files(), pool, tasks.clone());
-                let (transport, mesh) = opened.await;
+                let (transport, mesh) = opened.await.expect("the transport opens");
                 let mesh = mesh.expect("the mesh opens");
                 let mesh = mesh.expect("the peer has a region");
                 let hub = ::hub::Hub::new(::hub::Config {
@@ -6005,21 +6241,25 @@ mod port {
                     interner,
                     tasks: tasks.clone(),
                     node: key,
-                    time,
-                    entropy,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
                     region: Some(::hub::Region {
                         mesh: mesh.clone(),
                         transport: Rc::clone(&transport),
                     }),
                 });
-                hub.set_definitions(&definitions);
                 let clock = own.clock();
+                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
                 let port = route::accept(
                     transport,
-                    Some(mesh.clone()),
-                    hub.clone(),
+                    crate::task::Handles {
+                        hub: hub.clone(),
+                        ops: Some(ops),
+                    },
                     clock,
                     tasks,
+                    settings.header_wait,
+                    settings.places_max,
                 );
                 let (mut port, mut act) =
                     (pin!(port), pin!(act(hub, mesh.clone(), own)));
@@ -6529,6 +6769,59 @@ mod port {
             assert_eq!(read.lock().unwrap().take(), Some((vec![WALL], vec![7])));
         }
 
+        /// A task that a caller of `Mesh::spec` tells of a spec in use opens a reader on
+        /// a channel of that spec, in each order of the tasks that the seed picks.
+        #[test]
+        fn a_task_told_of_a_spec_in_use_opens_a_reader_on_its_channel() {
+            let mut failed = Vec::new();
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+                let told = Arc::new(Mutex::new((false, None::<std::task::Waker>)));
+                let opened = Arc::new(Mutex::new(None));
+                let (wait, out) = (Arc::clone(&told), Arc::clone(&opened));
+                node.spawn(move |hub| async move {
+                    poll_fn(|cx| {
+                        let mut told = wait.lock().unwrap();
+                        if told.0 {
+                            return Poll::Ready(());
+                        }
+                        told.1 = Some(cx.waker().clone());
+                        Poll::Pending
+                    })
+                    .await;
+                    let mode = ::hub::reader::Mode::Complete;
+                    let reader = hub.reader(unnamed("plant.value", mode)).await;
+                    *out.lock().unwrap() = Some(reader.err().map(|e| format!("{e:?}")));
+                });
+                let tell = Arc::clone(&told);
+                node.operate(move |ops| async move {
+                    apply(&ops, text("time", &["value"])).await;
+                    let waker = {
+                        let mut told = tell.lock().unwrap();
+                        told.0 = true;
+                        told.1.take()
+                    };
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                });
+                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let opened = opened.lock().unwrap().take();
+                if opened != Some(None) {
+                    failed.push((seed, opened));
+                }
+            }
+            assert_eq!(failed, []);
+        }
+
         /// An apply that removes a channel ends each reader on it.
         #[test]
         fn an_apply_that_removes_a_channel_ends_each_reader_on_it() {
@@ -6663,8 +6956,9 @@ mod port {
 
         /// The node runs a connector that an apply places on it, and runs it again when
         /// an apply changes its config. Its status gives how the run ended: `influx`
-        /// ends with a config error, and does not restart. The reader opens after the
-        /// first run, because the status channels come with the connector.
+        /// ends with a config error, since its `select` matches no channel, and does
+        /// not restart. The reader opens after the first run, because the status
+        /// channels come with the connector.
         #[test]
         fn a_node_runs_a_connector_that_an_apply_places_on_it() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -6685,12 +6979,52 @@ mod port {
             assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
         }
 
+        /// `status` through `operate` gives the connector that an apply places on the
+        /// node, read through its hub as a subject that may read its status.
+        #[test]
+        fn status_gives_the_connector_on_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.influx.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{}{watch}", connector("influx"));
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
+                r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
+                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""the selector matches no channel. Select a channel that the spec "#,
+                r#"defines"}}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
-        /// `influx` ends with a config error, so each later apply runs it again, also
-        /// one that keeps it. The reader opens after the run of the start, which no
-        /// reader sees: its open and the open of that run wait for the same home. The
-        /// seq of the first frame that it reads counts the three frames of that run.
+        /// `influx` ends with a config error, since its `select` matches no channel, so
+        /// each later apply runs it again, also one that keeps it. That apply adds
+        /// `plant.other`, so the run reads it until the next apply changes the config.
+        /// The reader opens after the run of the start, which no reader sees: its open
+        /// and the open of that run wait for the same home. The seq of the first frame
+        /// that it reads counts the three frames of that run.
         #[test]
         fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
             for seed in 0..16 {
@@ -6723,14 +7057,7 @@ mod port {
                 assert_eq!(sim.run(), Ok(()));
                 assert_eq!(node.join(), Ok(()));
                 let read = read.lock().unwrap();
-                let runs = [
-                    (6, 0, 0),
-                    (7, 3, 1),
-                    (8, 2, 1),
-                    (9, 0, 0),
-                    (10, 3, 1),
-                    (11, 2, 1),
-                ];
+                let runs = [(6, 0, 0), (7, 3, 0), (8, 2, 0), (9, 0, 0)];
                 assert_eq!(*read, runs, "seed {seed}");
             }
         }
@@ -6815,6 +7142,7 @@ mod port {
         /// The config of the connector `plant.influx`: its body without `kind` and
         /// `node`.
         const INFLUX: &str = "address = \"http://influx:8086\"\nselect = \"plant.*\"\n\
+                              database = \"plant\"\nmeasurement = \"telemetry\"\n\
                               reader {\n  mode = \"complete\"\n}\n";
 
         /// The text of a spec with the connector `plant.influx` of `kind` on [`OWN`].
@@ -7482,13 +7810,12 @@ mod budget {
     /// the next start can give other budgets.
     #[test]
     fn a_start_that_fails_before_each_buffer_opens_keeps_no_budgets() {
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         let buffer = Error::Buffer {
             core: 0,
-            error: ::buffer::Error::Pool(pool),
+            error: ::buffer::Error::Budget {
+                budget: 32_768,
+                min: 62_272,
+            },
         };
         let disk = Error::Disk {
             disk: Size::from_bytes(1),

@@ -320,6 +320,7 @@ dependencies = [
  "hub",
  "hyper",
  "loom",
+ "spec",
  "types",
 ]
 
@@ -327,9 +328,12 @@ dependencies = [
 name = "connector-influx"
 version = "0.0.0"
 dependencies = [
+ "bytes",
+ "codec",
  "connector",
  "document",
  "http",
+ "hub",
  "types",
  "unicode-properties",
 ]
@@ -866,6 +870,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",
@@ -950,16 +955,20 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "ops"
 version = "0.0.0"
 dependencies = [
+ "access",
  "clap",
  "config",
  "connector",
  "document",
+ "env",
+ "hub",
  "mesh",
  "schemars",
  "serde",
  "serde_json",
  "spec",
  "types",
+ "wire",
 ]
 
 [[package]]

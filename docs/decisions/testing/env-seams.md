@@ -6,6 +6,23 @@
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6073808019).
   Supersedes the ENV SEAMS and `Driver` texts of item 4 of
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072358016.
+  Amended (2026-10-10, #2064): `tasks::Group` is the one counting group of `env`. It
+  counts each task spawned through the `Tasks` that `Group::tasks` gives until the
+  task's future has dropped, and `Group::ended` gives an `Ended` that resolves only
+  then, with many waiters. `Group` does not implement `Driver`. The `Debug` text of
+  each is `Group { .. }` and `Ended { .. }`. `laptop.architect-2`
+  (2026-10-09T21:02:50Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454, and
+  `Group::tasks` in place of the `Driver` impl (`laptop.architect-2`,
+  2026-10-10T03:02:51Z):
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093107567, which
+  supersedes `impl Driver for Group` in 6089208454. A crate
+  that counts its tasks to wait until each has ended uses it, and keeps no count of its
+  own. A future that gives the result of one task, such as `buffer::End`, counts
+  nothing, so the rule does not cover it. `laptop.architect` (2026-10-10T03:02:58Z):
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453.
+  Supersedes "no change to `env`" in
+  https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337.
   `clock::Clock`: monotonic time as `types::time::Monotonic`, and a `Sleep` future that
   resets without an allocation.
   `wall::Wall`: the OS wall clock, which only `clock` reads (a lint).
@@ -270,8 +287,8 @@
   then closes the handle as `File::close`. It removes the file of the handle, by device
   and inode with no follow of a link, as FILE RENAME does: `NotFound { path }` when the
   path no longer names it, and nothing is removed. Until the remove ends, also after a
-  drop of its future, a write open of the path gives `Busy`; on `os` the descriptor
-  closes after the unlink, so the lock holds across processes until then. The race
+  drop of its future, a write open of the path gives `Busy`; on `os` the lock is
+  released after the unlink, so the lock holds across processes until then. The race
   sentence of FILE RENAME holds for it too. A drop of the future can stop the remove
   before it starts, as for `Files::remove`; the file then stays, and the handle closes.
   The removal is not durable until `sync_dir` on its directory ends. A poisoned handle
@@ -351,6 +368,31 @@
   create that takes a floor, which moves the rule of one caller into each driver.
   Decided by `laptop.architect-2`, #1229, 2026-10-11T17:05:00Z
   (https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111493387).
+  Amended (2026-10-11T22:42:41Z, #1186): each wait for the calls that a dropped future
+  or a dropped handle left to run (a write open, `Files::remove`, `File::rename`,
+  `Files::list`, `Files::free`) is for a future or a handle that dropped before the call
+  started. A drop while the call is in flight can add the wait or not: each wait of a
+  driver call for the calls that a dropped future or handle left to run is for a future
+  or handle that dropped before that driver call started, and `File::rename`, and a
+  create after `Full`, send a driver call after they start. A caller awaits a call, or
+  drops its future, before it starts a call that must see its result. For a list, a
+  `free`, a remove, and a write open (for a create, its first open), the driver call
+  starts with the call, and `sim` shows the order without the wait. Its tests are on
+  `sim` only, as `os` runs the calls of a `Files` in queue order. Lost: a wait for each
+  future that drops while the call is in flight. A caller cannot build on it: it cannot
+  know that the future will drop, and the same result comes by rule when the future
+  lives. `os` gives it only for a call that started first. A driver that runs two calls
+  at one time gives it for a write open only by a wait for each live call on the path.
+  Lost also: no wait for each such drop, with the start time of the call as an input of
+  each driver call, which changes the `Driver` surface for a result that no caller can
+  use. Decided by `laptop.architect-2`, #1186, 2026-10-11T22:42:41Z
+  (https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6114719100; a drop
+  in flight can add the wait, 2026-10-12T15:52:54Z:
+  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6127761370; a remove
+  and a write open, 2026-10-12T16:17:43Z:
+  https://github.com/synnaxlabs/foundation/issues/1186#issuecomment-6128175603; each
+  wait for the calls that a drop left to run, 2026-10-12T20:21:46Z:
+  https://github.com/synnaxlabs/foundation/pull/2432#issuecomment-6131966723).
   Amended (2026-10-08T00:45:04Z, #1622): a `Files::open` with `Mode::Create` whose
   driver gives `Full` syncs the directory of the path one time and opens again. It
   gives `Full` only when the second open does, and a `sync_dir` error as it is. It does
@@ -486,15 +528,21 @@
   Amended (2026-10-11, #1744): `env::paths` gives the files of the host by the paths
   that a user gave, as on a command line: a read of a file or of a directory's entries,
   up to a bound, and a write of a whole file. Each call blocks its thread. A
-  `Paths` goes only to `ops::cli`, never to a shard or to `ops::serve`, so a path that a
-  remote program names never reaches the disk of the node. `os` writes a file beside the
-  path and renames it over the path. `sim` keeps one tree in memory for each node, apart
-  from its disk, where a directory is there while a file is under it, and
-  `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes `env::files` for
-  the user's files (that seam is one directory, refuses an absolute path and `..`, and
-  starts a thread for each directory); a trait in `ops` that `main` implements (its real
-  half would reach the OS outside `os`). Decided by `laptop.architect-2` (2026-10-11
-  07:10 UTC, plan revision 4, decision 4,
+  `Paths` goes only to `ops::cli`, never to a shard of a node or to `ops::serve`, so a
+  path that a remote program names never reaches the disk of the node. "Of a node" is
+  by `laptop.architect-2` (2026-10-13T02:14:36Z, item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136725489;
+  approved by `laptop.architect`, 2026-10-13T03:51:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137828742), because
+  `cli` runs on a shard of the command line. Supersedes "never to a shard" of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274. `os`
+  writes a file beside the path and renames it over the path. `sim` keeps one tree in
+  memory for each node, apart from its disk, where a directory is there while a file is
+  under it, and `sim::Node::fail_path` fails one call with a code. Lost: `ops` takes
+  `env::files` for the user's files (that seam is one directory, refuses an absolute
+  path and `..`, and starts a thread for each directory); a trait in `ops` that `main`
+  implements (its real half would reach the OS outside `os`). Decided by
+  `laptop.architect-2` (2026-10-11 07:10 UTC, plan revision 4, decision 4,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913), with
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
@@ -563,3 +611,42 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6111675216
   (`laptop.architect-2`, 2026-10-11T20:23:25Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113352507).
+  Amended (2026-10-12T16:30:01Z, #1930): in `os`, a drop stops a file call until the I/O
+  queue takes the call. The queue takes it at a poll, when it has room and the task has
+  Tokio budget left, so a call that was polled can have no effect while the queue has
+  room. `os` keeps this: `env::files` gives a dropped call both outcomes. #1534 makes
+  `sim` give both for each dropped call that has not ended, by a coin, also after a
+  later call of the node ended. Lost: the send outside the Tokio budget, which closes
+  one of two ways to the same outcome, so `sim` must give it in each case, and which
+  ties the rule of `sim` to the queue of one driver; a test in `os` of the poll with no
+  budget, which pins an outcome that the contract only permits. Supersedes rule 2 of
+  https://github.com/synnaxlabs/foundation/pull/1462#issuecomment-6043752778. Decided by
+  `laptop.architect-2` (2026-10-12T16:30:01Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128368790).
+  Amended (2026-10-12T16:50:09Z, #1930): each file that `os` opens is closed on exec,
+  and `os` releases the `flock` lock of a file itself, before it closes a descriptor
+  that a write open locked. An unlock that the filesystem fails, as an NFS `LOCKU` or a
+  FUSE daemon can, leaves the lock to the close, so the window stays on that filesystem.
+  A lock lasts until an unlock, or until each copy of its descriptor closes, and a child
+  of the process holds a copy of each open file from its fork to its exec, or to its
+  end. So a lock that only the close released made a write open after a close give
+  `Busy` in that window, on Linux and on macOS, against `File::close` of `env::files`. A
+  failed create frees its blocks before its unlink for the same cause. The copy still
+  keeps the room of a removed file until the copy closes. `os` cannot free that room at
+  the remove: until `sync_dir` ends, a crash can undo the removal, and the file must
+  then be whole. `os` keeps this gap, and the doc of `os::files()` states it: a
+  Foundation node spawns no process, so only tests see it. Lost: the lock window as a
+  gap on record with a rule for tests, which leaves `File::close` false in `os` where
+  one unlock makes it true, and which each test that starts a child must know; a lock of
+  the process (`fcntl`), which a child does not get, but which gives no `Busy` between
+  two `Files` of one process, and which the close of any descriptor of the file drops; a
+  second try of a `Busy` open, which hides the hold of another process; a hold of each
+  removed file until the sync of its directory, to free its blocks then, which is state
+  in `os` for a case that only tests see; a list of the failures of the unlock from
+  outside, with a panic on each other error, which panics on an errno that a FUSE daemon
+  or a seccomp filter gives and the list does not name. Trigger: the first change that
+  makes a node spawn a process closes the room gap on the spawn side, with the macOS
+  gaps of the amendment of #2000. Decided by `laptop.architect-2` (2026-10-12T16:50:09Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128674782;
+  2026-10-12T18:18:49Z:
+  https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6130043360).

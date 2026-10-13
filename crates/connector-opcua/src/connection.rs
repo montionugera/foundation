@@ -20,8 +20,9 @@ use std::task::{Context, Poll, Waker};
 use env::clock::{Clock, Sleep};
 use env::net::{self, Listener, Net, Tcp, tcp};
 use env::rng::Rng;
-use types::time::Span;
+use types::time::{Monotonic, Span};
 
+use crate::alloc;
 use crate::event::Loop;
 use crate::ffi::{self, Bytes, Status};
 
@@ -40,7 +41,10 @@ const READ_BYTES: usize = 1 << 16;
 /// open62541 allocates each at most at the send buffer size of its channel. Sends wait
 /// from one pass to the next, and longer while a stream is full, so an owner keeps the
 /// chunks of its messages in flight at most this.
-const SENDS: usize = 256;
+pub(crate) const SENDS: usize = 256;
+
+/// The most chunks in a message that an open62541 endpoint on a manager sends or takes.
+pub(crate) const CHUNKS: u32 = 8;
 
 /// The most sends that one write takes.
 const PARTS: usize = 16;
@@ -70,9 +74,9 @@ impl Manager {
     /// connects through `net`, linked first into the event sources of the loop, where a
     /// client finds it.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When a C allocation fails.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub(crate) fn new(clock: Clock, net: Net, rng: &mut Rng) -> Self {
         Self::make(clock, net, None, rng)
     }
@@ -84,9 +88,9 @@ impl Manager {
     ///
     /// As [`Net::listen`].
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// When a C allocation fails.
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
     pub(crate) fn listening(
         clock: Clock,
         net: Net,
@@ -99,7 +103,21 @@ impl Manager {
             backlog,
             options: OPTIONS,
         })?;
-        Ok(Self::make(clock, net, Some(listener), rng))
+        Ok(Self::accepting(clock, net, listener, rng))
+    }
+
+    /// As [`Manager::listening`], on the bound `listener`.
+    ///
+    /// # Aborts
+    ///
+    /// When a C allocation fails, as [`alloc::exhausted`] says.
+    pub(crate) fn accepting(
+        clock: Clock,
+        net: Net,
+        listener: Listener,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(clock, net, Some(listener), rng)
     }
 
     fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
@@ -139,10 +157,9 @@ impl Manager {
         let raw = unsafe {
             ffi::shim_cm_new(events.raw(), &raw const HOOKS, state.as_ptr().cast())
         };
-        assert!(
-            !raw.is_null(),
-            "open62541: out of memory for a connection manager"
-        );
+        if raw.is_null() {
+            alloc::exhausted();
+        }
         this.raw.set(raw);
         Self { state, events }
     }
@@ -152,8 +169,8 @@ impl Manager {
         &self.events
     }
 
-    /// Gives the port of the listener of [`Manager::listening`], until a listen open
-    /// takes it.
+    /// Gives the port of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], until a listen open takes it.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn port(&self) -> Option<u16> {
         let listener = self.state().listener.take();
@@ -178,8 +195,24 @@ impl Manager {
     /// other.
     pub(crate) async fn drive<T>(
         &self,
-        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> T {
+        self.drive_until(None, run)
+            .await
+            .expect("invariant: a drive with no deadline ends only with a value")
+    }
+
+    /// Drives as [`Manager::drive`] does, but gives `None` when the clock reaches
+    /// `deadline`, if any, before `run` gives a value.
+    ///
+    /// # Panics
+    ///
+    /// When another drive of the manager runs.
+    pub(crate) async fn drive_until<T>(
+        &self,
+        deadline: Option<Monotonic>,
+        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+    ) -> Option<T> {
         let state = self.state();
         assert!(
             !state.held.replace(true),
@@ -201,18 +234,25 @@ impl Manager {
                     if state.accepted.get().is_some() {
                         cx.waker().wake_by_ref();
                     }
-                    break poll;
+                    break poll.map(Some);
                 }
                 if moved {
                     continue;
                 }
-                let Some(next) = self.events.next() else {
+                let next = match (self.events.next(), deadline) {
+                    (Some(next), Some(deadline)) => Some(next.min(deadline)),
+                    (next, deadline) => next.or(deadline),
+                };
+                let Some(next) = next else {
                     break Poll::Pending;
                 };
                 let timer = sleep.get_or_insert_with(|| state.clock.sleep_until(next));
                 timer.reset(next);
                 if Pin::new(timer).poll(cx).is_pending() {
                     break Poll::Pending;
+                }
+                if deadline == Some(next) {
+                    break Poll::Ready(None);
                 }
             }
         })

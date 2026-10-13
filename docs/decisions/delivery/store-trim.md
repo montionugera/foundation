@@ -73,4 +73,7 @@
   leaves them out; the bound counts one skip on its own. A release past the last synced
   record panics. Decided by the architect (#1345,
   https://github.com/synnaxlabs/foundation/issues/1345#issuecomment-6036930649,
-  2026-10-07T11:26:39Z).
+  2026-10-07T11:26:39Z). The carried tail is a carry record, kind 4 at ring version 1,
+  in the form of the carry body in S4. Decided by the architect (#160,
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6051990962,
+  2026-10-08T04:07:38Z).

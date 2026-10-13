@@ -1,12 +1,15 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::Error;
+use crate::error::{Action, Error, On, Unread};
 use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
@@ -22,11 +25,38 @@ struct Exit {
     status: u8,
 }
 
+/// What [`crate::cli`] gives for a command that reaches no node, with the paths of a
+/// host that holds no file. Such a command does not wait, so one poll ends it.
+fn offline(
+    args: impl IntoIterator<Item = OsString>,
+    input: impl io::BufRead,
+    output: impl io::Write,
+    errors: impl io::Write,
+) -> crate::Run {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let paths = sim.node(sim::node::Config::default()).paths();
+    let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
+        panic!("a command sent a request")
+    };
+    let reached = Cell::new(0);
+    let reach = async |_: &Path| {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    };
+    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
+    else {
+        panic!("a command waited");
+    };
+    assert_eq!(reached.get(), 0, "a command reached its node");
+    run
+}
+
 fn run(args: &[&str], input: impl io::BufRead) -> Exit {
     let args = ["foundation"].iter().chain(args).map(OsString::from);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let crate::Run::Exit(status) = crate::cli(args, input, &mut stdout, &mut stderr)
+    let crate::Run::Exit(status) = offline(args, input, &mut stdout, &mut stderr)
     else {
         panic!("a command that is not `start` exits");
     };
@@ -89,8 +119,9 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Three more for `start`, `mcp`, and `help`, which are not operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
+    // Six more for `start`, `plan`, `apply`, `status`, `mcp`, and `help`, which are
+    // not operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 6);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();
@@ -356,7 +387,7 @@ fn a_json_flag_with_a_value_gives_its_error_as_json() {
             value.clone(),
         ];
         let mut stderr = Vec::new();
-        let status = crate::cli(args, io::empty(), io::sink(), &mut stderr);
+        let status = offline(args, io::empty(), io::sink(), &mut stderr);
         let error: Value = serde_json::from_slice(&stderr).expect("json");
         assert_eq!(
             (status, error),
@@ -438,13 +469,13 @@ fn a_call_with_no_arguments_runs() {
     );
 }
 
-#[test]
-fn error_codes_and_fixes_match_the_golden_file() {
+/// One error of each variant but `Config`, `Node`, and `Remote`.
+fn every() -> Vec<Error> {
     let pointer = spec::Pointer {
         version: 0,
         root: spec::tree::empty(),
     };
-    let every = [
+    vec![
         Error::Argument {
             message: String::new(),
         },
@@ -469,11 +500,41 @@ fn error_codes_and_fixes_match_the_golden_file() {
         },
         Error::Apply(mesh::Error::NoVote),
         Error::Stopped(mesh::Stopped::Dropped),
-    ];
+        Error::Request {
+            message: String::new(),
+        },
+        Error::Denied {
+            subject: "bob".parse().expect("a name"),
+            action: Action::Plan,
+            on: On::Spec,
+        },
+        Error::LargeReply,
+        Error::ChannelRead {
+            connector: "site.a".parse().expect("a name"),
+            message: String::new(),
+        },
+        Error::Read {
+            path: PathBuf::new(),
+            cause: Unread::NotFound,
+        },
+        Error::Write {
+            path: PathBuf::new(),
+            error: env::paths::Error::NotFound,
+        },
+        Error::LargeRequest,
+        Error::Reply {
+            message: String::new(),
+        },
+    ]
+}
+
+#[test]
+fn error_codes_and_fixes_match_the_golden_file() {
+    let every = every();
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
         // `Config` holds the codes of the front ends, of `config`, and the one below.
-        // `Start` holds the codes of `node`.
+        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
         match error {
             Error::Argument { .. }
             | Error::Unknown { .. }
@@ -484,8 +545,17 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Stale { .. }
             | Error::Apply(_)
             | Error::Stopped(_)
+            | Error::Request { .. }
+            | Error::Denied { .. }
+            | Error::LargeReply
+            | Error::ChannelRead { .. }
+            | Error::Read { .. }
+            | Error::Write { .. }
+            | Error::LargeRequest
+            | Error::Reply { .. }
             | Error::Config(_)
-            | Error::Start(_) => {}
+            | Error::Node(_)
+            | Error::Remote { .. } => {}
         }
     }
     let mut lines: Vec<_> = every
@@ -518,7 +588,7 @@ mod start {
     use document::diagnostic::Code;
     use serde_json::json;
 
-    use super::{Exit, call, cli, failed};
+    use super::{Exit, call, cli, failed, offline};
     use crate::{Failure, Run, Start};
 
     fn start(args: &[&str]) -> Run {
@@ -528,7 +598,7 @@ mod start {
             .map(OsString::from);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let run = crate::cli(args, io::empty(), &mut stdout, &mut stderr);
+        let run = offline(args, io::empty(), &mut stdout, &mut stderr);
         assert_eq!((stdout, stderr), (Vec::new(), Vec::new()), "writes nothing");
         run
     }
@@ -704,7 +774,7 @@ mod start {
             fix: "y".to_owned(),
         };
         let mut text = Vec::new();
-        assert_eq!(start.fail(&failure, &mut text), 1);
+        assert_eq!(crate::fail(&[], &failure, &mut text), 1);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             format!(
@@ -748,13 +818,18 @@ mod start {
         }
     }
 
+    fn args(args: &[&str]) -> Vec<OsString> {
+        ["foundation"]
+            .iter()
+            .chain(args)
+            .map(OsString::from)
+            .collect()
+    }
+
     #[test]
     fn fail_writes_the_failure_as_cli_does_and_gives_1() {
-        let Run::Start(mut start) = start(&[]) else {
-            panic!("start runs");
-        };
         let mut text = Vec::new();
-        let status = start.fail(&busy(), &mut text);
+        let status = crate::fail(&args(&["start"]), &busy(), &mut text);
         assert_eq!(
             Exit {
                 stdout: String::new(),
@@ -770,9 +845,9 @@ mod start {
                 status: 1,
             }
         );
-        start.json = true;
         let mut json = Vec::new();
-        assert_eq!(start.fail(&busy(), &mut json), 1);
+        let status = crate::fail(&args(&["start", "--json"]), &busy(), &mut json);
+        assert_eq!(status, 1);
         let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(
             json,
@@ -783,7 +858,45 @@ mod start {
                 "notes": [],
             }] })
         );
-        assert_eq!(start.fail(&busy(), Closed), 1, "a closed output");
+        let status = crate::fail(&args(&["version", "--json"]), &busy(), Closed);
+        assert_eq!(status, 1, "a closed output");
+    }
+
+    #[test]
+    fn fail_after_a_double_dash_json_gives_text() {
+        let mut text = Vec::new();
+        let status =
+            crate::fail(&args(&["version", "--", "--json"]), &busy(), &mut text);
+        assert_eq!(status, 1);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "error[node.busy]: another node runs in foundation-data\n\
+             fix: Stop that node, or give another data directory with `--data`\n"
+        );
+    }
+
+    /// The OS gives the program name, so it can read as a flag.
+    #[test]
+    fn json_skips_the_program_name() {
+        for (program, flags, json) in [
+            ("--", &["start", "--json"][..], true),
+            ("--json", &["start"][..], false),
+        ] {
+            let args: Vec<OsString> =
+                [program].iter().chain(flags).map(OsString::from).collect();
+            let run = offline(args.clone(), io::empty(), io::sink(), io::sink());
+            let Run::Start(start) = run else {
+                panic!("{args:?} starts a node");
+            };
+            let mut written = Vec::new();
+            crate::fail(&args, &busy(), &mut written);
+            assert_eq!(
+                (start.json, written.starts_with(b"{")),
+                (json, json),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&written)
+            );
+        }
     }
 }
 
@@ -1007,7 +1120,7 @@ mod mcp {
 mod serve {
     use std::io::{self, Read, Write};
 
-    use super::{Exit, run};
+    use super::{Exit, offline, run};
     use crate::Run;
 
     const PING: &str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
@@ -1085,7 +1198,7 @@ mod serve {
     #[test]
     fn each_reply_is_flushed() {
         let mut output = Buffered::default();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             PING.as_bytes(),
             &mut output,
@@ -1107,7 +1220,7 @@ mod serve {
             closed: true,
             ..Buffered::default()
         };
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             output,
@@ -1139,7 +1252,7 @@ mod serve {
         let input = format!("{PING}{PING}");
         let mut rest = input.as_bytes();
         let mut stdout = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             Failing(io::ErrorKind::BrokenPipe),
@@ -1150,7 +1263,7 @@ mod serve {
             (Run::Exit(0), b"".as_slice(), PING.as_bytes())
         );
         let mut stderr = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "version"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::BrokenPipe),
@@ -1162,7 +1275,7 @@ mod serve {
     #[test]
     fn an_output_that_fails_is_an_error() {
         let mut stderr = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "version", "--json"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::StorageFull),
@@ -1208,4 +1321,22 @@ mod serve {
             "{help}"
         );
     }
+}
+
+#[test]
+fn the_places_of_one_file_share_its_path() {
+    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\nnope \"b\" {}\n")]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(Error::Config(problems)) = read else {
+        panic!("two problems, not {read:?}");
+    };
+    let [a, b] = &problems[..] else {
+        panic!("two problems, not {problems:?}");
+    };
+    let (Some(a), Some(b)) = (&a.place, &b.place) else {
+        panic!("two places, not {problems:?}");
+    };
+    assert_eq!(&*a.file, "site.hcl");
+    assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }

@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use control::{Gate, Handoff, Permit};
+use types::channel::{self, Slot};
 use types::frame::{Draft, Frame, Path};
 use types::time::{Monotonic, Stamp};
 
@@ -12,6 +13,10 @@ use crate::{Refusal, split};
 /// One index of a shard. It reads no clock: each input takes the time.
 #[derive(Debug)]
 pub(crate) struct Index {
+    /// The index's channel.
+    pub(crate) key: channel::Key,
+    /// The index's slot in the shard.
+    pub(crate) slot: Slot,
     /// Who may write the index.
     pub(crate) gate: Gate,
     order: Order,
@@ -47,14 +52,19 @@ impl Accepted {
 }
 
 impl Index {
-    /// An index with `gate`, whose paths stand at `live` and `backfill`.
+    /// The index `key` at `slot`, with `gate`, whose paths stand at `live` and
+    /// `backfill`.
     pub(crate) fn new(
         limits: order::Limits,
+        key: channel::Key,
+        slot: Slot,
         gate: Gate,
         live: Tail,
         backfill: Tail,
     ) -> Self {
         Self {
+            key,
+            slot,
             gate,
             order: Order::new(limits, live, backfill),
         }
@@ -126,7 +136,6 @@ mod tests {
     use control::Writer;
     use control::lease::Lease;
     use types::authority::Authority;
-    use types::channel;
     use types::frame::key_set::{Group, Interner, KeySet};
     use types::frame::{self, Form};
     use types::time::Span;
@@ -210,7 +219,15 @@ mod tests {
             earliest: "2000-01-01T00:00:00Z".parse().expect("a valid stamp"),
             ahead: Span::SECOND,
         };
-        Index::new(limits, Gate::new(), Tail::default(), Tail::default())
+        let (key, slot) = (channel::Key::from_u128(1), Slot::new(0));
+        Index::new(
+            limits,
+            key,
+            slot,
+            Gate::new(),
+            Tail::default(),
+            Tail::default(),
+        )
     }
 
     fn at(nanos: u64) -> Monotonic {

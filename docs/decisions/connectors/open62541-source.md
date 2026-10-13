@@ -360,6 +360,13 @@
   The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
   2026-10-11 00:41 UTC).
+  A NULL from a constructor of `shim.c` stops the process through `alloc::exhausted`,
+  which calls `std::alloc::handle_alloc_error` as the Rust allocator does on out of
+  memory. Its message gives the size of a header alone, because a constructor does
+  not give the size of the block that failed. A NULL inside the copy keeps the C
+  contract. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6140602800,
+  2026-10-13 07:30 UTC).
   `build.rs` gives both builds the sanitizers of the Rust build. With
   `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
   -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
@@ -517,10 +524,14 @@
   https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
   listen connection after an accept.
   A server listens on the listener that `Manager::listening` binds on the socket address
-  that its owner gives, with the options of each stream of the manager. Each accepted
-  stream is a new connection that gets `ESTABLISHED`, with the context of the listen
-  connection at the accept. A drive accepts at most one stream between two runs of the
-  loop, as the POSIX manager accepts one for each run
+  that its owner gives, with the options of each stream of the manager. The server of
+  `sim::serve` listens on the listener that the caller of `sim::serve` binds, with the
+  options of that bind, which `Manager::accepting` takes (OPCUA SIM). Approved by
+  `laptop.architect-2` (2026-10-13T02:19:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257). Each
+  accepted stream is a new connection that gets `ESTABLISHED`, with the context of the
+  listen connection at the accept. A drive accepts at most one stream between two runs
+  of the loop, as the POSIX manager accepts one for each run
   (`arch/posix/eventloop_posix_tcp.c:378-391` of v1.5.9). open62541 needs that run: at
   the limit, `purgeFirstChannelWithoutSession`
   (`patches/open62541/src/server/ua_server_binary.c:586-598`) also picks a channel that
@@ -553,11 +564,12 @@
   2026-10-10 03:05 UTC). Lost for the listener: the open of the listen binds it from its
   parameters. `address` is a host name and `Net::listen` takes a socket address, so the
   open would resolve in a hook that must give `ESTABLISHED` before it returns. Also
-  lost: the owner binds the listener and gives it to `Manager::listening`, so the stream
-  options hold only when the owner binds with the options of the manager. An owner that
-  binds port 0 reads its port from `Manager::port`, which gives the port of the listener
-  until a listen open takes it, and `Server::start` makes the URL of its server from
-  that port. Decided by `laptop.architect-2`
+  lost, for a server other than that of `sim::serve`: the owner binds the listener and
+  gives it to `Manager::listening`, so the stream options hold only when the owner binds
+  with the options of the manager. An owner that binds port 0 reads its port from
+  `Manager::port`, which gives the port of the listener until a listen open takes it,
+  and `Server::start` makes the URL of its server from that port. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6108905320,
   2026-10-11 12:14 UTC). Supersedes "No accessor for the bound address" of
   https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582. Also lost:
@@ -567,7 +579,8 @@
   21:10 UTC), and one with an enum argument, a new type that holds one value. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286,
-  2026-10-09 20:26 UTC). The two constructors: decided by `laptop.architect-2`
+  2026-10-09 20:26 UTC). The two constructors `new` and `listening`: decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505,
   2026-10-09 21:12 UTC), after the ruling of `laptop.director`. Supersedes the one
   constructor of
@@ -576,7 +589,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582,
   2026-10-10 03:15 UTC). Supersedes "the listener that its owner gives" of
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6088685286 and
-  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The
+  https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089351505. The third
+  constructor, `Manager::accepting`, takes the listener that the caller of `sim::serve`
+  binds, with the options of that bind. The streams of the test server need not have the
+  options of the client, so the cost of a second copy of the options is accepted for
+  `sim::serve`. Supersedes the bind in `Manager::listening` of
+  https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093207582 for
+  `sim::serve`: approved by `laptop.architect-2` (2026-10-13T02:23:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136822544). The
   parameters of the first callbacks: approved by `laptop.architect-2` at `feb6c21a4`
   (https://github.com/synnaxlabs/foundation/pull/2180#issuecomment-6089521550,
   2026-10-09 21:25 UTC).
@@ -690,3 +710,28 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
   2026-10-11 15:26 UTC).
+  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 16 first waits until one of them
+  ends. A read sends the timeout hint 0, so neither open62541 (2^32 - 1 ms, 49.7 days)
+  nor the server ends it, and it stays in flight until the server answers it or the
+  channel closes. An open62541 timeout ends a request on the client only, so the count
+  would not have the requests that the server still holds. The read gives `BadTimeout`
+  at the request timeout of the client, its wait included. When no read ends in that
+  wait, it gives `BadTooManyOperations`: the server holds 16 requests, and the client
+  sends no read until it answers one. The kind closes a client that gives it and
+  connects again. The bound is a constant from the sends of a connection, not from the
+  rate of reads, as only a server that holds requests fills it. A client sends and takes
+  at most 8 chunks in a message, and the test server sends at most 8, so the reads in
+  flight times the chunks of a message stay at 128, half of the 256 sends of a
+  connection. The other half is for the requests of open62541 itself. open62541 checks
+  the chunks of a message that it sends against its own count, not against the count of
+  the peer (`src/ua_securechannel.c`, line 392). Lost: a read whose future drops cancels
+  its request, since open62541 has no local remove, and `UA_Client_cancelByRequestId`
+  sends one more request, and the server still answers the read; a read past the bound
+  that fails at once, which fails reads that the late answer of a dropped read lets go
+  on; and a client that closes its channel when no read ends in the wait, which gives
+  the caller `BadConnectionClosed` and hides the cause. Proposed in
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6127422590. Approved
+  by `laptop.architect-2` at `8ab776da8`
+  (https://github.com/synnaxlabs/foundation/pull/2450#issuecomment-6128818932,
+  2026-10-12 16:59 UTC).

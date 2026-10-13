@@ -15,7 +15,10 @@
 #include "timer.h"
 #pragma GCC diagnostic pop
 
+#include "shim.h"
+
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +79,8 @@ _Static_assert(sizeof(UA_DataType) == 96, "UA_DataType changed");
 _Static_assert(sizeof(UA_DecodeBinaryOptions) == 40, "UA_DecodeBinaryOptions changed");
 _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
                "decodedLength moved");
+_Static_assert(sizeof(shim_node) == 24, "shim_node changed");
+_Static_assert(offsetof(shim_node, name) == 8, "shim_node.name moved");
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
@@ -611,8 +616,10 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el`, or NULL on a failure. */
-UA_Client *shim_client_new(UA_EventLoop *el) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
+ * or NULL when out of memory. A failed copy of the application URI or of the URI of
+ * namespace 0 gives a client with that URI empty (#2566). */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -622,12 +629,35 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
         UA_ClientConfig_clear(&config);
         return NULL;
     }
+    /* open62541 checks the chunks of a message that it sends and of one that it takes
+     * against this count, not against the count of the peer. */
+    config.localConnectionConfig.localMaxChunkCount = chunks;
     return UA_Client_newWithConfig(&config);
 }
 
 /* Gives the timeout of the requests of `client`, in ms. */
 UA_UInt32 shim_client_timeout(UA_Client *client) {
     return UA_Client_getConfig(client)->timeout;
+}
+
+/* Writes to `limits` the send and receive buffer sizes of the channel of `client`, the
+ * MaxMessageSize and the MaxChunkCount of its server (0 for none), and the encoded size
+ * of the session token of `client`. Gives `BadInternalError` when the copy gives
+ * another value than 5 `UInt32` values. */
+UA_StatusCode shim_client_limits(UA_Client *client, size_t limits[5]) {
+    UA_Variant value;
+    UA_StatusCode status = UA_Client_getConnectionAttributeCopy(
+        client, UA_QUALIFIEDNAME(0, "messageLimits"), &value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(value.type != &UA_TYPES[UA_TYPES_UINT32] || value.arrayLength != 5) {
+        UA_Variant_clear(&value);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    for(size_t i = 0; i < 5; i++)
+        limits[i] = ((const UA_UInt32 *)value.data)[i];
+    UA_Variant_clear(&value);
+    return UA_STATUSCODE_GOOD;
 }
 
 /* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
@@ -659,14 +689,99 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
- * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
-                               UA_ClientAsyncReadValueAttributeCallback callback,
-                               void *data, UA_UInt32 *request) {
-    return UA_Client_readValueAttribute_async(
-        client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+/* Gives a Read request of the Value of each of the `count` nodes at `nodes`, with no
+ * timestamps, which copies their names, or NULL when an allocation fails. */
+UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
+    UA_ReadRequest *request = UA_ReadRequest_new();
+    if(!request)
+        return NULL;
+    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    request->nodesToRead =
+        (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
+    if(!request->nodesToRead) {
+        UA_ReadRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToReadSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_ReadValueId *read = &request->nodesToRead[i];
+        read->attributeId = UA_ATTRIBUTEID_VALUE;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_ReadRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+void shim_read_free(UA_ReadRequest *request) { UA_ReadRequest_delete(request); }
+
+/* Sends `request` on `client`, and has `callback` called with `data` and the answer.
+ * Writes the id of the request to `id`. The request times out only after 2^32 - 1 ms
+ * (49.7 days), so in practice it ends at its answer or at the close of the channel. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
+                               UA_ClientAsyncReadCallback callback, void *data,
+                               UA_UInt32 *id) {
+    /* open62541 takes the timeout hint of a request from the config, and makes 0
+     * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
+     * hint 0. A send keeps the handle that it gives a request with handle 0. */
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_UInt32 timeout = config->timeout;
+    config->timeout = 0;
+    request->requestHeader.requestHandle = 0;
+    UA_StatusCode status =
+        UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
+    config->timeout = timeout;
+    return status;
+}
+
+/* Gives the bytes of the body of the message of `request` sent with a session token of
+ * `token` encoded bytes. */
+size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(request, type, NULL) -
+           UA_calcSizeBinary(&request->requestHeader.authenticationToken,
+                             &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           token;
+}
+
+/* Gives the most bytes of the body of the message of a good answer of a read of `count`
+ * nodes that each hold a Double, with each field of each value, or `SIZE_MAX` past
+ * it. */
+size_t shim_read_answer(size_t count) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
+    UA_ReadResponse response;
+    UA_ReadResponse_init(&response);
+    UA_Double value = 0;
+    UA_DataValue result;
+    UA_DataValue_init(&result);
+    UA_Variant_setScalar(&result.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    result.hasValue = true;
+    result.hasStatus = true;
+    result.hasSourceTimestamp = true;
+    result.hasServerTimestamp = true;
+    result.hasSourcePicoseconds = true;
+    result.hasServerPicoseconds = true;
+    size_t fixed =
+        UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+        UA_calcSizeBinary(&response, type, NULL);
+    size_t each = UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+    if(count > (SIZE_MAX - fixed) / each)
+        return SIZE_MAX;
+    return fixed + count * each;
+}
+
+/* Gives the count of results of `response`, a Read response. */
+size_t shim_read_count(const UA_ReadResponse *response) {
+    return response->resultsSize;
+}
+
+/* Gives result `index` of `response`, a Read response with more results than
+ * `index`. */
+const UA_DataValue *shim_read_result(const UA_ReadResponse *response, size_t index) {
+    return &response->results[index];
 }
 
 /* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
@@ -689,14 +804,4 @@ UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
         return UA_STATUSCODE_BADTYPEMISMATCH;
     *out = *(const UA_Double *)variant->data;
     return UA_STATUSCODE_GOOD;
-}
-
-/* Gives whether `client` has the URI of namespace 1 from its server, which it reads
- * after its session activates. */
-UA_Boolean shim_client_namespaced(UA_Client *client) {
-    UA_String uri = UA_STRING_NULL;
-    UA_StatusCode status = UA_Client_getNamespaceUri(client, 1, &uri);
-    UA_Boolean namespaced = status == UA_STATUSCODE_GOOD && uri.length > 0;
-    UA_String_clear(&uri);
-    return namespaced;
 }

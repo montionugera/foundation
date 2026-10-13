@@ -54,10 +54,16 @@
   peer's public key; else it stops with `Code(wire::header::REJECTED)`, and its reply
   half resets with the same code. A `Hub` stream of a `Peer::Client` session is
   rejected until #1744 (PR 4b of #585, by `laptop.architect-2`, 22:22 UTC,
-  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342). At the
-  stop, each session and stream future drops, then the mesh, and shard 0 waits for the
-  mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and before
-  `Node::join` returns, so a restart at once opens the log:
+  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342).
+  Amended (2026-10-12, #1744, by `laptop.architect-2`, 2026-10-13T05:13:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2545#issuecomment-6138748015): with a
+  mesh, it goes to the hub's link of the session, and `node` answers each
+  `Served::Request` with `ops::serve` for the subject of its hello, then `Reply::send`;
+  with no mesh, it is still rejected. Shard 0 gives its hub the access rules of the root
+  region of the spec in use, and of each later spec, the first before it takes the first
+  session. At the stop, each session and stream future drops, then the mesh, and shard 0
+  waits for the mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and
+  before `Node::join` returns, so a restart at once opens the log:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051658475. For a
   node with a mesh, this supersedes the stop order of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
@@ -247,14 +253,13 @@
   that proves a right leaves the bound: its place frees and its sessions stay.
   Membership is the one proof today, which shard 0 reads again for each held place as
   each new session of a peer outside the region arrives. The client hello of #1744
-  and the ticket join of
-  #1157 must each free the place when its proof holds. Guarantee: a peer outside the
-  region keeps its session until 256 later peers took a place, so the bound never closes
-  a peer that proves its right before that. Limit: a flood that takes 256 places in the
-  time that a peer needs to prove closes that peer's session. Only a limit on handshakes
-  before admission bounds that rate (#563). The stop rule holds: no clone of a session
-  lives outside a future that shard 0 drops. Supersedes the close of each session that
-  gets no place of
+  (#2548) and the ticket join of #1157 must each free the place when its proof holds.
+  Guarantee: a peer outside the region keeps its session until 256 later peers took a
+  place, so the bound never closes a peer that proves its right before that. Limit: a
+  flood that takes 256 places in the time that a peer needs to prove closes that peer's
+  session. Only a limit on handshakes before admission bounds that rate (#563). The stop
+  rule holds: no clone of a session lives outside a future that shard 0 drops.
+  Supersedes the close of each session that gets no place of
   https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
   (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
   first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
@@ -272,3 +277,25 @@
   https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
   supersedes the bind before any shard starts of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
+  Amended (2026-10-12, #1662, by `laptop.architect-2`, 15:50 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083. The
+  limits above, the 10 s wait for a header, and the 256 places are the defaults of
+  `node::Settings`, the field `settings` of `node::Config`, and are constants no more.
+  `foundation` gives the defaults. No spec sets them yet: a `node_settings` policy does
+  when a node applies one (#2453, after #2074), so the window keeps its cap until then.
+  The transport is the one place that refuses a value, as the buffer is for a part of
+  the pool budget (NODE SETTINGS). By then the node has claimed its data directory and
+  bound its port, and `Node::join` gives `Error::Transport` with the
+  `transport::Error::Config`. Lost: one field of `node::Config` for each value; the
+  constants until #2453, which lets no simulation run a node at small limits; a check in
+  `Node::start` before a shard starts, which states the rules of the transport a second
+  time for values that only a test gives until #2453. #2453 checks the values of a
+  policy before a node keeps them. Supersedes the limits as constants of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669
+  (2026-10-07 21:09 UTC), the floor as a patch of
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818
+  (2026-10-09 03:49 UTC), the two bounds as patches of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), and the window that #1662 sizes of
+  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609
+  (2026-10-07 23:41 UTC).
