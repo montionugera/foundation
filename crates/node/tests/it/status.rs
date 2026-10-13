@@ -43,10 +43,6 @@ pub(crate) struct Error {
     /// `config`, `device`, or `retry`.
     pub(crate) class: String,
     pub(crate) text: String,
-    /// The time of the next try. `None` unless the state is `restarting`. A missing key
-    /// reads as `None`, because `status` gives no `next` until #2530.
-    #[serde(default)]
-    pub(crate) next: Option<String>,
 }
 
 /// The connectors of `json`, the output of `foundation status --json`, by name.

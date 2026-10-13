@@ -503,7 +503,6 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
                     "the write to InfluxDB failed: the connect failed: {influx_address} \
                      refused the connection"
                 ),
-                next: None,
             }),
         }
     );

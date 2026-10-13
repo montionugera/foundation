@@ -126,7 +126,6 @@ fn status_gives_each_connector_as_json() {
                     "Select a channel that the spec defines",
                 )
                 .into(),
-                next: None,
             }),
         }
     );
