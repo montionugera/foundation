@@ -6,6 +6,7 @@
 
 mod one_node;
 mod port;
+mod quickstart;
 mod rig;
 #[cfg(unix)]
 mod secret;
