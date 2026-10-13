@@ -6968,6 +6968,44 @@ mod port {
             assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
         }
 
+        /// `status` through `operate` gives the connector that an apply places on the
+        /// node, read through its hub as a subject that may read its status.
+        #[test]
+        fn status_gives_the_connector_on_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.influx.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{}{watch}", connector("influx"));
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
+                r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
+                r#""counts":{},"error":{"class":"config","text":"this build cannot "#,
+                r#"run the influx kind yet. Remove the connector, or run it on a "#,
+                r#"build that has the influx writer"}}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
         /// A node that starts on a spec that places a connector on it applies that
         /// spec to its runs: it runs the connector at the start, before any apply.
         /// `influx` ends with a config error, so each later apply runs it again, also
