@@ -3941,6 +3941,14 @@ fn fails_a_round_comment_numbered_above_3_and_above_the_one_before_it() {
         check(&reviewed(vec![uncapped(ROUND), uncapped(ROUND)])),
         Vec::<String>::new()
     );
+    assert_eq!(
+        check(&reviewed(vec![
+            uncapped(ROUND),
+            bot(&fourth),
+            uncapped(&fourth)
+        ])),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
