@@ -88,7 +88,7 @@ pub(crate) struct Writes {
 
 impl Writes {
     /// Each channel that its kind writes.
-    pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
+    pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
         self.channels.iter()
     }
 
