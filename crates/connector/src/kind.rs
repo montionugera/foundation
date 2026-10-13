@@ -1009,6 +1009,59 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    ended the session with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refused_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Refused(
+            wire::hub::Refusal::NotHome,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a message \
+                    from the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_message_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Message(
+            wire::hub::Error::Empty,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a frame \
+                    from the home is not valid: entry 2 is out of range for a key set \
+                    of 1 entries"
+    )]
+    fn panics_for_a_frame_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Frame(
+            types::frame::Error::OutOfRange {
+                entry: 2,
+                entries: 1,
+            },
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the pool had \
+                    no block for the reader: pool is full: asked for 8 bytes, 0 bytes \
+                    free"
+    )]
+    fn panics_for_a_pool_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Pool(
+            block::Error::Exhausted {
+                requested: 8,
+                available: 0,
+            },
+        )));
+    }
+
+    #[test]
     #[should_panic(expected = "invariant: a kind labels no frame resend")]
     fn panics_for_a_write_of_a_resend_frame() {
         let resend = hub::home::Error::Resend;
