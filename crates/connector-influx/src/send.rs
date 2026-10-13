@@ -63,9 +63,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             if body.is_empty() {
                 reader.ack(position);
             } else {
-                let sent = send(&client, ctx, &uri, body.into());
+                let (client, uri) = (&client, &uri);
                 flight.set(Some(async move {
-                    sent.await;
+                    send(client, ctx, uri, body.into()).await;
                     (position, samples)
                 }));
             }
