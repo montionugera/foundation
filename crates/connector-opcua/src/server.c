@@ -52,13 +52,13 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* Adds to `server` the variable `node`, which holds `value` of the type
- * `UA_TYPES[type]`, under the Objects folder. */
+/* Adds to `server` the variable `node`, which holds `value` of the kind `kind`, under
+ * the Objects folder. */
 UA_StatusCode shim_server_add_scalar(UA_Server *server, shim_node node,
-                                     const shim_scalar *value, UA_UInt16 type) {
+                                     const shim_scalar *value, UA_UInt16 kind) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, &UA_TYPES[type]);
-    attributes.dataType = UA_TYPES[type].typeId;
+    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, &UA_TYPES[kind]);
+    attributes.dataType = UA_TYPES[kind].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     return UA_Server_addVariableNode(
         server, shim_node_id(node),
@@ -106,6 +106,22 @@ UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t si
     return status;
 }
 
+/* Adds to `server` the variable `node`, which holds the String "text", under the
+ * Objects folder. */
+UA_StatusCode shim_server_add_string(UA_Server *server, shim_node node) {
+    UA_String text = UA_STRING("text");
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&attributes.value, &text, &UA_TYPES[UA_TYPES_STRING]);
+    attributes.dataType = UA_TYPES[UA_TYPES_STRING].typeId;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    return UA_Server_addVariableNode(
+        server, shim_node_id(node),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "string"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+}
+
 /* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
  * of `server`, each 0 for the default of open62541. */
 void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
@@ -125,10 +141,8 @@ void shim_client_receive(UA_Client *client, UA_UInt32 size) {
  * the context that Rust holds. */
 typedef struct shim_source shim_source;
 struct shim_source {
-    /* Gives the value, the index of its type in `UA_TYPES`, and the status of a read of
-     * the variable. */
-    void (*read)(shim_source *source, shim_scalar *value, UA_UInt16 *type,
-                 UA_StatusCode *status);
+    /* Gives the value and the status of a read of the variable. */
+    void (*read)(shim_source *source, UA_Double *value, UA_StatusCode *status);
 };
 
 static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessionId,
@@ -146,21 +160,20 @@ static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessio
     (void)range;
     value->hasStatus = true;
     shim_source *source = nodeContext;
-    shim_scalar read;
-    UA_UInt16 type;
-    source->read(source, &read, &type, &value->status);
+    UA_Double read;
+    source->read(source, &read, &value->status);
     UA_StatusCode status =
-        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[type]);
+        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[UA_TYPES_DOUBLE]);
     value->hasValue = status == UA_STATUSCODE_GOOD;
     return status;
 }
 
-/* Adds to `server` the scalar variable `node` of any type under the Objects folder,
- * whose reads `source` answers. `source` lives until the server is deleted. */
+/* Adds to `server` the Double variable `node` under the Objects folder, whose reads
+ * `source` answers. `source` lives until the server is deleted. */
 UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
                                      shim_source *source) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    attributes.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
+    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
     attributes.valueRank = UA_VALUERANK_SCALAR;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};

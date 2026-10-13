@@ -718,6 +718,21 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
     assert_eq!(outcome.frames.len(), 11);
 }
 
+#[test]
+fn writes_the_value_of_a_good_status_with_a_subcode() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.change(Quality(0x0096_0000));
+        });
+        scene.supervise(ms(1_550)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    let frames = &outcome.frames;
+    assert_eq!(frames.len(), 16);
+    assert_eq!(values(frames, 2), served(&outcome, A));
+}
+
 /// The error names the read of the first bad status, also past the first read.
 #[test]
 fn names_the_read_of_a_bad_status_past_the_first() {

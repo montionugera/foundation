@@ -41,47 +41,49 @@ impl Value {
             return Err(status);
         }
         Ok(match kind {
-            // SAFETY: `shim_value_scalar` wrote the field of the type 0.
-            0 => Self::Bool(unsafe { scalar.boolean }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 1.
-            1 => Self::I8(unsafe { scalar.sbyte }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 2.
-            2 => Self::U8(unsafe { scalar.byte }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 3.
-            3 => Self::I16(unsafe { scalar.int16 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 4.
-            4 => Self::U16(unsafe { scalar.uint16 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 5.
-            5 => Self::I32(unsafe { scalar.int32 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 6.
-            6 => Self::U32(unsafe { scalar.uint32 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 7.
-            7 => Self::I64(unsafe { scalar.int64 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 8.
-            8 => Self::U64(unsafe { scalar.uint64 }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 9.
-            9 => Self::F32(unsafe { scalar.float }),
-            // SAFETY: `shim_value_scalar` wrote the field of the type 10.
-            10 => Self::F64(unsafe { scalar.double }),
-            _ => panic!("invariant: shim_value_scalar gives a type from 0 to 10"),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::BOOLEAN => Self::Bool(unsafe { scalar.boolean }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::SBYTE => Self::I8(unsafe { scalar.sbyte }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::BYTE => Self::U8(unsafe { scalar.byte }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::INT16 => Self::I16(unsafe { scalar.int16 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::UINT16 => Self::U16(unsafe { scalar.uint16 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::INT32 => Self::I32(unsafe { scalar.int32 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::UINT32 => Self::U32(unsafe { scalar.uint32 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::INT64 => Self::I64(unsafe { scalar.int64 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::UINT64 => Self::U64(unsafe { scalar.uint64 }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::FLOAT => Self::F32(unsafe { scalar.float }),
+            // SAFETY: `shim_value_scalar` wrote the field of the kind.
+            ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
+            _ => panic!(
+                "invariant: shim_value_scalar gives a kind of `ffi::Scalar`, not {kind}"
+            ),
         })
     }
 
-    /// Gives the C scalar of the value and the index of its type in `UA_TYPES`.
+    /// Gives the C scalar of the value and its kind.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn raw(self) -> (ffi::Scalar, u16) {
         match self {
-            Self::Bool(boolean) => (ffi::Scalar { boolean }, 0),
-            Self::I8(sbyte) => (ffi::Scalar { sbyte }, 1),
-            Self::U8(byte) => (ffi::Scalar { byte }, 2),
-            Self::I16(int16) => (ffi::Scalar { int16 }, 3),
-            Self::U16(uint16) => (ffi::Scalar { uint16 }, 4),
-            Self::I32(int32) => (ffi::Scalar { int32 }, 5),
-            Self::U32(uint32) => (ffi::Scalar { uint32 }, 6),
-            Self::I64(int64) => (ffi::Scalar { int64 }, 7),
-            Self::U64(uint64) => (ffi::Scalar { uint64 }, 8),
-            Self::F32(float) => (ffi::Scalar { float }, 9),
-            Self::F64(double) => (ffi::Scalar { double }, 10),
+            Self::Bool(boolean) => (ffi::Scalar { boolean }, ffi::BOOLEAN),
+            Self::I8(sbyte) => (ffi::Scalar { sbyte }, ffi::SBYTE),
+            Self::U8(byte) => (ffi::Scalar { byte }, ffi::BYTE),
+            Self::I16(int16) => (ffi::Scalar { int16 }, ffi::INT16),
+            Self::U16(uint16) => (ffi::Scalar { uint16 }, ffi::UINT16),
+            Self::I32(int32) => (ffi::Scalar { int32 }, ffi::INT32),
+            Self::U32(uint32) => (ffi::Scalar { uint32 }, ffi::UINT32),
+            Self::I64(int64) => (ffi::Scalar { int64 }, ffi::INT64),
+            Self::U64(uint64) => (ffi::Scalar { uint64 }, ffi::UINT64),
+            Self::F32(float) => (ffi::Scalar { float }, ffi::FLOAT),
+            Self::F64(double) => (ffi::Scalar { double }, ffi::DOUBLE),
         }
     }
 }

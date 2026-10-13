@@ -270,7 +270,7 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
 }
 
 /// A scalar of each type at its bounds, and each special value of a float.
-const SCALARS: [Value; 28] = [
+const SCALARS: [Value; 30] = [
     Value::Bool(false),
     Value::Bool(true),
     Value::I8(i8::MIN),
@@ -294,12 +294,35 @@ const SCALARS: [Value; 28] = [
     Value::F32(-0.0),
     Value::F32(f32::NEG_INFINITY),
     Value::F32(f32::NAN),
+    Value::F32(f32::from_bits(0xffc0_0001)),
     Value::F64(f64::MIN),
     Value::F64(f64::MAX),
     Value::F64(-0.0),
     Value::F64(f64::INFINITY),
     Value::F64(f64::NAN),
+    Value::F64(f64::from_bits(0xfff8_0000_0000_0001)),
 ];
+
+/// `value` as the test server sends it: open62541 sends each NaN as the quiet NaN
+/// with the sign bit set.
+fn sent(value: Value) -> Value {
+    match value {
+        Value::F32(float) if float.is_nan() => Value::F32(f32::from_bits(0xffc0_0000)),
+        Value::F64(double) if double.is_nan() => {
+            Value::F64(f64::from_bits(0xfff8_0000_0000_0000))
+        }
+        other => other,
+    }
+}
+
+/// `value` with each float as its bits, which tell each NaN and -0.0 apart.
+fn exact(value: Result<Value, Status>) -> Result<Result<Value, u64>, Status> {
+    value.map(|value| match value {
+        Value::F32(float) => Err(u64::from(float.to_bits())),
+        Value::F64(double) => Err(double.to_bits()),
+        other => Ok(other),
+    })
+}
 
 #[test]
 fn a_read_gives_each_scalar_type_at_its_bounds() {
@@ -317,33 +340,42 @@ fn a_read_gives_each_scalar_type_at_its_bounds() {
                 })
                 .collect();
             let mut client = peer.connected().await;
-            let nodes = client.nodes(&nodes).expect("28 nodes fit");
+            let nodes = client.nodes(&nodes).expect("30 nodes fit");
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             values
         })
         .await
     });
-    // Debug tells NaN and -0.0 apart, where `==` does not.
-    let expected: Result<_, Status> = Ok(SCALARS.map(Ok::<_, Status>).to_vec());
-    assert_eq!(format!("{values:?}"), format!("{expected:?}"));
+    let values = values.map(|values| values.into_iter().map(exact).collect::<Vec<_>>());
+    let expected = SCALARS.map(|value| exact(Ok(sent(value)))).to_vec();
+    assert_eq!(values, Ok(expected));
 }
 
 #[test]
-fn a_read_of_an_array_fails_with_a_type_mismatch() {
-    let (read, _) = run(0, async |node| {
+fn a_read_of_an_array_or_a_string_fails_with_a_type_mismatch() {
+    let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let array = Node {
                 namespace: 1,
                 key: Key::Number(1001),
             };
+            let string = Node {
+                namespace: 1,
+                key: Key::Number(1002),
+            };
             peer.server.add_doubles(&array);
+            peer.server.add_string(&string);
             let mut client = peer.connected().await;
-            client.read_one(&array).await
+            (
+                client.read_one(&array).await,
+                client.read_one(&string).await,
+            )
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_TYPE_MISMATCH));
+    let mismatch = Err(Status::BAD_TYPE_MISMATCH);
+    assert_eq!(reads, (mismatch, mismatch));
 }
 
 #[test]

@@ -104,6 +104,50 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
 }
 
 #[test]
+fn a_read_gives_the_value_of_a_good_subcode_and_the_status_of_an_uncertain() {
+    const CLAMPED: Quality = Quality(0x0030_0000);
+    const UNCERTAIN: Quality = Quality(0x4090_0000);
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE]);
+        let spike = SPIKE.parse::<Node>().expect("a node");
+        let mut reads = Vec::new();
+        let until = async {
+            let connect = Client::connect(
+                event::Time::monotonic(node.clock()),
+                node.net(),
+                &mut rng,
+                &url,
+            );
+            let mut client = connect.await.expect("connect");
+            for quality in [CLAMPED, UNCERTAIN] {
+                variables.change(quality);
+                reads.push(client.read_one(&spike).await);
+            }
+            client.close().await;
+        };
+        let mut served = node.entropy().rng();
+        serve(
+            node.clock(),
+            event::Time::monotonic(node.clock()).wall,
+            node.net(),
+            listener,
+            &mut served,
+            &variables,
+            until,
+        )
+        .await;
+        assert_eq!(reads, [Ok(Value::F64(1.0)), Err(Status(UNCERTAIN.0))]);
+    })
+    .expect("the run ends");
+}
+
+#[test]
 fn a_server_has_room_for_4_sessions() {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());

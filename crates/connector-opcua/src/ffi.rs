@@ -142,6 +142,19 @@ pub(crate) struct DecodeOptions {
 /// `UA_TYPES_COUNT`.
 pub(crate) const TYPES: usize = 388;
 
+/// The kind of each type of [`Scalar`], which is also its index in `UA_TYPES`.
+pub(crate) const BOOLEAN: u16 = 0;
+pub(crate) const SBYTE: u16 = 1;
+pub(crate) const BYTE: u16 = 2;
+pub(crate) const INT16: u16 = 3;
+pub(crate) const UINT16: u16 = 4;
+pub(crate) const INT32: u16 = 5;
+pub(crate) const UINT32: u16 = 6;
+pub(crate) const INT64: u16 = 7;
+pub(crate) const UINT64: u16 = 8;
+pub(crate) const FLOAT: u16 = 9;
+pub(crate) const DOUBLE: u16 = 10;
+
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;
 
@@ -368,8 +381,8 @@ pub(crate) struct ReadRequest([u8; 0]);
 #[repr(C)]
 pub(crate) struct ReadResponse([u8; 0]);
 
-/// `shim_scalar`: a scalar of the type `UA_TYPES[0]` (Boolean) to `UA_TYPES[10]`
-/// (Double). The index of its type tells which field holds it.
+/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`]. Its kind tells
+/// which field holds it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) union Scalar {

@@ -16,7 +16,6 @@ use crate::connection::Manager;
 use crate::event;
 use crate::node::Node;
 use crate::server::Server;
-use crate::value::Value;
 
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;
@@ -183,7 +182,7 @@ pub async fn serve(
                 (Variables::clone(variables), Clock::clone(&clock));
             server.add_source(node, move || {
                 let read = variables.read(index, clock.now());
-                (Value::F64(read.value), read.quality)
+                (read.value, read.quality)
             });
         }
     };

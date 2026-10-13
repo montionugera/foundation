@@ -193,6 +193,7 @@ unsafe extern "C" {
         node: Node<'_>,
         size: usize,
     ) -> u32;
+    pub(crate) fn shim_server_add_string(server: *mut Server, node: Node<'_>) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,

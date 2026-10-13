@@ -196,10 +196,11 @@ impl Client {
     /// # Errors
     ///
     /// [`Large`] when the request, or a good answer with each field of a Double, the
-    /// largest scalar, for each node, needs more bytes than one message of the session: its chunk size
-    /// times the smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7
-    /// bytes at the end of each chunk but the last, or the `MaxMessageSize` of the
-    /// server when that is smaller. The request comes first.
+    /// largest scalar, for each node, needs more bytes than one message of the
+    /// session: its chunk size times the smaller of [`CHUNKS`] and the
+    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
+    /// last, or the `MaxMessageSize` of the server when that is smaller. The request
+    /// comes first.
     ///
     /// # Aborts
     ///
@@ -219,9 +220,10 @@ impl Client {
     }
 
     /// Reads the Value of each node of `nodes` in one request, and gives the value of
-    /// each node in order: its scalar, the bad status of its value, or
-    /// `BadTypeMismatch` for an array or a type that is not one of [`Value`]. A read of no nodes gives no values and
-    /// sends nothing. A read that times out or whose future dropped stays in flight
+    /// each node in order: its scalar, the status of its value when that is not Good
+    /// (a Good with a subcode is Good), or `BadTypeMismatch` for an array or a type
+    /// that is not one of [`Value`]. A read of no nodes gives no values and sends
+    /// nothing. A read that times out or whose future dropped stays in flight
     /// until the server answers it or the connection closes. While [`READS`] are in
     /// flight, a read first waits until one ends.
     ///

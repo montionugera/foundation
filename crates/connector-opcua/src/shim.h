@@ -15,8 +15,9 @@ typedef struct {
     size_t length;
 } shim_node;
 
-/* A scalar of the type `UA_TYPES[0]` (Boolean) to `UA_TYPES[10]` (Double), as
- * `ffi::Scalar` gives it. */
+/* A scalar of a type from Boolean to Double, as `ffi::Scalar` gives it. The field
+ * that holds it is that of its kind: the `UA_DataTypeKind` of its type, which for
+ * these types is also the index of the type in `UA_TYPES`. */
 typedef union {
     UA_Boolean boolean;
     UA_SByte sbyte;
