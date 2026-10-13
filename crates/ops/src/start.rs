@@ -23,7 +23,8 @@ pub struct Start {
     pub listen: SocketAddr,
 }
 
-/// Why a node did not start, or stopped with an error.
+/// Why a node did not start, stopped with an error, or why a command line did not
+/// reach its node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     /// What kind of failure it is, such as `node.busy`.
@@ -55,6 +56,6 @@ impl Start {
     /// Writes `failure` to `errors` as [`crate::cli`] writes its own errors, and gives
     /// exit status 1.
     pub fn fail(&self, failure: &Failure, errors: impl Write) -> u8 {
-        crate::report(&Error::Start(failure.clone()), self.json, errors)
+        crate::report(&Error::Node(failure.clone()), self.json, errors)
     }
 }

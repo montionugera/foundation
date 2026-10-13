@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
+use std::path::PathBuf;
+
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -26,6 +28,10 @@ const STOPPED: Code = Code::new("ops.stopped");
 const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const READ: Code = Code::new("ops.read");
+const WRITE: Code = Code::new("ops.write");
+const LARGE_REQUEST: Code = Code::new("ops.large-request");
+const BAD_REPLY: Code = Code::new("ops.bad-reply");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -57,8 +63,9 @@ pub(crate) enum Error {
     },
     /// The region did not apply the plan.
     Apply(mesh::Error),
-    /// The node did not start, or stopped with an error.
-    Start(Failure),
+    /// The node did not start, stopped with an error, or a command line did not reach
+    /// it.
+    Node(Failure),
     /// The group of the mesh stopped, so the node can neither plan nor apply.
     Stopped(mesh::Stopped),
     /// The body that a node got is no request.
@@ -71,6 +78,28 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
+    /// A command line did not read the file at `path`.
+    Read { path: PathBuf, cause: Unread },
+    /// A command line did not write the plan file at `path`.
+    Write {
+        path: PathBuf,
+        error: env::paths::Error,
+    },
+    /// The request of a command line has more bytes than one request holds.
+    LargeRequest,
+    /// The reply of a node to a command line is no reply.
+    Reply { message: String },
+    /// The errors that a node gave a command line, with the exit status of each.
+    Remote { problems: Vec<Problem>, status: u8 },
+}
+
+/// Why a command line did not read a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unread {
+    NotFound,
+    Directory,
+    NotUtf8,
+    Io { code: i32 },
 }
 
 /// An action that an operation on a node needs: the action of its name, and `Admin`
@@ -140,28 +169,40 @@ impl Error {
 
     pub(crate) fn status(&self) -> u8 {
         match self {
-            Self::Argument { .. }
-            | Self::Unknown { .. }
-            | Self::Config(_)
-            | Self::Plan(_) => 2,
-            Self::Input { .. }
+            Self::Remote { status, .. } => *status,
+            Self::Read {
+                cause: Unread::Io { .. },
+                ..
+            }
+            | Self::Input { .. }
             | Self::Output { .. }
             | Self::Behind(_)
             | Self::Stale { .. }
             | Self::Apply(_)
-            | Self::Start(_)
+            | Self::Node(_)
             | Self::Stopped(_)
             | Self::Request { .. }
             | Self::Denied { .. }
-            | Self::LargeReply => 1,
+            | Self::LargeReply
+            | Self::Write { .. }
+            | Self::Reply { .. } => 1,
+            Self::Argument { .. }
+            | Self::Unknown { .. }
+            | Self::Config(_)
+            | Self::Plan(_)
+            | Self::Read { .. }
+            | Self::LargeRequest => 2,
         }
     }
 
     /// Each problem: for each error but `Config`, one with no place and no note.
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
-            Self::Config(problems) => return Cow::Borrowed(problems),
-            Self::Start(failure) => (failure.code, failure.fix.clone()),
+            Self::Config(problems) | Self::Remote { problems, .. } => {
+                return Cow::Borrowed(problems);
+            }
+            Self::Node(failure) => (failure.code, failure.fix.clone()),
             Self::Argument { .. } => (ARGUMENT, HELP.to_owned()),
             Self::Unknown {
                 closest: Some(closest),
@@ -207,6 +248,21 @@ impl Error {
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
             ),
+            Self::Read { .. } => (
+                READ,
+                "Fix the cause in the message, then run the command again".to_owned(),
+            ),
+            Self::Write { .. } => (
+                WRITE,
+                "Give `--out` a path in a directory that can be written".to_owned(),
+            ),
+            Self::LargeRequest => {
+                (LARGE_REQUEST, "Make the config files smaller".to_owned())
+            }
+            Self::Reply { .. } => (
+                BAD_REPLY,
+                "Use a `foundation` program of the same version as the node".to_owned(),
+            ),
         };
         Cow::Owned(vec![Problem {
             code: code.as_str().to_owned(),
@@ -222,14 +278,14 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config`, each
-    /// control character is written as its Rust escape, because a config producer
-    /// quotes the text of a file itself. In each other error, so are a backslash and
-    /// each character that does not print, because that text holds the caller's text
-    /// as given.
+    /// Each problem for a terminal, with one empty line between two. In `Config` and
+    /// `Remote`, each control character is written as its Rust escape, because a
+    /// config producer or the node quotes the text of a file itself. In each other
+    /// error, so are a backslash and each character that does not print, because that
+    /// text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
-            Self::Config(_) => escape_controls,
+            Self::Config(_) | Self::Remote { .. } => escape_controls,
             _ => escape,
         };
         let problems: Vec<String> = self
@@ -361,6 +417,7 @@ impl fmt::Display for Place {
 }
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Argument { message } => f.write_str(message),
@@ -404,7 +461,7 @@ impl fmt::Display for Error {
                  of the plan"
             ),
             Self::Apply(error) => error.fmt(f),
-            Self::Start(failure) => f.write_str(&failure.message),
+            Self::Node(failure) => f.write_str(&failure.message),
             Self::Stopped(stopped) => stopped.fmt(f),
             Self::Request { message } => {
                 write!(f, "the body is no request: {message}")
@@ -425,6 +482,41 @@ impl fmt::Display for Error {
                 "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
                  holds"
             ),
+            Self::Read { path, cause } => {
+                let path = path.display();
+                match cause {
+                    Unread::NotFound => write!(f, "no file is at {path}"),
+                    Unread::Directory => write!(f, "{path} is a directory, not a file"),
+                    Unread::NotUtf8 => write!(f, "the text of {path} is not UTF-8"),
+                    Unread::Io { code } => {
+                        write!(f, "the read of {path} failed with OS error {code}")
+                    }
+                }
+            }
+            Self::Write { path, error } => {
+                let path = path.display();
+                match error {
+                    env::paths::Error::NotFound => {
+                        write!(f, "the directory of the plan file {path} is not there")
+                    }
+                    env::paths::Error::Io { code } => write!(
+                        f,
+                        "the write of the plan file {path} failed with OS error {code}"
+                    ),
+                }
+            }
+            Self::LargeRequest => write!(
+                f,
+                "the request has more than {BODY_BYTES_MAX} bytes, the most that a \
+                 request holds"
+            ),
+            Self::Reply { message } => {
+                write!(f, "the reply of the node is no reply: {message}")
+            }
+            Self::Remote { problems, .. } => match problems.as_slice() {
+                [one] => f.write_str(&one.message),
+                _ => write!(f, "the node gave {} problems", problems.len()),
+            },
         }
     }
 }

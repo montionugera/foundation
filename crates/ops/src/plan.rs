@@ -142,10 +142,6 @@ impl Output {
     /// One line for each change, with a `key` line under it for each fingerprint, then
     /// the counts, then one `note` line with the tree key of each definition that
     /// Foundation made, when the spec holds one.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the table entries of #1744 call it")
-    )]
     pub(crate) fn text(&self) -> String {
         let lines: Vec<String> = self
             .changes
@@ -387,10 +383,6 @@ pub(crate) enum Action {
 }
 
 impl Action {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the table entries of #1744 call it")
-    )]
     const fn symbol(self) -> char {
         match self {
             Self::Add => '+',

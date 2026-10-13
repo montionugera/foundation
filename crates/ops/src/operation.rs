@@ -58,6 +58,11 @@ enum Command {
     Run(Request),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
+    /// Show the change from config files to the spec of the node in
+    /// `foundation-data`.
+    Plan(PlanArgs),
+    /// Apply a plan file of `foundation plan --out` on the node in `foundation-data`.
+    Apply(ApplyArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -79,6 +84,23 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+}
+
+#[derive(clap::Args)]
+struct PlanArgs {
+    /// The config files.
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// Write the plan file here, for `foundation apply`. With none, `plan` writes no
+    /// file.
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct ApplyArgs {
+    /// The plan file.
+    plan: PathBuf,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -115,6 +137,13 @@ pub(crate) struct Reference {
 pub(crate) enum Parsed {
     Run(Request),
     Start(Start),
+    Plan {
+        files: Vec<PathBuf>,
+        out: Option<PathBuf>,
+    },
+    Apply {
+        plan: PathBuf,
+    },
     Help(String),
     Mcp,
 }
@@ -144,6 +173,8 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
             name,
             listen,
         })),
+        Command::Plan(PlanArgs { files, out }) => Ok(Parsed::Plan { files, out }),
+        Command::Apply(ApplyArgs { plan }) => Ok(Parsed::Apply { plan }),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }

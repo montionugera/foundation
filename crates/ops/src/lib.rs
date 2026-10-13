@@ -3,6 +3,9 @@
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
+
+use env::paths::Paths;
 
 use serde_json::{Value, json};
 
@@ -15,6 +18,7 @@ mod mcp;
 mod node;
 mod operation;
 mod plan;
+mod remote;
 mod serve;
 mod start;
 #[cfg(test)]
@@ -48,16 +52,25 @@ pub enum Run {
 /// at most one line on `output`, flushed, until `input` ends. A line longer than 1 MiB
 /// gets an Invalid Request error. A closed `output` ends the run with no error,
 /// because its reader has left.
-#[expect(
-    clippy::unused_async,
-    reason = "`plan` and `apply` wait on a node in #1744 PR 2e-2"
-)]
-pub async fn cli(
+///
+/// `plan` and `apply` run on the node of `foundation-data`. Each reads the files it
+/// names through `paths`, calls `reach` with that data directory once, and calls
+/// what it gives with the body of one request. A [`Failure`] of either is the error
+/// of the command, with status 1. `start` and the other operations call neither.
+///
+/// Blocks its thread at each read or write of a path, `input`, or `output`, and makes
+/// none while a request to the node waits.
+pub async fn cli<C>(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,
     mut output: impl Write,
     errors: impl Write,
-) -> Run {
+    paths: &Paths,
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> Run
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
     let args: Vec<OsString> = args.into_iter().collect();
     // Read before parsing, so an argument error also honors `--json`.
     let json = args
@@ -77,6 +90,16 @@ pub async fn cli(
         Ok(Parsed::Help(text)) => {
             write(&mut output, &render(json!({ "help": text }), text.clone()))
         }
+        Ok(Parsed::Plan { files, out }) => {
+            match remote::plan(&files, out.as_deref(), paths, reach).await {
+                Ok(shown) => write(&mut output, &render(shown.json(), shown.text())),
+                Err(error) => Err(Stop::Failed(error)),
+            }
+        }
+        Ok(Parsed::Apply { plan }) => match remote::apply(&plan, paths, reach).await {
+            Ok(shown) => write(&mut output, &render(shown.json(), shown.text())),
+            Err(error) => Err(Stop::Failed(error)),
+        },
         Ok(Parsed::Mcp) => mcp::serve(input, &mut output),
         Err(error) => Err(Stop::Failed(error)),
     };

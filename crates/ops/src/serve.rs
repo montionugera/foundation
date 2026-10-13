@@ -4,8 +4,9 @@ use std::fmt;
 use std::io::{self, Write};
 
 use access::Rules;
-use serde::de::{self, Deserializer, IgnoredAny, MapAccess};
+use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
@@ -180,6 +181,60 @@ fn failed(error: &Error) -> Reply {
             panic!("invariant: the reply of `ops.large-reply` fits")
         })
     })
+}
+
+/// The body of a request of `plan` of `files`, for [`serve`].
+///
+/// # Panics
+///
+/// When the path of a file is not UTF-8.
+pub(crate) fn plan_request(files: &[File]) -> Vec<u8> {
+    let files = serde_json::to_value(files).expect("the path of each file is UTF-8");
+    let mut body = json!({ "plan": { "files": files } })
+        .to_string()
+        .into_bytes();
+    body.push(b'\n');
+    body
+}
+
+/// The body of a request of `apply` of the plan file `plan`, for [`serve`].
+pub(crate) fn apply_request(plan: &[u8]) -> Vec<u8> {
+    [b"{\"apply\":{}}\n", plan].concat()
+}
+
+/// The first line of a reply, as a command line reads it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Answer<T> {
+    Done { output: T },
+    Failed { errors: Vec<Problem>, status: u8 },
+}
+
+/// The output of the reply `body` of [`serve`], and the bytes after its first line.
+///
+/// # Errors
+///
+/// - [`Error::Remote`] with the errors of the reply and its exit status.
+/// - [`Error::Reply`] when `body` is no reply, or holds no error with a status of 0.
+pub(crate) fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
+    let bad = |message: &str| Error::Reply {
+        message: message.to_owned(),
+    };
+    let Some(end) = body.iter().position(|byte| *byte == b'\n') else {
+        return Err(bad("no newline ends the first line"));
+    };
+    let (head, rest) = (&body[..end], &body[end + 1..]);
+    match serde_json::from_slice(head) {
+        Ok(Answer::Done { output }) => Ok((output, rest)),
+        Ok(Answer::Failed { errors, status }) if status == 0 || errors.is_empty() => {
+            Err(bad("an error has the exit status 0, or no problem"))
+        }
+        Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
+            problems: errors,
+            status,
+        }),
+        Err(error) => Err(bad(&error.to_string())),
+    }
 }
 
 /// `Request` with `message`.
