@@ -435,18 +435,17 @@ impl<'a> Values<'a> {
     fn get(self, at: usize) -> f64 {
         match self.0[at] {
             Ok(value) => value,
-            Err(_) => self.broken(),
+            Err(status) => broken(at, status),
         }
     }
+}
 
-    /// Panics with the first bad read and its status. Cold and apart from `get`, so
-    /// the loop of a send keeps no read on the stack for the message.
-    #[cold]
-    #[inline(never)]
-    fn broken(self) -> ! {
-        let bad = Self::new(self.0).err();
-        panic!("invariant: `Values::new` refuses the read and status {bad:?}")
-    }
+/// Panics with the read at `at` and its status. Cold and apart from `Values::get`, so
+/// the loop of a send stores nothing per sample for the message.
+#[cold]
+#[inline(never)]
+fn broken(at: usize, status: Status) -> ! {
+    panic!("invariant: read {at} is {status:?}, which `Values::new` refuses")
 }
 
 /// A count of the status and its total in the run.

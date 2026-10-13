@@ -881,9 +881,9 @@ fn stamps_each_frame_within_its_read() {
 
 #[test]
 #[should_panic(
-    expected = "invariant: `Values::new` refuses the read and status Some((1, BadNotFound))"
+    expected = "invariant: read 2 is BadNotFound, which `Values::new` refuses"
 )]
-fn panics_with_the_first_bad_read_when_a_value_is_bad() {
+fn panics_with_the_read_whose_value_is_bad() {
     let bad = Err(Status::BAD_NOT_FOUND);
     let values = [Ok(1.0), bad, bad];
     Values(&values).get(2);
