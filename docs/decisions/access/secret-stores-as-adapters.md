@@ -33,14 +33,19 @@
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153570364). The erase
   is at most 64 KiB and 128 bytes, for a file of 64 KiB: the first 64 bytes and the
   footprint of class 35 (65,600 bytes). The allocation is the reservation of the pool,
-  5.2 MiB for that file. A get holds at most 5.4 MiB of heap at once, measured by the
-  counting allocator in `crates/secret/tests/memory.rs` on the `sim` driver, until it
-  returns, or until the read of a dropped get ends. Peaks: 80,727, 321,351, and
-  5,605,791 bytes for files of 1, 4096, and 65,536 bytes. On the `os` driver
-  (ip-172-31-11-216, Linux x86-64) the peaks are 81,070, 312,988, and 5,474,548 bytes.
-  The value is at most 64 KiB while a kind holds it. Both are outside the pool budget of
-  the node. The store does not check the owner or mode of the file. Deferred; trigger:
-  `env::files` gives the mode of a file. The person has not yet answered this question:
+  5.2 MiB for that file. A `File` runs one get at a time, and the next get waits its
+  turn in the order it came (`laptop.architect-2`, 2026-10-13T19:49:00Z:
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153847139). So the
+  gets of one shard hold at most 5.4 MiB of heap at once, and those of a node 5.4 MiB
+  times the shard count, measured by the counting allocator in
+  `crates/secret/tests/memory.rs` on the `sim` driver (ip-172-31-11-216, Linux x86-64).
+  Peaks: 81,023, 321,647, and 5,606,087 bytes for one get of a file of 1, 4096, and
+  65,536 bytes, and 5,606,511 bytes for two gets at once of 65,536 bytes. On the `os`
+  driver one get held 81,070, 312,988, and 5,474,548 bytes. A dropped get gives the turn
+  on at its drop, and its pool stays until its read ends. The value is at most 64 KiB
+  while a kind holds it. Both are outside the pool budget of the node. The store does
+  not check the owner or mode of the file. Deferred; trigger: `env::files` gives the
+  mode of a file. The person has not yet answered this question:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190. The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:

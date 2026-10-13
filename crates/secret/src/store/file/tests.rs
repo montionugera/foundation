@@ -1,4 +1,11 @@
+use std::future::poll_fn;
+use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::Wake;
+
 use env::files::Operation;
+use types::time::Span;
 
 use super::*;
 
@@ -195,6 +202,98 @@ fn gives_a_failed_file_call_as_unavailable() {
             assert_eq!(get(&store, "plant.token").await, failed);
         }
         assert_eq!(get(&store, "plant.token").await, Ok(b"t".to_vec()));
+    });
+}
+
+/// A waker that counts its wakes.
+#[derive(Default)]
+struct Count(AtomicU64);
+
+impl Wake for Count {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn wakes(count: &Count) -> u64 {
+    count.0.load(Ordering::Relaxed)
+}
+
+/// Polls `future` once with a waker of `count`.
+fn poll_with<F: Future>(future: Pin<&mut F>, count: &Arc<Count>) -> Poll<F::Output> {
+    let waker = Waker::from(Arc::clone(count));
+    future.poll(&mut Context::from_waker(&waker))
+}
+
+/// Polls `future` once with the waker of the task.
+async fn poll_once<F: Future>(future: &mut Pin<&mut F>) -> Poll<F::Output> {
+    poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
+}
+
+/// Puts the files `plant.a`, `plant.b`, and `plant.c`, each with its last letter.
+async fn put_three(files: &Files) {
+    for name in ["a", "b", "c"] {
+        put(files, &format!("secrets/plant.{name}"), name.as_bytes()).await;
+    }
+}
+
+#[test]
+fn a_second_get_waits_until_the_first_ends() {
+    on_sim(|node, files| async move {
+        let store = store(files.clone());
+        put_three(&files).await;
+        let mut first = pin!(get(&store, "plant.a"));
+        let mut second = pin!(get(&store, "plant.b"));
+        let count = Arc::new(Count::default());
+        assert_eq!(poll_once(&mut first).await, Poll::Pending);
+        for _ in 0..3 {
+            assert_eq!(poll_with(second.as_mut(), &count), Poll::Pending);
+            node.clock().sleep(Span::SECOND).await;
+        }
+        assert_eq!(wakes(&count), 0, "the second waits while the first reads");
+        assert_eq!(first.await, Ok(b"a".to_vec()));
+        assert_eq!(wakes(&count), 1, "the end of the first wakes the second");
+        assert_eq!(second.await, Ok(b"b".to_vec()));
+        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
+    });
+}
+
+#[test]
+fn a_dropped_get_that_reads_gives_the_turn_to_the_next() {
+    on_sim(|_, files| async move {
+        let store = store(files.clone());
+        put_three(&files).await;
+        let mut first = Box::pin(get(&store, "plant.a"));
+        let mut second = pin!(get(&store, "plant.b"));
+        let count = Arc::new(Count::default());
+        assert_eq!(poll_once(&mut first.as_mut()).await, Poll::Pending);
+        assert_eq!(poll_with(second.as_mut(), &count), Poll::Pending);
+        drop(first);
+        assert_eq!(wakes(&count), 1, "the drop of the first wakes the second");
+        assert_eq!(second.await, Ok(b"b".to_vec()));
+        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
+    });
+}
+
+#[test]
+fn a_dropped_get_that_waits_keeps_the_order_of_the_others() {
+    on_sim(|_, files| async move {
+        let store = store(files.clone());
+        put_three(&files).await;
+        let mut first = pin!(get(&store, "plant.a"));
+        let mut second = Box::pin(get(&store, "plant.b"));
+        let mut third = pin!(get(&store, "plant.c"));
+        let (count_second, count_third) = (Arc::default(), Arc::default());
+        assert_eq!(poll_once(&mut first).await, Poll::Pending);
+        assert_eq!(poll_with(second.as_mut(), &count_second), Poll::Pending);
+        assert_eq!(poll_with(third.as_mut(), &count_third), Poll::Pending);
+        drop(second);
+        assert_eq!(wakes(&count_third), 0, "the third waits for the first");
+        assert_eq!(first.await, Ok(b"a".to_vec()));
+        assert_eq!(wakes(&count_second), 0, "the dropped get left the order");
+        assert_eq!(wakes(&count_third), 1, "the first wakes the third");
+        assert_eq!(third.await, Ok(b"c".to_vec()));
+        assert!(store.gets.borrow().is_empty(), "the gets leave no turn");
     });
 }
 
