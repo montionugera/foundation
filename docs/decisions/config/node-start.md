@@ -186,15 +186,20 @@
   opens `dir/data` of a directory that is there and makes nothing. A file `address`
   with no address of a node is `Error::NotRunning`, which also covers a node that
   still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an
-  unspecified IP in `address`, it dials the loopback IP of its family. A dial, session,
-  or hello that fails is `Error::Unanswered` with the address it dialed, and a refused
-  hello is `Error::Refused`. Lost: `ops::Unreached`, worded in `ops`, which would name
-  the files that only `node` reads and take `hub` for the error of a dial. Decided by
+  unspecified IP in `address`, it dials the loopback IP of its family. A dial that
+  gives no session is `Error::Unanswered` with the address it dialed and the error of
+  the transport; a session or hello that fails after that is `Error::Session` with the
+  address and the error of `hub`; a refused hello is `Error::Refused`. Its pool is
+  fixed, as the pool of `sector` is. Lost: `ops::Unreached`, worded in `ops`, which
+  would name the files that only `node` reads and take `hub` for the error of a dial.
+  Decided by
   `laptop.architect-2` (2026-10-11T07:10:55Z, plan revision 4, decision 8 and the 2d
   surface,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913; the
   dialed address in `Unanswered` and this text, 2026-10-13T01:32:49Z,
-  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136132942); the
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136132942; the
+  split into `Unanswered` and `Session`, and the fixed pool, 2026-10-13T01:44:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936); the
   `hub` use and `Refused`, `laptop.architect`, 2026-10-11T08:10:05Z, item 3:
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274.
   Supersedes `ops::Unreached` and "`node`: no new public item" of
