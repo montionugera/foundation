@@ -134,8 +134,9 @@ mod tests {
         fn dialed_gives_the_loopback_ip_of_the_family_for_an_unspecified_ip(port: u16) {
             let v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
             let v6 = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
-            prop_assert_eq!(dialed(v4), SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
-            prop_assert_eq!(dialed(v6), SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port));
+            let loopback = |ip: IpAddr| SocketAddr::new(ip, port);
+            prop_assert_eq!(dialed(v4), loopback(Ipv4Addr::LOCALHOST.into()));
+            prop_assert_eq!(dialed(v6), loopback(Ipv6Addr::LOCALHOST.into()));
         }
     }
 }
