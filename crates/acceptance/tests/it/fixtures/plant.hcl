@@ -24,7 +24,7 @@ connector "plc" {
   kind    = "opcua"
   node    = "edge"
   address = "opc.tcp://localhost:50000"
-  rate    = 10
+  rate    = "10Hz"
   read "plant.spike" { node_id = "ns=3;s=SpikeData" }
   read "plant.dip" { node_id = "ns=3;s=DipData" }
   read "plant.trend" { node_id = "ns=3;s=PositiveTrendData" }
