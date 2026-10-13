@@ -341,16 +341,16 @@ fn the_copy_links_the_timer() {
 
 /// Each symbol outside the copy, `shim.c`, and `server.c` that they may name in glibc:
 /// on x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
-/// at `-O2` and `-moutline-atomics`. Also the two Windows calls of `shim.c` with MinGW.
-/// None gives or takes a heap block, so no block crosses between the allocator of libc
-/// and `src/alloc.rs`.
+/// at `-O2` and `-moutline-atomics`. Also the symbols of the two Windows calls of
+/// `shim.c` with MinGW. None gives or takes a heap block, so no block crosses between
+/// the allocator of libc and `src/alloc.rs`.
 const OUTSIDE: [&str; 37] = [
-    "GetStdHandle",
-    "WriteFile",
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
     "__fprintf_chk",
+    "__imp_GetStdHandle",
+    "__imp_WriteFile",
     "__memcpy_chk",
     "__memmove_chk",
     "__memset_chk",
