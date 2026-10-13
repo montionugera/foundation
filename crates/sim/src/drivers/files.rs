@@ -10,12 +10,10 @@ use env::files::{Error, Mode, Operation, Request};
 use env::paths::Found;
 
 use super::Node;
+use crate::DIRECTORY;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
 use crate::state::lock;
-
-/// `EISDIR` on Linux.
-const DIRECTORY: i32 = 21;
 
 impl Node {
     /// Starts `call` on `path` now, keeping `held` until it ends.
