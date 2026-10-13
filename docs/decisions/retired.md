@@ -78,3 +78,4 @@
 | "`read` gives a list of `Error`" and "Nesting past the depth limit is `Error::TooDeep` from `read`" of HCL ERRORS (#330, 6007697466) | HCL DIAGNOSTICS (#2079, 6093002544): `read` gives `Vec<Diagnostic>` |
 | TEXT FIXES, after round 3: a code fix keeps its round; REVIEW TIERS, after round 3: a second round on the fix commits | REVIEW ROUNDS (6150355931) |
 | "InfluxDB 1 only" of ONE NODE section 4 (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217) | INFLUX KIND (the person, 2026-10-13T16:24:35Z, https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949; `laptop.architect-2`, https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448) |
+| TEXT FIXES, for a Low finding in text: an item gives the exact new text (#2041, 6103180556), and an item that gives only facts and links or asks the author to find a fact is a finding | TEXT FIXES amendment (#2573, 6147048003) |

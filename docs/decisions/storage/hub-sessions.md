@@ -317,6 +317,14 @@
   would compute the midpoint again, and a change of the home's rule would make its
   stamps `Ahead`. Connector time sync adds what it needs with its own caller. Lost: a
   writer that stamps the frame, because only the caller knows when it read each sample.
+  `writer::Writer::time` gives a `writer::Time`, which a caller keeps apart from the
+  writer: `Time::now` reads what `Writer::now` reads, also after the writer drops. The
+  open62541 loop of the opcua kind reads it inside each client call, while the kind
+  holds its writer to write. A `Time` comes only from a writer, so mesh time is known.
+  Lost: the writer in `Rc<RefCell<_>>` in the kind, because it adds a borrow to each
+  draft and write. No `Hub::time`. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC).
   `writer::Writer::entries` gives the entry of each channel of
   `writer::Config::channels`, in that order: its position in the entries of
   `Writer::set`, as `Writer::draft` and `Draft::series_mut` take it. A channel named

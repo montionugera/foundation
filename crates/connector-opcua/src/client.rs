@@ -16,6 +16,7 @@ use types::time::Span;
 
 use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
+use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::Node;
 
@@ -88,11 +89,11 @@ struct Reads {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
     /// session, and gives it once the session is active. On an error, it closes the
-    /// session that it made with [`Client::close`] first, which can take up to two more
-    /// request timeouts.
+    /// session that it made with [`Client::close`] first, which can take up to two
+    /// more request timeouts.
     ///
     /// # Errors
     ///
@@ -105,12 +106,13 @@ impl Client {
     /// When open62541 cannot allocate the loop, the connection manager, or the
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
-        clock: Clock,
+        time: Time,
         net: Net,
         rng: &mut Rng,
         url: &CStr,
     ) -> Result<Self, Status> {
-        let connections = Manager::new(Clock::clone(&clock), net, rng);
+        let clock = Clock::clone(&time.clock);
+        let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let Some(raw) = NonNull::new(raw) else {
