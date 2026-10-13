@@ -679,7 +679,7 @@ pub enum Error {
     /// The sample period of a rate is under 1 ns or does not fit in a [`Span`].
     Period,
     /// The text is not a number and a unit, `Hz`, `kHz`, or `MHz`, or the number is
-    /// finer than 1 nHz, such as `0.0000000001Hz`.
+    /// finer than 1 nHz and the rate is not over 1 GHz, such as `0.0000000001Hz`.
     Rate,
 }
 
