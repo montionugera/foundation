@@ -138,6 +138,9 @@ _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
                "UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME moved");
+_Static_assert(
+    UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD == 11705,
+    "UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD moved");
 _Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0,
                "UA_SECURECHANNELSTATE_CLOSED moved");
 _Static_assert(sizeof(UA_SecureChannelState) == sizeof(int),
@@ -774,15 +777,28 @@ UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
     return status;
 }
 
-/* Gives the bytes of the body of the message of `request` sent with a session token of
- * `token` encoded bytes. */
-size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
+/* Gives the bytes of the body of the message of a Read request of no nodes sent with a
+ * session token of `token` encoded bytes. A request of nodes adds `shim_read_item` of
+ * each. */
+size_t shim_read_ask(size_t token) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
+    UA_ReadRequest request;
+    UA_ReadRequest_init(&request);
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
     return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(request, type, NULL) -
-           UA_calcSizeBinary(&request->requestHeader.authenticationToken,
+           UA_calcSizeBinary(&request, type, NULL) -
+           UA_calcSizeBinary(&request.requestHeader.authenticationToken,
                              &UA_TYPES[UA_TYPES_NODEID], NULL) +
            token;
+}
+
+/* Gives the bytes of the read of the Value of `node` in a Read request. */
+size_t shim_read_item(shim_node node) {
+    UA_ReadValueId read;
+    UA_ReadValueId_init(&read);
+    read.attributeId = UA_ATTRIBUTEID_VALUE;
+    read.nodeId = shim_node_id(node);
+    return UA_calcSizeBinary(&read, &UA_TYPES[UA_TYPES_READVALUEID], NULL);
 }
 
 /* Gives the most bytes of the body of the message of a good answer of a read of `count`

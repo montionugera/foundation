@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::ffi::CString;
 use std::future::poll_fn;
 use std::io::IoSlice;
+use std::mem;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
@@ -15,7 +16,7 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Client, Large, Nodes, Reads, SPLIT, answer, most};
+use super::{Client, Large, Nodes, READS, Reads, Request, SPLIT, UNREAD, answer, most};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
@@ -65,9 +66,9 @@ impl Client {
         self.read(&nodes).await.and_then(|values| values[0])
     }
 
-    /// Builds the Read request of `nodes` for this client with no check of its size.
+    /// Builds one Read request of `nodes` for this client with no check of its size.
     fn unchecked(&self, nodes: &[Node]) -> Nodes {
-        Nodes::new(nodes, Rc::clone(&self.key))
+        Nodes::new(nodes, &[nodes.len()], Rc::clone(&self.key))
     }
 }
 
@@ -792,7 +793,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
             let outside = Reads::default();
-            let nodes = Nodes::new(&[VALUE], Rc::default());
+            let nodes = Nodes::unchecked(&[VALUE]);
             let mut request = 0;
             // SAFETY: the client and `nodes` live, and `outside` outlives the client.
             let status = Status(unsafe {
@@ -806,9 +807,14 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             });
             assert_eq!(status, Status::GOOD);
             outside.pending.set(1);
-            outside.request.set(Some(request));
+            outside.requests.borrow_mut().push(Request {
+                key: request,
+                first: 0,
+                count: 1,
+            });
+            outside.values.set(vec![UNREAD]);
             drop(client);
-            outside.answer.take()
+            outside.failed.get()
         })
         .await
     });
@@ -1093,36 +1099,48 @@ fn long(length: usize) -> Node {
     }
 }
 
-/// Gives the length of the name of a [`long`] node after `nodes` whose request on
-/// `client` is the most bytes of one message, from a name of `probe` bytes, whose
-/// request is past it.
-fn fitting(client: &Client, nodes: &[Node], probe: usize) -> usize {
-    let mut nodes = nodes.to_vec();
-    nodes.push(long(probe));
-    match client.nodes(&nodes) {
-        Err(Large { bytes, most }) => probe - (bytes - most),
-        Ok(_) => panic!("a name of {probe} bytes fits"),
-    }
+/// Gives the counts of the requests of `nodes` on `client`, or the error.
+fn counts(client: &Client, nodes: &[Node]) -> Result<Vec<usize>, Large> {
+    client.nodes(nodes).map(|nodes| nodes.counts())
 }
 
-/// Gives the most [`long`] nodes of `length` bytes that `client` takes in one request.
-fn most_of(client: &Client, length: usize) -> usize {
-    let (mut fits, mut past) = (1, 1 << 14);
-    while past - fits > 1 {
-        let count = usize::midpoint(fits, past);
-        if client.nodes(&vec![long(length); count]).is_ok() {
-            fits = count;
+/// Gives the largest of 1 to `past` (not included) for which `fits` holds, as `fits`
+/// holds up to a bound and not past it.
+fn largest(past: usize, fits: impl Fn(usize) -> bool) -> usize {
+    let (mut fits_at, mut past) = (1, past);
+    while past - fits_at > 1 {
+        let probe = usize::midpoint(fits_at, past);
+        if fits(probe) {
+            fits_at = probe;
         } else {
-            past = count;
+            past = probe;
         }
     }
-    fits
+    fits_at
+}
+
+/// Gives the most bytes of the name of a [`long`] node after `nodes` that `client`
+/// reads with them in one request, below `past`.
+fn fitting(client: &Client, nodes: &[Node], past: usize) -> usize {
+    largest(past, |length| {
+        let mut list = nodes.to_vec();
+        list.push(long(length));
+        counts(client, &list).is_ok_and(|counts| counts.len() == 1)
+    })
+}
+
+/// Gives the most [`long`] nodes of `length` bytes that `client` reads in one request.
+fn most_of(client: &Client, length: usize) -> usize {
+    largest(1 << 14, |count| {
+        counts(client, &vec![long(length); count]).is_ok_and(|counts| counts.len() == 1)
+    })
 }
 
 /// The request of a session takes 8 chunks, [`CHUNKS`], of 65536 bytes less the
 /// 24 bytes of their headers, less 7 bytes at the end of each chunk but the last. The
-/// client refuses to send 1 byte more. A request whose one name fills each chunk to
-/// its end is 49 bytes longer when open62541 refuses it.
+/// client refuses to send 1 byte more, and a node after another goes in a second
+/// request. A request whose one name fills each chunk to its end is 49 bytes longer
+/// when open62541 refuses it.
 #[test]
 fn a_request_takes_the_chunks_of_one_message() {
     let (reads, _) = run(0, async |node| {
@@ -1130,24 +1148,27 @@ fn a_request_takes_the_chunks_of_one_message() {
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 1 << 20);
             peer.server.add_scalar(&long(length), Value::F64(2.5));
-            let fits = client.nodes(&[long(length)]).expect("it fits");
+            let fits = client.nodes(&[VALUE, long(length)]).expect("it fits");
+            let split = fits.counts();
             let read = client.read(&fits).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[long(length + 1)]).map(drop);
+            let past = client.nodes(&[VALUE, long(length + 1)]).map(drop);
             let after = client.read_one(&VALUE).await;
             let unchecked = client.unchecked(&[long(length + 49)]);
             let full = client.read(&unchecked).await.map(<[_]>::to_vec);
             let unchecked = client.unchecked(&[long(length + 50)]);
             let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
             client.close().await;
-            (read, past, after, full, sent, peer.value)
+            (split, read, past, after, full, sent, peer.value)
         })
         .await
     });
-    let (read, past, after, full, sent, value) = reads;
-    assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
+    let (split, read, past, after, full, sent, value) = reads;
+    assert_eq!(split, [1, 1]);
+    assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
     assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
+        node: 1,
         bytes: most + 1,
         most,
     };
@@ -1158,7 +1179,8 @@ fn a_request_takes_the_chunks_of_one_message() {
 
 /// A server with a `MaxMessageSize` of 8192 bytes takes a request of 8192 bytes, and
 /// refuses 1 byte more. A good answer of 239 Doubles takes at most 36 bytes and 34 per
-/// node, 8162 bytes, and of 240 nodes, 8196 bytes.
+/// node, 8162 bytes, and of 240 nodes, 8196 bytes: the 240th node goes in a second
+/// request.
 #[test]
 fn a_read_takes_the_max_message_size_of_the_server() {
     let (reads, _) = run(0, async |node| {
@@ -1175,25 +1197,31 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             let past = client.nodes(&[long(length + 1)]).map(drop);
             let most = client.nodes(&[VALUE; 239]).expect("239 nodes fit");
             let values = client.read(&most).await.map(<[_]>::to_vec);
-            let answer_past = client.nodes(&[VALUE; 240]).map(drop);
+            let split = client.nodes(&[VALUE; 240]).expect("240 nodes fit");
+            let counts = split.counts();
+            let split = client.read(&split).await.map(<[_]>::to_vec);
             let unchecked = client.unchecked(&[long(length + 1)]);
             let sent = client.read(&unchecked).await.map(<[_]>::to_vec);
             client.close().await;
-            (read, past, values, answer_past, sent, peer.value)
+            (read, past, values, counts, split, sent, peer.value)
         })
         .await
     });
-    let (read, past, values, answer_past, sent, value) = reads;
+    let (read, past, values, counts, split, sent, value) = reads;
     assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
-    let large = |bytes| Large { bytes, most: 8192 };
-    assert_eq!(past, Err(large(8193)));
+    let large = Large {
+        node: 0,
+        bytes: 8193,
+        most: 8192,
+    };
+    assert_eq!(past, Err(large));
     assert_eq!(values, Ok(vec![Ok(value); 239]));
-    assert_eq!(answer_past, Err(large(8196)));
+    assert_eq!((counts, split), (vec![239, 1], Ok(vec![Ok(value); 240])));
     assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
 }
 
 /// A server with buffers of 8192 bytes and a `MaxChunkCount` of 4 gives a message of 4
-/// chunks of 8168 bytes less 21: 959 nodes, and not 960.
+/// chunks of 8168 bytes less 21: one request of 959 nodes, and not 960.
 #[test]
 fn a_read_takes_the_buffers_and_chunks_of_the_server() {
     let (reads, _) = run(0, async |node| {
@@ -1204,21 +1232,15 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
                 ..Limits::default()
             });
             let mut client = peer.connected().await;
-            let most = client.nodes(&vec![VALUE; 959]).expect("959 nodes fit");
-            let values = client.read(&most).await.map(<[_]>::to_vec);
-            let past = client.nodes(&vec![VALUE; 960]).map(drop);
+            let nodes = client.nodes(&vec![VALUE; 960]).expect("960 nodes fit");
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
-            (values, past, peer.value)
+            (nodes.counts(), values, peer.value)
         })
         .await
     });
-    let (values, past, value) = reads;
-    assert_eq!(values, Ok(vec![Ok(value); 959]));
-    let large = Large {
-        bytes: 36 + 960 * 34,
-        most: 4 * 8168 - 3 * 7,
-    };
-    assert_eq!(past, Err(large));
+    let (counts, values, value) = reads;
+    assert_eq!((counts, values), (vec![959, 1], Ok(vec![Ok(value); 960])));
 }
 
 /// A client with a receive buffer of 8192 bytes sends chunks of 65536 bytes and takes
@@ -1231,27 +1253,22 @@ fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
             let mut client = peer.receiving(8192).await;
             let length = fitting(&client, &[], 1 << 20);
             let request = client.nodes(&[long(length + 1)]).map(drop);
-            let most = client.nodes(&vec![VALUE; 1919]).expect("1919 nodes fit");
-            let values = client.read(&most).await.map(<[_]>::to_vec);
-            let answer = client.nodes(&vec![VALUE; 1920]).map(drop);
+            let nodes = client.nodes(&vec![VALUE; 1920]).expect("1920 nodes fit");
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
-            (request, values, answer, peer.value)
+            (request, nodes.counts(), values, peer.value)
         })
         .await
     });
-    let (request, values, answer, value) = reads;
+    let (request, counts, values, value) = reads;
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
+        node: 0,
         bytes: most + 1,
         most,
     };
     assert_eq!(request, Err(large));
-    assert_eq!(values, Ok(vec![Ok(value); 1919]));
-    let large = Large {
-        bytes: 36 + 1920 * 34,
-        most: 8 * 8168 - 7 * 7,
-    };
-    assert_eq!(answer, Err(large));
+    assert_eq!((counts, values), (vec![1919, 1], Ok(vec![Ok(value); 1920])));
 }
 
 /// The limits of the channel live only in the copy that the key gives.
@@ -1362,6 +1379,63 @@ fn a_read_of_no_nodes_gives_no_values() {
     let (read, after, value) = reads;
     assert_eq!(read, Ok(vec![]));
     assert_eq!(after, Ok(value));
+}
+
+/// The node `i` of [`numbered`], whose value is `i`.
+fn numbered(index: u32) -> Node {
+    Node {
+        namespace: 1,
+        key: Key::Number(5000 + index),
+    }
+}
+
+/// Reads `count` nodes of [`numbered`] and an unknown node at the index 3 on a server
+/// with the `MaxNodesPerRead` `most`, and gives the counts of the requests, the values,
+/// and the values that the server gives.
+fn read_per(most: u32, count: u32) -> (Vec<usize>, Read, Values) {
+    run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_reads(most);
+            let mut nodes = Vec::new();
+            let mut values = Vec::new();
+            for index in 0..count {
+                if index == 3 {
+                    nodes.push(long(1));
+                    values.push(Err(Status::BAD_NODE_ID_UNKNOWN));
+                }
+                peer.server.add_scalar(&numbered(index), Value::U32(index));
+                nodes.push(numbered(index));
+                values.push(Ok(Value::U32(index)));
+            }
+            let mut client = peer.connected().await;
+            let nodes = client.nodes(&nodes).expect("the nodes fit");
+            let read = client.read(&nodes).await.map(<[_]>::to_vec);
+            client.close().await;
+            (nodes.counts(), read, values)
+        })
+        .await
+    })
+    .0
+}
+
+/// A read takes at most the `MaxNodesPerRead` of the server in one request, and gives
+/// the value of each node in order. A limit of 0 is no limit.
+#[test]
+fn a_request_takes_at_most_the_max_nodes_per_read_of_the_server() {
+    let (counts, read, values) = read_per(10, 24);
+    assert_eq!((counts, read), (vec![10, 10, 5], Ok(values)));
+    let (counts, read, values) = read_per(0, 24);
+    assert_eq!((counts, read), (vec![25], Ok(values)));
+}
+
+/// A read of more requests than the reads in flight sends each next request when one
+/// ends, and gives the value of each node in order.
+#[test]
+fn a_read_of_more_requests_than_reads_in_flight_reads_each() {
+    let count = u32::from(READS) * 2 + 3;
+    let (counts, read, values) = read_per(1, count);
+    assert_eq!(counts, vec![1; values.len()]);
+    assert_eq!(read, Ok(values));
 }
 
 /// Reads the list of `nodes` that one client checked on another client, and gives the
@@ -1523,21 +1597,24 @@ fn recount_of(message: &mut Vec<u8>, count: i32) {
     message[4..8].copy_from_slice(&size.to_le_bytes());
 }
 
-/// The values of a read, or its error.
-type Read = Result<Vec<Result<Value, Status>>, Status>;
+/// The value of each node of a read.
+type Values = Vec<Result<Value, Status>>;
 
-/// Gives two reads of [`VALUE`] by one client through a relay that gives the first
-/// Read response `recount` empty results when it is set, the request handle of each
-/// Read response, the value of [`VALUE`], and the count of values that the first
-/// answer copies into the client.
-fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, usize) {
+/// The values of a read, or its error.
+type Read = Result<Values, Status>;
+
+/// Gives two reads of [`VALUE`] by one client through a relay that gives the Read
+/// response of the first `recount` empty results when it is set, the request handle of
+/// each Read response, the value of [`VALUE`], and the values that the client holds
+/// after the first answer. The first Read response is that of the connect.
+fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, Values) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let mut handles = Vec::new();
             let rewrite = |message: &mut Vec<u8>| {
                 if let Some(handle) = handle(message) {
-                    if let (true, Some(count)) = (handles.is_empty(), recount) {
+                    if let (1, Some(count)) = (handles.len(), recount) {
                         recount_of(message, count);
                     }
                     handles.push(handle);
@@ -1547,9 +1624,8 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, usize) {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);
-                let values = client.reads.values.take();
-                let copied = values.len();
-                client.reads.values.set(values);
+                let copied = client.reads.values.take();
+                client.reads.values.set(copied.clone());
                 let second = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
                 ([first, second], copied)
@@ -1567,24 +1643,138 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, usize) {
 fn each_read_of_one_request_has_its_own_handle() {
     let (reads, handles, value, _) = read_twice(None);
     assert_eq!(reads, [Ok(vec![Ok(value)]), Ok(vec![Ok(value)])]);
-    let [one, two] = handles[..] else {
-        panic!("two Read responses, not {}", handles.len());
+    let [_, one, two] = handles[..] else {
+        panic!("three Read responses, not {}", handles.len());
     };
     assert_ne!(one, two);
 }
 
 /// An answer with a value for more or fewer nodes than its read fails, copies none of
 /// them, and the next read gives the value of each node. The test reads the buffer of
-/// the client: no call gives its size, and the next good answer clears it before it
-/// copies, so no caller sees a copied value.
+/// the client: no call gives it, so no caller sees a copied value.
 #[test]
 fn an_answer_of_another_count_of_values_fails() {
     for count in [0, 2] {
         let (reads, _, value, copied) = read_twice(Some(count));
         assert_eq!(
             (reads, copied),
-            ([Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])], 0),
+            (
+                [Err(Status::BAD_UNEXPECTED_ERROR), Ok(vec![Ok(value)])],
+                vec![UNREAD]
+            ),
             "{count} results"
         );
     }
+}
+
+/// Gives two reads by one client through a relay, on a server with a `MaxNodesPerRead`
+/// of 1: of the nodes 1 and 2 of [`numbered`] in two requests, then of the node 3.
+/// `rewrite` gets the index of each Read response after that of the connect, from 1,
+/// and the response, and gives the responses to send in its place. The relay gives
+/// them the next sequence numbers of the channel, which open62541 checks.
+fn read_split(
+    mut rewrite: impl FnMut(usize, Vec<u8>) -> Vec<Vec<u8>> + Send + 'static,
+) -> [Read; 2] {
+    run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_reads(1);
+            for index in 1..=3 {
+                peer.server.add_scalar(&numbered(index), Value::U32(index));
+            }
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let (mut responses, mut sequence) = (0, None);
+            let rewrite = |message: &mut Vec<u8>| {
+                if handle(message).is_none() {
+                    return;
+                }
+                responses += 1;
+                if responses == 1 {
+                    return;
+                }
+                let first = u32::from_le_bytes(message[16..20].try_into().expect("4"));
+                let next: &mut u32 = sequence.get_or_insert(first);
+                for mut response in rewrite(responses - 1, mem::take(message)) {
+                    response[16..20].copy_from_slice(&next.to_le_bytes());
+                    *next += 1;
+                    message.append(&mut response);
+                }
+            };
+            relayed(&node, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let first = client.nodes(&[numbered(1), numbered(2)]).expect("2 fit");
+                let second = client.nodes(&[numbered(3)]).expect("one node fits");
+                let first = client.read(&first).await.map(<[_]>::to_vec);
+                let second = client.read(&second).await.map(<[_]>::to_vec);
+                client.close().await;
+                [first, second]
+            })
+            .await
+        })
+        .await
+    })
+    .0
+}
+
+/// The answers of the requests of a read in another order give the values in the
+/// order of the nodes.
+#[test]
+fn a_read_gives_its_values_in_node_order_whatever_the_order_of_its_answers() {
+    let mut held = Vec::new();
+    let reads = read_split(move |index, message| match index {
+        1 => {
+            held = message;
+            vec![]
+        }
+        2 => vec![message, mem::take(&mut held)],
+        _ => vec![message],
+    });
+    let value = |index| Ok(Value::U32(index));
+    assert_eq!(reads, [Ok(vec![value(1), value(2)]), Ok(vec![value(3)])]);
+}
+
+/// An answer of a request of a read that failed does not go into the next read.
+#[test]
+fn an_answer_of_a_failed_read_goes_into_no_later_read() {
+    let mut held = Vec::new();
+    let reads = read_split(move |index, mut message| match index {
+        1 => {
+            held = message;
+            vec![]
+        }
+        2 => {
+            recount_of(&mut message, 0);
+            vec![message]
+        }
+        3 => vec![mem::take(&mut held), message],
+        _ => vec![message],
+    });
+    assert_eq!(
+        reads,
+        [
+            Err(Status::BAD_UNEXPECTED_ERROR),
+            Ok(vec![Ok(Value::U32(3))])
+        ]
+    );
+}
+
+/// A connect whose read of the `MaxNodesPerRead` of the server fails gives the status
+/// of the read, and closes its session: a server with room for one session takes the
+/// next client.
+#[test]
+fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let rewrite = |message: &mut Vec<u8>| {
+                if handle(message).is_some() {
+                    recount_of(message, 0);
+                }
+            };
+            let connect = relayed(&node, rewrite, peer.connect(&url)).await;
+            peer.connected().await.close().await;
+            connect.err()
+        })
+        .await
+    });
+    assert_eq!(connect, Some(Status::BAD_UNEXPECTED_ERROR));
 }

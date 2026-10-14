@@ -188,6 +188,10 @@ pub(crate) fn types() -> &'static [DataType; TYPES] {
     unsafe { &UA_TYPES }
 }
 
+/// `UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD`, the node of
+/// the most nodes of one Read request of a server, a `UInt32`. `shim.c` asserts it.
+pub(crate) const MAX_NODES_PER_READ: u32 = 11705;
+
 /// `UA_Callback`.
 pub(crate) type Callback =
     unsafe extern "C" fn(application: *mut c_void, data: *mut c_void);
@@ -509,7 +513,8 @@ unsafe extern "C" {
         count: usize,
     ) -> *mut ReadRequest;
     pub(crate) fn shim_read_free(request: *mut ReadRequest);
-    pub(crate) fn shim_read_ask(request: *const ReadRequest, token: usize) -> usize;
+    pub(crate) fn shim_read_ask(token: usize) -> usize;
+    pub(crate) fn shim_read_item(node: Node<'_>) -> usize;
     pub(crate) fn shim_read_answer(count: usize) -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,

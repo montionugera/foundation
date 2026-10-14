@@ -228,6 +228,22 @@ impl Server {
         };
     }
 
+    /// Sets the `MaxNodesPerRead` of the server to `most`, 0 for none, and adds the
+    /// variable `ns=0;i=11705` that gives it, which the build of open62541 lacks.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of the variable.
+    pub(crate) fn set_reads(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
+        let node = Node {
+            namespace: 0,
+            key: Key::Number(ffi::MAX_NODES_PER_READ),
+        };
+        self.add_scalar(&node, Value::U32(most));
+    }
+
     /// Gives the server, for a call that reads or changes it.
     pub(crate) fn raw(&self) -> *mut ffi::test::Server {
         self.raw.as_ptr()

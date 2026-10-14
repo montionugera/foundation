@@ -997,23 +997,51 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
 }
 
+/// Three nodes whose names together are past one message of the server (524047
+/// bytes) go in two requests, and each tick reads each node.
 #[test]
-fn refuses_a_read_past_one_message_of_the_server() {
+fn reads_each_node_on_each_tick_when_the_nodes_need_two_requests() {
+    let long = |letter: &str| -> &'static str {
+        format!("ns=3;s={letter}{}", "x".repeat(200_000)).leak()
+    };
+    let nodes: &'static [&'static str] = vec![long("a"), long("b"), long("c")].leak();
     let mut setup = Setup::three();
-    setup.reads[0].1 = format!("ns=3;s={}", "x".repeat(600_000));
+    setup.nodes = nodes;
+    for (read, &node) in setup.reads.iter_mut().zip(nodes) {
+        read.1 = node.to_owned();
+    }
     let outcome = run(
         setup,
         |scene| async move { scene.supervise(ms(1_050)).await },
     );
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let frames = &outcome.frames;
+    assert_eq!(frames.len(), 11);
+    for (key, &node) in [2, 3, 4].into_iter().zip(nodes) {
+        assert_eq!(values(frames, key), served(&outcome, node), "{key}");
+    }
+    assert_eq!(last(&outcome.statuses, IN), 33);
+}
+
+#[test]
+fn refuses_a_node_whose_read_alone_is_past_one_message_of_the_server() {
+    let mut setup = Setup::three();
+    setup.reads[1].1 = format!("ns=3;s={}", "x".repeat(600_000));
+    let outcome = run(
+        setup,
+        |scene| async move { scene.supervise(ms(1_050)).await },
+    );
+    let node = format!("ns=3;s={}", "x".repeat(600_000));
     assert_eq!(
         diagnostics(outcome.result),
         [Diagnostic::new(
             LARGE_READ,
             None,
-            "a Read of 3 nodes needs 600129 bytes, past the 524047 bytes of one \
-             message of the server"
-                .into(),
-            "Read fewer nodes in the connector, or split it into two connectors".into(),
+            format!(
+                "a Read of the node `{node}` of the channel `plant.b` needs 600087 bytes, \
+                 past the 524047 bytes of one message of the server"
+            ),
+            "Raise the message size of the server".into(),
         )]
     );
     assert_eq!(outcome.frames, []);
