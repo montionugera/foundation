@@ -2,7 +2,8 @@
 //! Rust, and the fuzz round trip makes a fixed count of allocations, and none after a
 //! decode that fails. A read through the connection manager makes a fixed count of
 //! allocations, and a drive with nothing ready makes none. A tick of the `opcua` kind
-//! allocates only what its read allocates. The count covers each thread, so this
+//! allocates only what its read allocates, and the write of its frame allocates
+//! nothing for a channel of any width. The count covers each thread, so this
 //! binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
@@ -16,6 +17,7 @@ use connector_opcua::bench::{Client, Manager, client};
 mod kind;
 use env::rng::Rng;
 use sim::Sim;
+use types::sample::Scalar;
 use types::time::Span;
 
 #[global_allocator]
@@ -30,6 +32,7 @@ fn main() {
     a_read_through_the_manager_allocates_a_fixed_count();
     a_read_of_a_client_allocates_a_fixed_count();
     a_tick_of_the_kind_allocates_what_its_read_allocates();
+    a_write_of_a_frame_of_any_type_allocates_nothing();
 }
 
 fn sim() -> (Sim, env::clock::Clock, Rng) {
@@ -206,5 +209,21 @@ fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
     for (nodes, read) in [(1, 6), (64, 69)] {
         let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
         assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
+    }
+}
+
+/// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
+/// each width. The test home grows the `Vec`s of its groups in its first two commits,
+/// which the first 20 writes cover, as in the `kind` bench.
+fn a_write_of_a_frame_of_any_type_allocates_nothing() {
+    let widths: [&[Scalar]; 4] = [
+        &[Scalar::Bool],
+        &[Scalar::I16],
+        &[Scalar::F32],
+        &[Scalar::F64],
+    ];
+    for scalars in widths {
+        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1);
+        assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
     }
 }

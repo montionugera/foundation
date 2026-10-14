@@ -14,9 +14,10 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Context, Wake, Waker};
 
 use connector::cancel::Token;
+use connector::kind::Table;
 use connector::pace::Timer;
 use connector::stamp::Stamps;
-use types::authority::Authority;
+use connector::testing::{self, Rig};
 use types::channel;
 use types::name::Name;
 use types::time::Rate;
@@ -109,25 +110,12 @@ fn check_stamps() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let result = sim.run_on(&node, |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks,
-        };
-        let (hub, _) = hub::testing::open(env).await;
+        let mut rig = Rig::open(env(&node, tasks), node.net(), Table::new()).await;
         let connector: Name = "plant.stamp".parse().expect("a valid name");
         let first = channel::Key::from_u128(100);
-        let status = connector::testing::create_status(&connector, &[], first);
-        hub.set_definitions(status.iter().map(|(name, def)| (name, def)));
-        let config = hub::writer::Config {
-            subject: connector,
-            authority: Authority(1),
-            lease: None,
-            channels: vec!["plant.stamp.status.state".parse().expect("a valid name")],
-        };
-        let writer = hub.writer(config).await.expect("the writer opens");
+        rig.define(testing::create_status(&connector, &[], first));
+        let state = "plant.stamp.status.state".parse().expect("a valid name");
+        let writer = rig.writer(connector, vec![state]).await;
         let mut stamps = Stamps::default();
         stamps.request(&writer, future::ready(())).await;
         let mut cx = Context::from_waker(Waker::noop());
@@ -144,6 +132,17 @@ fn check_stamps() {
         0,
         "a stamped request allocates nothing"
     );
+}
+
+/// The inputs of a hub on a new shard of `node`.
+fn env(node: &sim::node::Node, tasks: env::tasks::Tasks) -> hub::testing::Env {
+    hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks,
+    }
 }
 
 /// Polls `f` once to register it, then checks that 64 more polls with alternating
@@ -174,11 +173,9 @@ mod status {
 
     use connector::cancel::Token;
     use connector::kind::{Channels, Context, Error, Kind, Table};
-    use connector::supervisor::Supervisor;
-    use connector::testing;
+    use connector::testing::Rig;
     use document::Document;
     use document::diagnostic::Diagnostic;
-    use types::channel;
     use types::name::Name;
     use types::time::Span;
 
@@ -296,27 +293,12 @@ mod status {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
         let result = sim.run_on(&node, |node, tasks| async move {
-            let env = hub::testing::Env {
-                files: node.files(),
-                clock: node.clock(),
-                wall: node.wall(),
-                entropy: node.entropy(),
-                tasks,
-            };
             let kinds = Table::new().with("sets", kind);
-            let config = testing::create_config(env, node.net(), kinds).await;
+            let mut rig = Rig::open(super::env(&node, tasks), node.net(), kinds).await;
             let connector: Name = "plant.sets".parse().expect("a valid name");
-            let counts = [samples()];
-            let first = channel::Key::from_u128(100);
-            let status = testing::create_status(&connector, &counts, first);
-            config
-                .hub
-                .set_definitions(status.iter().map(|(name, def)| (name, def)));
-            let supervisor = Supervisor::new(config);
             let (token, config) = (Token::new(), Document::default());
             let mut run = pin!(
-                supervisor
-                    .open("sets", connector, &config, &token)
+                rig.open_connector("sets", connector, &config, &token)
                     .await
                     .run()
             );

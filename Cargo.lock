@@ -1748,6 +1748,7 @@ dependencies = [
  "aws-lc-rs",
  "block",
  "counting",
+ "document",
  "env",
  "proptest",
  "sim",
