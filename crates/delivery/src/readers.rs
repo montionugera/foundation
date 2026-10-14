@@ -434,7 +434,7 @@ impl Readers {
                 self.queue.push_back((Queued::Lost, seq));
             }
         } else {
-            self.miss(&seq);
+            self.miss(Some(seq.end));
         }
         &self.woken_complete
     }
@@ -443,11 +443,11 @@ impl Readers {
     /// on disk, to each complete session whose position it ends past, in seq order. A
     /// frame that finds the session's credit spent waits for a grant, and so does each
     /// later frame. A frame that still waits for a grant when a later call releases a
-    /// frame is a miss: it drops, and the session gets no later frame. Applies the
-    /// samples that [`Readers::lose`] queued once each frame before them is given,
-    /// whatever `durable` is. Returns the
-    /// complete sessions that had no frame to take and now have one, or that missed a
-    /// frame now and have none to take, each once: wake them.
+    /// frame is a miss: it drops, and the session gets no later frame. Applies each
+    /// miss that [`Readers::lose`] queued once the frames before it are given, whatever
+    /// `durable` is. Returns the complete sessions that had no frame to take and now
+    /// have one, or that missed a frame now and have none to take, each once: wake
+    /// them.
     #[must_use]
     pub fn release(&mut self, durable: u64) -> &[complete::Key] {
         self.woken_complete.clear();
@@ -456,7 +456,7 @@ impl Readers {
             if releases.is_none_or(|(_, seq)| seq.end > durable) {
                 return &self.woken_complete;
             }
-            self.miss_owed();
+            self.miss(None);
         }
         while let Some((queued, seq)) =
             self.queue.pop_front_if(|(queued, seq)| match queued {
@@ -465,7 +465,7 @@ impl Readers {
             })
         {
             let Queued::Frame(frame) = queued else {
-                self.miss(&seq);
+                self.miss(Some(seq.end));
                 continue;
             };
             let stale = |set: &mut Arc<KeySet>| set.key() != frame.key_set();
@@ -492,7 +492,7 @@ impl Readers {
             self.queue.push_front((Queued::Frame(frame), seq));
             self.hold(durable);
             if let Some((Queued::Lost, _)) = self.queue.get(self.held) {
-                self.miss_owed();
+                self.miss(None);
                 continue;
             }
             break;
@@ -528,11 +528,18 @@ impl Readers {
         self.held = at.frame;
     }
 
-    /// Makes each session that waits for a grant miss its frame, adds those with no
-    /// frame to take to the sessions to wake, and drops the held frames.
-    fn miss_owed(&mut self) {
+    /// Makes each complete session miss that waits for a grant, or that the lost
+    /// samples ending at `lost` end past. Adds those with no frame to take to the
+    /// sessions to wake, and drops the held frames. With `lost`, each frame before the
+    /// lost samples was released.
+    fn miss(&mut self, lost: Option<u64>) {
         for (session, flow) in iter::zip(&self.complete, &mut self.flows) {
-            if !matches!(flow.lag, Lag::Owed(_)) {
+            let missed = match flow.lag {
+                Lag::Owed(_) => true,
+                Lag::None => lost.is_some_and(|end| end > session.position.live),
+                Lag::Behind => false,
+            };
+            if !missed {
                 continue;
             }
             flow.lag = Lag::Behind;
@@ -543,29 +550,9 @@ impl Readers {
         }
         self.owing = 0;
         self.drop_held();
-    }
-
-    /// Makes each complete session that waits for a grant, or that the lost samples
-    /// `seq` end past, miss them, adds those with no frame to take to the sessions to
-    /// wake, and drops the held frames. Each frame before them was released.
-    fn miss(&mut self, seq: &Range<u64>) {
-        for (session, flow) in iter::zip(&self.complete, &mut self.flows) {
-            let missed = match flow.lag {
-                Lag::Owed(_) => true,
-                Lag::None => seq.end > session.position.live,
-                Lag::Behind => false,
-            };
-            if !missed {
-                continue;
-            }
-            flow.lag = Lag::Behind;
-            if flow.waiting.is_empty() {
-                self.woken_complete.push(session.key);
-            }
+        if let Some(end) = lost {
+            self.released = end;
         }
-        self.owing = 0;
-        self.drop_held();
-        self.released = seq.end;
     }
 
     /// Checks the seq of a live frame, named `what` in the panic message.
