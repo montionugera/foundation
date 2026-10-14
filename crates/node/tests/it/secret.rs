@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use env::files::Files;
+use env::files::{Absolute, Files};
 use secret::store::{Error, File, Store};
 use secret::{Reads, Resolver, Source};
 use types::name::Name;
@@ -55,7 +55,9 @@ fn reads_a_file_at_an_absolute_path_outside_the_data_directory() {
         let reads = Reads::new(Files::new(disk));
         let store = File::new(reads.clone(), Path::new("secrets"));
         let resolver = Resolver::new(Arc::default(), reads, Box::new(store));
-        let read = resolver.get(&Source::File(file)).await;
+        let path = Absolute::new(file.to_str().expect("a UTF-8 path"))
+            .expect("an absolute path");
+        let read = resolver.get(&Source::File(path)).await;
         assert_eq!(read.map(|value| value.expose().to_vec()), Ok(b"t".to_vec()));
     });
     get.expect("the thread starts")

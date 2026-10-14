@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use types::name::Name;
 
 use super::{Error, Request, Store};
+use crate::reads::Place;
 use crate::{Reads, Value};
 
 /// A store that holds each secret in a file of its own under one directory of the
@@ -47,7 +48,9 @@ impl File {
                     .into(),
             });
         }
-        self.reads.read(&self.dir.join(name.as_str())).await
+        (self.reads)
+            .read(Place::Data(&self.dir.join(name.as_str())))
+            .await
     }
 }
 

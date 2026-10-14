@@ -31,8 +31,12 @@
   environment of the node process, which `node` main reads once at start
   (`std::env::vars_os()`) and gives in `node::Config::vars`. No code below `node`
   reads the OS environment. To change the value, restart the node. A value that is
-  not UTF-8 gives its bytes. `file()` reads the absolute path through
-  `env::files::Files::open_absolute`, and `secret()` through the store (SECRET STORES
+  not UTF-8 gives its bytes. `secret::Source::File` holds an `env::files::Absolute`,
+  the one type of the path rule above, and `file()` reads it through
+  `env::files::Files::open_absolute`, as `laptop.architect-2` ruled on
+  2026-10-13T22:35:35Z
+  (https://github.com/synnaxlabs/foundation/pull/2621#issuecomment-6156672291).
+  `secret()` reads through the store (SECRET STORES
   AS ADAPTERS). Both share one `secret::Reads` on a shard: one read at a time, in the
   order they come, in the erased pool, at most 64 KiB, less one trailing `\n` or
   `\r\n`. So the memory bound of SECRET STORES AS ADAPTERS holds for both. An empty

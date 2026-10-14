@@ -4,7 +4,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
-use env::files::Mode;
+use env::files::{Absolute, Mode};
 use types::name::Name;
 
 use super::*;
@@ -43,7 +43,7 @@ fn env(name: &str) -> Source {
 }
 
 fn file(path: &str) -> Source {
-    Source::File(path.into())
+    Source::File(Absolute::new(path).expect("an absolute path"))
 }
 
 fn missing(detail: &str) -> Result<Vec<u8>, Error> {

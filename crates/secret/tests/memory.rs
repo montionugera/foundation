@@ -1,6 +1,6 @@
 //! The heap bytes that the gets of one resolver hold at once, through its file store
-//! and absolute files, as SECRET STORES AS ADAPTERS states them. The count covers every thread, so this binary has no test
-//! harness.
+//! and absolute files, as SECRET STORES AS ADAPTERS states them. The count covers
+//! every thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-use env::files::Mode;
+use env::files::{Absolute, Mode};
 use secret::store::File;
 use secret::{Reads, Resolver, Source};
 
@@ -72,7 +72,9 @@ fn peak(len: usize, gets: usize) -> usize {
         let resolver = Resolver::new(Arc::new(BTreeMap::new()), reads, Box::new(store));
         let sources = [
             Source::Secret("plant.key".parse().expect("a valid name")),
-            Source::File(absolute.into()),
+            Source::File(
+                Absolute::new("/run/secrets/plant.key").expect("an absolute path"),
+            ),
         ];
         let read = async |source| {
             let value = resolver

@@ -3,12 +3,12 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use env::files::{self, Files, Mode};
+use env::files::{self, Absolute, Files, Mode};
 
 use crate::Value;
 use crate::store::Error;
@@ -42,21 +42,23 @@ impl Reads {
         }))
     }
 
-    /// Reads the value in the file at `path`, absolute or relative to the data
-    /// directory, with one trailing `\n` or `\r\n` cut.
+    /// Reads the value in the file at `place`, with one trailing `\n` or `\r\n` cut.
     ///
     /// # Errors
     ///
     /// [`Error::Missing`] when the file is not there or the value is empty.
     /// [`Error::Unavailable`] when the file is more than 64 KiB, or a file call fails.
-    pub(crate) async fn read(&self, path: &Path) -> Result<Value, Error> {
+    pub(crate) async fn read(&self, place: Place<'_>) -> Result<Value, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
         let files = &self.0.files;
-        let opened = if path.is_absolute() {
-            files.open_absolute(path).await
-        } else {
-            files.open(path, Mode::Read).await
+        let (opened, path) = match place {
+            Place::Data(path) => {
+                (files.open(path, Mode::Read).await, files.shown(path))
+            }
+            Place::Host(path) => {
+                (files.open_absolute(path).await, path.as_path().into())
+            }
         };
         let file = match opened {
             Ok(file) => file,
@@ -64,7 +66,7 @@ impl Reads {
                 return Err(Error::Missing {
                     detail: format!(
                         "the file {} is not there. Write the value to it",
-                        self.shown(path).display()
+                        path.display()
                     ),
                 });
             }
@@ -74,7 +76,7 @@ impl Reads {
             return Err(Error::Unavailable {
                 detail: format!(
                     "the file {} is {} bytes, more than {LEN_MAX}",
-                    self.shown(path).display(),
+                    path.display(),
                     file.len()
                 ),
             });
@@ -92,7 +94,7 @@ impl Reads {
             return Err(Error::Missing {
                 detail: format!(
                     "the file {} is empty. Write the value to it",
-                    self.shown(path).display()
+                    path.display()
                 ),
             });
         }
@@ -103,15 +105,6 @@ impl Reads {
     #[cfg(test)]
     pub(crate) fn idle(&self) -> bool {
         self.0.reads.borrow().is_empty()
-    }
-
-    /// `path` as a person finds it on the host.
-    fn shown(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.0.files.shown(path)
-        }
     }
 
     /// Puts a read last in the order. The read holds the turn when the result is
@@ -125,6 +118,15 @@ impl Reads {
             key,
         }
     }
+}
+
+/// Where a secret file is.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Place<'a> {
+    /// A path relative to the data directory.
+    Data(&'a Path),
+    /// A path on the host.
+    Host(&'a Absolute),
 }
 
 impl fmt::Debug for Reads {

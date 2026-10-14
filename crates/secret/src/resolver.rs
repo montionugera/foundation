@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::sync::Arc;
 
+use crate::reads::Place;
 use crate::store::{self, Store};
 use crate::{Reads, Source, Value};
 
@@ -50,7 +51,7 @@ impl Resolver {
                     Some(value) => Ok(Value::new(value.as_encoded_bytes().to_vec())),
                 }
             }
-            Source::File(path) => self.reads.read(path).await,
+            Source::File(path) => self.reads.read(Place::Host(path)).await,
             Source::Secret(name) => self.store.get(name).await,
         }
     }
