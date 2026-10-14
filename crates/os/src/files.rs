@@ -38,9 +38,11 @@ const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC);
 
 /// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
+/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
 const READ_HOST: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC)
-    .union(OFlags::NONBLOCK);
+    .union(OFlags::NONBLOCK)
+    .union(OFlags::NOCTTY);
 
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
