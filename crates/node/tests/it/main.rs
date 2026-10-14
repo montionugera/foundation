@@ -18,12 +18,8 @@ use std::collections::BTreeMap;
 
 use rig::Rig;
 
-/// The refusal of `status` on a node that places no connector.
-const REFUSED: &str = concat!(
-    "error[ops.denied]: no access policy gives `@admin` the action `read` on a ",
-    "request that names no definition\n",
-    "fix: Ask an admin of the region for an access policy that allows it\n",
-);
+/// The output of `status` on a node that places no connector.
+const EMPTY: &str = "You can read no connector on this node.\n";
 
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("UTF-8")
@@ -158,7 +154,7 @@ fn status_gives_each_connector_as_json() {
     );
 }
 
-/// `status` reaches the running node, which refuses it while it places no connector.
+/// `status` reaches the running node, which places no connector.
 #[test]
 fn status_runs_on_the_node() {
     let mut rig = Rig::new();
@@ -170,7 +166,7 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
-        (Some(1), "", REFUSED)
+        (Some(0), EMPTY, "")
     );
 }
 
@@ -182,8 +178,8 @@ fn status_reaches_the_node_of_data() {
     rig.start_with(&["--name", "edge", "--data", "plant"]);
     let output = rig.run(&["status", "--data", "plant"], b"");
     assert_eq!(
-        (output.status.code(), text(&output.stderr)),
-        (Some(1), REFUSED)
+        (output.status.code(), text(&output.stdout)),
+        (Some(0), EMPTY)
     );
     let output = rig.run(&["status"], b"");
     assert_eq!(
