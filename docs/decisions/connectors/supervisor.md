@@ -190,6 +190,7 @@
   | `restarts` | `u64` | the restarts in this call |
   | `backoff` | `Span` | the wait from this sample to the next try, 0 unless `state` is 1 |
   | `error` | `String` | the text of the error that ended the last run, or that the running kind shows, empty when `class` is 0 |
+  | `note` | `String` | the note that the running kind shows (below), empty when it shows none |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
   A count holds across the runs of one call. A kind adds to it with `Count::add`, or
@@ -254,7 +255,14 @@
   supersedes "at once" of rule 3 for it. The same value again writes nothing. The end of
   the run replaces both. A call after the run returned shows nothing
   (`laptop.architect-2`, 2026-10-13T04:01:43Z:
-  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). A running
+  kind shows a note with `Context::note`: a short text of how the run works other than
+  its spec asks, such as a mode that the device forces, cut as `error`. A note is of one
+  run: each run starts with none, a new note replaces it, and the frame of `state` 3
+  holds an empty `note`. A change of the note is written within one second, as a change
+  of the shown error, and the same text again writes nothing. A call after the run
+  returned shows nothing (`laptop.architect-2`, 2026-10-13T23:48:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934). When a
   run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
   when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:

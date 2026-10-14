@@ -43,13 +43,14 @@ pub use reading::Reading;
 const TIME: &str = "time";
 
 /// The channels that the supervisor writes, with the sample type of each. `error`
-/// is last, so it is entry [`ERROR`] of a frame.
-const SUPERVISOR: [(&str, Type); 5] = [
+/// and `note` are last, so they are entries [`ERROR`] and [`NOTE`] of a frame.
+const SUPERVISOR: [(&str, Type); 6] = [
     (segment::STATE, Type::Scalar(Scalar::U8)),
     (segment::CLASS, Type::Scalar(Scalar::U8)),
     (segment::RESTARTS, Type::Scalar(Scalar::U64)),
     (segment::BACKOFF, Type::Scalar(Scalar::Span)),
     (segment::ERROR, Type::String),
+    (segment::NOTE, Type::String),
 ];
 
 /// The last segment of the name of each channel that the supervisor writes.
@@ -59,14 +60,17 @@ mod segment {
     pub(super) const RESTARTS: &str = "restarts";
     pub(super) const BACKOFF: &str = "backoff";
     pub(super) const ERROR: &str = "error";
+    pub(super) const NOTE: &str = "note";
 }
 
 /// The entry of `error` in a frame, after the index and the other channels of the
-/// supervisor.
-const ERROR: usize = SUPERVISOR.len();
+/// supervisor but `note`.
+const ERROR: usize = SUPERVISOR.len() - 1;
+/// The entry of `note` in a frame, after `error`.
+const NOTE: usize = SUPERVISOR.len();
 
-/// The most bytes of the text of `error`.
-const ERROR_MAX: usize = 1024;
+/// The most bytes of the text of `error` and of `note`.
+const TEXT_MAX: usize = 1024;
 /// The least time between two writes of a change of counts alone.
 const PERIOD: Span = Span::SECOND;
 
@@ -159,6 +163,7 @@ impl Status {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
             shown: RefCell::default(),
+            note: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
         }))
@@ -198,6 +203,22 @@ impl Status {
     /// Clears the class and the text, from the next write until the end of the run.
     pub(crate) fn clear(&self) {
         self.set(Shown::Cleared);
+    }
+
+    /// Shows `note`, cut to [`TEXT_MAX`] bytes, from the next write until the end of
+    /// the run, unless the run shows it already or no run runs.
+    pub(crate) fn note(&self, note: &dyn fmt::Display) {
+        if matches!(*self.0.shown.borrow(), Shown::Ended) {
+            return;
+        }
+        let note = cut(&note.to_string());
+        let mut shown = self.0.note.borrow_mut();
+        if *shown == note {
+            return;
+        }
+        *shown = note;
+        drop(shown);
+        self.0.stage();
     }
 
     /// Stages `new`, unless it is the value that the run shows, or no run runs.
@@ -306,7 +327,7 @@ pub enum Class {
 impl Class {
     /// The class of a run that ended with `end`, and the text of `error`: `None` and
     /// an empty text for `Ok`, else the text of the error with no class, cut to
-    /// [`ERROR_MAX`] bytes.
+    /// [`TEXT_MAX`] bytes.
     fn with_text(end: &Result<(), kind::Error>) -> (Option<Self>, String) {
         let (class, text) = match end {
             Ok(()) => (None, String::new()),
@@ -336,11 +357,13 @@ impl Class {
     }
 }
 
-/// The last value of each count and the error that the run shows, and whether the
-/// status waits for a write.
+/// The last value of each count, the error and the note that the run shows, and
+/// whether the status waits for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
     shown: RefCell<Shown>,
+    /// Empty when the run shows no note.
+    note: RefCell<String>,
     staged: Cell<bool>,
     /// The flush, while it waits for a staged count of an open session, so that a set
     /// after the close wakes nothing.
@@ -377,6 +400,7 @@ impl fmt::Debug for Values {
         f.debug_struct("Values")
             .field("counts", &self.counts)
             .field("shown", &self.shown.borrow())
+            .field("note", &self.note.borrow())
             .field("staged", &self.staged.get())
             .finish_non_exhaustive()
     }
@@ -418,7 +442,7 @@ impl Writer {
         let session = hub.writer(config).await?;
         let entries: Box<[usize]> = session.entries().into();
         let set = session.set();
-        let error = entries[ERROR];
+        let (error, note) = (entries[ERROR], entries[NOTE]);
         let form = Variable::of(set.entries()[error].data_type)
             .expect("invariant: `error` is a `String`");
         let empty = form
@@ -427,15 +451,20 @@ impl Writer {
         let mut series: Box<[_]> = entries
             .iter()
             .map(|&entry| {
-                let width = (entry != error).then(|| {
+                let width = (entry != error && entry != note).then(|| {
                     let width = set.entries()[entry].data_type.width();
-                    width.expect("invariant: a status sample but `error` has one width")
+                    width.expect("invariant: a status sample but a text has one width")
                 });
                 (entry, width.unwrap_or(empty))
             })
             .collect();
         series.sort_unstable();
-        let at = series.partition_point(|&(entry, _)| entry < error);
+        let text = |entry: usize| Text {
+            value: String::new(),
+            at: series.partition_point(|&(other, _)| other < entry),
+            form,
+        };
+        let (error, note) = (text(error), text(note));
         let group = set.entries()[entries[0]].group;
         let status = Status::new(counts);
         let session = Session {
@@ -448,11 +477,8 @@ impl Writer {
             phase: Phase::Running,
             class: None,
             restarts: 0,
-            error: Text {
-                value: String::new(),
-                at,
-                form,
-            },
+            error,
+            note,
             started: false,
             unapplied: false,
             closed: false,
@@ -492,10 +518,12 @@ impl Writer {
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
         self.values.shown.replace(Shown::Ended);
+        self.values.note.take();
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
             session.error.set(&mut session.series, error);
+            session.note.set(&mut session.series, String::new());
             session.phase = Phase::Ending;
         })
     }
@@ -622,6 +650,7 @@ struct Session {
     class: Option<Class>,
     restarts: u64,
     error: Text,
+    note: Text,
     /// Set at the first start, after which each start is a restart.
     started: bool,
     /// Set while the last change of state waits for a frame that the home applies,
@@ -633,11 +662,12 @@ struct Session {
     closed: bool,
 }
 
-/// The text of `error`, and where and how a frame holds it.
+/// The text of `error` or of `note`, and where and how a frame holds it.
 struct Text {
-    /// At most [`ERROR_MAX`] bytes.
+    /// At most [`TEXT_MAX`] bytes.
     value: String,
-    /// The index in `Session::series` of `error`, the one series whose length changes.
+    /// The index in `Session::series` of its series, one of the two whose length
+    /// changes.
     at: usize,
     form: Variable,
 }
@@ -646,7 +676,7 @@ impl Text {
     /// Sets the text to `value`, and the length of its series in `series`.
     fn set(&mut self, series: &mut [(usize, usize)], value: String) {
         let len = self.form.len(&[&value]);
-        series[self.at].1 = len.expect("invariant: at most ERROR_MAX bytes");
+        series[self.at].1 = len.expect("invariant: at most TEXT_MAX bytes");
         self.value = value;
     }
 }
@@ -678,6 +708,11 @@ impl Session {
                 }
             }
         }
+        let note = values.note.borrow();
+        if self.note.value != *note {
+            self.note.set(&mut self.series, note.clone());
+        }
+        drop(note);
         if self.closed {
             self.unapplied = false;
             return;
@@ -802,8 +837,12 @@ impl Session {
                 bytes.copy_from_slice(&stamp.nanos().to_le_bytes());
                 continue;
             }
-            if i == ERROR {
-                self.error.form.write(&[&self.error.value], bytes);
+            if let Some(text) = match i {
+                ERROR => Some(&self.error),
+                NOTE => Some(&self.note),
+                _ => None,
+            } {
+                text.form.write(&[&text.value], bytes);
                 continue;
             }
             let sample = samples.next().expect("invariant: a sample per channel");
@@ -814,10 +853,10 @@ impl Session {
     }
 }
 
-/// The longest prefix of `text` of at most [`ERROR_MAX`] bytes that ends at a char
+/// The longest prefix of `text` of at most [`TEXT_MAX`] bytes that ends at a char
 /// boundary, in a string with no spare capacity.
 fn cut(text: &str) -> String {
-    text[..text.floor_char_boundary(ERROR_MAX)].to_owned()
+    text[..text.floor_char_boundary(TEXT_MAX)].to_owned()
 }
 
 /// Polls `run` to its end, and `side` after it while `run` is pending, so `side` sees
@@ -1017,6 +1056,7 @@ mod tests {
                 Type::Scalar(Scalar::Span),
             ),
             (name("plant.modbus.status.error"), Type::String),
+            (name("plant.modbus.status.note"), Type::String),
             (name("plant.modbus.status.samples"), u64),
             (name("plant.modbus.status.errors"), u64),
         ];
@@ -1036,10 +1076,10 @@ mod tests {
         ) {
             let got = cut(&text);
             prop_assert!(text.starts_with(&got));
-            prop_assert!(got.len() <= ERROR_MAX);
+            prop_assert!(got.len() <= TEXT_MAX);
             prop_assert_eq!(got.capacity(), got.len());
             let next = text[got.len()..].chars().next();
-            prop_assert!(next.is_none_or(|c| got.len() + c.len_utf8() > ERROR_MAX));
+            prop_assert!(next.is_none_or(|c| got.len() + c.len_utf8() > TEXT_MAX));
         }
     }
 
@@ -1074,8 +1114,8 @@ mod tests {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, staged: \
-                    true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, note: \
+                    \"\", staged: true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 
