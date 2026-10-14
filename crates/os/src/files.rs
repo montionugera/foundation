@@ -37,6 +37,11 @@ const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 
+/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
+const READ_HOST: OFlags = OFlags::RDONLY
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NONBLOCK);
+
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
 /// wrap it with [`env::files::Files::new`].
@@ -398,9 +403,8 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
 /// 22 (`EINVAL`) for any other file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
     let failed = fail(path, Operation::Open);
-    let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK;
     let fd = Opened {
-        fd: fs::open(path, flags, fs::Mode::empty()).map_err(&failed)?,
+        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
         locked: false,
     };
     let stat = fs::fstat(&fd).map_err(&failed)?;
@@ -666,6 +670,13 @@ mod tests {
         let holder = fs::open("/sys/fs", READ_DIR, fs::Mode::empty()).unwrap();
         assert_eq!(sync_all(holder.as_fd()), Err(Errno::INVAL));
         make(fs::CWD, point).unwrap();
+    }
+
+    #[test]
+    fn open_absolute_closes_the_file_on_exec() {
+        let (opened, _) = open_absolute(&std::env::current_exe().unwrap()).unwrap();
+        let flags = rustix::io::fcntl_getfd(&opened.fd).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
     }
 
     #[test]
