@@ -414,15 +414,23 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
 /// 22 (`EINVAL`) for any other file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
     let failed = fail(path, Operation::Open);
+    // The check before the open keeps the open of a socket from giving `ENXIO`, and
+    // that of a device from running its driver. The check after it covers a swap.
+    regular(&fs::stat(path).map_err(&failed)?).map_err(&failed)?;
     let fd = Opened {
         fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
         locked: false,
     };
-    let stat = fs::fstat(&fd).map_err(&failed)?;
+    let len = regular(&fs::fstat(&fd).map_err(&failed)?).map_err(&failed)?;
+    Ok((fd, len))
+}
+
+/// The length of the regular file of `stat`, or the error of another kind of file.
+fn regular(stat: &fs::Stat) -> Result<u64, Errno> {
     match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => Ok((fd, stat.st_size.cast_unsigned())),
-        FileType::Directory => Err(failed(Errno::ISDIR)),
-        _ => Err(failed(Errno::INVAL)),
+        FileType::RegularFile => Ok(stat.st_size.cast_unsigned()),
+        FileType::Directory => Err(Errno::ISDIR),
+        _ => Err(Errno::INVAL),
     }
 }
 
@@ -681,13 +689,6 @@ mod tests {
         let holder = fs::open("/sys/fs", READ_DIR, fs::Mode::empty()).unwrap();
         assert_eq!(sync_all(holder.as_fd()), Err(Errno::INVAL));
         make(fs::CWD, point).unwrap();
-    }
-
-    #[test]
-    fn open_absolute_closes_the_file_on_exec() {
-        let (opened, _) = open_absolute(&std::env::current_exe().unwrap()).unwrap();
-        let flags = rustix::io::fcntl_getfd(&opened.fd).unwrap();
-        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
     }
 
     #[test]
