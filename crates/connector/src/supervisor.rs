@@ -391,6 +391,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
 
+    use env::files::Absolute;
     use env::net::tcp;
 
     use document::diagnostic::{Code, Diagnostic};
@@ -1072,9 +1073,8 @@ mod tests {
         assert_eq!(texts, ["", "busy", "busy", "busy", "", ""]);
     }
 
-    /// A kind that reads the secret of its name at the start of its run, then
-    /// returns.
-    struct Locked(&'static str);
+    /// A kind that reads its secret source at the start of its run, then returns.
+    struct Locked(secret::Source);
 
     impl Kind for Locked {
         type Config = ();
@@ -1095,7 +1095,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
-            let value = ctx.secret(&secret::Source::Secret(name(self.0))).await?;
+            let value = ctx.secret(&self.0).await?;
             assert_eq!(value.expose(), b"t");
             Ok(())
         }
@@ -1104,7 +1104,10 @@ mod tests {
     #[test]
     fn heals_a_run_when_the_missing_secret_is_written() {
         let (result, statuses) = run_on(|node, tasks| async move {
-            let kinds = Table::new().with("locked", Locked("plant.token"));
+            let kinds = Table::new().with(
+                "locked",
+                Locked(secret::Source::Secret(name("plant.token"))),
+            );
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.locked").await;
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
@@ -1133,9 +1136,52 @@ mod tests {
     }
 
     #[test]
+    fn heals_a_run_when_a_secret_file_too_large_is_cut() {
+        let path = "/run/secrets/plant.token";
+        let (result, statuses) = run_on(move |node, tasks| async move {
+            let source = secret::Source::File(Absolute::new(path).expect("absolute"));
+            let kinds = Table::new().with("locked", Locked(source));
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let paths = node.paths();
+            let large = vec![b't'; (1 << 16) + 1];
+            paths
+                .write(std::path::Path::new(path), &large)
+                .expect("writes it");
+            let (shown, clock) = (Rc::clone(&statuses), node.clock());
+            tasks.spawn(async move {
+                while shown.borrow().len() < 2 {
+                    clock.sleep(ms(10)).await;
+                }
+                paths
+                    .write(std::path::Path::new(path), b"t")
+                    .expect("writes it");
+            });
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(Span::SECOND).await;
+            (result, statuses.borrow().clone())
+        });
+        result.expect("the second run reads the secret");
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let large = "the secret file(\"/run/secrets/plant.token\"): the file \
+                     /run/secrets/plant.token is 65537 bytes, more than 65536. Make it \
+                     at most 65536 bytes";
+        assert_eq!(texts, ["", large, large, large, "", ""]);
+    }
+
+    #[test]
     fn ends_a_run_whose_secret_name_the_store_cannot_hold_without_a_restart() {
         let (result, statuses) = run_on(|node, tasks| async move {
-            let kinds = Table::new().with("locked", Locked("plant.Token"));
+            let kinds = Table::new().with(
+                "locked",
+                Locked(secret::Source::Secret(name("plant.Token"))),
+            );
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.locked").await;
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;

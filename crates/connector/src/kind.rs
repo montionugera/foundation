@@ -284,14 +284,15 @@ impl<C> Context<C> {
     /// hold the name of a `secret()`, with the store's text as the fix.
     /// [`Error::Retry`] for each other error, with a text that names the source and
     /// holds the fix, such as where to put the value. The supervisor restarts the
-    /// run with backoff, so a value put in its place heals it.
+    /// run with backoff, so a value put in its place heals it. For `env()`, restart
+    /// the node with the variable set.
     pub async fn secret(
         &self,
         source: &secret::Source,
     ) -> Result<secret::Value, Error> {
         let get = self.inputs.secrets.get(source).await;
         get.map_err(|error| match error {
-            secret::store::Error::BadName { detail } => {
+            secret::Error::BadName { detail } => {
                 let error = format!(
                     "the secret {source} has a name that the store cannot hold"
                 );
@@ -439,7 +440,7 @@ const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 #[derive(Debug)]
 struct Unread {
     source: secret::Source,
-    error: secret::store::Error,
+    error: secret::Error,
 }
 
 impl fmt::Display for Unread {

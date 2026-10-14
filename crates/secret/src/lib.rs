@@ -6,13 +6,14 @@ use std::fmt;
 
 use zeroize::Zeroizing;
 
+mod error;
 mod reads;
 mod resolver;
 pub mod seal;
 mod source;
 pub mod store;
 
-pub use reads::Reads;
+pub use error::Error;
 pub use resolver::Resolver;
 pub use source::Source;
 

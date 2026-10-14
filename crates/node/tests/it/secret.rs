@@ -5,9 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use env::files::{Absolute, Files};
-use secret::store::{Error, File, Store};
-use secret::{Reads, Resolver, Source};
-use types::name::Name;
+use secret::{Error, Resolver, Source};
 
 #[test]
 fn reads_the_secret_from_the_file_that_its_text_names() {
@@ -17,9 +15,13 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
     let (disk, io) = os::files(&dir, &threads, "files").expect("the disk opens");
     let file = dir.join("data/secrets/site.token");
     let get = threads.start("get", move || async move {
-        let store = File::new(Reads::new(Files::new(disk)), Path::new("secrets"));
-        let name: Name = "site.token".parse().expect("a valid name");
-        let missing = store.get(&name).await.map(|value| value.expose().to_vec());
+        let resolver =
+            Resolver::new(Arc::default(), Files::new(disk), Path::new("secrets"));
+        let source = Source::Secret("site.token".parse().expect("a valid name"));
+        let missing = resolver
+            .get(&source)
+            .await
+            .map(|value| value.expose().to_vec());
         let Err(Error::Missing { detail }) = missing else {
             panic!("no value yet: {missing:?}");
         };
@@ -33,7 +35,10 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         std::fs::create_dir_all(file.parent().expect("a directory"))
             .expect("makes the directory");
         std::fs::write(&file, b"t\n").expect("writes it");
-        let read = store.get(&name).await.map(|value| value.expose().to_vec());
+        let read = resolver
+            .get(&source)
+            .await
+            .map(|value| value.expose().to_vec());
         assert_eq!(read, Ok(b"t".to_vec()));
     });
     get.expect("the thread starts")
@@ -52,9 +57,8 @@ fn reads_a_file_at_an_absolute_path_outside_the_data_directory() {
     let file = dir.join("token");
     std::fs::write(&file, b"t\r\n").expect("writes it");
     let get = threads.start("get", move || async move {
-        let reads = Reads::new(Files::new(disk));
-        let store = File::new(reads.clone(), Path::new("secrets"));
-        let resolver = Resolver::new(Arc::default(), reads, Box::new(store));
+        let resolver =
+            Resolver::new(Arc::default(), Files::new(disk), Path::new("secrets"));
         let path = Absolute::new(file.to_str().expect("a UTF-8 path"))
             .expect("an absolute path");
         let read = resolver.get(&Source::File(path)).await;

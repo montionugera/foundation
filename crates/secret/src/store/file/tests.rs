@@ -166,8 +166,10 @@ fn reads_a_file_of_64_kib_and_refuses_one_byte_more() {
         )
         .await;
         let large = Err(Error::Unavailable {
-            detail: "the file /data/secrets/plant.key is 65537 bytes, more than 65536"
-                .into(),
+            detail:
+                "the file /data/secrets/plant.key is 65537 bytes, more than 65536. \
+                     Make it at most 65536 bytes"
+                    .into(),
         });
         assert_eq!(get(&store, "plant.key").await, large);
     });
@@ -197,7 +199,11 @@ fn gives_a_failed_file_call_as_unavailable() {
         {
             node.fail_file(path, operation);
             let failed = Err(Error::Unavailable {
-                detail: format!("{call} of secrets/plant.token failed with OS error 5"),
+                detail: format!(
+                    "{call} of secrets/plant.token failed with OS error 5. Make \
+                     /data/secrets/plant.token a file of at most 65536 bytes that the \
+                     user of the node can read"
+                ),
             });
             assert_eq!(get(&store, "plant.token").await, failed);
         }
@@ -254,7 +260,8 @@ fn a_second_get_waits_until_the_first_ends() {
         assert_eq!(first.await, Ok(b"a".to_vec()));
         assert_eq!(wakes(&count), 1, "the end of the first wakes the second");
         assert_eq!(second.await, Ok(b"b".to_vec()));
-        assert!(store.reads.idle(), "the gets leave no turn");
+        let further = get(&store, "plant.a").await;
+        assert_eq!(further, Ok(b"a".to_vec()), "the gets leave no turn");
     });
 }
 
@@ -271,7 +278,8 @@ fn a_dropped_get_that_reads_gives_the_turn_to_the_next() {
         drop(first);
         assert_eq!(wakes(&count), 1, "the drop of the first wakes the second");
         assert_eq!(second.await, Ok(b"b".to_vec()));
-        assert!(store.reads.idle(), "the gets leave no turn");
+        let further = get(&store, "plant.a").await;
+        assert_eq!(further, Ok(b"a".to_vec()), "the gets leave no turn");
     });
 }
 
@@ -293,7 +301,8 @@ fn a_dropped_get_that_waits_keeps_the_order_of_the_others() {
         assert_eq!(wakes(&count_second), 0, "the dropped get left the order");
         assert_eq!(wakes(&count_third), 1, "the first wakes the third");
         assert_eq!(third.await, Ok(b"c".to_vec()));
-        assert!(store.reads.idle(), "the gets leave no turn");
+        let further = get(&store, "plant.a").await;
+        assert_eq!(further, Ok(b"a".to_vec()), "the gets leave no turn");
     });
 }
 

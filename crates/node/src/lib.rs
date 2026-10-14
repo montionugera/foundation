@@ -34,8 +34,6 @@ mod task;
 #[cfg(not(loom))]
 mod tests;
 
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
@@ -103,9 +101,6 @@ pub struct Config<M> {
     /// The limits of the node's port, its peers, and its chunk store. A value that the
     /// transport refuses stops the node with [`Error::Transport`].
     pub settings: Settings,
-    /// The environment of the node process, which `env()` in a config reads. Main
-    /// gives `std::env::vars_os()`.
-    pub vars: BTreeMap<OsString, OsString>,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -828,7 +823,6 @@ struct Bind {
     entropy: env::entropy::Entropy,
     net: env::net::Net,
     settings: Settings,
-    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 impl Bind {
@@ -841,7 +835,6 @@ impl Bind {
             entropy: config.entropy.clone(),
             net: config.net.clone(),
             settings: config.settings,
-            vars: Arc::new(config.vars.clone()),
         }
     }
 
@@ -870,7 +863,6 @@ impl Bind {
             self.entropy,
             self.net,
             self.settings,
-            self.vars,
         ))
     }
 }
@@ -888,8 +880,6 @@ struct Endpoint {
     /// The network, which the node's connectors reach their devices and stores on.
     net: env::net::Net,
     settings: Settings,
-    /// The environment of the node process, which the node's connectors read.
-    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// The region that shard 0 opens, with what it needs to found the root region.
@@ -950,7 +940,6 @@ impl Endpoint {
         entropy: env::entropy::Entropy,
         net: env::net::Net,
         settings: Settings,
-        vars: Arc<BTreeMap<OsString, OsString>>,
     ) -> Self {
         let bound = address::bound(&port);
         let mut parts = port.split(NonZeroUsize::MIN);
@@ -964,7 +953,6 @@ impl Endpoint {
             entropy,
             net,
             settings,
-            vars,
         }
     }
 
@@ -1108,7 +1096,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let (settings, vars) = (endpoint.settings, Arc::clone(&endpoint.vars));
+        let settings = endpoint.settings;
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
@@ -1125,9 +1113,13 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let reads = secret::Reads::new(files.clone());
-            let store = secret::store::File::new(reads.clone(), &directory::secrets());
-            let secrets = secret::Resolver::new(vars, reads, Box::new(store));
+            // No kind reads `env()` yet. The environment of the process comes
+            // with the first one (#2583).
+            let secrets = secret::Resolver::new(
+                Arc::default(),
+                files.clone(),
+                &directory::secrets(),
+            );
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,

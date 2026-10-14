@@ -1,5 +1,4 @@
 use std::future::poll_fn;
-use std::path::Path;
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
@@ -8,7 +7,6 @@ use env::files::{Absolute, Mode};
 use types::name::Name;
 
 use super::*;
-use crate::store::{Error, File};
 
 /// The variables of each resolver of these tests.
 fn vars() -> Arc<BTreeMap<OsString, OsString>> {
@@ -27,9 +25,8 @@ where
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, _| {
-        let reads = Reads::new(node.files());
-        let store = File::new(reads.clone(), Path::new("secrets"));
-        body(node, Resolver::new(vars(), reads, Box::new(store)))
+        let resolver = Resolver::new(vars(), node.files(), Path::new("secrets"));
+        body(node, resolver)
     })
     .expect("the run ends");
 }
@@ -76,6 +73,35 @@ fn reads_a_variable_and_says_how_to_set_one_that_is_not_set_or_empty() {
     });
 }
 
+#[test]
+fn reads_a_variable_of_64_kib_and_refuses_one_byte_more() {
+    let full = "k".repeat(1 << 16);
+    let vars = BTreeMap::from([
+        ("FULL".into(), OsString::from(&full)),
+        ("OVER".into(), OsString::from(format!("{full}k"))),
+    ]);
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let got = sim.run_on(&node, |node, _| async move {
+        let resolver =
+            Resolver::new(Arc::new(vars), node.files(), Path::new("secrets"));
+        (
+            get(&resolver, &env("FULL")).await,
+            get(&resolver, &env("OVER")).await,
+        )
+    });
+    let (full_got, over) = got.expect("the run ends");
+    assert_eq!(full_got, Ok(full.into_bytes()));
+    assert_eq!(
+        over,
+        Err(Error::Unavailable {
+            detail: "the environment variable OVER of the node is 65537 bytes, more \
+                     than 65536. Start the node with it set to at most 65536 bytes"
+                .into(),
+        })
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn gives_the_bytes_of_a_variable_that_is_not_utf_8() {
@@ -86,9 +112,8 @@ fn gives_the_bytes_of_a_variable_that_is_not_utf_8() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let got = sim.run_on(&node, |node, _| async move {
-        let reads = Reads::new(node.files());
-        let store = File::new(reads.clone(), Path::new("secrets"));
-        let resolver = Resolver::new(Arc::new(vars), reads, Box::new(store));
+        let resolver =
+            Resolver::new(Arc::new(vars), node.files(), Path::new("secrets"));
         get(&resolver, &env("TOKEN")).await
     });
     assert_eq!(got.expect("the run ends"), Ok(bytes));
@@ -134,8 +159,10 @@ fn reads_an_absolute_file_of_64_kib_and_refuses_one_byte_more() {
         assert_eq!(
             get(&resolver, &file("/run/secrets/key")).await,
             Err(Error::Unavailable {
-                detail: "the file /run/secrets/key is 65537 bytes, more than 65536"
-                    .into(),
+                detail:
+                    "the file /run/secrets/key is 65537 bytes, more than 65536. Make \
+                         it at most 65536 bytes"
+                        .into(),
             })
         );
     });
@@ -150,7 +177,10 @@ fn gives_a_failed_open_of_an_absolute_file_as_unavailable() {
         assert_eq!(
             get(&resolver, &file("/run/secrets/token")).await,
             Err(Error::Unavailable {
-                detail: "open of /run/secrets/token failed with OS error 13".into(),
+                detail: "open of /run/secrets/token failed with OS error 13. Make \
+                         /run/secrets/token a file of at most 65536 bytes that the \
+                         user of the node can read"
+                    .into(),
             })
         );
     });
@@ -234,9 +264,7 @@ fn a_file_read_waits_for_a_store_read_on_the_same_reads() {
 fn shows_its_store_and_no_variable_in_debug() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let files = sim.node(sim::node::Config::default()).files();
-    let reads = Reads::new(files);
-    let store = File::new(reads.clone(), Path::new("secrets"));
-    let resolver = Resolver::new(vars(), reads, Box::new(store));
+    let resolver = Resolver::new(vars(), files, Path::new("secrets"));
     assert_eq!(
         format!("{resolver:?}"),
         "Resolver { store: File { dir: \"secrets\", .. }, .. }"

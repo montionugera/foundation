@@ -49,9 +49,7 @@ pub async fn create_config(
 /// `files` that [`create_secret`] writes.
 #[must_use]
 pub fn create_secrets(files: Files) -> secret::Resolver {
-    let reads = secret::Reads::new(files);
-    let store = secret::store::File::new(reads.clone(), Path::new(SECRETS));
-    secret::Resolver::new(Arc::default(), reads, Box::new(store))
+    secret::Resolver::new(Arc::default(), files, Path::new(SECRETS))
 }
 
 /// Writes `value` as the secret `name` in the store that [`create_secrets`]

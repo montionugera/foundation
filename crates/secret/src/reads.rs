@@ -2,7 +2,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -10,17 +9,16 @@ use std::task::{Context, Poll, Waker};
 
 use env::files::{self, Absolute, Files, Mode};
 
-use crate::Value;
-use crate::store::Error;
+use crate::{Error, Value};
 
-/// The most bytes that a secret file holds.
-const LEN_MAX: u64 = 1 << 16;
+/// The most bytes that a secret holds.
+pub(crate) const LEN_MAX: u64 = 1 << 16;
 
 /// The reads of secret files on one shard: one read at a time, in the order they
 /// come, into a pool that writes zero over its bytes at the drop. Clones share the
 /// turn.
 #[derive(Clone)]
-pub struct Reads(Rc<Inner>);
+pub(crate) struct Reads(Rc<Inner>);
 
 struct Inner {
     files: Files,
@@ -33,8 +31,7 @@ struct Inner {
 
 impl Reads {
     /// Reads secret files through `files`.
-    #[must_use]
-    pub fn new(files: Files) -> Self {
+    pub(crate) fn new(files: Files) -> Self {
         Self(Rc::new(Inner {
             files,
             reads: RefCell::default(),
@@ -47,7 +44,8 @@ impl Reads {
     /// # Errors
     ///
     /// [`Error::Missing`] when the file is not there or the value is empty.
-    /// [`Error::Unavailable`] when the file is more than 64 KiB, or a file call fails.
+    /// [`Error::Unavailable`] when the file is more than 64 KiB, or a file call fails,
+    /// with the fix.
     pub(crate) async fn read(&self, place: Place<'_>) -> Result<Value, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
@@ -70,12 +68,13 @@ impl Reads {
                     ),
                 });
             }
-            Err(error) => return Err(unavailable(&error)),
+            Err(error) => return Err(unavailable(&error, &path)),
         };
         if file.len() > LEN_MAX {
             return Err(Error::Unavailable {
                 detail: format!(
-                    "the file {} is {} bytes, more than {LEN_MAX}",
+                    "the file {} is {} bytes, more than {LEN_MAX}. Make it at most \
+                     {LEN_MAX} bytes",
                     path.display(),
                     file.len()
                 ),
@@ -88,7 +87,7 @@ impl Reads {
         let into = pool.alloc(len).expect("invariant: the pool holds the file");
         let read = file.read_at(0, into).await;
         file.close().await;
-        let read = read.map_err(|error| unavailable(&error))?;
+        let read = read.map_err(|error| unavailable(&error, &path))?;
         let value = cut(&read).to_vec();
         if value.is_empty() {
             return Err(Error::Missing {
@@ -99,12 +98,6 @@ impl Reads {
             });
         }
         Ok(Value::new(value))
-    }
-
-    /// Whether no read waits or reads.
-    #[cfg(test)]
-    pub(crate) fn idle(&self) -> bool {
-        self.0.reads.borrow().is_empty()
     }
 
     /// Puts a read last in the order. The read holds the turn when the result is
@@ -127,12 +120,6 @@ pub(crate) enum Place<'a> {
     Data(&'a Path),
     /// A path on the host.
     Host(&'a Absolute),
-}
-
-impl fmt::Debug for Reads {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Reads").finish_non_exhaustive()
-    }
 }
 
 /// A read in the order of [`Reads`]. It is ready when the read holds the turn, and
@@ -191,8 +178,13 @@ fn cut(bytes: &[u8]) -> &[u8] {
     }
 }
 
-fn unavailable(error: &files::Error) -> Error {
+/// The failed file call `error` on the file at `path`, as the path is shown.
+fn unavailable(error: &files::Error, path: &Path) -> Error {
     Error::Unavailable {
-        detail: error.to_string(),
+        detail: format!(
+            "{error}. Make {} a file of at most {LEN_MAX} bytes that the user of the \
+             node can read",
+            path.display()
+        ),
     }
 }

@@ -9,12 +9,14 @@ use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
+use std::sync::Arc;
 use std::task::Poll;
 
 use env::files::{Files, Mode};
-use secret::Reads;
-use secret::store::{Error, File, Request, Store};
-use types::name::Name;
+use secret::{Error, Resolver, Source, Value};
+
+/// A get of a resolver, boxed so that a test can poll it and then drop it.
+type Get<'a> = Pin<Box<dyn Future<Output = Result<Value, Error>> + 'a>>;
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -61,22 +63,27 @@ where
 }
 
 async fn reads(files: Files, _: PathBuf) {
-    let store = File::new(Reads::new(files), Path::new("secrets"));
-    let value = store.get(&name()).await.expect("the file holds the value");
+    let resolver = resolver(files);
+    let value = resolver.get(&source()).await;
+    let value = value.expect("the file holds the value");
     assert_eq!(value.expose(), PLAIN, "the file store reads the value");
 }
 
 /// Cuts the file to `PLAIN` after the get opened it, so the read fills 32 of its 33
 /// bytes and fails.
 async fn cut(files: Files, data: PathBuf) {
-    let store = File::new(Reads::new(files.clone()), Path::new("secrets"));
-    let name = name();
-    let mut get = store.get(&name);
+    let resolver = resolver(files.clone());
+    let source = source();
+    let mut get: Get<'_> = Box::pin(resolver.get(&source));
     hold_read(&files, &data, &mut get).await;
     std::fs::write(data.join("secrets/site.token"), PLAIN).expect("cuts the file");
     release(&data, "b");
     let failed = Err(Error::Unavailable {
-        detail: "read_at of secrets/site.token failed with OS error 5".into(),
+        detail: format!(
+            "read_at of secrets/site.token failed with OS error 5. Make {} a file of \
+             at most 65536 bytes that the user of the node can read",
+            data.join("secrets/site.token").display()
+        ),
     });
     let got = get.await.map(|value| value.expose().to_vec());
     assert_eq!(got, failed, "a read that ends short fails");
@@ -84,9 +91,9 @@ async fn cut(files: Files, data: PathBuf) {
 
 /// Drops the get while its read waits on the I/O thread.
 async fn dropped(files: Files, data: PathBuf) {
-    let store = File::new(Reads::new(files.clone()), Path::new("secrets"));
-    let name = name();
-    let mut get = store.get(&name);
+    let resolver = resolver(files.clone());
+    let source = source();
+    let mut get: Get<'_> = Box::pin(resolver.get(&source));
     hold_read(&files, &data, &mut get).await;
     drop(get);
     release(&data, "b");
@@ -96,7 +103,7 @@ async fn dropped(files: Files, data: PathBuf) {
 /// `b`, which [`release`] ends. An open of the FIFO `a` holds the I/O thread at the
 /// first poll, so the open of the file ends only after it, and a list after that open
 /// tells when it ended.
-async fn hold_read(files: &Files, data: &Path, get: &mut Request<'_>) {
+async fn hold_read(files: &Files, data: &Path, get: &mut Get<'_>) {
     for fifo in ["a", "b"] {
         let made = Command::new("mkfifo").arg(data.join(fifo)).status();
         assert!(
@@ -148,6 +155,11 @@ fn release(data: &Path, fifo: &str) {
     drop(writer.expect("opens the FIFO"));
 }
 
-fn name() -> Name {
-    "site.token".parse().expect("a valid name")
+/// A resolver whose file store is the directory `secrets` of `files`.
+fn resolver(files: Files) -> Resolver {
+    Resolver::new(Arc::default(), files, Path::new("secrets"))
+}
+
+fn source() -> Source {
+    Source::Secret("site.token".parse().expect("a valid name"))
 }
