@@ -64,9 +64,12 @@
   Amended (2026-10-13, #2606): `Shards::logged` and `Threads::logged` give a clone that
   starts each thread with a `tracing::Dispatch`, the log of its node. The driver runs
   each call of the thread's code with it as the default dispatch: the call of `main` or
-  `body`, each poll, and each drop of a task, of `main`, of `body`, or of a panic
-  payload. `os` sets it for the life of the OS thread, and `sim` enters it around each
-  such call. A `Shards` or `Threads` that is not logged drops each event
+  `body`, each poll, each drop of a task, of `main`, or of `body`, and each drop of a
+  panic payload that the driver catches. A panic that `start` passes to its caller is
+  the caller's. `os` sets it for the life of the OS thread and around the spawn, whose
+  failure drops the node's code on the calling thread. `sim` enters it around each such
+  call. A waker that no thread owns, of a net, serial, or file event, wakes and drops
+  with no log. A `Shards` or `Threads` that is not logged drops each event
   (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582; rule
   meaning: `laptop.director`, 2026-10-13T21:12:40Z,

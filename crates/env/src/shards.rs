@@ -188,9 +188,10 @@ pub trait Driver: Send + Sync {
     /// any character; `os` gives the OS the part before the first NUL byte.
     /// `config.core`, when set, is below [`Driver::cores`] and the driver is
     /// pinnable: [`Shards::start`] checks both. Dropping the shard drops every task,
-    /// also one that holds a clone of its [`Tasks`]. The call of `main`, each poll of
-    /// a task of the shard, and each drop of a task or of `main` run with `log` as the
-    /// default dispatch of the thread.
+    /// also one that holds a clone of its [`Tasks`]. The call of `main`, each poll of a
+    /// task of the shard, each drop of a task or of `main`, and each drop of a panic
+    /// payload that the driver catches run with `log` as the default dispatch of the
+    /// thread. A panic that `start` passes to its caller is the caller's.
     ///
     /// # Errors
     ///

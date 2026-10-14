@@ -27,10 +27,12 @@ https://github.com/synnaxlabs/foundation/issues/1151#issuecomment-6042756353,
 thread, so `connector-opcua` sets its start value on each thread that calls open62541
 (OPEN62541 SOURCE in `docs/decisions/connectors/open62541-source.md`). The default
 dispatch of `tracing` is one per thread. `os` sets the log of a shard or a dedicated
-thread for the life of its OS thread, and `sim` enters the log of a thread around each
-call that runs its code: each poll, and each drop of a task, a start, or a panic
-payload. So an event goes only to the log of its node, or to no sink. No crate sets a
-default for the whole process (a lint), and the time of a line comes only from `clock`
+thread for the life of its OS thread and around its spawn, and `sim` enters the log of
+a thread around each call that runs its code: each poll, each drop of a task or a
+start, and each drop of a panic payload that it catches. A panic that a start passes
+to its caller is the caller's, and a waker that no thread owns drops with no log. So
+an event goes only to the log of its node, or to no sink. No crate sets a default for
+the whole process (a lint), and the time of a line comes only from `clock`
 (`laptop.director`, 2026-10-13T21:12:40Z,
 https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 

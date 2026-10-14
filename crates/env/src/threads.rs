@@ -116,8 +116,10 @@ pub trait Driver: Send + Sync {
     /// Starts a thread with an executor for one future, and runs `body()` on it to
     /// completion, with the rules of [`Threads::start`]. `name` may hold any
     /// character; `os` gives the OS the part before the first NUL byte. The call of
-    /// `body`, each poll of its future, and the drop of `body` or of its future run
-    /// with `log` as the default dispatch of the thread.
+    /// `body`, each poll of its future, the drop of `body` or of its future, and each
+    /// drop of a panic payload that the driver catches run with `log` as the default
+    /// dispatch of the thread. A panic that `start` passes to its caller is the
+    /// caller's.
     ///
     /// # Errors
     ///
