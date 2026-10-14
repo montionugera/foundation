@@ -475,6 +475,12 @@ impl Writer {
         self.head
     }
 
+    /// The offsets of the last wrap skip, empty before the first.
+    #[cfg(all(test, feature = "trim"))]
+    pub(crate) fn skip(&self) -> Range<u64> {
+        self.skip.clone()
+    }
+
     /// The writer of an empty ring of `layout` with its tail at `offset`, after its
     /// restart record of one block.
     ///

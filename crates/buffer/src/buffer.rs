@@ -872,7 +872,8 @@ impl Buffer {
                     .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
             }
-            Err(full @ group::Rejected::Ring(_)) if TRIM => {
+            #[cfg(feature = "trim")]
+            Err(full @ group::Rejected::Ring(_)) => {
                 state.starved = true;
                 drop(guard);
                 shared.unpark();
@@ -2009,6 +2010,66 @@ mod tests {
                 stamp: Some(Stamp::from_nanos(9)),
             };
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
+        }
+
+        /// One record holds an entry of each of indexes 1 to 100, after 6 records of
+        /// index 101. The commits of index 101 turn the ring of 64 blocks, and the
+        /// carry record of the 100 tails takes 2 blocks where the area has one left,
+        /// so it wraps, and later trims pass the record of the 100 entries. After a
+        /// cut of the power, the open walks past the wrap and finds each tail.
+        #[test]
+        fn a_carry_record_that_wraps_gives_its_tails_after_a_reopen() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let skipped = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&skipped);
+            with_buffer(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let byte = pool.alloc(1).expect("a block").freeze();
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let filler = slots.index(channel::Key::from_u128(101));
+                    commit_each(&buffer, (101, filler), &part, 0..6).await;
+                    let batch: Vec<Entry> = (1..=100)
+                        .map(|index| {
+                            let slot =
+                                slots.index(channel::Key::from_u128(index.into()));
+                            entry(index, slot, Path::Live, 0, &byte)
+                        })
+                        .collect();
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                    commit_each(&buffer, (101, filler), &part, 6..70).await;
+                    let skip = buffer.shared.state.borrow().writer.skip();
+                    *given.lock().expect("no panic held the lock") = Some(skip);
+                    buffer
+                },
+            );
+            let skip = skipped.lock().expect("no panic held the lock").clone();
+            assert_eq!(skip, Some(63 * 4096..64 * 4096), "the carry record wraps");
+            sim.crash(&node, sim::Crash::Power);
+            let found = Arc::new(Mutex::new(Vec::new()));
+            let given = Arc::clone(&found);
+            with_buffer(
+                &mut sim,
+                &node,
+                "reopen",
+                |buffer, mut slots, _| async move {
+                    let tails = (1..=101)
+                        .map(|index| {
+                            let slot = slots.index(channel::Key::from_u128(index));
+                            buffer.durable(slot, Path::Live).seq
+                        })
+                        .collect();
+                    *given.lock().expect("no panic held the lock") = tails;
+                    buffer
+                },
+            );
+            let mut seqs = vec![3; 100];
+            seqs.push(210);
+            assert_eq!(*found.lock().expect("no panic held the lock"), seqs);
         }
 
         /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
