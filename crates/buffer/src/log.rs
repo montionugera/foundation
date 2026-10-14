@@ -307,15 +307,9 @@ impl Log {
             .expect("invariant: u32 fits usize")
             .max(1);
         if self.runs.capacity() > keep << 2 {
-            self.shrink(keep << 1);
+            std::hint::cold_path();
+            self.runs.shrink_to(keep << 1);
         }
-    }
-
-    /// Out of line, so each trim of a run keeps its code small.
-    #[cold]
-    #[inline(never)]
-    fn shrink(&mut self, room: usize) {
-        self.runs.shrink_to(room);
     }
 
     /// Moves the durable tail past the entry, and makes the record at `offset` the
