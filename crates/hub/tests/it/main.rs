@@ -2072,7 +2072,8 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
 
 /// A reader that sleeps while a writer writes one frame each second gets the frames
 /// before its miss, then `Behind`: frames of 128 samples pass the window before they
-/// fill the ring, and frames of 1 sample fill the ring first.
+/// fill the ring, and frames of 1 sample fill the ring first, so the reader gets each
+/// frame that the hub applied.
 #[test]
 fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
     for samples in [128, 1] {
@@ -2105,6 +2106,10 @@ fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
             };
             assert_behind(&ended);
             assert!(taken < 1_100, "{taken} frames");
+            // The ring fills before the window, so each applied frame comes first.
+            if samples == 1 {
+                assert_eq!(taken, applied);
+            }
         });
     }
 }

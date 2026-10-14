@@ -2059,6 +2059,39 @@ mod tests {
     }
 
     #[test]
+    fn ends_each_complete_reader_behind_at_a_frame_the_pool_could_not_freeze() {
+        run(16, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let zero = complete(&mut shard, Slot::new(0));
+            let two = complete(&mut shard, Slot::new(2));
+            let stamps: Vec<_> = (1..=100).collect();
+            let series: [(usize, &[i64]); 3] = [(0, &[10]), (1, &[1]), (2, &stamps)];
+            let live = frame(&test.pool, &set, &series);
+            let twin = frame(&test.pool, &set, &series);
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let room = [80, 56].map(|len| test.pool.alloc(len).expect("a block"));
+            let blocks = test.fill();
+            drop(room);
+            assert_eq!(
+                shard.write(a, LIVE, live),
+                Ok(&[lost(0, 0, 1), lost(2, 0, 100)][..])
+            );
+            drop((twin, blocks));
+            let next: [(usize, &[i64]); 3] = [(0, &[20]), (1, &[2]), (2, &[200])];
+            let next = frame(&test.pool, &set, &next);
+            assert_eq!(
+                shard.write(a, LIVE, next),
+                Ok(&[applied(0, 1, 1), applied(2, 100, 1)][..])
+            );
+            shard.committed().await.expect("the commit ends");
+            woken(&mut shard);
+            assert_eq!(missed(&mut shard, zero, 0), []);
+            assert_eq!(missed(&mut shard, two, 1), []);
+        });
+    }
+
+    #[test]
     fn refuses_a_frame_over_the_record_and_spends_nothing() {
         run(38, |test| async move {
             let set = two_indexes();
