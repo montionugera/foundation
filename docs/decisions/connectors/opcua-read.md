@@ -25,10 +25,9 @@
   writes only into memory of the client. Lost: a check at config time against the floor
   of 8192 bytes (it refuses about 400 nodes by number on each server); a check during
   the encode (the channel closes); a check before each send (it sizes each request on
-  each tick); one `Nodes` per request that the kind reads in turn (the kind then owns
-  the split and the order); one request at a time (a tick costs one round trip per
-  request). The check sizes each answer value as a Double and each chunk header for the
-  security mode None: the change that reads a value larger than a Double also changes
+  each tick); one request at a time (a tick costs one round trip per request). The
+  check sizes each answer value as a Double and each chunk header for the security
+  mode None: the change that reads a value larger than a Double also changes
   `shim_read_answer` and `SPLIT`, and the change that adds a mode also changes `HEADER`.
   open62541 moves a value of a fixed size that does not fit whole to the next chunk, and
   splits a string. The largest such value of a Read today is a Double (8 bytes), so the
@@ -55,4 +54,9 @@
   2026-10-14T01:37:20Z,
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229, and a
   value that is not a UInt32 at 2026-10-14T04:25:09Z,
-  https://github.com/synnaxlabs/foundation/pull/2674#issuecomment-6160861895.
+  https://github.com/synnaxlabs/foundation/pull/2674#issuecomment-6160861895. All at
+  once, a fixed count per request, and the lost one request at a time:
+  `laptop.architect-2` at 2026-10-13T23:26:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6157348272.
+  Supersedes the refusal of a list past one message and its lost split,
+  https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207.

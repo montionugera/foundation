@@ -1,11 +1,13 @@
 - **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one index of a
   kind that reads by request. The stamp of a frame is the midpoint of the mesh times
-  before and after the requests that read its samples, or 1 ns after the stamp before
-  it when that is later, so no stamp is at or before the stamp before it. The first
-  stamp of a run has no stamp before it, so the home can refuse the first frame of a
-  run as backwards when the run before it wrote a stamp at or after it on the same
-  index. Each stamp given counts as the stamp before the next, written or not
-  (`laptop.architect-2`, 2026-10-13T01:39:14Z, item 4:
+  before and after the requests that read its samples (`laptop.architect-2`,
+  2026-10-14T01:37:20Z,
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229), or
+  1 ns after the stamp before it when that is later, so no stamp is at or before the
+  stamp before it. The first stamp of a run has no stamp before it, so the home can
+  refuse the first frame of a run as backwards when the run before it wrote a stamp at
+  or after it on the same index. Each stamp given counts as the stamp before the next,
+  written or not (`laptop.architect-2`, 2026-10-13T01:39:14Z, item 4:
   https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136202010). So "the
   last stamp of the writer" in CONNECTOR STATUS is the last stamp that `Stamps` gave,
   also to a frame for which the pool gave no block (`laptop.architect`,
