@@ -271,14 +271,13 @@
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535. `state`
-  3 and the next state stay two frames also when no task is left, while the home
-  applies each of them within `SETTLE`, because `state` 3 marks the end of the run
-  (`laptop.architect-2`, 2026-10-09T19:51:38Z:
+  3 and the next state stay two frames also when no task is left, unless `state` 3
+  falls in an outage of the home longer than `SETTLE` (below), because `state` 3 marks
+  the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535). After
-  a longer outage, the next frame that the home applies replaces both, as the bound for
-  each outage below states. This supersedes "stay two frames" of 6088160535 for an
-  outage longer than `SETTLE`
-  (https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
+  such an outage, the next frame that the home applies replaces both, as the bound for
+  each outage below states. This supersedes "stay two frames" of 6088160535 for such an
+  outage (https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
   `status::Writer` holds the rules of each channel but the counts, and the supervisor
   calls its `start`, `end`, `wait`, and `stop` (same ruling, for `class` and `restarts`;
   for `backoff` and `error`, the #1735 ruling and the plan on #420 above). A frame that
