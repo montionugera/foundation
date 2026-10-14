@@ -134,11 +134,66 @@
   an end line, is not `none`. Decided by the director at 2026-10-11T00:54:34Z
   (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6103952358) and
   2026-10-11T01:16:17Z
-  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A merge
-  of the base is not clean when the base moves a path that the PR changed since their
-  merge base, and that is not code, to a code path, by the rename detection of the
-  merge. A base move of a path that the PR did not change stays clean. Decided by the
-  director at 2026-10-07T17:21:14Z
+  (https://github.com/synnaxlabs/foundation/pull/2319#issuecomment-6104109296). A last
+  round whose number is 3 or more may have findings and may end before a commit that
+  changes code, since no round follows it (REVIEW ROUNDS in
+  `docs/decisions/operations/review-rounds.md`). Its end, and the end of its first round
+  comment, must still be commits on the first-parent chain of the head, and each merge
+  after them must merge the base; else the check asks the author to correct the range or
+  to bring the reviewed commits back onto that chain. Each merge after the end of its
+  last round comment must also be a clean merge of the base; else the check asks for a
+  round comment with its number that checks the merge and ends at the head. When the
+  number of the last round is 3 or more and a commit after the end of its first round
+  comment changes a decision (`decision_change` on that end to the head), the check
+  fails unless the `Public surface:` line of its last round comment names an item, since
+  a round comment that only holds a late report or only checks a merge does not move the
+  end of the round (REVIEW ROUNDS), and because REVIEW ROUNDS has the author add each
+  such change to that line with its approval. Each other problem of that round stays:
+  the reviewers that it requires, the OK of each deferral in a risk crate, after the
+  issue on the `Deferred:` line of one of its round comments, the approvals of its
+  `Public surface:` line, and the director's approval of a red-team PR labeled `oracle`.
+  The check does not check that each finding of that round has its fix commit
+  or its deferral, or that each commit after it that changes code fixes a defect of that
+  round. For the reviewers that a round comment requires and for its `breaker` skip, the
+  first round comment on a PR is round 1 and each round comment after it is a later
+  round, whatever its number. A PR that replaces another reviews its whole diff in its
+  first round, and a round comment that only holds a late report or only checks a merge
+  of the base that is not clean, or a merge and the commits that fix what it broke,
+  takes the number of the round comment before it. The findings of the last round are
+  the findings of each round comment with its number, because a round comment that only
+  holds a late report or only checks a merge adds its findings to the round whose number
+  it takes. A round comment after the first on a PR fails when its number is more than
+  the number of the round comment before it plus 1. The first may have any number up to
+  3, because a PR that replaces another before round 3 continues its count. A round
+  comment posted before `2026-10-13T20:12:19Z` may have any number, so that the rule
+  does not fail the rounds that came before it. A round comment posted at or after
+  `2026-10-13T20:12:19Z` also fails when its number is more than 3 and more than the
+  number of the round comment before it, or when it is the first on its PR and its
+  number is more than 3, because no round runs after round 3 (REVIEW ROUNDS). Decided by
+  the director at 2026-10-13T16:33:37Z
+  (https://github.com/synnaxlabs/foundation/issues/2585), 16:53:06Z
+  (https://github.com/synnaxlabs/foundation/issues/2585#issuecomment-6150677430),
+  16:57:12Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150751781),
+  16:57:52Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150763804),
+  17:00:50Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150817769),
+  17:06:00Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150911446),
+  17:09:10Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6150968081),
+  17:19:02Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6151148195), and
+  19:29:04Z
+  (https://github.com/synnaxlabs/foundation/pull/2587#issuecomment-6153482774).
+  Supersedes, for that round, the rule above that the last round finds none and that the
+  range to the head changes no code
+  (https://github.com/synnaxlabs/foundation/issues/2315). A merge of the base is not
+  clean when the base moves a path that the PR changed since their merge base, and that
+  is not code, to a code path, by the rename detection of the merge. A base move of a
+  path that the PR did not change stays clean. Decided by the director at
+  2026-10-07T17:21:14Z
   (https://github.com/synnaxlabs/foundation/issues/1496#issuecomment-6043078385). When
   the last round is a later round with `Breaker: skipped`, it fails if its range changes
   code: a change to a file that is not a `.md` file (its lines, its mode, or its path),
@@ -234,21 +289,21 @@
   https://github.com/synnaxlabs/foundation/issues/1169#issuecomment-6040439732
   (2026-10-07T06:32:32Z). For this rule, a round comment after the first is a later
   round, whatever its number, and so is a first round comment whose number is above 1.
-  Each later round is read, not only the last. The range from the last round to the head
-  is not read for a decision. The check reads it only for code (TEXT FIXES), and the
-  `review` skill gives a text fix in a decision no round. The range is read as that of a
-  round with `Breaker: skipped` is read, so a change of the base does not count. A
-  decision in which a merge of the base in the range resolves a conflict counts, and so
-  does one in which the tree of the start and the base has a conflict, each also when
-  the conflict leaves no markers or the range ends with the text of the base. So does a
-  path outside `docs/decisions/` that the start changes since its merge base with the
-  base, and that the tree of the start and the base moves into `docs/decisions/`, by the
-  rename detection of the merge. A range with a start or an end that names no commit of
-  the clone fails too, and so does an end that holds more than one newest base commit:
-  the `review` skill asks for a merge of the base after round 1, never a rebase. When
-  REVIEW TIERS does not already require `architecture`, the problem states the remedy
-  and ends with the cause, such as "Its range changes the decision
-  `docs/decisions/x.md`." A round posted before the cutoff `DECISION_CUTOFF` in
+  Each later round is read, not only the last. Below round 3, the range from the last
+  round to the head is not read for a decision. The check reads it only for code (TEXT
+  FIXES), and the `review` skill gives a text fix in a decision no round. The range is
+  read as that of a round with `Breaker: skipped` is read, so a change of the base does
+  not count. A decision in which a merge of the base in the range resolves a conflict
+  counts, and so does one in which the tree of the start and the base has a conflict,
+  each also when the conflict leaves no markers or the range ends with the text of the
+  base. So does a path outside `docs/decisions/` that the start changes since its merge
+  base with the base, and that the tree of the start and the base moves into
+  `docs/decisions/`, by the rename detection of the merge. A range with a start or an
+  end that names no commit of the clone fails too, and so does an end that holds more
+  than one newest base commit: the `review` skill asks for a merge of the base after
+  round 1, never a rebase. When REVIEW TIERS does not already require `architecture`,
+  the problem states the remedy and ends with the cause, such as "Its range changes the
+  decision `docs/decisions/x.md`." A round posted before the cutoff `DECISION_CUTOFF` in
   `xtask/src/review.rs` (2026-10-11T16:00:00Z) is checked as before, so that the new
   rule does not fail the rounds that came before it. The cutoff is a fixed time: it
   stays when the rule merges after it, and the rule for `.rs` files gets a cutoff of its
@@ -264,11 +319,12 @@
   Rust reads a character. In a PR that changes a file of a risk crate (`crates/<name>/`,
   with `<name>` in `RISK` in `xtask/src/review.rs`, which holds the risk crates of
   ENGINEERS in `docs/decisions/operations/engineers.md`), the last round also fails when
-  its `Deferred:` line names an issue with no comment link after it in the line and
-  without the words `not in a risk crate` between it and the next issue of the line. The
-  first word `none` does not stop this rule. A file that the PR moves counts at its old
-  path and at its new one, in each rule that reads the files of the PR. An issue is each
-  `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
+  the `Deferred:` line of one of its round comments names an issue that, on the
+  `Deferred:` line of each of its round comments that names it, has no comment link
+  after it and no words `not in a risk crate` between it and the next issue of the line.
+  The first word `none` does not stop this rule. A file that the PR moves counts at its
+  old path and at its new one, in each rule that reads the files of the PR. An issue is
+  each `#<n>` of the line, also in a URL, each `GH-<n>`, and each URL
   `https://github.com/<owner>/<repo>/issues/<n>` or
   `https://github.com/<owner>/<repo>/pull/<n>` that is no comment link. A `GH-<n>` is an
   issue only when it starts a text node of the line as GitHub shows it, or follows in

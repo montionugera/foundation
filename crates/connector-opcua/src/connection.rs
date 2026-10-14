@@ -23,7 +23,7 @@ use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
 use crate::alloc;
-use crate::event::Loop;
+use crate::event::{Loop, Time};
 use crate::ffi::{self, Bytes, Status};
 
 /// The options of each stream.
@@ -70,15 +70,15 @@ pub(crate) struct Manager {
 }
 
 impl Manager {
-    /// Makes a loop on `clock` and `rng`, as [`Loop::new`] does, and a manager that
-    /// connects through `net`, linked first into the event sources of the loop, where a
-    /// client finds it.
+    /// Makes a loop on `time` and `rng`, as [`Loop::new`] does, and a manager
+    /// that connects through `net`, linked first into the event sources of the loop,
+    /// where a client finds it.
     ///
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(clock: Clock, net: Net, rng: &mut Rng) -> Self {
-        Self::make(clock, net, None, rng)
+    pub(crate) fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
+        Self::make(time, net, None, rng)
     }
 
     /// As [`Manager::new`], and the manager also accepts on a listener that it binds on
@@ -91,8 +91,12 @@ impl Manager {
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn listening(
-        clock: Clock,
+        time: Time,
         net: Net,
         local: SocketAddr,
         backlog: u32,
@@ -103,7 +107,7 @@ impl Manager {
             backlog,
             options: OPTIONS,
         })?;
-        Ok(Self::accepting(clock, net, listener, rng))
+        Ok(Self::accepting(time, net, listener, rng))
     }
 
     /// As [`Manager::listening`], on the bound `listener`.
@@ -111,17 +115,22 @@ impl Manager {
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "only the server of `sim` listens")
+    )]
     pub(crate) fn accepting(
-        clock: Clock,
+        time: Time,
         net: Net,
         listener: Listener,
         rng: &mut Rng,
     ) -> Self {
-        Self::make(clock, net, Some(listener), rng)
+        Self::make(time, net, Some(listener), rng)
     }
 
-    fn make(clock: Clock, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
-        let events = Loop::new(Clock::clone(&clock), rng);
+    fn make(time: Time, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
+        let clock = Clock::clone(&time.clock);
+        let events = Loop::new(time, rng);
         let state = NonNull::from(Box::leak(Box::new(State {
             net,
             listener: Cell::new(listener),
@@ -980,7 +989,8 @@ unsafe extern "C" fn open(
 /// # Panics
 ///
 /// When the manager has no listener or gave it to an earlier listen open, or when the
-/// listener is not on `port`. A panic in a hook aborts.
+/// listener is not on `port`. A panic in a hook ends the process: on Linux it aborts,
+/// and on Windows a panic here ends with an exception that nothing handles (#2579).
 ///
 /// # Safety
 ///

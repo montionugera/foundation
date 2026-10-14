@@ -23,6 +23,7 @@ clock = { path = "../clock" }
 config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector" }
 connector-influx = { path = "../connector-influx" }
+connector-opcua = { path = "../connector-opcua", features = ["open62541"] }
 crc32c = { workspace = true }
 document = { path = "../document" }
 env = { path = "../env" }

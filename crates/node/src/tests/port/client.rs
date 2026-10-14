@@ -359,7 +359,7 @@ fn a_program_plans_and_applies_on_the_node() {
     assert_eq!(text(&planned[..=end]), output);
     let applied_output = concat!(
         r#"{"output":{"pointer":{"version":1,"root":"#,
-        r#""f60dbe4d9c93586d6ce87ef97da14ab86b2ee9b20fa01ed0b35da7eb7c4e15f9"},"#,
+        r#""5366edbb244d9401ca0af4e03ddb9523067d572ced0cb177566526f9f04d3691"},"#,
         r#""added":2,"changed":0,"removed":0,"homes":1}}"#,
         "\n",
     );

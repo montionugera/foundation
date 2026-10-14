@@ -18,6 +18,7 @@ use types::time::Span;
 use super::{Client, Large, Nodes, Reads, SPLIT, answer, most};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
+use crate::event;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
@@ -86,8 +87,9 @@ struct Peer<'s> {
 
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        Client::connect(clock, net, &mut self.rng, url).await
+        let url = CString::new(url).expect("the URL holds no NUL");
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -98,8 +100,8 @@ impl Peer<'_> {
     /// Connects a client whose receive buffer is `receive` bytes.
     async fn receiving(&mut self, receive: u32) -> Client {
         let clock = Clock::clone(&self.clock);
-        let connections =
-            Manager::new(Clock::clone(&clock), self.net.clone(), &mut self.rng);
+        let time = event::Time::monotonic(Clock::clone(&clock));
+        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
@@ -140,8 +142,14 @@ async fn serve<T>(
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
-        .expect("the port is free");
+    let manager = Manager::listening(
+        event::Time::monotonic(node.clock()),
+        node.net(),
+        local,
+        4,
+        &mut rng,
+    )
+    .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
     let server = unsafe { Server::start(&manager, c"", sessions) };
     let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
@@ -327,12 +335,50 @@ fn a_connect_with_no_listener_fails_with_its_status() {
     assert_eq!(status, Some(Status::BAD_CONNECTION_REJECTED));
 }
 
+/// A port past `u32::MAX` that wraps to the port of the server fails the connect, and
+/// does not reach the server.
+#[test]
+fn a_connect_to_a_port_that_wraps_to_the_server_fails_with_its_status() {
+    let (status, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let wrapped = u64::from(PORT) + (1 << 32);
+            let url = format!("opc.tcp://{}:{wrapped}", node.addresses()[0]);
+            match peer.connect(&url).await {
+                Ok(client) => {
+                    client.close().await;
+                    None
+                }
+                Err(status) => Some(status),
+            }
+        })
+        .await
+    });
+    assert_eq!(status, Some(Status::BAD_TCP_ENDPOINT_URL_INVALID));
+}
+
+/// `UA_readNumber` stops before a digit that takes the number past `u32::MAX`.
+#[test]
+fn a_number_stops_before_the_digit_that_overflows_u32() {
+    let read = |text: &str| {
+        let mut number = 0;
+        // SAFETY: `text` lives through the call, which reads only its `len` bytes.
+        let progress = unsafe {
+            ffi::test::UA_readNumber(text.as_ptr(), text.len(), &raw mut number)
+        };
+        (progress, number)
+    };
+    assert_eq!(read("4294967295"), (10, u32::MAX));
+    assert_eq!(read("4294967296"), (9, 429_496_729));
+    assert_eq!(read("42949672950"), (10, u32::MAX));
+    assert_eq!(read("4840/path"), (4, 4840));
+}
+
 #[test]
 fn a_connect_to_a_url_that_open62541_refuses_fails_with_its_status() {
     let (statuses, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut statuses = Vec::new();
-            for url in ["http://127.0.0.1:4840", "opc.tcp://a\0b:4840"] {
+            for url in ["http://127.0.0.1:4840", "opc.tcp://plc:99999"] {
                 statuses.push(peer.connect(url).await.err());
             }
             statuses
@@ -659,8 +705,13 @@ async fn connect_to_listener(
     let clock = node.clock();
     let start = clock.now();
     let mut rng = node.entropy().rng();
-    let url = format!("opc.tcp://{local}");
-    let mut connect = pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
+    let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
+    let mut connect = pin!(Client::connect(
+        event::Time::monotonic(node.clock()),
+        node.net(),
+        &mut rng,
+        &url
+    ));
     let status = poll_fn(|cx| {
         while let Poll::Ready(stream) = listener.poll_accept(cx) {
             accepted(stream.expect("the accept works"));
@@ -820,11 +871,12 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
     let ((first, took, second), _) = run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
-            let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
+            let raw = CString::new(url.as_str()).expect("no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
             let start = peer.clock.now();
             let first = {
-                let mut connect =
-                    pin!(Client::connect(clock, net, &mut peer.rng, &url));
+                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
                 let mut flips: Vec<_> = flips
                     .iter()
                     .map(|at| Box::pin(peer.clock.sleep(*at)))

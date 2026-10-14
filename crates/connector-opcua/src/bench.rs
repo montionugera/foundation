@@ -1,10 +1,12 @@
 //! Runs the event loop of open62541 alone, and a connection manager with a server and
 //! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
-//! clients that each have their own manager. Not part of the contract of the crate.
+//! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
+//! kind with no server. Not part of the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 pub mod client;
+pub mod kind;
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
@@ -24,7 +26,7 @@ use types::time::{Monotonic, Span};
 use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::server::Server;
@@ -52,7 +54,7 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(clock, rng);
+        let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
@@ -197,8 +199,14 @@ impl Manager {
             .expect("open62541 counts sessions in 16 bits");
         let local = SocketAddr::new(address, PORT);
         let manager = ManuallyDrop::new(
-            connection::Manager::listening(clock, net, local, u32::from(sessions), rng)
-                .expect("the port is free"),
+            connection::Manager::listening(
+                event::Time::monotonic(clock),
+                net,
+                local,
+                u32::from(sessions),
+                rng,
+            )
+            .expect("the port is free"),
         );
         let events = manager.events();
         // SAFETY: the member takes its own loop.

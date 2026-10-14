@@ -3,7 +3,7 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::cell::Cell;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
@@ -16,6 +16,7 @@ use types::time::Span;
 
 use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
+use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::Node;
 
@@ -88,38 +89,37 @@ struct Reads {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `clock`, `net`, and `rng`, connects it to
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
     /// session, and gives it once the session is active. On an error, it closes the
-    /// session that it made with [`Client::close`] first, which can take up to two more
-    /// request timeouts.
+    /// session that it made with [`Client::close`] first, which can take up to two
+    /// more request timeouts.
     ///
     /// # Errors
     ///
-    /// `BadTcpEndpointUrlInvalid` when `url` holds a NUL, `BadTimeout` when the session
-    /// is not active after the request timeout of the client (5 s), else the status of
-    /// open62541 when it refuses `url` or the connect fails.
+    /// `BadTimeout` when the session is not active after the request timeout of the
+    /// client (5 s), else the status of open62541 when it refuses `url` or the connect
+    /// fails.
     ///
     /// # Aborts
     ///
     /// When open62541 cannot allocate the loop, the connection manager, or the
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
-        clock: Clock,
+        time: Time,
         net: Net,
         rng: &mut Rng,
-        url: &str,
+        url: &CStr,
     ) -> Result<Self, Status> {
-        let url =
-            CString::new(url).map_err(|_nul| Status::BAD_TCP_ENDPOINT_URL_INVALID)?;
-        let connections = Manager::new(Clock::clone(&clock), net, rng);
+        let clock = Clock::clone(&time.clock);
+        let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let Some(raw) = NonNull::new(raw) else {
             alloc::exhausted()
         };
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        unsafe { Self::start(clock, connections, raw, &url) }.await
+        unsafe { Self::start(clock, connections, raw, url) }.await
     }
 
     /// Connects `raw` as [`Client::connect`] does.
@@ -485,4 +485,29 @@ unsafe extern "C" fn answer(
         reads.values.set(values);
     }
     reads.answer.set(Some(status));
+}
+
+/// Whether open62541 reads `url` as an endpoint URL with a host.
+pub(crate) fn endpoint(url: &str) -> bool {
+    let url = ffi::Bytes {
+        length: url.len(),
+        data: url.as_ptr().cast_mut(),
+    };
+    let empty = || ffi::Bytes {
+        length: 0,
+        data: ptr::null_mut(),
+    };
+    let (mut host, mut path, mut port) = (empty(), empty(), 0);
+    // SAFETY: `url` points at `length` bytes that live through the call, which only
+    // reads them. It sets `host` and `path` to point into them, and they are not
+    // freed.
+    let status = unsafe {
+        ffi::UA_parseEndpointUrl(
+            &raw const url,
+            &raw mut host,
+            &raw mut port,
+            &raw mut path,
+        )
+    };
+    Status(status) == Status::GOOD && host.length > 0
 }

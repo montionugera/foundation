@@ -10,9 +10,10 @@ use env::clock::Clock;
 use env::net::{Listener, Net};
 use env::rng::Rng;
 use types::quality::Quality;
-use types::time::Monotonic;
+use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
+use crate::event;
 use crate::node::Node;
 use crate::server::Server;
 
@@ -80,6 +81,20 @@ impl Variables {
         state.quality = quality;
     }
 
+    /// Sets the value of the variable of `text` in [`Variables::new`].
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn set(&self, text: &str, value: f64) {
+        let mut state = self.state();
+        let variable = state.variables.iter_mut().find(|v| v.text == text);
+        variable
+            .unwrap_or_else(|| panic!("no variable {text:?}"))
+            .value = value;
+    }
+
     /// Each read that a server answered, by the text of its node in
     /// [`Variables::new`], in the order of the answers.
     #[must_use]
@@ -121,9 +136,11 @@ pub struct Served {
 
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
 /// then closes the server. It adds each namespace from 2 to the highest of
-/// `variables`. Each stream of the server has the options of `listener`. Call it on a
-/// thread that `env` started. A drop of the future while it waits, after a poll that
-/// gives `Pending`, leaks the server and can keep the port of `listener` bound.
+/// `variables`. Each stream of the server has the options of `listener`. `wall` gives
+/// the wall time of the server, which a client compares with the time of each channel
+/// token: give the wall time of the client's node. Call it on a thread that `env`
+/// started. A drop of the future while it waits, after a poll that gives `Pending`,
+/// leaks the server and can keep the port of `listener` bound.
 ///
 /// # Panics
 ///
@@ -133,16 +150,22 @@ pub struct Served {
 /// # Aborts
 ///
 /// When open62541 cannot allocate the loop or the connection manager: the process
-/// stops as the Rust allocator does when it has no memory.
+/// stops as the Rust allocator does when it has no memory. When `wall` panics:
+/// open62541 calls it, and a panic cannot unwind through C.
 pub async fn serve(
     clock: Clock,
+    wall: impl Fn() -> Stamp + 'static,
     net: Net,
     listener: Listener,
     rng: &mut Rng,
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let manager = Manager::accepting(Clock::clone(&clock), net, listener, rng);
+    let time = event::Time {
+        clock: Clock::clone(&clock),
+        wall: Box::new(wall),
+    };
+    let manager = Manager::accepting(time, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();

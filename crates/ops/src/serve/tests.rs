@@ -11,7 +11,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 use super::{Body, Large, serve};
 use crate::Node;
 use crate::common::{
-    BOB, EVE, NODE, PLANT, SAM, SITE, create_node, fail_sync, name, placed_site, solo,
+    BOB, EVE, NODE, SAM, SITE, create_node, fail_sync, name, placed_site, plant, solo,
 };
 use crate::plan;
 
@@ -309,7 +309,7 @@ fn gives_each_error_of_plan_and_apply_with_its_status() {
         let expected = stale(base, mesh.pointer());
         assert_eq!(split(&reply), (expected, &b""[..]));
 
-        let plan = planned(&node, &[("plant.hcl", PLANT)]).await;
+        let plan = planned(&node, &[("plant.hcl", plant())]).await;
         let stopped = fail_sync(&fixture.sim);
         let expected = refusal(
             "ops.stopped",
@@ -319,7 +319,7 @@ fn gives_each_error_of_plan_and_apply_with_its_status() {
         );
         let reply = serve(&node, &admin(), &apply_body(&plan)).await;
         assert_eq!(split(&reply), (expected.clone(), &b""[..]));
-        let body = plan_body(&[("plant.hcl", PLANT)]);
+        let body = plan_body(&[("plant.hcl", plant())]);
         let reply = serve(&node, &admin(), &body).await;
         assert_eq!(split(&reply), (expected, &b""[..]));
     });
@@ -583,7 +583,7 @@ fn refuses_a_plan_and_an_apply_on_a_node_that_uses_an_old_spec_as_behind() {
         let site = placed_site();
         applied(&node, &[("site.hcl", &site)]).await;
         let first = mesh.pointer();
-        let both = [("site.hcl", &*site), ("plant.hcl", PLANT)];
+        let both = [("site.hcl", &*site), ("plant.hcl", plant())];
         let plan = planned(&node, &both).await;
         fixture
             .sim
@@ -755,8 +755,8 @@ fn refuses_a_connector_of_a_subject_with_no_admin_on_its_key() {
         let plan = planned(&node, &files).await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
         let (head, _) = split(&reply);
-        // The connector and its six status channels.
-        assert_eq!(head["output"]["added"], 7, "{head}");
+        // The connector and its nine status channels.
+        assert_eq!(head["output"]["added"], 10, "{head}");
         assert_eq!(mesh.pointer().version, version + 1);
     });
 }
@@ -809,7 +809,7 @@ fn refuses_a_connector_over_a_channel_of_a_subject_with_no_admin_on_its_key() {
     });
 }
 
-/// A connector under `site` that reads `yard.temp`, with six status channels.
+/// A connector under `site` that reads `yard.temp`, with nine status channels.
 const PLC: &str = "connector \"site.plc\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
                    read \"yard.temp\" { node_id = \"x\" }\n}\n";
 
@@ -881,7 +881,10 @@ fn refuses_an_apply_that_removes_the_status_channels_of_a_connector() {
         })
         .await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
-        let all = ["time", "state", "class", "restarts", "backoff", "error"];
+        let all = [
+            "time", "state", "class", "restarts", "backoff", "error", "in", "lost",
+            "missed",
+        ];
         assert_eq!(split(&reply), (unheld(&all), &b""[..]));
         assert_eq!(mesh.pointer().version, version);
     });
@@ -900,7 +903,9 @@ fn refuses_an_apply_that_makes_the_status_data_of_a_connector_indexes() {
         })
         .await;
         let reply = serve(&node, &name("sam"), &apply_body(&plan)).await;
-        let data = ["state", "class", "restarts", "backoff", "error"];
+        let data = [
+            "state", "class", "restarts", "backoff", "error", "in", "lost", "missed",
+        ];
         assert_eq!(split(&reply), (unheld(&data), &b""[..]));
         assert_eq!(mesh.pointer().version, version);
     });
@@ -1112,13 +1117,13 @@ fn refuses_each_remote_subject_on_a_node_that_uses_no_spec() {
     });
 }
 
-/// The `plan` body of `PLANT` at a path of `long` bytes, which each change of the
+/// The `plan` body of `plant()` at a path of `long` bytes, which each change of the
 /// reply holds, and of one subject at a path of `short` bytes.
 fn wide_body(long: usize, short: usize) -> Vec<u8> {
     let long = format!("{}.hcl", "x".repeat(long - 4));
     let short = format!("{}.hcl", "y".repeat(short - 4));
     let subject = format!("subject \"bob\" {{ keys = [\"{BOB}\"] }}\n");
-    plan_body(&[(&long, PLANT), (&short, &subject)])
+    plan_body(&[(&long, plant()), (&short, &subject)])
 }
 
 #[test]
@@ -1126,8 +1131,12 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let bound = usize::try_from(BODY_BYTES_MAX).expect("the bound fits");
-        // Each of the 18 changes of `PLANT` holds the long path.
-        let long = bound / 18 - 1_000;
+        let reply = serve(&node, &admin(), &plan_body(&[("plant.hcl", plant())])).await;
+        let changes = split(&reply).0["output"]["added"]
+            .as_u64()
+            .expect("a count");
+        // Each change of `plant()` holds the long path.
+        let long = bound / usize::try_from(changes).expect("the count fits") - 1_000;
         let reply = serve(&node, &admin(), &wide_body(long, 4)).await;
         assert!(split(&reply).0.get("output").is_some());
         let short = 4 + bound - reply.len();
