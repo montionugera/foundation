@@ -505,6 +505,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
                      refused the connection"
                 ),
             }),
+            note: None,
         }
     );
     rig.wait("`plc` reads the first value of each variable", || {

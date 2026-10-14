@@ -31,6 +31,8 @@ enum Step {
     Show(&'static str),
     /// Clears the shown error, and writes it.
     Clear,
+    /// Shows the note of this text, and writes it.
+    Note(&'static str),
     End(Result<(), kind::Error>),
     Wait,
     Stop,
@@ -82,6 +84,10 @@ fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
                 }
                 Step::Clear => {
                     status.clear();
+                    writer.during(clock.sleep(Span::SECOND)).await;
+                }
+                Step::Note(text) => {
+                    status.note(&text);
                     writer.during(clock.sleep(Span::SECOND)).await;
                 }
                 Step::End(end) => writer.end(&end).await,
@@ -185,6 +191,7 @@ fn reading(
         state,
         restarts,
         error: error.map(|(class, text)| (class, text.to_owned())),
+        note: None,
         counts: BTreeMap::from([(name("in"), value)]),
     }
 }
@@ -356,5 +363,23 @@ fn gives_none_for_a_class_with_no_error() {
 #[test]
 fn reads_no_error_for_class_0_with_no_error() {
     let got = read(vec![frame([0, 0, 0, 0, 3], "")], NO_ERROR);
+    assert_eq!(got, Some(reading(State::Running, 0, None, 3)));
+}
+
+#[test]
+fn reads_the_note_that_the_running_kind_shows() {
+    let got = read(vec![Step::Start, Step::Note("polls")], ALL);
+    let want = Reading {
+        note: Some("polls".to_owned()),
+        ..reading(State::Running, 0, None, 0)
+    };
+    assert_eq!(got, Some(want));
+}
+
+#[test]
+fn reads_no_note_for_an_empty_note() {
+    let mut columns = columns([0, 0, 0, 0, 3], "");
+    columns.push(("note", Column::Texts(vec![""])));
+    let got = read(vec![Step::Program(columns)], ALL);
     assert_eq!(got, Some(reading(State::Running, 0, None, 3)));
 }
