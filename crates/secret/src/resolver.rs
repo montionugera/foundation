@@ -12,9 +12,8 @@ use crate::reads::{LEN_MAX, Place, Reads};
 use crate::store::File;
 use crate::{Error, Source, Value};
 
-/// Gives the value of each source on one shard. Its reads of files take turns: one
-/// at a time, in the order they come, in a pool that writes zero over its bytes at
-/// the drop.
+/// Gives the value of each source on one shard. Make one for each shard: a
+/// resolver reads one file at a time, which bounds its heap.
 pub struct Resolver {
     vars: Arc<BTreeMap<OsString, OsString>>,
     reads: Reads,
@@ -23,8 +22,7 @@ pub struct Resolver {
 
 impl Resolver {
     /// Makes a resolver that reads `env()` from `vars`, `file()` through `files`, and
-    /// `secret()` from the file store in `dir`, a path relative to the data directory
-    /// of `files`. `dir` need not be there yet.
+    /// `secret()` from the directory `dir` of `files`.
     ///
     /// # Panics
     ///

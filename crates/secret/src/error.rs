@@ -21,9 +21,8 @@ pub enum Error {
         /// The store's own text.
         detail: String,
     },
-    /// The source failed before it gave a value: the value is more than 64 KiB, a
-    /// file call failed, or the store did not answer. A get after the fix can
-    /// succeed.
+    /// The source gave no value now, such as a file over 64 KiB or a failed file
+    /// call. Retrying may succeed.
     Unavailable {
         /// The source's own text, which `Display` gives alone: what failed and the
         /// fix, as whole sentences.
