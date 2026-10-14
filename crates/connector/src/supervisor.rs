@@ -719,10 +719,9 @@ mod tests {
     /// Writes one status frame of `plant.script` from another writer, stamped `lead`
     /// after the hub's time, with an empty `error` and 9 in each other sample.
     async fn write_ahead(hub: &hub::Hub, lead: Span) {
-        let channels = ["state", "class", "restarts", "backoff", "error", "note"];
-        let channels = channels.map(|c| name(&format!("plant.script.status.{c}")));
+        let channels = status_names("plant.script", &[]);
         let mut other =
-            open_writer(hub, "plant.other", Authority::ABSOLUTE, channels.into()).await;
+            open_writer(hub, "plant.other", Authority::ABSOLUTE, channels).await;
         let entries = other.set().entries();
         let text = codec::Variable::of(Type::String).expect("a variable type");
         let series: Vec<_> = (entries.iter().enumerate())
@@ -1798,13 +1797,9 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let hog = rival(
-                &scene.hub,
-                &[
-                    "state", "class", "restarts", "backoff", "error", "note", "samples",
-                ],
-            )
-            .await;
+            let channels = status_names("plant.tally", &["samples"]);
+            let hog =
+                open_writer(&scene.hub, "plant.other", Authority(1), channels).await;
             clock.sleep(ms(400)).await;
             scene.remove("samples");
             clock.sleep(ms(700)).await;
@@ -1827,13 +1822,9 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let hog = rival(
-                &scene.hub,
-                &[
-                    "state", "class", "restarts", "backoff", "error", "note", "samples",
-                ],
-            )
-            .await;
+            let channels = status_names("plant.tally", &["samples"]);
+            let hog =
+                open_writer(&scene.hub, "plant.other", Authority(1), channels).await;
             clock.sleep(ms(400)).await;
             scene
                 .node
@@ -2803,11 +2794,7 @@ mod tests {
     /// 1 s. Else the home has no room to take that flush's frame, and loses it.
     fn hog(full: bool) -> impl Kind<Config = ()> {
         counted(move |ctx: Context<()>| async move {
-            let channels = [
-                "state", "class", "restarts", "backoff", "error", "note", "samples",
-            ]
-            .map(|c| name(&format!("plant.tally.status.{c}")))
-            .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let mut held = fill(&writer);
@@ -2847,11 +2834,7 @@ mod tests {
     /// returns `Ok`.
     fn hog_to_flush() -> impl Kind<Config = ()> {
         counted(|ctx: Context<()>| async move {
-            let channels = [
-                "state", "class", "restarts", "backoff", "error", "note", "samples",
-            ]
-            .map(|c| name(&format!("plant.tally.status.{c}")))
-            .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let mut held = fill(&writer);
@@ -2888,7 +2871,8 @@ mod tests {
     /// Takes frames of one sample for each channel of `writer` from the shard's pool
     /// until the pool has no room for a frame of any size up to 2 KiB, so that no
     /// status frame and no copy of it in the home gets a block. `writer` has `error`
-    /// and `note`, whose texts set the size.
+    /// and `note`, whose texts set the size, so this holds only while the two texts
+    /// of a test are short.
     fn fill(writer: &hub::writer::Writer) -> Vec<frame::Draft> {
         let mut held = Vec::new();
         for text in (0..=2_048).rev().step_by(16) {
@@ -3021,11 +3005,7 @@ mod tests {
     /// returns `Ok` at 200 ms.
     fn outlive() -> impl Kind<Config = ()> {
         counted(|ctx: Context<()>| async move {
-            let channels = [
-                "state", "class", "restarts", "backoff", "error", "note", "samples",
-            ]
-            .map(|c| name(&format!("plant.tally.status.{c}")))
-            .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let clock = ctx.clock().clone();
@@ -3082,10 +3062,7 @@ mod tests {
             let (canceller, sleeper) = (token.clone(), clock.clone());
             tasks.spawn(async move {
                 sleeper.sleep(ms(500)).await;
-                let channels =
-                    ["state", "class", "restarts", "backoff", "error", "note"]
-                        .map(|c| name(&format!("plant.script.status.{c}")))
-                        .into();
+                let channels = status_names("plant.script", &[]);
                 let hog =
                     open_writer(&hub, "plant.other", Authority(1), channels).await;
                 let held = fill(&hog);
@@ -3550,6 +3527,14 @@ mod tests {
 
     fn name(text: &str) -> Name {
         text.parse().expect("a valid name")
+    }
+
+    /// The names of the status channels of `connector` with `counts`, without their
+    /// index.
+    fn status_names(connector: &str, counts: &[&str]) -> Vec<Name> {
+        let counts: Vec<_> = counts.iter().map(|count| name(count)).collect();
+        let (_, channels) = status::channels(&name(connector), &counts).expect("names");
+        channels.into_iter().map(|(channel, _)| channel).collect()
     }
 
     /// Writes `sample` at `stamp` to `plant.value` through `writer`, which writes
