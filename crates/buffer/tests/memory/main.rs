@@ -45,15 +45,14 @@ fn first_shrink() -> u32 {
     for _ in 0..300 {
         logs.trim(1, 16);
     }
-    let mut commit = 300;
-    loop {
+    for commit in 301..=4 * LAP {
         let before = ALLOCATOR.held();
         logs.trim(1, 0);
-        commit += 1;
         if ALLOCATOR.held() < before {
             return commit;
         }
     }
+    panic!("no trim up to commit {} gave back bytes", 4 * LAP);
 }
 
 /// S4: each path keeps at most 414 bytes, and room for four paths when there are
@@ -97,7 +96,7 @@ fn main() {
     );
     assert_eq!(
         first_shrink(),
-        769,
+        3 * LAP + 1,
         "the lap that starts at 512 ends at 768"
     );
     for paths in [1, 2, 3, 4, 5, 3585, 4097] {
