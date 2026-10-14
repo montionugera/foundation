@@ -416,7 +416,8 @@ state on `main`.
   (SECRET SOURCES), and send the value to the address of a connector. This includes
   the files of the data directory: the node's keys and the sealed store. The refusal
   of a `file()` path in the data directory is #2670, before a release of ONE NODE. In
-  ONE NODE, that person is the node's admin. Trigger for a limit that the node's
+  ONE NODE, that person is the node's admin. `plan` reads the sources only of the
+  connectors that its subject may apply. Trigger for a limit that the node's
   operator sets, such as directories and variable names given at start: a spec applied
   by a subject that does not run the node.
 - Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
