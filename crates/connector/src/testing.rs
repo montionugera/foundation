@@ -58,7 +58,7 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 ///
 /// # Panics
 ///
-/// When a call of `files` fails, or another call for `name` runs at once.
+/// When a call of `files` fails, such as when another call for `name` runs at once.
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
